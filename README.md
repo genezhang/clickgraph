@@ -15,37 +15,90 @@
 - View-based graph analytics offer the benefits of zero-ETL without the hassle of data migration and duplicate cost, yet better performance and scalability than most of the native graph analytics options.
 - Neo4j Bolt protocol support gives instant access to the tools available, including graph visualization and the MCP server.
 ---
-## 🚀 What's New in v0.5.4 (December 7, 2025)
+## 🚀 What's New in v0.6.0 (December 22, 2025)
 
-### Major Release: Cross-Table Queries, Smart Inference & Real-World Benchmarks
+### WIP Release: Semantic Validation & Architectural Improvements
 
-**v0.5.4 delivers major improvements for complex graph analytics on ClickHouse.**
+**v0.6.0 brings elegant semantic validation for variable-length paths and robust multi-table label support.**
 
 ### Highlights ✨
 
-- **Cross-table query support** - Zeek log correlation and multi-table JOINs now work correctly
-- **Smart type inference** - Automatic node and relationship type inference from schema context
-- **FK-Edge patterns** - File systems, org charts with variable-length paths  
-- **String predicates** - `STARTS WITH`, `ENDS WITH`, `CONTAINS` operators
-- **OnTime Flights benchmark** - Validated against 20M row real-world dataset
-- **1,378 tests passing** - Comprehensive test coverage across multiple schemas
+- **VLP Transitivity Check** - Semantic validation prevents invalid recursive patterns
+- **Multi-table label fixes** - Denormalization metadata, type inference improvements
+- **Performance optimization** - Skip unnecessary CTE generation for non-transitive relationships
+- **Test status** - 2446/3359 passing (72.8%), 98.6% unit test coverage
 
 ### New Features
 
-- **Cross-table WITH correlation** - Multi-table JOINs with WHERE clause correlation
-- **Smart relationship inference** - `(a:Airport)-[r]->()` automatically infers r:FLIGHT
-- **Smart node inference** - `MATCH (n)` works on single-node-type schemas
-- **Label inference** - Unlabeled nodes infer types from relationship schema
-- **Relationship uniqueness** - Multi-hop undirected patterns enforce Neo4j-style uniqueness
+- **Semantic VLP Validation** - Automatically detects non-transitive relationships (e.g., IP→Domain) and converts to single-hop patterns
+- **Architecture** - Analyzer-level validation instead of tactical SQL fixes
+- **Example**: `(IP)-[DNS_REQUESTED*]->(Domain)` → Simple single-hop query (Domain nodes can't start DNS_REQUESTED edges)
 
 ### Bug Fixes 🐛
 
-- Fixed 17+ issues including polymorphic edges, OPTIONAL MATCH, multi-hop patterns, and more
-- See [CHANGELOG.md](CHANGELOG.md) for complete details
+- **Type inference** - Bottom-up processing for multi-hop pattern label resolution
+- **Denormalization metadata** - Copy `is_denormalized`, `from_node_properties`, `to_node_properties` from schema
+- **VLP ID columns** - Use relationship schema columns (`from_id`/`to_id`)
+- **Cycle prevention** - Skip for single-hop patterns (can't have cycles)
+
+---
+
+## 📦 Major Features & Capabilities (v0.5.0 - v0.6.0)
+
+### Advanced Schema Support
+
+- **Composite Node IDs** - Use property combinations instead of single columns for node identity
+  - **Example**: `node_id: [departure_airport, departure_time]` for flights (no single unique column)
+  - **Use case**: Time-series data, multi-dimensional keys, complex entity relationships
+  - **Benefit**: Model real-world data without artificial ID columns
+
+- **ClickHouse Function Pass-through** - Use ClickHouse functions directly in Cypher expressions
+  - **Syntax**: `RETURN clickhouse.function_name(args)`
+  - **Use cases**: `cityHash64()`, `murmurHash3_64()`, specialized aggregations, ClickHouse-specific operations
+  - **Example**: `RETURN clickhouse.cityHash64(u.email) AS hash`
+
+### Benchmarks & Validation
+
+- **LDBC SNB (Work In Progress)** - Social Network Benchmark implementation
+  - **Status**: Schema mapping complete, query adaptation in progress
+  - **Scale**: Designed for scale factors 1-100 (1K-100M edges)
+  - **Purpose**: Industry-standard graph database benchmarking
+
+- **MCP Server Validation** - Model Context Protocol integration testing
+  - **Status**: Active development and validation
+  - **Purpose**: LLM tool integration for graph queries
+
+### Quality Improvements
+
+- **Error handling** - Removed `.unwrap()` landmines, proper Result/Option propagation
+- **Schema validation** - Comprehensive checks for empty ID columns, missing properties
+- **Test infrastructure** - Unified test data setup scripts, reproducible fixtures
+- **Code quality** - Modular architecture, reduced duplication, cleaner abstractions
+
+### Previous Major Features (v0.5.x)
+
+- **Cross-table queries** - Zeek log correlation, multi-table JOINs (v0.5.4)
+- **Smart type inference** - Automatic node/relationship type inference (v0.5.4)
+- **FK-Edge patterns** - File systems, org charts with VLP (v0.5.4)
+- **Polymorphic edges** - Single table with multiple edge types (v0.5.2)
+- **Multi-tenancy** - Parameterized views, 99% cache reduction (v0.5.0)
+- **Query cache** - LRU caching, 10-100x speedup (v0.5.0)
+- **Bolt Protocol 5.8** - Full Neo4j compatibility (v0.5.0)
 
 ---
 
 ## 📦 Previous Releases
+
+<details>
+<summary><b>v0.5.4 (December 7, 2025)</b> - Cross-Table Queries & Smart Inference</summary>
+
+- **Cross-table query support** - Zeek log correlation and multi-table JOINs
+- **Smart type inference** - Automatic node and relationship type inference
+- **FK-Edge patterns** - File systems, org charts with variable-length paths
+- **OnTime Flights benchmark** - 20M row real-world dataset validation
+- See [CHANGELOG.md](CHANGELOG.md) for details
+
+</details>
 
 <details>
 <summary><b>v0.5.3 (December 2, 2025)</b> - Cypher Functions Release</summary>
