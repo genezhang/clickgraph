@@ -195,6 +195,13 @@ impl AnalyzerPass for GraphJoinInference {
             collected_graph_joins.extend(cross_branch_joins);
         }
 
+        // Phase 4: Generate relationship uniqueness constraints
+        // Prevents duplicate traversal of same relationship in multi-hop patterns
+        let uniqueness_constraints = self.generate_relationship_uniqueness_constraints(
+            &pattern_metadata,
+            graph_schema,
+        );
+
         println!(
             "DEBUG GraphJoinInference: collected_graph_joins.len() = {}",
             collected_graph_joins.len()
@@ -211,6 +218,10 @@ impl AnalyzerPass for GraphJoinInference {
         // Without this wrapper, RenderPlan will try to generate JOINs from raw GraphRel
         let optional_aliases = plan_ctx.get_optional_aliases().clone();
         let mut correlation_predicates: Vec<LogicalExpr> = vec![];
+        
+        // Phase 4: Add uniqueness constraints to correlation predicates
+        correlation_predicates.extend(uniqueness_constraints);
+        
         Self::build_graph_joins(
             logical_plan,
             &mut collected_graph_joins,
@@ -4017,6 +4028,127 @@ impl GraphJoinInference {
             left_has_explicit_label, right_has_explicit_label);
         
         (left_has_explicit_label, right_has_explicit_label)
+    }
+    
+    // ========================================================================
+    // Phase 4: Relationship Uniqueness Constraints
+    // ========================================================================
+    
+    /// Generate relationship uniqueness constraints for multi-hop patterns.
+    /// 
+    /// Prevents the same physical relationship from being traversed multiple times,
+    /// which can happen with bidirectional edges: (a)-[r1]-(b)-[r2]-(c)
+    /// 
+    /// Generates WHERE clauses like: r1.id != r2.id or composite checks for multi-column IDs.
+    fn generate_relationship_uniqueness_constraints(
+        &self,
+        pattern_metadata: &PatternGraphMetadata,
+        graph_schema: &GraphSchema,
+    ) -> Vec<LogicalExpr> {
+        let mut constraints = Vec::new();
+        
+        // Only generate constraints if we have 2+ relationships
+        if pattern_metadata.edges.len() < 2 {
+            return constraints;
+        }
+        
+        crate::debug_print!("🔐 Phase 4: Generating relationship uniqueness constraints for {} edges", 
+            pattern_metadata.edges.len());
+        
+        // For each pair of edges, generate r_i.id != r_j.id constraint
+        for i in 0..pattern_metadata.edges.len() {
+            for j in (i+1)..pattern_metadata.edges.len() {
+                let edge1 = &pattern_metadata.edges[i];
+                let edge2 = &pattern_metadata.edges[j];
+                
+                // Skip if either edge is VLP (handled differently in CTE)
+                if edge1.is_vlp || edge2.is_vlp {
+                    continue;
+                }
+                
+                // Get relationship schemas to determine edge ID columns
+                let rel1_schema = match graph_schema.get_rel_schema(&edge1.rel_types[0]) {
+                    Ok(schema) => schema,
+                    Err(_) => continue, // Skip if schema not found
+                };
+                let rel2_schema = match graph_schema.get_rel_schema(&edge2.rel_types[0]) {
+                    Ok(schema) => schema,
+                    Err(_) => continue,
+                };
+                
+                // Determine edge ID columns (use edge_id if specified, else [from_id, to_id])
+                let edge1_id_cols = rel1_schema.edge_id.as_ref()
+                    .map(|id| id.columns())
+                    .unwrap_or_else(|| vec![rel1_schema.from_id.as_str(), rel1_schema.to_id.as_str()]);
+                let edge2_id_cols = rel2_schema.edge_id.as_ref()
+                    .map(|id| id.columns())
+                    .unwrap_or_else(|| vec![rel2_schema.from_id.as_str(), rel2_schema.to_id.as_str()]);
+                
+                // Generate inequality constraint
+                // For single column: r1.id != r2.id
+                // For composite: (r1.col1 != r2.col1) OR (r1.col2 != r2.col2) OR ...
+                let constraint = if edge1_id_cols.len() == 1 && edge2_id_cols.len() == 1 {
+                    // Simple case: single column ID
+                    LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::NotEqual,
+                        operands: vec![
+                            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(edge1.alias.clone()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                    edge1_id_cols[0].to_string()
+                                ),
+                            }),
+                            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(edge2.alias.clone()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                    edge2_id_cols[0].to_string()
+                                ),
+                            }),
+                        ],
+                    })
+                } else {
+                    // Composite case: (r1.col1, r1.col2) != (r2.col1, r2.col2)
+                    // SQL: (r1.col1 != r2.col1) OR (r1.col2 != r2.col2) OR ...
+                    let mut or_operands = Vec::new();
+                    for (col1, col2) in edge1_id_cols.iter().zip(edge2_id_cols.iter()) {
+                        or_operands.push(LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::NotEqual,
+                            operands: vec![
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(edge1.alias.clone()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        col1.to_string()
+                                    ),
+                                }),
+                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(edge2.alias.clone()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        col2.to_string()
+                                    ),
+                                }),
+                            ],
+                        }));
+                    }
+                    
+                    // Combine with OR
+                    if or_operands.len() == 1 {
+                        or_operands.into_iter().next().unwrap()
+                    } else {
+                        LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::Or,
+                            operands: or_operands,
+                        })
+                    }
+                };
+                
+                crate::debug_print!("   🔐 Adding uniqueness constraint: {} != {}", 
+                    edge1.alias, edge2.alias);
+                constraints.push(constraint);
+            }
+        }
+        
+        crate::debug_print!("✅ Generated {} uniqueness constraints", constraints.len());
+        constraints
     }
 
     // ========================================================================
