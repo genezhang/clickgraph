@@ -319,10 +319,6 @@ impl ToSql for FromTableItem {
                 explicit_alias.clone()
             } else {
                 match view_ref.source.as_ref() {
-                    LogicalPlan::Scan(scan) => {
-                        // Use the table_alias from the Scan (original Cypher variable name)
-                        scan.table_alias.clone().unwrap_or_else(|| "t".to_string())
-                    }
                     LogicalPlan::ViewScan(_) => {
                         // ViewScan fallback - should not reach here if alias is properly set
                         "t".to_string()

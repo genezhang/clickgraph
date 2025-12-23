@@ -331,7 +331,7 @@ fi
 # Create single-parameter parameterized views
 run_sql "CREATE OR REPLACE VIEW brahmand.users_by_tenant AS SELECT user_id, tenant_id, name, email, country, created_at FROM brahmand.multi_tenant_users WHERE tenant_id = {tenant_id:String}"
 run_sql "CREATE OR REPLACE VIEW brahmand.orders_by_tenant AS SELECT order_id, tenant_id, user_id, product, amount, order_date FROM brahmand.multi_tenant_orders WHERE tenant_id = {tenant_id:String}"
-run_sql "CREATE OR REPLACE VIEW brahmand.friendships_by_tenant AS SELECT friendship_id, tenant_id, user_id_from, user_id_to, friendship_date FROM brahmand.multi_tenant_friendships WHERE tenant_id = {tenant_id:String}"
+run_sql "CREATE OR REPLACE VIEW brahmand.friendships_by_tenant AS SELECT friendship_id, tenant_id, user_id_from, user_id_to, created_at FROM brahmand.multi_tenant_friendships WHERE tenant_id = {tenant_id:String}"
 
 # Create multi-parameter parameterized views
 run_sql "CREATE OR REPLACE VIEW brahmand.users_by_tenant_and_country AS SELECT user_id, tenant_id, name, email, country, created_at FROM brahmand.multi_tenant_users WHERE tenant_id = {tenant_id:String} AND country = {country:String}"

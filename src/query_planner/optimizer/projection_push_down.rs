@@ -33,55 +33,6 @@ impl OptimizerPass for ProjectionPushDown {
                 let child_tf = self.optimize(cte.input.clone(), plan_ctx)?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
-            LogicalPlan::Scan(scan) => {
-                let table_ctx_opt = plan_ctx
-                    .get_mut_table_ctx_opt_from_alias_opt(&scan.table_alias)
-                    .map_err(|e| OptimizerError::PlanCtx {
-                        pass: Pass::ProjectionPushDown,
-                        source: e,
-                    })?;
-                if let Some(table_ctx) = table_ctx_opt {
-                    if !table_ctx.get_projections().is_empty() {
-                        let projections = table_ctx.get_projections().clone();
-
-                        println!(
-                            "\nProjectionPushDown: Creating new Projection for Scan(alias={:?})",
-                            scan.table_alias
-                        );
-                        println!(
-                            "ProjectionPushDown: Number of projection items: {}",
-                            projections.len()
-                        );
-                        for (i, item) in projections.iter().enumerate() {
-                            use crate::query_planner::logical_expr::LogicalExpr;
-                            println!(
-                                "ProjectionPushDown: Item {} discriminant: {:?}",
-                                i,
-                                std::mem::discriminant(&item.expression)
-                            );
-                            if let LogicalExpr::PropertyAccessExp(pa) = &item.expression {
-                                println!(
-                                    "ProjectionPushDown: Item {} is PropertyAccessExp(alias={}, column={})",
-                                    i, pa.table_alias, pa.column.raw()
-                                );
-                            } else if let LogicalExpr::Literal(_) = &item.expression {
-                                println!("ProjectionPushDown: Item {} is Literal!!!", i);
-                            }
-                        }
-
-                        let new_proj = Arc::new(LogicalPlan::Projection(Projection {
-                            input: logical_plan.clone(),
-                            items: projections,
-                            distinct: false,
-                        }));
-                        Transformed::Yes(new_proj)
-                    } else {
-                        Transformed::No(logical_plan.clone())
-                    }
-                } else {
-                    Transformed::No(logical_plan.clone())
-                }
-            }
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
                 let child_tf = self.optimize(graph_joins.input.clone(), plan_ctx)?;

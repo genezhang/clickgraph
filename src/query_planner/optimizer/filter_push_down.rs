@@ -34,28 +34,6 @@ impl OptimizerPass for FilterPushDown {
                 let child_tf = self.optimize(cte.input.clone(), plan_ctx)?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
-            LogicalPlan::Scan(scan) => {
-                let table_ctx_opt = plan_ctx
-                    .get_mut_table_ctx_opt_from_alias_opt(&scan.table_alias)
-                    .map_err(|e| OptimizerError::PlanCtx {
-                        pass: Pass::FilterPushDown,
-                        source: e,
-                    })?;
-                if let Some(table_ctx) = table_ctx_opt {
-                    if !table_ctx.get_filters().is_empty() {
-                        let combined_predicate = self
-                            .get_combined_predicate(table_ctx.get_filters().clone())
-                            .ok_or(OptimizerError::CombineFilterPredicate)?;
-
-                        let new_proj = Arc::new(LogicalPlan::Filter(Filter {
-                            input: logical_plan.clone(),
-                            predicate: combined_predicate,
-                        }));
-                        return Ok(Transformed::Yes(new_proj));
-                    }
-                }
-                Transformed::No(logical_plan.clone())
-            }
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
                 let child_tf = self.optimize(graph_joins.input.clone(), plan_ctx)?;

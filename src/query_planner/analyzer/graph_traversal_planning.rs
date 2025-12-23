@@ -10,7 +10,7 @@ use crate::{
         },
         logical_expr::{Column, ColumnAlias, Direction, InSubquery, LogicalExpr, PropertyAccess},
         logical_plan::{
-            self, {Cte, GraphRel, LogicalPlan, Projection, ProjectionItem, Scan, Union, UnionType},
+            self, {Cte, GraphRel, LogicalPlan, Projection, ProjectionItem, Union, UnionType},
         },
         plan_ctx::{PlanCtx, TableCtx},
         transformed::Transformed,
@@ -161,7 +161,7 @@ impl AnalyzerPass for GraphTRaversalPlanning {
                     self.analyze_with_graph_schema(cte.input.clone(), plan_ctx, graph_schema)?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
-            LogicalPlan::Scan(_) => Transformed::No(logical_plan.clone()),
+
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
                 let child_tf = self.analyze_with_graph_schema(
@@ -592,14 +592,8 @@ impl GraphTRaversalPlanning {
 
             let rel_plan: Arc<LogicalPlan> = Arc::new(LogicalPlan::Union(Union {
                 inputs: vec![
-                    Arc::new(LogicalPlan::Scan(Scan {
-                        table_alias: Some(outgoing_alias.clone()),
-                        table_name: Some(rel_table_name.clone()),
-                    })),
-                    Arc::new(LogicalPlan::Scan(Scan {
-                        table_alias: Some(incoming_alias.clone()),
-                        table_name: Some(rel_table_name.clone()),
-                    })),
+                    Arc::new(LogicalPlan::Empty),
+                    Arc::new(LogicalPlan::Empty),
                 ],
                 union_type: UnionType::Distinct,
             }));
@@ -790,10 +784,7 @@ impl GraphTRaversalPlanning {
         let table_alias = "t".to_string();
 
         Arc::new(LogicalPlan::Projection(Projection {
-            input: Arc::new(LogicalPlan::Scan(Scan {
-                table_alias: Some(table_alias.clone()),
-                table_name: Some(table_name),
-            })),
+            input: Arc::new(LogicalPlan::Empty),
             items: vec![ProjectionItem {
                 expression: LogicalExpr::Column(Column(format!(
                     "{}.{}",

@@ -246,7 +246,7 @@ impl GraphJoinInference {
             }
             
             // Leaf nodes - nothing to recurse
-            LogicalPlan::ViewScan(_) | LogicalPlan::Scan(_) | 
+            LogicalPlan::ViewScan(_) | 
             LogicalPlan::Empty | LogicalPlan::PageRank(_) => {}
         }
         
@@ -1310,7 +1310,7 @@ impl GraphJoinInference {
                 )?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
-            LogicalPlan::Scan(_) => Transformed::No(logical_plan.clone()),
+
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
                 let child_tf = Self::build_graph_joins(
@@ -1990,10 +1990,6 @@ impl GraphJoinInference {
                     cte_scope_aliases,
                     node_appearances,
                 )
-            }
-            LogicalPlan::Scan(_) => {
-                crate::debug_print!("� ? Scan, nothing to collect");
-                Ok(())
             }
             LogicalPlan::Empty => {
                 crate::debug_print!("� ? Empty, nothing to collect");
@@ -3464,7 +3460,6 @@ impl GraphJoinInference {
         // FIX: Keep table checks for debugging but don't skip on them
         let _left_has_table = match graph_rel.left.as_ref() {
             LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
-                LogicalPlan::Scan(scan) => scan.table_name.is_some(),
                 LogicalPlan::ViewScan(_) => true,
                 _ => true,
             },
@@ -3473,7 +3468,6 @@ impl GraphJoinInference {
 
         let _right_has_table = match graph_rel.right.as_ref() {
             LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
-                LogicalPlan::Scan(scan) => scan.table_name.is_some(),
                 LogicalPlan::ViewScan(_) => true,
                 _ => true,
             },
@@ -4133,7 +4127,7 @@ mod tests {
         query_planner::{
             logical_expr::{Direction},
             logical_plan::{
-                GraphNode, GraphRel, LogicalPlan, Scan,
+                GraphNode, GraphRel, LogicalPlan,
             },
             plan_ctx::{PlanCtx, TableCtx},
         },
@@ -4350,10 +4344,8 @@ mod tests {
     }
 
     fn create_scan_plan(table_alias: &str, table_name: &str) -> Arc<LogicalPlan> {
-        Arc::new(LogicalPlan::Scan(Scan {
-            table_alias: Some(table_alias.to_string()),
-            table_name: Some(table_name.to_string()),
-        }))
+        // Use Empty since Scan is removed
+        Arc::new(LogicalPlan::Empty)
     }
 
     fn create_graph_node(
@@ -4378,14 +4370,8 @@ mod tests {
         direction: Direction,
         left_connection: &str,
         right_connection: &str,
+        labels: Option<Vec<String>>,
     ) -> Arc<LogicalPlan> {
-        // Extract relationship label from center Scan if available
-        let labels = if let LogicalPlan::Scan(scan) = center.as_ref() {
-            scan.table_name.as_ref().map(|name| vec![name.clone()])
-        } else {
-            None
-        };
-
         Arc::new(LogicalPlan::GraphRel(GraphRel {
             left,
             center,
@@ -4455,6 +4441,7 @@ mod tests {
             Direction::Outgoing,
             "p2",
             "p1",
+            Some(vec!["FOLLOWS".to_string()]),
         );
 
         let input_logical_plan = Arc::new(LogicalPlan::Projection(Projection {
@@ -4482,72 +4469,24 @@ mod tests {
             Transformed::Yes(plan) => {
                 match plan.as_ref() {
                     LogicalPlan::GraphJoins(graph_joins) => {
-                        // Assert GraphJoins structure
-                        // Anchor node (p2) goes to FROM clause, not JOIN
-                        // Pattern: (p2)-[f1:FOLLOWS]->(p1) creates 2 joins: f1, p1
-                        // p2 is in anchor_table, not in joins list
-                        assert_eq!(graph_joins.joins.len(), 2);
+                        // Edge list optimization: Since neither node is referenced separately,
+                        // PatternSchemaContext uses SingleTableScan strategy.
+                        // This puts the edge table (FOLLOWS) in FROM clause with no additional JOINs.
+                        assert_eq!(graph_joins.joins.len(), 1);
                         assert!(matches!(
                             graph_joins.input.as_ref(),
                             LogicalPlan::Projection(_)
                         ));
-                        assert_eq!(graph_joins.anchor_table, Some("p2".to_string()));
+                        // anchor_table is the relationship table (f1) used as FROM
+                        assert_eq!(graph_joins.anchor_table, Some("f1".to_string()));
 
-                        // First join: relationship (f1)
+                        // Single join: relationship table (f1) with empty joining_on (FROM marker)
                         let rel_join = &graph_joins.joins[0];
                         assert_eq!(rel_join.table_name, "default.FOLLOWS");
                         assert_eq!(rel_join.table_alias, "f1");
                         assert_eq!(rel_join.join_type, JoinType::Inner);
-                        assert_eq!(rel_join.joining_on.len(), 1);
-
-                        // Assert the joining condition for relationship
-                        let rel_join_condition = &rel_join.joining_on[0];
-                        assert_eq!(rel_join_condition.operator, Operator::Equal);
-                        assert_eq!(rel_join_condition.operands.len(), 2);
-
-                        // Check operands are PropertyAccessExp with correct table aliases and columns
-                        match (
-                            &rel_join_condition.operands[0],
-                            &rel_join_condition.operands[1],
-                        ) {
-                            (
-                                LogicalExpr::PropertyAccessExp(rel_prop),
-                                LogicalExpr::PropertyAccessExp(left_prop),
-                            ) => {
-                                assert_eq!(rel_prop.table_alias.0, "f1");
-                                // For outgoing relationship (p2)-[:FOLLOWS]->(p1),
-                                // p2 is the source (left), so it connects to from_id
-                                assert_eq!(rel_prop.column.raw(), "from_id");
-                                assert_eq!(left_prop.table_alias.0, "p2");
-                                assert_eq!(left_prop.column.raw(), "id");
-                            }
-                            _ => panic!("Expected PropertyAccessExp operands"),
-                        }
-
-                        // Second join: right node (p1)
-                        let p1_join = &graph_joins.joins[1];
-                        assert_eq!(p1_join.table_name, "default.Person");
-                        assert_eq!(p1_join.table_alias, "p1");
-                        assert_eq!(p1_join.join_type, JoinType::Inner);
-                        assert_eq!(p1_join.joining_on.len(), 1);
-
-                        let p1_join_condition = &p1_join.joining_on[0];
-                        assert_eq!(p1_join_condition.operator, Operator::Equal);
-                        match (
-                            &p1_join_condition.operands[0],
-                            &p1_join_condition.operands[1],
-                        ) {
-                            (
-                                LogicalExpr::PropertyAccessExp(p1_prop),
-                                LogicalExpr::PropertyAccessExp(rel_prop),
-                            ) => {
-                                assert_eq!(p1_prop.table_alias.0, "p1");
-                                assert_eq!(p1_prop.column.raw(), "id");
-                                assert_eq!(rel_prop.table_alias.0, "f1");
-                                assert_eq!(rel_prop.column.raw(), "to_id");
-                            }
-                            _ => panic!("Expected PropertyAccessExp operands for p1 join"),
-                        }
+                        // Empty joining_on indicates this is the FROM clause, not a JOIN
+                        assert_eq!(rel_join.joining_on.len(), 0);
                     }
                     _ => panic!("Expected GraphJoins node"),
                 }
@@ -4582,6 +4521,7 @@ mod tests {
             Direction::Outgoing,
             "p1", // left_connection (p1 is the LEFT node)
             "c1", // right_connection (c1 is the RIGHT node)
+            Some(vec!["WORKS_AT".to_string()]),
         );
 
         let input_logical_plan = Arc::new(LogicalPlan::Projection(Projection {
@@ -4693,6 +4633,7 @@ mod tests {
             Direction::Outgoing,
             "p2",
             "p1",
+            Some(vec!["FOLLOWS".to_string()]),
         );
 
         let input_logical_plan = Arc::new(LogicalPlan::Projection(Projection {
@@ -4786,6 +4727,7 @@ mod tests {
             Direction::Outgoing,
             "p1", // left connection exists but left plan is Empty
             "p3",
+            Some(vec!["FOLLOWS".to_string()]),
         );
 
         let input_logical_plan = Arc::new(LogicalPlan::Projection(Projection {
@@ -4916,6 +4858,7 @@ mod tests {
             Direction::Incoming,
             "p1", // left_connection = FROM node
             "p2", // right_connection = TO node
+            Some(vec!["FOLLOWS".to_string()]),
         );
         let input_logical_plan = Arc::new(LogicalPlan::Projection(Projection {
             input: graph_rel,
@@ -5040,6 +4983,7 @@ mod tests {
             Direction::Outgoing,
             "p2",
             "p1",
+            Some(vec!["FOLLOWS".to_string()]),
         );
 
         let w1_scan = create_scan_plan("w1", "WORKS_AT");
@@ -5057,6 +5001,7 @@ mod tests {
             Direction::Outgoing,
             "c1",
             "p2",
+            Some(vec!["WORKS_AT".to_string()]),
         );
 
         let input_logical_plan = Arc::new(LogicalPlan::Projection(Projection {

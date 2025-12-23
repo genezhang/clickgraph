@@ -229,7 +229,6 @@ impl AliasResolverContext {
 
             // Leaf nodes - no transformation needed
             LogicalPlan::Empty => LogicalPlan::Empty,
-            LogicalPlan::Scan(scan) => LogicalPlan::Scan(scan),
             LogicalPlan::PageRank(pr) => LogicalPlan::PageRank(pr),
             LogicalPlan::Unwind(u) => {
                 let transformed_input = Arc::new(self.transform_plan((*u.input).clone()));
@@ -577,10 +576,6 @@ impl AliasResolverContext {
 
             LogicalPlan::ViewScan(_) => {
                 // ViewScans are leaf nodes, nothing to analyze
-            }
-
-            LogicalPlan::Scan(_) => {
-                // Scans are leaf nodes
             }
 
             LogicalPlan::Empty => {

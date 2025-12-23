@@ -52,10 +52,10 @@ impl AnalyzerPass for QueryValidation {
                 let right_alias = &graph_rel.right_connection;
 
                 // Check if nodes actually have table names - skip for anonymous patterns
-                // For patterns like ()-[r:FOLLOWS]->(), nodes are Empty Scans with table_name: None
+                // For patterns like ()-[r:FOLLOWS]->(), nodes are Empty with table_name: None
                 let left_has_table = match graph_rel.left.as_ref() {
                     LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
-                        LogicalPlan::Scan(scan) => scan.table_name.is_some(),
+                        LogicalPlan::Empty => false,
                         LogicalPlan::ViewScan(_) => true,
                         _ => true,
                     },
@@ -64,7 +64,7 @@ impl AnalyzerPass for QueryValidation {
 
                 let right_has_table = match graph_rel.right.as_ref() {
                     LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
-                        LogicalPlan::Scan(scan) => scan.table_name.is_some(),
+                        LogicalPlan::Empty => false,
                         LogicalPlan::ViewScan(_) => true,
                         _ => true,
                     },
@@ -221,7 +221,6 @@ impl AnalyzerPass for QueryValidation {
                     self.analyze_with_graph_schema(cte.input.clone(), plan_ctx, graph_schema)?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
-            LogicalPlan::Scan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
                 let child_tf = self.analyze_with_graph_schema(

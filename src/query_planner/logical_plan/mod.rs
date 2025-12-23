@@ -32,7 +32,7 @@ use super::plan_ctx::PlanCtx;
 pub mod errors;
 // pub mod logical_plan;
 mod filter_view;
-mod match_clause;
+pub mod match_clause; // Public for schema_inference to access ViewScan generation functions
 mod optional_match_clause;
 mod order_by_clause;
 pub mod plan_builder;
@@ -151,8 +151,6 @@ pub fn reset_cte_counter() {
 #[serde(bound = "")]
 pub enum LogicalPlan {
     Empty,
-
-    Scan(Scan),
 
     #[serde(with = "serde_arc")]
     ViewScan(Arc<ViewScan>),
@@ -383,12 +381,6 @@ impl WithClause {
     pub fn exports_alias(&self, alias: &str) -> bool {
         self.exported_aliases.iter().any(|a| a == alias)
     }
-}
-
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub struct Scan {
-    pub table_alias: Option<String>,
-    pub table_name: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -1234,9 +1226,6 @@ impl LogicalPlan {
             LogicalPlan::Empty => {
                 // Empty is a leaf node - no children to traverse
             }
-            LogicalPlan::Scan(_) => {
-                // Scan is a leaf node - no children to traverse
-            }
         }
 
         let n = children.len();
@@ -1253,7 +1242,6 @@ impl LogicalPlan {
                 "GraphRel({:?})(is_rel_anchor: {:?})",
                 graph_rel.direction, graph_rel.is_rel_anchor
             ),
-            LogicalPlan::Scan(scan) => format!("scan({:?})", scan.table_alias),
             LogicalPlan::Empty => "".to_string(),
             LogicalPlan::Filter(_) => "Filter".to_string(),
             LogicalPlan::Projection(_) => "Projection".to_string(),
@@ -1315,8 +1303,7 @@ impl LogicalPlan {
                 with_clause.input.contains_variable_length_path()
             }
             // Leaf nodes
-            LogicalPlan::Scan(_)
-            | LogicalPlan::ViewScan(_)
+            LogicalPlan::ViewScan(_)
             | LogicalPlan::Empty
             | LogicalPlan::PageRank(_) => false,
         }
@@ -1335,10 +1322,7 @@ mod tests {
     #[test]
     fn test_filter_rebuild_or_clone_with_transformation() {
         let original_input = Arc::new(LogicalPlan::Empty);
-        let new_input = Arc::new(LogicalPlan::Scan(Scan {
-            table_alias: Some("employees".to_string()),
-            table_name: Some("employee_table".to_string()),
-        }));
+        let new_input = Arc::new(LogicalPlan::Empty);
 
         let filter = Filter {
             input: original_input.clone(),
@@ -1389,10 +1373,7 @@ mod tests {
     #[test]
     fn test_projection_rebuild_or_clone_with_transformation() {
         let original_input = Arc::new(LogicalPlan::Empty);
-        let new_input = Arc::new(LogicalPlan::Scan(Scan {
-            table_alias: Some("customers".to_string()),
-            table_name: Some("customer_table".to_string()),
-        }));
+        let new_input = Arc::new(LogicalPlan::Empty);
 
         let projection_items = vec![ProjectionItem {
             expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
@@ -1430,10 +1411,7 @@ mod tests {
     #[test]
     fn test_graph_node_rebuild_or_clone() {
         let original_input = Arc::new(LogicalPlan::Empty);
-        let new_input = Arc::new(LogicalPlan::Scan(Scan {
-            table_alias: Some("users".to_string()),
-            table_name: Some("user_table".to_string()),
-        }));
+        let new_input = Arc::new(LogicalPlan::Empty);
 
         let graph_node = GraphNode {
             input: original_input.clone(),
@@ -1465,10 +1443,7 @@ mod tests {
         let left_plan = Arc::new(LogicalPlan::Empty);
         let center_plan = Arc::new(LogicalPlan::Empty);
         let right_plan = Arc::new(LogicalPlan::Empty);
-        let new_left_plan = Arc::new(LogicalPlan::Scan(Scan {
-            table_alias: Some("users".to_string()),
-            table_name: Some("user_table".to_string()),
-        }));
+        let new_left_plan = Arc::new(LogicalPlan::Empty);
 
         let graph_rel = GraphRel {
             left: left_plan.clone(),
@@ -1517,10 +1492,7 @@ mod tests {
 
     #[test]
     fn test_cte_rebuild_or_clone_with_empty_input() {
-        let original_input = Arc::new(LogicalPlan::Scan(Scan {
-            table_alias: Some("temp".to_string()),
-            table_name: Some("temp_table".to_string()),
-        }));
+        let original_input = Arc::new(LogicalPlan::Empty);
         let empty_input = Arc::new(LogicalPlan::Empty);
 
         let cte = Cte {
@@ -1579,11 +1551,8 @@ mod tests {
 
     #[test]
     fn test_complex_logical_plan_structure() {
-        // Create a complex plan: Projection -> Filter -> GraphNode -> Scan
-        let scan = LogicalPlan::Scan(Scan {
-            table_alias: Some("users".to_string()),
-            table_name: Some("user_accounts".to_string()),
-        });
+        // Create a complex plan: Projection -> Filter -> GraphNode -> Empty
+        let scan = LogicalPlan::Empty;
 
         let graph_node = LogicalPlan::GraphNode(GraphNode {
             input: Arc::new(scan),
@@ -1643,14 +1612,10 @@ mod tests {
                         LogicalPlan::GraphNode(graph_node) => {
                             assert_eq!(graph_node.alias, "user");
                             match graph_node.input.as_ref() {
-                                LogicalPlan::Scan(scan_node) => {
-                                    assert_eq!(scan_node.table_alias, Some("users".to_string()));
-                                    assert_eq!(
-                                        scan_node.table_name,
-                                        Some("user_accounts".to_string())
-                                    );
+                                LogicalPlan::Empty => {
+                                    // Empty is the leaf node now
                                 }
-                                _ => panic!("Expected Scan at bottom"),
+                                _ => panic!("Expected Empty at bottom"),
                             }
                         }
                         _ => panic!("Expected GraphNode"),

@@ -637,12 +637,7 @@ fn test_analyzer_denormalized_property_integration() {
         },
     ));
 
-    let flight_scan = Arc::new(LogicalPlan::Scan(
-        crate::query_planner::logical_plan::Scan {
-            table_alias: Some("flight".to_string()),
-            table_name: Some("FLIGHT".to_string()),
-        },
-    ));
+    let flight_scan = Arc::new(LogicalPlan::Empty);
 
     let graph_rel = Arc::new(LogicalPlan::GraphRel(
         crate::query_planner::logical_plan::GraphRel {

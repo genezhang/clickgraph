@@ -41,7 +41,7 @@ impl AnalyzerPass for FilterTagging {
         );
         let variant_name = match &*logical_plan {
             LogicalPlan::Empty => "Empty",
-            LogicalPlan::Scan(_) => "Scan",
+            LogicalPlan::Empty => "Empty",
             LogicalPlan::ViewScan(_) => "ViewScan",
             LogicalPlan::GraphNode(_) => "GraphNode",
             LogicalPlan::GraphRel(_) => "GraphRel",
@@ -90,7 +90,7 @@ impl AnalyzerPass for FilterTagging {
                     self.analyze_with_graph_schema(cte.input.clone(), plan_ctx, graph_schema)?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
-            LogicalPlan::Scan(_) => Transformed::No(logical_plan.clone()),
+
             LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
                 let child_tf = self.analyze_with_graph_schema(
@@ -461,7 +461,7 @@ impl FilterTagging {
                 Ok(gj.rebuild_or_clone(child_tf, plan.clone()))
             }
             // Leaf nodes - no transformation
-            LogicalPlan::ViewScan(_) | LogicalPlan::Scan(_) | LogicalPlan::Empty => {
+            LogicalPlan::ViewScan(_) | LogicalPlan::Empty => {
                 Ok(Transformed::No(plan.clone()))
             }
             // For any other node types, fall back to regular analysis
@@ -1989,7 +1989,7 @@ impl FilterTagging {
 mod tests {
     use super::*;
     use crate::query_planner::logical_expr::{Literal, PropertyAccess, TableAlias};
-    use crate::query_planner::logical_plan::{Filter, GraphNode, LogicalPlan, Scan};
+    use crate::query_planner::logical_plan::{Filter, GraphNode, LogicalPlan};
     use crate::query_planner::plan_ctx::TableCtx;
 
     fn create_property_access(table: &str, column: &str) -> LogicalExpr {
@@ -2500,10 +2500,7 @@ mod tests {
         let graph_schema = setup_test_graph_schema();
 
         // Create a Filter node with completely extractable predicate
-        let scan = Arc::new(LogicalPlan::Scan(Scan {
-            table_alias: Some("user".to_string()),
-            table_name: Some("users".to_string()),
-        }));
+        let scan = Arc::new(LogicalPlan::Empty);
 
         let filter = Arc::new(LogicalPlan::Filter(Filter {
             input: scan.clone(),
@@ -2533,11 +2530,8 @@ mod tests {
         let mut plan_ctx = setup_plan_ctx_with_tables();
         let graph_schema = setup_test_graph_schema();
 
-        // Create complex nested plan: GraphNode -> Filter -> Scan
-        let scan = Arc::new(LogicalPlan::Scan(Scan {
-            table_alias: Some("user".to_string()),
-            table_name: Some("users".to_string()),
-        }));
+        // Create complex nested plan: GraphNode -> Filter -> Empty
+        let scan = Arc::new(LogicalPlan::Empty);
 
         let filter = Arc::new(LogicalPlan::Filter(Filter {
             input: scan,
@@ -2561,13 +2555,11 @@ mod tests {
             Transformed::Yes(new_plan) => {
                 match new_plan.as_ref() {
                     LogicalPlan::GraphNode(node) => {
-                        // The filter should be removed and scan should be direct input
+                        // The filter should be removed and Empty should be direct input
                         assert_eq!(node.alias, "user");
                         match node.input.as_ref() {
-                            LogicalPlan::Scan(scan) => {
-                                assert_eq!(scan.table_alias, Some("user".to_string()));
-                            }
-                            _ => panic!("Expected scan as direct input after filter removal"),
+                            LogicalPlan::Empty => {}
+                            _ => panic!("Expected Empty as direct input after filter removal"),
                         }
                     }
                     _ => panic!("Expected GraphNode at top level"),

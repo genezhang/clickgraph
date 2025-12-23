@@ -889,7 +889,6 @@ impl OptimizerPass for FilterIntoGraphRel {
                 let child_tf = self.optimize(cte.input.clone(), plan_ctx)?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
-            LogicalPlan::Scan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::ViewScan(view_scan) => {
                 // ViewScan filters should have been injected by the GraphNode handler above
                 // This handler is only reached for standalone ViewScans (not wrapped by GraphNode)

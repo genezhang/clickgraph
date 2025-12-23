@@ -7,7 +7,7 @@ use crate::{
         logical_plan::{
             errors::LogicalPlanError,
             plan_builder::LogicalPlanResult,
-            {CartesianProduct, GraphNode, GraphRel, LogicalPlan, Scan, ShortestPathMode, Union},
+            {CartesianProduct, GraphNode, GraphRel, LogicalPlan, ShortestPathMode, Union},
         },
         plan_ctx::{PlanCtx, TableCtx},
     },
@@ -324,12 +324,8 @@ fn generate_scan(
     if let Some(label_str) = &label {
         // Handle $any wildcard for polymorphic edges
         if label_str == "$any" {
-            log::debug!("Label is $any (polymorphic wildcard), creating empty Scan");
-            let scan = Scan {
-                table_alias: Some(alias),
-                table_name: None,
-            };
-            return Ok(Arc::new(LogicalPlan::Scan(scan)));
+            log::debug!("Label is $any (polymorphic wildcard), creating Empty plan");
+            return Ok(Arc::new(LogicalPlan::Empty));
         }
 
         log::debug!("Trying to create ViewScan for label '{}'", label_str);
@@ -337,45 +333,14 @@ fn generate_scan(
             log::info!("✓ Successfully created ViewScan for label '{}'", label_str);
             Ok(view_scan)
         } else {
-            log::warn!(
-                "Schema lookup failed for node label '{}', falling back to regular Scan",
-                label_str
-            );
-
-            // Even for fallback Scan, try to get the actual table name from schema
-            // Use plan_ctx.schema() instead of GLOBAL_GRAPH_SCHEMA
-            let table_name = match plan_ctx.schema().get_node_schema(label_str) {
-                Ok(node_schema) => {
-                    log::info!(
-                        "✓ Fallback Scan: Using table '{}' for label '{}'",
-                        node_schema.table_name,
-                        label_str
-                    );
-                    Some(node_schema.table_name.clone())
-                }
-                Err(_) => {
-                    log::warn!(
-                        "Could not find schema for label '{}', using label as table name",
-                        label_str
-                    );
-                    Some(label_str.clone())
-                }
-            };
-
-            let scan = Scan {
-                table_alias: Some(alias),
-                table_name,
-            };
-            Ok(Arc::new(LogicalPlan::Scan(scan)))
+            // ViewScan creation failed - this is an error (schema not found)
+            Err(LogicalPlanError::NodeNotFound(label_str.to_string()))
         }
     } else {
-        log::debug!("No label provided, creating regular Scan");
-        // For nodes without labels, create a regular Scan with no table name
-        let scan = Scan {
-            table_alias: Some(alias),
-            table_name: None,
-        };
-        Ok(Arc::new(LogicalPlan::Scan(scan)))
+        log::debug!("No label provided - anonymous node, using Empty plan");
+        // For anonymous nodes, use Empty plan
+        // The node label will be inferred from relationship context during analysis
+        Ok(Arc::new(LogicalPlan::Empty))
     }
 }
 
@@ -422,7 +387,7 @@ fn is_label_denormalized(label: &Option<String>, plan_ctx: &PlanCtx) -> bool {
 
 /// Try to generate a ViewScan for a node by looking up the label in the schema from plan_ctx
 /// Returns None if schema is not available or label not found.
-fn try_generate_view_scan(
+pub fn try_generate_view_scan(
     _alias: &str,
     label: &str,
     plan_ctx: &PlanCtx,
@@ -823,7 +788,7 @@ fn try_generate_view_scan(
 }
 
 /// Try to generate a ViewScan for a relationship by looking up the relationship type in the schema from plan_ctx
-fn try_generate_relationship_view_scan(
+pub fn try_generate_relationship_view_scan(
     _alias: &str,
     rel_type: &str,
     left_node_label: Option<&str>,
@@ -1036,39 +1001,26 @@ fn generate_relationship_center(
                 );
                 return Ok(view_scan);
             } else {
-                log::warn!(
-                    "Relationship ViewScan creation failed for type '{}', falling back to regular Scan",
-                    unique_labels[0]
-                );
-                // Fallback to regular Scan when schema is not available (e.g., in tests)
-                let scan = Scan {
-                    table_alias: Some(rel_alias.to_string()),
-                    table_name: Some(unique_labels[0].clone()), // Use the relationship type as table name
-                };
-                return Ok(Arc::new(LogicalPlan::Scan(scan)));
+                // ViewScan creation failed - this is an error
+                return Err(LogicalPlanError::RelationshipNotFound(
+                    unique_labels[0].clone()
+                ));
             }
         } else {
             log::debug!(
-                "Multiple relationship types ({}), will be handled by CTE generation",
+                "Multiple relationship types ({}), using Empty plan (CTE uses GraphRel.labels)",
                 unique_labels.len()
             );
-            // For multiple relationships, create a placeholder scan that will be replaced by CTE generation
-            // Use the CTE name as the table name so the plan builder knows to use the CTE
-            let cte_name = format!("rel_{}_{}", left_connection, right_connection);
-            let placeholder_scan = Scan {
-                table_alias: Some(rel_alias.to_string()),
-                table_name: Some(cte_name),
-            };
-            return Ok(Arc::new(LogicalPlan::Scan(placeholder_scan)));
+            // For multiple relationships, use Empty plan
+            // The actual UNION ALL CTE generation happens in render phase using GraphRel.labels
+            // No need for "rel_*" placeholder - it was never actually looked up
+            return Ok(Arc::new(LogicalPlan::Empty));
         }
     } else {
-        log::debug!("No relationship labels specified, creating regular scan");
-        // For relationships without labels, create a regular Scan
-        let scan = Scan {
-            table_alias: Some(rel_alias.to_string()),
-            table_name: None,
-        };
-        return Ok(Arc::new(LogicalPlan::Scan(scan)));
+        log::debug!("No relationship labels specified, using Empty plan");
+        // For relationships without labels, use Empty
+        // Type inference pass will fill in the relationship type
+        return Ok(Arc::new(LogicalPlan::Empty));
     }
 }
 
@@ -2397,19 +2349,13 @@ mod tests {
         match result.as_ref() {
             LogicalPlan::GraphNode(graph_node) => {
                 assert_eq!(graph_node.alias, "customer");
-                // Input should be a ViewScan or Scan
+                // Input should be a ViewScan
                 match graph_node.input.as_ref() {
                     LogicalPlan::ViewScan(_view_scan) => {
                         // ViewScan created successfully via try_generate_view_scan
                         // This happens when GLOBAL_GRAPH_SCHEMA is available
                     }
-                    LogicalPlan::Scan(scan) => {
-                        // Fallback Scan when ViewScan creation fails or schema not available
-                        assert_eq!(scan.table_alias, Some("customer".to_string()));
-                        assert_eq!(scan.table_name, Some("Person".to_string()));
-                        // Now we pass the label!
-                    }
-                    _ => panic!("Expected ViewScan or Scan as input"),
+                    _ => panic!("Expected ViewScan as input"),
                 }
             }
             _ => panic!("Expected GraphNode"),
@@ -2744,13 +2690,37 @@ mod tests {
 
     #[test]
     fn test_generate_scan() {
-        // Create empty schema for test
-        use crate::graph_catalog::graph_schema::GraphSchema;
+        // Create schema with Customer node
+        use crate::graph_catalog::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema};
         use std::collections::HashMap;
+        
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            "Customer".to_string(),
+            NodeSchema {
+                database: "test_db".to_string(),
+                table_name: "customers".to_string(),
+                column_names: vec!["id".to_string(), "name".to_string()],
+                primary_keys: "id".to_string(),
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
+                label_column: None,
+                label_value: None,
+            },
+        );
+        
         let schema = Arc::new(GraphSchema::build(
             1,
             "test".to_string(),
-            HashMap::new(),
+            nodes,
             HashMap::new(),
         ));
         let plan_ctx = PlanCtx::new(schema);
@@ -2763,11 +2733,11 @@ mod tests {
         .unwrap();
 
         match scan.as_ref() {
-            LogicalPlan::Scan(scan_plan) => {
-                assert_eq!(scan_plan.table_alias, Some("customers".to_string()));
-                assert_eq!(scan_plan.table_name, Some("Customer".to_string()));
+            LogicalPlan::ViewScan(scan_plan) => {
+                assert_eq!(scan_plan.source_table, "test_db.customers");
+                // The label is "Customer" but ViewScan doesn't store it directly
             }
-            _ => panic!("Expected Scan plan"),
+            _ => panic!("Expected ViewScan plan"),
         }
     }
 

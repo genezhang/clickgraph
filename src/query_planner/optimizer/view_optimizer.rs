@@ -207,7 +207,6 @@ impl OptimizerPass for ViewOptimizer {
             }
 
             // Base cases - no further optimization needed
-            LogicalPlan::Scan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::Cte(cte) => {
                 let child_tf = self.optimize(cte.input.clone(), plan_ctx)?;

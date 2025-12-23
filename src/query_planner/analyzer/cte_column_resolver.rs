@@ -417,7 +417,7 @@ impl AnalyzerPass for CteColumnResolver {
 
             // Leaf nodes - no recursion needed
             LogicalPlan::Empty
-            | LogicalPlan::Scan(_)
+
             | LogicalPlan::ViewScan(_)
             | LogicalPlan::Cte(_)
             | LogicalPlan::PageRank(_)

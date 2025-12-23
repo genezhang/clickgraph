@@ -114,10 +114,6 @@ fn extract_bound_node_filter(plan: &LogicalPlan, node_alias: &str, cte_alias: &s
 
 fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
     let result = match plan {
-        LogicalPlan::Scan(scan) => {
-            log::debug!("extract_table_name: Scan, table={:?}", scan.table_name);
-            scan.table_name.clone()
-        }
         LogicalPlan::ViewScan(view_scan) => {
             log::debug!("extract_table_name: ViewScan, table={}", view_scan.source_table);
             Some(view_scan.source_table.clone())
@@ -568,10 +564,6 @@ pub fn extract_relationship_columns_from_table(table_name: &str) -> Relationship
 /// Extract relationship columns from a LogicalPlan
 pub fn extract_relationship_columns(plan: &LogicalPlan) -> Option<RelationshipColumns> {
     match plan {
-        LogicalPlan::Scan(scan) => scan
-            .table_name
-            .as_ref()
-            .map(|table| extract_relationship_columns_from_table(table)),
         LogicalPlan::ViewScan(view_scan) => {
             // Check if ViewScan already has relationship columns configured
             if let (Some(from_col), Some(to_col)) = (&view_scan.from_id, &view_scan.to_id) {
@@ -597,10 +589,6 @@ pub fn extract_relationship_columns(plan: &LogicalPlan) -> Option<RelationshipCo
 /// Extract ID column from a LogicalPlan
 fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
     match plan {
-        LogicalPlan::Scan(scan) => scan
-            .table_name
-            .as_ref()
-            .map(|table| table_to_id_column(table)),
         LogicalPlan::ViewScan(view_scan) => Some(view_scan.id_column.clone()),
         LogicalPlan::GraphNode(node) => extract_id_column(&node.input),
         LogicalPlan::Filter(filter) => extract_id_column(&filter.input),
@@ -845,7 +833,6 @@ pub fn extract_ctes_with_context(
     // Debug: Log the plan type being processed
     let plan_type = match plan {
         LogicalPlan::Empty => "Empty",
-        LogicalPlan::Scan(_) => "Scan",
         LogicalPlan::ViewScan(_) => "ViewScan",
         LogicalPlan::GraphNode(_) => "GraphNode",
         LogicalPlan::GraphRel(_) => "GraphRel",
@@ -860,7 +847,6 @@ pub fn extract_ctes_with_context(
     
     match plan {
         LogicalPlan::Empty => Ok(vec![]),
-        LogicalPlan::Scan(_) => Ok(vec![]),
         LogicalPlan::ViewScan(view_scan) => {
             // Check if this is a relationship ViewScan (has from_id/to_id)
             if let (Some(from_col), Some(to_col)) = (&view_scan.from_id, &view_scan.to_id) {
@@ -903,7 +889,6 @@ pub fn extract_ctes_with_context(
                 // Extract actual table names directly from ViewScan - with fallback to label lookup
                 let left_plan_desc = match graph_rel.left.as_ref() {
                     LogicalPlan::Empty => "Empty".to_string(),
-                    LogicalPlan::Scan(_) => "Scan".to_string(),
                     LogicalPlan::ViewScan(_) => "ViewScan".to_string(),
                     LogicalPlan::GraphNode(n) => format!("GraphNode({})", n.alias),
                     LogicalPlan::GraphRel(_) => "GraphRel".to_string(),
@@ -1524,7 +1509,6 @@ pub fn extract_ctes_with_context(
                 "Projection node detected, recursing into input type: {}",
                 match &*projection.input {
                     LogicalPlan::Empty => "Empty",
-                    LogicalPlan::Scan(_) => "Scan",
                     LogicalPlan::ViewScan(_) => "ViewScan",
                     LogicalPlan::GraphNode(_) => "GraphNode",
                     LogicalPlan::GraphRel(_) => "GraphRel",
@@ -2608,21 +2592,6 @@ pub fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
                 }
             }
             None
-        }
-        LogicalPlan::Scan(scan) => {
-            // For Scan nodes, try to get from table name
-            scan.table_name.as_ref().and_then(|table| {
-                if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-                    if let Ok(schemas) = schemas_lock.try_read() {
-                        if let Some(schema) = schemas.get("default") {
-                            if let Some((label, _)) = get_node_schema_by_table(schema, table) {
-                                return Some(label.to_string());
-                            }
-                        }
-                    }
-                }
-                None
-            })
         }
         LogicalPlan::GraphNode(node) => {
             // First try to get label directly from the GraphNode (for denormalized nodes)

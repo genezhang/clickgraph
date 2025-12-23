@@ -8,7 +8,7 @@ use crate::{
             errors::{AnalyzerError, Pass},
         },
         logical_expr::LogicalExpr,
-        logical_plan::{LogicalPlan, ProjectionItem, Scan},
+        logical_plan::{LogicalPlan, ProjectionItem},
         plan_ctx::{PlanCtx, TableCtx},
         transformed::Transformed,
     },
@@ -49,76 +49,118 @@ impl SchemaInference {
                 projection.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GraphNode(graph_node) => {
+                // Check if input is Empty - need to resolve to ViewScan
+                if matches!(graph_node.input.as_ref(), LogicalPlan::Empty) {
+                    // Get inferred label from TableCtx
+                    if let Ok(table_ctx) = plan_ctx.get_table_ctx(&graph_node.alias) {
+                        if let Some(labels) = table_ctx.get_labels() {
+                            if !labels.is_empty() && labels[0] != "$any" {
+                                let label = &labels[0];
+                                log::info!(
+                                    "SchemaInference: Resolving Empty → ViewScan for node '{}' with inferred label '{}'",
+                                    graph_node.alias, label
+                                );
+                                
+                                // Create ViewScan using the inferred label
+                                if let Some(view_scan) = crate::query_planner::logical_plan::match_clause::try_generate_view_scan(
+                                    &graph_node.alias,
+                                    label,
+                                    plan_ctx,
+                                ) {
+                                    // Rebuild GraphNode with ViewScan instead of Empty
+                                    return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(
+                                        crate::query_planner::logical_plan::GraphNode {
+                                            input: view_scan,
+                                            alias: graph_node.alias.clone(),
+                                            label: Some(label.clone()),
+                                            is_denormalized: graph_node.is_denormalized,
+                                            projected_columns: graph_node.projected_columns.clone(),
+                                        },
+                                    ))));
+                                } else {
+                                    log::warn!(
+                                        "SchemaInference: Failed to create ViewScan for node '{}' with label '{}'",
+                                        graph_node.alias, label
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Recurse into input (for ViewScan or other plan types)
                 let child_tf =
                     Self::push_inferred_table_names_to_scan(graph_node.input.clone(), plan_ctx)?;
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GraphRel(graph_rel) => {
+                // First recurse into left and right nodes
                 let left_tf =
                     Self::push_inferred_table_names_to_scan(graph_rel.left.clone(), plan_ctx)?;
-                let center_tf =
-                    Self::push_inferred_table_names_to_scan(graph_rel.center.clone(), plan_ctx)?;
                 let right_tf =
                     Self::push_inferred_table_names_to_scan(graph_rel.right.clone(), plan_ctx)?;
+                
+                // Check if center (relationship) is Empty - need to resolve to ViewScan
+                let center_tf = if matches!(graph_rel.center.as_ref(), LogicalPlan::Empty) {
+                    // Get inferred relationship type from TableCtx
+                    if let Ok(rel_ctx) = plan_ctx.get_rel_table_ctx(&graph_rel.alias) {
+                        if let Some(labels) = rel_ctx.get_labels() {
+                            if labels.len() == 1 {
+                                let rel_type = &labels[0];
+                                log::info!(
+                                    "SchemaInference: Resolving Empty → ViewScan for relationship '{}' with inferred type '{}'",
+                                    graph_rel.alias, rel_type
+                                );
+                                
+                                // Get left and right node labels for context
+                                let left_label = if let LogicalPlan::GraphNode(left_node) = graph_rel.left.as_ref() {
+                                    left_node.label.as_deref()
+                                } else { None };
+                                
+                                let right_label = if let LogicalPlan::GraphNode(right_node) = graph_rel.right.as_ref() {
+                                    right_node.label.as_deref()
+                                } else { None };
+                                
+                                // Create ViewScan for the relationship
+                                if let Some(view_scan) = crate::query_planner::logical_plan::match_clause::try_generate_relationship_view_scan(
+                                    &graph_rel.alias,
+                                    rel_type,
+                                    left_label,
+                                    right_label,
+                                    plan_ctx,
+                                ) {
+                                    Transformed::Yes(view_scan)
+                                } else {
+                                    log::warn!(
+                                        "SchemaInference: Failed to create ViewScan for relationship '{}' with type '{}'",
+                                        graph_rel.alias, rel_type
+                                    );
+                                    Self::push_inferred_table_names_to_scan(graph_rel.center.clone(), plan_ctx)?
+                                }
+                            } else {
+                                // Multiple relationship types - keep Empty, will be handled by UNION generation
+                                log::debug!(
+                                    "SchemaInference: Relationship '{}' has multiple types {:?}, keeping Empty for UNION generation",
+                                    graph_rel.alias, labels
+                                );
+                                Self::push_inferred_table_names_to_scan(graph_rel.center.clone(), plan_ctx)?
+                            }
+                        } else {
+                            Self::push_inferred_table_names_to_scan(graph_rel.center.clone(), plan_ctx)?
+                        }
+                    } else {
+                        Self::push_inferred_table_names_to_scan(graph_rel.center.clone(), plan_ctx)?
+                    }
+                } else {
+                    Self::push_inferred_table_names_to_scan(graph_rel.center.clone(), plan_ctx)?
+                };
+                
                 graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
             }
             LogicalPlan::Cte(cte) => {
                 let child_tf =
                     Self::push_inferred_table_names_to_scan(cte.input.clone(), plan_ctx)?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-            LogicalPlan::Scan(scan) => {
-                // If scan already has a table_name that looks like a CTE name (rel_*),
-                // don't overwrite it - it's a multi-relationship placeholder
-                if let Some(existing_name) = &scan.table_name {
-                    if existing_name.starts_with("rel_") {
-                        // This is a CTE placeholder for multiple relationship types
-                        // Don't overwrite it
-                        return Ok(Transformed::No(logical_plan.clone()));
-                    }
-                }
-
-                let table_ctx = plan_ctx
-                    .get_table_ctx_from_alias_opt(&scan.table_alias)
-                    .map_err(|e| AnalyzerError::PlanCtx {
-                        pass: Pass::SchemaInference,
-                        source: e,
-                    })?;
-
-                // Don't try to resolve table names for relationships - they're handled differently
-                // (either via CTE for multiple types, or via ViewScan for single types)
-                if table_ctx.is_relation() {
-                    // Keep the existing table_name (which could be CTE name or relationship type)
-                    return Ok(Transformed::No(logical_plan.clone()));
-                }
-
-                // Get the actual table name from schema, not the label
-                let table_name = if let Some(label) = table_ctx.get_label_opt() {
-                    // Skip $any labels - they're placeholders for polymorphic nodes
-                    if label == "$any" {
-                        log::debug!("push_inferred_table_names_to_scan: Skipping $any node");
-                        return Ok(Transformed::No(logical_plan.clone()));
-                    }
-
-                    // Use the graph_schema parameter that was passed to analyze_with_graph_schema
-                    // Note: We're in push_inferred_table_names_to_scan which doesn't have graph_schema,
-                    // but we can get it from plan_ctx
-                    if let Ok(node_schema) = plan_ctx.schema().get_node_schema(&label) {
-                        // Use fully qualified table name: database.table_name
-                        let fully_qualified =
-                            format!("{}.{}", node_schema.database, node_schema.table_name);
-                        Some(fully_qualified)
-                    } else {
-                        Some(label)
-                    }
-                } else {
-                    None
-                };
-
-                Transformed::Yes(Arc::new(LogicalPlan::Scan(Scan {
-                    table_name,
-                    table_alias: scan.table_alias.clone(),
-                })))
             }
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
@@ -241,10 +283,10 @@ impl SchemaInference {
                 let right_alias = &graph_rel.right_connection;
 
                 // Check if nodes actually have table names - skip for anonymous patterns
-                // For patterns like ()-[r:FOLLOWS]->(), nodes are Empty Scans with table_name: None
+                // For patterns like ()-[r:FOLLOWS]->(), nodes are Empty
                 let left_has_table = match graph_rel.left.as_ref() {
                     LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
-                        LogicalPlan::Scan(scan) => scan.table_name.is_some(),
+                        LogicalPlan::Empty => false,
                         LogicalPlan::ViewScan(_) => true,
                         _ => true,
                     },
@@ -253,7 +295,7 @@ impl SchemaInference {
 
                 let right_has_table = match graph_rel.right.as_ref() {
                     LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
-                        LogicalPlan::Scan(scan) => scan.table_name.is_some(),
+                        LogicalPlan::Empty => false,
                         LogicalPlan::ViewScan(_) => true,
                         _ => true,
                     },
@@ -390,7 +432,6 @@ impl SchemaInference {
                 // cte.rebuild_or_clone(child_tf, logical_plan.clone())
                 self.infer_schema(cte.input.clone(), plan_ctx, graph_schema)
             }
-            LogicalPlan::Scan(_) => Ok(()),
             LogicalPlan::Empty => Ok(()),
             LogicalPlan::GraphJoins(graph_joins) => {
                 // let child_tf = self.infer_schema(graph_joins.input.clone(), plan_ctx, graph_schema);

@@ -242,7 +242,7 @@ impl AnalyzerPass for GroupByBuilding {
                 let child_tf = self.analyze(cte.input.clone(), _plan_ctx)?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
-            LogicalPlan::Scan(_) => Transformed::No(logical_plan.clone()),
+
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
                 let child_tf = self.analyze(graph_joins.input.clone(), _plan_ctx)?;
@@ -386,7 +386,7 @@ mod tests {
     use super::*;
     #[allow(unused_imports)]
     use crate::query_planner::logical_expr::{AggregateFnCall, Column, PropertyAccess, TableAlias};
-    use crate::query_planner::logical_plan::{LogicalPlan, Projection, Scan};
+    use crate::query_planner::logical_plan::{LogicalPlan, Projection};
 
     fn create_property_access(table: &str, column: &str) -> LogicalExpr {
         LogicalExpr::PropertyAccessExp(PropertyAccess {
@@ -405,10 +405,7 @@ mod tests {
     }
 
     fn create_scan(alias: Option<String>, table_name: Option<String>) -> Arc<LogicalPlan> {
-        Arc::new(LogicalPlan::Scan(Scan {
-            table_alias: alias,
-            table_name: table_name,
-        }))
+        Arc::new(LogicalPlan::Empty)
     }
 
     #[test]

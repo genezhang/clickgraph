@@ -542,7 +542,7 @@ impl<'a> From<open_cypher_parser::ast::Case<'a>> for LogicalCase {
 
 impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
     fn from(exists: open_cypher_parser::ast::ExistsSubquery<'a>) -> Self {
-        use crate::query_planner::logical_plan::{Filter, GraphNode, GraphRel, LogicalPlan, Scan};
+        use crate::query_planner::logical_plan::{Filter, GraphNode, GraphRel, LogicalPlan};
         use open_cypher_parser::ast::PathPattern as AstPathPattern;
 
         // Convert the pattern to a logical plan structure
@@ -552,13 +552,9 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
         // Build the logical plan from the pattern based on its type
         let base_plan = match pattern {
             AstPathPattern::Node(node) => {
-                // Single node pattern - create a scan
-                let scan = LogicalPlan::Scan(Scan {
-                    table_alias: node.name.map(|s| s.to_string()),
-                    table_name: node.label.map(|s| s.to_string()),
-                });
+                // Single node pattern - use Empty for now (will be resolved during planning)
                 Arc::new(LogicalPlan::GraphNode(GraphNode {
-                    input: Arc::new(scan),
+                    input: Arc::new(LogicalPlan::Empty),
                     alias: node.name.unwrap_or("").to_string(),
                     label: node.label.map(|s| s.to_string()),
                     is_denormalized: false,
@@ -576,33 +572,18 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                     let end = cp.end_node.borrow();
                     let rel = &cp.relationship;
 
-                    let start_scan = LogicalPlan::Scan(Scan {
-                        table_alias: start.name.map(|s| s.to_string()),
-                        table_name: start.label.map(|s| s.to_string()),
-                    });
                     let start_node = LogicalPlan::GraphNode(GraphNode {
-                        input: Arc::new(start_scan),
+                        input: Arc::new(LogicalPlan::Empty),
                         alias: start.name.unwrap_or("").to_string(),
                         label: start.label.map(|s| s.to_string()),
                         is_denormalized: false,
             projected_columns: None,
                     });
 
-                    let rel_scan = LogicalPlan::Scan(Scan {
-                        table_alias: rel.name.map(|s| s.to_string()),
-                        table_name: rel
-                            .labels
-                            .as_ref()
-                            .and_then(|l| l.first())
-                            .map(|s| s.to_string()),
-                    });
+                    let rel_scan = LogicalPlan::Empty;
 
-                    let end_scan = LogicalPlan::Scan(Scan {
-                        table_alias: end.name.map(|s| s.to_string()),
-                        table_name: end.label.map(|s| s.to_string()),
-                    });
                     let end_node = LogicalPlan::GraphNode(GraphNode {
-                        input: Arc::new(end_scan),
+                        input: Arc::new(LogicalPlan::Empty),
                         alias: end.name.unwrap_or("").to_string(),
                         label: end.label.map(|s| s.to_string()),
                         is_denormalized: false,

@@ -17,6 +17,22 @@ fn empty_test_schema() -> GraphSchema {
     GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new())
 }
 
+// Helper to get schema from registry (after setup_test_schema)
+fn get_test_schema() -> GraphSchema {
+    use crate::server::GLOBAL_SCHEMAS;
+    const SCHEMA_NAME: &str = "default";
+    
+    if let Some(schemas_lock) = GLOBAL_SCHEMAS.get() {
+        if let Ok(schemas) = schemas_lock.try_read() {
+            if let Some(schema) = schemas.get(SCHEMA_NAME) {
+                return schema.clone();
+            }
+        }
+    }
+    // Fallback to empty schema if not found
+    empty_test_schema()
+}
+
 // Test schema setup for multiple relationship tests
 fn setup_test_schema() {
     use crate::graph_catalog::graph_schema::{GraphSchema, RelationshipSchema};
@@ -188,8 +204,101 @@ fn setup_test_schema() {
         },
     );
 
-    // Create empty node and index schemas for now
-    let nodes = HashMap::new();
+    // Create node schemas
+    use crate::graph_catalog::graph_schema::{NodeSchema, NodeIdSchema};
+    let mut nodes = HashMap::new();
+
+    // User node -> users table
+    nodes.insert(
+        "User".to_string(),
+        NodeSchema {
+            database: "test_db".to_string(),
+            table_name: "users".to_string(),
+            column_names: vec!["user_id".to_string(), "name".to_string()],
+            primary_keys: "user_id".to_string(),
+            node_id: NodeIdSchema::single("user_id".to_string(), "UInt64".to_string()),
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
+        },
+    );
+
+    // Customer node -> customers table
+    nodes.insert(
+        "Customer".to_string(),
+        NodeSchema {
+            database: "test_db".to_string(),
+            table_name: "customers".to_string(),
+            column_names: vec!["customer_id".to_string(), "name".to_string()],
+            primary_keys: "customer_id".to_string(),
+            node_id: NodeIdSchema::single("customer_id".to_string(), "UInt64".to_string()),
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
+        },
+    );
+
+    // Product node -> products table
+    nodes.insert(
+        "Product".to_string(),
+        NodeSchema {
+            database: "test_db".to_string(),
+            table_name: "products".to_string(),
+            column_names: vec!["product_id".to_string(), "name".to_string()],
+            primary_keys: "product_id".to_string(),
+            node_id: NodeIdSchema::single("product_id".to_string(), "UInt64".to_string()),
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
+        },
+    );
+
+    // Order node -> orders table
+    nodes.insert(
+        "Order".to_string(),
+        NodeSchema {
+            database: "test_db".to_string(),
+            table_name: "orders".to_string(),
+            column_names: vec!["order_id".to_string(), "customer_id".to_string()],
+            primary_keys: "order_id".to_string(),
+            node_id: NodeIdSchema::single("order_id".to_string(), "UInt64".to_string()),
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
+        },
+    );
 
     let schema = GraphSchema::build(1, "test_db".to_string(), nodes, relationships);
 
@@ -226,7 +335,7 @@ mod multiple_relationship_tests {
         );
 
         let query = parse_result.unwrap();
-        let schema = empty_test_schema();
+        let schema = get_test_schema();
         let (logical_plan, _plan_ctx) =
             build_logical_plan(&query, &schema, None, None).expect("Failed to build logical plan");
 
@@ -297,7 +406,7 @@ mod multiple_relationship_tests {
         );
 
         let query = parse_result.unwrap();
-        let schema = empty_test_schema();
+        let schema = get_test_schema();
         let (logical_plan, _plan_ctx) =
             build_logical_plan(&query, &schema, None, None).expect("Failed to build logical plan");
 
@@ -390,7 +499,7 @@ mod multiple_relationship_tests {
         );
 
         let query = parse_result.unwrap();
-        let schema = empty_test_schema();
+        let schema = get_test_schema();
         let (logical_plan, _plan_ctx) =
             build_logical_plan(&query, &schema, None, None).expect("Failed to build logical plan");
 
@@ -441,7 +550,7 @@ mod multiple_relationship_tests {
         );
 
         let query = parse_result.unwrap();
-        let schema = empty_test_schema();
+        let schema = get_test_schema();
         let (logical_plan, _plan_ctx) =
             build_logical_plan(&query, &schema, None, None).expect("Failed to build logical plan");
 
@@ -531,7 +640,7 @@ mod multiple_relationship_tests {
         );
 
         let query = parse_result.unwrap();
-        let schema = empty_test_schema();
+        let schema = get_test_schema();
         let (logical_plan, _plan_ctx) =
             build_logical_plan(&query, &schema, None, None).expect("Failed to build logical plan");
 
@@ -593,7 +702,7 @@ mod multiple_relationship_tests {
         );
 
         let query = parse_result.unwrap();
-        let schema = empty_test_schema();
+        let schema = get_test_schema();
         let (logical_plan, _plan_ctx) =
             build_logical_plan(&query, &schema, None, None).expect("Failed to build logical plan");
 
@@ -646,7 +755,7 @@ mod multiple_relationship_tests {
         );
 
         let query = parse_result.unwrap();
-        let schema = empty_test_schema();
+        let schema = get_test_schema();
         let (logical_plan, _plan_ctx) =
             build_logical_plan(&query, &schema, None, None).expect("Failed to build logical plan");
 
@@ -691,7 +800,7 @@ mod multiple_relationship_tests {
         );
 
         let query = parse_result.unwrap();
-        let schema = empty_test_schema();
+        let schema = get_test_schema();
         let (logical_plan, _plan_ctx) =
             build_logical_plan(&query, &schema, None, None).expect("Failed to build logical plan");
 
@@ -745,7 +854,7 @@ mod multiple_relationship_tests {
         );
 
         let query = parse_result.unwrap();
-        let schema = empty_test_schema();
+        let schema = get_test_schema();
         let (logical_plan, _plan_ctx) =
             build_logical_plan(&query, &schema, None, None).expect("Failed to build logical plan");
 

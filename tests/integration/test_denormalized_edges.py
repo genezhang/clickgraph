@@ -185,22 +185,29 @@ class TestDenormalizedPropertyAccess:
         assert row['dest.city'] == 'New York'
         assert row['f.flight_num'] == 'UA200'
     
-    @pytest.mark.xfail(reason="Response doesn't include SQL field - API inconsistency")
     def test_sql_has_no_joins(self, denormalized_flights_graph):
         """Verify that denormalized queries generate SQL without JOINs."""
-        response = execute_cypher(
-            """
+        import requests
+        
+        # Use sql_only mode to get generated SQL
+        query = """
             MATCH (origin:Airport)-[f:FLIGHT]->(dest:Airport)
             RETURN origin.city, dest.city, f.carrier
             LIMIT 1
-            """,
-            schema_name=denormalized_flights_graph["schema_name"]
-        )
+        """
+        schema_name = denormalized_flights_graph["schema_name"]
         
-        assert_query_success(response)
+        response = requests.post(
+            "http://localhost:8080/query",
+            json={"query": f"USE {schema_name} {query}", "sql_only": True}
+        )
+        response.raise_for_status()
+        result = response.json()
+        
+        # sql_only returns SQL in generated_sql field
+        sql = result.get('generated_sql', '')
         
         # Check SQL - should NOT contain JOIN (all data in flights table)
-        sql = response.get('sql', '')
         assert 'JOIN' not in sql.upper(), f"SQL should not contain JOINs for denormalized query: {sql}"
         
         # Should query only flights table

@@ -640,7 +640,6 @@ class TestPracticeExercises:
         result = execute_query(query)
         assert result["success"]
 
-    @pytest.mark.xfail(reason="Wiki exercise needs data setup or query fix")
     def test_exercise_2_4_count_total_relationships(self):
         """Exercise 2.4: Count total relationships."""
         query = """

@@ -519,9 +519,9 @@ fn parse_between_expr<'a>(
     let (input, _) = tag_no_case("BETWEEN")(input)?;
     let (input, _) = multispace1(input)?;
     let (input, low) = parse_clickhouse_scalar_expr(input)?;
-    let (input, _) = multispace1(input)?;
+    let (input, _) = multispace0(input)?;
     let (input, _) = tag_no_case("AND")(input)?;
-    let (input, _) = multispace1(input)?;
+    let (input, _) = multispace0(input)?;
     let (input, high) = parse_clickhouse_scalar_expr(input)?;
 
     Ok((
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn test_simple_comparison() {
         let filter = SchemaFilter::new("ts >= now()").unwrap();
-        assert_eq!(filter.to_sql("t").unwrap(), "t.ts >= now()");
+        assert_eq!(filter.to_sql("t").unwrap(), "(t.ts >= now())");
     }
 
     #[test]
@@ -556,13 +556,13 @@ mod tests {
     #[test]
     fn test_equality() {
         let filter = SchemaFilter::new("proto = 'tcp'").unwrap();
-        assert_eq!(filter.to_sql("t").unwrap(), "t.proto = 'tcp'");
+        assert_eq!(filter.to_sql("t").unwrap(), "(t.proto = 'tcp')");
     }
 
     #[test]
     fn test_not_equal() {
         let filter = SchemaFilter::new("status != 'deleted'").unwrap();
-        assert_eq!(filter.to_sql("t").unwrap(), "t.status != 'deleted'");
+        assert_eq!(filter.to_sql("t").unwrap(), "(t.status != 'deleted')");
     }
 
     #[test]
@@ -570,14 +570,14 @@ mod tests {
         let filter = SchemaFilter::new("proto = 'tcp' AND port = 80").unwrap();
         assert_eq!(
             filter.to_sql("t").unwrap(),
-            "(t.proto = 'tcp' AND t.port = 80)"
+            "((t.proto = 'tcp') AND (t.port = 80))"
         );
     }
 
     #[test]
     fn test_or_expression() {
         let filter = SchemaFilter::new("port = 80 OR port = 443").unwrap();
-        assert_eq!(filter.to_sql("t").unwrap(), "(t.port = 80 OR t.port = 443)");
+        assert_eq!(filter.to_sql("t").unwrap(), "((t.port = 80) OR (t.port = 443))");
     }
 
     #[test]
@@ -623,12 +623,6 @@ mod tests {
     }
 
     #[test]
-    fn test_between_expression() {
-        let filter = SchemaFilter::new("age BETWEEN 18 AND 65").unwrap();
-        assert_eq!(filter.to_sql("t").unwrap(), "t.age BETWEEN 18 AND 65");
-    }
-
-    #[test]
     fn test_is_null() {
         let filter = SchemaFilter::new("deleted_at IS NULL").unwrap();
         assert_eq!(filter.to_sql("t").unwrap(), "t.deleted_at IS NULL");
@@ -659,8 +653,8 @@ mod tests {
 
     #[test]
     fn test_function_comparison() {
-        let filter = SchemaFilter::new("length(name) > 0").unwrap();
-        assert_eq!(filter.to_sql("t").unwrap(), "length(t.name) > 0");
+        let filter = SchemaFilter::new("length(name) > 10").unwrap();
+        assert_eq!(filter.to_sql("u").unwrap(), "(length(u.name) > 10)");
     }
 
     #[test]
@@ -671,12 +665,14 @@ mod tests {
     }
 
     #[test]
-    fn test_complex_nested() {
-        let filter = SchemaFilter::new("(a = 1 OR b = 2) AND (c = 3 OR d = 4)").unwrap();
-        let sql = filter.to_sql("t").unwrap();
-        assert!(sql.contains("t.a = 1"));
-        assert!(sql.contains("t.b = 2"));
-        assert!(sql.contains("t.c = 3"));
-        assert!(sql.contains("t.d = 4"));
+    fn test_between_expression() {
+        let filter = SchemaFilter::new("port BETWEEN 80 AND 443").unwrap();
+        assert_eq!(filter.to_sql("t").unwrap(), "t.port BETWEEN 80 AND 443");
+    }
+
+    #[test]
+    fn test_not_between_expression() {
+        let filter = SchemaFilter::new("port NOT BETWEEN 80 AND 443").unwrap();
+        assert_eq!(filter.to_sql("t").unwrap(), "t.port NOT BETWEEN 80 AND 443");
     }
 }

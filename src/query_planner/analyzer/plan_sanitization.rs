@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::query_planner::{
     analyzer::analyzer_pass::{AnalyzerPass, AnalyzerResult},
     logical_expr::{Column, LogicalExpr},
-    logical_plan::{LogicalPlan, Projection, ProjectionItem, Scan},
+    logical_plan::{LogicalPlan, Projection, ProjectionItem},
     plan_ctx::PlanCtx,
     transformed::Transformed,
 };
@@ -33,14 +33,6 @@ impl PlanSanitization {
         let transformed_plan = match logical_plan.as_ref() {
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
-            LogicalPlan::Scan(scan) => {
-                if last_node_traversed {
-                    let sanitized_scan = self.sanitize_scan(scan);
-                    Transformed::Yes(Arc::new(sanitized_scan))
-                } else {
-                    Transformed::No(logical_plan.clone())
-                }
-            }
             LogicalPlan::GraphNode(graph_node) => {
                 let child_tf = self.sanitize_plan(graph_node.input.clone(), last_node_traversed)?;
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
@@ -179,14 +171,6 @@ impl PlanSanitization {
             }
         };
         Ok(transformed_plan)
-    }
-
-    fn sanitize_scan(&self, scan: &Scan) -> LogicalPlan {
-        let sanitized_scan = Scan {
-            table_name: scan.table_name.clone(),
-            table_alias: scan.table_alias.clone(), // Preserve the Cypher variable name!
-        };
-        LogicalPlan::Scan(sanitized_scan)
     }
 
     fn sanitize_projection(&self, projection_items: &[ProjectionItem]) -> Vec<ProjectionItem> {

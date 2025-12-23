@@ -416,7 +416,6 @@ impl OptimizerPass for CartesianJoinExtraction {
 
             // Leaf nodes - no transformation
             LogicalPlan::Empty
-            | LogicalPlan::Scan(_)
             | LogicalPlan::ViewScan(_)
             | LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
 
@@ -584,7 +583,7 @@ fn collect_aliases_from_plan_inner(plan: &LogicalPlan, aliases: &mut HashSet<Str
             }
         }
         // Leaf nodes without aliases
-        LogicalPlan::Empty | LogicalPlan::Scan(_) | LogicalPlan::PageRank(_) => {}
+        LogicalPlan::Empty | LogicalPlan::PageRank(_) => {}
         LogicalPlan::WithClause(wc) => {
             // Collect aliases from WithClause items
             for item in &wc.items {

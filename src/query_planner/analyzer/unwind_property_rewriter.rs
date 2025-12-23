@@ -208,7 +208,7 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
         }
         
         // Base cases - no children to rewrite
-        LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::Scan(_) | LogicalPlan::PageRank(_) => plan.clone(),
+        LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::PageRank(_) => plan.clone(),
     }
 }
 
@@ -371,6 +371,6 @@ fn find_tuple_property_index(
         }
         
         // Base cases
-        LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::Scan(_) | LogicalPlan::PageRank(_) => None,
+        LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::PageRank(_) => None,
     }
 }

@@ -262,7 +262,7 @@ impl CleanupViewScanFilters {
 
             // Leaf nodes - no transformation needed
             LogicalPlan::Empty
-            | LogicalPlan::Scan(_)
+
             | LogicalPlan::PageRank(_)
             | LogicalPlan::Union(_)
             | LogicalPlan::Cte(_)

@@ -198,21 +198,6 @@ fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
             }
             None
         }
-        LogicalPlan::Scan(scan) => {
-            // For regular scans, try to infer from table name
-            if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-                if let Ok(schemas) = schemas_lock.try_read() {
-                    if let Some(schema) = schemas.get("default") {
-                        if let Some(table_name) = &scan.table_name {
-                            if let Some((label, _)) = get_node_schema_by_table(schema, table_name) {
-                                return Some(label.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-            None
-        }
         LogicalPlan::GraphNode(node) => {
             // First try to get label directly from the GraphNode (for denormalized nodes)
             if let Some(label) = &node.label {
@@ -491,7 +476,6 @@ pub(crate) fn extract_var_len_properties(
 fn extract_alias_from_plan(plan: &LogicalPlan) -> Option<String> {
     match plan {
         LogicalPlan::GraphNode(node) => Some(node.alias.clone()),
-        LogicalPlan::Scan(scan) => scan.table_alias.clone(),
         LogicalPlan::ViewScan(_) => None, // ViewScan doesn't have an alias field
         _ => None,
     }

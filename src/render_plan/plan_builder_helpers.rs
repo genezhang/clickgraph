@@ -368,7 +368,6 @@ pub(super) fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
     match plan {
         // For CTEs, return the CTE name directly (don't recurse into input)
         LogicalPlan::Cte(cte) => Some(cte.name.clone()),
-        LogicalPlan::Scan(scan) => scan.table_name.clone(),
         LogicalPlan::ViewScan(view_scan) => Some(view_scan.source_table.clone()),
         LogicalPlan::GraphNode(node) => extract_table_name(&node.input),
         LogicalPlan::GraphRel(rel) => extract_table_name(&rel.center),
@@ -388,7 +387,6 @@ pub(super) fn extract_parameterized_table_ref(plan: &LogicalPlan) -> Option<Stri
     match plan {
         // For CTEs, return the CTE name directly (no parameters)
         LogicalPlan::Cte(cte) => Some(cte.name.clone()),
-        LogicalPlan::Scan(scan) => scan.table_name.clone(),
         LogicalPlan::ViewScan(view_scan) => {
             // Check if this is a parameterized view
             if let Some(ref param_names) = view_scan.view_parameter_names {
@@ -535,7 +533,6 @@ pub(super) fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) 
 
         // === Terminal nodes that cannot contain aliases ===
         LogicalPlan::Empty => None,
-        LogicalPlan::Scan(_) => None,     // Raw scan without alias info
         LogicalPlan::ViewScan(_) => None, // ViewScan itself doesn't have alias, GraphNode wraps it
         LogicalPlan::PageRank(_) => None, // PageRank is a computed result, no direct table alias
 
@@ -1437,9 +1434,9 @@ pub(super) fn is_node_polymorphic(plan: &LogicalPlan, target_alias: &str) -> boo
     match plan {
         LogicalPlan::GraphNode(node) => {
             if node.alias == target_alias {
-                // Check if input is a Scan with no table_name
-                if let LogicalPlan::Scan(scan) = node.input.as_ref() {
-                    return scan.table_name.is_none();
+                // Check if input is Empty ($any wildcard)
+                if let LogicalPlan::Empty = node.input.as_ref() {
+                    return true;
                 }
             }
             is_node_polymorphic(&node.input, target_alias)
@@ -1715,14 +1712,12 @@ pub(super) fn has_polymorphic_edge(plan: &LogicalPlan) -> bool {
         LogicalPlan::GraphRel(graph_rel) => {
             // Check if right node is polymorphic ($any)
             if let LogicalPlan::GraphNode(right_node) = graph_rel.right.as_ref() {
-                if let LogicalPlan::Scan(scan) = right_node.input.as_ref() {
-                    if scan.table_name.is_none() {
-                        log::debug!(
-                            "has_polymorphic_edge: Found $any right node '{}'",
-                            right_node.alias
-                        );
-                        return true;
-                    }
+                if let LogicalPlan::Empty = right_node.input.as_ref() {
+                    log::debug!(
+                        "has_polymorphic_edge: Found $any right node '{}'",
+                        right_node.alias
+                    );
+                    return true;
                 }
             }
             // Check child plans
@@ -1748,12 +1743,10 @@ pub(super) fn get_polymorphic_relationship_alias(plan: &LogicalPlan) -> Option<S
         LogicalPlan::GraphRel(graph_rel) => {
             // Check if right node is polymorphic ($any)
             if let LogicalPlan::GraphNode(right_node) = graph_rel.right.as_ref() {
-                if let LogicalPlan::Scan(scan) = right_node.input.as_ref() {
-                    if scan.table_name.is_none() {
-                        // This is a polymorphic edge - return its alias
-                        if !graph_rel.alias.is_empty() {
-                            return Some(graph_rel.alias.clone());
-                        }
+                if let LogicalPlan::Empty = right_node.input.as_ref() {
+                    // This is a polymorphic edge - return its alias
+                    if !graph_rel.alias.is_empty() {
+                        return Some(graph_rel.alias.clone());
                     }
                 }
             }
@@ -1793,11 +1786,7 @@ pub(super) fn collect_polymorphic_edges(plan: &LogicalPlan) -> Vec<PolymorphicEd
                 // Check if right node is polymorphic ($any) - for outgoing edges
                 let right_is_polymorphic =
                     if let LogicalPlan::GraphNode(right_node) = graph_rel.right.as_ref() {
-                        if let LogicalPlan::Scan(scan) = right_node.input.as_ref() {
-                            scan.table_name.is_none()
-                        } else {
-                            false
-                        }
+                        matches!(right_node.input.as_ref(), LogicalPlan::Empty)
                     } else {
                         false
                     };
@@ -1805,11 +1794,7 @@ pub(super) fn collect_polymorphic_edges(plan: &LogicalPlan) -> Vec<PolymorphicEd
                 // Check if left node is polymorphic ($any) - for incoming edges
                 let left_is_polymorphic =
                     if let LogicalPlan::GraphNode(left_node) = graph_rel.left.as_ref() {
-                        if let LogicalPlan::Scan(scan) = left_node.input.as_ref() {
-                            scan.table_name.is_none()
-                        } else {
-                            false
-                        }
+                        matches!(left_node.input.as_ref(), LogicalPlan::Empty)
                     } else {
                         false
                     };
@@ -2110,7 +2095,6 @@ pub(super) fn generate_polymorphic_edge_filters(
 pub(super) fn plan_type_name(plan: &LogicalPlan) -> &'static str {
     match plan {
         LogicalPlan::Empty => "Empty",
-        LogicalPlan::Scan(_) => "Scan",
         LogicalPlan::ViewScan(_) => "ViewScan",
         LogicalPlan::GraphNode(_) => "GraphNode",
         LogicalPlan::GraphRel(_) => "GraphRel",
@@ -2160,7 +2144,6 @@ pub(super) fn plan_to_string(plan: &LogicalPlan, depth: usize) -> String {
             plan_to_string(&proj.input, depth + 1)
         ),
         LogicalPlan::ViewScan(scan) => format!("{}ViewScan(table='{}')", indent, scan.source_table),
-        LogicalPlan::Scan(scan) => format!("{}Scan(table={:?})", indent, scan.table_name),
         _ => format!("{}Other({})", indent, plan_type_name(plan)),
     }
 }

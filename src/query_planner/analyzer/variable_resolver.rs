@@ -773,7 +773,6 @@ impl VariableResolver {
 
             // Terminal nodes - no recursion, no changes
             LogicalPlan::Empty
-            | LogicalPlan::Scan(_)
             | LogicalPlan::ViewScan(_)
             | LogicalPlan::PageRank(_) => Ok(Transformed::No(plan)),
 

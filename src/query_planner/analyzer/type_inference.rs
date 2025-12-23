@@ -318,7 +318,6 @@ impl TypeInference {
             }
             
             LogicalPlan::ViewScan(_)
-            | LogicalPlan::Scan(_)
             | LogicalPlan::Empty => {
                 // Leaf nodes - no recursion needed
                 Ok(Transformed::No(plan))

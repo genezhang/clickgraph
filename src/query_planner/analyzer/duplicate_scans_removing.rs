@@ -98,7 +98,7 @@ impl DuplicateScansRemoving {
                     Self::remove_duplicate_scans(cte.input.clone(), traversed, plan_ctx)?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
-            LogicalPlan::Scan(_) => Transformed::No(logical_plan.clone()),
+
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
                 let child_tf =
@@ -219,15 +219,13 @@ mod tests {
         Direction, Literal, LogicalExpr, Operator, OperatorApplication,
     };
     use crate::query_planner::logical_plan::{
-        Filter, GraphNode, GraphRel, LogicalPlan, Projection, ProjectionItem, Scan,
+        Filter, GraphNode, GraphRel, LogicalPlan, Projection, ProjectionItem,
     };
 
     // helper functions
     fn create_scan(alias: Option<String>, table_name: Option<String>) -> Arc<LogicalPlan> {
-        Arc::new(LogicalPlan::Scan(Scan {
-            table_alias: alias.map(|s| s.to_string()),
-            table_name: table_name.map(|s| s.to_string()),
-        }))
+        // Use Empty since Scan is removed
+        Arc::new(LogicalPlan::Empty)
     }
 
     fn create_graph_node(alias: &str, input: Arc<LogicalPlan>) -> Arc<LogicalPlan> {

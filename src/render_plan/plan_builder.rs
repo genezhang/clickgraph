@@ -5251,7 +5251,6 @@ impl RenderPlanBuilder for LogicalPlan {
     fn extract_last_node_cte(&self) -> RenderPlanBuilderResult<Option<Cte>> {
         let last_node_cte = match &self {
             LogicalPlan::Empty => None,
-            LogicalPlan::Scan(_) => None,
             LogicalPlan::ViewScan(_) => None,
             LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_last_node_cte()?,
             LogicalPlan::GraphRel(graph_rel) => {
@@ -5324,7 +5323,6 @@ impl RenderPlanBuilder for LogicalPlan {
         crate::debug_println!("DEBUG: extract_select_items called on: {:?}", self);
         let select_items = match &self {
             LogicalPlan::Empty => vec![],
-            LogicalPlan::Scan(_) => vec![],
             LogicalPlan::ViewScan(view_scan) => {
                 // Build select items from ViewScan's property mappings and projections
                 // This is needed for multiple relationship types where ViewScan nodes are created
@@ -6080,60 +6078,6 @@ impl RenderPlanBuilder for LogicalPlan {
         
         let from_ref = match &self {
             LogicalPlan::Empty => None,
-            LogicalPlan::Scan(scan) => {
-                let table_name_raw = scan
-                    .table_name
-                    .clone()
-                    .ok_or(RenderBuildError::MissingFromTable)?;
-
-                // Check if this is a CTE placeholder for multiple relationships
-                // CTE names start with "rel_" and should not be included in FROM clause
-                if table_name_raw.starts_with("rel_") {
-                    log::info!(
-                        "✓ Skipping CTE placeholder '{}' in FROM clause - will be referenced in JOINs",
-                        table_name_raw
-                    );
-                    return Ok(None);
-                }
-
-                // Apply relationship type mapping if this might be a relationship scan
-                // (Node scans should be ViewScan after our fix, so remaining Scans are likely relationships)
-                let table_name = rel_type_to_table_name(&table_name_raw);
-
-                // Get the alias - use Scan's table_alias if available
-                let alias = if let Some(ref scan_alias) = scan.table_alias {
-                    log::info!(
-                        "✓ Scan has table_alias='{}' for table '{}'",
-                        scan_alias,
-                        table_name
-                    );
-                    scan_alias.clone()
-                } else {
-                    // No alias in Scan - this shouldn't happen for relationship scans!
-                    // Generate a warning and use a default
-                    let default_alias = "t".to_string();
-                    log::error!(
-                        "❌ BUG: Scan for table '{}' has NO table_alias! Using fallback '{}'",
-                        table_name,
-                        default_alias
-                    );
-                    log::error!(
-                        "   This indicates the Scan was created without preserving the Cypher variable name!"
-                    );
-                    default_alias
-                };
-
-                log::info!(
-                    "✓ Creating ViewTableRef: table='{}', alias='{}'",
-                    table_name,
-                    alias
-                );
-                Some(ViewTableRef::new_view_with_alias(
-                    Arc::new(LogicalPlan::Scan(scan.clone())),
-                    table_name,
-                    alias,
-                ))
-            }
             LogicalPlan::ViewScan(scan) => {
                 // Check if this is a relationship ViewScan (has from_id/to_id)
                 if scan.from_id.is_some() && scan.to_id.is_some() {
@@ -6258,28 +6202,6 @@ impl RenderPlanBuilder for LogicalPlan {
                             alias: Some(first_graph_rel.alias.clone()),
                             use_final: scan.use_final,
                         }))));
-                    }
-                    
-                    // Handle Scan with table_name (can happen with CTE placeholders)
-                    // For denormalized edges, need to get the actual edge table name from schema
-                    if let LogicalPlan::Scan(scan) = first_graph_rel.center.as_ref() {
-                        if let Some(table_name) = &scan.table_name {
-                            // Skip CTE placeholders - these indicate the relationship is part of a larger query
-                            // that should be handled differently
-                            if table_name.starts_with("rel_") {
-                                log::debug!("⚠️  Denormalized edge has CTE placeholder '{}' - cannot use as FROM directly", table_name);
-                            } else {
-                                // Real table name - use it
-                                log::debug!("✓ Using Scan edge table '{}' AS '{}'", 
-                                    table_name, first_graph_rel.alias);
-                                return Ok(Some(FromTable::new(Some(ViewTableRef {
-                                    source: first_graph_rel.center.clone(),
-                                    name: table_name.clone(),
-                                    alias: Some(first_graph_rel.alias.clone()),
-                                    use_final: false,
-                                }))));
-                            }
-                        }
                     }
                     
                     log::debug!("⚠️  Could not extract edge table from center (type: {:?})", 
@@ -6675,7 +6597,6 @@ impl RenderPlanBuilder for LogicalPlan {
     fn extract_filters(&self) -> RenderPlanBuilderResult<Option<RenderExpr>> {
         let filters = match &self {
             LogicalPlan::Empty => None,
-            LogicalPlan::Scan(_) => None,
             LogicalPlan::ViewScan(scan) => {
                 // ViewScan.view_filter should be None after CleanupViewScanFilters optimizer.
                 // All filters are consolidated in GraphRel.where_predicate.
@@ -10652,7 +10573,6 @@ impl RenderPlanBuilder for LogicalPlan {
             "Starting render plan generation for plan type: {}",
             match &transformed_plan {
                 LogicalPlan::Empty => "Empty",
-                LogicalPlan::Scan(_) => "Scan",
                 LogicalPlan::ViewScan(_) => "ViewScan",
                 LogicalPlan::GraphNode(_) => "GraphNode",
                 LogicalPlan::GraphRel(_) => "GraphRel",

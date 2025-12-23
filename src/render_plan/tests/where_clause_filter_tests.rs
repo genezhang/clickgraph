@@ -23,11 +23,11 @@ use std::collections::HashMap;
 fn cypher_to_sql(cypher: &str) -> String {
     let ast = open_cypher_parser::parse_query(cypher).expect("Failed to parse Cypher query");
 
-    // Create empty schema for test
-    let empty_schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+    // Create proper test schema with User nodes
+    let graph_schema = setup_test_graph_schema();
 
     let (logical_plan, mut plan_ctx) =
-        build_logical_plan(&ast, &empty_schema, None, None).expect("Failed to build logical plan");
+        build_logical_plan(&ast, &graph_schema, None, None).expect("Failed to build logical plan");
 
     // Debug: Print logical plan before analyzer passes
     println!("Logical plan before analyzer passes: {:?}", logical_plan);
@@ -35,9 +35,6 @@ fn cypher_to_sql(cypher: &str) -> String {
     // Run analyzer passes to extract filters from Filter nodes
     use crate::query_planner::analyzer;
     use crate::query_planner::optimizer;
-
-    // Create a proper graph schema for testing with property mappings
-    let graph_schema = setup_test_graph_schema();
 
     // Run analyzer passes to extract and tag filters
     let logical_plan =

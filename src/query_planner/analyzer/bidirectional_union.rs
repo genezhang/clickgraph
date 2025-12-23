@@ -341,7 +341,7 @@ fn transform_bidirectional(
         | LogicalPlan::Empty
         | LogicalPlan::PageRank(_)
         | LogicalPlan::GraphJoins(_)
-        | LogicalPlan::Scan(_)
+
         | LogicalPlan::Cte(_) => Ok(Transformed::No(plan.clone())),
 
         // WithClause is a BOUNDARY - transform its input independently, don't propagate Union beyond

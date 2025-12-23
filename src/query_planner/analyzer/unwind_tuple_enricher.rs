@@ -131,7 +131,7 @@ pub fn enrich_unwind_with_tuple_info(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan>
             }))
         }
         // Leaf nodes - no children to recurse into
-        LogicalPlan::Empty | LogicalPlan::Scan(_) | LogicalPlan::ViewScan(_) | LogicalPlan::PageRank(_) => {
+        LogicalPlan::Empty | LogicalPlan::ViewScan(_) | LogicalPlan::PageRank(_) => {
             plan.clone()
         }
     }
