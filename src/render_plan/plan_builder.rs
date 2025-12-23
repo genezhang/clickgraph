@@ -6438,8 +6438,41 @@ impl RenderPlanBuilder for LogicalPlan {
                 from_table_to_view_ref(projection.input.extract_from()?)
             }
             LogicalPlan::GraphJoins(graph_joins) => {
-                // Helper to find GraphRel through Projection/Filter/GraphJoins wrappers
-                // Must traverse GraphJoins for WITH clause scenarios where we have nested GraphJoins
+                // ============================================================================
+                // CLEAN DESIGN: FROM table determination for GraphJoins
+                // ============================================================================
+                // 
+                // The logical model is simple:
+                // 1. Every table in a graph query is represented as a Join in graph_joins.joins
+                // 2. A Join with EMPTY joining_on is a FROM marker (no join conditions = base table)
+                // 3. A Join with NON-EMPTY joining_on is a real JOIN
+                // 4. There should be exactly ONE FROM marker per GraphJoins
+                //
+                // This function finds that FROM marker and returns it.
+                // NO FALLBACKS. If there's no FROM marker, something is wrong upstream.
+                // ============================================================================
+                
+                log::debug!("🔍 GraphJoins.extract_from: {} joins, anchor_table={:?}", 
+                    graph_joins.joins.len(), graph_joins.anchor_table);
+                
+                // STEP 1: Find FROM marker (Join with empty joining_on)
+                // This is the authoritative source - it was set by graph_join_inference
+                for join in &graph_joins.joins {
+                    if join.joining_on.is_empty() {
+                        log::info!("✅ Found FROM marker: table='{}' alias='{}'", 
+                            join.table_name, join.table_alias);
+                        return Ok(Some(FromTable::new(Some(super::ViewTableRef {
+                            source: std::sync::Arc::new(LogicalPlan::Empty),
+                            name: join.table_name.clone(),
+                            alias: Some(join.table_alias.clone()),
+                            use_final: false,
+                        }))));
+                    }
+                }
+                
+                // STEP 2: No FROM marker found - check special cases that don't use joins
+                
+                // Helper to find GraphRel through wrappers
                 fn find_graph_rel(plan: &LogicalPlan) -> Option<&GraphRel> {
                     match plan {
                         LogicalPlan::GraphRel(gr) => Some(gr),
@@ -6450,11 +6483,9 @@ impl RenderPlanBuilder for LogicalPlan {
                         _ => None,
                     }
                 }
-
+                
                 // Helper to find GraphNode for node-only queries
-                fn find_graph_node(
-                    plan: &LogicalPlan,
-                ) -> Option<&crate::query_planner::logical_plan::GraphNode> {
+                fn find_graph_node(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::GraphNode> {
                     match plan {
                         LogicalPlan::GraphNode(gn) => Some(gn),
                         LogicalPlan::Projection(proj) => find_graph_node(&proj.input),
@@ -6464,39 +6495,37 @@ impl RenderPlanBuilder for LogicalPlan {
                         _ => None,
                     }
                 }
-
-                // Helper to check if a GraphNode has a real ViewScan (not just a Scan placeholder)
-                fn has_viewscan_input(
-                    graph_node: &crate::query_planner::logical_plan::GraphNode,
-                ) -> bool {
-                    matches!(graph_node.input.as_ref(), LogicalPlan::ViewScan(_))
-                }
-
-                // RULE: When joins is empty, no node tables are needed - use edge table as FROM
-                // This happens for: 1) Denormalized edges, 2) Anonymous node patterns, 3) Pure edge queries
-                log::debug!("🔍 GraphJoins.extract_from: joins.len()={}, is_empty()={}", 
-                    graph_joins.joins.len(), graph_joins.joins.is_empty());
                 
+                // Helper to find CartesianProduct
+                fn find_cartesian_product(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::CartesianProduct> {
+                    match plan {
+                        LogicalPlan::CartesianProduct(cp) => Some(cp),
+                        LogicalPlan::Filter(f) => find_cartesian_product(&f.input),
+                        LogicalPlan::Projection(p) => find_cartesian_product(&p.input),
+                        _ => None,
+                    }
+                }
+                
+                fn is_cte_reference(plan: &LogicalPlan) -> bool {
+                    match plan {
+                        LogicalPlan::WithClause(_) => true,
+                        LogicalPlan::ViewScan(vs) => vs.source_table.starts_with("with_"),
+                        LogicalPlan::GraphNode(gn) => is_cte_reference(&gn.input),
+                        LogicalPlan::Projection(p) => is_cte_reference(&p.input),
+                        LogicalPlan::Filter(f) => is_cte_reference(&f.input),
+                        _ => false,
+                    }
+                }
+                
+                // CASE A: Empty joins - check for denormalized edge or node-only patterns
                 if graph_joins.joins.is_empty() {
-                    log::debug!("✓ Empty joins - looking for edge-only pattern");
+                    log::debug!("📋 No joins - checking for special patterns");
                     
+                    // A.1: Denormalized edge pattern - use edge table directly
                     if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
-                        log::debug!("✓ Found GraphRel '{}', checking if denormalized", graph_rel.alias);
-                        
-                        // Check if center is denormalized by looking for from_node_properties
-                        let center_is_denormalized = if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
-                            scan.from_node_properties.is_some() && scan.to_node_properties.is_some()
-                        } else {
-                            false
-                        };
-                        
-                        log::debug!("  center_denormalized={}", center_is_denormalized);
-                        
-                        if center_is_denormalized {
-                            // Center is denormalized - use it as FROM regardless of node state
-                            if let LogicalPlan::ViewScan(rel_scan) = graph_rel.center.as_ref() {
-                                log::info!("🎯 DENORMALIZED EDGE CENTER: Using '{}' AS '{}' as FROM",
-                                    rel_scan.source_table, graph_rel.alias);
+                        if let LogicalPlan::ViewScan(rel_scan) = graph_rel.center.as_ref() {
+                            if rel_scan.from_node_properties.is_some() || rel_scan.to_node_properties.is_some() {
+                                log::info!("🎯 DENORMALIZED: Using edge table '{}' as FROM", rel_scan.source_table);
                                 return Ok(Some(FromTable::new(Some(super::ViewTableRef {
                                     source: graph_rel.center.clone(),
                                     name: rel_scan.source_table.clone(),
@@ -6506,348 +6535,112 @@ impl RenderPlanBuilder for LogicalPlan {
                             }
                         }
                         
-                        let left_is_denormalized = is_node_denormalized(&graph_rel.left);
-                        let right_is_denormalized = is_node_denormalized(&graph_rel.right);
-                        
-                        log::debug!("  left_denorm={}, right_denorm={}", 
-                            left_is_denormalized, right_is_denormalized);
-                        
-                        if left_is_denormalized && right_is_denormalized {
-                            // Both nodes denormalized - use edge table directly
-                            if let LogicalPlan::ViewScan(rel_scan) = graph_rel.center.as_ref() {
-                                log::info!("🎯 DENORMALIZED EDGE (empty joins): Using '{}' AS '{}' as FROM",
-                                    rel_scan.source_table, graph_rel.alias);
-                                return Ok(Some(FromTable::new(Some(super::ViewTableRef {
-                                    source: graph_rel.center.clone(),
-                                    name: rel_scan.source_table.clone(),
-                                    alias: Some(graph_rel.alias.clone()),
-                                    use_final: rel_scan.use_final,
-                                }))));
-                            }
-                            
-                            // Handle Scan case (with table_name)
-                            if let LogicalPlan::Scan(rel_scan) = graph_rel.center.as_ref() {
-                                if let Some(table_name) = &rel_scan.table_name {
-                                    if !table_name.starts_with("rel_") {
-                                        log::info!("🎯 DENORMALIZED EDGE (empty joins, Scan): Using '{}' AS '{}' as FROM",
-                                            table_name, graph_rel.alias);
-                                        return Ok(Some(FromTable::new(Some(super::ViewTableRef {
-                                            source: graph_rel.center.clone(),
-                                            name: table_name.clone(),
-                                            alias: Some(graph_rel.alias.clone()),
-                                            use_final: false,
-                                        }))));
-                                    } else {
-                                        log::debug!("⚠️  Skipping CTE placeholder '{}' for FROM", table_name);
-                                    }
-                                }
-                            }
-                            
-                            log::debug!("⚠️  Denormalized edge center is neither ViewScan nor Scan with table_name");
-                        }
-                        
-                        // Check if LEFT node has a real table (ViewScan, not just placeholder Scan)
-                        // This handles polymorphic edges where one side is labeled, other is $any
+                        // A.2: Polymorphic edge - use the labeled node
                         if let LogicalPlan::GraphNode(left_node) = graph_rel.left.as_ref() {
-                            if has_viewscan_input(left_node) && !left_node.is_denormalized {
-                                // Left node is a real table - use it as FROM
-                                log::info!(
-                                    "🎯 POLYMORPHIC: Left node '{}' has ViewScan, using as FROM (joins may be empty due to $any target)",
-                                    left_node.alias
-                                );
-                                if let LogicalPlan::ViewScan(scan) = left_node.input.as_ref() {
-                                    return Ok(Some(FromTable::new(Some(super::ViewTableRef {
-                                        source: std::sync::Arc::new(LogicalPlan::GraphNode(
-                                            left_node.clone(),
-                                        )),
-                                        name: scan.source_table.clone(),
-                                        alias: Some(left_node.alias.clone()),
-                                        use_final: scan.use_final,
-                                    }))));
-                                }
+                            if let LogicalPlan::ViewScan(scan) = left_node.input.as_ref() {
+                                log::info!("🎯 POLYMORPHIC: Using left node '{}' as FROM", left_node.alias);
+                                return Ok(Some(FromTable::new(Some(super::ViewTableRef {
+                                    source: std::sync::Arc::new(LogicalPlan::GraphNode(left_node.clone())),
+                                    name: scan.source_table.clone(),
+                                    alias: Some(left_node.alias.clone()),
+                                    use_final: scan.use_final,
+                                }))));
                             }
                         }
-
-                        // Check if RIGHT node has a real table (for reverse direction queries)
                         if let LogicalPlan::GraphNode(right_node) = graph_rel.right.as_ref() {
-                            if has_viewscan_input(right_node) && !right_node.is_denormalized {
-                                log::info!(
-                                    "🎯 POLYMORPHIC: Right node '{}' has ViewScan, using as FROM",
-                                    right_node.alias
-                                );
-                                if let LogicalPlan::ViewScan(scan) = right_node.input.as_ref() {
-                                    return Ok(Some(FromTable::new(Some(super::ViewTableRef {
-                                        source: std::sync::Arc::new(LogicalPlan::GraphNode(
-                                            right_node.clone(),
-                                        )),
-                                        name: scan.source_table.clone(),
-                                        alias: Some(right_node.alias.clone()),
-                                        use_final: scan.use_final,
-                                    }))));
-                                }
+                            if let LogicalPlan::ViewScan(scan) = right_node.input.as_ref() {
+                                log::info!("🎯 POLYMORPHIC: Using right node '{}' as FROM", right_node.alias);
+                                return Ok(Some(FromTable::new(Some(super::ViewTableRef {
+                                    source: std::sync::Arc::new(LogicalPlan::GraphNode(right_node.clone())),
+                                    name: scan.source_table.clone(),
+                                    alias: Some(right_node.alias.clone()),
+                                    use_final: scan.use_final,
+                                }))));
                             }
-                        }
-
-                        // Both nodes are either denormalized or unlabeled - use relationship table
-                        if let Some(rel_table) = extract_table_name(&graph_rel.center) {
-                            log::info!(
-                                "🎯 DENORMALIZED: No labeled nodes, using relationship table '{}' as '{}'",
-                                rel_table, graph_rel.alias
-                            );
-                            let view_ref = super::ViewTableRef {
-                                source: std::sync::Arc::new(LogicalPlan::GraphRel(
-                                    graph_rel.clone(),
-                                )),
-                                name: rel_table,
-                                alias: Some(graph_rel.alias.clone()),
-                                use_final: false,
-                            };
-                            return Ok(from_table_to_view_ref(Some(FromTable::new(Some(
-                                view_ref,
-                            ))))
-                            .map(|vr| FromTable::new(Some(vr))));
                         }
                     }
-
-                    // NODE-ONLY QUERY: No GraphRel, look for GraphNode
+                    
+                    // A.3: Node-only query (MATCH (n:Label) RETURN n)
                     if let Some(graph_node) = find_graph_node(&graph_joins.input) {
-                        log::info!(
-                            "🎯 NODE-ONLY: No JOINs, no GraphRel, using GraphNode alias '{}' for FROM",
-                            graph_node.alias
-                        );
-                        // Get table from GraphNode's ViewScan
                         if let LogicalPlan::ViewScan(scan) = graph_node.input.as_ref() {
-                            // Use ViewTableRef::new_table_with_alias to properly handle parameterized views
+                            log::info!("🎯 NODE-ONLY: Using node '{}' as FROM", graph_node.alias);
                             let view_ref = super::ViewTableRef::new_table_with_alias(
                                 scan.as_ref().clone(),
                                 scan.source_table.clone(),
                                 graph_node.alias.clone(),
                             );
-                            log::info!(
-                                "🎯 NODE-ONLY: Created ViewTableRef for table '{}' (name='{}') as '{}'",
-                                scan.source_table,
-                                view_ref.name,
-                                graph_node.alias
-                            );
-                            return Ok(from_table_to_view_ref(Some(FromTable::new(Some(
-                                view_ref,
-                            ))))
-                            .map(|vr| FromTable::new(Some(vr))));
-                        }
-                    }
-
-                    // WITH...MATCH PATTERN: Check for CartesianProduct (disconnected pattern after WITH clause)
-                    // The CartesianProduct combines WITH CTE with new MATCH pattern
-                    // Need to extract FROM from the right side (new MATCH) since left side is CTE
-                    //
-                    // IMPORTANT: Only treat as WITH...MATCH if left side is actually a CTE reference!
-                    // Comma patterns like (a:User), (b:User) also create CartesianProduct but both sides are regular nodes
-                    fn find_cartesian_product(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::CartesianProduct> {
-                        match plan {
-                            LogicalPlan::CartesianProduct(cp) => Some(cp),
-                            LogicalPlan::Filter(f) => find_cartesian_product(&f.input),
-                            LogicalPlan::Projection(p) => find_cartesian_product(&p.input),
-                            _ => None,
+                            return Ok(Some(FromTable::new(Some(view_ref))));
                         }
                     }
                     
-                    fn is_cte_reference(plan: &LogicalPlan) -> bool {
-                        match plan {
-                            // WithClause IS a CTE source - the entire point of WITH is to create a CTE
-                            LogicalPlan::WithClause(_) => true,
-                            LogicalPlan::ViewScan(vs) => vs.source_table.starts_with("with_"),
-                            LogicalPlan::GraphNode(gn) => is_cte_reference(&gn.input),
-                            LogicalPlan::Projection(p) => is_cte_reference(&p.input),
-                            LogicalPlan::Filter(f) => is_cte_reference(&f.input),
-                            _ => false,
-                        }
-                    }
-
+                    // A.4: CartesianProduct (WITH...MATCH or comma patterns)
                     if let Some(cp) = find_cartesian_product(&graph_joins.input) {
-                        // Check if this is a WITH...MATCH pattern (left side is CTE) or a comma pattern (both sides are regular nodes)
                         if is_cte_reference(&cp.left) {
-                            log::info!("🎯 WITH...MATCH: Found CartesianProduct with CTE on left, extracting FROM from right side");
-                            // Right side should be the new MATCH pattern with actual table
+                            log::info!("🎯 WITH...MATCH: FROM comes from right side");
                             return cp.right.extract_from();
                         } else {
-                            log::info!("🎯 COMMA PATTERN: Found CartesianProduct with regular nodes, using left as FROM");
-                            // Comma pattern: Both sides are regular nodes
-                            // Use CartesianProduct's logic: left side becomes FROM, right becomes JOIN
-                            let left_from = cp.left.extract_from()?;
-                            if left_from.is_some() {
-                                return Ok(from_table_to_view_ref(left_from).map(|vr| FromTable::new(Some(vr))));
-                            } else {
-                                println!("CartesianProduct: Left side has no FROM, using right side");
-                                return Ok(from_table_to_view_ref(cp.right.extract_from()?).map(|vr| FromTable::new(Some(vr))));
-                            }
+                            log::info!("🎯 COMMA PATTERN: FROM comes from left side");
+                            return cp.left.extract_from();
                         }
                     }
-
-                    return Ok(from_table_to_view_ref(None).map(|vr| FromTable::new(Some(vr))));
+                    
+                    // No valid FROM found for empty joins - this is unexpected
+                    log::warn!("⚠️ GraphJoins has empty joins and no recognizable pattern - returning None");
+                    return Ok(None);
                 }
-
-                // NORMAL PATH with JOINs: Try to find GraphRel through any Projection/Filter wrappers
-                if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
-                    if let Some(labels) = &graph_rel.labels {
-                        // Deduplicate labels - [:FOLLOWS|FOLLOWS] should be treated as single type
-                        let unique_labels: std::collections::HashSet<_> = labels.iter().collect();
-                        if unique_labels.len() > 1 {
-                            // Multiple relationship types: check if right node is polymorphic ($any)
-                            // $any nodes have a Scan with no table_name (not a ViewScan)
-                            // For polymorphic edges, use LEFT node (the labeled one) as FROM
-                            let right_is_polymorphic = match graph_rel.right.as_ref() {
-                                LogicalPlan::GraphNode(gn) => {
-                                    match gn.input.as_ref() {
-                                        // Scan with no table_name = polymorphic $any node
-                                        LogicalPlan::Scan(scan) => scan.table_name.is_none(),
-                                        // ViewScan = normal labeled node
-                                        _ => false,
-                                    }
-                                }
-                                _ => false,
-                            };
-
-                            if right_is_polymorphic {
-                                // Polymorphic: use LEFT (labeled) node as FROM
-                                log::info!("🎯 POLYMORPHIC: Right is $any (no table), using LEFT node as FROM");
-                                let left_from = graph_rel.left.extract_from()?;
-                                from_table_to_view_ref(left_from)
-                            } else {
-                                // Normal multi-type: need both start and end nodes in FROM
-                                // Get end node from GraphRel
-                                let end_from = graph_rel.right.extract_from()?;
-
-                                // Return the end node - start node will be added as CROSS JOIN
-                                from_table_to_view_ref(end_from)
-                            }
-                        } else {
-                            // Single relationship type: Use anchor table from GraphJoins
-                            // The anchor was already computed during join reordering
-                            let anchor_alias = &graph_joins.anchor_table;
-
-                            if let Some(anchor_alias) = anchor_alias {
-                                log::info!("Using anchor table from GraphJoins: {}", anchor_alias);
-                                
-                                // FIRST: Check if anchor has a CTE reference (from WITH clause export)
-                                let table_name = if let Some(cte_name) = graph_joins.cte_references.get(anchor_alias) {
-                                    log::info!("✅ Anchor '{}' has CTE reference: '{}'", anchor_alias, cte_name);
-                                    Some(cte_name.clone())
-                                } else {
-                                    // FALLBACK: Use extract_rel_and_node_tables to get parameterized view reference
-                                    // This handles multi-tenant parameterized views correctly
-                                    let rel_tables = extract_rel_and_node_tables(&graph_joins.input);
-                                    rel_tables.get(anchor_alias).cloned()
-                                        .or_else(|| find_table_name_for_alias(&graph_joins.input, anchor_alias))
-                                };
-                                
-                                // Get the table name for the anchor node by recursively finding the GraphNode with matching alias
-                                if let Some(table_name) = table_name
-                                {
-                                    Some(super::ViewTableRef {
-                                        source: std::sync::Arc::new(LogicalPlan::Empty),
-                                        name: table_name,
-                                        alias: Some(anchor_alias.clone()),
-                                        use_final: false,
-                                    })
-                                } else {
-                                    // Fallback to first join
-                                    if let Some(first_join) = graph_joins.joins.first() {
-                                        Some(super::ViewTableRef {
-                                            source: std::sync::Arc::new(LogicalPlan::Empty),
-                                            name: first_join.table_name.clone(),
-                                            alias: Some(first_join.table_alias.clone()),
-                                            use_final: false,
-                                        })
-                                    } else {
-                                        None
-                                    }
-                                }
-                            } else {
-                                // No anchor found, use first join
-                                if let Some(first_join) = graph_joins.joins.first() {
-                                    Some(super::ViewTableRef {
-                                        source: std::sync::Arc::new(LogicalPlan::Empty),
-                                        name: first_join.table_name.clone(),
-                                        alias: Some(first_join.table_alias.clone()),
-                                        use_final: false,
-                                    })
-                                } else {
-                                    None
-                                }
-                            }
-                        }
-                    } else {
-                        // No labels: Use anchor table from GraphJoins
-                        let anchor_alias = &graph_joins.anchor_table;
-
-                        if let Some(anchor_alias) = anchor_alias {
-                            // FIRST: Check if anchor has a CTE reference (from WITH clause export)
-                            let table_name = if let Some(cte_name) = graph_joins.cte_references.get(anchor_alias) {
-                                log::info!("✅ Anchor '{}' has CTE reference: '{}'", anchor_alias, cte_name);
-                                Some(cte_name.clone())
-                            } else {
-                                // FALLBACK: Use extract_rel_and_node_tables to get parameterized view reference
-                                let rel_tables = extract_rel_and_node_tables(&graph_joins.input);
-                                rel_tables.get(anchor_alias).cloned()
-                                    .or_else(|| find_table_name_for_alias(&graph_joins.input, anchor_alias))
-                            };
-                            
-                            // Get the table name for the anchor node
-                            if let Some(table_name) = table_name
-                            {
-                                Some(super::ViewTableRef {
-                                    source: std::sync::Arc::new(LogicalPlan::Empty),
-                                    name: table_name,
-                                    alias: Some(anchor_alias.clone()),
-                                    use_final: false,
-                                })
-                            } else {
-                                if let Some(first_join) = graph_joins.joins.first() {
-                                    Some(super::ViewTableRef {
-                                        source: std::sync::Arc::new(LogicalPlan::Empty),
-                                        name: first_join.table_name.clone(),
-                                        alias: Some(first_join.table_alias.clone()),
-                                        use_final: false,
-                                    })
-                                } else {
-                                    None
-                                }
-                            }
-                        } else {
-                            // Not a GraphRel input: fallback to first join
-                            if let Some(first_join) = graph_joins.joins.first() {
-                                Some(super::ViewTableRef {
-                                    source: std::sync::Arc::new(LogicalPlan::Empty),
-                                    name: first_join.table_name.clone(),
-                                    alias: Some(first_join.table_alias.clone()),
-                                    use_final: false,
-                                })
-                            } else {
-                                None
-                            }
-                        }
+                
+                // CASE B: Has joins but no FROM marker
+                // This happens for OPTIONAL MATCH where the anchor comes from a prior MATCH
+                // The anchor_table is set but the anchor table info is in the input plan, not in joins
+                if let Some(anchor_alias) = &graph_joins.anchor_table {
+                    log::info!("🔍 No FROM marker in joins, looking for anchor '{}' in input plan", anchor_alias);
+                    
+                    // Try to find the anchor table in the input plan tree
+                    // For OPTIONAL MATCH, the anchor is from the first MATCH (which is in input)
+                    let rel_tables = extract_rel_and_node_tables(&graph_joins.input);
+                    if let Some(table_name) = rel_tables.get(anchor_alias) {
+                        log::info!("✅ Found anchor '{}' table '{}' in input plan", anchor_alias, table_name);
+                        return Ok(Some(FromTable::new(Some(super::ViewTableRef {
+                            source: std::sync::Arc::new(LogicalPlan::Empty),
+                            name: table_name.clone(),
+                            alias: Some(anchor_alias.clone()),
+                            use_final: false,
+                        }))));
                     }
-                } else {
-                    // Not a GraphRel input: normal processing
-                    // First try to extract FROM from the input
-                    let input_from = graph_joins.input.extract_from()?;
-                    if input_from.is_some() {
-                        from_table_to_view_ref(input_from)
-                    } else {
-                        // If input has no FROM clause but we have joins, use the first join as FROM
-                        // This handles the case of simple relationships where GraphRel returns None
-                        if let Some(first_join) = graph_joins.joins.first() {
-                            Some(super::ViewTableRef {
-                                source: std::sync::Arc::new(LogicalPlan::Empty),
-                                name: first_join.table_name.clone(),
-                                alias: Some(first_join.table_alias.clone()),
-                                use_final: false,
-                            })
-                        } else {
-                            None
-                        }
+                    
+                    // Also check CTE references
+                    if let Some(cte_name) = graph_joins.cte_references.get(anchor_alias) {
+                        log::info!("✅ Anchor '{}' has CTE reference: '{}'", anchor_alias, cte_name);
+                        return Ok(Some(FromTable::new(Some(super::ViewTableRef {
+                            source: std::sync::Arc::new(LogicalPlan::Empty),
+                            name: cte_name.clone(),
+                            alias: Some(anchor_alias.clone()),
+                            use_final: false,
+                        }))));
+                    }
+                    
+                    // Try find_table_name_for_alias as last resort
+                    if let Some(table_name) = find_table_name_for_alias(&graph_joins.input, anchor_alias) {
+                        log::info!("✅ Found anchor '{}' via find_table_name_for_alias: '{}'", anchor_alias, table_name);
+                        return Ok(Some(FromTable::new(Some(super::ViewTableRef {
+                            source: std::sync::Arc::new(LogicalPlan::Empty),
+                            name: table_name,
+                            alias: Some(anchor_alias.clone()),
+                            use_final: false,
+                        }))));
                     }
                 }
+                
+                // If we still can't find FROM, this is a real bug
+                log::error!("❌ BUG: GraphJoins has {} joins but NO FROM marker and couldn't resolve anchor! anchor_table={:?}", 
+                    graph_joins.joins.len(), graph_joins.anchor_table);
+                for (i, join) in graph_joins.joins.iter().enumerate() {
+                    log::error!("  join[{}]: table='{}' alias='{}' conditions={}", 
+                        i, join.table_name, join.table_alias, join.joining_on.len());
+                }
+                
+                // Return None to surface the bug
+                None
             }
             LogicalPlan::GroupBy(group_by) => {
                 from_table_to_view_ref(group_by.input.extract_from()?)
@@ -7278,18 +7071,27 @@ impl RenderPlanBuilder for LogicalPlan {
                 
                 println!("DEBUG: GraphJoins extract_joins called");
                 println!("DEBUG:   Input plan type: {:?}", std::mem::discriminant(graph_joins.input.as_ref()));
-                println!("DEBUG:   Deprecated joins count: {}", graph_joins.joins.len());
+                println!("DEBUG:   Total joins count: {}", graph_joins.joins.len());
                 for (i, j) in graph_joins.joins.iter().enumerate() {
-                    println!("DEBUG:   Deprecated join[{}]: {} AS {}", i, j.table_name, j.table_alias);
+                    let is_from = j.joining_on.is_empty();
+                    println!("DEBUG:   join[{}]: {} AS {} (conditions={}, is_from={})", 
+                        i, j.table_name, j.table_alias, j.joining_on.len(), is_from);
                 }
                 
                 // Use the centralized helper from plan_builder_helpers.rs
                 let rel_tables = extract_rel_and_node_tables(graph_joins.input.as_ref());
                 println!("DEBUG: GraphJoins - extracted rel tables: {:?}", rel_tables);
                 
-                // Now fix the table_name in each deprecated join using the extracted mapping
+                // Convert joins, SKIPPING FROM markers (joins with empty joining_on)
+                // FROM markers are used by extract_from(), not extract_joins()
                 let mut joins: Vec<Join> = Vec::new();
                 for logical_join in &graph_joins.joins {
+                    // SKIP FROM markers - they have empty joining_on
+                    if logical_join.joining_on.is_empty() {
+                        println!("DEBUG: SKIPPING FROM marker for alias '{}'", logical_join.table_alias);
+                        continue;
+                    }
+                    
                     let mut render_join: Join = logical_join.clone().try_into()?;
                     
                     // Fix table_name if we have a resolved table for this alias
@@ -7309,7 +7111,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     joins.push(render_join);
                 }
                 
-                println!("DEBUG: GraphJoins extract_joins returning {} joins", joins.len());
+                println!("DEBUG: GraphJoins extract_joins returning {} joins (excluding FROM markers)", joins.len());
                 joins
             }
             LogicalPlan::GraphRel(graph_rel) => {

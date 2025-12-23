@@ -680,16 +680,18 @@ impl GraphJoinInference {
             }
         }
 
-        // If we found a FROM marker, handle it directly
+        // If we found a FROM marker, use it as anchor but KEEP it in joins
+        // The extract_from() method looks for FROM markers in the joins vector
+        // The extract_joins() method filters them out (empty joining_on = FROM, not JOIN)
         if let Some(idx) = from_marker_index {
-            let mut remaining_joins: Vec<Join> = joins.clone();
-            let from_join = remaining_joins.remove(idx);
-            let from_alias = from_join.table_alias.clone();
+            let from_alias = joins[idx].table_alias.clone();
             crate::debug_print!(
-                "  🏠 Using '{}' as FROM clause (explicit marker)",
+                "  🏠 Using '{}' as FROM clause (explicit marker) - keeping in joins for extract_from",
                 from_alias
             );
-            return (Some(from_alias), remaining_joins);
+            // Return all joins INCLUDING the FROM marker
+            // extract_from will find it, extract_joins will skip it
+            return (Some(from_alias), joins);
         }
 
         // Collect all aliases that are being joined
@@ -2478,7 +2480,7 @@ impl GraphJoinInference {
             // ================================================================
             // SingleTableScan: Fully denormalized - NO JOINs needed
             // ================================================================
-            JoinStrategy::SingleTableScan { table: _ } => {
+            JoinStrategy::SingleTableScan { table } => {
                 crate::debug_print!("    ✅ SingleTableScan: No JOINs needed (fully denormalized)");
 
                 // Register both nodes as embedded on the edge for property resolution
@@ -2503,10 +2505,35 @@ impl GraphJoinInference {
                     );
                 }
 
-                // Mark all entities as "joined" (they share the same FROM table)
-                joined_entities.insert(left_alias.to_string());
+                // CRITICAL FIX: Create a FROM marker join for the relationship table!
+                // When optimization is applied (nodes aren't referenced), we use only the
+                // relationship table without JOINing to node tables. For multi-hop patterns,
+                // subsequent relationships need to know which table is the anchor/FROM clause.
+                // We create a "FROM marker" join with empty joining_on to signal that this
+                // table should be the FROM clause.
+                //
+                // Example: MATCH (a)-[r1]->(b)-[r2]->(c) RETURN count(r1)
+                //   - r1 optimized: SingleTableScan (only user_follows_bench, nodes not referenced)
+                //   - Creates FROM marker: Join { table: user_follows_bench, alias: r1, joining_on: [] }
+                //   - r2 processing: Creates joins for b→r2→c
+                //   - Reorder logic: Sees FROM marker for r1, uses it as anchor
+                //   - Final SQL: FROM user_follows_bench AS r1 INNER JOIN ... (correct!)
+                //
+                // Without this marker, r2's joins have no anchor and pick arbitrary node as FROM.
+                let from_marker = Join {
+                    table_name: table.clone(),
+                    table_alias: rel_alias.to_string(),
+                    joining_on: vec![], // Empty = FROM table marker
+                    join_type: JoinType::Inner,
+                    pre_filter: None,
+                    from_id_column: None,
+                    to_id_column: None,
+                };
+                Self::push_join_if_not_duplicate(collected_graph_joins, from_marker);
+                crate::debug_print!("    🏠 Added FROM marker for relationship table '{}'", rel_alias);
+
+                // Mark relationship as "joined" but NOT the nodes (they're embedded in rel table)
                 joined_entities.insert(rel_alias.to_string());
-                joined_entities.insert(right_alias.to_string());
 
                 Ok(())
             }
@@ -2578,13 +2605,36 @@ impl GraphJoinInference {
                     crate::debug_print!("       Connect order: LEFT → EDGE → RIGHT");
                     log::debug!("  📍 Connect order: LEFT → EDGE → RIGHT");
 
-                    // If first relationship and left is anchor, mark it joined
+                    // If first relationship and left is anchor, mark it joined AND create FROM marker
                     if is_first_relationship && !left_is_optional {
                         crate::debug_print!(
                             "       LEFT '{}' is anchor - will be FROM table",
                             left_alias
                         );
                         log::debug!("  🎯 LEFT '{}' marked as FROM table (is_first_relationship={}, left_is_optional={})", left_alias, is_first_relationship, left_is_optional);
+                        
+                        // CRITICAL: Create FROM marker for the anchor node!
+                        // This preserves the table name so extract_from can find it.
+                        // Without this, anonymous nodes (Scan with no table_name) would fall back
+                        // to using the first JOIN as FROM, which would be the relationship - WRONG!
+                        let left_table_name = Self::get_table_name_with_prefix(
+                            left_cte_name,
+                            left_alias,
+                            left_node_schema,
+                            plan_ctx,
+                        );
+                        let from_marker = Join {
+                            table_name: left_table_name,
+                            table_alias: left_alias.to_string(),
+                            joining_on: vec![], // Empty = FROM table marker
+                            join_type: JoinType::Inner,
+                            pre_filter: None,
+                            from_id_column: None,
+                            to_id_column: None,
+                        };
+                        Self::push_join_if_not_duplicate(collected_graph_joins, from_marker);
+                        crate::debug_print!("       🏠 Added FROM marker for anchor node '{}'", left_alias);
+                        
                         joined_entities.insert(left_alias.to_string());
                     }
 
@@ -2625,7 +2675,7 @@ impl GraphJoinInference {
                 from_id_column: None,
                 to_id_column: None,
                         };
-                        collected_graph_joins.push(left_join);
+                        Self::push_join_if_not_duplicate(collected_graph_joins, left_join);
                         joined_entities.insert(left_alias.to_string());
                     }
 
@@ -2669,7 +2719,7 @@ impl GraphJoinInference {
                         from_id_column: Some(rel_schema.from_id.clone()),
                         to_id_column: Some(rel_schema.to_id.clone()),
                     };
-                    collected_graph_joins.push(rel_join);
+                    Self::push_join_if_not_duplicate(collected_graph_joins, rel_join);
                     joined_entities.insert(rel_alias.to_string());
 
                     // JOIN: Right node (connects to edge via to_id)
@@ -2708,7 +2758,7 @@ impl GraphJoinInference {
                         };
                         
                         log::debug!("📌 Adding RIGHT node JOIN: {} AS {}", right_cte_name, right_alias);
-                        collected_graph_joins.push(right_join);
+                        Self::push_join_if_not_duplicate(collected_graph_joins, right_join);
                         joined_entities.insert(right_alias.to_string());
                     } else {
                         log::debug!("⏭️  SKIP RIGHT node JOIN: {} (already in joined_entities)", right_alias);
@@ -2746,7 +2796,7 @@ impl GraphJoinInference {
                         from_id_column: None,
                         to_id_column: None,
                     };
-                    collected_graph_joins.push(rel_join);
+                    Self::push_join_if_not_duplicate(collected_graph_joins, rel_join);
                     joined_entities.insert(rel_alias.to_string());
 
                     // JOIN: Left node (connects to edge via from_id)
@@ -2780,7 +2830,7 @@ impl GraphJoinInference {
                         };
                         
                         log::debug!("📌 Adding LEFT node JOIN: {} AS {}", left_cte_name, left_alias);
-                        collected_graph_joins.push(left_join);
+                        Self::push_join_if_not_duplicate(collected_graph_joins, left_join);
                         joined_entities.insert(left_alias.to_string());
                     } else {
                         log::debug!("⏭️  SKIP LEFT node JOIN: {} (already in joined_entities)", left_alias);
@@ -2922,7 +2972,7 @@ impl GraphJoinInference {
                 from_id_column: None,
                 to_id_column: None,
                     };
-                    collected_graph_joins.push(node_join);
+                    Self::push_join_if_not_duplicate(collected_graph_joins, node_join);
                     joined_entities.insert(join_node_alias.to_string());
                 }
 
@@ -2966,7 +3016,7 @@ impl GraphJoinInference {
                     from_id_column: Some(rel_schema.from_id.clone()),
                     to_id_column: Some(rel_schema.to_id.clone()),
                 };
-                collected_graph_joins.push(rel_join);
+                Self::push_join_if_not_duplicate(collected_graph_joins, rel_join);
                 joined_entities.insert(rel_alias.to_string());
 
                 Ok(())
@@ -3050,7 +3100,7 @@ impl GraphJoinInference {
                     from_id_column: None,
                     to_id_column: None,
                 };
-                collected_graph_joins.push(edge_join);
+                Self::push_join_if_not_duplicate(collected_graph_joins, edge_join);
 
                 // Mark all as joined
                 joined_entities.insert(left_alias.to_string());
@@ -3186,7 +3236,7 @@ impl GraphJoinInference {
                 from_id_column: None,
                 to_id_column: None,
                             };
-                            collected_graph_joins.push(left_join);
+                            Self::push_join_if_not_duplicate(collected_graph_joins, left_join);
                             joined_entities.insert(left_alias.to_string());
                         }
                     }
@@ -3235,7 +3285,7 @@ impl GraphJoinInference {
                 from_id_column: None,
                 to_id_column: None,
                             };
-                            collected_graph_joins.push(right_join);
+                            Self::push_join_if_not_duplicate(collected_graph_joins, right_join);
                             joined_entities.insert(right_alias.to_string());
                         }
                     }
@@ -3395,6 +3445,21 @@ impl GraphJoinInference {
         //     crate::debug_print!("    +- infer_graph_join EXIT\n");
         //     return Ok(());
         // }
+
+        // Check if nodes have explicit labels in the Cypher query
+        // Anonymous nodes () have label: None in their GraphNode
+        // Labeled nodes (a:User) have label: Some("User")
+        let left_has_explicit_label = match graph_rel.left.as_ref() {
+            LogicalPlan::GraphNode(gn) => gn.label.is_some(),
+            _ => true, // Non-GraphNode inputs (like Empty for standalone rel) don't need checking
+        };
+        let right_has_explicit_label = match graph_rel.right.as_ref() {
+            LogicalPlan::GraphNode(gn) => gn.label.is_some(),
+            _ => true,
+        };
+        
+        crate::debug_print!("    🏷️ Label check: left_has_label={}, right_has_label={}", 
+            left_has_explicit_label, right_has_explicit_label);
 
         // FIX: Keep table checks for debugging but don't skip on them
         let _left_has_table = match graph_rel.left.as_ref() {
@@ -3605,12 +3670,27 @@ impl GraphJoinInference {
         let is_shortest_path = graph_rel.shortest_path_mode.is_some();
         let is_first_relationship = joined_entities.is_empty();
         
-        // TEMP: Disable optimization to debug multi-hop issue
-        let apply_optimization = false; // !left_is_referenced && !right_is_referenced && !is_vlp && !is_shortest_path && is_first_relationship;
+        // Apply SingleTableScan optimization when:
+        // 1. Neither node is referenced in RETURN/WHERE (unreferenced)
+        // 2. OR both nodes are anonymous (no explicit label in Cypher)
+        // AND:
+        // - Not a variable-length path (VLP needs CTEs)
+        // - Not a shortest path
+        // - This is the first relationship (multi-hop needs node tables for chaining)
+        //
+        // Anonymous nodes with explicit label: (a:User) → has_label=true, needs JOIN if referenced
+        // Anonymous nodes without label: () → has_label=false, never needs JOIN for its own table
+        let both_nodes_anonymous = !left_has_explicit_label && !right_has_explicit_label;
+        let neither_node_referenced = !left_is_referenced && !right_is_referenced;
+        
+        let apply_optimization = (both_nodes_anonymous || neither_node_referenced) 
+            && !is_vlp 
+            && !is_shortest_path 
+            && is_first_relationship;
         
         if apply_optimization {
-            crate::debug_print!("    ⚡ UNREFERENCED NODES detected: left='{}' ref={}, right='{}' ref={} - using SingleTableScan strategy", 
-                left_alias_str, left_is_referenced, right_alias_str, right_is_referenced);
+            crate::debug_print!("    ⚡ SingleTableScan: both_anonymous={}, neither_referenced={}, left_ref={}, right_ref={}", 
+                both_nodes_anonymous, neither_node_referenced, left_is_referenced, right_is_referenced);
             // Override join strategy: no node JOINs needed, only relationship table
             ctx.join_strategy = JoinStrategy::SingleTableScan {
                 table: rel_schema.full_table_name(),
@@ -4019,7 +4099,7 @@ impl GraphJoinInference {
             to_id_column: None,
         };
 
-        collected_graph_joins.push(join);
+        Self::push_join_if_not_duplicate(collected_graph_joins, join);
 
         crate::debug_print!(
             "       ✅ Generated: {} JOIN {} ON {}.{} = {}.{}",
