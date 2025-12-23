@@ -15,7 +15,7 @@ BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 SCHEMA_NAME = "unified_test_schema"  # Uses unified test schema
 
 
-def test_friends_of_friends_excludes_start_node():
+def test_friends_of_friends_excludes_start_node(simple_graph):
     """
     Test that user_id=1 is NOT in the results when querying friends-of-friends.
     
@@ -84,7 +84,7 @@ def test_sql_contains_uniqueness_constraints():
     print(f"✅ Generated SQL: {sql[:200]}...")
 
 
-def test_three_hop_uniqueness():
+def test_three_hop_uniqueness(simple_graph):
     """
     Test uniqueness in longer paths (3 hops).
     Graph doesn't have 3-hop paths, so we test 2-hop with available data.
@@ -114,7 +114,7 @@ def test_three_hop_uniqueness():
     print(f"   Checked {len(result['results'])} paths")
 
 
-def test_anonymous_nodes_uniqueness():
+def test_anonymous_nodes_uniqueness(simple_graph):
     """
     Test that anonymous nodes also maintain uniqueness.
     """
