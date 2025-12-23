@@ -1,11 +1,81 @@
 // Integration test for path variable SQL generation
 use clickgraph::{
-    graph_catalog::graph_schema::GraphSchema,
+    graph_catalog::{
+        expression_parser::PropertyValue,
+        graph_schema::{GraphSchema, NodeSchema, NodeIdSchema, RelationshipSchema},
+    },
     open_cypher_parser::parse_query,
     query_planner::logical_plan::plan_builder::build_logical_plan,
     render_plan::{logical_plan_to_render_plan, ToSql},
 };
 use std::collections::HashMap;
+
+fn create_test_schema() -> GraphSchema {
+    let mut nodes = HashMap::new();
+    let mut rels = HashMap::new();
+
+    // Create Person node
+    nodes.insert(
+        "Person".to_string(),
+        NodeSchema {
+            database: "test".to_string(),
+            table_name: "persons".to_string(),
+            column_names: vec!["id".to_string(), "name".to_string()],
+            primary_keys: "id".to_string(),
+            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            property_mappings: {
+                let mut props = HashMap::new();
+                props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
+                props.insert("name".to_string(), PropertyValue::Column("name".to_string()));
+                props
+            },
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
+        },
+    );
+
+    // Create FOLLOWS relationship
+    rels.insert(
+        "FOLLOWS".to_string(),
+        RelationshipSchema {
+            database: "test".to_string(),
+            table_name: "follows".to_string(),
+            column_names: vec!["follower_id".to_string(), "followed_id".to_string()],
+            from_node: "Person".to_string(),
+            to_node: "Person".to_string(),
+            from_node_table: "persons".to_string(),
+            to_node_table: "persons".to_string(),
+            from_id: "follower_id".to_string(),
+            to_id: "followed_id".to_string(),
+            from_node_id_dtype: "UInt64".to_string(),
+            to_node_id_dtype: "UInt64".to_string(),
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_label_values: None,
+            to_label_values: None,
+            from_node_properties: None,
+            to_node_properties: None,
+            is_fk_edge: false,
+        },
+    );
+
+    GraphSchema::build(1, "test".to_string(), nodes, rels)
+}
 
 #[test]
 fn test_path_variable_sql_generation() {
@@ -16,8 +86,8 @@ fn test_path_variable_sql_generation() {
     // Parse the query
     let ast = parse_query(cypher).expect("Failed to parse Cypher query");
 
-    // Create empty schema (test doesn't need actual schema)
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+    // Create test schema with Person node and FOLLOWS relationship
+    let schema = create_test_schema();
 
     // Build logical plan
     let (logical_plan, _plan_ctx) =
@@ -61,8 +131,8 @@ fn test_path_variable_with_properties() {
     // Parse the query
     let ast = parse_query(cypher).expect("Failed to parse Cypher query");
 
-    // Create empty schema
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+    // Create test schema with Person node and FOLLOWS relationship
+    let schema = create_test_schema();
 
     // Build logical plan
     let (logical_plan, _plan_ctx) =
@@ -97,8 +167,8 @@ fn test_non_path_variable_unchanged() {
     // Parse the query
     let ast = parse_query(cypher).expect("Failed to parse Cypher query");
 
-    // Create empty schema
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+    // Create test schema with Person node and FOLLOWS relationship
+    let schema = create_test_schema();
 
     // Build logical plan
     let (logical_plan, _plan_ctx) =

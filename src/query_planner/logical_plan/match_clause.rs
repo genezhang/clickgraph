@@ -2330,7 +2330,8 @@ mod tests {
 
     #[test]
     fn test_traverse_node_pattern_new_node() {
-        let mut plan_ctx = PlanCtx::default();
+        let graph_schema = create_test_schema_with_relationships();
+        let mut plan_ctx = PlanCtx::new(Arc::new(graph_schema));
         let initial_plan = Arc::new(LogicalPlan::Empty);
 
         let node_pattern = ast::NodePattern {
@@ -2427,7 +2428,8 @@ mod tests {
 
     #[test]
     fn test_traverse_connected_pattern_new_connection() {
-        let mut plan_ctx = PlanCtx::default();
+        let graph_schema = create_test_schema_with_relationships();
+        let mut plan_ctx = PlanCtx::new(Arc::new(graph_schema));
         let initial_plan = Arc::new(LogicalPlan::Empty);
 
         let start_node = ast::NodePattern {
@@ -2501,7 +2503,8 @@ mod tests {
 
     #[test]
     fn test_traverse_connected_pattern_with_existing_start_node() {
-        let mut plan_ctx = PlanCtx::default();
+        let graph_schema = create_test_schema_with_relationships();
+        let mut plan_ctx = PlanCtx::new(Arc::new(graph_schema));
         let initial_plan = Arc::new(LogicalPlan::Empty);
 
         // Pre-populate with existing start node
@@ -2578,7 +2581,8 @@ mod tests {
 
     #[test]
     fn test_evaluate_match_clause_with_node_and_connected_pattern() {
-        let mut plan_ctx = PlanCtx::default();
+        let graph_schema = create_test_schema_with_relationships();
+        let mut plan_ctx = PlanCtx::new(Arc::new(graph_schema));
         let initial_plan = Arc::new(LogicalPlan::Empty);
 
         // Create a match clause with both node pattern and connected pattern
@@ -2905,6 +2909,205 @@ mod tests {
                 is_fk_edge: false,
             },
         );
+        
+        // Add missing nodes for tests
+        nodes.insert(
+            "Person".to_string(),
+            NodeSchema {
+                database: "test_db".to_string(),
+                table_name: "persons".to_string(),
+                column_names: vec!["id".to_string(), "name".to_string(), "city".to_string()],
+                primary_keys: "id".to_string(),
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
+                label_column: None,
+                label_value: None,
+            },
+        );
+        nodes.insert(
+            "Organization".to_string(),
+            NodeSchema {
+                database: "test_db".to_string(),
+                table_name: "organizations".to_string(),
+                column_names: vec!["id".to_string(), "name".to_string()],
+                primary_keys: "id".to_string(),
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
+                label_column: None,
+                label_value: None,
+            },
+        );
+        nodes.insert(
+            "Employee".to_string(),
+            NodeSchema {
+                database: "test_db".to_string(),
+                table_name: "employees".to_string(),
+                column_names: vec!["id".to_string(), "name".to_string()],
+                primary_keys: "id".to_string(),
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
+                label_column: None,
+                label_value: None,
+            },
+        );
+        nodes.insert(
+            "Project".to_string(),
+            NodeSchema {
+                database: "test_db".to_string(),
+                table_name: "projects".to_string(),
+                column_names: vec!["id".to_string(), "name".to_string()],
+                primary_keys: "id".to_string(),
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
+                label_column: None,
+                label_value: None,
+            },
+        );
+        nodes.insert(
+            "System".to_string(),
+            NodeSchema {
+                database: "test_db".to_string(),
+                table_name: "systems".to_string(),
+                column_names: vec!["id".to_string(), "name".to_string()],
+                primary_keys: "id".to_string(),
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
+                label_column: None,
+                label_value: None,
+            },
+        );
+        
+        // Add missing relationships for tests
+        rels.insert(
+            "WORKS_AT".to_string(),
+            RelationshipSchema {
+                database: "test_db".to_string(),
+                table_name: "works_at".to_string(),
+                column_names: vec!["person_id".to_string(), "org_id".to_string()],
+                from_node: "Person".to_string(),
+                to_node: "Organization".to_string(),
+                from_node_table: "persons".to_string(),
+                to_node_table: "organizations".to_string(),
+                from_id: "person_id".to_string(),
+                to_id: "org_id".to_string(),
+                from_node_id_dtype: "UInt64".to_string(),
+                to_node_id_dtype: "UInt64".to_string(),
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                edge_id: None,
+                type_column: None,
+                from_label_column: None,
+                to_label_column: None,
+                from_label_values: None,
+                to_label_values: None,
+                from_node_properties: None,
+                to_node_properties: None,
+                is_fk_edge: false,
+            },
+        );
+        rels.insert(
+            "ASSIGNED_TO".to_string(),
+            RelationshipSchema {
+                database: "test_db".to_string(),
+                table_name: "assigned_to".to_string(),
+                column_names: vec!["emp_id".to_string(), "proj_id".to_string()],
+                from_node: "Employee".to_string(),
+                to_node: "Project".to_string(),
+                from_node_table: "employees".to_string(),
+                to_node_table: "projects".to_string(),
+                from_id: "emp_id".to_string(),
+                to_id: "proj_id".to_string(),
+                from_node_id_dtype: "UInt64".to_string(),
+                to_node_id_dtype: "UInt64".to_string(),
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                edge_id: None,
+                type_column: None,
+                from_label_column: None,
+                to_label_column: None,
+                from_label_values: None,
+                to_label_values: None,
+                from_node_properties: None,
+                to_node_properties: None,
+                is_fk_edge: false,
+            },
+        );
+        rels.insert(
+            "MANAGES".to_string(),
+            RelationshipSchema {
+                database: "test_db".to_string(),
+                table_name: "manages".to_string(),
+                column_names: vec!["user_id".to_string(), "system_id".to_string()],
+                from_node: "User".to_string(),
+                to_node: "System".to_string(),
+                from_node_table: "users".to_string(),
+                to_node_table: "systems".to_string(),
+                from_id: "user_id".to_string(),
+                to_id: "system_id".to_string(),
+                from_node_id_dtype: "UInt64".to_string(),
+                to_node_id_dtype: "UInt64".to_string(),
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                edge_id: None,
+                type_column: None,
+                from_label_column: None,
+                to_label_column: None,
+                from_label_values: None,
+                to_label_values: None,
+                from_node_properties: None,
+                to_node_properties: None,
+                is_fk_edge: false,
+            },
+        );
 
         GraphSchema::build(1, "test_db".to_string(), nodes, rels)
     }
@@ -3049,7 +3252,7 @@ mod tests {
 
     #[test]
     fn test_infer_relationship_type_multiple_matches() {
-        // (u:User)-[r]->() should return both LIKES and FOLLOWS (multiple edges from User)
+        // (u:User)-[r]->() should return LIKES, FOLLOWS, and MANAGES (multiple edges from User)
         let schema = create_test_schema_with_relationships();
 
         let result = infer_relationship_type_from_nodes(
@@ -3062,9 +3265,10 @@ mod tests {
 
         assert!(result.is_some());
         let types = result.unwrap();
-        assert_eq!(types.len(), 2);
+        assert_eq!(types.len(), 3); // Now 3 relationships: LIKES, FOLLOWS, MANAGES
         assert!(types.contains(&"LIKES".to_string()));
         assert!(types.contains(&"FOLLOWS".to_string()));
+        assert!(types.contains(&"MANAGES".to_string()));
     }
 
     #[test]

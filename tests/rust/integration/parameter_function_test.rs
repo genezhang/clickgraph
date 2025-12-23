@@ -1,5 +1,8 @@
 use clickgraph::{
-    graph_catalog::graph_schema::GraphSchema,
+    graph_catalog::{
+        expression_parser::PropertyValue,
+        graph_schema::{GraphSchema, NodeSchema, NodeIdSchema},
+    },
     open_cypher_parser::parse_query,
     query_planner::logical_plan::plan_builder::build_logical_plan,
     render_plan::{logical_plan_to_render_plan, ToSql},
@@ -9,13 +12,189 @@ use std::collections::HashMap;
 // NOTE: Standalone RETURN queries (without MATCH) require HTTP API handling
 // to add dummy FROM clause. These tests focus on queries with MATCH patterns.
 
+fn create_test_schema() -> GraphSchema {
+    let mut nodes = HashMap::new();
+
+    // Create User node
+    nodes.insert(
+        "User".to_string(),
+        NodeSchema {
+            database: "test".to_string(),
+            table_name: "users".to_string(),
+            column_names: vec!["id".to_string(), "name".to_string(), "age".to_string()],
+            primary_keys: "id".to_string(),
+            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            property_mappings: {
+                let mut props = HashMap::new();
+                props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
+                props.insert("name".to_string(), PropertyValue::Column("name".to_string()));
+                props.insert("age".to_string(), PropertyValue::Column("age".to_string()));
+                props
+            },
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
+        },
+    );
+
+    // Create Order node
+    nodes.insert(
+        "Order".to_string(),
+        NodeSchema {
+            database: "test".to_string(),
+            table_name: "orders".to_string(),
+            column_names: vec!["id".to_string(), "total".to_string()],
+            primary_keys: "id".to_string(),
+            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            property_mappings: {
+                let mut props = HashMap::new();
+                props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
+                props.insert("total".to_string(), PropertyValue::Column("total".to_string()));
+                props
+            },
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
+        },
+    );
+
+    // Create Product node
+    nodes.insert(
+        "Product".to_string(),
+        NodeSchema {
+            database: "test".to_string(),
+            table_name: "products".to_string(),
+            column_names: vec!["id".to_string(), "name".to_string(), "price".to_string()],
+            primary_keys: "id".to_string(),
+            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            property_mappings: {
+                let mut props = HashMap::new();
+                props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
+                props.insert("name".to_string(), PropertyValue::Column("name".to_string()));
+                props.insert("price".to_string(), PropertyValue::Column("price".to_string()));
+                props
+            },
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
+        },
+    );
+
+    // Create Person node
+    nodes.insert(
+        "Person".to_string(),
+        NodeSchema {
+            database: "test".to_string(),
+            table_name: "persons".to_string(),
+            column_names: vec!["id".to_string(), "name".to_string()],
+            primary_keys: "id".to_string(),
+            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            property_mappings: {
+                let mut props = HashMap::new();
+                props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
+                props.insert("name".to_string(), PropertyValue::Column("name".to_string()));
+                props
+            },
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
+        },
+    );
+
+    // Create Number node
+    nodes.insert(
+        "Number".to_string(),
+        NodeSchema {
+            database: "test".to_string(),
+            table_name: "numbers".to_string(),
+            column_names: vec!["id".to_string(), "value".to_string()],
+            primary_keys: "id".to_string(),
+            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            property_mappings: {
+                let mut props = HashMap::new();
+                props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
+                props.insert("value".to_string(), PropertyValue::Column("value".to_string()));
+                props
+            },
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
+        },
+    );
+
+    // Create Text node
+    nodes.insert(
+        "Text".to_string(),
+        NodeSchema {
+            database: "test".to_string(),
+            table_name: "texts".to_string(),
+            column_names: vec!["id".to_string(), "content".to_string()],
+            primary_keys: "id".to_string(),
+            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            property_mappings: {
+                let mut props = HashMap::new();
+                props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
+                props.insert("content".to_string(), PropertyValue::Column("content".to_string()));
+                props
+            },
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
+        },
+    );
+
+    GraphSchema::build(1, "test".to_string(), nodes, HashMap::new())
+}
+
 #[test]
 fn test_parameter_in_where_with_function_in_return() {
     // Test: Parameter in WHERE, function in RETURN
     let query = "MATCH (n:User) WHERE n.age > $minAge RETURN toUpper(n.name) AS upper_name";
     let ast = parse_query(query).expect("Failed to parse query");
 
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+    let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
         build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
@@ -35,7 +214,7 @@ fn test_function_with_parameter_in_where() {
     let query = "MATCH (n:User) WHERE toUpper(n.status) = $status RETURN n.name";
     let ast = parse_query(query).expect("Failed to parse query");
 
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+    let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
         build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
@@ -55,7 +234,7 @@ fn test_multiple_parameters_with_multiple_functions() {
     let query = "MATCH (n:Product) WHERE n.price >= $minPrice AND n.price <= $maxPrice RETURN toUpper(n.name), ceil(n.price) AS rounded_price";
     let ast = parse_query(query).expect("Failed to parse query");
 
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+    let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
         build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
@@ -76,7 +255,7 @@ fn test_math_function_in_where_with_parameter() {
     let query = "MATCH (n:Number) WHERE abs(n.value) > $threshold RETURN n.value";
     let ast = parse_query(query).expect("Failed to parse query");
 
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+    let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
         build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
@@ -96,7 +275,7 @@ fn test_string_function_with_parameters_in_return() {
     let query = "MATCH (n:Text) RETURN substring(n.content, $start, $length) AS substr";
     let ast = parse_query(query).expect("Failed to parse query");
 
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+    let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
         build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
@@ -116,7 +295,7 @@ fn test_aggregation_function_with_parameter_filter() {
     let query = "MATCH (n:Order) WHERE n.total > $minTotal RETURN count(n) AS order_count, sum(n.total) AS total_sum";
     let ast = parse_query(query).expect("Failed to parse query");
 
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+    let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
         build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
@@ -137,7 +316,7 @@ fn test_nested_functions_with_properties() {
     let query = "MATCH (n:Person) RETURN toUpper(substring(n.name, 0, 5)) AS short_upper_name";
     let ast = parse_query(query).expect("Failed to parse query");
 
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+    let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
         build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
@@ -158,7 +337,7 @@ fn test_case_expression_with_parameters() {
     let query = "MATCH (n:Product) RETURN CASE WHEN n.price > $threshold THEN 'expensive' ELSE 'affordable' END AS category";
     let ast = parse_query(query).expect("Failed to parse query");
 
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+    let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
         build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
@@ -178,7 +357,7 @@ fn test_function_on_parameter_in_return() {
     let query = "MATCH (n:User) RETURN toUpper($userName) AS upper_param, n.name";
     let ast = parse_query(query).expect("Failed to parse query");
 
-    let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+    let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
         build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
