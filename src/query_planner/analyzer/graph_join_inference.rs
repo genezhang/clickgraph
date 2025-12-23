@@ -50,6 +50,90 @@ struct NodeAppearance {
     is_vlp: bool,
 }
 
+// ============================================================================
+// Pattern Graph Metadata (Evolution toward clean conceptual model)
+// ============================================================================
+// These structures provide a lightweight "index" over the existing GraphRel tree,
+// caching information that's currently computed repeatedly throughout the algorithm.
+// This enables cleaner join inference logic without rewriting the entire system.
+
+/// Metadata about a node in the MATCH pattern graph.
+/// Cached information to avoid repeated traversals and reference checking.
+#[derive(Debug, Clone)]
+struct PatternNodeInfo {
+    /// Node variable alias (e.g., "a", "b", "person")
+    alias: String,
+    /// Optional label constraint (e.g., Some("User"), None for unlabeled nodes)
+    label: Option<String>,
+    /// Whether this node is referenced in SELECT/WHERE/ORDER BY/etc.
+    /// Cached result of is_node_referenced() to avoid repeated tree traversals.
+    is_referenced: bool,
+    /// How many edges (relationships) use this node.
+    /// appearance_count > 1 indicates cross-branch pattern (needs JOIN between edges)
+    appearance_count: usize,
+    /// Whether this node has an explicit label in Cypher (e.g., (a:User) vs (a))
+    /// Used for SingleTableScan optimization decisions.
+    has_explicit_label: bool,
+}
+
+/// Metadata about an edge (relationship) in the MATCH pattern graph.
+/// Represents a single relationship pattern like -[r:TYPE]->
+#[derive(Debug, Clone)]
+struct PatternEdgeInfo {
+    /// Edge variable alias (e.g., "r", "follows", "t1")
+    alias: String,
+    /// Relationship types (e.g., ["FOLLOWS"], or ["FOLLOWS", "FRIENDS"] for [:FOLLOWS|FRIENDS])
+    rel_types: Vec<String>,
+    /// Source node variable (e.g., "a" in (a)-[r]->(b))
+    from_node: String,
+    /// Target node variable (e.g., "b" in (a)-[r]->(b))
+    to_node: String,
+    /// Whether this edge's properties are referenced in the query
+    /// Cached to avoid repeated checks
+    is_referenced: bool,
+    /// Whether this is a variable-length path (e.g., *1..3, *)
+    /// VLP patterns are handled by CTE generation, not regular JOINs
+    is_vlp: bool,
+    /// Whether this is a shortest path pattern
+    /// Shortest path patterns have special handling similar to VLP
+    is_shortest_path: bool,
+    /// Direction: Outgoing (-[r]->), Incoming (<-[r]-), Either (-[r]-)
+    direction: Direction,
+    /// Whether this edge is part of an OPTIONAL MATCH
+    is_optional: bool,
+}
+
+/// Complete pattern graph metadata extracted from a MATCH clause.
+/// Provides a "map" view of the pattern structure to enable cleaner join inference.
+#[derive(Debug, Clone, Default)]
+struct PatternGraphMetadata {
+    /// All nodes in the pattern, indexed by alias
+    nodes: HashMap<String, PatternNodeInfo>,
+    /// All edges in the pattern (in order of appearance)
+    edges: Vec<PatternEdgeInfo>,
+}
+
+impl PatternGraphMetadata {
+    /// Get edge metadata by alias
+    fn get_edge_by_alias(&self, alias: &str) -> Option<&PatternEdgeInfo> {
+        self.edges.iter().find(|e| e.alias == alias)
+    }
+    
+    /// Get all edges that use a specific node (by node alias)
+    fn edges_using_node(&self, node_alias: &str) -> Vec<&PatternEdgeInfo> {
+        self.edges.iter()
+            .filter(|e| e.from_node == node_alias || e.to_node == node_alias)
+            .collect()
+    }
+    
+    /// Check if a node appears in multiple edges (cross-branch pattern indicator)
+    fn is_cross_branch_node(&self, node_alias: &str) -> bool {
+        self.nodes.get(node_alias)
+            .map(|n| n.appearance_count > 1)
+            .unwrap_or(false)
+    }
+}
+
 pub struct GraphJoinInference;
 
 impl AnalyzerPass for GraphJoinInference {
@@ -63,6 +147,15 @@ impl AnalyzerPass for GraphJoinInference {
             "DEBUG GraphJoinInference: analyze_with_graph_schema called, plan type: {:?}",
             std::mem::discriminant(&*logical_plan)
         );
+
+        // POC: Build pattern graph metadata (currently unused, but ready for evolution)
+        // This pre-pass extracts pattern structure and caches reference checks.
+        // Future: Use this metadata throughout join inference to simplify logic.
+        let _pattern_metadata = Self::build_pattern_metadata(&logical_plan, plan_ctx)?;
+        log::debug!("📊 Pattern metadata built: {} nodes, {} edges", 
+            _pattern_metadata.nodes.len(), _pattern_metadata.edges.len());
+        // TODO: Pass _pattern_metadata to collect_graph_joins and use it to simplify
+        // reference checking, cross-branch detection, and join decision logic.
 
         // CRITICAL: Before collecting joins, scan for WITH clauses and register their
         // exported aliases as CTE references in plan_ctx. This enables proper variable
@@ -122,6 +215,196 @@ impl GraphJoinInference {
     pub fn new() -> Self {
         GraphJoinInference
     }
+
+    // ========================================================================
+    // Pattern Graph Metadata Construction (POC)
+    // ========================================================================
+    // Lightweight pre-pass that builds an index over the GraphRel tree.
+    // Caches reference checks and computes pattern structure information
+    // to enable cleaner join inference logic.
+
+    /// Build pattern graph metadata by traversing the GraphRel tree.
+    /// This is a pre-pass that extracts and caches pattern structure information.
+    ///
+    /// Phase 1: Extract pattern info (nodes and edges)
+    /// Phase 2: Compute node references (which nodes are used in SELECT/WHERE/etc)
+    /// Phase 3: Compute edge references (which edges are used)
+    /// Phase 4: Count node appearances (for cross-branch detection)
+    fn build_pattern_metadata(
+        logical_plan: &LogicalPlan,
+        plan_ctx: &PlanCtx,
+    ) -> AnalyzerResult<PatternGraphMetadata> {
+        let mut metadata = PatternGraphMetadata::default();
+        
+        // Phase 1: Extract pattern structure from GraphRel tree
+        Self::extract_pattern_info(logical_plan, plan_ctx, &mut metadata)?;
+        
+        // Phase 2: Compute which nodes are referenced in the query
+        Self::compute_node_references(logical_plan, &mut metadata);
+        
+        // Phase 3: Compute which edges are referenced
+        Self::compute_edge_references(logical_plan, &mut metadata);
+        
+        // Phase 4: Count node appearances (appearance_count)
+        Self::compute_node_appearances(&mut metadata);
+        
+        log::debug!("📊 Built PatternGraphMetadata: {} nodes, {} edges", 
+            metadata.nodes.len(), metadata.edges.len());
+        
+        Ok(metadata)
+    }
+    
+    /// Phase 1: Extract pattern info from GraphRel nodes
+    fn extract_pattern_info(
+        plan: &LogicalPlan,
+        plan_ctx: &PlanCtx,
+        metadata: &mut PatternGraphMetadata,
+    ) -> AnalyzerResult<()> {
+        match plan {
+            LogicalPlan::GraphRel(graph_rel) => {
+                // Extract edge info from this GraphRel
+                let edge_info = PatternEdgeInfo {
+                    alias: graph_rel.alias.clone(),
+                    rel_types: graph_rel.labels.clone().unwrap_or_default(),
+                    from_node: graph_rel.left_connection.clone(),
+                    to_node: graph_rel.right_connection.clone(),
+                    is_referenced: false, // Computed later
+                    is_vlp: graph_rel.variable_length.is_some(),
+                    is_shortest_path: graph_rel.shortest_path_mode.is_some(),
+                    direction: graph_rel.direction.clone(),
+                    is_optional: graph_rel.is_optional.unwrap_or(false),
+                };
+                metadata.edges.push(edge_info);
+                
+                // Extract node info for left and right nodes (if not already present)
+                Self::extract_node_info(&graph_rel.left_connection, plan_ctx, metadata)?;
+                Self::extract_node_info(&graph_rel.right_connection, plan_ctx, metadata)?;
+                
+                // Recurse into left and right branches
+                Self::extract_pattern_info(&graph_rel.left, plan_ctx, metadata)?;
+                Self::extract_pattern_info(&graph_rel.right, plan_ctx, metadata)?;
+            }
+            LogicalPlan::GraphNode(graph_node) => {
+                // Extract node info
+                Self::extract_node_info(&graph_node.alias, plan_ctx, metadata)?;
+                
+                // Recurse into input
+                Self::extract_pattern_info(&graph_node.input, plan_ctx, metadata)?;
+            }
+            // Recurse through container nodes
+            LogicalPlan::Projection(p) => {
+                Self::extract_pattern_info(&p.input, plan_ctx, metadata)?;
+            }
+            LogicalPlan::Filter(f) => {
+                Self::extract_pattern_info(&f.input, plan_ctx, metadata)?;
+            }
+            LogicalPlan::GraphJoins(gj) => {
+                Self::extract_pattern_info(&gj.input, plan_ctx, metadata)?;
+            }
+            LogicalPlan::GroupBy(gb) => {
+                Self::extract_pattern_info(&gb.input, plan_ctx, metadata)?;
+            }
+            LogicalPlan::OrderBy(ob) => {
+                Self::extract_pattern_info(&ob.input, plan_ctx, metadata)?;
+            }
+            LogicalPlan::Skip(s) => {
+                Self::extract_pattern_info(&s.input, plan_ctx, metadata)?;
+            }
+            LogicalPlan::Limit(l) => {
+                Self::extract_pattern_info(&l.input, plan_ctx, metadata)?;
+            }
+            LogicalPlan::Cte(cte) => {
+                Self::extract_pattern_info(&cte.input, plan_ctx, metadata)?;
+            }
+            LogicalPlan::Union(u) => {
+                for input in &u.inputs {
+                    Self::extract_pattern_info(input, plan_ctx, metadata)?;
+                }
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                Self::extract_pattern_info(&cp.left, plan_ctx, metadata)?;
+                Self::extract_pattern_info(&cp.right, plan_ctx, metadata)?;
+            }
+            LogicalPlan::Unwind(uw) => {
+                Self::extract_pattern_info(&uw.input, plan_ctx, metadata)?;
+            }
+            LogicalPlan::WithClause(wc) => {
+                Self::extract_pattern_info(&wc.input, plan_ctx, metadata)?;
+            }
+            // Leaf nodes - nothing to extract
+            LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::PageRank(_) => {}
+        }
+        
+        Ok(())
+    }
+    
+    /// Extract node info from an alias if not already present
+    fn extract_node_info(
+        alias: &str,
+        plan_ctx: &PlanCtx,
+        metadata: &mut PatternGraphMetadata,
+    ) -> AnalyzerResult<()> {
+        // Skip if already extracted
+        if metadata.nodes.contains_key(alias) {
+            return Ok(());
+        }
+        
+        // Get node label from plan_ctx
+        let table_ctx = plan_ctx.get_table_ctx_from_alias_opt(&Some(alias.to_string()))
+            .map_err(|e| AnalyzerError::PlanCtx {
+                pass: Pass::GraphJoinInference,
+                source: e,
+            })?;
+        
+        let label = table_ctx.get_label_str().ok();
+        
+        // TODO: Extract has_explicit_label from TableCtx once field is available
+        // For POC, we'll set it to false (conservative - assume all nodes need JOINs)
+        let has_explicit_label = false;
+        
+        let node_info = PatternNodeInfo {
+            alias: alias.to_string(),
+            label,
+            is_referenced: false, // Computed later
+            appearance_count: 0,  // Computed later
+            has_explicit_label,
+        };
+        
+        metadata.nodes.insert(alias.to_string(), node_info);
+        Ok(())
+    }
+    
+    /// Phase 2: Compute which nodes are referenced in SELECT/WHERE/ORDER BY/etc
+    fn compute_node_references(plan: &LogicalPlan, metadata: &mut PatternGraphMetadata) {
+        // Note: is_node_referenced uses a PlanCtx but we can't pass the real one here
+        // due to borrowing constraints. Instead, we do direct plan traversal.
+        // This is fine since we're just checking if the alias appears in projections/filters.
+        for (alias, node_info) in metadata.nodes.iter_mut() {
+            node_info.is_referenced = Self::plan_references_alias(plan, alias);
+        }
+    }
+    
+    /// Phase 3: Compute which edges are referenced
+    fn compute_edge_references(plan: &LogicalPlan, metadata: &mut PatternGraphMetadata) {
+        for edge_info in metadata.edges.iter_mut() {
+            // Check if edge alias is referenced in the plan
+            edge_info.is_referenced = Self::plan_references_alias(plan, &edge_info.alias);
+        }
+    }
+    
+    /// Phase 4: Count how many edges use each node (for cross-branch detection)
+    fn compute_node_appearances(metadata: &mut PatternGraphMetadata) {
+        for node_info in metadata.nodes.values_mut() {
+            let count = metadata.edges.iter()
+                .filter(|e| e.from_node == node_info.alias || e.to_node == node_info.alias)
+                .count();
+            node_info.appearance_count = count;
+        }
+    }
+
+    // ========================================================================
+    // Existing Implementation (unchanged)
+    // ========================================================================
 
     /// Scan the plan for WITH clauses and register their exported aliases as CTE references.
     /// This enables proper variable resolution when subsequent patterns reference those aliases.
