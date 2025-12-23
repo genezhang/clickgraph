@@ -1132,12 +1132,38 @@ pub fn extract_ctes_with_context(
 
                 if use_chained_join {
                     // 🚀 OPTIMIZATION: Fixed-length, non-shortest-path → NO CTE!
-                    // Return empty CTE list - will be handled as inline JOINs
+                    // Generate inline JOINs instead of recursive CTE
                     let exact_hops = spec.exact_hop_count().unwrap();
                     println!(
-                        "CTE BRANCH: Fixed-length pattern (*{}) detected - skipping CTE, using inline JOINs",
+                        "CTE BRANCH: Fixed-length pattern (*{}) detected - generating inline JOINs",
                         exact_hops
                     );
+
+                    // Build VlpContext with all necessary information
+                    if let Some(vlp_ctx) = build_vlp_context(graph_rel) {
+                        // Generate inline JOINs using expand_fixed_length_joins_with_context
+                        let (from_table, from_alias, joins) =
+                            expand_fixed_length_joins_with_context(&vlp_ctx);
+
+                        // Store the generated JOINs in context for later retrieval
+                        context.set_fixed_length_joins(
+                            &vlp_ctx.start_alias,
+                            &vlp_ctx.end_alias,
+                            from_table,
+                            from_alias,
+                            joins,
+                        );
+
+                        println!(
+                            "CTE BRANCH: Stored fixed-length JOINs for {}-{} pattern",
+                            vlp_ctx.start_alias, vlp_ctx.end_alias
+                        );
+                    } else {
+                        log::warn!(
+                            "Failed to build VlpContext for fixed-length pattern - falling back to CTE"
+                        );
+                        // Fall through to CTE generation below
+                    }
 
                     // Extract CTEs from child plans (if any)
                     let child_ctes =

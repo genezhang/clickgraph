@@ -25,6 +25,9 @@ pub struct CteGenerationContext {
     end_cypher_alias: Option<String>,
     /// Graph schema for this query (enables multi-schema support)
     schema: Option<GraphSchema>,
+    /// Fixed-length path inline JOINs (from_table, from_alias, joins)
+    /// Key: "start_alias-end_alias" for the GraphRel pattern
+    fixed_length_joins: HashMap<String, (String, String, Vec<super::Join>)>,
 }
 
 impl Default for CteGenerationContext {
@@ -36,6 +39,7 @@ impl Default for CteGenerationContext {
             start_cypher_alias: None,
             end_cypher_alias: None,
             schema: None,
+            fixed_length_joins: HashMap::new(),
         }
     }
 }
@@ -53,6 +57,7 @@ impl CteGenerationContext {
             start_cypher_alias: None,
             end_cypher_alias: None,
             schema: Some(schema),
+            fixed_length_joins: HashMap::new(),
         }
     }
 
@@ -162,6 +167,30 @@ impl CteGenerationContext {
             self.end_filters_for_outer_query = Some(filters.clone());
         }
         self
+    }
+
+    /// Store fixed-length path inline JOINs for later retrieval
+    pub(crate) fn set_fixed_length_joins(
+        &mut self,
+        start_alias: &str,
+        end_alias: &str,
+        from_table: String,
+        from_alias: String,
+        joins: Vec<super::Join>,
+    ) {
+        let key = format!("{}-{}", start_alias, end_alias);
+        log::info!("Storing fixed-length JOINs for {}: {} joins", key, joins.len());
+        self.fixed_length_joins.insert(key, (from_table, from_alias, joins));
+    }
+
+    /// Retrieve fixed-length path inline JOINs if available
+    pub(crate) fn get_fixed_length_joins(
+        &self,
+        start_alias: &str,
+        end_alias: &str,
+    ) -> Option<&(String, String, Vec<super::Join>)> {
+        let key = format!("{}-{}", start_alias, end_alias);
+        self.fixed_length_joins.get(&key)
     }
 }
 
