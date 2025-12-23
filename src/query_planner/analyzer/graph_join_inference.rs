@@ -3639,160 +3639,22 @@ impl GraphJoinInference {
         // This compares the new unified abstraction against the old detection logic
         self.log_pattern_context_comparison(graph_rel, plan_ctx, graph_schema);
 
-        // Skip join inference for TRULY variable-length paths (need recursive CTEs)
-        // But DO process fixed-length patterns (*1, *2, *3) - they use inline JOINs
-        if let Some(spec) = &graph_rel.variable_length {
-            let is_fixed_length =
-                spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none();
-
-            if !is_fixed_length {
-                // Truly variable-length (*1..3, *, etc.) - skip, will use CTE path
-                crate::debug_print!(
-                    "    � ? SKIP: Variable-length path detected (not fixed-length) for rel={}, left={}, right={}",
-                    graph_rel.alias, graph_rel.left_connection, graph_rel.right_connection
-                );
-                
-                // Mark VLP endpoints as "joined" so subsequent patterns don't think they're first
-                // NOTE: These nodes will need explicit JOINs created in the render phase to connect
-                // them to the VLP CTE (via start_id/end_id columns)
-                let left_alias = &graph_rel.left_connection;
-                let right_alias = &graph_rel.right_connection;
-                joined_entities.insert(left_alias.to_string());
-                joined_entities.insert(right_alias.to_string());
-                log::debug!("  🎯 VLP: Marked endpoints '{}' and '{}' as joined (note: need CTE connection JOINs in render)", left_alias, right_alias);
-                
+        // Phase 3: Check if we should skip this pattern due to VLP
+        if let Some(should_skip) = self.should_skip_for_vlp(graph_rel, joined_entities) {
+            if should_skip {
                 crate::debug_print!("    +- infer_graph_join EXIT\n");
                 return Ok(());
             }
-            // Fixed-length (*1, *2, *3) - continue to generate JOINs
-            crate::debug_print!(
-                "    � Fixed-length pattern (*{}) detected - will generate inline JOINs",
-                spec.exact_hop_count().unwrap()
-            );
         }
 
-        // Check if nodes have labels - skip for anonymous nodes like ()-[r]->()
-        let left_alias = &graph_rel.left_connection;
-        let right_alias = &graph_rel.right_connection;
-
-        let left_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(left_alias.clone()));
-        let right_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone()));
-
-        // FIX: Don't skip anonymous nodes - they still need JOINs created
-        // because relationship JOIN conditions reference their aliases
-        // Old logic: Skip if either node is anonymous (no context or no label)
-        // New logic: Only skip if nodes truly don't exist in plan_ctx
-        if left_ctx_opt.is_err() || right_ctx_opt.is_err() {
-            crate::debug_print!("    � ? SKIP: Node context missing entirely");
+        // Phase 3: Validate node contexts (check for missing contexts and $any nodes)
+        if self.validate_node_contexts(graph_rel, plan_ctx, joined_entities).is_err() {
             crate::debug_print!("    +- infer_graph_join EXIT\n");
             return Ok(());
         }
-
-        // Check for $any nodes - only skip if LEFT is $any (nothing to join FROM)
-        // If RIGHT is $any, we still need to:
-        // 1. Join the relationship CTE to the left node
-        // 2. Just skip creating a join for the $any target node table itself
-        let left_is_polymorphic_any = if let Ok(left_ctx) = &left_ctx_opt {
-            if let Ok(left_label) = left_ctx.get_label_str() {
-                left_label == "$any"
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        let right_is_polymorphic_any = if let Ok(right_ctx) = &right_ctx_opt {
-            if let Ok(right_label) = right_ctx.get_label_str() {
-                crate::debug_print!("    🔍 DEBUG: right_label = '{}'", right_label);
-                right_label == "$any"
-            } else {
-                crate::debug_print!("    🔍 DEBUG: right_ctx.get_label_str() failed");
-                false
-            }
-        } else {
-            crate::debug_print!("    🔍 DEBUG: right_ctx_opt is Err");
-            false
-        };
-
-        crate::debug_print!(
-            "    🔍 DEBUG: right_is_polymorphic_any = {}",
-            right_is_polymorphic_any
-        );
-
-        if left_is_polymorphic_any {
-            crate::debug_print!("    🚫 SKIP: Polymorphic $any left node - nothing to join from");
-            crate::debug_print!("    +- infer_graph_join EXIT\n");
-            return Ok(());
-        }
-
-        // For polymorphic right nodes ($any), skip relationship join creation entirely
-        // The CTE will handle the relationship join in plan_builder.rs
-        // When right node is $any, we know this is a polymorphic/wildcard edge
-        // because $any is only set for edges that:
-        // 1. Have no explicit target type (wildcard like [r]->)
-        // 2. Use polymorphic edge table with $any in schema
-        if right_is_polymorphic_any {
-            crate::debug_print!(
-                "    🎯 SKIP: Polymorphic $any right node - CTE will handle relationship join"
-            );
-            crate::debug_print!("    +- infer_graph_join EXIT\n");
-            // Mark the relationship as "joined" to avoid issues in subsequent processing
-            joined_entities.insert(graph_rel.alias.clone());
-            return Ok(());
-        }
-
-        // FIX: Don't check for labels - anonymous nodes don't have labels but still need JOINs
-        // let left_has_label = left_ctx_opt.as_ref().unwrap().get_label_opt().is_some();
-        // let right_has_label = right_ctx_opt.as_ref().unwrap().get_label_opt().is_some();
-        // if !left_has_label || !right_has_label {
-        //     crate::debug_print!("    � ? SKIP: Anonymous node (no label)");
-        //     crate::debug_print!("    +- infer_graph_join EXIT\n");
-        //     return Ok(());
-        // }
-
-        // Check if nodes have explicit labels in the Cypher query
-        // Anonymous nodes () have label: None in their GraphNode
-        // Labeled nodes (a:User) have label: Some("User")
-        let left_has_explicit_label = match graph_rel.left.as_ref() {
-            LogicalPlan::GraphNode(gn) => gn.label.is_some(),
-            _ => true, // Non-GraphNode inputs (like Empty for standalone rel) don't need checking
-        };
-        let right_has_explicit_label = match graph_rel.right.as_ref() {
-            LogicalPlan::GraphNode(gn) => gn.label.is_some(),
-            _ => true,
-        };
         
-        crate::debug_print!("    🏷️ Label check: left_has_label={}, right_has_label={}", 
-            left_has_explicit_label, right_has_explicit_label);
-
-        // FIX: Keep table checks for debugging but don't skip on them
-        let _left_has_table = match graph_rel.left.as_ref() {
-            LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
-                LogicalPlan::ViewScan(_) => true,
-                _ => true,
-            },
-            _ => true,
-        };
-
-        let _right_has_table = match graph_rel.right.as_ref() {
-            LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
-                LogicalPlan::ViewScan(_) => true,
-                _ => true,
-            },
-            _ => true,
-        };
-
-        // FIX: Don't skip anonymous nodes - they need table/ViewScan for JOIN generation
-        // Anonymous nodes like `()` in `()-[r:FOLLOWS]->()` will have:
-        // - Generated aliases (ab19d09e4b)
-        // - ViewScans created from schema
-        // - No explicit table_name but ViewScan provides it
-        // Old logic: Skip if BOTH nodes have no table names
-        // New logic: Always proceed - ViewScan will provide table info
-        // if (!left_has_table && !right_has_table) {
-        //     return Ok(());
-        // }
+        // Phase 3: Extract node label information
+        let (left_has_explicit_label, right_has_explicit_label) = self.extract_node_labels(graph_rel);
 
         // Clone the optional_aliases set before calling get_graph_context
         // to avoid borrow checker issues
@@ -4033,6 +3895,129 @@ impl GraphJoinInference {
     // ========================================================================
     // Cross-Branch Shared Node Detection (Phase 4)
     // ========================================================================
+
+    // ========================================================================
+    // Phase 3: Extracted Helper Methods (Breaking Up God Method)
+    // ========================================================================
+    
+    /// Check if this pattern should skip JOIN inference due to variable-length path.
+    /// 
+    /// Returns `Some(true)` if pattern should be skipped (VLP/shortest path that needs CTE).
+    /// Returns `Some(false)` if pattern should continue (fixed-length like *1, *2, *3).
+    /// Returns `None` if not a VLP pattern at all.
+    fn should_skip_for_vlp(
+        &self,
+        graph_rel: &GraphRel,
+        joined_entities: &mut HashSet<String>,
+    ) -> Option<bool> {
+        let spec = graph_rel.variable_length.as_ref()?;
+        
+        let is_fixed_length = spec.exact_hop_count().is_some() 
+            && graph_rel.shortest_path_mode.is_none();
+        
+        if !is_fixed_length {
+            // Truly variable-length (*1..3, *, etc.) - skip, will use CTE path
+            crate::debug_print!(
+                "    🔍 SKIP: Variable-length path detected (not fixed-length) for rel={}, left={}, right={}",
+                graph_rel.alias, graph_rel.left_connection, graph_rel.right_connection
+            );
+            
+            // Mark VLP endpoints as "joined" so subsequent patterns don't think they're first
+            joined_entities.insert(graph_rel.left_connection.to_string());
+            joined_entities.insert(graph_rel.right_connection.to_string());
+            log::debug!("  🎯 VLP: Marked endpoints '{}' and '{}' as joined (note: need CTE connection JOINs in render)", 
+                graph_rel.left_connection, graph_rel.right_connection);
+            
+            Some(true) // Skip this pattern
+        } else {
+            // Fixed-length (*1, *2, *3) - continue to generate JOINs
+            crate::debug_print!(
+                "    ⚡ Fixed-length pattern (*{}) detected - will generate inline JOINs",
+                spec.exact_hop_count().unwrap()
+            );
+            Some(false) // Don't skip, process normally
+        }
+    }
+    
+    /// Validate node contexts and check for polymorphic $any nodes.
+    /// Returns `Ok(())` to continue processing, `Err(true)` to skip pattern.
+    fn validate_node_contexts(
+        &self,
+        graph_rel: &GraphRel,
+        plan_ctx: &PlanCtx,
+        joined_entities: &mut HashSet<String>,
+    ) -> Result<(), bool> {
+        let left_alias = &graph_rel.left_connection;
+        let right_alias = &graph_rel.right_connection;
+        
+        let left_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(left_alias.clone()));
+        let right_ctx_opt = plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone()));
+        
+        // Skip if nodes truly don't exist in plan_ctx
+        if left_ctx_opt.is_err() || right_ctx_opt.is_err() {
+            crate::debug_print!("    🔍 SKIP: Node context missing entirely");
+            return Err(true);
+        }
+        
+        // Check for $any polymorphic nodes
+        let left_is_polymorphic_any = if let Ok(left_ctx) = &left_ctx_opt {
+            if let Ok(left_label) = left_ctx.get_label_str() {
+                left_label == "$any"
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        
+        let right_is_polymorphic_any = if let Ok(right_ctx) = &right_ctx_opt {
+            if let Ok(right_label) = right_ctx.get_label_str() {
+                crate::debug_print!("    🔍 DEBUG: right_label = '{}'", right_label);
+                right_label == "$any"
+            } else {
+                crate::debug_print!("    🔍 DEBUG: right_ctx.get_label_str() failed");
+                false
+            }
+        } else {
+            crate::debug_print!("    🔍 DEBUG: right_ctx_opt is Err");
+            false
+        };
+        
+        crate::debug_print!("    🔍 DEBUG: right_is_polymorphic_any = {}", right_is_polymorphic_any);
+        
+        // Skip if LEFT is $any (nothing to join from)
+        if left_is_polymorphic_any {
+            crate::debug_print!("    🚫 SKIP: Polymorphic $any left node - nothing to join from");
+            return Err(true);
+        }
+        
+        // Skip if RIGHT is $any (CTE will handle)
+        if right_is_polymorphic_any {
+            crate::debug_print!("    🎯 SKIP: Polymorphic $any right node - CTE will handle relationship join");
+            joined_entities.insert(graph_rel.alias.clone());
+            return Err(true);
+        }
+        
+        Ok(())
+    }
+    
+    /// Extract label information for both nodes.
+    /// Returns (left_has_explicit_label, right_has_explicit_label).
+    fn extract_node_labels(&self, graph_rel: &GraphRel) -> (bool, bool) {
+        let left_has_explicit_label = match graph_rel.left.as_ref() {
+            LogicalPlan::GraphNode(gn) => gn.label.is_some(),
+            _ => true,
+        };
+        let right_has_explicit_label = match graph_rel.right.as_ref() {
+            LogicalPlan::GraphNode(gn) => gn.label.is_some(),
+            _ => true,
+        };
+        
+        crate::debug_print!("    🏷️ Label check: left_has_label={}, right_has_label={}", 
+            left_has_explicit_label, right_has_explicit_label);
+        
+        (left_has_explicit_label, right_has_explicit_label)
+    }
 
     // ========================================================================
     // Phase 2: Simplified Cross-Branch Detection Using Metadata
