@@ -5818,4 +5818,228 @@ mod tests {
             "WORKS_AT should NOT be FK-edge pattern"
         );
     }
+
+    // ========================================================================
+    // Phase 4 Tests: Relationship Uniqueness Constraints
+    // ========================================================================
+
+    #[test]
+    fn test_no_uniqueness_constraints_for_single_relationship() {
+        // Single relationship pattern should not generate constraints
+        let analyzer = GraphJoinInference::new();
+        let graph_schema = create_test_graph_schema();
+        
+        let metadata = PatternGraphMetadata {
+            nodes: HashMap::new(),
+            edges: vec![
+                PatternEdgeInfo {
+                    alias: "r1".to_string(),
+                    rel_types: vec!["FOLLOWS".to_string()],
+                    from_node: "a".to_string(),
+                    to_node: "b".to_string(),
+                    is_referenced: true,
+                    is_vlp: false,
+                    is_shortest_path: false,
+                    direction: Direction::Outgoing,
+                    is_optional: false,
+                },
+            ],
+        };
+        
+        let constraints = analyzer.generate_relationship_uniqueness_constraints(
+            &metadata,
+            &graph_schema,
+        );
+        
+        assert_eq!(constraints.len(), 0, "Single relationship should not generate constraints");
+    }
+
+    #[test]
+    fn test_uniqueness_constraints_for_two_relationships() {
+        // Two-hop pattern should generate 1 constraint: r1 != r2
+        let analyzer = GraphJoinInference::new();
+        let graph_schema = create_test_graph_schema();
+        
+        let metadata = PatternGraphMetadata {
+            nodes: HashMap::new(),
+            edges: vec![
+                PatternEdgeInfo {
+                    alias: "r1".to_string(),
+                    rel_types: vec!["FOLLOWS".to_string()],
+                    from_node: "a".to_string(),
+                    to_node: "b".to_string(),
+                    is_referenced: true,
+                    is_vlp: false,
+                    is_shortest_path: false,
+                    direction: Direction::Outgoing,
+                    is_optional: false,
+                },
+                PatternEdgeInfo {
+                    alias: "r2".to_string(),
+                    rel_types: vec!["FOLLOWS".to_string()],
+                    from_node: "b".to_string(),
+                    to_node: "c".to_string(),
+                    is_referenced: true,
+                    is_vlp: false,
+                    is_shortest_path: false,
+                    direction: Direction::Outgoing,
+                    is_optional: false,
+                },
+            ],
+        };
+        
+        let constraints = analyzer.generate_relationship_uniqueness_constraints(
+            &metadata,
+            &graph_schema,
+        );
+        
+        assert_eq!(constraints.len(), 1, "Two relationships should generate 1 constraint");
+        
+        // Verify it's a composite constraint (from_id OR to_id inequality)
+        match &constraints[0] {
+            LogicalExpr::OperatorApplicationExp(op) => {
+                assert_eq!(op.operator, Operator::Or, "Composite ID should use OR");
+                assert_eq!(op.operands.len(), 2, "Should have 2 operands (from_id and to_id)");
+            }
+            _ => panic!("Expected OperatorApplicationExp with OR"),
+        }
+    }
+
+    #[test]
+    fn test_uniqueness_constraints_for_three_relationships() {
+        // Three-hop pattern should generate 3 constraints: r1!=r2, r1!=r3, r2!=r3
+        let analyzer = GraphJoinInference::new();
+        let graph_schema = create_test_graph_schema();
+        
+        let metadata = PatternGraphMetadata {
+            nodes: HashMap::new(),
+            edges: vec![
+                PatternEdgeInfo {
+                    alias: "r1".to_string(),
+                    rel_types: vec!["FOLLOWS".to_string()],
+                    from_node: "a".to_string(),
+                    to_node: "b".to_string(),
+                    is_referenced: true,
+                    is_vlp: false,
+                    is_shortest_path: false,
+                    direction: Direction::Outgoing,
+                    is_optional: false,
+                },
+                PatternEdgeInfo {
+                    alias: "r2".to_string(),
+                    rel_types: vec!["FOLLOWS".to_string()],
+                    from_node: "b".to_string(),
+                    to_node: "c".to_string(),
+                    is_referenced: true,
+                    is_vlp: false,
+                    is_shortest_path: false,
+                    direction: Direction::Outgoing,
+                    is_optional: false,
+                },
+                PatternEdgeInfo {
+                    alias: "r3".to_string(),
+                    rel_types: vec!["FOLLOWS".to_string()],
+                    from_node: "c".to_string(),
+                    to_node: "d".to_string(),
+                    is_referenced: true,
+                    is_vlp: false,
+                    is_shortest_path: false,
+                    direction: Direction::Outgoing,
+                    is_optional: false,
+                },
+            ],
+        };
+        
+        let constraints = analyzer.generate_relationship_uniqueness_constraints(
+            &metadata,
+            &graph_schema,
+        );
+        
+        // Combinatorial: C(3,2) = 3 pairs
+        assert_eq!(constraints.len(), 3, "Three relationships should generate 3 pairwise constraints");
+    }
+
+    #[test]
+    fn test_skip_vlp_relationships_in_uniqueness() {
+        // VLP relationships should be skipped in uniqueness constraint generation
+        let analyzer = GraphJoinInference::new();
+        let graph_schema = create_test_graph_schema();
+        
+        let metadata = PatternGraphMetadata {
+            nodes: HashMap::new(),
+            edges: vec![
+                PatternEdgeInfo {
+                    alias: "r1".to_string(),
+                    rel_types: vec!["FOLLOWS".to_string()],
+                    from_node: "a".to_string(),
+                    to_node: "b".to_string(),
+                    is_referenced: true,
+                    is_vlp: true, // VLP edge
+                    is_shortest_path: false,
+                    direction: Direction::Outgoing,
+                    is_optional: false,
+                },
+                PatternEdgeInfo {
+                    alias: "r2".to_string(),
+                    rel_types: vec!["FOLLOWS".to_string()],
+                    from_node: "b".to_string(),
+                    to_node: "c".to_string(),
+                    is_referenced: true,
+                    is_vlp: false,
+                    is_shortest_path: false,
+                    direction: Direction::Outgoing,
+                    is_optional: false,
+                },
+            ],
+        };
+        
+        let constraints = analyzer.generate_relationship_uniqueness_constraints(
+            &metadata,
+            &graph_schema,
+        );
+        
+        assert_eq!(constraints.len(), 0, "VLP relationships should be skipped");
+    }
+
+    #[test]
+    fn test_uniqueness_constraints_with_different_relationship_types() {
+        // Mixed relationship types should still generate constraints
+        let analyzer = GraphJoinInference::new();
+        let graph_schema = create_test_graph_schema();
+        
+        let metadata = PatternGraphMetadata {
+            nodes: HashMap::new(),
+            edges: vec![
+                PatternEdgeInfo {
+                    alias: "f1".to_string(),
+                    rel_types: vec!["FOLLOWS".to_string()],
+                    from_node: "a".to_string(),
+                    to_node: "b".to_string(),
+                    is_referenced: true,
+                    is_vlp: false,
+                    is_shortest_path: false,
+                    direction: Direction::Outgoing,
+                    is_optional: false,
+                },
+                PatternEdgeInfo {
+                    alias: "w1".to_string(),
+                    rel_types: vec!["WORKS_AT".to_string()],
+                    from_node: "b".to_string(),
+                    to_node: "c".to_string(),
+                    is_referenced: true,
+                    is_vlp: false,
+                    is_shortest_path: false,
+                    direction: Direction::Outgoing,
+                    is_optional: false,
+                },
+            ],
+        };
+        
+        let constraints = analyzer.generate_relationship_uniqueness_constraints(
+            &metadata,
+            &graph_schema,
+        );
+        
+        assert_eq!(constraints.len(), 1, "Different relationship types should still generate constraints");
+    }
 }
