@@ -180,6 +180,21 @@ impl AnalyzerPass for GraphJoinInference {
             &pattern_metadata, // Phase 1: Pass metadata for cached lookups
         )?;
 
+        // Phase 2: Generate cross-branch joins using metadata (simplified!)
+        // Instead of tracking NodeAppearance during traversal, use pre-computed
+        // appearance_count from metadata to identify shared nodes naturally.
+        log::debug!("🔍 Phase 2: Generating cross-branch joins from metadata...");
+        let cross_branch_joins = self.generate_cross_branch_joins_from_metadata(
+            &pattern_metadata,
+            plan_ctx,
+            graph_schema,
+        )?;
+        
+        if !cross_branch_joins.is_empty() {
+            log::info!("✅ Generated {} cross-branch joins from metadata", cross_branch_joins.len());
+            collected_graph_joins.extend(cross_branch_joins);
+        }
+
         println!(
             "DEBUG GraphJoinInference: collected_graph_joins.len() = {}",
             collected_graph_joins.len()
@@ -2152,17 +2167,13 @@ impl GraphJoinInference {
                         collected_graph_joins.len()
                     );
 
-                    // Check for cross-branch shared nodes BEFORE processing current relationship
-                    crate::debug_print!("📊   🔍 Checking for cross-branch shared nodes...");
-                    self.check_and_generate_cross_branch_joins(
-                        graph_rel,
-                        plan_ctx,
-                        graph_schema,
-                        node_appearances,
-                        collected_graph_joins,
-                    )?;
+                    // Phase 2: Cross-branch joins now generated once at the end using metadata
+                    // (Commented out old approach - was generating during traversal)
+                    // self.check_and_generate_cross_branch_joins(
+                    //     graph_rel, plan_ctx, graph_schema, node_appearances, collected_graph_joins
+                    // )?;
                     crate::debug_print!(
-                        "📊   ✓ Cross-branch check done. Joins now: {}",
+                        "📊   ✓ Cross-branch check skipped (handled by Phase 2). Joins now: {}",
                         collected_graph_joins.len()
                     );
 
@@ -2219,17 +2230,13 @@ impl GraphJoinInference {
                         collected_graph_joins.len()
                     );
 
-                    // Check for cross-branch shared nodes BEFORE processing current relationship
-                    crate::debug_print!("📊   🔍 Checking for cross-branch shared nodes...");
-                    self.check_and_generate_cross_branch_joins(
-                        graph_rel,
-                        plan_ctx,
-                        graph_schema,
-                        node_appearances,
-                        collected_graph_joins,
-                    )?;
+                    // Phase 2: Cross-branch joins now generated once at the end using metadata
+                    // (Commented out old approach - was generating during traversal)
+                    // self.check_and_generate_cross_branch_joins(
+                    //     graph_rel, plan_ctx, graph_schema, node_appearances, collected_graph_joins
+                    // )?;
                     crate::debug_print!(
-                        "📊   ✓ Cross-branch check done. Joins now: {}",
+                        "📊   ✓ Cross-branch check skipped (handled by Phase 2). Joins now: {}",
                         collected_graph_joins.len()
                     );
 
@@ -4025,6 +4032,182 @@ impl GraphJoinInference {
 
     // ========================================================================
     // Cross-Branch Shared Node Detection (Phase 4)
+    // ========================================================================
+
+    // ========================================================================
+    // Phase 2: Simplified Cross-Branch Detection Using Metadata
+    // ========================================================================
+    
+    /// Generate cross-branch joins using pattern metadata (Phase 2 - simplified approach).
+    /// Uses appearance_count from metadata instead of building NodeAppearance HashMap.
+    /// 
+    /// **Key Insight**: Cross-branch patterns have a node in the SAME ROLE (from/to) in multiple edges.
+    /// - Linear: `(a)-[:R1]->(b)-[:R2]->(c)` - 'b' is to_node of R1, from_node of R2 (chain) → NO cross-branch
+    /// - Comma: `(a)-[:R1]->(b), (a)-[:R2]->(c)` - 'a' is from_node in BOTH (branches) → YES cross-branch
+    fn generate_cross_branch_joins_from_metadata(
+        &self,
+        pattern_metadata: &PatternGraphMetadata,
+        plan_ctx: &PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<Vec<Join>> {
+        let mut joins = Vec::new();
+        
+        // Find all nodes that appear in multiple edges (potential cross-branch candidates)
+        for (node_alias, node_info) in &pattern_metadata.nodes {
+            if node_info.appearance_count <= 1 {
+                continue; // Not a cross-branch node
+            }
+            
+            log::debug!("🔍 Potential cross-branch node '{}' appears in {} edges", 
+                node_alias, node_info.appearance_count);
+            
+            // Get all edges that use this node
+            let edges = pattern_metadata.edges_using_node(node_alias);
+            if edges.len() < 2 {
+                continue; // Need at least 2 edges to generate cross-branch join
+            }
+            
+            // Group edges by (table_name, role)
+            // Cross-branch patterns have edges with SAME ROLE in DIFFERENT tables
+            // Linear chains have edges with DIFFERENT ROLES (to_node → from_node)
+            let mut from_edges: HashMap<String, Vec<&PatternEdgeInfo>> = HashMap::new();
+            let mut to_edges: HashMap<String, Vec<&PatternEdgeInfo>> = HashMap::new();
+            
+            for edge in &edges {
+                let rel_schema = graph_schema.get_rel_schema(&edge.rel_types[0])
+                    .map_err(|e| AnalyzerError::GraphSchema {
+                        pass: Pass::GraphJoinInference,
+                        source: e,
+                    })?;
+                
+                // Determine the role of this node in this edge
+                if edge.from_node == *node_alias {
+                    from_edges.entry(rel_schema.table_name.clone())
+                        .or_insert_with(Vec::new)
+                        .push(*edge);
+                } else if edge.to_node == *node_alias {
+                    to_edges.entry(rel_schema.table_name.clone())
+                        .or_insert_with(Vec::new)
+                        .push(*edge);
+                }
+            }
+            
+            // Cross-branch pattern: node is from_node in multiple DIFFERENT tables
+            // OR node is to_node in multiple DIFFERENT tables
+            let has_from_branch = from_edges.len() > 1;
+            let has_to_branch = to_edges.len() > 1;
+            
+            if has_from_branch {
+                log::debug!("   ✅ Node '{}' is CROSS-BRANCH (from_node in {} different tables)", 
+                    node_alias, from_edges.len());
+                
+                // Generate JOIN between first two edges from different tables
+                let mut table_edges: Vec<_> = from_edges.values().collect();
+                let edge1 = table_edges[0][0];
+                let edge2 = table_edges[1][0];
+                
+                joins.push(self.create_cross_branch_join(
+                    edge1, edge2, node_alias, true, graph_schema
+                )?);
+            }
+            
+            if has_to_branch {
+                log::debug!("   ✅ Node '{}' is CROSS-BRANCH (to_node in {} different tables)", 
+                    node_alias, to_edges.len());
+                
+                // Generate JOIN between first two edges from different tables
+                let mut table_edges: Vec<_> = to_edges.values().collect();
+                let edge1 = table_edges[0][0];
+                let edge2 = table_edges[1][0];
+                
+                joins.push(self.create_cross_branch_join(
+                    edge1, edge2, node_alias, false, graph_schema
+                )?);
+            }
+            
+            if !has_from_branch && !has_to_branch {
+                log::debug!("   ⏭️  Node '{}' NOT cross-branch (different roles in edges - linear chain)",
+                    node_alias);
+            }
+        }
+        
+        Ok(joins)
+    }
+    
+    /// Helper to create a cross-branch JOIN between two edges sharing a node.
+    fn create_cross_branch_join(
+        &self,
+        edge1: &PatternEdgeInfo,
+        edge2: &PatternEdgeInfo,
+        node_alias: &str,
+        is_from_side: bool, // true if shared node is from_node, false if to_node
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<Join> {
+        log::debug!("   Generating cross-branch JOIN between '{}' and '{}' on shared node '{}' ({})",
+            edge1.alias, edge2.alias, node_alias, 
+            if is_from_side { "from_node" } else { "to_node" });
+        
+        // Get relationship schemas
+        let rel1_schema = graph_schema.get_rel_schema(&edge1.rel_types[0])
+            .map_err(|e| AnalyzerError::GraphSchema {
+                pass: Pass::GraphJoinInference,
+                source: e,
+            })?;
+        let rel2_schema = graph_schema.get_rel_schema(&edge2.rel_types[0])
+            .map_err(|e| AnalyzerError::GraphSchema {
+                pass: Pass::GraphJoinInference,
+                source: e,
+            })?;
+        
+        // Determine join columns based on shared node's role
+        let edge1_col = if is_from_side {
+            &rel1_schema.from_id
+        } else {
+            &rel1_schema.to_id
+        };
+        
+        let edge2_col = if is_from_side {
+            &rel2_schema.from_id
+        } else {
+            &rel2_schema.to_id
+        };
+        
+        // Create the cross-branch join
+        let join = Join {
+            table_name: rel2_schema.full_table_name(),
+            table_alias: edge2.alias.clone(),
+            joining_on: vec![OperatorApplication {
+                operator: Operator::Equal,
+                operands: vec![
+                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(edge2.alias.clone()),
+                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                            edge2_col.to_string()
+                        ),
+                    }),
+                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(edge1.alias.clone()),
+                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                            edge1_col.to_string()
+                        ),
+                    }),
+                ],
+            }],
+            join_type: JoinType::Inner,
+            pre_filter: None,
+            from_id_column: None,
+            to_id_column: None,
+        };
+        
+        log::debug!("   ➕ Adding cross-branch JOIN: {} AS {} ON {}.{} = {}.{}",
+            join.table_name, join.table_alias, 
+            edge2.alias, edge2_col, edge1.alias, edge1_col);
+        
+        Ok(join)
+    }
+
+    // ========================================================================
+    // Legacy Cross-Branch Detection (Still used, will be removed after Phase 2)
     // ========================================================================
 
     /// Check for cross-branch shared nodes and generate JOINs where needed.
