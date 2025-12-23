@@ -148,14 +148,10 @@ impl AnalyzerPass for GraphJoinInference {
             std::mem::discriminant(&*logical_plan)
         );
 
-        // POC: Build pattern graph metadata (currently unused, but ready for evolution)
-        // This pre-pass extracts pattern structure and caches reference checks.
-        // Future: Use this metadata throughout join inference to simplify logic.
-        let _pattern_metadata = Self::build_pattern_metadata(&logical_plan, plan_ctx)?;
+        // Phase 1: Build pattern graph metadata (caches reference checks)
+        let pattern_metadata = Self::build_pattern_metadata(&logical_plan, plan_ctx)?;
         log::debug!("📊 Pattern metadata built: {} nodes, {} edges", 
-            _pattern_metadata.nodes.len(), _pattern_metadata.edges.len());
-        // TODO: Pass _pattern_metadata to collect_graph_joins and use it to simplify
-        // reference checking, cross-branch detection, and join decision logic.
+            pattern_metadata.nodes.len(), pattern_metadata.edges.len());
 
         // CRITICAL: Before collecting joins, scan for WITH clauses and register their
         // exported aliases as CTE references in plan_ctx. This enables proper variable
@@ -180,7 +176,8 @@ impl AnalyzerPass for GraphJoinInference {
             &mut collected_graph_joins,
             &mut joined_entities,
             &cte_scope_aliases,
-            &mut node_appearances, // NEW: Track node appearances for cross-branch JOINs
+            &mut node_appearances,
+            &pattern_metadata, // Phase 1: Pass metadata for cached lookups
         )?;
 
         println!(
@@ -1401,6 +1398,7 @@ impl GraphJoinInference {
                             &mut branch_joined_entities,
                             &HashSet::new(), // Empty CTE scope for Union branches
                             &mut HashMap::new(), // Empty node_appearances for each Union branch
+                            &PatternGraphMetadata::default(), // Empty metadata for Union branch
                         )?;
 
                         crate::debug_print!(
@@ -1642,6 +1640,7 @@ impl GraphJoinInference {
                         &mut inner_joined_entities,
                         &HashSet::new(), // Empty CTE scope for inner GroupBy scope
                         &mut HashMap::new(), // Empty node_appearances for inner GroupBy scope
+                        &PatternGraphMetadata::default(), // Empty metadata for GroupBy inner scope
                     )?;
 
                     crate::debug_print!(
@@ -2060,7 +2059,8 @@ impl GraphJoinInference {
         collected_graph_joins: &mut Vec<Join>,
         joined_entities: &mut HashSet<String>,
         cte_scope_aliases: &HashSet<String>, // Aliases exported from WITH CTEs in parent scopes
-        node_appearances: &mut HashMap<String, Vec<NodeAppearance>>, // NEW: Track cross-branch shared nodes
+        node_appearances: &mut HashMap<String, Vec<NodeAppearance>>,
+        pattern_metadata: &PatternGraphMetadata, // Phase 1: Pattern metadata for cached lookups
     ) -> AnalyzerResult<()> {
         crate::debug_print!("\n+- collect_graph_joins ENTER");
         crate::debug_print!(
@@ -2085,6 +2085,7 @@ impl GraphJoinInference {
                     joined_entities,
                     cte_scope_aliases,
                     node_appearances,
+                    pattern_metadata,
                 )
             }
             LogicalPlan::GraphNode(graph_node) => {
@@ -2102,6 +2103,7 @@ impl GraphJoinInference {
                     joined_entities,
                     cte_scope_aliases,
                     node_appearances,
+                    pattern_metadata,
                 )
             }
             LogicalPlan::ViewScan(_) => {
@@ -2143,6 +2145,7 @@ impl GraphJoinInference {
                         joined_entities,
                         cte_scope_aliases,
                         node_appearances,
+                    pattern_metadata,
                     )?;
                     crate::debug_print!(
                         "📊   ✓ RIGHT done. Joins now: {}",
@@ -2172,6 +2175,7 @@ impl GraphJoinInference {
                         graph_schema,
                         collected_graph_joins,
                         joined_entities,
+                        pattern_metadata,
                     )?;
                     crate::debug_print!(
                         "📊   ✓ CURRENT done. Joins now: {}",
@@ -2189,6 +2193,7 @@ impl GraphJoinInference {
                         joined_entities,
                         cte_scope_aliases,
                         node_appearances,
+                    pattern_metadata,
                     );
                     crate::debug_print!(
                         "📊   ✓ LEFT done. Joins now: {}",
@@ -2207,6 +2212,7 @@ impl GraphJoinInference {
                         joined_entities,
                         cte_scope_aliases,
                         node_appearances,
+                    pattern_metadata,
                     )?;
                     crate::debug_print!(
                         "📊   ✓ LEFT done. Joins now: {}",
@@ -2236,6 +2242,7 @@ impl GraphJoinInference {
                         graph_schema,
                         collected_graph_joins,
                         joined_entities,
+                        pattern_metadata,
                     )?;
                     crate::debug_print!(
                         "📊   ✓ CURRENT done. Joins now: {}",
@@ -2253,6 +2260,7 @@ impl GraphJoinInference {
                         joined_entities,
                         cte_scope_aliases,
                         node_appearances,
+                    pattern_metadata,
                     );
                     crate::debug_print!(
                         "📊   ✓ RIGHT done. Joins now: {}",
@@ -2272,6 +2280,7 @@ impl GraphJoinInference {
                     joined_entities,
                     cte_scope_aliases,
                     node_appearances,
+                    pattern_metadata,
                 )
             }
             LogicalPlan::Empty => {
@@ -2289,6 +2298,7 @@ impl GraphJoinInference {
                     joined_entities,
                     cte_scope_aliases,
                     node_appearances,
+                    pattern_metadata,
                 )
             }
             LogicalPlan::Filter(filter) => {
@@ -2302,6 +2312,7 @@ impl GraphJoinInference {
                     joined_entities,
                     cte_scope_aliases,
                     node_appearances,
+                    pattern_metadata,
                 )
             }
             LogicalPlan::GroupBy(group_by) => {
@@ -2323,6 +2334,7 @@ impl GraphJoinInference {
                         joined_entities,
                         cte_scope_aliases,
                         node_appearances,
+                    pattern_metadata,
                     )
                 }
             }
@@ -2337,6 +2349,7 @@ impl GraphJoinInference {
                     joined_entities,
                     cte_scope_aliases,
                     node_appearances,
+                    pattern_metadata,
                 )
             }
             LogicalPlan::Skip(skip) => {
@@ -2350,6 +2363,7 @@ impl GraphJoinInference {
                     joined_entities,
                     cte_scope_aliases,
                     node_appearances,
+                    pattern_metadata,
                 )
             }
             LogicalPlan::Limit(limit) => {
@@ -2363,6 +2377,7 @@ impl GraphJoinInference {
                     joined_entities,
                     cte_scope_aliases,
                     node_appearances,
+                    pattern_metadata,
                 )
             }
             LogicalPlan::Union(_union) => {
@@ -2388,6 +2403,7 @@ impl GraphJoinInference {
                     joined_entities,
                     cte_scope_aliases,
                     node_appearances,
+                    pattern_metadata,
                 )
             }
             LogicalPlan::CartesianProduct(cp) => {
@@ -2407,6 +2423,7 @@ impl GraphJoinInference {
                     joined_entities,
                     cte_scope_aliases,
                     node_appearances,
+                    pattern_metadata,
                 )?;
 
                 // For the RIGHT side, we still collect into shared collections,
@@ -2421,6 +2438,7 @@ impl GraphJoinInference {
                     joined_entities,
                     cte_scope_aliases,
                     node_appearances,
+                    pattern_metadata,
                 )
             }
             LogicalPlan::WithClause(with_clause) => {
@@ -3597,6 +3615,7 @@ impl GraphJoinInference {
         graph_schema: &GraphSchema,
         collected_graph_joins: &mut Vec<Join>,
         joined_entities: &mut HashSet<String>,
+        pattern_metadata: &PatternGraphMetadata, // Phase 1: Cached metadata
     ) -> AnalyzerResult<()> {
         crate::debug_print!(
             "    +- infer_graph_join ENTER for GraphRel({})",
@@ -3772,28 +3791,27 @@ impl GraphJoinInference {
         // to avoid borrow checker issues
         let optional_aliases = plan_ctx.get_optional_aliases().clone();
 
-        // Check if nodes are actually referenced in the query BEFORE calling get_graph_context
-        // to avoid borrow checker issues (get_graph_context takes &mut plan_ctx)
+        // Phase 1: Use cached node reference checks from metadata (no tree traversal!)
+        // Previously: Called is_node_referenced() twice per GraphRel (expensive tree traversal)
+        // Now: Instant HashMap lookup of pre-computed result
+        let left_is_referenced = pattern_metadata.nodes
+            .get(&graph_rel.left_connection)
+            .map(|n| n.is_referenced)
+            .unwrap_or(false); // Conservative: if not in metadata, assume not referenced
+        
         crate::debug_print!(
-            "    � Checking if LEFT '{}' is referenced...",
-            graph_rel.left_connection
-        );
-        let left_is_referenced =
-            Self::is_node_referenced(&graph_rel.left_connection, plan_ctx, &root_plan);
-        crate::debug_print!(
-            "    � LEFT '{}' referenced: {}",
+            "    ⚡ LEFT '{}' referenced: {} (cached)",
             graph_rel.left_connection,
             left_is_referenced
         );
 
+        let right_is_referenced = pattern_metadata.nodes
+            .get(&graph_rel.right_connection)
+            .map(|n| n.is_referenced)
+            .unwrap_or(false);
+        
         crate::debug_print!(
-            "    � Checking if RIGHT '{}' is referenced...",
-            graph_rel.right_connection
-        );
-        let right_is_referenced =
-            Self::is_node_referenced(&graph_rel.right_connection, plan_ctx, &root_plan);
-        crate::debug_print!(
-            "    � RIGHT '{}' referenced: {}",
+            "    ⚡ RIGHT '{}' referenced: {} (cached)",
             graph_rel.right_connection,
             right_is_referenced
         );
