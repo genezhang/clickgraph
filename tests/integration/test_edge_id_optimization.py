@@ -60,7 +60,8 @@ def test_single_column_edge_id():
         else:
             print("\n⚠️  Edge ID not found in SQL")
             print(f"   - Searching for: 'follow_id' in 'path_edges'")
-            print(f"   - Found: {[line for line in sql.split('\\n') if 'path_edges' in line]}")
+            lines_with_path_edges = [line for line in sql.split('\n') if 'path_edges' in line]
+            print(f"   - Found: {lines_with_path_edges}")
             return False
     
     print("\n❌ No SQL generated")

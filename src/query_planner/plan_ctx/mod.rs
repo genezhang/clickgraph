@@ -9,6 +9,7 @@ use std::{
 use crate::{
     graph_catalog::graph_schema::GraphSchema,
     query_planner::{
+        analyzer::property_requirements::PropertyRequirements,
         logical_expr::{LogicalExpr, Property},
         logical_plan::ProjectionItem,
         plan_ctx::errors::PlanCtxError,
@@ -261,6 +262,11 @@ pub struct PlanCtx {
     /// This preserves node/relationship type information across WITH boundaries,
     /// enabling property resolution after WITH (e.g., `WITH tag ... RETURN tag.name`)
     cte_entity_types: HashMap<String, HashMap<String, (bool, Option<Vec<String>>)>>,
+    /// Property requirements tracking for optimization
+    /// Populated by PropertyRequirementsAnalyzer pass (root-to-leaf traversal)
+    /// Consumed by property expansion in renderer to prune unnecessary columns
+    /// Example: If RETURN only uses friend.firstName, don't collect friend.* (200 columns)
+    property_requirements: Option<PropertyRequirements>,
 }
 
 impl PlanCtx {
@@ -484,6 +490,7 @@ impl PlanCtx {
             cte_counter: 0,
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
+            property_requirements: None,
         }
     }
 
@@ -503,6 +510,7 @@ impl PlanCtx {
             cte_counter: 0,
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
+            property_requirements: None,
         }
     }
 
@@ -526,6 +534,7 @@ impl PlanCtx {
             cte_counter: 0,
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
+            property_requirements: None,
         }
     }
 
@@ -555,6 +564,7 @@ impl PlanCtx {
             cte_counter: 0,
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
+            property_requirements: None,
         }
     }
 
@@ -577,6 +587,7 @@ impl PlanCtx {
             cte_counter: 0,
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
+            property_requirements: None,
         }
     }
 
@@ -755,6 +766,28 @@ impl PlanCtx {
         self.cte_entity_types
             .get(cte_name)?
             .get(alias)
+    }
+
+    /// Get property requirements for optimization
+    ///
+    /// Returns None if not yet populated by PropertyRequirementsAnalyzer pass
+    pub fn get_property_requirements(&self) -> Option<&PropertyRequirements> {
+        self.property_requirements.as_ref()
+    }
+
+    /// Set property requirements (called by PropertyRequirementsAnalyzer pass)
+    ///
+    /// This should be called once after analyzing the query plan to determine
+    /// which properties are actually needed for each alias.
+    pub fn set_property_requirements(&mut self, requirements: PropertyRequirements) {
+        self.property_requirements = Some(requirements);
+    }
+
+    /// Check if property requirements have been populated
+    ///
+    /// Returns true if PropertyRequirementsAnalyzer pass has run and set requirements
+    pub fn has_property_requirements(&self) -> bool {
+        self.property_requirements.is_some()
     }
 }
 

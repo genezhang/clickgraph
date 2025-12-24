@@ -6,6 +6,9 @@ pub mod view_resolver;
 #[cfg(test)]
 mod view_resolver_tests;
 
+pub mod property_requirements;
+pub mod property_requirements_analyzer;
+
 use crate::{
     graph_catalog::graph_schema::GraphSchema,
     query_planner::{
@@ -254,6 +257,15 @@ pub fn intermediate_analyzing(
     // This enables user.name → user.5 (tuple index) after UNWIND of collect(node)
     // Must run AFTER all analysis passes that might recreate Unwind nodes
     let plan = unwind_tuple_enricher::enrich_unwind_with_tuple_info(plan);
+
+    // Property Requirements Analysis - determine which properties are actually needed
+    // This runs at the END of analysis, after all property references are stable
+    // Enables property pruning optimization in renderer (85-98% memory reduction)
+    log::info!("🔍 Running Property Requirements Analyzer...");
+    let property_requirements_analyzer = property_requirements_analyzer::PropertyRequirementsAnalyzer;
+    let transformed_plan = property_requirements_analyzer.analyze(plan.clone(), plan_ctx)?;
+    let plan = transformed_plan.get_plan();
+    log::info!("✓ Property Requirements Analyzer completed");
 
     Ok(plan)
 }

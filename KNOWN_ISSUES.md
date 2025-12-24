@@ -105,7 +105,7 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ### 1. collect() Performance - Wide Tables (December 20, 2025)
 
-**Status**: 🎯 OPTIMIZATION OPPORTUNITY  
+**Status**: 🎯 OPTIMIZATION OPPORTUNITY - **Implementation Plan Ready** (Dec 23, 2025)  
 **Severity**: HIGH (for production workloads with 100+ column tables)  
 **Impact**: 85-98% performance improvement possible
 
@@ -121,13 +121,28 @@ RETURN friend.firstName     -- Only uses 1 column!
 - Expands to `groupArray(tuple(col1, col2, ..., col100))`
 - Materializes unnecessary data in memory
 - Expensive for LDBC Person (50+ properties), e-commerce products (100-200 properties)
+- Same issue affects `WITH node, count(...)` patterns using `anyLast()` wrapper
 
-**Optimization Opportunities**:
-1. **Column Projection**: Analyze downstream usage, collect only referenced properties
-2. **No-op Detection**: Eliminate `collect() + UNWIND` when it's effectively a passthrough
-3. **Partial Materialization**: Use ClickHouse window functions when possible
+**Related Patterns Affected**:
+1. `collect(node)` + `UNWIND` with selective property access
+2. `WITH node, count(...)` + `RETURN node.property` (anyLast wrapping)
+3. `WITH relationship` in aggregation contexts
 
-**Documentation**: See [notes/collect_unwind_optimization.md](notes/collect_unwind_optimization.md)
+**Optimization Strategy** (see [notes/property_pruning_optimization_plan.md](notes/property_pruning_optimization_plan.md)):
+1. **Phase 1**: New `PropertyRequirements` tracking infrastructure
+2. **Phase 2**: `PropertyRequirementsAnalyzer` pass (backward analysis from RETURN)
+3. **Phase 3**: Selective expansion in `expand_collect_to_group_array()` and `expand_table_alias()`
+4. **Phase 4**: Edge cases (nested properties, wildcards, multiple UNWIND sites)
+
+**Expected Improvements**:
+- LDBC Person (50 cols): **8x faster, 96% less memory**
+- E-commerce (200 cols): **16x faster, 98.5% less memory**
+
+**Implementation Timeline**: 3-4 weeks (1 senior engineer)
+
+**Documentation**:
+- Initial analysis: [notes/collect_unwind_optimization.md](notes/collect_unwind_optimization.md)
+- **Implementation plan**: [notes/property_pruning_optimization_plan.md](notes/property_pruning_optimization_plan.md) ⭐
 
 **Workaround**: Manually use `collect(node.property)` for single properties:
 ```cypher

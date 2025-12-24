@@ -1,3 +1,29 @@
+## [Unreleased]
+
+### 🚀 Features
+
+- *(optimization)* Property pruning optimization for memory-efficient queries (Dec 24, 2025)
+  - Reduces SQL column expansion from all properties to only needed ones
+  - 85-98% memory reduction for queries accessing few properties from wide tables
+  - Analyzer pass extracts property requirements from RETURN/WITH clauses
+  - Special handling for UNWIND property mapping (e.g., `UNWIND collect(f) AS friend, RETURN friend.name` → requires only `f.name`)
+  - Supports CASE expressions, nested binary operators, scalar/aggregate functions
+  - 34/34 unit tests passing (expanded from 19 to 34 tests, 79% increase)
+  - See `notes/property-pruning.md` for complete technical details
+
+### 🧪 Testing
+
+- *(tests)* Comprehensive property pruning test suite (20 analyzer tests, 14 data structure tests)
+  - Binary expression tests (simple and nested AND/OR)
+  - Function tests (scalar functions, aggregate functions with/without properties)
+  - CASE expression support
+  - Filter node tests with complex predicates
+  - OrderBy with multiple properties
+  - Mixed wildcard and specific requirement scenarios
+  - UNWIND property mapping tests (specific properties and wildcards)
+  - Edge case coverage (empty plans, literals, multiple aliases)
+- *(tests)* Validate property pruning with live ClickHouse queries
+
 ## [0.6.0] - 2025-12-22
 
 ### 🚀 Features

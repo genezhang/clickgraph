@@ -2,17 +2,15 @@ version: '3.8'
 
 services:
   clickhouse-test:
-    image: clickhouse/clickhouse-server:25.8.11
+    image: clickhouse/clickhouse-server:25.8.12
     container_name: clickhouse-test
     ports:
       - "8123:8123"
       - "9000:9000"
     environment:
-      CLICKHOUSE_DB: social
+      CLICKHOUSE_DB: brahmand
       CLICKHOUSE_USER: test_user
       CLICKHOUSE_PASSWORD: test_pass
-    volumes:
-      - ./setup_demo_data.sql:/docker-entrypoint-initdb.d/setup.sql:ro
     healthcheck:
       test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
       interval: 5s
@@ -28,18 +26,18 @@ services:
       - "8080:8080"
       - "7687:7687"
     environment:
-      GRAPH_CONFIG_PATH: /app/social_network.yaml
+      GRAPH_CONFIG_PATH: /app/schemas/test/unified_test_schema.yaml
       CLICKHOUSE_URL: http://clickhouse-test:8123
       CLICKHOUSE_USER: test_user
       CLICKHOUSE_PASSWORD: test_pass
-      CLICKHOUSE_DATABASE: social
-      RUST_LOG: debug
+      CLICKHOUSE_DATABASE: brahmand
+      RUST_LOG: info
     volumes:
-      - ./social_network.yaml:/app/social_network.yaml:ro
+      - ./schemas:/app/schemas:ro
     depends_on:
       clickhouse-test:
         condition: service_healthy
-    command: ["--http-port", "8080"]
+    command: ["--http-port", "8080", "--bolt-port", "7687"]
 
 networks:
   default:

@@ -35,7 +35,11 @@ def run_sql(sql):
     """Execute SQL directly in ClickHouse"""
     cmd = [
         "docker", "exec", "-i", "clickhouse",
-        "clickhouse-client", "--database=brahmand", "--multiquery"
+        "clickhouse-client", 
+        "-u", "test_user",
+        "--password", "test_pass",
+        "--database=brahmand", 
+        "--multiquery"
     ]
     proc = subprocess.run(cmd, input=sql.encode('utf-8'), capture_output=True)
     if proc.returncode != 0:

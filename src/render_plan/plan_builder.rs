@@ -5,6 +5,7 @@ use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::{
     GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem, ViewScan,
 };
+use crate::query_planner::plan_ctx::PlanCtx;
 use crate::utils::cte_naming::generate_cte_name;
 use log::debug;
 use std::collections::{HashMap, HashSet};
@@ -549,11 +550,17 @@ fn rewrite_render_expr_for_vlp(expr: &mut RenderExpr, mappings: &HashMap<String,
 /// 1. Check cte_references map: does this alias reference a CTE?
 /// 2. If yes, get columns from cte_schemas[cte_name] with this alias prefix
 /// 3. If no, it's a fresh variable - query the plan for base table properties
+///
+/// # Arguments
+/// * `has_aggregation` - If true, wraps non-ID columns with anyLast() for efficient aggregation
+/// * `plan_ctx` - Optional PlanCtx for accessing PropertyRequirements (property pruning optimization)
 fn expand_table_alias_to_select_items(
     alias: &str,
     plan: &LogicalPlan,
     cte_schemas: &HashMap<String, (Vec<SelectItem>, Vec<String>, HashMap<String, String>, HashMap<(String, String), String>)>,
     cte_references: &HashMap<String, String>,
+    has_aggregation: bool,
+    plan_ctx: Option<&PlanCtx>,
 ) -> Vec<SelectItem> {
     log::info!("🔍 expand_table_alias_to_select_items: Expanding alias '{}', cte_references={:?}", alias, cte_references);
     
@@ -641,10 +648,20 @@ fn expand_table_alias_to_select_items(
     match plan.get_properties_with_table_alias(alias) {
         Ok((properties, actual_table_alias)) => {
             if !properties.is_empty() {
-                // Use consolidated helper from property_expansion module
-                // This ensures consistency with RETURN clause processing
-                use crate::render_plan::property_expansion::expand_alias_to_select_items;
-                let items = expand_alias_to_select_items(alias, properties, actual_table_alias);
+                // Get ID column for aggregation handling
+                let id_col = plan.find_id_column_for_alias(alias).unwrap_or_else(|_| "id".to_string());
+                
+                // Get property requirements for pruning optimization (Dec 2025)
+                let property_requirements = plan_ctx.and_then(|ctx| ctx.get_property_requirements());
+                
+                // Use unified expansion helper with aggregation support (Dec 2025)
+                use crate::render_plan::property_expansion::{expand_alias_to_select_items_unified, PropertyAliasFormat};
+                let items = expand_alias_to_select_items_unified(
+                    alias, properties, &id_col, actual_table_alias,
+                    has_aggregation,  // Enables anyLast() wrapping for non-ID columns
+                    PropertyAliasFormat::Underscore,
+                    property_requirements,  // Enable property pruning if requirements available
+                );
                 
                 log::info!(
                     "🔧 expand_table_alias_to_select_items: Found alias '{}' in base tables ({} properties)",
@@ -1288,6 +1305,7 @@ fn update_graph_joins_cte_refs(
 fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
+    plan_ctx: Option<&PlanCtx>,
 ) -> RenderPlanBuilderResult<RenderPlan> {
     use super::CteContent;
 
@@ -1813,42 +1831,22 @@ fn build_chained_with_match_cte_plan(
                                         // Check if this is a TableAlias that needs expansion to ALL columns
                                         match &item.expression {
                                             crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
-                                                // Use helper function to expand to ALL columns
+                                                // Use unified expansion helper (Dec 2025)
                                                 // CRITICAL: Use cte_references_for_rendering (includes ALL previous CTEs),
                                                 // NOT with_cte_refs (only includes CTEs visible in this WITH's immediate input)
                                                 // This allows "WITH a, b, c" to find "a" and "b" from previous CTEs
-                                                let mut expanded = expand_table_alias_to_select_items(&alias.0, plan_to_render, &cte_schemas, &cte_references_for_rendering);
-                                                log::info!("🔧 build_chained_with_match_cte_plan: Expanded alias '{}' to {} items", alias.0, expanded.len());
-                                                
-                                                // If there's aggregation, wrap non-ID columns with ANY()
-                                                // This allows efficient GROUP BY (only ID column)
-                                                if has_aggregation {
-                                                    // Find the ID column for this alias using CTE-aware lookup
-                                                    // (we pre-checked this exists above)
-                                                    if let Ok(id_col) = plan_to_render.find_id_column_with_cte_context(&alias.0, &cte_schemas, &cte_references_for_rendering) {
-                                                        log::info!("✅ Found ID column '{}' for alias '{}', wrapping non-ID columns with anyLast()", id_col, alias.0);
-                                                        expanded = expanded.into_iter().map(|mut si| {
-                                                            // Check if this is the ID column
-                                                            let is_id_column = if let RenderExpr::PropertyAccessExp(ref prop_access) = si.expression {
-                                                                prop_access.column.raw() == id_col
-                                                            } else {
-                                                                false
-                                                            };
-                                                            
-                                                            // Wrap non-ID columns with anyLast() to avoid GROUP BY bloat
-                                                            // Use "anyLast" instead of "any" to avoid conflict with Cypher's any() array function
-                                                            if !is_id_column {
-                                                                log::info!("🔧 Wrapping column {:?} with anyLast()", si.expression);
-                                                                si.expression = RenderExpr::AggregateFnCall(crate::render_plan::render_expr::AggregateFnCall {
-                                                                    name: "anyLast".to_string(),
-                                                                    args: vec![si.expression.clone()],
-                                                                });
-                                                                log::info!("🔧 Wrapped result: {:?}", si.expression);
-                                                            }
-                                                            si
-                                                        }).collect();
-                                                    }
-                                                }
+                                                // 
+                                                // The unified helper automatically handles anyLast() wrapping when has_aggregation=true
+                                                let expanded = expand_table_alias_to_select_items(
+                                                    &alias.0, 
+                                                    plan_to_render, 
+                                                    &cte_schemas, 
+                                                    &cte_references_for_rendering,
+                                                    has_aggregation,  // Enables anyLast() wrapping in unified function
+                                                    plan_ctx  // Pass Option<&PlanCtx> for property pruning
+                                                );
+                                                log::info!("🔧 build_chained_with_match_cte_plan: Expanded alias '{}' to {} items (aggregation={})", 
+                                                           alias.0, expanded.len(), has_aggregation);
                                                 
                                                 expanded
                                             }
@@ -2819,7 +2817,7 @@ fn render_without_with_detection(
 
     // Recursively process the nested WITH clauses by calling build_chained_with_match_cte_plan
     // This will return a RenderPlan with all nested WITH clauses converted to CTEs
-    match build_chained_with_match_cte_plan(plan, schema) {
+    match build_chained_with_match_cte_plan(plan, schema, None) {
         Ok(render_plan) => {
             log::info!("🔧 render_without_with_detection: Recursive WITH processing succeeded");
             Ok(render_plan)
@@ -4928,6 +4926,15 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Limit(limit) => {
                 return limit.input.find_id_column_for_alias(alias);
             }
+            LogicalPlan::Union(union) => {
+                // For UNION, check all branches and return the first match
+                // All branches should have the same schema, so any match is valid
+                for input in &union.inputs {
+                    if let Ok(id) = input.find_id_column_for_alias(alias) {
+                        return Ok(id);
+                    }
+                }
+            }
             _ => {}
         }
         Err(RenderBuildError::InvalidRenderPlan(format!(
@@ -5561,59 +5568,33 @@ impl RenderPlanBuilder for LogicalPlan {
 
                                 // CRITICAL FIX: If query has aggregation, wrap non-ID columns with anyLast()
                                 // This unifies WITH and RETURN aggregation logic
-                                if has_aggregation {
-                                    // Get ID column for this alias - MUST succeed, no fallbacks!
+                                // CONSOLIDATED (Dec 2025): Use unified expansion helper
+                                if has_aggregation || !has_aggregation {
+                                    // Get ID column for this alias (needed for anyLast() wrapping determination)
                                     let id_col = self.find_id_column_for_alias(&alias.0)
                                         .map_err(|e| RenderBuildError::InvalidRenderPlan(
-                                            format!("Cannot find ID column for alias '{}' in aggregation: {}", alias.0, e)
+                                            format!("Cannot find ID column for alias '{}': {}", alias.0, e)
                                         ))?;
                                     
-                                    log::info!("🔧 Aggregation detected: wrapping non-ID columns with anyLast() for alias '{}', ID column='{}'",
-                                               alias.0, id_col);
-                                    
-                                    // Expand properties with anyLast() wrapping for non-ID columns
-                                    let table_alias_to_use = actual_table_alias.clone()
-                                        .unwrap_or_else(|| alias.0.clone());
-                                    
-                                    for (prop_name, col_name) in properties {
-                                        use crate::graph_catalog::expression_parser::PropertyValue;
-                                        
-                                        let base_expr = crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
-                                            crate::query_planner::logical_expr::PropertyAccess {
-                                                table_alias: crate::query_planner::logical_expr::TableAlias(table_alias_to_use.clone()),
-                                                column: PropertyValue::Column(col_name.clone()),
-                                            }
-                                        );
-                                        
-                                        // Wrap non-ID columns with anyLast()
-                                        let wrapped_expr = if col_name == id_col {
-                                            base_expr
-                                        } else {
-                                            crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(
-                                                crate::query_planner::logical_expr::AggregateFnCall {
-                                                    name: "anyLast".to_string(),
-                                                    args: vec![base_expr],
-                                                }
-                                            )
-                                        };
-                                        
-                                        expanded_items.push(ProjectionItem {
-                                            expression: wrapped_expr,
-                                            col_alias: Some(crate::query_planner::logical_expr::ColumnAlias(
-                                                format!("{}_{}", alias.0, prop_name)
-                                            )),
-                                        });
+                                    if has_aggregation {
+                                        log::info!("🔧 Aggregation detected: wrapping non-ID columns with anyLast() for alias '{}', ID column='{}'",
+                                                   alias.0, id_col);
                                     }
-                                    continue; // Skip adding the TableAlias item itself
-                                } else {
-                                    // No aggregation - use standard expansion
-                                    use crate::render_plan::property_expansion::{expand_alias_to_properties, PropertyAliasFormat};
-                                    let property_items = expand_alias_to_properties(
+                                    
+                                    // Use unified expansion helper (consolidates RETURN/WITH logic)
+                                    use crate::render_plan::property_expansion::{
+                                        expand_alias_to_projection_items_unified, PropertyAliasFormat
+                                    };
+                                    
+                                    let property_items = expand_alias_to_projection_items_unified(
                                         &alias.0,
                                         properties,
+                                        &id_col,
                                         actual_table_alias,
+                                        has_aggregation,  // Enables anyLast() wrapping for non-ID columns
                                         PropertyAliasFormat::Underscore,
                                     );
+                                    
                                     expanded_items.extend(property_items);
                                     continue; // Skip adding the TableAlias item itself
                                 }
@@ -10553,7 +10534,7 @@ impl RenderPlanBuilder for LogicalPlan {
         if has_with {
             log::info!("🔧 Handling WITH+MATCH pattern with CTE generation");
             println!("DEBUG: CALLING build_chained_with_match_cte_plan from to_render_plan");
-            return build_chained_with_match_cte_plan(&transformed_plan, schema);
+            return build_chained_with_match_cte_plan(&transformed_plan, schema, None);
         }
 
         // === Handle WITH+aggregation+MATCH patterns ===
