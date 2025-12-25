@@ -210,12 +210,17 @@ fn extract_node_label_from_plan(plan: &LogicalPlan) -> String {
 }
 
 /// Extract node label from a ViewScan plan
+/// 
+/// ⚠️  TODO(schema-threading): Hardcoded "default" lookup - should pass schema parameter
+/// This is called during CTE generation for property wildcard expansion (*)
+/// Currently only affects VLP queries with `RETURN n.*` patterns
 fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
     match plan {
         LogicalPlan::ViewScan(view_scan) => {
             // Try to get the label from the schema using the table name
             if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
                 if let Ok(schemas) = schemas_lock.try_read() {
+                    // TODO: Pass schema_name as parameter instead of hardcoding "default"
                     if let Some(schema) = schemas.get("default") {
                         if let Some((label, _)) =
                             get_node_schema_by_table(schema, &view_scan.source_table)
@@ -395,6 +400,7 @@ pub(crate) fn extract_var_len_properties(
                             // Expand * to all properties for this node type
                             if let Some(schema_lock) = crate::server::GLOBAL_SCHEMAS.get() {
                                 if let Ok(schemas) = schema_lock.try_read() {
+                                    // TODO(schema-threading): Hardcoded "default" - should use context.schema
                                     if let Some(schema) = schemas.get("default") {
                                         if let Some(node_schema) =
                                             schema.get_nodes_schemas().get(node_label)

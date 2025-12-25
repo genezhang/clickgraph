@@ -3548,8 +3548,9 @@ impl GraphJoinInference {
                                 }],
                                 join_type: Self::determine_join_type(left_is_optional),
                                 pre_filter: None,
-                from_id_column: None,
-                to_id_column: None,
+                // For FK-edge: Set from_id/to_id so constraint compilation can detect this edge JOIN
+                from_id_column: Some(from_id.clone()),
+                to_id_column: Some(to_id.clone()),
                             };
                             Self::push_join_if_not_duplicate(collected_graph_joins, left_join);
                             joined_entities.insert(left_alias.to_string());
@@ -3597,8 +3598,9 @@ impl GraphJoinInference {
                                 }],
                                 join_type: Self::determine_join_type(right_is_optional),
                                 pre_filter: None,
-                from_id_column: None,
-                to_id_column: None,
+                // For FK-edge: Set from_id/to_id so constraint compilation can detect this edge JOIN
+                from_id_column: Some(from_id.clone()),
+                to_id_column: Some(to_id.clone()),
                             };
                             Self::push_join_if_not_duplicate(collected_graph_joins, right_join);
                             joined_entities.insert(right_alias.to_string());

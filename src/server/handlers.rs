@@ -176,13 +176,21 @@ pub async fn query_handler(
         if let Some(ref use_clause) = ast.use_clause {
             use_clause.database_name
         } else {
+            // ✅ EXPLICIT: Use "default" as the default schema name when no USE clause
+            // This is intentional and explicit, not a hidden fallback
             payload.schema_name.as_deref().unwrap_or("default")
         }
     } else {
+        // Parse failed - use request parameter or explicit "default"
         payload.schema_name.as_deref().unwrap_or("default")
     };
 
-    log::debug!("Using schema: {}", schema_name);
+    log::debug!("Using schema: {} ({})", schema_name, 
+        if payload.schema_name.is_none() && !clean_query.to_uppercase().contains("USE ") {
+            "explicit default - no USE clause"
+        } else {
+            "from query or parameter"
+        });
 
     // Generate cache key (view_parameters are NOT part of the key)
     // They will be substituted at execution time via $placeholder syntax
@@ -289,10 +297,15 @@ pub async fn query_handler(
     }
 
     let (ch_sql_queries, maybe_schema_elem, is_read, query_type_str) = {
+        // ✅ FAIL LOUDLY: If schema not found, return clear error (no silent fallback)
         let graph_schema = match graph_catalog::get_graph_schema_by_name(schema_name).await {
             Ok(schema) => schema,
             Err(e) => {
-                return Err((StatusCode::BAD_REQUEST, format!("Schema error: {}", e)));
+                log::error!("Schema '{}' not found. Available schemas: {:?}", 
+                    schema_name, 
+                    graph_catalog::list_available_schemas().await);
+                return Err((StatusCode::BAD_REQUEST, 
+                    format!("Schema '{}' not found. {}", schema_name, e)));
             }
         };
 

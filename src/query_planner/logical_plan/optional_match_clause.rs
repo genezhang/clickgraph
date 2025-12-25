@@ -141,6 +141,7 @@ fn setup_test_graph_schema() -> GraphSchema {
         from_node_properties: None,
         to_node_properties: None,
         is_fk_edge: false,
+        constraints: None,
     };
     relationships.insert("FOLLOWS".to_string(), follows_rel);
 

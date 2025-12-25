@@ -29,6 +29,8 @@ use crate::{
         logical_plan::LogicalPlan,
         optimizer::{
             cartesian_join_extraction::CartesianJoinExtraction, optimizer_pass::OptimizerPass,
+            collect_unwind_elimination::CollectUnwindElimination,
+            trivial_with_elimination::TrivialWithElimination,
         },
     },
 };
@@ -257,6 +259,34 @@ pub fn intermediate_analyzing(
     // This enables user.name → user.5 (tuple index) after UNWIND of collect(node)
     // Must run AFTER all analysis passes that might recreate Unwind nodes
     let plan = unwind_tuple_enricher::enrich_unwind_with_tuple_info(plan);
+
+    // Collect+UNWIND Elimination - remove no-op patterns like WITH collect(x) as xs + UNWIND xs as x
+    // This must run BEFORE PropertyRequirementsAnalyzer to eliminate patterns that would complicate analysis
+    log::info!("🔍 Running Collect+UNWIND Elimination...");
+    let collect_unwind_elimination = CollectUnwindElimination;
+    let plan = match collect_unwind_elimination.optimize(plan.clone(), plan_ctx) {
+        Ok(transformed) => transformed.get_plan(),
+        Err(e) => {
+            return Err(errors::AnalyzerError::OptimizerError {
+                message: e.to_string(),
+            });
+        }
+    };
+    log::info!("✓ Collect+UNWIND Elimination completed");
+
+    // Trivial WITH Elimination - remove pass-through WITH clauses that add no value
+    // Run after collect+UNWIND elimination to clean up any resulting trivial WITHs
+    log::info!("🔍 Running Trivial WITH Elimination...");
+    let trivial_with_elimination = TrivialWithElimination;
+    let plan = match trivial_with_elimination.optimize(plan.clone(), plan_ctx) {
+        Ok(transformed) => transformed.get_plan(),
+        Err(e) => {
+            return Err(errors::AnalyzerError::OptimizerError {
+                message: e.to_string(),
+            });
+        }
+    };
+    log::info!("✓ Trivial WITH Elimination completed");
 
     // Property Requirements Analysis - determine which properties are actually needed
     // This runs at the END of analysis, after all property references are stable

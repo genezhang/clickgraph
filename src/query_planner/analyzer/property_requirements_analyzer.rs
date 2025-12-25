@@ -310,9 +310,11 @@ impl PropertyRequirementsAnalyzer {
                 
                 // Special handling for collect()
                 if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
-                    // collect(node) - analyze what properties are needed from collected items
-                    // This is handled by looking at downstream UNWIND usage
-                    Self::analyze_expression(&agg.args[0], requirements);
+                    // collect(node) - DO NOT analyze the argument here!
+                    // The UNWIND analysis will map requirements from UNWIND alias to source alias.
+                    // Example: UNWIND collect(f) AS friend, friend.name → f.name (handled in UNWIND case)
+                    // If we analyze_expression(f) here, it marks f as needing ALL properties (incorrect)
+                    log::info!("🔍 Skipping collect() argument analysis - will be handled by UNWIND mapping");
                 } else {
                     // Other aggregates - analyze arguments
                     for arg in &agg.args {

@@ -1,5 +1,6 @@
 pub mod column_info;
 pub mod config;
+pub mod constraint_compiler;
 pub mod engine_detection;
 pub mod errors;
 pub mod expression_parser;

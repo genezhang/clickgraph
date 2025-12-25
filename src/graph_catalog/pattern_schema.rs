@@ -498,6 +498,8 @@ pub struct PatternSchemaContext {
     pub left_is_polymorphic: bool,
     /// True if right node is polymorphic $any
     pub right_is_polymorphic: bool,
+    /// Edge constraints from schema (e.g. "from.age > to.age")
+    pub constraints: Option<String>,
 }
 
 impl PatternSchemaContext {
@@ -566,6 +568,7 @@ impl PatternSchemaContext {
             rel_types,
             left_is_polymorphic,
             right_is_polymorphic,
+            constraints: rel_schema.constraints.clone(),
         })
     }
 

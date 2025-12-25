@@ -302,7 +302,7 @@ pub(crate) trait RenderPlanBuilder {
 
     fn extract_filters(&self) -> RenderPlanBuilderResult<Option<RenderExpr>>;
 
-    fn extract_joins(&self) -> RenderPlanBuilderResult<Vec<Join>>;
+    fn extract_joins(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<Vec<Join>>;
 
     fn extract_group_by(&self) -> RenderPlanBuilderResult<Vec<RenderExpr>>;
 
@@ -1868,14 +1868,17 @@ fn build_chained_with_match_cte_plan(
                                                         if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(ref alias) = agg.args[0] {
                                                             log::info!("🔧 WITH context: Expanding collect({}) to groupArray(tuple(...))", alias.0);
                                                             
+                                                            // Extract property requirements for pruning
+                                                            let property_requirements = plan_ctx.and_then(|ctx| ctx.get_property_requirements());
+                                                            
                                                             // Get all properties for this alias
                                                             match plan_to_render.get_properties_with_table_alias(&alias.0) {
                                                                 Ok((props, _actual_alias)) if !props.is_empty() => {
                                                                     log::info!("🔧 Found {} properties for alias '{}', expanding", props.len(), alias.0);
                                                                     
-                                                                    // Use centralized expansion utility
+                                                                    // Use centralized expansion utility with property requirements
                                                                     use crate::render_plan::property_expansion::expand_collect_to_group_array;
-                                                                    expand_collect_to_group_array(&alias.0, props)
+                                                                    expand_collect_to_group_array(&alias.0, props, property_requirements)
                                                                 }
                                                                 _ => {
                                                                     log::warn!("⚠️  Could not expand collect({}) in WITH - no properties found, keeping as-is", alias.0);
@@ -5520,8 +5523,10 @@ impl RenderPlanBuilder for LogicalPlan {
                                         log::info!("🔧 Found {} properties for alias '{}', expanding", props.len(), alias.0);
                                         
                                         // Use centralized expansion utility
+                                        // Note: property_requirements not available in extract_select_items context
+                                        // Pruning optimization only available via WITH clause or explicit projection
                                         use crate::render_plan::property_expansion::expand_collect_to_group_array;
-                                        let expanded_expr = expand_collect_to_group_array(&alias.0, props);
+                                        let expanded_expr = expand_collect_to_group_array(&alias.0, props, None);
                                         
                                         // Create new item with expanded expression
                                         ProjectionItem {
@@ -5723,8 +5728,9 @@ impl RenderPlanBuilder for LogicalPlan {
                                         log::info!("🔧 Found {} properties for alias '{}'", props.len(), alias.0);
                                         
                                         // Use centralized expansion utility
+                                        // Note: property_requirements not available in extract_select_items context
                                         use crate::render_plan::property_expansion::expand_collect_to_group_array;
-                                        expand_collect_to_group_array(&alias.0, props)
+                                        expand_collect_to_group_array(&alias.0, props, None)
                                     }
                                     _ => {
                                         log::warn!("⚠️  Could not expand collect({}) - no properties found, keeping as-is", alias.0);
@@ -5931,7 +5937,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                 match group_by.input.get_properties_with_table_alias(&alias.0) {
                                     Ok((properties, _actual_alias)) if !properties.is_empty() => {
                                         use crate::render_plan::property_expansion::expand_collect_to_group_array;
-                                        let expanded_logical = expand_collect_to_group_array(&alias.0, properties.clone());
+                                        // Note: property_requirements not available in extract_select_items context
+                                        let expanded_logical = expand_collect_to_group_array(&alias.0, properties.clone(), None);
                                         
                                         // Convert to RenderExpr
                                         let render_expr: Result<RenderExpr, _> = expanded_logical.try_into();
@@ -6910,7 +6917,96 @@ impl RenderPlanBuilder for LogicalPlan {
         Ok(final_filters)
     }
 
-    fn extract_joins(&self) -> RenderPlanBuilderResult<Vec<Join>> {
+    fn extract_joins(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<Vec<Join>> {
+        // Helper functions for edge constraint compilation
+        
+        // Extract relationship type and node labels from GraphRel in the plan
+        fn extract_relationship_context(plan: &LogicalPlan, rel_alias: &str) -> Option<(String, String, String)> {
+            match plan {
+                LogicalPlan::Projection(proj) => extract_relationship_context(&proj.input, rel_alias),
+                LogicalPlan::Filter(filter) => extract_relationship_context(&filter.input, rel_alias),
+                LogicalPlan::GraphRel(gr) if gr.alias == rel_alias => {
+                    let rel_type = gr.labels.as_ref()?.first()?.clone();
+                    let from_label = extract_node_label(&gr.left)?;
+                    let to_label = extract_node_label(&gr.right)?;
+                    Some((rel_type, from_label, to_label))
+                }
+                LogicalPlan::GraphRel(gr) => {
+                    extract_relationship_context(&gr.left, rel_alias)
+                        .or_else(|| extract_relationship_context(&gr.center, rel_alias))
+                        .or_else(|| extract_relationship_context(&gr.right, rel_alias))
+                }
+                LogicalPlan::GraphNode(gn) => extract_relationship_context(&gn.input, rel_alias),
+                _ => None,
+            }
+        }
+        
+        // Extract node label from GraphNode
+        fn extract_node_label(plan: &LogicalPlan) -> Option<String> {
+            match plan {
+                LogicalPlan::GraphNode(gn) => gn.label.clone(),
+                _ => None,
+            }
+        }
+        
+        // Extract relationship context for FK-edge patterns
+        // For FK-edge, the JOIN uses the to_node alias, so we search for GraphRel nodes
+        // that connect to this alias
+        fn extract_fk_edge_relationship_context(plan: &LogicalPlan, node_alias: &str) -> Option<(String, String, String)> {
+            match plan {
+                LogicalPlan::Projection(proj) => extract_fk_edge_relationship_context(&proj.input, node_alias),
+                LogicalPlan::Filter(filter) => extract_fk_edge_relationship_context(&filter.input, node_alias),
+                LogicalPlan::GraphRel(gr) => {
+                    // Check if this GraphRel's right node (to_node) matches the alias
+                    if let LogicalPlan::GraphNode(to_node) = &*gr.right {
+                        if to_node.alias == node_alias {
+                            let rel_type = gr.labels.as_ref()?.first()?.clone();
+                            let from_label = extract_node_label(&gr.left)?;
+                            let to_label = to_node.label.clone()?;
+                            return Some((rel_type, from_label, to_label));
+                        }
+                    }
+                    
+                    // Recurse into nested patterns
+                    extract_fk_edge_relationship_context(&gr.left, node_alias)
+                        .or_else(|| extract_fk_edge_relationship_context(&gr.center, node_alias))
+                        .or_else(|| extract_fk_edge_relationship_context(&gr.right, node_alias))
+                }
+                LogicalPlan::GraphNode(gn) => extract_fk_edge_relationship_context(&gn.input, node_alias),
+                _ => None,
+            }
+        }
+        
+        // Extract from/to node aliases for a relationship alias from JOIN list and anchor
+        fn extract_node_aliases_from_joins(joins: &[crate::query_planner::logical_plan::Join], rel_alias: &str) -> Option<(String, String)> {
+            // From alias: look for FROM marker (JOIN with no conditions = anchor node)
+            let from_alias = joins.iter()
+                .find(|j| j.joining_on.is_empty())
+                .map(|j| j.table_alias.clone());
+            
+            // To alias: find the OTHER node (not the relationship, not the anchor, has conditions)
+            let to_alias = joins.iter()
+                .find(|j| {
+                    j.table_alias != rel_alias && 
+                    !j.joining_on.is_empty() &&
+                    j.table_alias != from_alias.as_ref().map(|s| s.as_str()).unwrap_or("")
+                })
+                .map(|j| j.table_alias.clone());
+            
+            match (from_alias, to_alias) {
+                (Some(from), Some(to)) => {
+                    log::info!("🔍 Extracted node aliases: from={}, to={}", from, to);
+                    Some((from, to))
+                }
+                _ => {
+                    log::warn!("⚠️  Could not extract node aliases for relationship {}", rel_alias);
+                    None
+                }
+            }
+        }
+
+        // Main extract_joins implementation
+
         // Use helper functions from plan_builder_helpers module
         // get_schema_filter_for_node() - extracts schema filter from LogicalPlan
         // get_polymorphic_edge_filter_for_join() - generates polymorphic edge type filter
@@ -6918,12 +7014,12 @@ impl RenderPlanBuilder for LogicalPlan {
         // combine_render_exprs_with_and() - combines filters with AND
 
         let joins = match &self {
-            LogicalPlan::Limit(limit) => limit.input.extract_joins()?,
-            LogicalPlan::Skip(skip) => skip.input.extract_joins()?,
-            LogicalPlan::OrderBy(order_by) => order_by.input.extract_joins()?,
-            LogicalPlan::GroupBy(group_by) => group_by.input.extract_joins()?,
-            LogicalPlan::Filter(filter) => filter.input.extract_joins()?,
-            LogicalPlan::Projection(projection) => projection.input.extract_joins()?,
+            LogicalPlan::Limit(limit) => limit.input.extract_joins(schema)?,
+            LogicalPlan::Skip(skip) => skip.input.extract_joins(schema)?,
+            LogicalPlan::OrderBy(order_by) => order_by.input.extract_joins(schema)?,
+            LogicalPlan::GroupBy(group_by) => group_by.input.extract_joins(schema)?,
+            LogicalPlan::Filter(filter) => filter.input.extract_joins(schema)?,
+            LogicalPlan::Projection(projection) => projection.input.extract_joins(schema)?,
             LogicalPlan::GraphNode(graph_node) => {
                 // For nested GraphNodes (multiple standalone nodes), create CROSS JOINs
                 let mut joins = vec![];
@@ -6944,7 +7040,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
 
                 // Recursively get joins from the input
-                let mut inner_joins = graph_node.input.extract_joins()?;
+                let mut inner_joins = graph_node.input.extract_joins(schema)?;
                 joins.append(&mut inner_joins);
 
                 joins
@@ -6961,7 +7057,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 exact_hops
                             );
                             // Delegate to input to get the expanded multi-hop JOINs
-                            return graph_joins.input.extract_joins();
+                            return graph_joins.input.extract_joins(schema);
                         }
                     }
                 }
@@ -6971,18 +7067,12 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Extract alias → parameterized table reference mapping from GraphRel/GraphNode nodes
                 // This uses the centralized helper that handles parameterized views correctly
                 
-                println!("DEBUG: GraphJoins extract_joins called");
-                println!("DEBUG:   Input plan type: {:?}", std::mem::discriminant(graph_joins.input.as_ref()));
-                println!("DEBUG:   Total joins count: {}", graph_joins.joins.len());
-                for (i, j) in graph_joins.joins.iter().enumerate() {
-                    let is_from = j.joining_on.is_empty();
-                    println!("DEBUG:   join[{}]: {} AS {} (conditions={}, is_from={})", 
-                        i, j.table_name, j.table_alias, j.joining_on.len(), is_from);
-                }
-                
                 // Use the centralized helper from plan_builder_helpers.rs
                 let rel_tables = extract_rel_and_node_tables(graph_joins.input.as_ref());
-                println!("DEBUG: GraphJoins - extracted rel tables: {:?}", rel_tables);
+                
+                // Collect edge constraints to apply to the final node JOIN
+                // Edge constraints reference both from/to nodes, so must be applied after both are joined
+                let mut edge_constraints: Vec<(String, RenderExpr)> = Vec::new();
                 
                 // Convert joins, SKIPPING FROM markers (joins with empty joining_on)
                 // FROM markers are used by extract_from(), not extract_joins()
@@ -6990,30 +7080,112 @@ impl RenderPlanBuilder for LogicalPlan {
                 for logical_join in &graph_joins.joins {
                     // SKIP FROM markers - they have empty joining_on
                     if logical_join.joining_on.is_empty() {
-                        println!("DEBUG: SKIPPING FROM marker for alias '{}'", logical_join.table_alias);
                         continue;
                     }
                     
                     let mut render_join: Join = logical_join.clone().try_into()?;
                     
+                    // Compile edge constraints for relationship JOINs (if constraints defined in schema)
+                    // Store them to be applied to the final node JOIN (where both from/to tables are available)
+                    if render_join.from_id_column.is_some() && render_join.to_id_column.is_some() {
+                        log::debug!("🔍 JOIN {} has from_id/to_id columns - checking for constraints", render_join.table_alias);
+                        
+                        // This is a relationship JOIN (has from/to ID columns)
+                        // Try two patterns:
+                        // 1. Standard edge: table_alias matches GraphRel rel_alias (e.g., "c" for COPIED_BY)
+                        // 2. FK-edge: table_alias matches GraphRel to_node alias (e.g., "folder" for IN_FOLDER)
+                        let rel_context = extract_relationship_context(&graph_joins.input, &render_join.table_alias)
+                            .or_else(|| {
+                                log::debug!("Standard rel context not found, trying FK-edge pattern...");
+                                extract_fk_edge_relationship_context(&graph_joins.input, &render_join.table_alias)
+                            });
+                        
+                        if let Some((rel_type, from_label, to_label)) = rel_context {
+                            log::debug!("✓ Found relationship context: type={}, from={}, to={}", rel_type, from_label, to_label);
+                            if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_type) {
+                                log::debug!("✓ Found relationship schema for {}", rel_type);
+                                if let Some(ref constraint_expr) = rel_schema.constraints {
+                                    log::debug!("✓ Found constraint expression: {}", constraint_expr);
+                                    if let (Some(from_schema), Some(to_schema)) = 
+                                        (schema.get_node_schema_opt(&from_label), 
+                                         schema.get_node_schema_opt(&to_label))
+                                    {
+                                        // Find from/to aliases from JOIN conditions
+                                        // For standard edge, use extract_node_aliases_from_joins
+                                        // For FK-edge, extract directly from JOIN (from and to are the joined nodes)
+                                        let node_aliases = extract_node_aliases_from_joins(&graph_joins.joins, &render_join.table_alias)
+                                            .or_else(|| {
+                                                // FK-edge fallback: infer from the JOIN itself
+                                                // The JOIN connects from_node to to_node, alias is to_node
+                                                // For FK-edge with 1 JOIN, the anchor is the from_node
+                                                let from_alias_opt = graph_joins.joins.iter()
+                                                    .find(|j| !j.joining_on.is_empty() && j.table_alias != render_join.table_alias)
+                                                    .map(|j| j.table_alias.clone())
+                                                    .or_else(|| {
+                                                        // If no other JOIN, from_node is the anchor (FROM table)
+                                                        // Use graph_joins.anchor_table
+                                                        graph_joins.anchor_table.clone()
+                                                    });
+                                                    
+                                                from_alias_opt.map(|from_alias| {
+                                                    log::debug!("🔍 FK-edge alias extraction: from={}, to={}", from_alias, render_join.table_alias);
+                                                    (from_alias, render_join.table_alias.clone())
+                                                })
+                                            });
+                                            
+                                        if let Some((from_alias, to_alias)) = node_aliases {
+                                            match crate::graph_catalog::constraint_compiler::compile_constraint(
+                                                constraint_expr,
+                                                from_schema,
+                                                to_schema,
+                                                &from_alias,
+                                                &to_alias,
+                                            ) {
+                                                Ok(compiled_sql) => {
+                                                    log::info!("✓ Compiled edge constraint for {} ({}): {} → {}",
+                                                        render_join.table_alias, rel_type, constraint_expr, compiled_sql);
+                                                    
+                                                    // Store constraint to apply to this JOIN directly
+                                                    // (for FK-edge, this IS the to_node JOIN)
+                                                    let constraint_expr = RenderExpr::Raw(compiled_sql);
+                                                    edge_constraints.push((to_alias, constraint_expr));
+                                                }
+                                                Err(e) => {
+                                                    log::warn!("Failed to compile edge constraint for {}: {}", render_join.table_alias, e);
+                                                }
+                                            }
+                                        } else {
+                                            log::debug!("Could not extract node aliases for FK-edge JOIN: {}", render_join.table_alias);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
                     // Fix table_name if we have a resolved table for this alias
                     if let Some(resolved_table) = rel_tables.get(&render_join.table_alias) {
-                        println!(
-                            "DEBUG: FIXING table_name: '{}' → '{}' (alias: '{}')",
-                            render_join.table_name, resolved_table, render_join.table_alias
-                        );
                         render_join.table_name = resolved_table.clone();
-                    } else {
-                        println!(
-                            "DEBUG: NO FIX for alias '{}', keeping table_name '{}'",
-                            render_join.table_alias, render_join.table_name
-                        );
                     }
                     
                     joins.push(render_join);
                 }
                 
-                println!("DEBUG: GraphJoins extract_joins returning {} joins (excluding FROM markers)", joins.len());
+                // Apply collected edge constraints to the appropriate node JOINs
+                for (to_alias, constraint) in edge_constraints {
+                    if let Some(join) = joins.iter_mut().find(|j| j.table_alias == to_alias) {
+                        join.pre_filter = if let Some(existing) = join.pre_filter.clone() {
+                            Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                operator: Operator::And,
+                                operands: vec![existing, constraint],
+                            }))
+                        } else {
+                            Some(constraint)
+                        };
+                        log::debug!("Applied edge constraint to node JOIN: {}", to_alias);
+                    }
+                }
+                
                 joins
             }
             LogicalPlan::GraphRel(graph_rel) => {
@@ -7098,7 +7270,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         );
 
                         // First, recursively get joins from the left GraphRel
-                        let mut left_joins = graph_rel.left.extract_joins()?;
+                        let mut left_joins = graph_rel.left.extract_joins(schema)?;
                         joins.append(&mut left_joins);
 
                         // Get the left relationship's to_id column for joining
@@ -7187,7 +7359,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         "🔍 DEBUG: Multi-hop pattern detected on LEFT side - recursively extracting left GraphRel joins (alias={})",
                         graph_rel.alias
                     );
-                    let mut left_joins = graph_rel.left.extract_joins()?;
+                    let mut left_joins = graph_rel.left.extract_joins(schema)?;
                     println!("  ↳ Got {} joins from left GraphRel", left_joins.len());
                     joins.append(&mut left_joins);
                 }
@@ -7199,7 +7371,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         "🔍 DEBUG: Multi-hop pattern detected on RIGHT side - recursively extracting right GraphRel joins (alias={})",
                         graph_rel.alias
                     );
-                    let mut right_joins = graph_rel.right.extract_joins()?;
+                    let mut right_joins = graph_rel.right.extract_joins(schema)?;
                     println!("  ↳ Got {} joins from right GraphRel", right_joins.len());
                     for (idx, j) in right_joins.iter().enumerate() {
                         println!("      [{}] {} AS {} ON {:?}", idx, j.table_name, j.table_alias, j.joining_on);
@@ -7641,12 +7813,101 @@ impl RenderPlanBuilder for LogicalPlan {
                 };
 
                 println!("🔧 DEBUG: About to push JOIN 1 (relationship): {} AS {}", rel_table, graph_rel.alias);
+                
+                // Compile edge constraints if present
+                // Look up relationship schema and check for constraints field
+                let mut combined_pre_filter = rel_pre_filter.clone();
+                
+                log::info!("🔍 Edge constraint check: is_bidirectional={}", is_bidirectional);
+                
+                if !is_bidirectional {
+                    // Only compile constraints for directional edges (bidirectional is complex OR condition)
+                    if let Some(schema_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+                        log::info!("🔍 GLOBAL_SCHEMAS lock acquired");
+                        if let Ok(schemas) = schema_lock.try_read() {
+                            log::info!("🔍 Schemas read lock acquired, available schemas: {:?}", schemas.keys().collect::<Vec<_>>());
+                            // Try to find schema - check all available schemas
+                            // Priority: "default", then empty string, then any other schema
+                            let mut schema_to_use = None;
+                            if let Some(schema) = schemas.get("default") {
+                                schema_to_use = Some(("default", schema));
+                            } else if let Some(schema) = schemas.get("") {
+                                schema_to_use = Some(("", schema));
+                            } else if let Some((name, schema)) = schemas.iter().next() {
+                                // Use first available schema if no default
+                                schema_to_use = Some((name.as_str(), schema));
+                            }
+                            
+                            if let Some((schema_name, schema)) = schema_to_use {
+                                    log::info!("🔍 Using schema: {}", schema_name);
+                                    // Get the first relationship type (for multi-type like [:TYPE1|TYPE2], constraints not supported)
+                                    if let Some(labels_vec) = &graph_rel.labels {
+                                        log::info!("🔍 Relationship labels: {:?}", labels_vec);
+                                        if let Some(rel_type) = labels_vec.first() {
+                                            log::info!("🔍 Looking up relationship type: {}", rel_type);
+                                            // Look up relationship schema by type
+                                            if let Some(rel_schema) = schema.get_relationships_schema_opt(rel_type) {
+                                                log::info!("🔍 Found relationship schema for {}, constraints={:?}", rel_type, rel_schema.constraints);
+                                                // Check if constraints are defined
+                                                if let Some(ref constraint_expr) = rel_schema.constraints {
+                                                    log::info!("🔍 Found constraint expression: {}", constraint_expr);
+                                                    // Get node schemas for from/to nodes
+                                                    log::info!("🔍 Node labels: start={:?}, end={:?}", start_label, end_label);
+                                                    if let (Some(start_label), Some(end_label)) = (&start_label, &end_label) {
+                                                        log::info!("🔍 Looking up node schemas: start={}, end={}", start_label, end_label);
+                                                        if let (Some(from_node_schema), Some(to_node_schema)) = 
+                                                            (schema.get_node_schema_opt(start_label), schema.get_node_schema_opt(end_label))
+                                                        {
+                                                            log::info!("🔍 Found both node schemas, compiling constraint...");
+                                                            // Compile the constraint expression
+                                                            match crate::graph_catalog::constraint_compiler::compile_constraint(
+                                                                constraint_expr,
+                                                                from_node_schema,
+                                                                to_node_schema,
+                                                                &graph_rel.left_connection,
+                                                                &graph_rel.right_connection,
+                                                            ) {
+                                                                Ok(compiled_sql) => {
+                                                                    log::info!(
+                                                                        "✅ Compiled edge constraint for {} (schema={}): {} → {}",
+                                                                        graph_rel.alias, schema_name, constraint_expr, compiled_sql
+                                                                    );
+                                                                    // Add compiled constraint to pre_filter (will be added to ON clause)
+                                                                    let constraint_render_expr = RenderExpr::Raw(compiled_sql);
+                                                                    combined_pre_filter = if let Some(existing) = combined_pre_filter {
+                                                                        // Combine with existing pre_filter using AND
+                                                                        Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                                                            operator: Operator::And,
+                                                                            operands: vec![existing, constraint_render_expr],
+                                                                        }))
+                                                                    } else {
+                                                                        Some(constraint_render_expr)
+                                                                    };
+                                                                }
+                                                                Err(e) => {
+                                                                    log::warn!(
+                                                                        "⚠️  Failed to compile edge constraint for {} (schema={}): {}",
+                                                                        graph_rel.alias, schema_name, e
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                            }
+                        }
+                    }
+                }
+                
                 joins.push(Join {
                     table_name: rel_table.clone(),
                     table_alias: graph_rel.alias.clone(),
                     joining_on: vec![rel_join_condition],
                     join_type: join_type.clone(),
-                    pre_filter: rel_pre_filter.clone(),
+                    pre_filter: combined_pre_filter,
                     from_id_column: Some(rel_cols.from_id.clone()),
                     to_id_column: Some(rel_cols.to_id.clone()),
                 });
@@ -7776,7 +8037,7 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::CartesianProduct(cp) => {
                 // For CartesianProduct, generate JOIN with ON clause if join_condition exists
                 // or CROSS JOIN semantics if no join_condition
-                let mut joins = cp.left.extract_joins()?;
+                let mut joins = cp.left.extract_joins(schema)?;
 
                 // Check if right side is a GraphRel - OPTIONAL MATCH case needs special handling
                 if let LogicalPlan::GraphRel(graph_rel) = cp.right.as_ref() {
@@ -7813,7 +8074,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     } else {
                         // Normal case: anchor is on left, or non-optional
                         // Use standard extract_joins
-                        joins.extend(cp.right.extract_joins()?);
+                        joins.extend(cp.right.extract_joins(schema)?);
                     }
                 } else {
                     // Non-GraphRel right side (e.g., simple node patterns)
@@ -7863,7 +8124,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
 
                     // Include any joins from the right side
-                    joins.extend(cp.right.extract_joins()?);
+                    joins.extend(cp.right.extract_joins(schema)?);
                 }
 
                 joins
@@ -10157,7 +10418,7 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
 
-        let extracted_joins = self.extract_joins()?;
+        let extracted_joins = self.extract_joins(schema)?;
         println!(
             "DEBUG: build_simple_relationship_render_plan - extracted_joins: {:?}",
             extracted_joins
@@ -11202,7 +11463,7 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
 
-        let mut extracted_joins = transformed_plan.extract_joins()?;
+        let mut extracted_joins = transformed_plan.extract_joins(schema)?;
         
         log::info!("{}", "=".repeat(80));
         log::info!("🔍🔍🔍 CHECKING FOR VLP ENDPOINT JOINS");

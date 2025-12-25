@@ -312,6 +312,12 @@ pub struct RelationshipDefinition {
     /// Example: "is_active = 1 AND created_at >= now() - INTERVAL 30 DAY"
     #[serde(default)]
     pub filter: Option<String>,
+
+    /// Optional: Constraint expression across from/to nodes for relationship validation
+    /// References use "from.property" and "to.property" syntax (resolved to columns at compile time)
+    /// Example: "from.timestamp <= to.timestamp" or "from.context = to.context AND from.timestamp < to.timestamp"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<String>,
 }
 
 /// Edge definition - supporting both standard and polymorphic patterns
@@ -384,6 +390,12 @@ pub struct StandardEdgeDefinition {
     /// Example: "is_active = 1 AND created_at >= now() - INTERVAL 30 DAY"
     #[serde(default)]
     pub filter: Option<String>,
+
+    /// Optional: Constraint expression across from/to nodes for edge validation
+    /// References use "from.property" and "to.property" syntax (resolved to columns at compile time)
+    /// Example: "from.timestamp <= to.timestamp" or "from.context = to.context AND from.timestamp < to.timestamp"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<String>,
 }
 
 /// Polymorphic edge definition (one config → many edge types from explicit list)
@@ -478,6 +490,12 @@ pub struct PolymorphicEdgeDefinition {
     /// Example: "is_active = 1 AND created_at >= now() - INTERVAL 30 DAY"
     #[serde(default)]
     pub filter: Option<String>,
+
+    /// Optional: Constraint expression across from/to nodes for edge validation
+    /// References use "from.property" and "to.property" syntax (resolved to columns at compile time)
+    /// Example: "from.timestamp <= to.timestamp" or "from.context = to.context AND from.timestamp < to.timestamp"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<String>,
 }
 
 /// Convert snake_case to camelCase
@@ -818,6 +836,7 @@ fn build_relationship_schema(
         from_node_properties: from_node_props,
         to_node_properties: to_node_props,
         is_fk_edge,
+        constraints: rel_def.constraints.clone(),
     })
 }
 
@@ -944,6 +963,7 @@ fn build_standard_edge_schema(
         from_node_properties: from_node_props,
         to_node_properties: to_node_props,
         is_fk_edge,
+        constraints: std_edge.constraints.clone(),
     })
 }
 
@@ -1014,6 +1034,7 @@ fn build_polymorphic_edge_schemas(
             from_node_properties: None,
             to_node_properties: None,
             is_fk_edge: false, // Polymorphic edges are never FK-edge pattern
+            constraints: poly_edge.constraints.clone(),
         };
         results.push((type_val.clone(), rel_schema));
     }
@@ -1081,6 +1102,9 @@ impl GraphSchemaConfig {
 
         // Validate polymorphic edges
         self.validate_polymorphic_edges()?;
+
+        // Validate edge constraints
+        self.validate_edge_constraints()?;
 
         Ok(())
     }
@@ -1240,6 +1264,55 @@ impl GraphSchemaConfig {
                             return Err(GraphSchemaError::InvalidConfig {
                                 message: "Composite edge_id cannot be empty array".to_string(),
                             });
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate edge constraint expressions
+    /// Warns if constraints don't contain 'from.' or 'to.' references
+    fn validate_edge_constraints(&self) -> Result<(), GraphSchemaError> {
+        // Check legacy relationships
+        for rel in &self.graph_schema.relationships {
+            if let Some(ref constraint_expr) = rel.constraints {
+                if !constraint_expr.contains("from.") && !constraint_expr.contains("to.") {
+                    log::warn!(
+                        "⚠️  Relationship '{}': constraints field '{}' doesn't contain 'from.' or 'to.' references. \
+                         Did you mean to use the 'filter' field instead?",
+                        rel.type_name,
+                        constraint_expr
+                    );
+                }
+            }
+        }
+
+        // Check standard edges
+        for edge in &self.graph_schema.edges {
+            match edge {
+                EdgeDefinition::Standard(std_edge) => {
+                    if let Some(ref constraint_expr) = std_edge.constraints {
+                        if !constraint_expr.contains("from.") && !constraint_expr.contains("to.") {
+                            log::warn!(
+                                "⚠️  Edge '{}': constraints field '{}' doesn't contain 'from.' or 'to.' references. \
+                                 Did you mean to use the 'filter' field instead?",
+                                std_edge.type_name,
+                                constraint_expr
+                            );
+                        }
+                    }
+                }
+                EdgeDefinition::Polymorphic(poly_edge) => {
+                    if let Some(ref constraint_expr) = poly_edge.constraints {
+                        if !constraint_expr.contains("from.") && !constraint_expr.contains("to.") {
+                            log::warn!(
+                                "⚠️  Polymorphic edge: constraints field '{}' doesn't contain 'from.' or 'to.' references. \
+                                 Did you mean to use the 'filter' field instead?",
+                                constraint_expr
+                            );
                         }
                     }
                 }
@@ -1656,6 +1729,7 @@ graph_schema:
                     view_parameters: None,
                     use_final: None,
                     filter: None,
+                    constraints: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
@@ -1693,9 +1767,11 @@ graph_schema:
                     view_parameters: None,
                     use_final: None,
                     filter: None,
+                    constraints: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
+                    constraints: None,
                 })],
             },
         };
@@ -1721,6 +1797,7 @@ graph_schema:
                     view_parameters: None,
                     use_final: None,
                     filter: None,
+                    constraints: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
@@ -1745,9 +1822,11 @@ graph_schema:
                     view_parameters: None,
                     use_final: None,
                     filter: None,
+                    constraints: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
+                    constraints: None,
                 })],
             },
         };
@@ -1777,6 +1856,7 @@ graph_schema:
                     view_parameters: None,
                     use_final: None,
                     filter: None,
+                    constraints: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
@@ -1808,6 +1888,8 @@ graph_schema:
                     view_parameters: None,
                     use_final: None,
                     filter: None,
+                    constraints: None,
+                    constraints: None,
                 })],
             },
         };
@@ -1832,6 +1914,7 @@ graph_schema:
                     view_parameters: None,
                     use_final: None,
                     filter: None,
+                    constraints: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
@@ -1858,6 +1941,7 @@ graph_schema:
                     view_parameters: None,
                     use_final: None,
                     filter: None,
+                    constraints: None,
                 })],
             },
         };
@@ -1889,6 +1973,7 @@ graph_schema:
                         view_parameters: None,
                         use_final: None,
                         filter: None,
+                    constraints: None,
                         auto_discover_columns: false,
                         exclude_columns: vec![],
                         naming_convention: "snake_case".to_string(),
@@ -1906,6 +1991,7 @@ graph_schema:
                         view_parameters: None,
                         use_final: None,
                         filter: None,
+                    constraints: None,
                         auto_discover_columns: false,
                         exclude_columns: vec![],
                         naming_convention: "snake_case".to_string(),
@@ -1936,6 +2022,7 @@ graph_schema:
                     view_parameters: None,
                     use_final: None,
                     filter: None,
+                    constraints: None,
                 })],
             },
         };
@@ -1966,6 +2053,7 @@ graph_schema:
                     view_parameters: None,
                     use_final: None,
                     filter: None,
+                    constraints: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
@@ -1992,6 +2080,7 @@ graph_schema:
                     view_parameters: None,
                     use_final: None,
                     filter: None,
+                    constraints: None,
                 })],
             },
         };
@@ -2027,6 +2116,7 @@ graph_schema:
                     view_parameters: None,
                     use_final: None,
                     filter: None,
+                    constraints: None,
                     auto_discover_columns: false,
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
@@ -2053,6 +2143,7 @@ graph_schema:
                     view_parameters: None,
                     use_final: None,
                     filter: None,
+                    constraints: None,
                 })],
             },
         };
@@ -2232,6 +2323,7 @@ mod node_id_identity_mapping_tests {
             view_parameters: None,
             use_final: None,
             filter: None,
+                    constraints: None,
             auto_discover_columns: false,
             exclude_columns: vec![],
             naming_convention: "snake_case".to_string(),
@@ -2287,6 +2379,7 @@ mod node_id_identity_mapping_tests {
             view_parameters: None,
             use_final: None,
             filter: None,
+                    constraints: None,
             auto_discover_columns: false,
             exclude_columns: vec![],
             naming_convention: "snake_case".to_string(),
@@ -2338,6 +2431,7 @@ mod node_id_identity_mapping_tests {
             view_parameters: None,
             use_final: None,
             filter: None,
+                    constraints: None,
             auto_discover_columns: false,
             exclude_columns: vec![],
             naming_convention: "snake_case".to_string(),

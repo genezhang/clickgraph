@@ -16,11 +16,13 @@ use crate::query_planner::{
 use super::plan_ctx::PlanCtx;
 pub mod cartesian_join_extraction;
 mod cleanup_viewscan_filters;
+pub mod collect_unwind_elimination;
 pub mod errors;
 mod filter_into_graph_rel;
 mod filter_push_down;
 pub mod optimizer_pass;
 mod projection_push_down;
+pub mod trivial_with_elimination;
 mod view_optimizer;
 
 // Helper to recursively print plan structure for debugging (TRACE level)

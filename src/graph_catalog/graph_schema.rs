@@ -233,6 +233,22 @@ pub struct RelationshipSchema {
     /// denormalized node properties (from_node_properties/to_node_properties).
     #[serde(skip)]
     pub is_fk_edge: bool,
+
+    /// Optional: Edge traversal constraint expression
+    /// SQL expression with 'from.property' and 'to.property' references
+    /// Compiled to additional JOIN ON condition beyond ID equality
+    /// Use AND/OR for composite logic
+    /// 
+    /// Examples:
+    ///   - "from.timestamp < to.timestamp"  (chronological ordering)
+    ///   - "from.app_id = to.app_id"  (context preservation)
+    ///   - "from.timestamp + 300 > to.timestamp AND from.country = to.country"
+    /// 
+    /// Applied as:
+    /// - Single-hop: Additional condition in JOIN ON clause
+    /// - VLP: Additional condition in recursive CTE JOIN
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<String>,
 }
 
 impl RelationshipSchema {
