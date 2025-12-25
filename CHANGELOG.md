@@ -2,6 +2,49 @@
 
 ### 🚀 Features
 
+- *(schema)* **Edge Constraints for cross-node validation** (Dec 24-27, 2025) 🎯 **PRODUCTION-READY**
+  - Enables logical constraints between connected nodes (e.g., `from.timestamp <= to.timestamp`)
+  - Defined in schema YAML, automatically applied to all queries
+  - **Test Coverage**: 8/8 tests passing (100% of all schema patterns)
+  - Supports: Standard edge (3-table), FK-edge (1-table), Denormalized, Polymorphic, VLP schemas
+  - Single-hop: Constraints in JOIN ON clause
+  - Variable-length paths: Constraints in both base and recursive CTE WHERE clauses
+  - Resolves property names to physical columns based on node schemas
+  - **Documented**: Added to `docs/schema-reference.md` as key differentiator feature
+
+### 📚 Documentation
+
+- *(schema)* Added edge constraints to schema reference guide (Dec 27, 2025)
+  - Highlighted as key differentiator in opening section
+  - Comprehensive examples for all schema patterns
+  - Operator support and compilation details
+  - Known limitations documented for future enhancement
+
+### 🐛 Bug Fixes
+
+- *(schema)* Fixed edge constraints schema threading for VLP (Dec 27, 2025)
+  - **Root Cause**: VLP CTE generator used hardcoded "default" schema lookup → failed for named schemas
+  - **Fix**: Thread `schema: &'a GraphSchema` through entire VLP generation pipeline
+  - **Changes**: 
+    - Added lifetime parameter `'a` to `VariableLengthCteGenerator<'a>` struct
+    - Updated all constructors to accept schema parameter
+    - Eliminated hardcoded `for schema_name in ["default", ""]` loop
+    - Direct schema usage: `self.schema.get_relationships_schema_opt(rel_type)`
+  - **Impact**: VLP constraints now working for all schema patterns
+  - **Files Changed**: 
+    - `variable_length_cte.rs`: Added schema field and updated constraint compilation
+    - `cte_extraction.rs`: Pass schema to all VLP generator constructors
+  - See `SCHEMA_THREADING_ARCHITECTURE.md` for complete architecture explanation
+
+- *(schema)* Fixed edge constraints schema threading for single-hop (Dec 27, 2025)
+  - **Root Cause**: Hardcoded "default" schema lookup in `extract_joins()` failed for named schemas
+  - **Fix**: Thread `schema: &GraphSchema` parameter through `extract_joins()` trait
+  - **Impact**: FK-edge pattern now working, explicit schema handling prevents hidden bugs
+  - Updated 15+ call sites across plan_builder.rs
+  - Made "default" explicit with clear logging ("explicit default - no USE clause")
+  - Fail loudly on missing schema with available schemas list (no silent fallbacks)
+  - See `EDGE_CONSTRAINTS_FIX_SUMMARY.md` for technical details
+
 - *(optimization)* Property pruning optimization for memory-efficient queries (Dec 24, 2025)
   - Reduces SQL column expansion from all properties to only needed ones
   - 85-98% memory reduction for queries accessing few properties from wide tables

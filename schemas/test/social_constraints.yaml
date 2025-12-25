@@ -1,0 +1,26 @@
+name: social_network_constraints
+graph_schema:
+  nodes:
+    - label: User
+      database: social
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        username: username
+        age: age
+        city: city
+
+  edges:
+    - type: FOLLOWS
+      database: social
+      table: follows
+      from_id: follower_id
+      to_id: followed_id
+      from_node: User
+      to_node: User
+      property_mappings:
+        follow_date: follow_date
+      # Constraint: Only older users can follow younger users
+      # Use case: "Elder mentorship" social network
+      constraints: "from.age > to.age"

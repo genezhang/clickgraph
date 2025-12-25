@@ -1,0 +1,40 @@
+name: travel_denormalized
+graph_schema:
+  nodes:
+    - label: Airport
+      database: travel
+      table: flights_denorm
+      node_id: code
+      property_mappings: {}  # Empty - all properties are denormalized
+      
+      # Denormalized origin (from_node) properties
+      from_node_properties:
+        code: origin_code
+        name: origin_name
+        timezone_offset: origin_timezone_offset
+        country: origin_country
+      
+      # Denormalized destination (to_node) properties
+      to_node_properties:
+        code: dest_code
+        name: dest_name
+        timezone_offset: dest_timezone_offset
+        country: dest_country
+
+  edges:
+    - type: FLIGHT
+      database: travel
+      table: flights_denorm
+      from_id: origin_code
+      to_id: dest_code
+      from_node: Airport
+      to_node: Airport
+      property_mappings:
+        flight_num: flight_num
+        departure: departure_time
+        arrival: arrival_time
+      # Constraint: Only flights within same timezone
+      # Use case: Regional airline only operates within timezone
+      constraints: "from.timezone_offset = to.timezone_offset"
+
+

@@ -1,4 +1,5 @@
 use crate::graph_catalog::config::Identifier;
+use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_plan::VariableLengthSpec;
 use crate::render_plan::Cte;
 
@@ -11,7 +12,8 @@ pub struct NodeProperty {
 }
 
 /// Generates recursive CTE SQL for variable-length path traversal
-pub struct VariableLengthCteGenerator {
+pub struct VariableLengthCteGenerator<'a> {
+    pub schema: &'a GraphSchema, // Schema for constraint compilation and property resolution
     pub spec: VariableLengthSpec,
     pub cte_name: String,
     pub start_node_table: String,
@@ -72,8 +74,9 @@ impl From<crate::query_planner::logical_plan::ShortestPathMode> for ShortestPath
     }
 }
 
-impl VariableLengthCteGenerator {
+impl<'a> VariableLengthCteGenerator<'a> {
     pub fn new(
+        schema: &'a GraphSchema, // Schema for constraint compilation
         spec: VariableLengthSpec,
         start_table: &str,             // Actual table name (e.g., "users")
         start_id_col: &str,            // ID column name (e.g., "user_id")
@@ -93,6 +96,7 @@ impl VariableLengthCteGenerator {
         edge_id: Option<Identifier>,             // Edge ID for relationship uniqueness
     ) -> Self {
         Self::new_with_polymorphic(
+            schema,
             spec,
             start_table,
             start_id_col,
@@ -120,6 +124,7 @@ impl VariableLengthCteGenerator {
 
     /// Create a generator with polymorphic edge support
     pub fn new_with_polymorphic(
+        schema: &'a GraphSchema, // Schema for constraint compilation
         spec: VariableLengthSpec,
         start_table: &str,
         start_id_col: &str,
@@ -144,6 +149,7 @@ impl VariableLengthCteGenerator {
         to_node_label: Option<String>,
     ) -> Self {
         Self::new_with_fk_edge(
+            schema,
             spec,
             start_table,
             start_id_col,
@@ -173,6 +179,7 @@ impl VariableLengthCteGenerator {
     /// Create a generator with polymorphic edge support and FK-edge flag
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_fk_edge(
+        schema: &'a GraphSchema, // Schema for constraint compilation
         spec: VariableLengthSpec,
         start_table: &str,
         start_id_col: &str,
@@ -201,6 +208,7 @@ impl VariableLengthCteGenerator {
         let database = std::env::var("CLICKHOUSE_DATABASE").ok();
 
         Self {
+            schema,
             spec,
             cte_name: format!(
                 "vlp_{}",
@@ -244,6 +252,7 @@ impl VariableLengthCteGenerator {
 
     /// Create a generator for denormalized edges (node properties embedded in edge table)
     pub fn new_denormalized(
+        schema: &'a GraphSchema, // Schema for constraint compilation
         spec: VariableLengthSpec,
         relationship_table: &str, // The only table - edge table with node properties
         rel_from_col: &str,       // From column (e.g., "Origin")
@@ -260,6 +269,7 @@ impl VariableLengthCteGenerator {
         let database = std::env::var("CLICKHOUSE_DATABASE").ok();
 
         Self {
+            schema,
             spec,
             cte_name: format!(
                 "vlp_{}",
@@ -306,6 +316,7 @@ impl VariableLengthCteGenerator {
     /// Create a generator for mixed patterns (one node denormalized, one standard)
     #[allow(clippy::too_many_arguments)]
     pub fn new_mixed(
+        schema: &'a GraphSchema, // Schema for constraint compilation
         spec: VariableLengthSpec,
         start_table: &str,  // Start node table (or rel table if start is denorm)
         start_id_col: &str, // Start ID column
@@ -329,6 +340,7 @@ impl VariableLengthCteGenerator {
         let database = std::env::var("CLICKHOUSE_DATABASE").ok();
 
         Self {
+            schema,
             spec,
             cte_name: format!(
                 "vlp_{}",
@@ -448,6 +460,57 @@ impl VariableLengthCteGenerator {
             crate::debug_print!("    🔹 VLP polymorphic edge filter: {}", filter);
             Some(filter)
         }
+    }
+
+    /// Generate edge constraint expression for JOIN/WHERE clause
+    /// Compiles constraint from schema (e.g., "from.timestamp <= to.timestamp")
+    /// into SQL (e.g., "start_node.created_at <= end_node.created_at")
+    ///
+    /// Constraints are added to:
+    /// - Base case: WHERE clause (after node JOINs)
+    /// - Recursive case: WHERE clause (validates each hop)
+    fn generate_edge_constraint_filter(&self) -> Option<String> {
+        // Get the first relationship type (multi-type not supported for constraints)
+        if let Some(rel_types) = &self.relationship_types {
+            if let Some(rel_type) = rel_types.first() {
+                // Look up relationship schema
+                if let Some(rel_schema) = self.schema.get_relationships_schema_opt(rel_type) {
+                    // Check if constraints are defined
+                    if let Some(ref constraint_expr) = rel_schema.constraints {
+                        // Get node schemas for from/to nodes
+                        if let (Some(from_node_schema), Some(to_node_schema)) = (
+                            self.schema.get_node_schema_opt(&rel_schema.from_node),
+                            self.schema.get_node_schema_opt(&rel_schema.to_node)
+                        ) {
+                            // Compile the constraint expression
+                            // Use the actual node aliases from CTE generation
+                            match crate::graph_catalog::constraint_compiler::compile_constraint(
+                                constraint_expr,
+                                from_node_schema,
+                                to_node_schema,
+                                &self.start_node_alias,
+                                &self.end_node_alias,
+                            ) {
+                                Ok(compiled_sql) => {
+                                    log::info!(
+                                        "✅ Compiled VLP edge constraint for {}: {} → {}",
+                                        rel_type, constraint_expr, compiled_sql
+                                    );
+                                    return Some(compiled_sql);
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "⚠️  Failed to compile VLP edge constraint for {}: {}",
+                                        rel_type, e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Generate relationship type expression for a given hop
@@ -1260,6 +1323,11 @@ impl VariableLengthCteGenerator {
                 where_conditions.push(poly_filter);
             }
 
+            // Add edge constraints if defined in schema
+            if let Some(constraint_filter) = self.generate_edge_constraint_filter() {
+                where_conditions.push(constraint_filter);
+            }
+
             if let Some(ref filters) = self.start_node_filters {
                 where_conditions.push(filters.clone());
             }
@@ -1388,6 +1456,11 @@ impl VariableLengthCteGenerator {
             where_conditions.push(poly_filter);
         }
 
+        // Add edge constraints if defined in schema
+        if let Some(constraint_filter) = self.generate_edge_constraint_filter() {
+            where_conditions.push(constraint_filter);
+        }
+
         // Note: We no longer skip zero-hop rows in recursion.
         // The recursion can now start from zero-hop base case and expand from there.
         // Cycle detection (NOT has) prevents infinite loops.
@@ -1508,6 +1581,11 @@ impl VariableLengthCteGenerator {
             where_conditions.push(poly_filter);
         }
 
+        // Add edge constraints if defined in schema
+        if let Some(constraint_filter) = self.generate_edge_constraint_filter() {
+            where_conditions.push(constraint_filter);
+        }
+
         let where_clause = where_conditions.join("\n      AND ");
 
         // Recursive case joins through INTERMEDIATE table, not end table
@@ -1611,6 +1689,11 @@ impl VariableLengthCteGenerator {
         // Add WHERE clause with start and end node filters
         let mut where_conditions = Vec::new();
 
+        // Add edge constraints if defined in schema
+        if let Some(constraint_filter) = self.generate_edge_constraint_filter() {
+            where_conditions.push(constraint_filter);
+        }
+
         if let Some(ref filters) = self.start_node_filters {
             where_conditions.push(filters.clone());
         }
@@ -1709,10 +1792,15 @@ impl VariableLengthCteGenerator {
             self.relationship_from_column, self.end_node_id_column
         );
 
-        let where_conditions = vec![
+        let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
             format!("NOT has(vp.path_edges, {})", edge_tuple_check),
         ];
+
+        // Add edge constraints if defined in schema
+        if let Some(constraint_filter) = self.generate_edge_constraint_filter() {
+            where_conditions.push(constraint_filter);
+        }
 
         let where_clause = where_conditions.join("\n      AND ");
 
@@ -1784,10 +1872,15 @@ impl VariableLengthCteGenerator {
             self.relationship_from_column, self.end_node_id_column
         );
 
-        let where_conditions = vec![
+        let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
             format!("NOT has(vp.path_edges, {})", edge_tuple_check),
         ];
+
+        // Add edge constraints if defined in schema
+        if let Some(constraint_filter) = self.generate_edge_constraint_filter() {
+            where_conditions.push(constraint_filter);
+        }
 
         let where_clause = where_conditions.join("\n      AND ");
 
@@ -1847,6 +1940,12 @@ impl VariableLengthCteGenerator {
 
         // Add WHERE clause for start node filters (rewritten for rel table)
         let mut where_conditions = Vec::new();
+
+        // Add edge constraints if defined in schema
+        if let Some(constraint_filter) = self.generate_edge_constraint_filter() {
+            where_conditions.push(constraint_filter);
+        }
+
         if let Some(ref filters) = self.start_node_filters {
             // Rewrite start_node references to rel references
             let rewritten =
@@ -1892,6 +1991,11 @@ impl VariableLengthCteGenerator {
             format!("vp.hop_count < {}", max_hops),
             format!("NOT has(vp.path_edges, {})", edge_tuple_recursive),
         ];
+
+        // Add edge constraints if defined in schema
+        if let Some(constraint_filter) = self.generate_edge_constraint_filter() {
+            where_conditions.push(constraint_filter);
+        }
 
         if self.shortest_path_mode.is_none() {
             if let Some(ref filters) = self.end_node_filters {

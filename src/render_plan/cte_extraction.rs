@@ -1248,6 +1248,7 @@ pub fn extract_ctes_with_context(
                     let mut generator = if both_denormalized {
                         log::debug!("CTE: Using denormalized generator for variable-length path (both nodes virtual)");
                         VariableLengthCteGenerator::new_denormalized(
+                            schema,
                             spec.clone(),
                             &rel_table, // The only table - edge table
                             &from_col,  // From column
@@ -1266,6 +1267,7 @@ pub fn extract_ctes_with_context(
                         log::debug!("CTE: Using mixed generator for variable-length path (start_denorm={}, end_denorm={})",
                                   start_is_denormalized, end_is_denormalized);
                         VariableLengthCteGenerator::new_mixed(
+                            schema,
                             spec.clone(),
                             &start_table,
                             &start_id_col,
@@ -1289,6 +1291,7 @@ pub fn extract_ctes_with_context(
                         )
                     } else {
                         VariableLengthCteGenerator::new_with_fk_edge(
+                            schema,
                             spec.clone(),
                             &start_table,
                             &start_id_col,

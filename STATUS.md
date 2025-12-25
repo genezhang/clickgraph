@@ -138,9 +138,14 @@ MATCH (a:User)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c)-[:FOLLOWS]->(d:User) RETURN a.nam
 
 ---
 
-## 🎯 Current State & Next Priorities (Dec 22, 2025)
+## 🎯 Current State & Next Priorities (Dec 24, 2025)
 
-**Major Progress**: Property usage optimization eliminates unnecessary JOINs, Wiki tests at 100%, core functionality significantly improved.
+**Major Progress**: Edge constraints feature completed and fully tested. Property usage optimization eliminates unnecessary JOINs, Wiki tests at 100%, core functionality significantly improved.
+
+**Completed Features**:
+- ✅ **Edge Constraints**: Cross-node validation (e.g., `from.timestamp <= to.timestamp`) for single-hop and VLP queries
+- ✅ **Property Usage Optimization**: Eliminates unnecessary JOINs for aggregation queries
+- ✅ **VLP Transitivity Check**: Semantic validation for recursive patterns
 
 **Remaining Work**:
 1. **Multi-Hop Bug Fix** (Priority 1): Fix nested GraphRel SQL generation for 3+ relationship chains
@@ -152,7 +157,92 @@ MATCH (a:User)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c)-[:FOLLOWS]->(d:User) RETURN a.nam
 - **Logic Bugs** (~38): Multi-hop patterns, VLP edge cases, shortest paths
 - **Progress**: From 2514→2481 passing (74.3%), but better code quality
 
-**Key Achievement**: Property usage-based JOIN optimization provides significant performance improvement for aggregation queries while maintaining correctness for property-accessing queries.
+**Key Achievement**: Edge constraints enable powerful temporal and logical validation in graph traversals, critical for lineage and security use cases.
+
+---
+
+## 🚀 v0.6.1 Feature: Edge Constraints (Dec 24-27, 2025)
+
+**Achievement**: Implemented cross-node validation constraints for relationships with **100% schema pattern coverage (8/8 tests passing)** ✅ **PRODUCTION-READY** 🎯
+
+**Documented**: Added edge constraints to [docs/schema-reference.md](docs/schema-reference.md) as a key differentiator feature.
+
+### Key Feature: Edge Constraints
+
+**Problem**: Graph traversals often require logical constraints between connected nodes (e.g., "event A must happen before event B") which cannot be expressed by simple ID matching.
+
+**Solution**:
+- Added `constraints` field to relationship schema (e.g., `"from.timestamp <= to.timestamp"`)
+- Implemented constraint compiler to translate schema expressions to SQL
+- Threaded schema explicitly through entire SQL generation pipeline
+- Integrated into both single-hop JOIN generation and VLP recursive CTEs
+
+**Capabilities**:
+- ✅ **Single-Hop Queries**: Adds constraints to the `ON` clause of the target node JOIN
+- ✅ **Variable-Length Paths**: Adds constraints to `WHERE` clauses in both base and recursive CTE parts
+- ✅ **Standard Edge Schema**: 3-table model (from_node, edge, to_node)
+- ✅ **FK-Edge Schema**: 1-table model (FK in node table)
+- ✅ **Denormalized Edge**: Node properties stored in edge table
+- ✅ **Polymorphic Edges**: Multiple relationship types in single table
+- **Schema-Driven**: Defined once in YAML, applied automatically to all queries
+
+**Test Coverage** (Dec 27, 2025):
+- ✅ `test_edge_constraint_sql_generation` - Basic SQL generation
+- ✅ `test_edge_constraint_filtering` - Constraint filtering
+- ✅ `test_query_without_constraint` - Queries without constraints work
+- ✅ `test_social_network_constraints` - Standard 3-table schema
+- ✅ `test_filesystem_fk_edge_constraints` - FK-edge (1-table) schema  
+- ✅ `test_denormalized_edge_constraints` - Denormalized edges
+- ✅ `test_polymorphic_edge_constraints` - Polymorphic edge types
+- ✅ `test_edge_constraint_vlp` - VLP constraints with recursive CTEs
+
+**Result**: **8/8 passing (100% coverage)** - All schema patterns supported!
+
+**Example**:
+```yaml
+# Schema
+edges:
+  - type_name: COPIED_BY
+    constraints: "from.timestamp <= to.timestamp"
+```
+
+```cypher
+# Single-hop query
+MATCH (a)-[:COPIED_BY]->(b) RETURN a, b
+
+# Generated SQL (constraint in JOIN)
+... INNER JOIN data_files AS b ON ... AND a.created_timestamp <= b.created_timestamp
+```
+
+```cypher
+# VLP query
+MATCH (a)-[:COPIED_BY*1..3]->(b) RETURN a, b
+
+# Generated SQL (constraints in both base and recursive CTE)
+WITH RECURSIVE vlp_cte AS (
+    -- Base case: constraint in WHERE
+    SELECT ... WHERE start_node.created_timestamp <= end_node.created_timestamp AND ...
+    UNION ALL
+    -- Recursive case: constraint in WHERE
+    SELECT ... WHERE ... AND current_node.created_timestamp <= end_node.created_timestamp
+)
+```
+
+**Implementation**: 
+- `constraint_compiler.rs`: Parses and compiles schema expressions
+- `plan_builder.rs`: Thread `schema` parameter, apply constraints during JOIN generation
+- `variable_length_cte.rs`: Schema threading for VLP constraint compilation
+- `cte_extraction.rs`: Pass schema to VLP generator constructors
+
+**Architecture Improvements** (Dec 27):
+- ✅ **Schema Threading**: Pass `schema: &GraphSchema` parameter through entire pipeline
+  - Eliminated hardcoded "default" lookups in VLP generator
+  - Added lifetime parameter `'a` to `VariableLengthCteGenerator<'a>`
+  - Updated all constructors: `new()`, `new_denormalized()`, `new_mixed()`, `new_with_fk_edge()`
+- ✅ **Explicit Defaults**: Log "explicit default - no USE clause" when using default schema
+- ✅ **Loud Failures**: List available schemas when schema not found (no silent fallbacks)
+- ✅ **FK-Edge Pattern**: Fixed anchor resolution using `graph_joins.anchor_table`
+- 📚 **Documentation**: Created comprehensive architecture docs (SCHEMA_THREADING_ARCHITECTURE.md)
 
 ---
 

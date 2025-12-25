@@ -1,0 +1,32 @@
+name: filesystem_constraints
+graph_schema:
+  nodes:
+    - label: File
+      database: filesystem
+      table: files
+      node_id: file_id
+      property_mappings:
+        file_id: file_id
+        name: file_name
+        security_level: security_level
+
+    - label: Folder
+      database: filesystem
+      table: folders
+      node_id: folder_id
+      property_mappings:
+        folder_id: folder_id
+        name: folder_name
+        security_level: security_level
+
+  edges:
+    - type: IN_FOLDER
+      database: filesystem
+      table: files  # FK-edge pattern: edge is embedded in from_node table
+      from_id: file_id
+      to_id: parent_folder_id
+      from_node: File
+      to_node: Folder
+      # Constraint: File's security level must not exceed folder's security level
+      # Use case: Files can only be placed in folders with adequate security clearance
+      constraints: "from.security_level <= to.security_level"

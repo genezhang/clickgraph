@@ -1,0 +1,32 @@
+name: community_polymorphic
+graph_schema:
+  nodes:
+    - label: Member
+      database: community
+      table: members
+      node_id: member_id
+      property_mappings:
+        member_id: member_id
+        username: username
+        reputation: reputation
+        join_date: join_date
+
+  edges:
+    # Polymorphic edge: Multiple relationship types in one table
+    - polymorphic: true
+      type_column: interaction_type
+      type_values:
+        - MENTORS
+        - REVIEWS
+        - HELPS
+      database: community
+      table: interactions
+      from_id: from_member_id
+      to_id: to_member_id
+      from_node: Member
+      to_node: Member
+      property_mappings:
+        interaction_date: interaction_date
+      # Constraint: Higher reputation members interact with lower reputation members
+      # Applies to all interaction types (MENTORS, REVIEWS, HELPS)
+      constraints: "from.reputation >= to.reputation"

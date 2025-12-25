@@ -2,6 +2,22 @@
 
 Complete reference for YAML schema configuration, covering all attributes for nodes and edges.
 
+## Key Differentiators
+
+**🔗 Edge Constraints** - ClickGraph supports cross-node validation rules in relationship traversals. Define temporal ordering, referential integrity, or custom business logic directly in your schema:
+
+```yaml
+edges:
+  - type_name: FILE_COPY
+    from_node: File
+    to_node: File
+    constraints: "from.timestamp <= to.timestamp"  # Temporal ordering enforced
+```
+
+Constraints work across all query types (single-hop, variable-length paths, shortest path) and all schema patterns (standard, polymorphic, denormalized, FK-edge).
+
+---
+
 ## Overview
 
 ClickGraph schemas map existing ClickHouse tables to graph entities (nodes and edges). Schemas are defined in YAML files and support several patterns:
@@ -101,6 +117,39 @@ For edges with their own dedicated table.
 | `view_parameters` | list | `null` | Parameter names for parameterized views |
 | `use_final` | bool | `null` | Override FINAL keyword usage |
 | `filter` | string | `null` | SQL predicate filter |
+| `constraints` | string | `null` | Cross-node validation expression (e.g., `"from.timestamp <= to.timestamp"`) |
+
+#### Edge Constraints
+
+Edge constraints enable validation rules that span both source and target nodes. They are compiled into SQL and added to JOIN conditions or WHERE clauses.
+
+**Syntax**: Boolean expression using `from.` and `to.` prefixes to reference node properties.
+
+**Example**:
+```yaml
+edges:
+  - type_name: COPIED_BY
+    database: lineage
+    table: file_lineage
+    from_node: DataFile
+    to_node: DataFile
+    from_id: source_file_id
+    to_id: target_file_id
+    constraints: "from.timestamp <= to.timestamp"  # Temporal ordering
+```
+
+**Supported Operators**: `<`, `<=`, `>`, `>=`, `=`, `!=`, `AND`, `OR`
+
+**Compilation**: 
+- Property names (`from.timestamp`, `to.timestamp`) are resolved using node property_mappings
+- Result: `f.created_timestamp <= t.created_timestamp` (in SQL)
+- For single-hop: Added to target node JOIN ON clause
+- For variable-length paths: Added to CTE WHERE clauses (base and recursive)
+
+**Current Limitations**:
+- Directional only (applies to specific from_node → to_node direction)
+- Single relationship type per constraint
+- No support for complex expressions (subqueries, aggregations)
 
 ---
 
