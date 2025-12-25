@@ -1,0 +1,108 @@
+# Data Lineage Schema Example - Edge Constraints Feature Demo
+#
+# This schema demonstrates the edge constraints feature for tracking
+# data lineage in a data processing pipeline. The COPIED_BY relationship
+# has a temporal constraint ensuring data flows forward in time.
+#
+# Use case: Track how data files are copied/transformed through pipeline stages
+# - Each copy operation creates a new file with a later timestamp
+# - VLP queries can find all descendants: MATCH (f:DataFile)-[:COPIED_BY*1..5]->(d)
+# - Constraint ensures temporal ordering: from.timestamp <= to.timestamp
+
+name: data_lineage
+graph_schema:
+  nodes:
+    - label: DataFile
+      database: lineage
+      table: data_files
+      node_id: file_id
+      property_mappings:
+        file_id: file_id
+        path: file_path
+        size: file_size_bytes
+        timestamp: created_timestamp
+        stage: pipeline_stage
+        checksum: file_checksum
+
+    - label: DataAnalysis
+      database: lineage
+      table: analysis_results
+      node_id: analysis_id
+      property_mappings:
+        analysis_id: analysis_id
+        name: analysis_name
+        timestamp: run_timestamp
+        status: execution_status
+
+  edges:
+    # Standard edge with temporal constraint
+    - type: COPIED_BY
+      database: lineage
+      table: file_lineage
+      from_id: source_file_id
+      to_id: target_file_id
+      from_node: DataFile
+      to_node: DataFile
+      property_mappings:
+        operation: copy_operation_type  # 'copy', 'transform', 'aggregate'
+        timestamp: operation_timestamp
+        user: operated_by_user
+      # Edge constraint: ensure temporal ordering in lineage
+      # This prevents cycles and validates data flow direction
+      constraints: "from.timestamp <= to.timestamp"
+
+    # Edge from file to analysis (demonstrates multi-hop with constraints)
+    - type: ANALYZED_BY
+      database: lineage
+      table: file_analysis
+      from_id: file_id
+      to_id: analysis_id
+      from_node: DataFile
+      to_node: DataAnalysis
+      property_mappings:
+        timestamp: analysis_timestamp
+      # Constraint: analysis must happen after file creation
+      constraints: "from.timestamp <= to.timestamp"
+
+# Example queries enabled by this schema:
+#
+# 1. Find all descendants of a file (with temporal validation):
+#    MATCH (f:DataFile {file_id: 1})-[:COPIED_BY*1..5]->(d:DataFile)
+#    RETURN d.path, d.timestamp
+#
+# 2. Find files created through multi-stage pipeline:
+#    MATCH path = (f:DataFile {stage: 'raw'})-[:COPIED_BY*]->(d:DataFile {stage: 'gold'})
+#    RETURN nodes(path), length(path)
+#
+# 3. Track file through analysis:
+#    MATCH (f:DataFile)-[:COPIED_BY*]->(final:DataFile)-[:ANALYZED_BY]->(a:DataAnalysis)
+#    WHERE f.file_id = 1
+#    RETURN final.path, a.name, a.status
+#
+# SQL Generation (single hop):
+#   SELECT ... FROM lineage.data_files AS from_node
+#   JOIN lineage.file_lineage AS edge ON from_node.file_id = edge.source_file_id
+#   JOIN lineage.data_files AS to_node ON edge.target_file_id = to_node.file_id
+#   WHERE from_node.created_timestamp <= to_node.created_timestamp  -- constraint!
+#
+# SQL Generation (VLP):
+#   WITH RECURSIVE lineage_cte AS (
+#     -- Base case
+#     SELECT source_file_id, target_file_id, 1 as depth
+#     FROM lineage.file_lineage AS edge
+#     JOIN lineage.data_files AS from_f ON edge.source_file_id = from_f.file_id
+#     JOIN lineage.data_files AS to_f ON edge.target_file_id = to_f.file_id
+#     WHERE from_f.file_id = 1
+#       AND from_f.created_timestamp <= to_f.created_timestamp  -- constraint!
+#     UNION ALL
+#     -- Recursive case
+#     SELECT edge.source_file_id, edge.target_file_id, prev.depth + 1
+#     FROM lineage_cte AS prev
+#     JOIN lineage.file_lineage AS edge ON prev.target_file_id = edge.source_file_id
+#     JOIN lineage.data_files AS from_f ON edge.source_file_id = from_f.file_id
+#     JOIN lineage.data_files AS to_f ON edge.target_file_id = to_f.file_id
+#     WHERE prev.depth < 5
+#       AND from_f.created_timestamp <= to_f.created_timestamp  -- constraint!
+#   )
+#   SELECT to_node.* FROM lineage_cte
+#   JOIN lineage.data_files AS to_node ON lineage_cte.target_file_id = to_node.file_id
