@@ -33,7 +33,7 @@ class TestVLPWithCollect:
     def test_vlp_with_collect(self):
         """VLP + COLLECT: Collect all names in paths."""
         query = """
-        MATCH path = (u1:TestUser)-[:TestFollows*1..2]->(u2:TestUser)
+        MATCH path = (u1:TestUser)-[:TEST_FOLLOWS*1..2]->(u2:TestUser)
         WHERE u1.user_id = 1
         RETURN u1.name as start, COLLECT(u2.name) as reached
         """
@@ -50,7 +50,7 @@ class TestVLPWithCollect:
     def test_vlp_with_collect_and_groupby(self):
         """VLP + COLLECT + GROUP BY: Group paths by starting node."""
         query = """
-        MATCH path = (u1:TestUser)-[:TestFollows*1..2]->(u2:TestUser)
+        MATCH path = (u1:TestUser)-[:TEST_FOLLOWS*1..2]->(u2:TestUser)
         WHERE u1.user_id IN [1, 2]
         RETURN u1.user_id, COLLECT(u2.name) as reached
         """
@@ -66,7 +66,7 @@ class TestVLPWithClause:
     def test_vlp_with_filtering(self):
         """VLP + WITH: Filter paths before final RETURN."""
         query = """
-        MATCH path = (u1:TestUser)-[:TestFollows*1..2]->(u2:TestUser)
+        MATCH path = (u1:TestUser)-[:TEST_FOLLOWS*1..2]->(u2:TestUser)
         WHERE u1.user_id = 1
         WITH u1, u2, length(path) as path_len
         WHERE path_len = 2
@@ -81,7 +81,7 @@ class TestVLPWithClause:
     def test_vlp_with_and_aggregation(self):
         """VLP + WITH + Aggregation: Count distinct endpoints."""
         query = """
-        MATCH path = (u1:TestUser)-[:TestFollows*1..2]->(u2:TestUser)
+        MATCH path = (u1:TestUser)-[:TEST_FOLLOWS*1..2]->(u2:TestUser)
         WHERE u1.user_id = 1
         WITH u1, COUNT(DISTINCT u2.user_id) as reach_count
         RETURN u1.name, reach_count
@@ -163,7 +163,7 @@ class TestVLPWithAggregations:
     def test_vlp_count_distinct(self):
         """VLP + Multiple aggregates: COUNT and DISTINCT."""
         query = """
-        MATCH path = (u1:TestUser)-[:TestFollows*1..2]->(u2:TestUser)
+        MATCH path = (u1:TestUser)-[:TEST_FOLLOWS*1..2]->(u2:TestUser)
         WHERE u1.user_id = 1
         RETURN COUNT(DISTINCT u2.user_id) as unique_reached,
                COUNT(*) as total_paths
@@ -179,7 +179,7 @@ class TestVLPWithAggregations:
     def test_vlp_property_in_where_and_return(self):
         """VLP: Use properties in both WHERE and RETURN clauses."""
         query = """
-        MATCH path = (u1:TestUser)-[:TestFollows*1..2]->(u2:TestUser)
+        MATCH path = (u1:TestUser)-[:TEST_FOLLOWS*1..2]->(u2:TestUser)
         WHERE u1.name = 'Alice'
         RETURN u1.name, u2.name
         """
@@ -204,7 +204,7 @@ class TestVLPPropertyPruning:
         we add sql_only mode to API or inspection capability.
         """
         query = """
-        MATCH path = (u1:TestUser)-[:TestFollows*1..2]->(u2:TestUser)
+        MATCH path = (u1:TestUser)-[:TEST_FOLLOWS*1..2]->(u2:TestUser)
         WHERE u1.user_id = 1
         RETURN u2.user_id
         """

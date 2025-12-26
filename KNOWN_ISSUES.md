@@ -1,7 +1,7 @@
 # Known Issues
 
-**Active Issues**: 0 bugs, 3 feature limitations, 1 known limitation  
-**Last Updated**: December 25, 2025
+**Active Issues**: 0 bugs, 3 feature limitations  
+**Last Updated**: December 26, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -11,42 +11,33 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 ## Current Status
 
 **Bug Status**: ✅ **All known bugs fixed!**
-- Integration test pass rate: **100% (549 passed, 54 xfailed)** 
+- Integration test pass rate: **100%** 
 - All core functionality working correctly
+- VLP + WITH clause path functions fixed (Dec 26, 2025)
 - VLP cross-functional testing complete (Dec 25, 2025)
 - Denormalized VLP fixed (Dec 25, 2025)
 - Property pruning complete (Dec 24, 2025)
 
 ---
 
+## Recently Fixed
+
+### Path Functions in WITH Clauses (CTEs)
+**Status**: ✅ **FIXED** - December 26, 2025
+
+**Problem**: VLP queries with `length(path)` in WITH clauses generated CTEs that used VLP internal aliases (`start_node`/`end_node`) instead of Cypher aliases (`u1`/`u2`) in SELECT items.
+
+**Root Cause**: The `rewrite_vlp_union_branch_aliases` function was incorrectly rewriting WITH CTE bodies. When checking if endpoint aliases had JOINs, it checked the *outer* plan's JOINs, but when rewriting CTE bodies, those nested RenderPlans don't have JOINs yet (they're in the outer plan). This caused it to incorrectly rewrite `u1` → `start_node`.
+
+**Fix**: Modified `rewrite_vlp_union_branch_aliases` to only apply `t` → `vlp_alias` mapping when rewriting CTE bodies, excluding endpoint alias rewrites entirely for CTEs. WITH CTEs have their own JOINs (`JOIN users AS u1`) so SELECT items should use those Cypher aliases.
+
+**Verification**: All VLP + WITH clause tests pass:
+- `test_vlp_with_filtering` ✅
+- `test_vlp_with_and_aggregation` ✅
+
+---
+
 ## Known Limitations
-
-### 1. Path Functions in WITH Clauses (CTEs)
-**Status**: ⚠️ KNOWN LIMITATION  
-**Discovered**: December 25, 2025  
-**Issue**: Using `length(path)` in WITH clauses generates invalid SQL  
-
-**Example (Fails)**:
-```cypher
-MATCH path = (u1:TestUser)-[:TEST_FOLLOWS*1..2]->(u2:TestUser)
-WHERE u1.user_id = 1
-WITH u1, u2, length(path) as path_len
-WHERE path_len = 2
-RETURN u1.name, u2.name, path_len
-```
-
-**Error**: `Unknown expression identifier 't.hop_count'`
-
-**Root Cause**: Path functions (`length()`, `nodes()`, `relationships()`) work in RETURN clauses but have issues in WITH clauses (CTEs). The CTE doesn't have access to the path metadata table alias.
-
-**Workaround**: Use fixed-length patterns when exact hop count is needed:
-```cypher
-MATCH path = (u1:TestUser)-[:TEST_FOLLOWS*2]->(u2:TestUser)
-WHERE u1.user_id = 1
-RETURN u1.name, u2.name
-```
-
-**Scope**: This is a general CTE limitation, not specific to VLP implementation. Path functions work correctly in RETURN clauses.
 
 **Documentation**: [docs/development/vlp-cross-functional-testing.md](docs/development/vlp-cross-functional-testing.md)
 

@@ -1,6 +1,35 @@
 ## [Unreleased]
 
-### 🚀 Features
+### � Bug Fixes
+
+#### VLP Path Functions in WITH Clauses (Dec 26, 2025) ⭐
+
+**Fixed `length(path)` generating incorrect aliases in WITH clauses.**
+
+**Problem:**
+```cypher
+MATCH path = (u1:User)-[:FOLLOWS*1..2]->(u2:User)
+WITH u1, u2, length(path) as path_len
+WHERE path_len = 2
+RETURN u1.name, u2.name, path_len
+-- Generated SQL had: SELECT start_node.age (WRONG)
+-- Instead of: SELECT u1.age (CORRECT)
+```
+
+**Root Cause:**
+The `rewrite_vlp_union_branch_aliases` function was checking if endpoint aliases (u1, u2) had JOINs in the *outer* plan, but when rewriting CTE bodies (nested RenderPlans), those don't have JOINs yet. This caused incorrect rewriting: `u1` → `start_node`.
+
+**Fix:**
+Modified CTE body rewriting to ONLY apply `t` → `vlp_alias` mapping (for path functions like `length(path)`), excluding endpoint alias rewrites entirely. WITH CTEs have their own JOINs, so SELECT items should use Cypher aliases.
+
+**Verification:**
+- `test_vlp_with_filtering` ✅
+- `test_vlp_with_and_aggregation` ✅
+- All 24 VLP integration tests pass ✅
+
+---
+
+### �🚀 Features
 
 #### Multiple UNWIND Clauses (Dec 25, 2025) ⭐
 

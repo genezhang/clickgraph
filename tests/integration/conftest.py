@@ -108,19 +108,25 @@ def clean_database(clickhouse_client, test_database):
         pass
 
 
-def execute_cypher(query: str, schema_name: str = "unified_test_schema", raise_on_error: bool = True) -> Dict[str, Any]:
+def execute_cypher(query: str, schema_name: str = "social_benchmark", raise_on_error: bool = True) -> Dict[str, Any]:
     """
     Execute a Cypher query via ClickGraph HTTP API.
     
-    UNIFIED SCHEMA MODE (NEW CONVENTION):
-    - Uses explicit "USE <schema_name>" clause in all queries
+    MULTI-SCHEMA MODE (CLEAN SEPARATION):
+    - Uses explicit "USE <schema_name>" clause in queries
     - Auto-prepends USE clause if not present
-    - Default schema: unified_test_schema (contains TestUser, TestProduct, etc.)
-    - No schema_name parameter sent to server (USE clause handles it)
+    - Default schema: social_benchmark (User, Post, FOLLOWS from brahmand DB)
+    - Each schema is a separate self-contained graph
+    
+    Available schemas:
+    - social_benchmark: Primary social network (User, Post, FOLLOWS)
+    - test_fixtures: Test data (TestUser, TestProduct, TEST_FOLLOWS)
+    - denormalized_flights: Denormalized Airport→FLIGHT graph
+    - data_security, property_expressions, etc.: Specialized test schemas
     
     Args:
         query: Cypher query string (USE clause auto-prepended if missing)
-        schema_name: Schema name to use in USE clause (default: "unified_test_schema")
+        schema_name: Schema name to use in USE clause (default: "social_benchmark")
         raise_on_error: If True, raise HTTPError on failure. If False, return error in response dict.
         
     Returns:
@@ -201,27 +207,38 @@ def load_all_test_schemas():
     This ensures all tests can run regardless of which schema was initially loaded via GRAPH_CONFIG_PATH.
     Schemas are loaded dynamically via /schemas/load endpoint and stored in GLOBAL_SCHEMAS.
     
-    Schema mappings:
-    - unified_test_schema: Main test schema (TestUser, TestProduct, etc.)
+    Schema mappings (clean separation - each schema is a self-contained graph):
+    - social_benchmark: Primary social network (User, Post, FOLLOWS) from brahmand DB
+    - test_fixtures: Test data (TestUser, TestProduct) from test_integration DB
+    - denormalized_flights: Denormalized Airport→FLIGHT graph from test_integration DB
     - data_security: Security graph (User, Group, File, Folder, polymorphic relationships)
     - property_expressions: Property expression tests
-    - Other test schemas as needed
+    - Other specialized test schemas
     """
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
     
     # Define schemas to load: (schema_name, yaml_path)
+    # NOTE: Each schema is a separate graph - tests use USE clause to select schema
     schemas_to_load = [
-        ("unified_test_schema", "schemas/test/unified_test_schema.yaml"),
+        # Core test schemas (clean separation)
+        ("social_benchmark", "schemas/test/social_benchmark.yaml"),
+        ("test_fixtures", "schemas/test/test_fixtures.yaml"),
+        ("denormalized_flights", "schemas/test/denormalized_flights.yaml"),
+        
+        # Specialized test schemas
         ("data_security", "examples/data_security/data_security.yaml"),
         ("property_expressions", "schemas/test/property_expressions.yaml"),
         ("property_expressions_simple", "schemas/test/property_expressions_simple.yaml"),
-        ("test_integration", "schemas/test/test_integration_schema.yaml"),
         ("group_membership", "schemas/test/group_membership_simple.yaml"),
         ("multi_tenant", "schemas/test/multi_tenant.yaml"),
-        ("denormalized_flights", "schemas/test/denormalized_flights.yaml"),
         ("mixed_denorm_test", "schemas/test/mixed_denorm_test.yaml"),
-        # Add ontime_flights for multi-hop tests
+        
+        # Benchmark schemas
         ("ontime_flights", "schemas/examples/ontime_denormalized.yaml"),
+        
+        # Legacy schemas (keep temporarily for backward compatibility)
+        ("unified_test_schema", "schemas/test/unified_test_schema.yaml"),  # DEPRECATED - use specific schemas
+        ("test_integration", "schemas/test/test_integration_schema.yaml"),  # DEPRECATED - use test_fixtures
     ]
     
     loaded_count = 0
