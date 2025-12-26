@@ -110,27 +110,6 @@ graph_schema:
         url: url
 
     # ===================================================================================
-    # ONTIME FLIGHTS - Flight data benchmark (tests/integration/ontime/)
-    # ===================================================================================
-    - label: Flight
-      database: ontime
-      table: ontime
-      node_id: FlightNum
-      property_mappings:
-        FlightNum: FlightNum
-        Year: Year
-        Month: Month
-        DayofMonth: DayofMonth
-        Origin: Origin
-        Dest: Dest
-        DepTime: DepTime
-        ArrTime: ArrTime
-        DepDelay: DepDelay
-        ArrDelay: ArrDelay
-        Distance: Distance
-        Cancelled: Cancelled
-
-    # ===================================================================================
     # TEST_INTEGRATION - Dynamic test fixtures (tests/integration/test_*.py)
     # Uses TestUser/TestProduct to avoid conflicts with social_benchmark User
     # ===================================================================================
@@ -287,20 +266,19 @@ graph_schema:
       to_node: Tag
 
     # ===================================================================================
-    # ONTIME FLIGHTS relationships
+    # DENORMALIZED FLIGHTS relationships (test_integration.flights)
     # ===================================================================================
-    # ONTIME FLIGHTS relationships
-    # ===================================================================================
-    - type: FLIES_TO
-      database: ontime
-      table: ontime
+    - type: FLIGHT
+      database: test_integration
+      table: flights
       from_id: Origin
       to_id: Dest
-      from_node: Flight
-      to_node: Flight
+      from_node: Airport
+      to_node: Airport
       property_mappings:
-        Distance: Distance
-        ArrDelay: ArrDelay
+        flight_number: flight_number
+        airline: airline
+        distance_miles: distance_miles
 
     # ===================================================================================
     # TEST_INTEGRATION relationships (dynamic test fixtures)
