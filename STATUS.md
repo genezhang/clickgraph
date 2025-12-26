@@ -2,7 +2,32 @@
 
 *Updated: December 25, 2025*
 
-## 🎯 Latest: **Multiple UNWIND Complete!** (Dec 25, 2025)
+## 🎯 Latest: **VLP Cross-Functional Testing Complete!** (Dec 25, 2025)
+
+**Achievement**: Verified Variable-Length Path queries work correctly with ALL other Cypher features!
+
+**Philosophy**: "Never assume orthogonal features work together - test them!"
+
+**Test Results**: ✅ **6/6 cross-functional scenarios passing**
+
+| Feature Combination | Status | Example |
+|---|---|---|
+| VLP + COLLECT | ✅ PASS | `MATCH path=(a)-[*1..2]->(b) RETURN COLLECT(b.name)` |
+| VLP + WITH filtering | ✅ PASS | `MATCH path=(a)-[*]->(b) WITH a,b WHERE b.id>2` |
+| VLP + COUNT DISTINCT | ✅ PASS | `MATCH path=(a)-[*]->(b) RETURN COUNT(DISTINCT b)` |
+| VLP + WITH + Aggregation | ✅ PASS | `MATCH p=(a)-[*]->(b) WITH a, COUNT(b) AS cnt` |
+| VLP + Property WHERE | ✅ PASS | `MATCH path=(a)-[*]->(b) WHERE a.name='Alice'` |
+| VLP + COLLECT + GROUP BY | ✅ PASS | `MATCH p=(a)-[*]->(b) RETURN a.id, COLLECT(b)` |
+
+**Documentation**: See [docs/development/vlp-cross-functional-testing.md](docs/development/vlp-cross-functional-testing.md)
+
+**Verification Script**: `scripts/test/verify_vlp_crossfunctional.sh`
+
+**Known Limitation**: `length(path)` in WITH clauses (path functions in CTEs - general issue, not VLP-specific)
+
+---
+
+## 🎉 Multiple UNWIND Complete! (Dec 25, 2025)
 
 **Feature Complete**: Multiple consecutive UNWIND clauses for cartesian products!
 
