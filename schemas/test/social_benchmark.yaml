@@ -1,0 +1,84 @@
+# Social Benchmark Schema
+# 
+# Primary test schema for ClickGraph integration tests
+# Database: brahmand
+# Tables: users_bench, posts_bench, user_follows_bench, post_likes_bench
+#
+# This schema represents a social network with users, posts, and relationships.
+# Used by: Most wiki tests, basic query tests, VLP tests with standard schema
+
+name: social_benchmark
+
+graph_schema:
+  nodes:
+    # User nodes from brahmand.users_bench
+    - label: User
+      database: brahmand
+      table: users_bench
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: full_name           # Cypher: u.name → SQL: full_name
+        email: email_address      # Cypher: u.email → SQL: email_address
+        registration_date: registration_date
+        is_active: is_active
+        country: country
+        city: city
+
+    # Post nodes from brahmand.posts_bench
+    - label: Post
+      database: brahmand
+      table: posts_bench
+      node_id: post_id
+      property_mappings:
+        post_id: post_id
+        content: content
+        date: created_at
+
+    # ZeekLog nodes from brahmand.zeek_logs
+    - label: ZeekLog
+      database: brahmand
+      table: zeek_logs
+      node_id: log_id
+      property_mappings:
+        log_id: log_id
+        timestamp: timestamp
+        source_ip: source_ip
+        dest_ips: dest_ips
+        protocols: protocols
+        bytes_sent: bytes_sent
+
+  edges:
+    # FOLLOWS relationship: User follows another User
+    - type: FOLLOWS
+      database: brahmand
+      table: user_follows_bench
+      from_id: follower_id
+      to_id: followed_id
+      from_node: User
+      to_node: User
+      property_mappings:
+        follow_date: follow_date
+    
+    # AUTHORED relationship: User authors a Post
+    - type: AUTHORED
+      database: brahmand
+      table: posts_bench
+      from_id: user_id
+      to_id: post_id
+      from_node: User
+      to_node: Post
+      property_mappings:
+        content: content
+        date: created_at
+    
+    # LIKED relationship: User likes a Post  
+    - type: LIKED
+      database: brahmand
+      table: post_likes_bench
+      from_id: user_id
+      to_id: post_id
+      from_node: User
+      to_node: Post
+      property_mappings:
+        liked_at: liked_at

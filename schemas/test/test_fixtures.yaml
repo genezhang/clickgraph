@@ -1,0 +1,68 @@
+# Test Fixtures Schema
+#
+# Schema for dynamic test fixtures and integration tests
+# Database: test_integration
+# Tables: users, products, follows, purchases, friendships
+#
+# This schema uses TestUser/TestProduct labels to avoid conflicts with other schemas.
+# Used by: Dynamic fixture tests, basic integration tests, node uniqueness tests
+
+name: test_fixtures
+
+graph_schema:
+  nodes:
+    # TestUser nodes from test_integration.users
+    - label: TestUser
+      database: test_integration
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: name
+        age: age
+
+    # TestProduct nodes from test_integration.products
+    - label: TestProduct
+      database: test_integration
+      table: products
+      node_id: product_id
+      property_mappings:
+        product_id: product_id
+        name: name
+        price: price
+        category: category
+
+  edges:
+    # TEST_FOLLOWS relationship: TestUser follows another TestUser
+    - type: TEST_FOLLOWS
+      database: test_integration
+      table: follows
+      from_id: follower_id
+      to_id: followed_id
+      from_node: TestUser
+      to_node: TestUser
+      property_mappings:
+        since: since
+
+    # TEST_PURCHASED relationship: TestUser purchases TestProduct
+    - type: TEST_PURCHASED
+      database: test_integration
+      table: purchases
+      from_id: user_id
+      to_id: product_id
+      from_node: TestUser
+      to_node: TestProduct
+      property_mappings:
+        purchase_date: purchase_date
+        quantity: quantity
+
+    # TEST_FRIENDS_WITH relationship: TestUsers are friends (bidirectional)
+    - type: TEST_FRIENDS_WITH
+      database: test_integration
+      table: friendships
+      from_id: user_id_1
+      to_id: user_id_2
+      from_node: TestUser
+      to_node: TestUser
+      property_mappings:
+        since: since

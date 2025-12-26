@@ -7,6 +7,23 @@ use serde::{Deserialize, Serialize};
 use serde_yaml;
 use std::collections::HashMap;
 
+/// Multi-schema configuration wrapper
+/// Supports loading multiple schemas from a single YAML file
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SchemaConfigFile {
+    /// Single schema (backward compatible)
+    Single(GraphSchemaConfig),
+    /// Multiple schemas in one file
+    Multi {
+        /// Optional default schema name
+        #[serde(default)]
+        default_schema: Option<String>,
+        /// List of schemas
+        schemas: Vec<GraphSchemaConfig>,
+    },
+}
+
 /// Identifier type supporting both single and composite IDs
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]

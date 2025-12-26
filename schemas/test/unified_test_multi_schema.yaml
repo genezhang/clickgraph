@@ -1,0 +1,293 @@
+default_schema: social_benchmark
+schemas:
+  - name: social_benchmark
+    graph_schema:
+      nodes:
+        - label: User
+          database: brahmand
+          table: users_bench
+          node_id: user_id
+          property_mappings:
+            user_id: user_id
+            name: full_name
+            email: email_address
+            registration_date: registration_date
+            is_active: is_active
+            country: country
+            city: city
+        - label: Post
+          database: brahmand
+          table: posts_bench
+          node_id: post_id
+          property_mappings:
+            post_id: post_id
+            content: content
+            date: created_at
+      edges:
+        - type: AUTHORED
+          database: brahmand
+          table: posts_bench
+          from_id: user_id
+          to_id: post_id
+          from_node: User
+          to_node: Post
+        - type: FOLLOWS
+          database: brahmand
+          table: user_follows_bench
+          from_id: follower_id
+          to_id: followed_id
+          from_node: User
+          to_node: User
+          property_mappings:
+            follow_date: follow_date
+        - type: LIKED
+          database: brahmand
+          table: post_likes_bench
+          from_id: user_id
+          to_id: post_id
+          from_node: User
+          to_node: Post
+          property_mappings:
+            liked_at: liked_at
+
+  - name: test_fixtures
+    graph_schema:
+      nodes:
+        - label: TestUser
+          database: brahmand
+          table: users
+          node_id: user_id
+          property_mappings:
+            user_id: user_id
+            name: name
+            email: email
+        - label: TestProduct
+          database: brahmand
+          table: products
+          node_id: product_id
+          property_mappings:
+            product_id: product_id
+            name: name
+            price: price
+        - label: TestGroup
+          database: brahmand
+          table: groups
+          node_id: group_id
+          property_mappings:
+            group_id: group_id
+            name: name
+      edges:
+        - type: TEST_PURCHASED
+          database: brahmand
+          table: purchases
+          from_id: user_id
+          to_id: product_id
+          from_node: TestUser
+          to_node: TestProduct
+          property_mappings:
+            purchase_date: purchase_date
+            quantity: quantity
+        - type: TEST_FRIENDS_WITH
+          database: brahmand
+          table: friendships
+          from_id: user_id_1
+          to_id: user_id_2
+          from_node: TestUser
+          to_node: TestUser
+          property_mappings:
+            since: since
+        - type: MEMBER_OF
+          database: brahmand
+          table: memberships
+          from_id: user_id
+          to_id: group_id
+          from_node: TestUser
+          to_node: TestGroup
+          property_mappings:
+            joined_date: joined_date
+            role: role
+        - type: RATED
+          database: brahmand
+          table: ratings
+          from_id: user_id
+          to_id: product_id
+          from_node: TestUser
+          to_node: TestProduct
+          property_mappings:
+            rating: rating
+            review_text: review_text
+
+  - name: ldbc_snb
+    graph_schema:
+      nodes:
+        - label: Person
+          database: ldbc
+          table: person
+          node_id: personId
+          property_mappings:
+            personId: personId
+            firstName: firstName
+            lastName: lastName
+            creationDate: creationDate
+        - label: Comment
+          database: ldbc
+          table: comment
+          node_id: commentId
+          property_mappings:
+            commentId: commentId
+            content: content
+            creationDate: creationDate
+        - label: Forum
+          database: ldbc
+          table: forum
+          node_id: forumId
+          property_mappings:
+            forumId: forumId
+            title: title
+            creationDate: creationDate
+        - label: Tag
+          database: ldbc
+          table: tag
+          node_id: tagId
+          property_mappings:
+            tagId: tagId
+            name: name
+      edges:
+        - type: KNOWS
+          database: ldbc
+          table: person_knows_person
+          from_id: person1Id
+          to_id: person2Id
+          from_node: Person
+          to_node: Person
+        - type: HAS_CREATOR
+          database: ldbc
+          table: comment
+          from_id: commentId
+          to_id: creatorId
+          from_node: Comment
+          to_node: Person
+        - type: REPLY_OF
+          database: ldbc
+          table: comment
+          from_id: commentId
+          to_id: replyOfCommentId
+          from_node: Comment
+          to_node: Comment
+        - type: LIKES
+          database: ldbc
+          table: person_likes_comment
+          from_id: personId
+          to_id: commentId
+          from_node: Person
+          to_node: Comment
+        - type: CONTAINER_OF
+          database: ldbc
+          table: forum_containerof_post
+          from_id: forumId
+          to_id: postId
+          from_node: Forum
+          to_node: Comment
+        - type: HAS_MEMBER
+          database: ldbc
+          table: forum_hasmember_person
+          from_id: forumId
+          to_id: personId
+          from_node: Forum
+          to_node: Person
+        - type: HAS_MODERATOR
+          database: ldbc
+          table: forum
+          from_id: forumId
+          to_id: moderatorId
+          from_node: Forum
+          to_node: Person
+        - type: HAS_TAG
+          database: ldbc
+          table: comment_hastag_tag
+          from_id: commentId
+          to_id: tagId
+          from_node: Comment
+          to_node: Tag
+
+  - name: denormalized_flights
+    graph_schema:
+      nodes:
+        - label: Airport
+          database: travel
+          table: flights
+          node_id: origin_airport
+          property_mappings:
+            code: origin_airport
+            name: origin_airport_name
+            city: origin_city
+      edges:
+        - type: FLIGHT
+          database: travel
+          table: flights
+          from_id: origin_airport
+          to_id: dest_airport
+          from_node: Airport
+          to_node: Airport
+          property_mappings:
+            flight_date: flight_date
+            flight_number: flight_number
+            departure_time: departure_time
+            arrival_time: arrival_time
+
+  - name: pattern_comp
+    graph_schema:
+      nodes:
+        - label: PatternCompUser
+          database: brahmand
+          table: pattern_comp_users
+          node_id: user_id
+          property_mappings:
+            user_id: user_id
+            name: name
+      edges:
+        - type: PATTERN_COMP_FOLLOWS
+          database: brahmand
+          table: pattern_comp_follows
+          from_id: follower_id
+          to_id: followed_id
+          from_node: PatternCompUser
+          to_node: PatternCompUser
+
+  - name: zeek_logs
+    graph_schema:
+      nodes:
+        - label: IP
+          database: security
+          table: ip_addresses
+          node_id: ip
+          property_mappings:
+            ip: ip
+        - label: Domain
+          database: security
+          table: dns
+          node_id: query
+          property_mappings:
+            domain: query
+      edges:
+        - type: DNS_REQUESTED
+          database: security
+          table: dns
+          from_id: id_orig_h
+          to_id: query
+          from_node: IP
+          to_node: Domain
+          property_mappings:
+            ts: ts
+            query_type: qtype_name
+        - type: CONNECTED_TO
+          database: security
+          table: conn
+          from_id: id_orig_h
+          to_id: id_resp_h
+          from_node: IP
+          to_node: IP
+          property_mappings:
+            ts: ts
+            duration: duration
+            proto: proto
