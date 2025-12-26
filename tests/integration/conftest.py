@@ -239,9 +239,9 @@ def load_all_test_schemas():
         # Benchmark schemas
         ("ontime_flights", "schemas/examples/ontime_denormalized.yaml"),
         
-        # Multi-schema config (loads 6 schemas: social_benchmark, test_fixtures, ldbc_snb, etc.)
-        # This is now the PRIMARY test schema configuration
-        ("multi_schema", "schemas/test/unified_test_multi_schema.yaml"),
+        # NOTE: unified_test_multi_schema.yaml is loaded as default via GRAPH_CONFIG_PATH
+        # It contains 6 schemas loaded automatically by the server at startup
+        # (test_fixtures, social_benchmark, ldbc_snb, denormalized_flights, zeek_logs, pattern_comp)
     ]
     
     loaded_count = 0
@@ -582,8 +582,8 @@ def simple_graph(clickhouse_client, test_database, clean_database):
     # NOTE: Uses test_fixtures schema which contains TestUser/TestProduct labels
     # mapped to brahmand database (from multi-schema config)
     return {
-        \"schema_name\": \"test_fixtures\",  # Use test_fixtures schema from multi-schema config
-        \"database\": \"brahmand\",        # Physical ClickHouse database where tables exist (NOTE: changed from test_integration)
+        "schema_name": "test_fixtures",  # Use test_fixtures schema from multi-schema config
+        "database": "brahmand",        # Physical ClickHouse database where tables exist (NOTE: changed from test_integration)
         "nodes": {
             "TestUser": {  # Changed from "User" to match unified schema
                 "table": "users",
