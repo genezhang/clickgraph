@@ -31,8 +31,6 @@
 ### New Features
 
 - **Semantic VLP Validation** - Automatically detects non-transitive relationships (e.g., IP→Domain) and converts to single-hop patterns
-- **Multiple UNWIND Clauses** - Cartesian product support for multiple consecutive UNWIND clauses (e.g., `UNWIND [1,2] AS x UNWIND [10,20] AS y` → 4 rows)
-- **Pattern Comprehensions** - Extract values from graph patterns into lists with `[(pattern) | expression]` syntax
 - **Architecture** - Analyzer-level validation instead of tactical SQL fixes
 - **Example**: `(IP)-[DNS_REQUESTED*]->(Domain)` → Simple single-hop query (Domain nodes can't start DNS_REQUESTED edges)
 - **ClickHouse function passthrough** - Make all ClickHouse functions available in Cypher through the pass-thru feature
@@ -44,6 +42,9 @@
 - **VLP ID columns** - Use relationship schema columns (`from_id`/`to_id`)
 - **Cycle prevention** - Skip for single-hop patterns (can't have cycles)
 
+### New in the Main Branch
+- **Multiple UNWIND Clauses** - Cartesian product support for multiple consecutive UNWIND clauses (e.g., `UNWIND [1,2] AS x UNWIND [10,20] AS y` → 4 rows)
+- **Pattern Comprehensions** - Extract values from graph patterns into lists with `[(pattern) | expression]` syntax
 ---
 
 ## 📦 Major Features & Capabilities (v0.5.0 - v0.6.0)
@@ -68,7 +69,7 @@
   - **Purpose**: Industry-standard graph database benchmarking
 
 - **MCP Server Validation** - Model Context Protocol integration testing
-  - **Status**: Active development and validation
+  - **Status**: validated
   - **Purpose**: LLM tool integration for graph queries
 
 ### Quality Improvements
@@ -242,7 +243,7 @@ docker run -d \
   genezhang/clickgraph:latest
 ```
 
-**Note**: `CLICKHOUSE_DATABASE` is optional (defaults to "default"). All queries use fully-qualified table names from your schema config.
+**Note**: `CLICKHOUSE_DATABASE` is optional (defaults to "default"). All queries use fully-qualified table names from your schema config. The graph from the config in `GRAPH_CONFIG_PATH` becomes the default graph for Cypher.
 ```
 
 Or use docker-compose (uses published image by default):
@@ -322,9 +323,9 @@ cypher-shell -a bolt://localhost:7687 -u neo4j -p password
    driver.close()
    ```
 
-5. **Use the USE clause for multi-database queries**:
+5. **Use the USE clause for queries on a specific graph**:
    ```cypher
-   -- Query specific database using Neo4j-compatible USE clause
+   -- Query specific graph using Neo4j-compatible USE clause
    USE social_network
    MATCH (u:User)-[:FOLLOWS]->(friend)
    RETURN u.name, collect(friend.name) AS friends
@@ -441,14 +442,16 @@ Transform existing relational data into graph format through YAML configuration:
 views:
   - name: social_network
     nodes:
-      user:                    # Node label in Cypher queries
-        source_table: users
+      - label: user                    # Node label in Cypher queries
+        table: users
+        database: mydb
         node_id: user_id
         property_mappings:
           name: full_name
-    relationships:
-      follows:                 # Relationship type in Cypher queries
-        source_table: user_follows
+    edges:
+      - type: follows                 # Relationship type in Cypher queries
+        table: user_follows
+        database: mydb
         from_node: user        # Source node label
         to_node: user          # Target node label
         from_id: follower_id
@@ -505,6 +508,7 @@ ClickGraph supports flexible configuration via command-line arguments and enviro
 # View all options
 cargo run --bin clickgraph -- --help
 
+# ClickHouse database connection env vars are required to connect to ClickHouse
 # Custom ports
 cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 
@@ -533,13 +537,14 @@ See `docs/configuration.md` for complete configuration documentation.
 
 ## 🧪 Development Status
 
-**Current Version**: v0.5.3 (December 2, 2025)
+**Current Version**: v0.6.0 (December 22, 2025)
 
 ### Test Coverage
 - ✅ **Rust Unit Tests**: 534/534 passing (100%)
 - ✅ **Schema Variation Tests**: 73 tests across 4 schema types
 - ✅ **Benchmarks**: 14/14 passing (100%)
 - ✅ **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
+- ✅ **Pytest**: 3000+ (95+% passing)
 
 ### Key Features
 - ✅ **Polymorphic & Coupled Edge Tables**: Advanced schema patterns
