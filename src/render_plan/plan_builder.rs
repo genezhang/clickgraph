@@ -449,6 +449,72 @@ fn rewrite_vlp_union_branch_aliases(plan: &mut RenderPlan) -> RenderPlanBuilderR
         rewrite_render_expr_for_vlp(group_expr, &filtered_mappings);
     }
     
+    // 🔧 FIX #6: Also rewrite CTE bodies - BUT ONLY FOR PATH FUNCTION REWRITES (t → vlp1)
+    // DO NOT rewrite endpoint aliases (u1 → start_node) in WITH CTEs!
+    // 
+    // WITH CTEs have their own JOINs like: JOIN users AS u1 ON vlp1.start_id = u1.user_id
+    // So their SELECT items should use u1/u2 (from JOINs), NOT start_node/end_node (VLP internal)
+    //
+    // We ONLY need to rewrite the generic "t" alias that comes from path functions
+    // like length(path) → t.hop_count, which should become vlp1.hop_count
+    log::info!("🔍 VLP: Rewriting {} CTE bodies (PATH FUNCTIONS ONLY)", plan.ctes.0.len());
+    
+    // Create a mapping that ONLY includes the "t" → vlp alias mapping
+    // Exclude endpoint aliases (u1, u2, etc.) for CTE body rewriting
+    //
+    // Rationale:
+    // - Normal VLP: CTE has JOINs (JOIN users AS u1), SELECT should use u1.name ✅
+    // - Denormalized VLP: CTE has NO JOINs, properties from VLP CTE columns (vlp1_Origin)
+    //   BUT the column names in CTE are already prefixed (u1_name), so we don't rewrite table aliases
+    let path_function_mappings: HashMap<String, String> = filtered_mappings.iter()
+        .filter(|(from_alias, _to_alias)| {
+            // Only keep "t" mapping (for path functions like length(path))
+            // Exclude endpoint node aliases
+            *from_alias == "t"
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    
+    log::info!("🔍 VLP: Path function mappings for CTE rewrite: {:?}", path_function_mappings);
+    
+    if !path_function_mappings.is_empty() {
+        for (idx, cte) in plan.ctes.0.iter_mut().enumerate() {
+            // Skip VLP CTEs themselves - only rewrite CTEs that reference VLP results
+            if cte.cte_name.starts_with("vlp_cte") || cte.cte_name.starts_with("chained_path_") {
+                log::info!("   CTE[{}]: Skipping VLP CTE '{}'", idx, cte.cte_name);
+                continue;
+            }
+            
+            log::info!("   CTE[{}]: Rewriting path functions in CTE body '{}'", idx, cte.cte_name);
+            
+            // CTEs have a content field that can be Structured(RenderPlan) or RawSql(String)
+            // We only need to rewrite Structured CTEs
+            if let CteContent::Structured(ref mut cte_plan) = cte.content {
+                // Rewrite SELECT items in the CTE (only t → vlp alias)
+                log::info!("      CTE: Rewriting {} SELECT items (path functions only)", cte_plan.select.items.len());
+                for (item_idx, select_item) in cte_plan.select.items.iter_mut().enumerate() {
+                    log::info!("         SELECT[{}]: {:?}", item_idx, select_item.expression);
+                    rewrite_render_expr_for_vlp(&mut select_item.expression, &path_function_mappings);
+                }
+                
+                // Rewrite WHERE clause if present
+                if let Some(ref mut where_expr) = cte_plan.filters.0 {
+                    log::info!("      CTE: Rewriting WHERE clause (path functions only)");
+                    rewrite_render_expr_for_vlp(where_expr, &path_function_mappings);
+                }
+                
+                // Rewrite GROUP BY if present
+                log::info!("      CTE: Rewriting {} GROUP BY expressions (path functions only)", cte_plan.group_by.0.len());
+                for (group_idx, group_expr) in cte_plan.group_by.0.iter_mut().enumerate() {
+                    log::info!("         GROUP BY[{}]: {:?}", group_idx, group_expr);
+                    rewrite_render_expr_for_vlp(group_expr, &path_function_mappings);
+                }
+            }
+        }
+    } else {
+        log::info!("🔍 VLP: No path function mappings - skipping CTE body rewrite");
+    }
+    
     Ok(())
 }
 
@@ -694,6 +760,9 @@ fn expand_table_alias_to_select_items(
     // STEP 3: Not a CTE reference - it's a fresh variable from current MATCH
     match plan.get_properties_with_table_alias(alias) {
         Ok((properties, actual_table_alias)) => {
+            log::info!("🔍🔍 expand_table_alias_to_select_items: alias='{}', got {} properties, actual_table_alias={:?}", 
+                       alias, properties.len(), actual_table_alias);
+            
             if !properties.is_empty() {
                 // Get ID column for aggregation handling
                 let id_col = plan.find_id_column_for_alias(alias).unwrap_or_else(|_| "id".to_string());
@@ -701,18 +770,41 @@ fn expand_table_alias_to_select_items(
                 // Get property requirements for pruning optimization (Dec 2025)
                 let property_requirements = plan_ctx.and_then(|ctx| ctx.get_property_requirements());
                 
+                // 🔧 FIX: For VLP queries with JOINs, use the Cypher alias (e.g., "u1") not VLP internal alias (e.g., "start_node")
+                // When WITH clause has "WITH u1, u2", we want to SELECT from the JOIN aliases u1/u2,
+                // not from the VLP CTE internal aliases start_node/end_node (which don't exist in FROM clause)
+                //
+                // IMPORTANT: actual_table_alias is None for VLP endpoints because they come from ViewScan
+                // which doesn't track the internal VLP aliases. So we use the Cypher alias (u1/u2) instead.
+                let table_alias_to_use = if let Some(ref table_alias) = actual_table_alias {
+                    if table_alias == "start_node" || table_alias == "end_node" {
+                        // VLP internal alias detected (shouldn't happen, but handle it)
+                        log::info!("🔧 expand_table_alias_to_select_items: VLP internal alias '{}' detected, using Cypher alias '{}' instead", 
+                                   table_alias, alias);
+                        Some(alias.to_string())
+                    } else {
+                        log::info!("🔧 expand_table_alias_to_select_items: Using actual_table_alias '{}'", table_alias);
+                        actual_table_alias.clone()
+                    }
+                } else {
+                    // No table alias from plan - use the Cypher alias
+                    // This is the common case for VLP endpoints where ViewScan returns None
+                    log::info!("🔧 expand_table_alias_to_select_items: No actual_table_alias, using Cypher alias '{}'", alias);
+                    Some(alias.to_string())
+                };
+                
                 // Use unified expansion helper with aggregation support (Dec 2025)
                 use crate::render_plan::property_expansion::{expand_alias_to_select_items_unified, PropertyAliasFormat};
                 let items = expand_alias_to_select_items_unified(
-                    alias, properties, &id_col, actual_table_alias,
+                    alias, properties, &id_col, table_alias_to_use.clone(),
                     has_aggregation,  // Enables anyLast() wrapping for non-ID columns
                     PropertyAliasFormat::Underscore,
                     property_requirements,  // Enable property pruning if requirements available
                 );
                 
                 log::info!(
-                    "🔧 expand_table_alias_to_select_items: Found alias '{}' in base tables ({} properties)",
-                    alias, items.len()
+                    "🔧 expand_table_alias_to_select_items: Found alias '{}' in base tables ({} properties), using table alias '{}'",
+                    alias, items.len(), table_alias_to_use.as_deref().unwrap_or(alias)
                 );
                 
                 return items;
@@ -1873,7 +1965,7 @@ fn build_chained_with_match_cte_plan(
                                     }
                                 }
                                 
-                                let select_items: Vec<SelectItem> = items.iter()
+                                let mut select_items: Vec<SelectItem> = items.iter()
                                     .flat_map(|item| {
                                         // Check if this is a TableAlias that needs expansion to ALL columns
                                         match &item.expression {
@@ -2616,6 +2708,11 @@ fn build_chained_with_match_cte_plan(
     // ClickHouse will validate CTE references when executing the SQL
     // Validation here causes false failures when nested calls reference outer CTEs
     // that haven't been hoisted yet but will be present in the final SQL
+
+    // Apply VLP alias rewriting for path functions in WITH clauses
+    // This fixes "Unknown expression identifier `t.hop_count`" errors where
+    // length(path) was converted to t.hop_count but t needs to be rewritten to the actual VLP alias
+    rewrite_vlp_union_branch_aliases(&mut render_plan)?;
 
     log::info!(
         "🔧 build_chained_with_match_cte_plan: Success - final plan has {} CTEs",
