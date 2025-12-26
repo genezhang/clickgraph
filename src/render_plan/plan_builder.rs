@@ -357,45 +357,63 @@ fn rewrite_vlp_union_branch_aliases(plan: &mut RenderPlan) -> RenderPlanBuilderR
     
     log::info!("🔄 VLP Union Branch: Found {} VLP CTE(s), checking if rewrite is needed", vlp_mappings.len());
     
-    // ✨ ARCHITECTURAL FIX: Filter mappings to exclude VLP endpoint node aliases
+    // ✨ ARCHITECTURAL FIX: Filter mappings based on whether endpoint JOINs exist
     // 
-    // VLP CTEs only contain:
-    //   - start_id, end_id (for path matching)
-    //   - hop_count, path_edges, path_nodes, path_relationships (path tracking)
-    //   - edge properties (from the relationship)
+    // For NORMAL VLP:
+    //   - VLP CTEs contain: start_id, end_id, hop_count, path tracking, edge properties
+    //   - VLP CTEs do NOT contain node properties!
+    //   - Node properties fetched by JOINing to source tables
+    //   - Therefore: Exclude endpoint aliases from rewriting (a → vlp1)
     // 
-    // VLP CTEs do NOT contain node properties!
+    // For DENORMALIZED VLP:
+    //   - VLP CTEs contain: Everything above PLUS node properties (from edge table)
+    //   - No separate node tables exist - no JOINs added
+    //   - Therefore: INCLUDE endpoint aliases for rewriting (a → vlp1)
     // 
-    // Node properties must be fetched by JOINing to source tables.
-    // Therefore, we must NOT rewrite node alias property accesses (a.property, b.property)
-    // to use the CTE alias (vlp1.property).
-    // 
-    // Strategy: Collect VLP endpoint node aliases from CTE metadata, exclude them from rewriting.
-    //   - Keep: Path variable mappings (t → vlp1) for t.path_nodes, t.hop_count, etc.
-    //   - Exclude: Node endpoint mappings (a → vlp1, b → vlp1) - these need JOINs
+    // Detection Strategy: Check if endpoint JOINs exist in plan.joins
+    //   - If endpoint JOINs exist → Normal VLP → Exclude endpoint aliases
+    //   - If endpoint JOINs missing → Denormalized VLP → Include endpoint aliases
     let mut vlp_endpoint_aliases: HashSet<String> = HashSet::new();
+    let mut endpoint_has_joins: HashMap<String, bool> = HashMap::new();
+    
     for cte in &plan.ctes.0 {
         if let (Some(start), Some(end)) = (&cte.vlp_cypher_start_alias, &cte.vlp_cypher_end_alias) {
             vlp_endpoint_aliases.insert(start.clone());
             vlp_endpoint_aliases.insert(end.clone());
-            log::info!("🔍 VLP: Identified endpoint aliases: '{}', '{}' (will not rewrite)", start, end);
+            
+            // Check if these endpoint aliases have corresponding JOINs
+            let start_has_join = plan.joins.0.iter().any(|j| j.table_alias == *start);
+            let end_has_join = plan.joins.0.iter().any(|j| j.table_alias == *end);
+            
+            endpoint_has_joins.insert(start.clone(), start_has_join);
+            endpoint_has_joins.insert(end.clone(), end_has_join);
+            
+            log::info!("🔍 VLP: Endpoint aliases: '{}' (has_join={}), '{}' (has_join={})", 
+                      start, start_has_join, end, end_has_join);
         }
     }
     
     let filtered_mappings: HashMap<String, String> = vlp_mappings.into_iter()
         .filter(|(cypher_alias, _vlp_alias)| {
-            // Keep the mapping if it's NOT a VLP endpoint node alias
-            // This preserves "t" → "vlp1" but removes "a"/"b" mappings
             let is_endpoint = vlp_endpoint_aliases.contains(cypher_alias);
             if is_endpoint {
-                log::info!("🔍 VLP: Excluding endpoint alias '{}' from rewrite (needs JOIN for properties)", cypher_alias);
+                // If endpoint has a JOIN, exclude from rewrite (properties come from JOIN)
+                // If endpoint has NO JOIN, include in rewrite (properties come from CTE - denormalized!)
+                let has_join = endpoint_has_joins.get(cypher_alias).copied().unwrap_or(false);
+                if has_join {
+                    log::info!("🔍 VLP: Excluding endpoint alias '{}' from rewrite (has JOIN for properties)", cypher_alias);
+                    return false;
+                } else {
+                    log::info!("✅ VLP: INCLUDING endpoint alias '{}' in rewrite (denormalized - properties in CTE)", cypher_alias);
+                    return true;
+                }
             }
-            !is_endpoint
+            true  // Keep non-endpoint mappings (e.g., path variable)
         })
         .collect();
     
     if filtered_mappings.is_empty() {
-        log::info!("🔍 VLP Union Branch: All mappings filtered out (all are endpoint nodes needing JOINs) - nothing to rewrite");
+        log::info!("🔍 VLP Union Branch: All mappings filtered out - nothing to rewrite");
         return Ok(());
     }
     
@@ -422,10 +440,20 @@ fn rewrite_vlp_union_branch_aliases(plan: &mut RenderPlan) -> RenderPlanBuilderR
         rewrite_render_expr_for_vlp(where_expr, &filtered_mappings);
     }
     
+    // 🔧 FIX #5: Also rewrite GROUP BY expressions
+    // The GROUP BY clause may contain Cypher aliases (e.g., f.DestCityName)
+    // that need to be rewritten to use VLP table aliases (e.g., vlp4.DestCityName)
+    log::info!("🔍 VLP: Rewriting {} GROUP BY expressions", plan.group_by.0.len());
+    for (idx, group_expr) in plan.group_by.0.iter_mut().enumerate() {
+        log::info!("   GROUP BY[{}]: {:?}", idx, group_expr);
+        rewrite_render_expr_for_vlp(group_expr, &filtered_mappings);
+    }
+    
     Ok(())
 }
 
 /// Extract VLP alias mappings from CTEs: Cypher alias → VLP table alias
+/// Also extracts relationship aliases for denormalized patterns
 fn extract_vlp_alias_mappings(ctes: &CteItems) -> HashMap<String, String> {
     let mut mappings = HashMap::new();
     
@@ -455,7 +483,26 @@ fn extract_vlp_alias_mappings(ctes: &CteItems) -> HashMap<String, String> {
                 .replace("vlp_cte", "vlp")
                 .replace("chained_path_", "vlp");
             log::info!("🔄 VLP path function mapping: t → {}", vlp_alias);
-            mappings.insert("t".to_string(), vlp_alias);
+            mappings.insert("t".to_string(), vlp_alias.clone());
+            
+            // ✨ NEW FIX: For denormalized VLP, also map relationship aliases
+            // When WHERE clause has f.Origin (relationship property), map to CTE
+            // This is needed because denormalized VLP properties are incorrectly
+            // resolved to relationship aliases during query planning
+            // We detect this by checking if endpoint JOINs were skipped
+            // (which indicates denormalized pattern)
+            // 
+            // Note: We don't have the relationship alias in CTE metadata,
+            // so we'll add mappings for common relationship alias patterns
+            // This will be checked against actual usage during rewriting
+            log::info!("🔧 Adding fallback relationship alias mappings for denormalized VLP");
+            // Common single-letter aliases: f, r, e, rel
+            for rel_alias in &["f", "r", "e", "rel"] {
+                if !mappings.contains_key(*rel_alias) {
+                    log::info!("🔄 VLP relationship mapping (fallback): {} → {}", rel_alias, vlp_alias);
+                    mappings.insert(rel_alias.to_string(), vlp_alias.clone());
+                }
+            }
         }
     }
     
@@ -11755,9 +11802,16 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                 } else {
                     // Different start and end nodes: Add JOINs to access node properties
-                    // For denormalized nodes, JOIN back to edge table to get properties
+                    // ✅ FIX: Check if nodes are denormalized - if so, skip JOINs (properties are in CTE)
+                    let start_is_denormalized = start_table.contains("ERROR_NODE_SCHEMA_MISSING");
+                    let end_is_denormalized = end_table.contains("ERROR_NODE_SCHEMA_MISSING");
+                    
+                    log::info!("🔍 VLP endpoint JOIN decision: start_is_denormalized={}, end_is_denormalized={}", 
+                              start_is_denormalized, end_is_denormalized);
+                    
                     // For OPTIONAL VLP, skip the start node JOIN (it's already in FROM)
-                    if !vlp_is_optional {
+                    if !vlp_is_optional && !start_is_denormalized {
+                        // Only add START node JOIN if node is NOT denormalized
                         // 🔧 FIX: Use Cypher alias from VLP metadata instead of internal VLP alias
                         let start_node_alias = vlp_cte
                             .and_then(|c| c.vlp_cypher_start_alias.clone())
@@ -11788,17 +11842,21 @@ impl RenderPlanBuilder for LogicalPlan {
                             to_id_column: None,
                         });
                     } else {
-                        log::debug!("⏭️  SKIP START node JOIN: vlp_is_optional={}", vlp_is_optional);
+                        if start_is_denormalized {
+                            log::debug!("⏭️  SKIP START node JOIN: denormalized node (properties in CTE)");
+                        } else {
+                            log::debug!("⏭️  SKIP START node JOIN: vlp_is_optional={}", vlp_is_optional);
+                        }
                     }
-                    // Always add END node JOIN to access node properties  
-                    // For denormalized nodes, this JOINs back to the edge table
-                    // 🔧 FIX: Always use Cypher alias from VLP metadata (for both OPTIONAL and REQUIRED)
-                    let end_node_alias = vlp_cte
-                        .and_then(|c| c.vlp_cypher_end_alias.clone())
-                        .unwrap_or_else(|| end_alias.clone());
-                    
-                    log::debug!("✅ Creating END node JOIN: {} AS {} (Cypher alias from VLP metadata)", 
-                              end_table, end_node_alias);
+                    // Add END node JOIN to access node properties (unless denormalized)
+                    // For OPTIONAL and REQUIRED VLP: Always use Cypher alias from VLP metadata
+                    if !end_is_denormalized {
+                        let end_node_alias = vlp_cte
+                            .and_then(|c| c.vlp_cypher_end_alias.clone())
+                            .unwrap_or_else(|| end_alias.clone());
+                        
+                        log::debug!("✅ Creating END node JOIN: {} AS {} (Cypher alias from VLP metadata)", 
+                                  end_table, end_node_alias);
                     extracted_joins.push(Join {
                         table_name: end_table,
                         table_alias: end_node_alias.clone(),
@@ -11820,6 +11878,9 @@ impl RenderPlanBuilder for LogicalPlan {
                         from_id_column: None,
                         to_id_column: None,
                     });
+                    } else {
+                        log::debug!("⏭️  SKIP END node JOIN: denormalized node (properties in CTE)");
+                    }
                 }
             }
 

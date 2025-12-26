@@ -274,7 +274,6 @@ class TestDenormalizedWithFilters:
 class TestDenormalizedVariableLengthPaths:
     """Test variable-length paths with denormalized properties."""
     
-    @pytest.mark.xfail(reason="VLP with denormalized properties causes 500 error - needs investigation")
     def test_variable_path_with_denormalized_properties(self, denormalized_flights_graph):
         """Test variable-length path returning denormalized properties."""
         response = execute_cypher(
@@ -296,26 +295,34 @@ class TestDenormalizedVariableLengthPaths:
         assert row['dest.city'] == 'Atlanta'
         assert row['hops'] == 2  # LAX -> ORD -> ATL
     
-    @pytest.mark.xfail(reason="VLP CTE with denormalized properties causes issues - needs investigation")
     def test_variable_path_cte_uses_denormalized_props(self, denormalized_flights_graph):
         """Verify CTEs for variable paths use denormalized properties."""
-        response = execute_cypher(
-            """
-            MATCH (origin:Airport)-[f:FLIGHT*1..2]->(dest:Airport)
-            WHERE origin.city = 'Los Angeles'
-            RETURN dest.city, COUNT(*) as path_count
-            """,
-            schema_name=denormalized_flights_graph["schema_name"]
+        # Use sql_only mode to get SQL back
+        import requests
+        query = """
+        USE denormalized_flights_test
+        MATCH (origin:Airport)-[f:FLIGHT*1..2]->(dest:Airport)
+        WHERE origin.city = 'Los Angeles'
+        RETURN dest.city, COUNT(*) as path_count
+        """
+        
+        response = requests.post(
+            f"{CLICKGRAPH_URL}/query",
+            json={"query": query, "sql_only": True},
+            headers={"Content-Type": "application/json"}
         )
         
-        assert_query_success(response)
+        assert response.status_code == 200, f"Query failed: {response.text}"
+        result = response.json()
         
         # SQL should use denormalized columns in CTE
-        sql = response.get('sql', '')
-        assert 'WITH RECURSIVE' in sql or 'WITH' in sql
+        sql = result.get('generated_sql', '')
+        assert sql, f"No SQL found in result. Result keys: {result.keys()}"
+        assert 'WITH RECURSIVE' in sql or 'WITH' in sql, f"No CTE found. SQL: {sql[:500]}"
         
-        # Should reference denormalized columns
-        assert 'origin_city' in sql or 'dest_city' in sql
+        # Should reference denormalized columns (schema uses OriginCityName/DestCityName)
+        assert 'OriginCityName' in sql or 'DestCityName' in sql, \
+            f"SQL should contain denormalized columns. SQL: {sql[:500]}"
 
 
 class TestPerformanceOptimization:
