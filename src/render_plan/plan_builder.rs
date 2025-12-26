@@ -316,8 +316,8 @@ pub(crate) trait RenderPlanBuilder {
 
     fn extract_union(&self) -> RenderPlanBuilderResult<Option<Union>>;
 
-    /// Extract UNWIND clause as ARRAY JOIN item
-    fn extract_array_join(&self) -> RenderPlanBuilderResult<Option<super::ArrayJoin>>;
+    /// Extract UNWIND clause as ARRAY JOIN items
+    fn extract_array_join(&self) -> RenderPlanBuilderResult<Vec<super::ArrayJoin>>;
 
     fn try_build_join_based_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan>;
 
@@ -2090,7 +2090,7 @@ fn build_chained_with_match_cte_plan(
                     },
                     from: FromTableItem(None),
                     joins: JoinItems(vec![]),
-                    array_join: ArrayJoinItem(None),
+                    array_join: ArrayJoinItem(Vec::new()),
                     filters: FilterItems(None),
                     group_by: GroupByExpressions(vec![]),
                     having_clause: None,
@@ -8442,19 +8442,26 @@ impl RenderPlanBuilder for LogicalPlan {
         Ok(union_opt)
     }
 
-    /// Extract UNWIND clause as ARRAY JOIN
-    /// Traverses the logical plan tree to find Unwind nodes
-    fn extract_array_join(&self) -> RenderPlanBuilderResult<Option<super::ArrayJoin>> {
+    /// Extract UNWIND clauses as ARRAY JOIN items
+    /// Traverses the logical plan tree to find ALL Unwind nodes for cartesian product
+    /// Multiple UNWIND clauses generate multiple ARRAY JOIN clauses in sequence
+    fn extract_array_join(&self) -> RenderPlanBuilderResult<Vec<super::ArrayJoin>> {
+        let mut array_joins = Vec::new();
+        
         match self {
             LogicalPlan::Unwind(u) => {
-                // Convert LogicalExpr to RenderExpr
+                // Convert LogicalExpr to RenderExpr for this UNWIND
                 let render_expr = RenderExpr::try_from(u.expression.clone())?;
-                Ok(Some(super::ArrayJoin {
+                array_joins.push(super::ArrayJoin {
                     expression: render_expr,
                     alias: u.alias.clone(),
-                }))
+                });
+                // Recursively collect UNWIND nodes from input
+                let mut inner_joins = u.input.extract_array_join()?;
+                array_joins.append(&mut inner_joins);
+                Ok(array_joins)
             }
-            // Recursively check children
+            // Recursively check children for more UNWIND nodes
             LogicalPlan::Projection(p) => p.input.extract_array_join(),
             LogicalPlan::Filter(f) => f.input.extract_array_join(),
             LogicalPlan::GroupBy(g) => g.input.extract_array_join(),
@@ -8463,12 +8470,14 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Skip(s) => s.input.extract_array_join(),
             LogicalPlan::GraphJoins(gj) => gj.input.extract_array_join(),
             LogicalPlan::GraphNode(gn) => gn.input.extract_array_join(),
-            LogicalPlan::GraphRel(gr) => gr
-                .center
-                .extract_array_join()
-                .or_else(|_| gr.left.extract_array_join())
-                .or_else(|_| gr.right.extract_array_join()),
-            _ => Ok(None),
+            LogicalPlan::GraphRel(gr) => {
+                // Check all branches for UNWIND nodes
+                let mut joins = gr.center.extract_array_join()?;
+                joins.append(&mut gr.left.extract_array_join()?);
+                joins.append(&mut gr.right.extract_array_join()?);
+                Ok(joins)
+            }
+            _ => Ok(Vec::new()),
         }
     }
 
@@ -8669,7 +8678,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     },
                     from: FromTableItem(None),
                     joins: JoinItems(vec![]),
-                    array_join: ArrayJoinItem(None),
+                    array_join: ArrayJoinItem(Vec::new()),
                     filters: FilterItems(None),
                     group_by: GroupByExpressions(outer_group_by),
                     having_clause: None,
@@ -8758,7 +8767,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             },
                             from: plan.from.clone(),
                             joins: plan.joins.clone(),
-                            array_join: ArrayJoinItem(None),
+                            array_join: ArrayJoinItem(Vec::new()),
                             filters: plan.filters.clone(),
                             group_by: GroupByExpressions(vec![]), // No GROUP BY in branches
                             having_clause: None,
@@ -8851,7 +8860,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     },
                     from: FromTableItem(None),
                     joins: JoinItems(vec![]),
-                    array_join: ArrayJoinItem(None),
+                    array_join: ArrayJoinItem(Vec::new()),
                     filters: FilterItems(None),
                     group_by: GroupByExpressions(outer_group_by),
                     having_clause: first_plan.having_clause.clone(),
@@ -8929,7 +8938,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 }, // Empty - let to_sql use SELECT *
                 from: FromTableItem(None),       // Union doesn't need FROM at top level
                 joins: JoinItems(vec![]),
-                array_join: ArrayJoinItem(None),
+                array_join: ArrayJoinItem(Vec::new()),
                 filters: FilterItems(None),
                 group_by: GroupByExpressions(vec![]),
                 having_clause: None,
@@ -9353,7 +9362,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         select: inner_render_plan.select.clone(),
                         from: inner_render_plan.from.clone(),
                         joins: inner_render_plan.joins.clone(),
-                        array_join: ArrayJoinItem(None),
+                        array_join: ArrayJoinItem(Vec::new()),
                         filters: inner_render_plan.filters.clone(),
                         group_by: GroupByExpressions(inner_group_by_exprs),
                         having_clause: inner_group_by
@@ -9460,7 +9469,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         use_final: false,
                     })),
                     joins: JoinItems(vec![]),
-                    array_join: ArrayJoinItem(None),
+                    array_join: ArrayJoinItem(Vec::new()),
                     filters: FilterItems(None),
                     group_by: GroupByExpressions(outer_group_by_exprs),
                     having_clause: outer_group_by
@@ -9724,7 +9733,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 },
                                 from: inner_render_plan.from.clone(),
                                 joins: inner_render_plan.joins.clone(),
-                                array_join: ArrayJoinItem(None),
+                                array_join: ArrayJoinItem(Vec::new()),
                                 filters: inner_render_plan.filters.clone(),
                                 group_by: GroupByExpressions(group_by_exprs.clone()), // Clone to preserve for later use
                                 having_clause: having_expr,
@@ -9863,7 +9872,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     use_final: false,
                                 })),
                                 joins: JoinItems(vec![]), // No joins needed
-                                array_join: ArrayJoinItem(None),
+                                array_join: ArrayJoinItem(Vec::new()),
                                 filters: FilterItems(None),
                                 group_by: GroupByExpressions(vec![]),
                                 having_clause: None,
@@ -9964,7 +9973,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             },
                             from: outer_from,
                             joins: JoinItems(vec![cte_join]),
-                            array_join: ArrayJoinItem(None),
+                            array_join: ArrayJoinItem(Vec::new()),
                             filters: FilterItems(None),
                             group_by: GroupByExpressions(vec![]),
                             having_clause: None,
@@ -10188,9 +10197,9 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
 
-        // Check if we have an UNWIND clause - if so and no FROM, resolve the source table
-        let array_join = self.extract_array_join()?;
-        if final_from.is_none() && array_join.is_some() {
+        // Check if we have UNWIND clauses - if so and no FROM, resolve the source table
+        let array_joins = self.extract_array_join()?;
+        if final_from.is_none() && !array_joins.is_empty() {
             log::debug!("UNWIND clause detected without FROM table - checking for CTE references");
             
             // Try to find CTE references from GraphJoins in the plan
@@ -10220,10 +10229,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     use_final: false,
                 })));
             } else {
-                // Check if the UNWIND expression itself is standalone (no schema references)
+                // Check if the first UNWIND expression is standalone (no schema references)
                 // Only use system.one if unwinding a literal or standalone expression
-                let array_join_ref = array_join.as_ref().unwrap();
-                let is_standalone = super::plan_builder_helpers::is_standalone_expression(&array_join_ref.expression);
+                let first_array_join = &array_joins[0];
+                let is_standalone = super::plan_builder_helpers::is_standalone_expression(&first_array_join.expression);
                 
                 if is_standalone {
                     // Standalone UNWIND with literals: UNWIND [1,2,3] AS n
@@ -10237,10 +10246,10 @@ impl RenderPlanBuilder for LogicalPlan {
                 } else {
                     // UNWIND references schema elements but no CTE found - this is an error!
                     log::error!("❌ UNWIND: Expression references schema elements but no CTE or FROM table found!");
-                    log::error!("   Expression: {:?}", array_join_ref.expression);
+                    log::error!("   Expression: {:?}", first_array_join.expression);
                     return Err(RenderBuildError::InvalidRenderPlan(
                         format!("UNWIND expression references schema elements (columns/properties) but no FROM table or CTE was found. \
-                                This indicates a query planning bug. Expression: {:?}", array_join_ref.expression)
+                                This indicates a query planning bug. Expression: {:?}", first_array_join.expression)
                     ));
                 }
             }
@@ -10750,7 +10759,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 },
                 from: FromTableItem(None),
                 joins: JoinItems(vec![]),
-                array_join: ArrayJoinItem(None),
+                array_join: ArrayJoinItem(Vec::new()),
                 filters: FilterItems(None),
                 group_by: GroupByExpressions(vec![]),
                 having_clause: None,
@@ -11745,8 +11754,8 @@ impl RenderPlanBuilder for LogicalPlan {
                         });
                     }
                 } else {
-                    // Different start and end nodes: Always add JOINs to access node properties
-                    // (Even if nodes are denormalized, VLP CTE doesn't contain their properties)
+                    // Different start and end nodes: Add JOINs to access node properties
+                    // For denormalized nodes, JOIN back to edge table to get properties
                     // For OPTIONAL VLP, skip the start node JOIN (it's already in FROM)
                     if !vlp_is_optional {
                         // 🔧 FIX: Use Cypher alias from VLP metadata instead of internal VLP alias
@@ -11781,37 +11790,36 @@ impl RenderPlanBuilder for LogicalPlan {
                     } else {
                         log::debug!("⏭️  SKIP START node JOIN: vlp_is_optional={}", vlp_is_optional);
                     }
-                    // Always add END node JOIN (VLP CTE doesn't contain node properties)
-                    {
-                        // 🔧 FIX: Always use Cypher alias from VLP metadata (for both OPTIONAL and REQUIRED)
-                        let end_node_alias = vlp_cte
-                            .and_then(|c| c.vlp_cypher_end_alias.clone())
-                            .unwrap_or_else(|| end_alias.clone());
-                        
-                        log::debug!("✅ Creating END node JOIN: {} AS {} (Cypher alias from VLP metadata)", 
-                                  end_table, end_node_alias);
-                        extracted_joins.push(Join {
-                            table_name: end_table,
-                            table_alias: end_node_alias.clone(),
-                            joining_on: vec![OperatorApplication {
-                                operator: Operator::Equal,
-                                operands: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(vlp_alias.clone()), // ✅ Use computed vlp_alias
-                                        column: PropertyValue::Column("end_id".to_string()),
-                                    }),
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(end_node_alias.clone()),
-                                        column: PropertyValue::Column(end_id_col.clone()),
-                                    }),
-                                ],
-                            }],
-                            join_type: vlp_join_type.clone(),
-                            pre_filter: None,
-                            from_id_column: None,
-                            to_id_column: None,
-                        });
-                    }
+                    // Always add END node JOIN to access node properties  
+                    // For denormalized nodes, this JOINs back to the edge table
+                    // 🔧 FIX: Always use Cypher alias from VLP metadata (for both OPTIONAL and REQUIRED)
+                    let end_node_alias = vlp_cte
+                        .and_then(|c| c.vlp_cypher_end_alias.clone())
+                        .unwrap_or_else(|| end_alias.clone());
+                    
+                    log::debug!("✅ Creating END node JOIN: {} AS {} (Cypher alias from VLP metadata)", 
+                              end_table, end_node_alias);
+                    extracted_joins.push(Join {
+                        table_name: end_table,
+                        table_alias: end_node_alias.clone(),
+                        joining_on: vec![OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(vlp_alias.clone()), // ✅ Use computed vlp_alias
+                                    column: PropertyValue::Column("end_id".to_string()),
+                                }),
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(end_node_alias.clone()),
+                                    column: PropertyValue::Column(end_id_col.clone()),
+                                }),
+                            ],
+                        }],
+                        join_type: vlp_join_type.clone(),
+                        pre_filter: None,
+                        from_id_column: None,
+                        to_id_column: None,
+                    });
                 }
             }
 
@@ -12180,12 +12188,12 @@ impl RenderPlanBuilder for LogicalPlan {
             from: FromTableItem(from_table_to_view_ref(final_from)),
             joins: JoinItems(extracted_joins),
             array_join: ArrayJoinItem({
-                // Extract ARRAY JOIN and rewrite path functions for VLP if needed
-                let mut array_join_opt = transformed_plan.extract_array_join()?;
+                // Extract ARRAY JOIN items and rewrite path functions for VLP if needed
+                let mut array_joins = transformed_plan.extract_array_join()?;
 
                 // If this is a VLP query with ARRAY JOIN, rewrite path functions
                 // e.g., UNWIND nodes(p) AS n → ARRAY JOIN t.path_nodes AS n
-                if let Some(ref mut array_join) = array_join_opt {
+                if !array_joins.is_empty() {
                     if let Some(ref pv) = get_path_variable(&transformed_plan) {
                         // Check if this is a VLP query that uses CTE
                         let needs_cte =
@@ -12197,16 +12205,18 @@ impl RenderPlanBuilder for LogicalPlan {
                             };
 
                         if needs_cte {
-                            // Rewrite path functions like nodes(p) → t.path_nodes
-                            array_join.expression = rewrite_path_functions_with_table(
-                                &array_join.expression,
-                                pv,
-                                "t", // CTE alias
-                            );
+                            // Rewrite path functions for all ARRAY JOIN items
+                            for array_join in &mut array_joins {
+                                array_join.expression = rewrite_path_functions_with_table(
+                                    &array_join.expression,
+                                    pv,
+                                    "t", // CTE alias
+                                );
+                            }
                         }
                     }
                 }
-                array_join_opt
+                array_joins
             }),
             filters: FilterItems(final_filters),
             group_by: GroupByExpressions(extracted_group_by_exprs),

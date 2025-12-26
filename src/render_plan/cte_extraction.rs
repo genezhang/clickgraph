@@ -3,7 +3,7 @@
 //! Some functions in this module are reserved for future use or used only in specific code paths.
 #![allow(dead_code)]
 
-use crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGenerator;
+use crate::clickhouse_query_generator::variable_length_cte::{VariableLengthCteGenerator, NodeProperty};
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_plan::LogicalPlan;
@@ -959,13 +959,43 @@ pub fn extract_ctes_with_context(
                 let to_col = rel_cols.to_id;
                 eprintln!("🔧 VLP: Final columns: from_col='{}', to_col='{}' for table '{}'", from_col, to_col, rel_table);
 
-                // 🔧 FIX: Get node ID columns from node schemas, not relationship schema
-                // For traditional schemas: node table has user_id, relationship has follower_id/followed_id
-                // For denormalized schemas: relationship's from_id/to_id ARE the node ID columns
-                // Solution: Look up node schema and use its node_id field
+                // ⚠️ CRITICAL: Node ID Column Selection (Multi-Schema Support)
+                // ========================================================
+                // ClickGraph supports TWO fundamentally different schema patterns:
+                //
+                // 1. TRADITIONAL SCHEMA (separate node & edge tables):
+                //    - Node table exists: users, posts, etc.
+                //    - node_schema.node_id points to PHYSICAL column in node table
+                //    - Example: User.node_id="user_id" → users.user_id
+                //    - VLP Strategy: Use node_schema.node_id.column()
+                //
+                // 2. DENORMALIZED SCHEMA (virtual nodes in edge table):
+                //    - Node table is VIRTUAL (points to edge table)
+                //    - node_schema.node_id is LOGICAL property name
+                //    - Physical ID is in relationship columns (from_id/to_id)
+                //    - Example: Airport.node_id="code" but physical is flights.Origin
+                //    - VLP Strategy: Use relationship columns (from_col/to_col)
+                //
+                // 🚨 BREAKING HISTORY:
+                // - Dec 22, 2025: Changed to use node_schema.node_id without checking is_denormalized
+                // - Result: Denormalized VLP broke (3 tests marked xfail)
+                // - Dec 25, 2025: Fixed by checking is_denormalized flag
+                //
+                // 🧪 TESTING REQUIREMENT:
+                // ANY change to this logic MUST test BOTH schema types:
+                // - tests/integration/test_variable_paths.py (traditional)
+                // - tests/integration/test_denormalized_edges.py::TestDenormalizedVariableLengthPaths (denormalized)
+                //
+                // See: docs/development/schema-testing-requirements.md
                 let start_id_col = if !start_label.is_empty() {
                     if let Ok(node_schema) = schema.get_node_schema(&start_label) {
-                        node_schema.node_id.column().to_string()
+                        if node_schema.is_denormalized {
+                            // For denormalized nodes, use relationship column
+                            from_col.clone()
+                        } else {
+                            // For traditional nodes, use node schema's node_id
+                            node_schema.node_id.column().to_string()
+                        }
                     } else {
                         // Fallback: use relationship's from_id
                         eprintln!("⚠️ VLP: Could not find node schema for '{}', using relationship from_id '{}'", start_label, from_col);
@@ -978,7 +1008,13 @@ pub fn extract_ctes_with_context(
 
                 let end_id_col = if !end_label.is_empty() {
                     if let Ok(node_schema) = schema.get_node_schema(&end_label) {
-                        node_schema.node_id.column().to_string()
+                        if node_schema.is_denormalized {
+                            // For denormalized nodes, use relationship column
+                            to_col.clone()
+                        } else {
+                            // For traditional nodes, use node schema's node_id
+                            node_schema.node_id.column().to_string()
+                        }
                     } else {
                         // Fallback: use relationship's to_id
                         eprintln!("⚠️ VLP: Could not find node schema for '{}', using relationship to_id '{}'", end_label, to_col);
@@ -1246,7 +1282,62 @@ pub fn extract_ctes_with_context(
 
                     // Choose generator based on denormalized status
                     let mut generator = if both_denormalized {
-                        log::debug!("CTE: Using denormalized generator for variable-length path (both nodes virtual)");
+                        eprintln!("🔧 CTE: Using denormalized generator for variable-length path (both nodes virtual)");
+                        eprintln!("🔧 CTE: rel_table={}, filter_properties count={}", rel_table, filter_properties.len());
+                        
+                        // For denormalized nodes, extract ALL properties from the node schema
+                        // (not just filter properties, since properties come from the edge table)
+                        let mut all_denorm_properties = filter_properties.clone();
+                        
+                        // Get node schema to extract all from_properties and to_properties
+                        // Handle both "table" and "database.table" formats
+                        let rel_table_name = rel_table.split('.').last().unwrap_or(&rel_table);
+                        
+                        if let Some(node_schema) = schema.get_nodes_schemas().values()
+                            .find(|n| {
+                                let schema_table = n.table_name.split('.').last().unwrap_or(&n.table_name);
+                                schema_table == rel_table_name
+                            }) {
+                            
+                            eprintln!("🔧 CTE: Found node schema for table {}", rel_table);
+                            
+                            // Add all from_node properties
+                            if let Some(ref from_props) = node_schema.from_properties {
+                                eprintln!("🔧 CTE: Adding {} from_node properties", from_props.len());
+                                for (logical_prop, physical_col) in from_props {
+                                    if !all_denorm_properties.iter().any(|p| 
+                                        p.cypher_alias == graph_rel.left_connection && p.alias == *logical_prop) {
+                                        eprintln!("🔧 CTE: Adding from property: {} -> {}", logical_prop, physical_col);
+                                        all_denorm_properties.push(NodeProperty {
+                                            cypher_alias: graph_rel.left_connection.clone(),
+                                            column_name: logical_prop.clone(),
+                                            alias: logical_prop.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                            
+                            // Add all to_node properties
+                            if let Some(ref to_props) = node_schema.to_properties {
+                                eprintln!("🔧 CTE: Adding {} to_node properties", to_props.len());
+                                for (logical_prop, physical_col) in to_props {
+                                    if !all_denorm_properties.iter().any(|p| 
+                                        p.cypher_alias == graph_rel.right_connection && p.alias == *logical_prop) {
+                                        eprintln!("🔧 CTE: Adding to property: {} -> {}", logical_prop, physical_col);
+                                        all_denorm_properties.push(NodeProperty {
+                                            cypher_alias: graph_rel.right_connection.clone(),
+                                            column_name: logical_prop.clone(),
+                                            alias: logical_prop.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                        } else {
+                            eprintln!("❌ CTE: No node schema found for table {}", rel_table);
+                        }
+                        
+                        eprintln!("🔧 CTE: Final all_denorm_properties count: {}", all_denorm_properties.len());
+                        
                         VariableLengthCteGenerator::new_denormalized(
                             schema,
                             spec.clone(),
@@ -1255,6 +1346,7 @@ pub fn extract_ctes_with_context(
                             &to_col,    // To column
                             &graph_rel.left_connection,
                             &graph_rel.right_connection,
+                            all_denorm_properties, // Pass all denormalized properties
                             graph_rel.shortest_path_mode.clone().map(|m| m.into()),
                             combined_start_filters.clone(),
                             // 🔒 Always pass end filters - schema filters apply to base tables

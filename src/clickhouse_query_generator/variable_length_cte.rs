@@ -259,6 +259,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         rel_to_col: &str,         // To column (e.g., "Dest")
         start_alias: &str,        // Cypher alias (e.g., "a")
         end_alias: &str,          // Cypher alias (e.g., "b")
+        properties: Vec<NodeProperty>, // Properties to include in CTE
         shortest_path_mode: Option<ShortestPathMode>,
         start_node_filters: Option<String>,
         end_node_filters: Option<String>,
@@ -288,7 +289,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             end_node_alias: "end_node".to_string(),
             start_cypher_alias: start_alias.to_string(),
             end_cypher_alias: end_alias.to_string(),
-            properties: vec![], // Denormalized doesn't need property mapping
+            properties, // Denormalized properties from edge table
             database,
             shortest_path_mode,
             start_node_filters,
@@ -684,6 +685,40 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 "Array(Tuple(UInt64, UInt64))".to_string()
             }
         }
+    }
+
+    /// Map a logical property name to physical column name for denormalized nodes
+    /// Uses from_properties or to_properties mappings from schema
+    fn map_denormalized_property(
+        &self,
+        logical_prop: &str,
+        is_from_node: bool,
+    ) -> Result<String, String> {
+        // For denormalized nodes, find the node schema that points to our relationship table
+        let node_schemas = self.schema.get_nodes_schemas();
+        
+        let node_schema = node_schemas
+            .values()
+            .find(|n| n.table_name == self.relationship_table)
+            .ok_or_else(|| format!("No node schema found for table '{}'", self.relationship_table))?;
+        
+        // Get the appropriate property mapping (from_properties or to_properties)
+        let property_map = if is_from_node {
+            node_schema.from_properties.as_ref()
+        } else {
+            node_schema.to_properties.as_ref()
+        };
+        
+        // Look up the physical column name
+        property_map
+            .and_then(|map| map.get(logical_prop))
+            .map(|col| col.to_string())
+            .ok_or_else(|| format!(
+                "Property '{}' not found in {} for denormalized node in table '{}'",
+                logical_prop,
+                if is_from_node { "from_properties" } else { "to_properties" },
+                self.relationship_table
+            ))
     }
 
     /// Generate the recursive CTE for variable-length traversal
@@ -1919,16 +1954,51 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Build edge tuple for cycle detection
         let edge_tuple = self.build_edge_tuple_base();
 
-        // For denormalized, start_id and end_id come directly from the relationship columns
-        // Include path_nodes for UNWIND nodes(p) support
-        let select_clause = format!(
-            "{rel}.{from_col} as start_id,\n        {rel}.{to_col} as end_id,\n        1 as hop_count,\n        [{edge_tuple}] as path_edges,\n        {path_rels},\n        [{rel}.{from_col}, {rel}.{to_col}] as path_nodes",
-            rel = self.relationship_alias,
-            from_col = self.relationship_from_column,
-            to_col = self.relationship_to_column,
-            edge_tuple = edge_tuple,
-            path_rels = self.generate_relationship_type_for_hop(1)
-        );
+        // Build SELECT clause with denormalized properties
+        let mut select_items = vec![
+            format!("{}.{} as start_id", self.relationship_alias, self.relationship_from_column),
+            format!("{}.{} as end_id", self.relationship_alias, self.relationship_to_column),
+            "1 as hop_count".to_string(),
+            format!("[{}] as path_edges", edge_tuple),
+            self.generate_relationship_type_for_hop(1),
+            format!("[{}.{}, {}.{}] as path_nodes", 
+                self.relationship_alias, self.relationship_from_column,
+                self.relationship_alias, self.relationship_to_column),
+        ];
+
+        // Add denormalized node properties to CTE
+        // For denormalized nodes, properties come directly from edge table
+        // Use physical column names (e.g., "Origin", "OriginCityName") without prefixing
+        for prop in &self.properties {
+            if prop.cypher_alias == self.start_cypher_alias {
+                // Start node property: use from_properties mapping
+                if let Ok(physical_col) = self.map_denormalized_property(&prop.alias, true) {
+                    select_items.push(format!(
+                        "{}.{} as {}",
+                        self.relationship_alias,
+                        physical_col,
+                        physical_col  // Use physical column name as alias
+                    ));
+                } else {
+                    log::warn!("Could not map start property {}", prop.alias);
+                }
+            }
+            if prop.cypher_alias == self.end_cypher_alias {
+                // End node property: use to_properties mapping
+                if let Ok(physical_col) = self.map_denormalized_property(&prop.alias, false) {
+                    select_items.push(format!(
+                        "{}.{} as {}",
+                        self.relationship_alias,
+                        physical_col,
+                        physical_col  // Use physical column name as alias
+                    ));
+                } else {
+                    log::warn!("Could not map end property {}", prop.alias);
+                }
+            }
+        }
+
+        let select_clause = select_items.join(",\n        ");
 
         // Simple FROM - just the relationship table, no node tables
         let mut query = format!(
@@ -1975,17 +2045,42 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Build edge tuple for cycle detection
         let edge_tuple_recursive = self.build_edge_tuple_recursive(&self.relationship_alias);
 
-        // For denormalized, the recursive case:
-        // - Takes start_id from the CTE (previous path start)
-        // - Takes end_id from the new relationship's to_col
-        // Include path_nodes for UNWIND nodes(p) support
-        let select_clause = format!(
-            "vp.start_id,\n        {rel}.{to_col} as end_id,\n        vp.hop_count + 1 as hop_count,\n        arrayConcat(vp.path_edges, [{edge_tuple}]) as path_edges,\n        arrayConcat(vp.path_relationships, {path_rels}) as path_relationships,\n        arrayConcat(vp.path_nodes, [{rel}.{to_col}]) as path_nodes",
-            rel = self.relationship_alias,
-            to_col = self.relationship_to_column,
-            edge_tuple = edge_tuple_recursive,
-            path_rels = self.get_relationship_type_array()
-        );
+        // Build SELECT clause with denormalized properties
+        let mut select_items = vec![
+            "vp.start_id".to_string(),
+            format!("{}.{} as end_id", self.relationship_alias, self.relationship_to_column),
+            "vp.hop_count + 1 as hop_count".to_string(),
+            format!("arrayConcat(vp.path_edges, [{}]) as path_edges", edge_tuple_recursive),
+            format!("arrayConcat(vp.path_relationships, {}) as path_relationships", self.get_relationship_type_array()),
+            format!("arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes", 
+                self.relationship_alias, self.relationship_to_column),
+        ];
+
+        // Add denormalized properties - carry forward start properties, get new end properties
+        // Use physical column names without prefixing
+        for prop in &self.properties {
+            if prop.cypher_alias == self.start_cypher_alias {
+                // Start properties: carry forward from CTE (physical column names)
+                if let Ok(physical_col) = self.map_denormalized_property(&prop.alias, true) {
+                    select_items.push(format!("vp.{} as {}", physical_col, physical_col));
+                }
+            }
+            if prop.cypher_alias == self.end_cypher_alias {
+                // End properties: get from new edge's to_node columns  
+                if let Ok(physical_col) = self.map_denormalized_property(&prop.alias, false) {
+                    select_items.push(format!(
+                        "{}.{} as {}",
+                        self.relationship_alias,
+                        physical_col,
+                        physical_col  // Use physical column name
+                    ));
+                } else {
+                    log::warn!("Could not map end property {} in recursive case", prop.alias);
+                }
+            }
+        }
+
+        let select_clause = select_items.join(",\n        ");
 
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
