@@ -92,6 +92,8 @@ cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 
 > **⚠️ Required**: `GRAPH_CONFIG_PATH` must be set to a valid schema YAML file. Without it, ClickGraph won't know how to map your ClickHouse tables to graph nodes and edges.
 
+> **💡 Multi-Schema Support (NEW in v0.6.1)**: You can now load multiple independent graph schemas from a single YAML file! See [Schema Configuration](#schema-configuration) below for details.
+
 You should see output like:
 ```
 ClickGraph v0.5.1 (fork of Brahmand)
@@ -275,6 +277,109 @@ curl -X POST http://localhost:8080/query \
   }'
 ```
 
+## Schema Configuration
+
+### Single Schema (Traditional)
+
+Load one graph schema per deployment:
+
+```bash
+export GRAPH_CONFIG_PATH="./schemas/social_network.yaml"
+cargo run --bin clickgraph
+```
+
+### Multi-Schema Configuration (NEW in v0.6.1)
+
+Load multiple independent graph schemas from a single YAML file, enabling schema isolation and flexible querying:
+
+**Example Multi-Schema File** (`schemas/multi.yaml`):
+```yaml
+default_schema: social_network
+schemas:
+  - name: social_network
+    graph_schema:
+      nodes:
+        - label: User
+          database: social_db
+          table: users
+          node_id: user_id
+          property_mappings:
+            user_id: user_id
+            name: name
+      edges:
+        - type: FOLLOWS
+          database: social_db
+          table: follows
+          from_id: follower_id
+          to_id: followed_id
+          from_node: User
+          to_node: User
+
+  - name: security_logs
+    graph_schema:
+      nodes:
+        - label: IP
+          database: security
+          table: connections
+          node_id: ip_address
+          property_mappings:
+            ip: ip_address
+      edges:
+        - type: CONNECTED_TO
+          database: security
+          table: connections
+          from_id: source_ip
+          to_id: dest_ip
+          from_node: IP
+          to_node: IP
+```
+
+**Load Multi-Schema File**:
+```bash
+export GRAPH_CONFIG_PATH="./schemas/multi.yaml"
+cargo run --bin clickgraph
+
+# Verify schemas loaded
+curl -s http://localhost:8080/schemas | jq
+```
+
+**Query Different Schemas**:
+```cypher
+-- Query social_network schema
+USE social_network
+MATCH (u:User)-[:FOLLOWS]->(f:User)
+RETURN u.name, f.name
+
+-- Switch to security_logs schema
+USE security_logs
+MATCH (ip1:IP)-[:CONNECTED_TO]->(ip2:IP)
+RETURN ip1.ip, ip2.ip
+
+-- Use default schema (no USE clause needed)
+MATCH (u:User) RETURN count(u)
+```
+
+**Benefits**:
+- ✅ **Schema Isolation**: Each schema maintains independent definitions
+- ✅ **Flexible Switching**: Use `USE <schema_name>` to switch between schemas
+- ✅ **Simplified Management**: One file for all test/dev environments
+- ✅ **Backward Compatible**: Single-schema YAML files still work
+
+**API Endpoint**:
+```bash
+# List all loaded schemas
+curl -s http://localhost:8080/schemas | jq '.schemas[] | "\(.name): \(.node_count) nodes, \(.relationship_count) edges"'
+
+# Example output:
+# social_network: 2 nodes, 1 edge
+# security_logs: 1 node, 1 edge
+# default: 2 nodes, 1 edge  (alias for default_schema)
+```
+
+See [Schema Reference](schema-reference.md) for complete multi-schema format details.
+
+---
+
 ## Configuration Options
 
 ### Command-Line Configuration
@@ -308,7 +413,7 @@ export CLICKHOUSE_PASSWORD="your_password"
 export CLICKHOUSE_DATABASE="your_database"
 
 # Graph schema (required for graph queries)
-export GRAPH_CONFIG_PATH="/path/to/your/schema.yaml"
+export GRAPH_CONFIG_PATH="/path/to/your/schema.yaml"  # Single or multi-schema file
 ```
 
 ## Neo4j Tool Integration

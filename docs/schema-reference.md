@@ -29,6 +29,8 @@ ClickGraph schemas map existing ClickHouse tables to graph entities (nodes and e
 
 ## Schema File Structure
 
+### Single Schema Format (Traditional)
+
 ```yaml
 # Top-level structure
 name: <schema_name>        # Optional: Schema identifier
@@ -43,6 +45,77 @@ graph_schema:
       # ... edge attributes (standard)
     - polymorphic: true
       # ... edge attributes (polymorphic)
+```
+
+### Multi-Schema Format (NEW in v0.6.1)
+
+Load multiple independent graph schemas from a single YAML file:
+
+```yaml
+# Define default schema (used when no USE clause specified)
+default_schema: social_network
+
+schemas:
+  # First schema
+  - name: social_network
+    graph_schema:
+      nodes:
+        - label: User
+          database: social_db
+          table: users
+          node_id: user_id
+          property_mappings:
+            user_id: user_id
+            name: name
+      edges:
+        - type: FOLLOWS
+          database: social_db
+          table: follows
+          from_id: follower_id
+          to_id: followed_id
+          from_node: User
+          to_node: User
+
+  # Second schema (completely independent)
+  - name: security_logs
+    graph_schema:
+      nodes:
+        - label: IP
+          database: security
+          table: connections
+          node_id: ip_address
+          property_mappings:
+            ip: ip_address
+      edges:
+        - type: CONNECTED_TO
+          database: security
+          table: connections
+          from_id: source_ip
+          to_id: dest_ip
+          from_node: IP
+          to_node: IP
+```
+
+**Key Features**:
+- **default_schema**: Sets which schema is used when no `USE` clause is specified
+- **Schema Isolation**: Each schema has independent node labels and edge types
+- **Schema Selection**: Use `USE <schema_name>` clause to switch between schemas
+- **Automatic Alias**: A `default` schema alias is created pointing to `default_schema`
+
+**Usage Example**:
+```cypher
+-- Query social_network schema
+USE social_network
+MATCH (u:User)-[:FOLLOWS]->(f:User)
+RETURN u.name, f.name
+
+-- Switch to security_logs schema
+USE security_logs
+MATCH (ip1:IP)-[:CONNECTED_TO]->(ip2:IP)
+RETURN ip1.ip, ip2.ip
+
+-- Use default schema (no USE clause)
+MATCH (u:User) RETURN count(u)
 ```
 
 ---

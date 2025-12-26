@@ -102,9 +102,106 @@ export CLICKGRAPH_PORT="8080"                 # HTTP port
 export CLICKGRAPH_BOLT_HOST="0.0.0.0"         # Bolt host
 export CLICKGRAPH_BOLT_PORT="7687"            # Bolt port
 export CLICKGRAPH_BOLT_ENABLED="true"         # Enable/disable Bolt
+
+# Schema configuration (required)
+export GRAPH_CONFIG_PATH="./schemas/my_schema.yaml"
 ```
 
 **Note**: Command-line arguments take precedence over environment variables.
+
+## Schema Configuration
+
+### Single Schema (Traditional)
+
+Load one graph schema from a YAML file:
+
+```bash
+export GRAPH_CONFIG_PATH="./schemas/examples/social_network.yaml"
+cargo run --bin clickgraph
+```
+
+### Multi-Schema Configuration (NEW in v0.6.1)
+
+Load multiple independent graph schemas from a single YAML file:
+
+```yaml
+# schemas/multi_schema.yaml
+default_schema: social_benchmark
+schemas:
+  - name: social_benchmark
+    graph_schema:
+      nodes:
+        - label: User
+          database: brahmand
+          table: users_bench
+          node_id: user_id
+          property_mappings:
+            user_id: user_id
+            name: full_name
+      edges:
+        - type: FOLLOWS
+          database: brahmand
+          table: user_follows_bench
+          from_id: follower_id
+          to_id: followed_id
+          from_node: User
+          to_node: User
+
+  - name: ldbc_snb
+    graph_schema:
+      nodes:
+        - label: Person
+          database: ldbc
+          table: person
+          node_id: personId
+          property_mappings:
+            personId: personId
+            firstName: firstName
+      edges:
+        - type: KNOWS
+          database: ldbc
+          table: person_knows_person
+          from_id: person1Id
+          to_id: person2Id
+          from_node: Person
+          to_node: Person
+```
+
+**Usage**:
+```bash
+export GRAPH_CONFIG_PATH="./schemas/multi_schema.yaml"
+cargo run --bin clickgraph
+
+# Verify schemas loaded
+curl -s http://localhost:8080/schemas | jq '.schemas[] | "\(.name): \(.node_count) nodes, \(.relationship_count) edges"'
+
+# Output:
+# social_benchmark: 4 nodes, 6 edges
+# ldbc_snb: 8 nodes, 16 edges
+# default: 4 nodes, 6 edges  (alias for default_schema)
+```
+
+**Selecting Schema in Queries**:
+```cypher
+# Use specific schema
+USE social_benchmark
+MATCH (u:User)-[:FOLLOWS]->(f:User)
+RETURN u.name, f.name
+
+# Switch to different schema
+USE ldbc_snb
+MATCH (p:Person)-[:KNOWS]->(friend:Person)
+RETURN p.firstName, friend.firstName
+
+# Use default schema (no USE clause needed)
+MATCH (u:User) RETURN count(u)
+```
+
+**Benefits**:
+- ✅ **Isolation**: Each schema maintains independent node/edge definitions
+- ✅ **Flexibility**: Switch between schemas using `USE <schema_name>`
+- ✅ **Simplified Testing**: Load all test schemas from one file
+- ✅ **Backward Compatible**: Single-schema YAML files still work
 
 ## Protocol Support
 
