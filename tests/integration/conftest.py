@@ -7,10 +7,12 @@ This module provides:
 - ClickGraph server communication utilities
 - Common test data fixtures
 
-UNIFIED SCHEMA APPROACH:
-- Default GRAPH_CONFIG_PATH points to schemas/test/unified_test_schemas.yaml
-- All tests use explicit "USE <schema_name>" clause in queries
-- No per-test schema switching needed - schemas coexist in single config
+MULTI-SCHEMA APPROACH (v0.6.1+):
+- Default GRAPH_CONFIG_PATH points to schemas/test/unified_test_multi_schema.yaml
+- All tests use explicit "USE <schema_name>" clause to select schema
+- 6 schemas available: social_benchmark, test_fixtures, ldbc_snb, 
+  denormalized_flights, pattern_comp, zeek_logs
+- Complete schema isolation - no label conflicts between schemas
 """
 
 import pytest
@@ -28,16 +30,17 @@ CLICKHOUSE_PORT = int(os.getenv("CLICKHOUSE_PORT", "8123"))
 CLICKHOUSE_USER = os.getenv("CLICKHOUSE_USER", "test_user")
 CLICKHOUSE_PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "test_pass")
 
-# Set unified schema as default (can be overridden by env var)
+# Set multi-schema config as default (can be overridden by env var)
 if "GRAPH_CONFIG_PATH" not in os.environ:
     # Get path relative to project root (tests/integration/ → ../../schemas/test/)
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-    unified_schema_path = os.path.join(project_root, "schemas/test/unified_test_schema.yaml")  # Fixed filename
-    if os.path.exists(unified_schema_path):
-        os.environ["GRAPH_CONFIG_PATH"] = unified_schema_path
-        print(f"✓ Using unified test schema: {unified_schema_path}")
+    multi_schema_path = os.path.join(project_root, "schemas/test/unified_test_multi_schema.yaml")
+    if os.path.exists(multi_schema_path):
+        os.environ["GRAPH_CONFIG_PATH"] = multi_schema_path
+        print(f"✓ Using multi-schema config: {multi_schema_path}")
+        print(f"  Available schemas: social_benchmark, test_fixtures, ldbc_snb, denormalized_flights, pattern_comp, zeek_logs")
     else:
-        print(f"⚠ Warning: Unified schema not found at {unified_schema_path}")
+        print(f"⚠ Warning: Multi-schema config not found at {multi_schema_path}")
 
 
 @pytest.fixture(scope="session")
@@ -236,9 +239,9 @@ def load_all_test_schemas():
         # Benchmark schemas
         ("ontime_flights", "schemas/examples/ontime_denormalized.yaml"),
         
-        # Legacy schemas (keep temporarily for backward compatibility)
-        ("unified_test_schema", "schemas/test/unified_test_schema.yaml"),  # DEPRECATED - use specific schemas
-        ("test_integration", "schemas/test/test_integration_schema.yaml"),  # DEPRECATED - use test_fixtures
+        # Multi-schema config (loads 6 schemas: social_benchmark, test_fixtures, ldbc_snb, etc.)
+        # This is now the PRIMARY test schema configuration
+        ("multi_schema", "schemas/test/unified_test_multi_schema.yaml"),
     ]
     
     loaded_count = 0
@@ -576,11 +579,11 @@ def simple_graph(clickhouse_client, test_database, clean_database):
     # This ensures tests don't confuse schema name with database name
     
     # Return complete schema configuration
-    # NOTE: Uses unified_test_schema which contains TestUser/TestProduct labels
-    # mapped to test_integration database
+    # NOTE: Uses test_fixtures schema which contains TestUser/TestProduct labels
+    # mapped to brahmand database (from multi-schema config)
     return {
-        "schema_name": "unified_test_schema",  # Use unified test schema
-        "database": "test_integration",        # Physical ClickHouse database where tables exist
+        \"schema_name\": \"test_fixtures\",  # Use test_fixtures schema from multi-schema config
+        \"database\": \"brahmand\",        # Physical ClickHouse database where tables exist (NOTE: changed from test_integration)
         "nodes": {
             "TestUser": {  # Changed from "User" to match unified schema
                 "table": "users",

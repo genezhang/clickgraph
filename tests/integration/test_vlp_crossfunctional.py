@@ -12,7 +12,7 @@ import requests
 import json
 
 
-def query_api(query: str, schema_name: str = "unified_test_schema", port: int = 8080) -> dict:
+def query_api(query: str, schema_name: str = "test_fixtures", port: int = 8080) -> dict:
     """Execute a Cypher query against the API."""
     response = requests.post(
         f"http://localhost:{port}/query",

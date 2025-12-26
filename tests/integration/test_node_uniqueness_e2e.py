@@ -12,7 +12,7 @@ import requests
 import os
 
 BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
-SCHEMA_NAME = "unified_test_schema"  # Uses unified test schema
+SCHEMA_NAME = "test_fixtures"  # Uses test_fixtures schema (TestUser/TestProduct)
 
 
 def test_friends_of_friends_excludes_start_node(simple_graph):

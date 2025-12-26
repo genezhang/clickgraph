@@ -19,7 +19,7 @@ BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 QUERY_ENDPOINT = f"{BASE_URL}/query"
 
 
-def query_cypher(cypher_query, parameters=None, schema_name="unified_test_schema"):
+def query_cypher(cypher_query, parameters=None, schema_name="test_fixtures"):
     """Helper function to execute Cypher query via HTTP API."""
     # Auto-prepend USE clause if not present
     if not cypher_query.strip().upper().startswith("USE "):

@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from conftest import execute_cypher, assert_query_success, get_single_value, assert_row_count
 
 
-def execute_query(query, schema_name="unified_test_schema"):
+def execute_query(query, schema_name="test_fixtures"):
     """Execute a Cypher query against ClickGraph."""
     return execute_cypher(query, schema_name=schema_name)
 
@@ -34,7 +34,7 @@ class TestCountRelationships:
             MATCH ()-[r:TEST_FOLLOWS]->()
             RETURN count(r) AS total
             """,
-            schema_name="unified_test_schema"
+            schema_name="test_fixtures"
         )
         
         assert_query_success(response)
@@ -52,7 +52,7 @@ class TestCountRelationships:
         import requests
         response = requests.post(
             "http://localhost:8080/query",
-            json={"query": "USE unified_test_schema\nMATCH ()-[r]->()\nRETURN count(r)"}
+            json={"query": "USE test_fixtures\nMATCH ()-[r]->()\nRETURN count(r)"}
         )
         
         assert response.status_code == 500
@@ -73,7 +73,7 @@ class TestCountRelationships:
         import requests
         response = requests.post(
             "http://localhost:8080/query",
-            json={"query": "USE unified_test_schema\nMATCH ()-[]->() RETURN count(*) AS total"}
+            json={"query": "USE test_fixtures\nMATCH ()-[]->() RETURN count(*) AS total"}
         )
         
         assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
@@ -92,7 +92,7 @@ class TestCountRelationships:
         import requests
         response = requests.post(
             "http://localhost:8080/query",
-            json={"query": "USE unified_test_schema\nMATCH (u:TestUser)-[r]->(other:TestUser)\nRETURN count(r) AS total"}
+            json={"query": "USE test_fixtures\nMATCH (u:TestUser)-[r]->(other:TestUser)\nRETURN count(r) AS total"}
         )
         
         assert response.status_code == 200
@@ -108,7 +108,7 @@ class TestCountRelationships:
             MATCH ()-[:TEST_FOLLOWS]->()
             RETURN count(*) AS total
             """,
-            schema_name="unified_test_schema"
+            schema_name="test_fixtures"
         )
         
         assert_query_success(response)
@@ -127,7 +127,7 @@ class TestCountRelationships:
         # Test relationship without type - should say "Missing type"
         response_rel = requests.post(
             "http://localhost:8080/query",
-            json={"query": "USE unified_test_schema\nMATCH ()-[r]->()\nRETURN count(r)"}
+            json={"query": "USE test_fixtures\nMATCH ()-[r]->()\nRETURN count(r)"}
         )
         assert response_rel.status_code == 500
         assert "Missing type for relationship" in response_rel.text
