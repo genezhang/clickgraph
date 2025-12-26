@@ -1,11 +1,13 @@
 use crate::{
-    open_cypher_parser::ast::ReturnClause,
+    open_cypher_parser::ast::{Expression, ReturnClause, ReturnItem},
     query_planner::logical_expr::{
         AggregateFnCall, ColumnAlias, LogicalExpr, PropertyAccess, TableAlias,
     },
     query_planner::logical_plan::{
-        LogicalPlan, Projection, ProjectionItem, Union, UnionType,
+        optional_match_clause::evaluate_optional_match_clause, LogicalPlan, Projection,
+        ProjectionItem, Union, UnionType,
     },
+    query_planner::plan_ctx::PlanCtx,
 };
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -188,9 +190,74 @@ fn property_key(prop: &PropertyAccess) -> String {
     format!("{}.{}", prop.table_alias.0, prop.column.raw())
 }
 
+/// Rewrite pattern comprehensions in return items
+/// Modifies the plan by adding OPTIONAL MATCH nodes and replaces pattern comprehensions with collect()
+fn rewrite_pattern_comprehensions<'a>(
+    return_items: Vec<ReturnItem<'a>>,
+    mut plan: Arc<LogicalPlan>,
+    plan_ctx: &mut PlanCtx,
+) -> (Vec<ReturnItem<'a>>, Arc<LogicalPlan>) {
+    let mut rewritten_items = Vec::new();
+    let mut pc_counter = 0;
+
+    for item in return_items {
+        if let Expression::PatternComprehension(pc) = &item.expression {
+            // Generate unique alias for this pattern comprehension
+            pc_counter += 1;
+
+            // Build OPTIONAL MATCH clause from the pattern
+            let optional_match = crate::open_cypher_parser::ast::OptionalMatchClause {
+                path_patterns: vec![(*pc.pattern).clone()],
+                where_clause: pc.where_clause.as_ref().map(|w| {
+                    crate::open_cypher_parser::ast::WhereClause {
+                        conditions: (**w).clone(),
+                    }
+                }),
+            };
+
+            // Add OPTIONAL MATCH to the plan
+            plan = match evaluate_optional_match_clause(&optional_match, plan.clone(), plan_ctx) {
+                Ok(new_plan) => new_plan,
+                Err(e) => {
+                    log::error!(
+                        "Failed to evaluate OPTIONAL MATCH for pattern comprehension: {:?}",
+                        e
+                    );
+                    // Keep original item and continue
+                    rewritten_items.push(item);
+                    continue;
+                }
+            };
+
+            // Replace pattern comprehension with collect(projection)
+            let collect_call = Expression::FunctionCallExp(
+                crate::open_cypher_parser::ast::FunctionCall {
+                    name: "collect".to_string(),
+                    args: vec![(*pc.projection).clone()],
+                },
+            );
+
+            // Create new return item with collect()
+            // If original item had no alias, we'll let the inference handle it later
+            let new_item = ReturnItem {
+                expression: collect_call,
+                alias: item.alias, // Keep original alias if present, None otherwise
+            };
+
+            rewritten_items.push(new_item);
+        } else {
+            // Not a pattern comprehension - keep as is
+            rewritten_items.push(item);
+        }
+    }
+
+    (rewritten_items, plan)
+}
+
 pub fn evaluate_return_clause<'a>(
     return_clause: &ReturnClause<'a>,
     plan: Arc<LogicalPlan>,
+    plan_ctx: &mut PlanCtx,
 ) -> Arc<LogicalPlan> {
     crate::debug_print!("========================================");
     crate::debug_print!("⚠️ RETURN CLAUSE DISTINCT = {}", return_clause.distinct);
@@ -207,8 +274,15 @@ pub fn evaluate_return_clause<'a>(
         );
     }
     crate::debug_print!("========================================");
-    let projection_items: Vec<ProjectionItem> = return_clause
-        .return_items
+
+    // Rewrite pattern comprehensions before converting to ProjectionItems
+    let (rewritten_return_items, plan) = rewrite_pattern_comprehensions(
+        return_clause.return_items.clone(),
+        plan,
+        plan_ctx,
+    );
+
+    let projection_items: Vec<ProjectionItem> = rewritten_return_items
         .iter()
         .map(|item| item.clone().into())
         .collect();

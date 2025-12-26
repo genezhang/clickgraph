@@ -120,8 +120,16 @@ impl TableCtx {
             .as_ref()
             .and_then(|v| v.first())
             .cloned()
-            .ok_or(PlanCtxError::Label {
-                alias: self.alias.clone(),
+            .ok_or_else(|| {
+                if self.is_rel {
+                    PlanCtxError::Type {
+                        alias: self.alias.clone(),
+                    }
+                } else {
+                    PlanCtxError::Label {
+                        alias: self.alias.clone(),
+                    }
+                }
             })
     }
 

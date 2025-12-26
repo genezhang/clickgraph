@@ -145,13 +145,13 @@ pub enum JoinType {
     Right,
 }
 
-/// ARRAY JOIN item for ClickHouse
-/// Maps from Cypher UNWIND clause
+/// ARRAY JOIN items for ClickHouse
+/// Maps from Cypher UNWIND clauses (supports multiple for cartesian product)
 ///
-/// Example: UNWIND r.items AS item
-/// Generates: ARRAY JOIN r.items AS item
+/// Example: UNWIND [1,2] AS x UNWIND [10,20] AS y
+/// Generates: ARRAY JOIN [1,2] AS x ARRAY JOIN [10,20] AS y
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Default)]
-pub struct ArrayJoinItem(pub Option<ArrayJoin>);
+pub struct ArrayJoinItem(pub Vec<ArrayJoin>);
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct ArrayJoin {

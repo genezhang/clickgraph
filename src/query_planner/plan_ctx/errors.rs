@@ -11,6 +11,9 @@ pub enum PlanCtxError {
     #[error("No table context for relationship alias `{alias}`")]
     RelTableCtx { alias: String },
 
-    #[error("Missing Label for `{alias}`")]
+    #[error("Missing label for node `{alias}`")]
     Label { alias: String },
+
+    #[error("Missing type for relationship `{alias}`")]
+    Type { alias: String },
 }

@@ -121,10 +121,12 @@ pub fn parse_query_with_nom(
     let (input, call_clause): (&str, Option<CallClause>) =
         opt(call_clause::parse_call_clause).parse(input)?;
 
-    // Parse UNWIND clause (can appear after MATCH/OPTIONAL MATCH, before WITH/RETURN)
+    // Parse UNWIND clauses (can appear after MATCH/OPTIONAL MATCH, before WITH/RETURN)
+    // Supports multiple consecutive UNWIND for cartesian product
     // Example: MATCH (n) UNWIND n.items AS item RETURN item
-    let (input, unwind_clause): (&str, Option<UnwindClause>) =
-        opt(unwind_clause::parse_unwind_clause).parse(input)?;
+    // Example: UNWIND [1,2] AS x UNWIND [10,20] AS y RETURN x, y
+    let (input, unwind_clauses): (&str, Vec<UnwindClause>) =
+        many0(unwind_clause::parse_unwind_clause).parse(input)?;
 
     let (input, with_clause): (&str, Option<WithClause>) =
         opt(with_clause::parse_with_clause).parse(input)?;
@@ -161,7 +163,7 @@ pub fn parse_query_with_nom(
         match_clauses,
         optional_match_clauses,
         call_clause,
-        unwind_clause,
+        unwind_clauses,
         with_clause,
         where_clause,
         create_clause,

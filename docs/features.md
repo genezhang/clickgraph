@@ -70,6 +70,27 @@ GROUP BY u.name, p.title
 ```
 → See [OPTIONAL MATCH Guide](optional-match-guide.md) for complete documentation
 
+#### UNWIND Clause
+```cypher
+-- Expand a list into individual rows
+UNWIND [1, 2, 3] AS num
+RETURN num
+
+-- Multiple UNWIND for cartesian products
+UNWIND [1, 2] AS x
+UNWIND [10, 20] AS y
+RETURN x, y
+-- Returns 4 rows: (1,10), (1,20), (2,10), (2,20)
+
+-- Combine with graph patterns
+MATCH (u:User)
+WITH u.interests AS interests
+UNWIND interests AS interest
+RETURN interest, count(*) AS users
+GROUP BY interest
+```
+→ See [Cypher Language Reference](wiki/Cypher-Language-Reference.md#unwind-clause) for complete documentation
+
 #### Conditional Logic
 ```cypher
 MATCH (u:User)

@@ -81,3 +81,24 @@ graph_schema:
       property_mappings:
         since_date: since_date
 
+    # Pattern comprehension test tables
+    - label: PatternCompUser
+      database: brahmand
+      table: pattern_comp_users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: full_name
+        country: country
+        city: city
+
+    - type: PATTERN_COMP_FOLLOWS
+      database: brahmand
+      table: pattern_comp_follows
+      from_id: follower_id
+      to_id: followed_id
+      from_node: PatternCompUser
+      to_node: PatternCompUser
+      property_mappings:
+        follow_date: follow_date
+

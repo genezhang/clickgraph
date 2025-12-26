@@ -16,7 +16,7 @@ use crate::open_cypher_parser::common::{self, ws};
 use super::{
     ast::{
         ExistsSubquery, Expression, FunctionCall, LambdaExpression, Literal, Operator,
-        OperatorApplication, PropertyAccess, ReduceExpression,
+        OperatorApplication, PatternComprehension, PropertyAccess, ReduceExpression,
     },
     path_pattern, where_clause,
 };
@@ -211,6 +211,94 @@ fn parse_reduce_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     ))
 }
 
+/// Parse pattern comprehension
+/// Syntax: [(pattern) WHERE condition | projection]
+/// Examples:
+///   [(user)-[:FOLLOWS]->(follower) | follower.name]
+///   [(a)-[:KNOWS]->(b) WHERE b.age > 25 | b.name]
+///   [(n)-[r]->(m) | r.weight]
+fn parse_pattern_comprehension(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    // Parse opening bracket '['
+    let (input, _) = ws(char('[')).parse(input)?;
+
+    // Parse the graph pattern (e.g., (a)-[:REL]->(b))
+    let (input, pattern) = ws(crate::open_cypher_parser::path_pattern::parse_path_pattern)
+        .parse(input)?;
+
+    // Optional WHERE clause
+    let (input, where_clause) = opt(preceded(
+        ws(tag_no_case("WHERE")),
+        parse_expression,
+    ))
+    .parse(input)?;
+
+    // Parse '|' separator
+    let (input, _) = ws(char('|')).parse(input)?;
+
+    // Parse the projection expression
+    let (input, projection) = parse_pattern_comprehension_projection(input)?;
+
+    // Parse closing bracket ']'
+    let (input, _) = ws(char(']')).parse(input)?;
+
+    Ok((
+        input,
+        Expression::PatternComprehension(PatternComprehension {
+            pattern: Box::new(pattern),
+            where_clause: where_clause.map(Box::new),
+            projection: Box::new(projection),
+        }),
+    ))
+}
+
+/// Helper to parse the projection expression inside pattern comprehension
+/// Stops at the closing ']'
+fn parse_pattern_comprehension_projection(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    // We need to parse an expression but stop at ']'
+    // Use a similar approach to parse_reduce_body_expression
+    
+    let mut depth = 0;
+    let mut i = 0;
+    let bytes = input.as_bytes();
+
+    while i < bytes.len() {
+        match bytes[i] as char {
+            '[' => depth += 1,
+            ']' if depth == 0 => break, // Found our closing bracket
+            ']' => depth -= 1,
+            '(' => {
+                // Track nested parentheses too
+                let mut paren_depth = 1;
+                i += 1;
+                while i < bytes.len() && paren_depth > 0 {
+                    match bytes[i] as char {
+                        '(' => paren_depth += 1,
+                        ')' => paren_depth -= 1,
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let expr_str = &input[..i];
+    let remaining = &input[i..];
+
+    // Parse the expression from the extracted string
+    let (leftover, expr) = parse_expression(expr_str)?;
+
+    // Make sure we consumed the whole expression
+    if !leftover.trim().is_empty() {
+        return Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1)));
+    }
+
+    Ok((remaining, expr))
+}
+
 /// Parse the list expression in reduce, stopping at '|'
 fn parse_reduce_list_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     // Parse a simple expression that doesn't cross the '|' boundary
@@ -285,6 +373,7 @@ fn parse_primary(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
         parse_exists_expression, // Must be before parse_function_call to catch EXISTS { }
         parse_case_expression,
         parse_reduce_expression, // Must be before parse_function_call to catch reduce(...)
+        parse_pattern_comprehension, // Must be before parse_list_literal to catch [(pattern) | ...]
         parse_path_pattern_expression,
         parse_function_call,
         parse_postfix_expression,

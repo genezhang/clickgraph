@@ -181,6 +181,19 @@ graph_schema:
         city: DestCityName
         state: DestState
 
+    # ===================================================================================
+    # PATTERN COMPREHENSION TESTS (tests/integration/test_pattern_comprehensions.py)
+    # ===================================================================================
+    - label: PatternCompUser
+      database: brahmand
+      table: pattern_comp_users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: full_name
+        country: country
+        city: city
+
   edges:
     # ===================================================================================
     # SOCIAL BENCHMARK relationships
@@ -340,3 +353,17 @@ graph_schema:
         role: role
 
     # ===================================================================================
+    # PATTERN COMPREHENSION TESTS (tests/integration/test_pattern_comprehensions.py)
+    # ===================================================================================
+    - type: PATTERN_COMP_FOLLOWS
+      database: brahmand
+      table: pattern_comp_follows
+      from_id: follower_id
+      to_id: followed_id
+      from_node: PatternCompUser
+      to_node: PatternCompUser
+      property_mappings:
+        follow_date: follow_date
+
+    # ===================================================================================
+

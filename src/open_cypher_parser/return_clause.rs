@@ -71,28 +71,8 @@ pub fn parse_return_clause(
 fn return_item_parser(input: &str) -> IResult<&str, ReturnItem<'_>, OpenCypherParsingError<'_>> {
     parse_return_item(input).map_err(|e| match e {
         nom::Err::Incomplete(needed) => nom::Err::Incomplete(needed),
-        nom::Err::Error(err) => {
-            // Check if this looks like a pattern comprehension
-            if input.contains("[(") && input.contains("|") 
-                && (input.contains("->") || input.contains("<-") || input.contains("-[")) {
-                nom::Err::Failure(OpenCypherParsingError {
-                    errors: vec![(input, "Pattern comprehensions [(pattern) | projection] are not yet supported. Use MATCH with collect() instead.")],
-                })
-            } else {
-                nom::Err::Failure(OpenCypherParsingError::from(err))
-            }
-        }
-        nom::Err::Failure(err) => {
-            // Check if this looks like a pattern comprehension
-            if input.contains("[(") && input.contains("|") 
-                && (input.contains("->") || input.contains("<-") || input.contains("-[")) {
-                nom::Err::Failure(OpenCypherParsingError {
-                    errors: vec![(input, "Pattern comprehensions [(pattern) | projection] are not yet supported. Use MATCH with collect() instead.")],
-                })
-            } else {
-                nom::Err::Failure(OpenCypherParsingError::from(err))
-            }
-        }
+        nom::Err::Error(err) => nom::Err::Failure(OpenCypherParsingError::from(err)),
+        nom::Err::Failure(err) => nom::Err::Failure(OpenCypherParsingError::from(err)),
     })
 }
 

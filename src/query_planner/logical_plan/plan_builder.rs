@@ -35,6 +35,7 @@ pub fn build_logical_plan(
     // 🚨 DIAGNOSTIC: Check if query is completely empty
     if query_ast.match_clauses.is_empty() 
         && query_ast.optional_match_clauses.is_empty() 
+        && query_ast.unwind_clauses.is_empty()
         && query_ast.return_clause.is_none() 
         && query_ast.with_clause.is_none() {
         log::error!("❌ EMPTY QUERY DETECTED: Parser returned empty AST!");
@@ -51,7 +52,7 @@ pub fn build_logical_plan(
         log::error!("     - ORDER BY: {}", query_ast.order_by_clause.is_some());
         log::error!("     - LIMIT: {}", query_ast.limit_clause.is_some());
         log::error!("     - SKIP: {}", query_ast.skip_clause.is_some());
-        log::error!("     - UNWIND: {}", query_ast.unwind_clause.is_some());
+        log::error!("     - UNWIND: {}", !query_ast.unwind_clauses.is_empty());
         log::error!("     - CALL: {}", query_ast.call_clause.is_some());
         
         return Err(LogicalPlanError::QueryPlanningError(
@@ -86,9 +87,10 @@ pub fn build_logical_plan(
         )?;
     }
 
-    // Process UNWIND clause after MATCH/OPTIONAL MATCH, before WITH
+    // Process UNWIND clauses after MATCH/OPTIONAL MATCH, before WITH
     // UNWIND transforms array values into individual rows
-    if let Some(unwind_clause_ast) = &query_ast.unwind_clause {
+    // Multiple UNWIND clauses create cartesian product
+    for unwind_clause_ast in &query_ast.unwind_clauses {
         log::debug!(
             "build_logical_plan: Processing UNWIND clause with alias {}",
             unwind_clause_ast.alias
@@ -111,7 +113,8 @@ pub fn build_logical_plan(
     }
 
     if let Some(return_clause) = &query_ast.return_clause {
-        logical_plan = return_clause::evaluate_return_clause(return_clause, logical_plan);
+        logical_plan =
+            return_clause::evaluate_return_clause(return_clause, logical_plan, &mut plan_ctx);
     }
 
     if let Some(order_clause) = &query_ast.order_by_clause {

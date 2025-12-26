@@ -2,6 +2,138 @@
 
 ### 🚀 Features
 
+#### Multiple UNWIND Clauses (Dec 25, 2025) ⭐
+
+**Complete support for multiple consecutive UNWIND clauses generating cartesian products.**
+
+**Syntax:**
+```cypher
+UNWIND [1, 2] AS x
+UNWIND [10, 20] AS y
+RETURN x, y
+```
+
+**What's New:**
+- ✅ **Multiple UNWIND support**: Chain unlimited UNWIND clauses for cartesian products
+- ✅ **Generic implementation**: Collects all UNWIND nodes, generates multiple ARRAY JOIN clauses
+- ✅ **Works with filtering**: WHERE clauses filter cartesian product results
+- ✅ **Works with aggregation**: COUNT, SUM, etc. over expanded rows
+- ✅ **Integration tests**: 7 comprehensive tests covering all use cases
+
+**Implementation Details:**
+- Parser: Changed `unwind_clause: Option` → `unwind_clauses: Vec` with `many0()`
+- SQL Generation: Recursive collection of all Unwind nodes
+- ClickHouse SQL: Multiple `ARRAY JOIN` clauses in sequence
+
+**Examples:**
+```cypher
+-- Cartesian product: 4 rows (2×2)
+UNWIND [1, 2] AS x
+UNWIND [10, 20] AS y
+RETURN x, y
+-- Results: (1,10), (1,20), (2,10), (2,20)
+
+-- Triple UNWIND: 8 rows (2×2×2)
+UNWIND [1, 2] AS x  
+UNWIND [10, 20] AS y
+UNWIND [100, 200] AS z
+RETURN x, y, z
+
+-- With filtering
+UNWIND [1, 2, 3] AS x
+UNWIND [10, 20, 30] AS y
+WHERE x + y > 25
+RETURN x, y
+
+-- With aggregation
+UNWIND ['a', 'b'] AS letter
+UNWIND [1, 2, 3] AS num
+RETURN letter, count(*) AS count
+GROUP BY letter
+```
+
+**Impact**:
+- Unblocks 3 LDBC BI queries (bi-4, bi-13, bi-16)
+- Enables complex data expansion patterns
+- LDBC pass rate: 70% → 73% (+3%)
+
+---
+
+#### Pattern Comprehensions (Dec 25, 2025) ⭐
+
+**Complete implementation of pattern comprehension syntax for concise list collection from graph patterns.**
+
+**Syntax:**
+```cypher
+[(pattern) WHERE condition | projection]
+```
+
+**What's New:**
+- ✅ **Basic pattern comprehensions**: `[(u)-[:FOLLOWS]->(f) | f.name]` - collect values from matched patterns
+- ✅ **Optional WHERE clause**: `[(u)-[:FOLLOWS]->(f) WHERE f.country = 'USA' | f.name]` - filter before projection
+- ✅ **Expression projections**: `[(u)-[:FOLLOWS]->(f) | f.name + ' from ' + f.country]` - computed values
+- ✅ **Multiple comprehensions**: Use multiple patterns in same RETURN/WITH clause
+- ✅ **Empty list handling**: Returns `[]` when no matches found
+- ✅ **Full documentation**: Complete section in Cypher Language Reference with examples
+
+**Implementation Details:**
+- Parser: `open_cypher_parser/expression.rs` - full syntax support
+- Rewriter: `query_planner/pattern_comprehension_rewriter.rs` - transforms to OPTIONAL MATCH + collect()
+- SQL Generation: LEFT JOIN with groupArray() aggregation
+- Tests: 5 integration tests covering all features
+
+**Examples:**
+```cypher
+-- Social network - collect friend names
+MATCH (u:User) WHERE u.user_id = 1
+RETURN u.name, [(u)-[:FOLLOWS]->(f) | f.name] AS friends
+
+-- E-commerce - expensive purchases only
+MATCH (c:Customer)
+RETURN c.name, [(c)-[:PURCHASED]->(p) WHERE p.price > 100 | p.name] AS luxury_items
+
+-- Compare followers and following
+MATCH (u:User)
+RETURN u.name,
+       [(u)-[:FOLLOWS]->(f) | f.name] AS following,
+       [(u)<-[:FOLLOWS]-(f) | f.name] AS followers
+```
+
+**Use Cases:**
+- Friend recommendations (social networks)
+- Product bundles (e-commerce)
+- Citation analysis (knowledge graphs)
+- Activity tracking (event systems)
+
+**Related:**
+- Works seamlessly with OPTIONAL MATCH
+- Integrates with collect() aggregation
+- Supports all Cypher expressions in projections
+- Compatible with multi-schema architecture
+
+---
+
+### 🐛 Bug Fixes
+
+#### Error Message Terminology Fix (Dec 25, 2025)
+
+**Fixed error messages to use correct graph terminology:**
+- Nodes: \"Missing **label** for node `{alias}`\"
+- Relationships: \"Missing **type** for relationship `{alias}`\" (was incorrectly saying \"label\")
+
+**Impact:**
+- Clearer error messages improve debugging experience
+- Helps users understand the difference between node labels and relationship types
+- Test coverage: 4 new tests in `test_count_relationships.py`
+
+**Files changed:**
+- `src/query_planner/plan_ctx/errors.rs` - Updated error enum definitions
+- `src/query_planner/plan_ctx/mod.rs` - Added `is_rel` parameter to `get_label_str()`
+
+**Related issue**: COUNT(r) investigation revealed incorrect terminology
+
+---
+
 - *(schema)* **Edge Constraints for cross-node validation** (Dec 24-27, 2025) 🎯 **PRODUCTION-READY**
   - Enables logical constraints between connected nodes (e.g., `from.timestamp <= to.timestamp`)
   - Defined in schema YAML, automatically applied to all queries

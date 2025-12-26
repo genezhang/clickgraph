@@ -31,6 +31,8 @@
 ### New Features
 
 - **Semantic VLP Validation** - Automatically detects non-transitive relationships (e.g., IP→Domain) and converts to single-hop patterns
+- **Multiple UNWIND Clauses** - Cartesian product support for multiple consecutive UNWIND clauses (e.g., `UNWIND [1,2] AS x UNWIND [10,20] AS y` → 4 rows)
+- **Pattern Comprehensions** - Extract values from graph patterns into lists with `[(pattern) | expression]` syntax
 - **Architecture** - Analyzer-level validation instead of tactical SQL fixes
 - **Example**: `(IP)-[DNS_REQUESTED*]->(Domain)` → Simple single-hop query (Domain nodes can't start DNS_REQUESTED edges)
 - **ClickHouse function passthrough** - Make all ClickHouse functions available in Cypher through the pass-thru feature

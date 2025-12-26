@@ -354,6 +354,9 @@ impl AliasResolverContext {
             // PatternCount is rendered directly with schema lookup, no alias transformation needed
             LogicalExpr::PatternCount(pc) => LogicalExpr::PatternCount(pc),
 
+            // PatternComprehension will be rewritten during query planning, doesn't need alias transformation here
+            LogicalExpr::PatternComprehension(pc) => LogicalExpr::PatternComprehension(pc),
+
             // These don't contain PropertyAccess
             LogicalExpr::Literal(_)
             | LogicalExpr::Raw(_)

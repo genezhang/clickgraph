@@ -87,6 +87,11 @@ pub enum LogicalExpr {
     /// Used in ClickHouse array functions
     /// Example: x -> x > 5
     Lambda(LambdaExpr),
+
+    /// Pattern comprehension: [(pattern) WHERE condition | projection]
+    /// Returns a list of projected values from matched patterns
+    /// Will be rewritten to OPTIONAL MATCH + collect() during query planning
+    PatternComprehension(PatternComprehensionExpr),
 }
 
 /// Pattern count for size() on patterns
@@ -129,6 +134,21 @@ pub struct LambdaExpr {
     pub params: Vec<String>,
     /// Body expression (can reference params)
     pub body: Box<LogicalExpr>,
+}
+
+/// Pattern comprehension: returns list of values from pattern matches
+/// Example: [(user)-[:FOLLOWS]->(follower) WHERE follower.active | follower.name]
+/// This will be rewritten during query planning to:
+///   OPTIONAL MATCH (user)-[:FOLLOWS]->(follower) WHERE follower.active
+///   RETURN collect(follower.name)
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct PatternComprehensionExpr {
+    /// The graph pattern to match
+    pub pattern: PathPattern,
+    /// Optional WHERE clause for filtering
+    pub where_clause: Option<Box<LogicalExpr>>,
+    /// Expression to project for each match
+    pub projection: Box<LogicalExpr>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -696,6 +716,11 @@ impl<'a> From<open_cypher_parser::ast::Expression<'a>> for LogicalExpr {
                 params: lambda.params.iter().map(|s| s.to_string()).collect(),
                 body: Box::new(LogicalExpr::from(*lambda.body)),
             }),
+            Expression::PatternComprehension(pc) => {
+                // Pattern comprehensions should be rewritten during query planning
+                // before reaching this point. If we get here, it's a bug.
+                panic!("PatternComprehension should have been rewritten during query planning. This is a bug!")
+            }
         }
     }
 }

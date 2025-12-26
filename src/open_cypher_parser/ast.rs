@@ -33,7 +33,7 @@ pub struct OpenCypherQueryAst<'a> {
     pub match_clauses: Vec<MatchClause<'a>>, // Support multiple MATCH clauses in sequence
     pub optional_match_clauses: Vec<OptionalMatchClause<'a>>,
     pub call_clause: Option<CallClause<'a>>,
-    pub unwind_clause: Option<UnwindClause<'a>>,
+    pub unwind_clauses: Vec<UnwindClause<'a>>, // Support multiple UNWIND clauses for cartesian product
     pub with_clause: Option<WithClause<'a>>,
     pub where_clause: Option<WhereClause<'a>>,
     pub create_clause: Option<CreateClause<'a>>,
@@ -521,6 +521,10 @@ pub enum Expression<'a> {
     /// Used in ClickHouse array functions like arrayFilter, arrayMap
     /// Example: x -> x > 5, (x, y) -> x + y
     Lambda(LambdaExpression<'a>),
+    /// Pattern comprehension: [(pattern) WHERE condition | projection]
+    /// Returns a list of projected values from matched patterns
+    /// Example: [(user)-[:FOLLOWS]->(follower) WHERE follower.active | follower.name]
+    PatternComprehension(PatternComprehension<'a>),
 }
 
 /// Lambda expression for ClickHouse array functions
@@ -565,6 +569,22 @@ pub struct ReduceExpression<'a> {
     pub list: Box<Expression<'a>>,
     /// Expression to compute for each element (can reference both accumulator and variable)
     pub expression: Box<Expression<'a>>,
+}
+
+/// Pattern comprehension: generates a list from pattern matches
+/// Syntax: [(pattern) WHERE condition | projection]
+/// Examples:
+///   [(user)-[:FOLLOWS]->(f) | f.name] => ['Alice', 'Bob', 'Charlie']
+///   [(a)-[:KNOWS]->(b) WHERE b.age > 25 | b.name] => ['Dave', 'Eve']
+///   [(n)-[r]->(m) | r.weight] => [1.5, 2.0, 3.7]
+#[derive(Debug, PartialEq, Clone)]
+pub struct PatternComprehension<'a> {
+    /// The graph pattern to match (e.g., (user)-[:FOLLOWS]->(follower))
+    pub pattern: Box<PathPattern<'a>>,
+    /// Optional WHERE clause for filtering matches
+    pub where_clause: Option<Box<Expression<'a>>>,
+    /// Expression to project for each match (e.g., follower.name)
+    pub projection: Box<Expression<'a>>,
 }
 
 impl fmt::Display for Expression<'_> {

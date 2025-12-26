@@ -297,21 +297,18 @@ class TestJoinConditions:
             headers={"Content-Type": "application/json"}
         )
         return response.json().get("generated_sql", "")
-
-    @pytest.mark.xfail(reason="Schema loading timing issue: ontime_flights schema not found during test execution")
     def test_outgoing_join_uses_dest_to_origin(self):
         """Outgoing edge: r2.Origin = r1.Dest (next hop starts where prev ended)."""
-        query = "MATCH (a:Airport)-[r1:FLIGHT]->(b:Airport)-[r2:FLIGHT]->(c:Airport) RETURN a.code LIMIT 1"
+        query = "USE ontime_flights MATCH (a:Airport)-[r1:FLIGHT]->(b:Airport)-[r2:FLIGHT]->(c:Airport) RETURN a.code LIMIT 1"
         sql = self.get_sql(query)
         
         # For denormalized: r2.Origin = r1.Dest
         assert "r2.Origin = r1.Dest" in sql or "r2.Origin = f1.Dest" in sql.replace("f", "r"), \
             f"Outgoing JOIN should connect r2.Origin to r1.Dest.\nSQL: {sql}"
 
-    @pytest.mark.xfail(reason="Schema loading timing issue: ontime_flights schema not found during test execution")
     def test_undirected_has_both_join_directions(self):
         """Undirected patterns should have both Origin→Dest and Dest→Origin JOINs."""
-        query = "MATCH (a:Airport)-[r1:FLIGHT]-(b:Airport)-[r2:FLIGHT]-(c:Airport) RETURN a.code LIMIT 1"
+        query = "USE ontime_flights MATCH (a:Airport)-[r1:FLIGHT]-(b:Airport)-[r2:FLIGHT]-(c:Airport) RETURN a.code LIMIT 1"
         sql = self.get_sql(query)
         
         # Should have branches with both r2.Origin = r1.Dest AND r2.Dest = r1.Origin
@@ -337,20 +334,19 @@ class TestMultiHopEdgeCases:
         )
         return response.json().get("generated_sql", "")
 
-    @pytest.mark.xfail(reason="Schema loading timing issue: ontime_flights schema not found during test execution")
     def test_single_hop_no_union(self):
         """Single hop should never have UNION."""
-        query = "MATCH (a:Airport)-[r:FLIGHT]-(b:Airport) RETURN a.code, b.code LIMIT 5"
+        query = "USE ontime_flights MATCH (a:Airport)-[r:FLIGHT]-(b:Airport) RETURN a.code, b.code LIMIT 5"
         sql = self.get_sql(query)
         
         # Single undirected edge = 2 branches
         union_count = sql.count("UNION ALL") + 1 if "UNION ALL" in sql else 1
         assert union_count == 2, f"Single undirected hop should have 2 branches, got {union_count}"
 
-    @pytest.mark.xfail(reason="Schema loading timing issue: ontime_flights schema not found during test execution")
     def test_4hop_undirected_has_16_branches(self):
         """4 undirected hops = 2^4 = 16 branches."""
         query = """
+        USE ontime_flights
         MATCH (a:Airport)-[r1:FLIGHT]-(b:Airport)-[r2:FLIGHT]-(c:Airport)-[r3:FLIGHT]-(d:Airport)-[r4:FLIGHT]-(e:Airport)
         RETURN a.code LIMIT 1
         """

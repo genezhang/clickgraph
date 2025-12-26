@@ -1,7 +1,7 @@
 # Known Issues
 
 **Active Issues**: 0 bugs, 4 feature limitations  
-**Last Updated**: December 24, 2025
+**Last Updated**: December 25, 2025
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -11,23 +11,22 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 ## Current Status
 
 **Bug Status**: ✅ **All known bugs fixed!**
-- Integration test pass rate: **100% (544 passed, 54 xfailed)** 
+- Integration test pass rate: **100% (548 passed, 50 xfailed)** 
 - All core functionality working correctly
+- **Denormalized VLP fixed** (Dec 25, 2025) - root cause addressed with prevention measures
+- Multi-hop 3+ queries verified working (Dec 25, 2025)
+- Schema loading working correctly (Dec 25, 2025)
 - Property pruning complete (Dec 24, 2025)
 - VLP alias rewriting complete (Dec 22, 2025)
 
 **Feature Limitations**: The following Cypher features are **not yet implemented** (by design - read-only query engine):
 
-### 1. Pattern Comprehensions
-**Status**: ⚠️ NOT IMPLEMENTED  
-**Example**: `[(person)-[:KNOWS]->(friend) | friend.name]`  
-**Workaround**: Use `MATCH` with `collect()` instead:
-```cypher
-MATCH (person)-[:KNOWS]->(friend)
-WITH person, collect(friend.name) as friendNames
-RETURN person, friendNames
-```
-**Impact**: Blocks 2 LDBC BI queries (bi-8, bi-14)
+### 1. Multiple UNWIND Clauses ✅
+**Status**: ✅ **COMPLETE** (Dec 25, 2025)  
+**Example**: `UNWIND [1,2] AS x UNWIND [10,20] AS y RETURN x, y`  
+**Implementation**: Multiple ARRAY JOIN clauses for cartesian product  
+**Tests**: 7/7 integration tests passing  
+**Impact**: Unblocks 3 LDBC BI queries (bi-4, bi-16, bi-13)
 
 ### 2. Procedure Calls (APOC/GDS)
 **Status**: ⚠️ NOT IMPLEMENTED (out of scope - analytical query engine)  
@@ -35,13 +34,20 @@ RETURN person, friendNames
 **Reason**: ClickGraph is a SQL query translator, not a procedure runtime  
 **Impact**: Blocks 4 LDBC BI queries (bi-10, bi-15, bi-19, bi-20)
 
-### 3. Bidirectional Relationship Patterns  
+### 3. Pattern Comprehensions ✅
+**Status**: ✅ **COMPLETE** (Dec 25, 2025)  
+**Example**: `[(person)-[:KNOWS]->(friend) | friend.name]`  
+**Implementation**: Full support with query rewriting to OPTIONAL MATCH + collect()  
+**Tests**: 5/5 integration tests passing  
+**Documentation**: Complete section in Cypher Language Reference
+
+### 4. Bidirectional Relationship Patterns  
 **Status**: ⚠️ NOT IMPLEMENTED (non-standard syntax)  
 **Example**: `(a)<-[:TYPE]->(b)` (both arrows on same relationship)  
 **Workaround**: Use undirected pattern `(a)-[:TYPE]-(b)` or two MATCH clauses  
 **Impact**: Blocks 1 LDBC BI query (bi-17)
 
-### 4. Write Operations
+### 5. Write Operations
 **Status**: ❌ OUT OF SCOPE (read-only by design)  
 **Not Supported**: `CREATE`, `SET`, `DELETE`, `MERGE`, `REMOVE`  
 **Reason**: ClickGraph is a read-only analytical query engine for ClickHouse  
@@ -126,6 +132,63 @@ RETURN person, friendNames
 
 ---
 
+## Critical Incident: Denormalized VLP Regression (Dec 22-25, 2025)
+
+### Timeline
+- **Dec 22, 2025**: Commit 6fc1506 "Use node ID columns for VLP CTE generation"
+  - ✅ Fixed: Traditional schema VLP (11/24 → 24/24 tests)
+  - ❌ Broke: Denormalized schema VLP (3 tests marked xfail SAME DAY)
+  - Issue: Changed node ID selection without checking `is_denormalized` flag
+  
+- **Dec 25, 2025**: Root cause identified and fixed
+  - Problem: Code used `node_schema.node_id` for denormalized nodes (logical property)
+  - Should use: Relationship columns (`from_col`/`to_col`) for physical IDs
+  - Fix: Check `is_denormalized` flag before column selection
+
+### Root Cause Analysis
+
+**Technical**: Not checking `is_denormalized` flag in [cte_extraction.rs](src/render_plan/cte_extraction.rs#L967-L993)
+
+**Deeper Issues**:
+1. **Schema Duality**: Two fundamentally different patterns (traditional vs denormalized) in same code path
+2. **Testing Gap**: Dec 22 commit only tested traditional schemas, marked denormalized tests xfail
+3. **No Type Safety**: Runtime `is_denormalized` checks only, no compile-time distinction
+
+### Prevention Measures Implemented
+
+1. **Documentation**: [docs/development/schema-testing-requirements.md](docs/development/schema-testing-requirements.md)
+   - Mandatory multi-schema testing for VLP changes
+   - No xfail allowed on critical features
+   - Schema-specific testing checklist
+
+2. **Code Comments**: Extensive warnings in [cte_extraction.rs](src/render_plan/cte_extraction.rs)
+   - Explains both schema patterns
+   - Documents breaking history
+   - References testing requirements
+
+3. **Meta Tests**: [tests/meta/test_schema_coverage.py](tests/meta/test_schema_coverage.py)
+   - Validates VLP tests exist for ALL schema types
+   - Detects xfail on critical features
+   - Checks code has proper documentation
+
+4. **Pre-commit Hook**: [scripts/hooks/pre-commit.sh](scripts/hooks/pre-commit.sh)
+   - Runs when VLP/relationship code changes
+   - Forces multi-schema test validation
+   - Prevents commits with failing denormalized tests
+
+### Lesson Learned
+
+**When VLP or relationship traversal code changes:**
+- ✅ MUST test traditional schemas
+- ✅ MUST test denormalized schemas  
+- ✅ MUST test FK-edge schemas (when available)
+- ❌ NEVER mark VLP tests as xfail
+- ❌ NEVER claim "fixed" while marking tests xfail
+
+This feature is **critical for ClickGraph's no-ETL value proposition** - denormalized schemas enable graph queries on existing tables without data transformation.
+
+---
+
 ## Documentation
 
 For comprehensive feature documentation and examples:
@@ -138,3 +201,4 @@ For developers:
 - **Architecture**: [docs/architecture/](docs/architecture/)
 - **Development Guide**: [DEVELOPMENT_PROCESS.md](DEVELOPMENT_PROCESS.md)
 - **Test Infrastructure**: [tests/README.md](tests/README.md)
+- **Schema Testing**: [docs/development/schema-testing-requirements.md](docs/development/schema-testing-requirements.md) ⭐ NEW

@@ -18,6 +18,7 @@ Complete syntax reference for Cypher queries supported by ClickGraph.
 - [ORDER BY, LIMIT, SKIP](#order-by-limit-skip)
 - [Aggregation Functions](#aggregation-functions)
 - [Path Expressions](#path-expressions)
+- [Pattern Comprehensions](#pattern-comprehensions) ⭐ **NEW**
 - [Functions](#functions)
   - [size() - Pattern Counting](#size---get-collection-size)
   - [List Functions](#other-list-functions)
@@ -667,6 +668,184 @@ RETURN u.name ORDER BY u.user_id SKIP 10 LIMIT 10  -- Page 2
 
 ---
 
+## UNWIND Clause
+
+**Status**: ⭐ **COMPLETE** (v0.6.0) - Full support for multiple UNWIND clauses
+
+The `UNWIND` clause transforms a list into individual rows, enabling cartesian products and list expansion operations.
+
+### Syntax
+
+```cypher
+UNWIND list_expression AS alias
+```
+
+**Multiple UNWIND** (cartesian product):
+```cypher
+UNWIND list1 AS alias1
+UNWIND list2 AS alias2
+RETURN alias1, alias2
+```
+
+### Single UNWIND Examples
+
+```cypher
+-- Unwind a literal list
+UNWIND [1, 2, 3] AS num
+RETURN num
+-- Returns: 1, 2, 3 (3 rows)
+
+-- Unwind with filtering
+UNWIND [1, 2, 3, 4, 5] AS num
+WHERE num > 2
+RETURN num
+-- Returns: 3, 4, 5
+
+-- Unwind with aggregation
+UNWIND ['a', 'b', 'c', 'a', 'b'] AS letter
+RETURN letter, count(*) AS frequency
+GROUP BY letter
+-- Returns: a:2, b:2, c:1
+```
+
+### Multiple UNWIND (Cartesian Product)
+
+Multiple consecutive UNWIND clauses create a cartesian product:
+
+```cypher
+-- 2×2 = 4 rows
+UNWIND [1, 2] AS x
+UNWIND [10, 20] AS y
+RETURN x, y
+-- Returns: (1,10), (1,20), (2,10), (2,20)
+
+-- 2×3 = 6 rows
+UNWIND ['a', 'b'] AS letter
+UNWIND [1, 2, 3] AS num
+RETURN letter, num
+-- Returns: (a,1), (a,2), (a,3), (b,1), (b,2), (b,3)
+
+-- Triple UNWIND: 2×2×2 = 8 rows
+UNWIND [1, 2] AS x
+UNWIND [10, 20] AS y
+UNWIND [100, 200] AS z
+RETURN x, y, z
+```
+
+### UNWIND with Filtering
+
+WHERE clauses filter the cartesian product:
+
+```cypher
+-- Filter combinations
+UNWIND [1, 2, 3] AS x
+UNWIND [10, 20, 30] AS y
+WHERE x + y > 25
+RETURN x, y, x + y AS sum
+-- Returns only: (1,30), (2,30), (3,30)
+
+-- Multiple filters
+UNWIND [1, 2, 3, 4] AS x
+UNWIND [10, 20] AS y
+WHERE x % 2 = 0 AND y > 10
+RETURN x, y
+-- Returns: (2,20), (4,20)
+```
+
+### UNWIND with Aggregation
+
+```cypher
+-- Count combinations
+UNWIND [1, 2] AS x
+UNWIND [10, 20] AS y
+RETURN count(*) AS total
+-- Returns: 4
+
+-- Sum products
+UNWIND [1, 2] AS x
+UNWIND [10, 20] AS y
+RETURN sum(x * y) AS total_product
+-- Returns: 90 (1*10 + 1*20 + 2*10 + 2*20)
+
+-- Group by one dimension
+UNWIND ['a', 'b'] AS letter
+UNWIND [1, 2, 3] AS num
+RETURN letter, count(*) AS count
+GROUP BY letter
+-- Returns: a:3, b:3
+```
+
+### Common Use Cases
+
+**1. Parameter Expansion**
+```cypher
+-- Expand a list parameter into rows
+UNWIND $user_ids AS id
+MATCH (u:User {user_id: id})
+RETURN u.name
+```
+
+**2. Cross-Join Data**
+```cypher
+-- Generate combinations
+UNWIND ['red', 'blue', 'green'] AS color
+UNWIND ['small', 'medium', 'large'] AS size
+RETURN color, size
+-- All 9 combinations
+```
+
+**3. Range Expansion** (when `range()` supported)
+```cypher
+UNWIND range(1, 10) AS day
+RETURN day, day * 100 AS value
+```
+
+### Implementation Details
+
+**SQL Generation:**
+- Single UNWIND → `ARRAY JOIN` clause in ClickHouse
+- Multiple UNWIND → Multiple `ARRAY JOIN` clauses (cartesian product)
+- Predicates → Standard `WHERE` clause
+
+**Example SQL:**
+```sql
+-- Cypher:
+UNWIND [1, 2] AS x
+UNWIND [10, 20] AS y
+WHERE x + y > 15
+RETURN x, y
+
+-- Generated ClickHouse SQL:
+SELECT x, y
+FROM system.one
+ARRAY JOIN [1, 2] AS x
+ARRAY JOIN [10, 20] AS y
+WHERE x + y > 15
+```
+
+### Limitations
+
+- ❌ **Nested expressions in UNWIND not supported yet**: `UNWIND [x * 10, x * 20] AS y` (requires x from outer scope)
+- ✅ **Works with**: Literals, parameters, column references
+- ✅ **Combines with**: MATCH, WHERE, WITH, aggregations
+
+### Common Errors
+
+**Error**: "UNWIND expression references schema elements but no FROM table found"
+```cypher
+-- ❌ Wrong: Referencing undefined variable
+UNWIND items AS item  -- 'items' not defined
+RETURN item
+
+-- ✅ Correct: Use from MATCH or WITH
+MATCH (n:Node)
+WITH n.items AS items
+UNWIND items AS item
+RETURN item
+```
+
+---
+
 ## Aggregation Functions
 
 Compute aggregate values over groups.
@@ -771,6 +950,283 @@ RETURN length(p) AS hops,
        [n IN nodes(p) | n.name] AS names,
        [e IN edges(p) | type(e)] AS edge_types
 ```
+
+---
+
+## Pattern Comprehensions
+
+**Status**: ⭐ **NEW** (v0.6.0) - Full support for pattern comprehension syntax
+
+Pattern comprehensions provide a concise syntax for collecting values from graph patterns. They combine pattern matching and projection into a single expression that returns a list.
+
+### Syntax
+
+```cypher
+[(pattern) WHERE condition | projection]
+```
+
+**Components:**
+- `pattern` - Graph pattern to match (nodes and edges)
+- `WHERE condition` - Optional filter on matched elements
+- `| projection` - Expression to project for each match
+
+### Basic Examples
+
+```cypher
+-- Collect friend names
+MATCH (u:User)
+WHERE u.user_id = 1
+RETURN u.name, [(u)-[:FOLLOWS]->(f) | f.name] AS friends
+
+-- Result:
+-- | u.name  | friends                      |
+-- | Alice   | ["Bob", "Charlie", "Diana"] |
+```
+
+**How it works:**
+1. For each matched user `u`
+2. Find all users `f` that `u` follows
+3. Project each `f.name` into a list
+4. Return list as `friends` column
+
+### With WHERE Clause
+
+Filter matches before projecting:
+
+```cypher
+-- Collect friends from USA only
+MATCH (u:User)
+WHERE u.user_id = 1
+RETURN u.name, 
+       [(u)-[:FOLLOWS]->(f) WHERE f.country = 'USA' | f.name] AS usa_friends
+
+-- Collect high-value products
+MATCH (c:Customer)
+RETURN c.name,
+       [(c)-[:PURCHASED]->(p:Product) WHERE p.price > 100 | p.name] AS expensive_purchases
+```
+
+### Expression Projections
+
+Project computed values instead of properties:
+
+```cypher
+-- String concatenation
+MATCH (u:User)
+WHERE u.user_id = 1
+RETURN [(u)-[:FOLLOWS]->(f) | f.name + ' from ' + f.country] AS friend_locations
+-- Result: ["Bob from USA", "Charlie from UK", "Diana from USA"]
+
+-- Arithmetic
+MATCH (order:Order)
+RETURN order.order_id,
+       [(order)-[:CONTAINS]->(item) | item.price * item.quantity] AS line_totals
+
+-- Function calls
+MATCH (u:User)
+RETURN [(u)-[:FOLLOWS]->(f) | toLower(f.email)] AS friend_emails
+```
+
+### Multiple Pattern Comprehensions
+
+Use multiple comprehensions in the same query:
+
+```cypher
+-- Compare followers and following
+MATCH (u:User)
+WHERE u.user_id = 1
+RETURN u.name,
+       [(u)-[:FOLLOWS]->(f) | f.name] AS following,
+       [(u)<-[:FOLLOWS]-(f) | f.name] AS followers
+
+-- Multi-relationship analysis
+MATCH (u:User)
+RETURN u.name,
+       [(u)-[:FOLLOWS]->(f) | f.name] AS follows,
+       [(u)-[:LIKED]->(p:Post) | p.title] AS liked_posts,
+       [(u)-[:POSTED]->(p:Post) | p.title] AS own_posts
+```
+
+### Empty Results
+
+Pattern comprehensions return empty lists when no matches are found:
+
+```cypher
+-- User with no followers
+MATCH (u:User)
+WHERE u.user_id = 999
+RETURN u.name, [(u)<-[:FOLLOWS]-(f) | f.name] AS followers
+-- Result: | "Diana" | [] |
+
+-- Check for empty lists
+MATCH (u:User)
+WITH u, [(u)<-[:FOLLOWS]-(f) | f.name] AS followers
+WHERE size(followers) = 0
+RETURN u.name AS users_with_no_followers
+```
+
+### Real-World Use Cases
+
+**Social Network - Friend Recommendations:**
+```cypher
+MATCH (me:User {user_id: 1})
+RETURN me.name,
+       [(me)-[:FOLLOWS]->()-[:FOLLOWS]->(fof) 
+        WHERE NOT (me)-[:FOLLOWS]->(fof) AND fof <> me 
+        | fof.name] AS friend_recommendations
+```
+
+**E-Commerce - Product Bundles:**
+```cypher
+MATCH (p:Product {product_id: 123})
+RETURN p.name,
+       p.price,
+       [(p)<-[:PURCHASED]-(:Customer)-[:PURCHASED]->(related:Product)
+        WHERE related <> p
+        | related.name] AS frequently_bought_together
+```
+
+**Knowledge Graph - Citation Analysis:**
+```cypher
+MATCH (paper:Paper)
+RETURN paper.title,
+       paper.year,
+       [(paper)-[:CITES]->(cited) WHERE cited.year < paper.year | cited.title] AS references,
+       [(paper)<-[:CITES]-(citing) WHERE citing.year > paper.year | citing.title] AS cited_by
+```
+
+### Implementation Details
+
+**Query Rewriting:**
+Pattern comprehensions are rewritten to OPTIONAL MATCH + collect() internally:
+
+```cypher
+-- Original query
+RETURN [(u)-[:FOLLOWS]->(f) WHERE f.country = 'USA' | f.name] AS friends
+
+-- Internally rewritten to:
+OPTIONAL MATCH (u)-[:FOLLOWS]->(f)
+WHERE f.country = 'USA'
+WITH u, collect(f.name) AS friends
+RETURN friends
+```
+
+**SQL Generation:**
+- Uses LEFT JOIN for optional matching
+- Generates `groupArray()` for collection
+- WHERE clause becomes SQL WHERE condition
+- Projection becomes SELECT expression
+
+### Performance Considerations
+
+**Efficient:**
+```cypher
+-- With filtering - generates efficient WHERE clause
+[(u)-[:FOLLOWS]->(f) WHERE f.country = 'USA' | f.name]
+
+-- With indexed properties
+[(u)-[:FOLLOWS]->(f) WHERE f.user_id = 123 | f.name]  -- user_id indexed
+```
+
+**Less Efficient:**
+```cypher
+-- Without filtering - matches all relationships
+[(u)-[:FOLLOWS]->(f) | f.name]
+
+-- Complex expressions in projection
+[(u)-[:FOLLOWS]->(f) | expensiveFunction(f.bio)]  -- computed per row
+```
+
+**Optimization Tips:**
+1. Add WHERE filters to reduce matches
+2. Use indexed properties in WHERE clause
+3. Keep projection expressions simple
+4. Consider LIMIT for large result sets
+
+### Comparison with Alternatives
+
+**Pattern Comprehension:**
+```cypher
+MATCH (u:User)
+RETURN u.name, [(u)-[:FOLLOWS]->(f) | f.name] AS friends
+```
+
+**Equivalent WITH + collect():**
+```cypher
+MATCH (u:User)
+OPTIONAL MATCH (u)-[:FOLLOWS]->(f)
+WITH u, collect(f.name) AS friends
+RETURN u.name, friends
+```
+
+**When to use each:**
+- ✅ Pattern comprehension: Inline collection, simple projections
+- ✅ WITH + collect(): Complex aggregations, multiple grouping keys
+
+### Common Patterns
+
+**Collecting IDs:**
+```cypher
+[(u)-[:FOLLOWS]->(f) | f.user_id] AS follower_ids
+```
+
+**Collecting Multiple Properties (as string):**
+```cypher
+[(u)-[:FOLLOWS]->(f) | f.name + ':' + f.email] AS friend_contacts
+```
+
+**Nested Pattern Comprehensions:**
+```cypher
+MATCH (u:User)
+RETURN u.name,
+       [(u)-[:FOLLOWS]->(friend) | 
+         friend.name + ' (' + toString(size([(friend)-[:POSTED]->()])) + ' posts)'
+       ] AS friend_activity
+```
+
+### Common Errors
+
+**❌ Missing projection:**
+```cypher
+[(u)-[:FOLLOWS]->(f)]  -- ERROR: No projection specified
+```
+**✅ Correct:**
+```cypher
+[(u)-[:FOLLOWS]->(f) | f.name]
+```
+
+**❌ Invalid WHERE placement:**
+```cypher
+[(u)-[:FOLLOWS]->(f) | f.name WHERE f.country = 'USA']  -- ERROR
+```
+**✅ Correct:**
+```cypher
+[(u)-[:FOLLOWS]->(f) WHERE f.country = 'USA' | f.name]
+```
+
+**❌ Using undefined variable:**
+```cypher
+MATCH (u:User)
+RETURN [(u)-[:FOLLOWS]->(f) | x.name]  -- ERROR: x not defined
+```
+**✅ Correct:**
+```cypher
+MATCH (u:User)
+RETURN [(u)-[:FOLLOWS]->(f) | f.name]  -- f is defined in pattern
+```
+
+### Limitations
+
+- ❌ Variable-length paths not supported in pattern comprehensions
+- ❌ Multiple patterns in single comprehension (use separate comprehensions)
+- ❌ Nested comprehensions with same variable names
+
+### See Also
+
+- [Aggregation Functions](#aggregation-functions) - collect() function
+- [OPTIONAL MATCH](#optional-match) - Optional pattern matching
+- [List Functions](#other-list-functions) - Working with lists
+- [WITH Clause](#with-clause) - Alternative approach with explicit grouping
 
 ---
 
