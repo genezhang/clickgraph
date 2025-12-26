@@ -17,7 +17,7 @@ set -e
 # Default values
 HTTP_PORT=8080
 BOLT_PORT=7687
-CONFIG_PATH="schemas/test/unified_test_schema.yaml"  # Fixed: Use unified schema by default
+CONFIG_PATH="schemas/test/unified_test_multi_schema.yaml"  # Multi-schema config with 6 isolated schemas
 DATABASE="brahmand"  # Changed: Most tests use brahmand database
 CLICKHOUSE_URL="http://localhost:8123"
 CLICKHOUSE_USER="test_user"

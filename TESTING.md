@@ -36,18 +36,18 @@ bash scripts/test/setup_all_test_data.sh
 CLICKHOUSE_URL="http://localhost:8123" \
 CLICKHOUSE_USER="test_user" \
 CLICKHOUSE_PASSWORD="test_pass" \
+GRAPH_CONFIG_PATH="./schemas/test/unified_test_multi_schema.yaml" \
 target/debug/clickgraph --http-port 8080 &
 
 # Wait for server to start
 sleep 3
 
-# 3. Load test schemas (schemas are in-memory, must reload after each restart!)
-CLICKGRAPH_URL=http://localhost:8080 python3 scripts/test/load_test_schemas.py
-
-# 4. Test manually
+# 3. Test manually (multi-schema config loads 6 schemas automatically)
 curl -X POST http://localhost:8080/query \
   -H "Content-Type: application/json" \
   -d '{"query":"USE social_benchmark MATCH (u:User) RETURN u.name LIMIT 3"}'
+  
+# Note: Additional schemas loaded by conftest.py during pytest runs
 ```
 
 ### Test Data Setup Details
