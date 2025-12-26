@@ -1519,7 +1519,10 @@ WHERE (p.id = X AND p.id = X)  -- ❌ DUPLICATE!
     - ✅ Renamed 12 standalone scripts to `script_test_*.py` (excluded from pytest collection)
     - ✅ Added autouse fixtures for schema loading
   - **Test Data Loaded**:
-    - Ran official setup scripts: `setup_all_test_data.sh`, `load_test_schemas.py`
+    - Ran test data setup: `bash scripts/test/setup_all_test_data.sh`
+    - Started server: `GRAPH_CONFIG_PATH=./schemas/test/unified_test_multi_schema.yaml cargo run`
+    - Verified multi-schema loading: All 6 schemas + default alias loaded successfully
+    - Ran pytest with automatic schema loading via conftest.py
     - Loaded security_graph data from `schemas/examples/security_graph_load.sql`
   - Results by category:
     - **Rust unit tests**: 647/647 (100%)
