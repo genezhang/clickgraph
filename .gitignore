@@ -79,6 +79,7 @@ setup_medium_benchmark_data.sql
 archive/
 notes/
 docs/
+docs1/
 
 # Keep only user-facing docs (negation patterns)
 !docs/getting-started.md
