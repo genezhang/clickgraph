@@ -103,7 +103,7 @@ class TestDenormalizedVLPCrossFunctional:
         WHERE a1.code = 'JFK'
         RETURN a1.city, COLLECT(a2.city) as destinations
         """
-        result = query_api(query, schema_name="denormalized_flights")
+        result = query_api(query, schema_name="denormalized_flights_test")
         
         assert result["status"] == "success"
         assert len(result["data"]) > 0
@@ -119,7 +119,7 @@ class TestDenormalizedVLPCrossFunctional:
         WHERE a1.code IN ['JFK', 'LAX']
         RETURN a1.city, COUNT(*) as path_count
         """
-        result = query_api(query, schema_name="denormalized_flights")
+        result = query_api(query, schema_name="denormalized_flights_test")
         
         assert result["status"] == "success"
         assert len(result["data"]) >= 1
@@ -132,7 +132,7 @@ class TestDenormalizedVLPCrossFunctional:
         RETURN a1.city, a1.state, a2.city, a2.state
         LIMIT 5
         """
-        result = query_api(query, schema_name="denormalized_flights")
+        result = query_api(query, schema_name="denormalized_flights_test")
         
         assert result["status"] == "success"
         assert len(result["data"]) > 0
@@ -150,7 +150,7 @@ class TestDenormalizedVLPCrossFunctional:
         WHERE a1.city = 'New York'
         RETURN a2.city, COUNT(*) as count
         """
-        result = query_api(query, schema_name="denormalized_flights")
+        result = query_api(query, schema_name="denormalized_flights_test")
         
         assert result["status"] == "success"
         # Should have at least one destination from New York

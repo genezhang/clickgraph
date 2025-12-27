@@ -138,7 +138,7 @@ class TestVLPWithDenormalizedSchema:
     def test_denorm_length_path_in_with(self):
         """Denormalized schema: length(path) in WITH clause."""
         query = """
-        USE denormalized_flights
+        USE denormalized_flights_test
         MATCH path = (a:Airport)-[:FLIGHT*1..2]->(b:Airport)
         WHERE a.code = 'LAX'
         WITH a, b, length(path) as hops
@@ -147,7 +147,7 @@ class TestVLPWithDenormalizedSchema:
         ORDER BY b.city
         LIMIT 5
         """
-        result = query_api(query, schema_name="denormalized_flights")
+        result = query_api(query, schema_name="denormalized_flights_test")
         assert result["status"] == "success"
         for row in result["data"]:
             assert row["hops"] == 2
@@ -156,7 +156,7 @@ class TestVLPWithDenormalizedSchema:
     def test_denorm_nodes_path_in_with(self):
         """Denormalized schema: nodes(path) in WITH clause."""
         query = """
-        USE denormalized_flights
+        USE denormalized_flights_test
         MATCH path = (a:Airport)-[:FLIGHT*1..2]->(b:Airport)
         WHERE a.code = 'LAX'
         WITH a, b, nodes(path) as path_nodes, length(path) as hops
@@ -165,7 +165,7 @@ class TestVLPWithDenormalizedSchema:
         ORDER BY b.city
         LIMIT 5
         """
-        result = query_api(query, schema_name="denormalized_flights")
+        result = query_api(query, schema_name="denormalized_flights_test")
         assert result["status"] == "success"
         for row in result["data"]:
             assert row["node_count"] == 3  # 2 hops = 3 nodes
@@ -174,7 +174,7 @@ class TestVLPWithDenormalizedSchema:
     def test_denorm_with_properties_and_path(self):
         """Denormalized schema: Properties + path function in WITH."""
         query = """
-        USE denormalized_flights
+        USE denormalized_flights_test
         MATCH path = (a:Airport)-[:FLIGHT*1..2]->(b:Airport)
         WHERE a.code = 'LAX'
         WITH a.city as origin, b.city as dest, b.state as dest_state, length(path) as hops
@@ -183,7 +183,7 @@ class TestVLPWithDenormalizedSchema:
         ORDER BY dest
         LIMIT 5
         """
-        result = query_api(query, schema_name="denormalized_flights")
+        result = query_api(query, schema_name="denormalized_flights_test")
         assert result["status"] == "success"
         for row in result["data"]:
             assert row["hops"] == 2

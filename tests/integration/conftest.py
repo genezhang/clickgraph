@@ -226,8 +226,7 @@ def load_all_test_schemas():
         # Core test schemas (clean separation)
         ("social_benchmark", "schemas/test/social_benchmark.yaml"),
         ("test_fixtures", "schemas/test/test_fixtures.yaml"),
-        # NOTE: denormalized_flights_test is loaded from unified_test_multi_schema.yaml as "denormalized_flights"
-        # Tests using denormalized patterns should use schema_name="denormalized_flights"
+        ("denormalized_flights_test", "schemas/test/denormalized_flights.yaml"),  # Comprehensive denormalized FROM/TO properties
         
         # Specialized test schemas
         ("data_security", "examples/data_security/data_security.yaml"),
