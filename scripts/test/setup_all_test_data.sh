@@ -118,13 +118,34 @@ log_info "=== Integration Test Data ==="
 run_sql_file "$PROJECT_ROOT/tests/fixtures/data/test_integration_data.sql" "Integration test tables"
 echo ""
 
-# 3. Denormalized flights data (for ontime_flights schema)
+# 3. Denormalized flights data (for denormalized_flights_test schema)
 log_info "=== Denormalized Flights Data ==="
-run_sql_file "$PROJECT_ROOT/scripts/test/setup_denormalized_test_data.sql" "Flights test data"
-# Also create in default database for ontime_benchmark schema
-run_sql "CREATE TABLE IF NOT EXISTS default.flights AS test_integration.flights"
-run_sql "INSERT INTO default.flights SELECT * FROM test_integration.flights"
-log_info "Copied flights table to default database for ontime_benchmark schema"
+# Create table with denormalized FROM/TO node properties (OnTime-style)
+run_sql "DROP TABLE IF EXISTS test_integration.flights"
+run_sql "CREATE TABLE test_integration.flights (
+    flight_id UInt32,
+    flight_number String,
+    airline String,
+    Origin String,
+    OriginCityName String,
+    OriginState String,
+    Dest String,
+    DestCityName String,
+    DestState String,
+    dep_time String,
+    arr_time String,
+    distance_miles UInt32
+) ENGINE = MergeTree() ORDER BY flight_id"
+
+run_sql "INSERT INTO test_integration.flights VALUES
+    (1, 'AA100', 'American Airlines', 'LAX', 'Los Angeles', 'CA', 'SFO', 'San Francisco', 'CA', '08:00', '09:30', 337),
+    (2, 'UA200', 'United Airlines', 'SFO', 'San Francisco', 'CA', 'JFK', 'New York', 'NY', '10:00', '18:30', 2586),
+    (3, 'DL300', 'Delta Airlines', 'JFK', 'New York', 'NY', 'LAX', 'Los Angeles', 'CA', '09:00', '12:30', 2475),
+    (4, 'AA400', 'American Airlines', 'ORD', 'Chicago', 'IL', 'ATL', 'Atlanta', 'GA', '07:00', '10:00', 606),
+    (5, 'DL500', 'Delta Airlines', 'ATL', 'Atlanta', 'GA', 'LAX', 'Los Angeles', 'CA', '11:00', '13:30', 1946),
+    (6, 'UA600', 'United Airlines', 'LAX', 'Los Angeles', 'CA', 'ORD', 'Chicago', 'IL', '14:00', '20:00', 1745)"
+
+log_info " ✓ Created test_integration.flights (6 routes with denormalized Airport properties)"
 echo ""
 
 # 4. Filesystem test data (for filesystem schema)

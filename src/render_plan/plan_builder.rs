@@ -562,13 +562,24 @@ fn extract_vlp_alias_mappings(ctes: &CteItems) -> HashMap<String, String> {
             // so we'll add mappings for common relationship alias patterns
             // This will be checked against actual usage during rewriting
             log::info!("🔧 Adding fallback relationship alias mappings for denormalized VLP");
-            // Common single-letter aliases: f, r, e, rel
+            
+            // Common single-letter aliases
             for rel_alias in &["f", "r", "e", "rel"] {
                 if !mappings.contains_key(*rel_alias) {
                     log::info!("🔄 VLP relationship mapping (fallback): {} → {}", rel_alias, vlp_alias);
                     mappings.insert(rel_alias.to_string(), vlp_alias.clone());
                 }
             }
+            
+            // Also map all t+digit patterns (t1, t2, ..., t99)
+            // These are generated as table aliases and can be any number
+            for i in 1..=99 {
+                let t_alias = format!("t{}", i);
+                if !mappings.contains_key(&t_alias) {
+                    mappings.insert(t_alias.clone(), vlp_alias.clone());
+                }
+            }
+            log::info!("🔄 VLP relationship mapping (fallback): t1-t99 → {}", vlp_alias);
         }
     }
     
