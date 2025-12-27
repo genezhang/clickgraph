@@ -8,22 +8,44 @@
 
 ### One-Command Setup & Test
 
-**IMPORTANT**: Tests use conftest.py to auto-start the ClickGraph server. You should NOT have a server already running on port 8080!
+**⚠️ IMPORTANT: Prevent VS Code Terminal Freeze**
 
+The test suite outputs large volumes of data that can freeze VS Code's terminal. Use one of these safe approaches:
+
+**Option 1: Background execution with file output (RECOMMENDED)**
 ```bash
-# 1. Load all test data (creates databases, loads fixtures, includes small-scale benchmark data)
+# 1. Load all test data
 bash scripts/test/setup_all_test_data.sh
 
-# 2. Run all integration tests (conftest.py automatically starts server)
-pytest tests/integration/
+# 2. Start server with reduced logging (redirected to file)
+RUST_LOG=error GRAPH_CONFIG_PATH="./schemas/test/unified_test_multi_schema.yaml" \
+CLICKHOUSE_URL="http://localhost:8123" CLICKHOUSE_USER="test_user" CLICKHOUSE_PASSWORD="test_pass" \
+nohup ./target/release/clickgraph --http-port 8080 > /tmp/clickgraph.log 2>&1 &
 
-# 3. Run specific test suites
-pytest tests/integration/wiki/              # Wiki documentation tests (60 tests)
-pytest tests/integration/matrix/            # Matrix tests (2400+ tests)
-pytest tests/integration/test_*.py          # Individual test files
+# 3. Run tests in background with output to file
+nohup pytest tests/integration/ -q --tb=no > /tmp/pytest_results.txt 2>&1 &
+
+# 4. Check progress
+tail -f /tmp/pytest_results.txt  # Watch progress
+# Or wait for completion and view results:
+cat /tmp/pytest_results.txt | tail -50
 ```
 
-**Expected baseline**: ~2600 passing, ~900 failing, ~25 skipped (Dec 26, 2025)
+**Option 2: External terminal (safer for large test runs)**
+```bash
+# Run in a separate terminal window (not in VS Code)
+pytest tests/integration/ -v --tb=short
+```
+
+**Option 3: Selective testing (safe in VS Code)**
+```bash
+# Run small test subsets (safe for VS Code terminal)
+pytest tests/integration/test_count_relationships.py -v
+pytest tests/integration/wiki/ -v
+pytest tests/integration/ --ignore=tests/integration/matrix --ignore=tests/integration/query_patterns -v
+```
+
+**Expected baseline**: 2849 passing (80.6%), 507 failing, 116 xfail (Dec 26, 2025)
 
 ### Manual Server Testing (for development/debugging)
 
@@ -170,6 +192,13 @@ export GRAPH_CONFIG_PATH="./schemas/test/unified_test_multi_schema.yaml"
 
 ### Troubleshooting
 
+**VS Code terminal freezes during test runs**:
+- **Root cause**: Large test output volume overwhelms VS Code terminal
+- **Solution 1**: Run tests in background with output to file (see above)
+- **Solution 2**: Use external terminal (not in VS Code)
+- **Solution 3**: Run small test subsets only
+- **Quick fix**: Set `RUST_LOG=error` to reduce server logging
+
 **Tests hang or timeout**:
 - Check if ClickGraph server is already running (kill it first)
 - Check Docker container: `docker-compose ps`
@@ -181,6 +210,11 @@ export GRAPH_CONFIG_PATH="./schemas/test/unified_test_multi_schema.yaml"
 **Connection refused**:
 - Start ClickHouse: `docker-compose up -d`
 - Wait for health check: `docker-compose ps` (should show "healthy")
+
+**High memory usage**:
+- Matrix tests (2400+) run many queries - this is expected
+- Use `--ignore=tests/integration/matrix` to skip resource-intensive tests
+- Monitor with: `htop` or `docker stats`
 
 ### Test Infrastructure Files
 
