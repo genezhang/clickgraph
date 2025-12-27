@@ -87,14 +87,14 @@ def denormalized_flights_graph(clickhouse_client, test_database):
     response = requests.post(
         f'{CLICKGRAPH_URL}/schemas/load',
         json={
-            'schema_name': 'denormalized_flights_test',
+            'schema_name': 'denormalized_flights',
             'config_content': schema_content
         }
     )
     assert response.status_code == 200, f"Failed to load schema: {response.text}"
     
     return {
-        "schema_name": "denormalized_flights_test",
+        "schema_name": "denormalized_flights",
         "database": test_database
     }
 
@@ -300,7 +300,7 @@ class TestDenormalizedVariableLengthPaths:
         # Use sql_only mode to get SQL back
         import requests
         query = """
-        USE denormalized_flights_test
+        USE denormalized_flights
         MATCH (origin:Airport)-[f:FLIGHT*1..2]->(dest:Airport)
         WHERE origin.city = 'Los Angeles'
         RETURN dest.city, COUNT(*) as path_count
