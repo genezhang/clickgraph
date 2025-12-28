@@ -8,6 +8,9 @@ mod view_resolver_tests;
 
 pub mod property_requirements;
 pub mod property_requirements_analyzer;
+pub mod multi_type_vlp_expansion;
+#[cfg(test)]
+mod test_multi_type_vlp_auto_inference;
 
 use crate::{
     graph_catalog::graph_schema::GraphSchema,

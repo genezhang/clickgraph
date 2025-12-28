@@ -32,10 +32,10 @@ use crate::render_plan::cte_extraction::extract_ctes_with_context;
 use crate::render_plan::cte_extraction::{
     build_vlp_context, expand_fixed_length_joins_with_context, extract_node_label_from_viewscan,
     extract_relationship_columns, get_fixed_path_info, get_path_variable, get_shortest_path_mode,
-    get_variable_length_denorm_info, get_variable_length_rel_info, get_variable_length_spec,
-    has_variable_length_rel, is_variable_length_denormalized, is_variable_length_optional,
-    label_to_table_name, rel_type_to_table_name, rel_types_to_table_names, table_to_id_column,
-    RelationshipColumns, VlpSchemaType,
+    get_variable_length_aliases, get_variable_length_denorm_info, get_variable_length_rel_info,
+    get_variable_length_spec, has_variable_length_rel, is_variable_length_denormalized,
+    is_variable_length_optional, label_to_table_name, rel_type_to_table_name,
+    rel_types_to_table_names, table_to_id_column, RelationshipColumns, VlpSchemaType,
 };
 
 // Import ALL helper functions from the dedicated helpers module using glob import
@@ -551,35 +551,18 @@ fn extract_vlp_alias_mappings(ctes: &CteItems) -> HashMap<String, String> {
             log::info!("🔄 VLP path function mapping: t → {}", vlp_alias);
             mappings.insert("t".to_string(), vlp_alias.clone());
             
-            // ✨ NEW FIX: For denormalized VLP, also map relationship aliases
-            // When WHERE clause has f.Origin (relationship property), map to CTE
-            // This is needed because denormalized VLP properties are incorrectly
-            // resolved to relationship aliases during query planning
-            // We detect this by checking if endpoint JOINs were skipped
-            // (which indicates denormalized pattern)
-            // 
-            // Note: We don't have the relationship alias in CTE metadata,
-            // so we'll add mappings for common relationship alias patterns
-            // This will be checked against actual usage during rewriting
-            log::info!("🔧 Adding fallback relationship alias mappings for denormalized VLP");
-            
-            // Common single-letter aliases
-            for rel_alias in &["f", "r", "e", "rel"] {
-                if !mappings.contains_key(*rel_alias) {
-                    log::info!("🔄 VLP relationship mapping (fallback): {} → {}", rel_alias, vlp_alias);
-                    mappings.insert(rel_alias.to_string(), vlp_alias.clone());
-                }
-            }
-            
-            // Also map all t+digit patterns (t1, t2, ..., t99)
-            // These are generated as table aliases and can be any number
-            for i in 1..=99 {
-                let t_alias = format!("t{}", i);
-                if !mappings.contains_key(&t_alias) {
-                    mappings.insert(t_alias.clone(), vlp_alias.clone());
-                }
-            }
-            log::info!("🔄 VLP relationship mapping (fallback): t1-t99 → {}", vlp_alias);
+            // ⚠️ TODO: REMOVE THIS FALLBACK - PROPER FIX REQUIRED
+            // See notes/HOLISTIC_FIX_METHODOLOGY.md for details
+            //
+            // This fallback blindly maps relationship aliases (f, r, e, t1-t99) to VLP CTE aliases.
+            // This is INCORRECT because:
+            // 1. Relationship property filters (e.g., f.flight_number = 123) should be applied
+            // ✅ HOLISTIC FIX (Dec 26, 2025): Relationship filters now properly handled in CTE generation
+            // - FK-edge patterns: Map to start_node/new_start/current_node in cte_extraction.rs
+            // - Standard patterns: Map to rel alias in cte_extraction.rs  
+            // - Denormalized patterns: Map to rel alias in cte_extraction.rs
+            // No fallback mapping needed - filters are applied inside the CTE where they belong.
+            log::debug!("VLP relationship filters handled in CTE generation - no fallback mapping needed");
         }
     }
     
@@ -11354,13 +11337,18 @@ impl RenderPlanBuilder for LogicalPlan {
                     // 🎯 FIX Issue #5: Add user-defined filters on CHAINED PATTERN nodes
                     // For queries like (u)-[*]->(g)-[:REL]->(f) WHERE f.sensitive_data = 1
                     // The filter on 'f' should go into the final WHERE clause, not the CTE.
-                    // Extract all user filters, then exclude VLP start/end filters (already in CTE).
+                    // Extract all user filters, then exclude VLP start/end/relationship filters (already in CTE).
                     if let Ok(Some(all_user_filters)) = transformed_plan.extract_filters() {
-                        // Helper to check if expression references ONLY VLP aliases (start or end)
+                        // 🔧 HOLISTIC FIX: Get all VLP aliases including relationship alias
+                        let vlp_rel_alias = get_variable_length_aliases(self)
+                            .map(|(_, _, rel_alias)| rel_alias);
+                        
+                        // Helper to check if expression references ONLY VLP aliases (start, end, or relationship)
                         fn references_only_vlp_aliases(
                             expr: &RenderExpr,
                             start_alias: &str,
                             end_alias: &str,
+                            rel_alias: Option<&str>,
                         ) -> bool {
                             fn collect_aliases(
                                 expr: &RenderExpr,
@@ -11385,9 +11373,13 @@ impl RenderPlanBuilder for LogicalPlan {
                             }
                             let mut aliases = std::collections::HashSet::new();
                             collect_aliases(expr, &mut aliases);
-                            // Returns true if ALL referenced aliases are VLP start or end
+                            // Returns true if ALL referenced aliases are VLP-related (start, end, or relationship)
                             !aliases.is_empty()
-                                && aliases.iter().all(|a| a == start_alias || a == end_alias)
+                                && aliases.iter().all(|a| {
+                                    a == start_alias 
+                                    || a == end_alias 
+                                    || rel_alias.map(|r| a == r).unwrap_or(false)
+                                })
                         }
 
                         // Split AND-connected filters
@@ -11409,7 +11401,8 @@ impl RenderPlanBuilder for LogicalPlan {
                         let all_filters = split_and_filters(all_user_filters);
                         for filter in all_filters {
                             // Include filter if it references nodes OUTSIDE the VLP (chained pattern nodes)
-                            if !references_only_vlp_aliases(&filter, &start_alias, &end_alias) {
+                            // 🔧 HOLISTIC FIX: Now also checks relationship alias to avoid duplicating VLP filters
+                            if !references_only_vlp_aliases(&filter, &start_alias, &end_alias, vlp_rel_alias.as_deref()) {
                                 log::info!(
                                     "VLP outer query: Adding chained-pattern filter: {:?}",
                                     filter
@@ -11669,7 +11662,25 @@ impl RenderPlanBuilder for LogicalPlan {
         log::info!("🔍 VLP detection: has_vlp_cte={}, vlp_aliases={:?}", has_vlp_cte, vlp_aliases);
         log::info!("{}", "=".repeat(80));
         
-        if has_vlp_cte && vlp_aliases.is_some() {
+        // Check if this is a multi-type VLP CTE (needs special handling - direct SELECT, no JOINs)
+        let is_multi_type_vlp = vlp_cte.map_or(false, |cte| cte.cte_name.starts_with("vlp_multi_type_"));
+        log::info!("🎯 Multi-type VLP check: is_multi_type_vlp={}, vlp_cte={:?}", 
+                   is_multi_type_vlp, 
+                   vlp_cte.map(|c| c.cte_name.as_str()));
+        
+        if is_multi_type_vlp {
+            log::info!("🎯 MULTI-TYPE VLP DETECTED - Skipping endpoint JOINs (CTE has all data)");
+            // For multi-type VLP, don't add endpoint JOINs
+            // The CTE already has everything: end_type, end_id (String), end_properties (JSON)
+            // The normal RenderPlan construction below will handle it correctly
+            // We just need to avoid the VLP endpoint JOIN generation code
+            
+            // ⚠️ CRITICAL: Clear extracted_joins to prevent any JOINs from being added
+            // Multi-type VLP CTEs are self-contained - they have all the data we need
+            let filtered_joins_count = extracted_joins.len();
+            extracted_joins.clear();
+            log::info!("🎯 Multi-type VLP: Cleared {} extracted joins (not needed for multi-type VLP)", filtered_joins_count);
+        } else if has_vlp_cte && vlp_aliases.is_some() {
             let (start_alias, end_alias) = vlp_aliases.unwrap();
             log::debug!("🎯 ENTERING VLP ENDPOINT JOIN CREATION BLOCK");
             log::debug!("🎯 start_alias='{}', end_alias='{}'", start_alias, end_alias);
@@ -12345,6 +12356,27 @@ impl RenderPlanBuilder for LogicalPlan {
         });
 
         // 🔧 CRITICAL FIX: Apply VLP alias rewriting for ALL RenderPlans, not just Union branches
+        // For multi-type VLP, rewrite SELECT items to use CTE columns directly
+        // CTE exports: end_type, end_id, end_properties (JSON)
+        // Instead of: SELECT x.name, x.email → SELECT end_type, end_id, end_properties
+        if is_multi_type_vlp {
+            log::info!("🎯 Multi-type VLP: Rewriting SELECT items to use CTE columns");
+            final_select_items = vec![
+                SelectItem {
+                    expression: RenderExpr::Raw("end_type".to_string()),
+                    col_alias: Some(ColumnAlias("end_type".to_string())),
+                },
+                SelectItem {
+                    expression: RenderExpr::Raw("end_id".to_string()),
+                    col_alias: Some(ColumnAlias("end_id".to_string())),
+                },
+                SelectItem {
+                    expression: RenderExpr::Raw("end_properties".to_string()),
+                    col_alias: Some(ColumnAlias("end_properties".to_string())),
+                },
+            ];
+        }
+        
         // This fixes the path function alias bug where length(p) generates t.hop_count but t doesn't exist
         // The hardcoded "t" alias in rewrite_logical_path_functions needs to be rewritten to the actual
         // VLP CTE alias (e.g., vlp1433, vlp2)

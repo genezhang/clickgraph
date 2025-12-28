@@ -112,6 +112,83 @@ fn extract_bound_node_filter(plan: &LogicalPlan, node_alias: &str, cte_alias: &s
     }
 }
 
+/// Extract node labels from a GraphNode plan (supports multi-label nodes)
+/// Returns Vec of labels, or None if no labels found
+fn extract_node_labels(plan: &LogicalPlan) -> Option<Vec<String>> {
+    match plan {
+        LogicalPlan::GraphNode(node) => {
+            // Check if node has a label
+            if let Some(ref label) = node.label {
+                Some(vec![label.clone()])
+            } else {
+                None
+            }
+        }
+        LogicalPlan::Filter(filter) => extract_node_labels(&filter.input),
+        LogicalPlan::Projection(proj) => extract_node_labels(&proj.input),
+        _ => None,
+    }
+}
+
+/// Check if variable-length path should use JOIN expansion (for multi-type nodes)
+/// instead of recursive CTE
+///
+/// Returns true if:
+/// 1. End node has multiple explicit labels (e.g., (x:User|Post))
+/// 2. Multiple relationship types lead to different end node types
+///
+/// Examples:
+/// - `MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)` where FOLLOWS→User, AUTHORED→Post
+/// - `MATCH (u:User)-[:FOLLOWS*1..2]->(x:User|Post)`
+fn should_use_join_expansion(
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+    rel_types: &[String],
+    schema: &GraphSchema,
+) -> bool {
+    // Extract end node labels from right node
+    let end_node_labels = extract_node_labels(&graph_rel.right);
+    
+    // Case 1: End node has multiple explicit labels (x:User|Post)
+    if let Some(ref labels) = end_node_labels {
+        if labels.len() > 1 {
+            log::info!(
+                "🎯 CTE: Multi-type VLP detected - end node has {} labels: {:?}",
+                labels.len(),
+                labels
+            );
+            return true;
+        }
+    }
+    
+    // Case 2: Multiple relationship types that connect to different node types
+    // This requires checking the schema to see what to_node each rel_type connects to
+    if rel_types.len() > 1 {
+        let mut end_types = std::collections::HashSet::new();
+        for rel_type in rel_types {
+            if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
+                end_types.insert(rel_schema.to_node.clone());
+            }
+        }
+        
+        if end_types.len() > 1 {
+            log::info!(
+                "🎯 CTE: Multi-type VLP detected - {} relationship types lead to {} different end node types: {:?}",
+                rel_types.len(),
+                end_types.len(),
+                end_types
+            );
+            return true;
+        }
+    }
+    
+    log::debug!(
+        "🎯 CTE: Single-type VLP - using recursive CTE (end_labels={:?}, rel_types={:?})",
+        end_node_labels,
+        rel_types
+    );
+    false
+}
+
 fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
     let result = match plan {
         LogicalPlan::ViewScan(view_scan) => {
@@ -899,13 +976,28 @@ pub fn extract_ctes_with_context(
                 log::info!("🔍 VLP: Left plan = {}", left_plan_desc);
                 let start_table = extract_table_name(&graph_rel.left)
                     .ok_or_else(|| RenderBuildError::MissingTableInfo("start node in VLP".to_string()))?;
-                let end_table = extract_table_name(&graph_rel.right)
-                    .ok_or_else(|| RenderBuildError::MissingTableInfo("end node in VLP".to_string()))?;
+                
+                // 🎯 CHECK: Is this multi-type VLP? (end node has unknown type)
+                // If so, end_table will be determined by schema expansion, not from the plan
+                let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
+                let is_multi_type_vlp = should_use_join_expansion(&graph_rel, &rel_types, schema);
+                
+                let end_table = if is_multi_type_vlp {
+                    // For multi-type VLP, end_table isn't in the plan (it's polymorphic)
+                    // We'll determine end types from schema later
+                    log::info!("🎯 VLP: Multi-type detected, end_table will be determined from schema");
+                    None
+                } else {
+                    // Regular VLP: end_table must be in the plan
+                    Some(extract_table_name(&graph_rel.right)
+                        .ok_or_else(|| RenderBuildError::MissingTableInfo("end node in VLP".to_string()))?)
+                };
 
                 // Also extract labels for filter categorization and property extraction
                 // These are optional - not all nodes have labels (e.g., CTEs)
-                let start_label = extract_node_label_from_viewscan(&graph_rel.left).unwrap_or_default();
-                let end_label = extract_node_label_from_viewscan(&graph_rel.right).unwrap_or_default();
+                // ✅ FIX: Use schema-aware label extraction to support multi-schema queries
+                let start_label = extract_node_label_from_viewscan_with_schema(&graph_rel.left, schema).unwrap_or_default();
+                let end_label = extract_node_label_from_viewscan_with_schema(&graph_rel.right, schema).unwrap_or_default();
 
                 // Get rel_table from ViewScan's source_table (authoritative) or fall back to label lookup
                 let rel_table = match graph_rel.center.as_ref() {
@@ -1034,9 +1126,29 @@ pub fn extract_ctes_with_context(
                 // - right_connection = traversal end node alias
                 let start_alias = graph_rel.left_connection.clone();
                 let end_alias = graph_rel.right_connection.clone();
+                // Relationship alias for property filters (e.g., WHERE r.property = value)
+                let rel_alias = graph_rel.alias.clone();
+
+                // 🔧 HOLISTIC FIX: Early detection of FK-edge pattern for proper alias mapping
+                // In FK-edge patterns, relationship properties are on the start_node table (not a separate rel table)
+                let is_fk_edge_early = if let Some(labels) = &graph_rel.labels {
+                    if let Some(first_label) = labels.first() {
+                        schema.get_rel_schema(first_label)
+                            .map(|rel_schema| rel_schema.is_fk_edge)
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                
+                if is_fk_edge_early {
+                    log::info!("🔧 VLP: Detected FK-edge pattern early - relationship properties map to start_node alias");
+                }
 
                 // Extract and categorize filters for variable-length paths from GraphRel.where_predicate
-                let (mut start_filters_sql, mut end_filters_sql, categorized_filters_opt) =
+                let (mut start_filters_sql, mut end_filters_sql, rel_filters_sql, categorized_filters_opt) =
                     if let Some(where_predicate) = &graph_rel.where_predicate {
                         log::info!("🔍 GraphRel has where_predicate: {:?}", where_predicate);
                         // Convert LogicalExpr to RenderExpr
@@ -1054,18 +1166,31 @@ pub fn extract_ctes_with_context(
                             &LogicalPlan::GraphRel(graph_rel.clone()),
                         );
 
-                        // Categorize filters
+                        // Categorize filters - now passing actual rel_alias for relationship property filtering!
                         let categorized = categorize_filters(
                             Some(&render_expr),
                             &start_alias,
                             &end_alias,
-                            "", // rel_alias not used yet
+                            &rel_alias, // ✅ FIXED: Pass actual relationship alias to capture relationship filters
                         );
 
-                        // Create alias mapping
+                        // Create alias mapping for node aliases
                         let alias_mapping = [
                             (start_alias.clone(), "start_node".to_string()),
                             (end_alias.clone(), "end_node".to_string()),
+                        ];
+
+                        // 🔧 HOLISTIC FIX: Create alias mapping for relationship based on schema pattern
+                        // - Standard pattern (3-way join): Maps to "rel" alias (separate edge table)
+                        // - FK-edge pattern (2-way join): Maps to "start_node" alias (edge IS start node table)
+                        let rel_target_alias = if is_fk_edge_early {
+                            log::info!("🔧 VLP FK-edge: Mapping relationship properties to 'start_node' (no separate rel table)");
+                            "start_node".to_string()
+                        } else {
+                            "rel".to_string()
+                        };
+                        let rel_alias_mapping = [
+                            (rel_alias.clone(), rel_target_alias),
                         ];
 
                         let start_sql = categorized
@@ -1076,6 +1201,11 @@ pub fn extract_ctes_with_context(
                             .end_node_filters
                             .as_ref()
                             .map(|expr| render_expr_to_sql_string(expr, &alias_mapping));
+                        // ✅ NEW: Convert relationship filters to SQL
+                        let rel_sql = categorized
+                            .relationship_filters
+                            .as_ref()
+                            .map(|expr| render_expr_to_sql_string(expr, &rel_alias_mapping));
 
                         // For variable-length queries (not shortest path), store end filters in context for outer query
                         if graph_rel.shortest_path_mode.is_none() {
@@ -1087,9 +1217,9 @@ pub fn extract_ctes_with_context(
                             }
                         }
 
-                        (start_sql, end_sql, Some(categorized))
+                        (start_sql, end_sql, rel_sql, Some(categorized))
                     } else {
-                        (None, None, None)
+                        (None, None, None, None)
                     };
 
                 // 🔧 BOUND NODE FIX: Extract filters from bound nodes (Filter → GraphNode)
@@ -1163,8 +1293,14 @@ pub fn extract_ctes_with_context(
                 // because we need proper filtering and shortest path selection logic
 
                 // 🎯 DECISION POINT: CTE or inline JOINs?
+                // BUT FIRST: Check if this is multi-type VLP (requires UNION ALL, not chained JOINs)
+                let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
+                let is_multi_type = should_use_join_expansion(&graph_rel, &rel_types, schema);
+                
                 let use_chained_join =
-                    spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none();
+                    spec.exact_hop_count().is_some() 
+                    && graph_rel.shortest_path_mode.is_none()
+                    && !is_multi_type;  // Don't use chained JOINs for multi-type VLP
 
                 if use_chained_join {
                     // 🚀 OPTIMIZATION: Fixed-length, non-shortest-path → NO CTE!
@@ -1207,8 +1343,132 @@ pub fn extract_ctes_with_context(
 
                     return Ok(child_ctes);
                 } else {
-                    // ✅ Truly variable-length or shortest path → RECURSIVE CTE!
-                    println!("CTE BRANCH: Variable-length pattern detected - using recursive CTE");
+                    // ✅ Truly variable-length or shortest path → Check if multi-type
+                    println!("CTE BRANCH: Variable-length pattern detected");
+                    
+                    // 🎯 CHECK FOR MULTI-TYPE VLP (Part 1D implementation)
+                    let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
+                    
+                    if should_use_join_expansion(&graph_rel, &rel_types, schema) {
+                        // Multi-type VLP: Use JOIN expansion with UNION ALL
+                        log::info!("🎯 CTE: Using JOIN expansion for multi-type VLP");
+                        
+                        // Extract start labels from graph pattern
+                        let start_labels = extract_node_labels(&graph_rel.left)
+                            .unwrap_or_else(|| {
+                                // Fallback: extract from ViewScan
+                                vec![extract_node_label_from_viewscan_with_schema(&graph_rel.left, schema)
+                                    .unwrap_or_else(|| "UnknownStartType".to_string())]
+                            });
+                        
+                        // For multi-type VLP, we need ALL possible end types from the relationship schema
+                        // The GraphNode label might only have one type (from type inference), 
+                        // but the actual query could reach multiple types
+                        let mut end_labels: Vec<String> = Vec::new();
+                        
+                        // First, try to get explicit labels from the graph pattern
+                        if let Some(labels) = extract_node_labels(&graph_rel.right) {
+                            end_labels = labels;
+                        }
+                        
+                        // If only one label or no labels, collect all possible end types from relationships
+                        if end_labels.len() <= 1 {
+                            let mut possible_end_types = std::collections::HashSet::new();
+                            for rel_type in &rel_types {
+                                if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
+                                    possible_end_types.insert(rel_schema.to_node.clone());
+                                }
+                            }
+                            if possible_end_types.len() > 1 {
+                                // Multiple possible end types - use all of them
+                                end_labels = possible_end_types.into_iter().collect();
+                                log::info!(
+                                    "🎯 CTE: Expanded end_labels from relationships: {:?}",
+                                    end_labels
+                                );
+                            } else if end_labels.is_empty() {
+                                // Fallback: extract from ViewScan
+                                end_labels = vec![extract_node_label_from_viewscan_with_schema(&graph_rel.right, schema)
+                                    .unwrap_or_else(|| "UnknownEndType".to_string())];
+                            }
+                        }
+                        
+                        log::info!(
+                            "🎯 CTE Multi-type VLP: start_labels={:?}, rel_types={:?}, end_labels={:?}",
+                            start_labels, rel_types, end_labels
+                        );
+                        
+                        // Create the generator
+                        use crate::clickhouse_query_generator::MultiTypeVlpJoinGenerator;
+                        
+                        // For multi-type VLP, we use start_filters_sql and end_filters_sql directly
+                        // The schema filters are handled differently in JOIN expansion
+                        let mut generator = MultiTypeVlpJoinGenerator::new(
+                            schema,
+                            start_labels,
+                            rel_types,
+                            end_labels,
+                            spec.clone(),
+                            start_alias.clone(),
+                            end_alias.clone(),
+                            start_filters_sql.clone(),
+                            end_filters_sql.clone(),
+                            rel_filters_sql.clone(),
+                            graph_rel.path_variable.clone(),
+                        );
+                        
+                        // TODO: Add property projections based on what's needed in RETURN clause
+                        // For now, we'll generate without specific property projections
+                        // Properties will be handled by the analyzer in Phase 5
+                        
+                        // Generate CTE name - use vlp_ prefix for proper detection
+                        // The plan_builder.rs looks for CTEs starting with "vlp_" or "chained_path_"
+                        let cte_name = format!("vlp_multi_type_{}_{}", start_alias, end_alias);
+                        
+                        // Generate SQL
+                        match generator.generate_cte_sql(&cte_name) {
+                            Ok(cte_sql) => {
+                                log::info!("🎯 CTE Multi-type VLP SQL generated successfully");
+                                log::debug!("Generated SQL:\n{}", cte_sql);
+                                
+                                // Create CTE wrapper with all required fields
+                                let cte = Cte {
+                                    cte_name: cte_name.clone(),
+                                    content: CteContent::RawSql(cte_sql),
+                                    is_recursive: false,  // Multi-type VLP uses UNION ALL, not recursive
+                                    vlp_start_alias: Some("start_node".to_string()),
+                                    vlp_end_alias: Some("end_node".to_string()),
+                                    vlp_start_table: None,  // Will be filled by generator if needed
+                                    vlp_end_table: None,
+                                    vlp_cypher_start_alias: Some(start_alias.clone()),
+                                    vlp_cypher_end_alias: Some(end_alias.clone()),
+                                    vlp_start_id_col: None,
+                                    vlp_end_id_col: None,
+                                };
+                                
+                                // Extract CTEs from child plans
+                                let mut child_ctes = extract_ctes_with_context(
+                                    &graph_rel.right,
+                                    last_node_alias,
+                                    context,
+                                    schema
+                                )?;
+                                child_ctes.push(cte);
+                                
+                                return Ok(child_ctes);
+                            }
+                            Err(e) => {
+                                return Err(RenderBuildError::UnsupportedFeature(format!(
+                                    "Failed to generate multi-type VLP SQL: {}. \
+                                     This may indicate missing schema information or unsupported path combination.",
+                                    e
+                                )));
+                            }
+                        }
+                    }
+                    
+                    // Single-type VLP: Use traditional recursive CTE
+                    println!("CTE BRANCH: Single-type VLP - using recursive CTE");
 
                     // Check if nodes are denormalized (properties embedded in edge table)
                     let start_is_denormalized = match graph_rel.left.as_ref() {
@@ -1346,11 +1606,13 @@ pub fn extract_ctes_with_context(
                             &to_col,    // To column
                             &graph_rel.left_connection,
                             &graph_rel.right_connection,
+                            &rel_alias, // ✅ HOLISTIC FIX: Pass relationship Cypher alias
                             all_denorm_properties, // Pass all denormalized properties
                             graph_rel.shortest_path_mode.clone().map(|m| m.into()),
                             combined_start_filters.clone(),
                             // 🔒 Always pass end filters - schema filters apply to base tables
                             combined_end_filters.clone(),
+                            rel_filters_sql.clone(), // ✅ HOLISTIC FIX: Pass relationship filters
                             graph_rel.path_variable.clone(),
                             graph_rel.labels.clone(),
                             edge_id,
@@ -1358,6 +1620,11 @@ pub fn extract_ctes_with_context(
                     } else if is_mixed {
                         log::debug!("CTE: Using mixed generator for variable-length path (start_denorm={}, end_denorm={})",
                                   start_is_denormalized, end_is_denormalized);
+                        
+                        // For single-type VLP, end_table must exist
+                        let end_table_str = end_table.as_ref()
+                            .ok_or_else(|| RenderBuildError::MissingTableInfo("end node in single-type VLP".to_string()))?;
+                        
                         VariableLengthCteGenerator::new_mixed(
                             schema,
                             spec.clone(),
@@ -1366,15 +1633,17 @@ pub fn extract_ctes_with_context(
                             &rel_table,
                             &from_col,
                             &to_col,
-                            &end_table,
+                            end_table_str,
                             &end_id_col,
                             &graph_rel.left_connection,
                             &graph_rel.right_connection,
+                            &rel_alias, // ✅ HOLISTIC FIX: Pass relationship Cypher alias
                             filter_properties.clone(),
                             graph_rel.shortest_path_mode.clone().map(|m| m.into()),
                             combined_start_filters.clone(),
                             // 🔒 Always pass end filters - schema filters apply to base tables
                             combined_end_filters.clone(),
+                            rel_filters_sql.clone(), // ✅ HOLISTIC FIX: Pass relationship filters
                             graph_rel.path_variable.clone(),
                             graph_rel.labels.clone(),
                             edge_id,
@@ -1382,6 +1651,10 @@ pub fn extract_ctes_with_context(
                             end_is_denormalized,
                         )
                     } else {
+                        // For single-type VLP, end_table must exist
+                        let end_table_str = end_table.as_ref()
+                            .ok_or_else(|| RenderBuildError::MissingTableInfo("end node in single-type VLP".to_string()))?;
+                        
                         VariableLengthCteGenerator::new_with_fk_edge(
                             schema,
                             spec.clone(),
@@ -1390,15 +1663,17 @@ pub fn extract_ctes_with_context(
                             &rel_table,
                             &from_col,
                             &to_col,
-                            &end_table,
+                            end_table_str,
                             &end_id_col,
                             &graph_rel.left_connection,
                             &graph_rel.right_connection,
+                            &rel_alias, // ✅ HOLISTIC FIX: Pass relationship Cypher alias
                             filter_properties, // Use filter properties
                             graph_rel.shortest_path_mode.clone().map(|m| m.into()),
                             combined_start_filters, // Start filters (user + schema)
                             // 🔒 Always pass end filters - schema filters apply to base tables
                             combined_end_filters,
+                            rel_filters_sql, // ✅ HOLISTIC FIX: Pass relationship filters
                             graph_rel.path_variable.clone(),
                             graph_rel.labels.clone(),
                             edge_id,                   // Pass edge_id from schema
@@ -1965,6 +2240,27 @@ pub fn has_variable_length_rel(plan: &LogicalPlan) -> Option<(String, String)> {
     };
     log::debug!("  Result: {:?}", result);
     result
+}
+
+/// Get all VLP-related aliases: (start_node_alias, end_node_alias, relationship_alias)
+/// Used to determine if filters should be handled by CTE vs outer query
+pub fn get_variable_length_aliases(plan: &LogicalPlan) -> Option<(String, String, String)> {
+    match plan {
+        LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => {
+            Some((rel.left_connection.clone(), rel.right_connection.clone(), rel.alias.clone()))
+        }
+        LogicalPlan::GraphRel(rel) => get_variable_length_aliases(&rel.left),
+        LogicalPlan::GraphNode(node) => get_variable_length_aliases(&node.input),
+        LogicalPlan::Filter(filter) => get_variable_length_aliases(&filter.input),
+        LogicalPlan::Projection(proj) => get_variable_length_aliases(&proj.input),
+        LogicalPlan::GraphJoins(joins) => get_variable_length_aliases(&joins.input),
+        LogicalPlan::GroupBy(gb) => get_variable_length_aliases(&gb.input),
+        LogicalPlan::OrderBy(ob) => get_variable_length_aliases(&ob.input),
+        LogicalPlan::Skip(skip) => get_variable_length_aliases(&skip.input),
+        LogicalPlan::Limit(limit) => get_variable_length_aliases(&limit.input),
+        LogicalPlan::Cte(cte) => get_variable_length_aliases(&cte.input),
+        _ => None,
+    }
 }
 
 /// Check if a variable-length pattern uses denormalized edges
@@ -2697,6 +2993,34 @@ pub fn get_shortest_path_mode(
 }
 
 /// Extract node label from ViewScan in the plan
+/// Uses the provided schema for node label lookup
+pub fn extract_node_label_from_viewscan_with_schema(
+    plan: &LogicalPlan,
+    schema: &GraphSchema,
+) -> Option<String> {
+    match plan {
+        LogicalPlan::ViewScan(view_scan) => {
+            // Look up node label from the provided schema using table name
+            if let Some((label, _)) = get_node_schema_by_table(schema, &view_scan.source_table) {
+                return Some(label.to_string());
+            }
+            None
+        }
+        LogicalPlan::GraphNode(node) => {
+            // First try to get label directly from the GraphNode (for denormalized nodes)
+            if let Some(label) = &node.label {
+                return Some(label.clone());
+            }
+            // Otherwise, recurse into input
+            extract_node_label_from_viewscan_with_schema(&node.input, schema)
+        }
+        LogicalPlan::Filter(filter) => extract_node_label_from_viewscan_with_schema(&filter.input, schema),
+        _ => None,
+    }
+}
+
+/// Extract node label from ViewScan in the plan (legacy version using global schemas)
+/// ⚠️ DEPRECATED: Use extract_node_label_from_viewscan_with_schema instead
 pub fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
     match plan {
         LogicalPlan::ViewScan(view_scan) => {

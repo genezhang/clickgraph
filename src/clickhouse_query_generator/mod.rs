@@ -6,6 +6,7 @@ mod edge_uniqueness_tests;
 mod errors;
 mod function_registry;
 mod function_translator;
+pub mod multi_type_vlp_joins; // Multi-type VLP JOIN expansion (Part 1D)
 pub mod pagerank;
 pub mod to_sql; // Made public for EXISTS subquery support
 pub mod to_sql_query; // Made public for EXISTS subquery generation with WITH clauses
@@ -21,6 +22,7 @@ pub use function_translator::{
     is_ch_passthrough_aggregate, is_explicit_ch_aggregate, is_function_supported,
     translate_scalar_function, CH_AGG_PREFIX, CH_PASSTHROUGH_PREFIX,
 };
+pub use multi_type_vlp_joins::MultiTypeVlpJoinGenerator; // Export for cte_extraction.rs
 pub use variable_length_cte::{NodeProperty, VariableLengthCteGenerator};
 
 // pub fn generate_sql(plan: RenderPlan) -> String{
