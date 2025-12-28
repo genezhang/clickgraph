@@ -4820,6 +4820,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
+                constraints: None,
             },
         );
 
@@ -4856,6 +4857,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
+                constraints: None,
             },
         );
 
@@ -5652,6 +5654,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: true, // Self-referencing FK pattern
+                constraints: None,
             },
         );
 
@@ -5766,6 +5769,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: true, // FK-edge pattern (non-self-ref)
+                constraints: None,
             },
         );
 

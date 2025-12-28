@@ -1,6 +1,196 @@
 ## [Unreleased]
 
-### � Bug Fixes
+### � Internal/Development
+
+#### GraphRAG Multi-Type VLP Foundation - Developer Preview (Dec 27, 2025)
+
+**⚠️ NOT USER-FACING**: Foundation work only. SQL generation (Part 1D) required before feature is usable.
+
+**Implemented parsing and inference foundation for multi-type variable-length paths.**
+
+**The GraphRAG Use Case**: GraphRAG (Graph Retrieval-Augmented Generation) requires traversing heterogeneous graphs where relationships connect different node types. Example:
+```cypher
+-- User can FOLLOW other Users OR AUTHOR Posts
+MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)
+RETURN x
+
+-- Challenge: 'x' can be User OR Post - how to handle polymorphic end nodes?
+```
+
+**Components Implemented**:
+
+1. **Multi-Label Node Syntax (Part 1B)** ✅
+   - Added support for `(x:User|Post)` - explicit type unions
+   - Parser functions: `parse_node_labels()`, `parse_name_labels()`
+   - File: `src/open_cypher_parser/path_pattern.rs`
+   - Tests: 4 new unit tests passing
+   - Example: `(x:User|Post|Comment)` → labels = ["User", "Post", "Comment"]
+
+2. **Auto-Inference from Relationships (Part 2A)** ✅
+   - Automatically infer end node types from relationship schemas
+   - When: VLP + multi-type + unlabeled end node
+   - Logic: Extract `to_node` from each relationship type in schema
+   - File: `src/query_planner/analyzer/type_inference.rs` (lines 150-230)
+   - Tests: 4 new unit tests in `test_multi_type_vlp_auto_inference.rs`
+   - Example: `(u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)` → infers `x.labels = ["User", "Post"]`
+
+3. **Path Enumeration (Part 1C)** ✅
+   - Schema-validated generation of valid path combinations
+   - DFS exploration with `enumerate_vlp_paths()` function
+   - File: `src/query_planner/analyzer/multi_type_vlp_expansion.rs` (500 lines, new module)
+   - Tests: 5 new unit tests (single-hop, multi-hop, multi-type, no paths, range)
+   - Example paths for `User-[:FOLLOWS|AUTHORED*1..2]->User|Post`:
+     - [User-FOLLOWS->User] (1-hop)
+     - [User-AUTHORED->Post] (1-hop)
+     - [User-FOLLOWS->User-FOLLOWS->User] (2-hop)
+     - [User-FOLLOWS->User-AUTHORED->Post] (2-hop)
+
+4. **AST Changes (Part 1A)** ✅
+   - Changed `NodePattern.label: Option<&str>` → `labels: Option<Vec<&str>>`
+   - Updated 111 compilation errors across codebase
+   - File: `src/open_cypher_parser/ast.rs`
+
+5. **SQL Generation Design (Part 1D)** ✅
+   - Complete design document: `notes/multi-type-vlp-sql-generation-design.md`
+   - Strategy: UNION ALL of type-safe JOINs (not recursive CTE)
+   - Rationale: User.user_id ≠ Post.post_id (different ID domains, unsafe for recursion)
+   - Limitation: 3-hop maximum (combinatorial explosion)
+   - Status: Design complete, **implementation deferred** (requires 2-3 days CTE refactoring)
+
+6. **Integration Tests (Part 2B)** ✅
+   - Created `tests/integration/test_graphrag_auto_inference.py` with 5 test cases
+   - Tests: Basic inference, property access, explicit vs inferred, no inference when labeled, results validation
+   - Status: All tests created and ready, **currently skipped** (blocked on Part 1D SQL generation)
+
+**Test Statistics**:
+- Unit tests: 725/735 passing (98.6%)
+- New tests added: 13 (4 parsing + 5 path enumeration + 4 auto-inference)
+- Integration tests: 5 created, ready to enable after Part 1D
+
+**Documentation**:
+- Implementation summary: `notes/multi-type-vlp-implementation-summary.md`
+- SQL design: `notes/multi-type-vlp-sql-generation-design.md`
+- Requirements: `notes/graphrag-requirements-analysis.md`
+
+**Developer Capabilities** (not user-facing):
+- Parse multi-label syntax: `(x:User|Post)` → AST representation
+- Auto-infer end node types from relationship schemas
+- Enumerate valid paths based on schema graph
+- Store multi-label information in logical plan
+
+**Missing for User Execution**:
+- ❌ SQL generation (Part 1D) - users get errors when running queries
+- ❌ Property access on multi-type nodes
+- ❌ Result merging from UNION ALL branches
+- ❌ End-to-end query execution
+
+**Status**: Foundation complete, but **NOT USABLE** until Part 1D (SQL generation) is implemented. Estimated 2-3 days of CTE refactoring work required.
+
+**Files Added**:
+- `src/query_planner/analyzer/multi_type_vlp_expansion.rs` (500 lines)
+- `src/query_planner/analyzer/test_multi_type_vlp_auto_inference.rs` (280 lines)
+- `tests/integration/test_graphrag_auto_inference.py` (300 lines)
+- `notes/multi-type-vlp-sql-generation-design.md` (200 lines)
+- `notes/multi-type-vlp-implementation-summary.md` (400 lines)
+
+**Files Modified**:
+- `src/open_cypher_parser/ast.rs` - NodePattern.labels Vec
+- `src/open_cypher_parser/path_pattern.rs` - Multi-label parsing functions
+- `src/query_planner/analyzer/type_inference.rs` - Auto-inference logic
+- `src/query_planner/analyzer/mod.rs` - Module declarations
+
+---
+
+## [0.6.1] - 2025-12-27
+
+### 🐛 Bug Fixes
+
+#### VLP Relationship Filters + Edge Constraints Holistic Fix (Dec 27, 2025) ⭐
+
+**Fixed relationship filters and edge constraints in Variable-Length Path queries across all schema patterns.**
+
+**Problems Fixed**:
+
+1. **Relationship filters populated but never used**: The `relationship_filters` field was being populated in `cte_extraction.rs` but never passed to CTE generators, causing WHERE clause filters to be ignored.
+
+2. **Wrong aliases for FK-edge patterns**: FK-edge patterns were using `rel` alias (from standard 3-table pattern) when they should use `start_node` (the table containing the FK).
+
+3. **Edge constraints used fixed aliases in recursive cases**: The `generate_edge_constraint_filter()` method always used `self.start_node_alias` and `self.end_node_alias`, but recursive cases use different aliases (`current_node`, `new_start`, `new_end`).
+
+**Root Causes**:
+- Relationship filters were extracted but never threaded through to CTE generators
+- Pattern detection happened too late (after filter processing)
+- Edge constraint compilation was hardcoded to base case aliases
+
+**Holistic Solution**:
+
+1. **Added relationship_filters field handling** throughout CTE generation:
+   - Added to all generator constructors: `new()`, `new_denormalized()`, `new_mixed()`, `new_with_fk_edge()`
+   - Applied in both base and recursive WHERE clauses
+   - FK-edge recursive cases rewrite aliases (`start_node` → `new_start` or `current_node`)
+
+2. **Pattern-aware alias mapping** in `cte_extraction.rs`:
+   - Added early FK-edge detection before filter processing
+   - Maps relationship filters to correct alias:
+     - FK-edge → `start_node` (the table with the FK)
+     - Standard/Denormalized/Polymorphic → `rel` (relationship table alias)
+
+3. **Dynamic constraint aliases** in `variable_length_cte.rs`:
+   - Changed `generate_edge_constraint_filter()` to accept `from_alias: Option<&str>`, `to_alias: Option<&str>`
+   - Base cases pass `None, None` (uses defaults)
+   - Recursive cases pass actual aliases:
+     - Standard: `Some("current_node"), None`
+     - FK-edge APPEND: `Some("current_node"), Some("new_end")`
+     - FK-edge PREPEND: `Some("new_start"), Some("current_node")`
+
+4. **Outer query filter deduplication**:
+   - Added `get_variable_length_aliases()` helper in `plan_builder.rs`
+   - Prevents duplicate relationship filters in outer query
+   - Checks if filter references VLP relationship alias
+
+**Coverage**: All 5 schema patterns verified:
+- ✅ FK-edge (2-way JOIN with FK in node table)
+- ✅ Standard (3-way JOIN: from_node → edge → to_node)
+- ✅ Denormalized (single table with node properties)
+- ✅ Mixed (partial denormalization)
+- ✅ Polymorphic (multiple edge types in one table)
+
+**Example**:
+```cypher
+-- Query with relationship filter + constraint
+MATCH (f:DataFile {file_id: 1})-[r:COPIED_BY*1..3 {operation: 'clean'}]->(d:DataFile)
+RETURN f.path, d.path
+
+-- Generated SQL (Standard pattern):
+WITH RECURSIVE vlp_cte AS (
+    -- Base case
+    SELECT ...
+    WHERE start_node.created_timestamp <= end_node.created_timestamp  -- constraint (correct alias)
+      AND rel.copy_operation_type = 'clean'  -- relationship filter (correct alias)
+    
+    UNION ALL
+    
+    -- Recursive case
+    SELECT ...
+    WHERE current_node.created_timestamp <= end_node.created_timestamp  -- constraint (correct alias!)
+      AND rel.copy_operation_type = 'clean'  -- relationship filter (correct alias)
+)
+```
+
+**Test Coverage**:
+- Added `test_vlp_with_relationship_filters_and_constraints` in `test_edge_constraints.py`
+- Verified constraint filtering blocks invalid edges (e.g., 4→2 with timestamp violation)
+- Verified relationship filters work in both base and recursive cases
+
+**Files Modified**:
+- `src/render_plan/cte_extraction.rs` (Lines 1040-1104) - Pattern-aware alias mapping
+- `src/clickhouse_query_generator/variable_length_cte.rs` (Multiple sections) - Relationship filters + dynamic constraints
+- `src/render_plan/plan_builder.rs` (Lines 560-570, 11360-11435) - Outer query deduplication
+- `tests/integration/test_edge_constraints.py` - Added comprehensive test case
+
+---
+
+### 🐛 Bug Fixes (Previous)
 
 #### VLP Path Functions in WITH Clauses (Dec 26, 2025) ⭐
 

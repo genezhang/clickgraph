@@ -714,6 +714,24 @@ impl ProjectionTagging {
                                         Some(ColumnAlias(format!("labels({})", alias)));
                                 }
                                 if !table_ctx.is_relation() {
+                                    // Check if this binding has MULTIPLE labels (multi-type VLP pattern)
+                                    // Multi-type VLP end nodes get multiple labels from TypeInference (Part 2A)
+                                    // Example: (u)-[:FOLLOWS|AUTHORED*1..2]->(x) → x.labels = ["User", "Post"]
+                                    // For multi-type VLP, the actual label is stored in the CTE's end_type column
+                                    if let Some(labels) = table_ctx.get_labels() {
+                                        if labels.len() > 1 {
+                                            log::info!("🎯 labels({}) has multiple labels ({:?}) - mapping to end_type for multi-type VLP", alias, labels);
+                                            // Multi-type VLP: return array with single element from end_type column
+                                            let end_type_expr = LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(alias.clone()),
+                                                column: crate::graph_catalog::expression_parser::PropertyValue::Column("end_type".to_string()),
+                                            });
+                                            item.expression = LogicalExpr::List(vec![end_type_expr]);
+                                            return Ok(());
+                                        }
+                                    }
+                                    
+                                    // Regular node: use labels from table_ctx
                                     if let Some(labels) = table_ctx.get_labels() {
                                         // Create array literal: ['Label1', 'Label2', ...]
                                         let label_exprs: Vec<LogicalExpr> = labels.iter()
@@ -733,10 +751,29 @@ impl ProjectionTagging {
                                 if item.col_alias.is_none() {
                                     item.col_alias = Some(ColumnAlias(format!("label({})", alias)));
                                 }
+                                
                                 if !table_ctx.is_relation() {
+                                    // Check if this binding has MULTIPLE labels (multi-type VLP pattern)
+                                    // Multi-type VLP end nodes get multiple labels from TypeInference (Part 2A)
+                                    // Example: (u)-[:FOLLOWS|AUTHORED*1..2]->(x) → x.labels = ["User", "Post"]
+                                    // For multi-type VLP, the actual label is stored in the CTE's end_type column
+                                    if let Some(labels) = table_ctx.get_labels() {
+                                        if labels.len() > 1 {
+                                            log::info!("🎯 label({}) has multiple labels ({:?}) - mapping to end_type for multi-type VLP", alias, labels);
+                                            // Multi-type VLP: map to end_type column
+                                            item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(alias.clone()),
+                                                column: crate::graph_catalog::expression_parser::PropertyValue::Column("end_type".to_string()),
+                                            });
+                                            return Ok(());
+                                        }
+                                    }
+                                    
+                                    // Regular node: use first label from table_ctx
                                     if let Some(labels) = table_ctx.get_labels() {
                                         if let Some(first_label) = labels.first() {
-                                            // Return the first label as a scalar string
+                                            log::info!("🔍 label({}) - using static label: {}", alias, first_label);
+                                            // Return the first label as a scalar string literal
                                             item.expression = LogicalExpr::Literal(
                                                 crate::query_planner::logical_expr::Literal::String(
                                                     first_label.clone(),

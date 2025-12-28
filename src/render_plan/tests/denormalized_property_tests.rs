@@ -140,6 +140,7 @@ fn setup_denormalized_schema() -> GraphSchema {
                     .collect(),
             ),
             is_fk_edge: false,
+            constraints: None,
         },
     );
 
@@ -334,6 +335,7 @@ fn test_multiple_relationships_same_node() {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         },
     );
 
@@ -489,6 +491,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
                     .collect(),
             ),
             is_fk_edge: false,
+            constraints: None,
         },
     );
 

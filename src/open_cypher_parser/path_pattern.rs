@@ -250,6 +250,15 @@ fn parse_name_or_label_with_properties(
     Ok((remainder, (node_label, node_properties)))
 }
 
+// Parse node name or labels (multi-label support) with properties
+fn parse_name_or_labels_with_properties(
+    input: &'_ str,
+) -> IResult<&'_ str, (Option<Vec<&'_ str>>, Option<Vec<Property<'_>>>)> {
+    let (remainder, node_labels) = parse_node_labels(input)?;
+    let (remainder, node_properties) = opt(parse_properties).parse(remainder)?;
+    Ok((remainder, (node_labels, node_properties)))
+}
+
 // Parse relationship labels that can be multiple labels separated by |
 fn parse_relationship_labels(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'_ str>>> {
     let (remainder, first_label) =
@@ -278,7 +287,37 @@ fn parse_relationship_labels(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'_ 
     Ok((current_input, Some(labels)))
 }
 
+// Parse node labels that can be multiple labels separated by |
+fn parse_node_labels(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'_ str>>> {
+    let (remainder, first_label) =
+        ws(opt(common::parse_alphanumeric_with_underscore)).parse(input)?;
+
+    if first_label.is_none() {
+        return Ok((remainder, None));
+    }
+
+    let mut labels = vec![first_label.unwrap()];
+
+    // Parse additional labels separated by |
+    let mut current_input = remainder;
+    loop {
+        let (new_input, pipe) = opt(ws(char('|'))).parse(current_input)?;
+        if pipe.is_none() {
+            break;
+        }
+
+        let (new_input, additional_label) =
+            ws(common::parse_alphanumeric_with_underscore).parse(new_input)?;
+        labels.push(additional_label);
+        current_input = new_input;
+    }
+
+    Ok((current_input, Some(labels)))
+}
+
+
 type NameOrLabelWithProperties<'a> = (Option<&'a str>, Option<Vec<Property<'a>>>);
+type NameOrLabelsWithProperties<'a> = (Option<Vec<&'a str>>, Option<Vec<Property<'a>>>);
 
 fn parse_name_label(
     input: &'_ str,
@@ -293,6 +332,20 @@ fn parse_name_label(
     .parse(input)
 }
 
+// Parse node name and labels (with multi-label support)
+fn parse_name_labels(
+    input: &'_ str,
+) -> IResult<&'_ str, (NameOrLabelWithProperties<'_>, NameOrLabelsWithProperties<'_>)> {
+    let (input, _) = multispace0(input)?;
+
+    separated_pair(
+        parse_name_or_label_with_properties,
+        opt(char(':')),
+        parse_name_or_labels_with_properties,
+    )
+    .parse(input)
+}
+
 // fn parse_comma(input: &str) -> IResult<&str, Option<&str>> {
 //     opt(tag_no_case(",")).parse(input)
 // }
@@ -303,19 +356,18 @@ fn parse_node_pattern(input: &'_ str) -> IResult<&'_ str, NodePattern<'_>> {
     let empty_node_parser = map(delimited(ws(char('(')), space0, ws(char(')'))), |_| {
         NodePattern {
             name: None,
-            label: None,
+            labels: None,
             properties: None,
         }
     });
 
     let node_parser = map(
-        delimited(ws(char('(')), parse_name_label, ws(char(')'))),
-        |((node_name, properties_with_node_name), (node_label, properties_with_node_label))| {
+        delimited(ws(char('(')), parse_name_labels, ws(char(')'))),
+        |((node_name, properties_with_node_name), (node_labels, properties_with_node_label))| {
             NodePattern {
                 name: node_name,
-                label: node_label,
+                labels: node_labels, // Now supports multi-labels directly
                 properties: properties_with_node_name.map_or(properties_with_node_label, Some),
-                // .map_or(properties_with_node_label, |v| Some(v)),
             }
         },
     );
@@ -651,7 +703,7 @@ mod tests {
         match pattern {
             PathPattern::Node(node) => {
                 assert_eq!(node.name, Some("n"));
-                assert_eq!(node.label, Some("User"));
+                assert_eq!(node.labels, Some(vec!["User"]));
                 assert!(node.properties.is_some(), "Should have properties");
             }
             _ => panic!("Expected Node pattern"),
@@ -678,7 +730,7 @@ mod tests {
         match pattern {
             PathPattern::Node(node) => {
                 assert_eq!(node.name, Some("u"));
-                assert_eq!(node.label, Some("User"));
+                assert_eq!(node.labels, Some(vec!["User"]));
                 assert!(node.properties.is_some(), "Should have properties");
             }
             _ => panic!("Expected Node pattern"),
@@ -694,7 +746,7 @@ mod tests {
                 assert_eq!(remaining, "");
                 let expected = NodePattern {
                     name: None,
-                    label: None,
+                    labels: None,
                     properties: None,
                 };
                 assert_eq!(&node, &expected);
@@ -720,7 +772,7 @@ mod tests {
                 // The start and end nodes are parsed as empty nodes.
                 let expected_node = Rc::new(RefCell::new(NodePattern {
                     name: None,
-                    label: None,
+                    labels: None,
                     properties: None,
                 }));
                 // For this test, we expect an outgoing relationship without properties.
@@ -764,7 +816,7 @@ mod tests {
                         assert_eq!(remaining, "");
                         let expected_node = Rc::new(RefCell::new(NodePattern {
                             name: None,
-                            label: None,
+                            labels: None,
                             properties: None,
                         }));
                         assert_eq!(
@@ -778,7 +830,7 @@ mod tests {
                         // The start and end nodes are parsed as empty nodes.
                         let expected_node = Rc::new(RefCell::new(NodePattern {
                             name: None,
-                            label: None,
+                            labels: None,
                             properties: None,
                         }));
                         // For this test, we expect an outgoing relationship without properties.
@@ -824,7 +876,7 @@ mod tests {
                 assert_eq!(connected_patterns.len(), 2);
                 let expected_node = Rc::new(RefCell::new(NodePattern {
                     name: None,
-                    label: None,
+                    labels: None,
                     properties: None,
                 }));
                 let expected_relationship_1 = RelationshipPattern {
@@ -883,7 +935,7 @@ mod tests {
 
                 let expected_node_a = Rc::new(RefCell::new(NodePattern {
                     name: Some("a"),
-                    label: Some("IamA"),
+                    labels: Some(vec!["IamA"]),
                     properties: Some(vec![Property::PropertyKV(PropertyKVPair {
                         key: "name",
                         value: Expression::Literal(Literal::String("IamA")),
@@ -892,13 +944,13 @@ mod tests {
 
                 let expected_node_b = Rc::new(RefCell::new(NodePattern {
                     name: Some("b"),
-                    label: None,
+                    labels: None,
                     properties: None,
                 }));
 
                 let expected_node_c = Rc::new(RefCell::new(NodePattern {
                     name: None,
-                    label: Some("IamC"),
+                    labels: Some(vec!["IamC"]),
                     properties: None,
                 }));
 
@@ -1224,7 +1276,7 @@ mod tests {
                 // The start and end nodes are parsed as empty nodes.
                 let expected_node = Rc::new(RefCell::new(NodePattern {
                     name: None,
-                    label: None,
+                    labels: None,
                     properties: None,
                 }));
                 // For this test, we expect an outgoing relationship with multiple labels.
@@ -1254,6 +1306,105 @@ mod tests {
             Err(e) => {
                 panic!("Parse error: {:?}", e);
             }
+        }
+    }
+
+    #[test]
+    fn test_parse_node_pattern_multiple_labels() {
+        // Test: (x:User|Post) should parse with both labels
+        let input = "(x:User|Post)";
+        let result = parse_path_pattern(input);
+        
+        assert!(result.is_ok(), "Failed to parse multi-label node: {:?}", result);
+        let (remaining, path_pattern) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input");
+        
+        match path_pattern {
+            PathPattern::Node(node) => {
+                assert_eq!(node.name, Some("x"), "Node name should be 'x'");
+                assert_eq!(
+                    node.labels,
+                    Some(vec!["User", "Post"]),
+                    "Should have both User and Post labels"
+                );
+                assert!(node.properties.is_none(), "Should have no properties");
+            }
+            _ => panic!("Expected Node pattern, got: {:?}", path_pattern),
+        }
+    }
+
+    #[test]
+    fn test_parse_node_pattern_multiple_labels_with_properties() {
+        // Test: (x:User|Post {id: 1}) with properties
+        let input = "(x:User|Post {id: 1})";
+        let result = parse_path_pattern(input);
+        
+        assert!(result.is_ok(), "Failed to parse multi-label node with properties: {:?}", result);
+        let (remaining, path_pattern) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input");
+        
+        match path_pattern {
+            PathPattern::Node(node) => {
+                assert_eq!(node.name, Some("x"));
+                assert_eq!(node.labels, Some(vec!["User", "Post"]));
+                assert!(node.properties.is_some(), "Should have properties");
+            }
+            _ => panic!("Expected Node pattern"),
+        }
+    }
+
+    #[test]
+    fn test_parse_node_pattern_triple_labels() {
+        // Test: (x:Person|User|Admin) with three labels
+        let input = "(x:Person|User|Admin)";
+        let result = parse_path_pattern(input);
+        
+        assert!(result.is_ok(), "Failed to parse triple-label node: {:?}", result);
+        let (remaining, path_pattern) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input");
+        
+        match path_pattern {
+            PathPattern::Node(node) => {
+                assert_eq!(node.name, Some("x"));
+                assert_eq!(
+                    node.labels,
+                    Some(vec!["Person", "User", "Admin"]),
+                    "Should have all three labels"
+                );
+            }
+            _ => panic!("Expected Node pattern"),
+        }
+    }
+
+    #[test]
+    fn test_parse_multi_label_in_connected_pattern() {
+        // Test: (u:User)-[:FOLLOWS]->(x:User|Post) - multi-label as end node
+        let input = "(u:User)-[:FOLLOWS]->(x:User|Post)";
+        let result = parse_path_pattern(input);
+        
+        assert!(result.is_ok(), "Failed to parse connected pattern with multi-label end node: {:?}", result);
+        let (remaining, path_pattern) = result.unwrap();
+        assert_eq!(remaining, "", "Should consume entire input");
+        
+        match path_pattern {
+            PathPattern::ConnectedPattern(connected) => {
+                assert_eq!(connected.len(), 1);
+                
+                // Check start node
+                let start_node = connected[0].start_node.borrow();
+                assert_eq!(start_node.name, Some("u"));
+                assert_eq!(start_node.labels, Some(vec!["User"]));
+                
+                // Check end node has multiple labels
+                let end_node = connected[0].end_node.borrow();
+                assert_eq!(end_node.name, Some("x"));
+                assert_eq!(
+                    end_node.labels,
+                    Some(vec!["User", "Post"]),
+                    "End node should have both User and Post labels"
+                );
+            }
+            _ => panic!("Expected ConnectedPattern"),
         }
     }
 }

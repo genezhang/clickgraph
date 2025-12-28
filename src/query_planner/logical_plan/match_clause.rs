@@ -1138,7 +1138,7 @@ fn traverse_connected_pattern_with_mode<'a>(
         crate::debug_print!("┌─ Processing connected_pattern #{}", pattern_idx);
 
         let start_node_ref = connected_pattern.start_node.borrow();
-        let start_node_label_from_ast = start_node_ref.label.map(|val| val.to_string());
+        let start_node_label_from_ast = start_node_ref.first_label().map(|val| val.to_string());
         // Use pre-assigned alias to ensure shared nodes get the same alias
         let start_node_alias = node_alias_map
             .get(&(connected_pattern.start_node.as_ptr() as usize))
@@ -1183,7 +1183,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             .get(&(connected_pattern.end_node.as_ptr() as usize))
             .cloned()
             .unwrap_or_else(generate_id);
-        let end_node_label_from_ast = end_node_ref.label.map(|val| val.to_string());
+        let end_node_label_from_ast = end_node_ref.first_label().map(|val| val.to_string());
         
         // CRITICAL FIX: Same label resolution order as start_node
         let end_node_label = if end_node_label_from_ast.is_some() {
@@ -2007,7 +2007,7 @@ fn traverse_node_pattern(
         .name
         .ok_or(LogicalPlanError::EmptyNode)?
         .to_string();
-    let mut node_label: Option<String> = node_pattern.label.map(|val| val.to_string());
+    let mut node_label: Option<String> = node_pattern.first_label().map(|val| val.to_string());
 
     // === SINGLE-NODE-SCHEMA INFERENCE ===
     // If no label provided and schema has only one node type, use it
@@ -2336,7 +2336,7 @@ mod tests {
 
         let node_pattern = ast::NodePattern {
             name: Some("customer"),
-            label: Some("Person"),
+            labels: Some(vec!["Person"]),
             properties: Some(vec![ast::Property::PropertyKV(ast::PropertyKVPair {
                 key: "city",
                 value: ast::Expression::Literal(ast::Literal::String("Boston")),
@@ -2388,7 +2388,7 @@ mod tests {
 
         let node_pattern = ast::NodePattern {
             name: Some("customer"),
-            label: Some("Person"), // Different label
+            labels: Some(vec!["Person"]), // Different label
             properties: Some(vec![ast::Property::PropertyKV(ast::PropertyKVPair {
                 key: "age",
                 value: ast::Expression::Literal(ast::Literal::Integer(25)),
@@ -2414,7 +2414,7 @@ mod tests {
 
         let node_pattern = ast::NodePattern {
             name: None, // Empty node
-            label: Some("Person"),
+            labels: Some(vec!["Person"]),
             properties: None,
         };
 
@@ -2434,13 +2434,13 @@ mod tests {
 
         let start_node = ast::NodePattern {
             name: Some("user"),
-            label: Some("Person"),
+            labels: Some(vec!["Person"]),
             properties: None,
         };
 
         let end_node = ast::NodePattern {
             name: Some("company"),
-            label: Some("Organization"),
+            labels: Some(vec!["Organization"]),
             properties: None,
         };
 
@@ -2521,13 +2521,13 @@ mod tests {
 
         let start_node = ast::NodePattern {
             name: Some("user"),      // This exists in plan_ctx
-            label: Some("Employee"), // Different label
+            labels: Some(vec!["Employee"]), // Different label
             properties: None,
         };
 
         let end_node = ast::NodePattern {
             name: Some("project"),
-            label: Some("Project"),
+            labels: Some(vec!["Project"]),
             properties: None,
         };
 
@@ -2588,7 +2588,7 @@ mod tests {
         // Create a match clause with both node pattern and connected pattern
         let node_pattern = ast::NodePattern {
             name: Some("admin"),
-            label: Some("User"),
+            labels: Some(vec!["User"]),
             properties: Some(vec![ast::Property::PropertyKV(ast::PropertyKVPair {
                 key: "role",
                 value: ast::Expression::Literal(ast::Literal::String("administrator")),
@@ -2597,13 +2597,13 @@ mod tests {
 
         let start_node = ast::NodePattern {
             name: Some("admin"), // Same as above - should connect
-            label: None,
+            labels: None,
             properties: None,
         };
 
         let end_node = ast::NodePattern {
             name: Some("system"),
-            label: Some("System"),
+            labels: Some(vec!["System"]),
             properties: None,
         };
 
@@ -2847,6 +2847,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
+            constraints: None,
             },
         );
         rels.insert(
@@ -2877,6 +2878,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
+            constraints: None,
             },
         );
         rels.insert(
@@ -2907,6 +2909,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
+            constraints: None,
             },
         );
         
@@ -3046,6 +3049,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
+            constraints: None,
             },
         );
         rels.insert(
@@ -3076,6 +3080,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
+            constraints: None,
             },
         );
         rels.insert(
@@ -3106,6 +3111,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
+            constraints: None,
             },
         );
 
@@ -3168,6 +3174,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
+            constraints: None,
             },
         );
 
@@ -3471,6 +3478,7 @@ mod tests {
                     from_node_properties: None,
                     to_node_properties: None,
                     is_fk_edge: false,
+            constraints: None,
                 },
             );
         }
@@ -3756,6 +3764,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
+            constraints: None,
             },
         );
 

@@ -689,9 +689,18 @@ impl ToSql for Cte {
                 format!("{} AS ({})", self.cte_name, cte_body)
             }
             CteContent::RawSql(sql) => {
-                // For raw SQL, it already includes the CTE name and AS clause
-                // from VariableLengthCteGenerator.generate_recursive_sql()
-                sql.clone()
+                // Check if raw SQL already includes the CTE name and AS clause
+                // (legacy behavior from VariableLengthCteGenerator)
+                // or if we need to wrap it (new behavior from MultiTypeVlpJoinGenerator)
+                if sql.trim_start().to_lowercase().starts_with("with ") 
+                   || sql.trim_start().starts_with(&format!("{} AS", self.cte_name))
+                   || sql.contains(" AS (") {
+                    // Already wrapped - use as-is
+                    sql.clone()
+                } else {
+                    // Raw CTE body - wrap it
+                    format!("{} AS (\n{}\n)", self.cte_name, sql)
+                }
             }
         }
     }

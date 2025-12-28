@@ -1368,6 +1368,7 @@ mod tests {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         };
 
         relationships.insert("FLIGHT".to_string(), flight_rel);
@@ -1433,6 +1434,7 @@ mod tests {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         };
 
         relationships.insert("AUTHORED".to_string(), authored_rel);
@@ -1508,6 +1510,7 @@ mod tests {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         };
 
         // Test detection
@@ -1582,6 +1585,7 @@ mod tests {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         };
 
         // Test detection
@@ -1683,6 +1687,7 @@ mod tests {
             from_node_properties: Some(from_props),
             to_node_properties: None, // User is traditional
             is_fk_edge: false,
+            constraints: None,
         };
 
         // Test detection
@@ -1786,6 +1791,7 @@ mod tests {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         };
 
         // Test detection
@@ -1873,6 +1879,7 @@ mod tests {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         };
 
         // Should still be detected as denormalized (1-2 mappings allowed)
@@ -1933,6 +1940,7 @@ mod tests {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         };
 
         // Should NOT be detected as denormalized (missing props)
@@ -2000,6 +2008,7 @@ mod tests {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         };
 
         // Should NOT be detected (different databases)
@@ -2077,6 +2086,7 @@ mod tests {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         };
 
         // Should NOT be detected (too many property_mappings)
@@ -2119,6 +2129,7 @@ mod tests {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         };
 
         // RESOLVED_TO: (Domain)-[:RESOLVED_TO]->(ResolvedIP)
@@ -2148,6 +2159,7 @@ mod tests {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         };
 
         relationships.insert("REQUESTED".to_string(), requested);
@@ -2200,6 +2212,7 @@ mod tests {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         };
 
         let edge2 = RelationshipSchema {
@@ -2228,6 +2241,7 @@ mod tests {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         };
 
         relationships.insert("REL1".to_string(), edge1);
@@ -2271,6 +2285,7 @@ mod tests {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         };
 
         let edge2 = RelationshipSchema {
@@ -2299,6 +2314,7 @@ mod tests {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         };
 
         relationships.insert("REL1".to_string(), edge1);

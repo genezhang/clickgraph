@@ -28,11 +28,13 @@ pub struct VariableLengthCteGenerator<'a> {
     pub end_node_alias: String,
     pub start_cypher_alias: String, // Original Cypher query alias (e.g., "u1")
     pub end_cypher_alias: String,   // Original Cypher query alias (e.g., "u2")
+    pub relationship_cypher_alias: String, // Original Cypher relationship alias (e.g., "r" in [r:FOLLOWS*])
     pub properties: Vec<NodeProperty>, // Properties to include in the CTE
     pub database: Option<String>,   // Optional database prefix
     pub shortest_path_mode: Option<ShortestPathMode>, // Shortest path optimization mode
     pub start_node_filters: Option<String>, // WHERE clause for start node (e.g., "start_node.full_name = 'Alice'")
     pub end_node_filters: Option<String>, // WHERE clause for end node (e.g., "end_full_name = 'Bob'")
+    pub relationship_filters: Option<String>, // WHERE clause for relationship (e.g., "rel.weight > 0.5")
     pub path_variable: Option<String>, // Path variable name from MATCH clause (e.g., "p" in "MATCH p = ...")
     pub relationship_types: Option<Vec<String>>, // Relationship type labels (e.g., ["FOLLOWS", "FRIENDS_WITH"])
     pub edge_id: Option<Identifier>, // Edge ID columns for relationship uniqueness (None = use from_id, to_id)
@@ -107,10 +109,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
             end_id_col,
             start_alias,
             end_alias,
+            "", // relationship_cypher_alias - default empty for backward compat
             properties,
             shortest_path_mode,
             start_node_filters,
             end_node_filters,
+            None, // relationship_filters - default None for backward compat
             path_variable,
             relationship_types,
             edge_id,
@@ -135,10 +139,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
         end_id_col: &str,
         start_alias: &str,
         end_alias: &str,
+        relationship_cypher_alias: &str, // Cypher relationship alias (e.g., "r" in [r:FOLLOWS*])
         properties: Vec<NodeProperty>,
         shortest_path_mode: Option<ShortestPathMode>,
         start_node_filters: Option<String>,
         end_node_filters: Option<String>,
+        relationship_filters: Option<String>, // Filters on relationship properties
         path_variable: Option<String>,
         relationship_types: Option<Vec<String>>,
         edge_id: Option<Identifier>,
@@ -160,10 +166,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
             end_id_col,
             start_alias,
             end_alias,
+            relationship_cypher_alias,
             properties,
             shortest_path_mode,
             start_node_filters,
             end_node_filters,
+            relationship_filters,
             path_variable,
             relationship_types,
             edge_id,
@@ -190,10 +198,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
         end_id_col: &str,
         start_alias: &str,
         end_alias: &str,
+        relationship_cypher_alias: &str, // Cypher relationship alias
         properties: Vec<NodeProperty>,
         shortest_path_mode: Option<ShortestPathMode>,
         start_node_filters: Option<String>,
         end_node_filters: Option<String>,
+        relationship_filters: Option<String>, // Filters on relationship properties
         path_variable: Option<String>,
         relationship_types: Option<Vec<String>>,
         edge_id: Option<Identifier>,
@@ -226,11 +236,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
             end_node_alias: "end_node".to_string(),
             start_cypher_alias: start_alias.to_string(),
             end_cypher_alias: end_alias.to_string(),
+            relationship_cypher_alias: relationship_cypher_alias.to_string(),
             properties,
             database,
             shortest_path_mode,
             start_node_filters,
             end_node_filters,
+            relationship_filters,
             path_variable,
             relationship_types,
             edge_id,
@@ -259,10 +271,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
         rel_to_col: &str,         // To column (e.g., "Dest")
         start_alias: &str,        // Cypher alias (e.g., "a")
         end_alias: &str,          // Cypher alias (e.g., "b")
+        relationship_cypher_alias: &str, // Cypher relationship alias (e.g., "r")
         properties: Vec<NodeProperty>, // Properties to include in CTE
         shortest_path_mode: Option<ShortestPathMode>,
         start_node_filters: Option<String>,
         end_node_filters: Option<String>,
+        relationship_filters: Option<String>, // Filters on relationship properties
         path_variable: Option<String>,
         relationship_types: Option<Vec<String>>,
         edge_id: Option<Identifier>,
@@ -296,11 +310,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
             end_node_alias: "end_node".to_string(),
             start_cypher_alias: start_alias.to_string(),
             end_cypher_alias: end_alias.to_string(),
+            relationship_cypher_alias: relationship_cypher_alias.to_string(),
             properties, // Denormalized properties from edge table
             database,
             shortest_path_mode,
             start_node_filters,
             end_node_filters,
+            relationship_filters,
             path_variable,
             relationship_types,
             edge_id,
@@ -335,10 +351,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
         end_id_col: &str,   // End ID column
         start_alias: &str,  // Cypher alias for start node
         end_alias: &str,    // Cypher alias for end node
+        relationship_cypher_alias: &str, // Cypher relationship alias
         properties: Vec<NodeProperty>, // Properties to include
         shortest_path_mode: Option<ShortestPathMode>,
         start_node_filters: Option<String>,
         end_node_filters: Option<String>,
+        relationship_filters: Option<String>, // Filters on relationship properties
         path_variable: Option<String>,
         relationship_types: Option<Vec<String>>,
         edge_id: Option<Identifier>,
@@ -366,11 +384,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
             end_node_alias: "end_node".to_string(),
             start_cypher_alias: start_alias.to_string(),
             end_cypher_alias: end_alias.to_string(),
+            relationship_cypher_alias: relationship_cypher_alias.to_string(),
             properties,
             database,
             shortest_path_mode,
             start_node_filters,
             end_node_filters,
+            relationship_filters,
             path_variable,
             relationship_types,
             edge_id,
@@ -477,7 +497,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// Constraints are added to:
     /// - Base case: WHERE clause (after node JOINs)
     /// - Recursive case: WHERE clause (validates each hop)
-    fn generate_edge_constraint_filter(&self) -> Option<String> {
+    /// Generate edge constraint filter with dynamic alias support
+    /// 
+    /// For recursive cases, pass the actual aliases used in that SQL block.
+    /// If None, defaults to self.start_node_alias and self.end_node_alias.
+    fn generate_edge_constraint_filter(
+        &self,
+        from_alias: Option<&str>,
+        to_alias: Option<&str>,
+    ) -> Option<String> {
         // Get the first relationship type (multi-type not supported for constraints)
         if let Some(rel_types) = &self.relationship_types {
             if let Some(rel_type) = rel_types.first() {
@@ -490,19 +518,22 @@ impl<'a> VariableLengthCteGenerator<'a> {
                             self.schema.get_node_schema_opt(&rel_schema.from_node),
                             self.schema.get_node_schema_opt(&rel_schema.to_node)
                         ) {
+                            // Use provided aliases or fall back to defaults
+                            let actual_from_alias = from_alias.unwrap_or(&self.start_node_alias);
+                            let actual_to_alias = to_alias.unwrap_or(&self.end_node_alias);
+                            
                             // Compile the constraint expression
-                            // Use the actual node aliases from CTE generation
                             match crate::graph_catalog::constraint_compiler::compile_constraint(
                                 constraint_expr,
                                 from_node_schema,
                                 to_node_schema,
-                                &self.start_node_alias,
-                                &self.end_node_alias,
+                                actual_from_alias,
+                                actual_to_alias,
                             ) {
                                 Ok(compiled_sql) => {
-                                    log::info!(
-                                        "✅ Compiled VLP edge constraint for {}: {} → {}",
-                                        rel_type, constraint_expr, compiled_sql
+                                    log::debug!(
+                                        "✅ Compiled VLP edge constraint for {} (from={}, to={}): {} → {}",
+                                        rel_type, actual_from_alias, actual_to_alias, constraint_expr, compiled_sql
                                     );
                                     return Some(compiled_sql);
                                 }
@@ -1412,8 +1443,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 where_conditions.push(poly_filter);
             }
 
-            // Add edge constraints if defined in schema
-            if let Some(constraint_filter) = self.generate_edge_constraint_filter() {
+            // Add edge constraints if defined in schema (base case uses default aliases)
+            if let Some(constraint_filter) = self.generate_edge_constraint_filter(None, None) {
                 where_conditions.push(constraint_filter);
             }
 
@@ -1425,6 +1456,14 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 if let Some(ref filters) = self.end_node_filters {
                     where_conditions.push(filters.clone());
                 }
+            }
+            
+            // ✅ HOLISTIC FIX: Add relationship filters (e.g., WHERE r.weight > 0.5)
+            // These filters apply to the relationship/edge table properties and must be applied
+            // during traversal, not on the CTE output (which doesn't have these columns)
+            if let Some(ref filters) = self.relationship_filters {
+                log::debug!("Adding relationship filters to base case: {}", filters);
+                where_conditions.push(filters.clone());
             }
 
             if !where_conditions.is_empty() {
@@ -1546,7 +1585,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
 
         // Add edge constraints if defined in schema
-        if let Some(constraint_filter) = self.generate_edge_constraint_filter() {
+        // Recursive case: from=current_node, to=end_node_alias (same alias as base case)
+        if let Some(constraint_filter) = self.generate_edge_constraint_filter(Some("current_node"), None) {
             where_conditions.push(constraint_filter);
         }
 
@@ -1566,6 +1606,14 @@ impl<'a> VariableLengthCteGenerator<'a> {
             if let Some(ref filters) = self.end_node_filters {
                 where_conditions.push(filters.clone());
             }
+        }
+
+        // ✅ HOLISTIC FIX: Add relationship filters in recursive case too
+        // This ensures relationship property filters (e.g., r.weight > 0.5) are applied
+        // at every hop of the traversal, not just the base case
+        if let Some(ref filters) = self.relationship_filters {
+            log::debug!("Adding relationship filters to recursive case: {}", filters);
+            where_conditions.push(filters.clone());
         }
 
         let where_clause = where_conditions.join("\n      AND ");
@@ -1671,8 +1719,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
 
         // Add edge constraints if defined in schema
-        if let Some(constraint_filter) = self.generate_edge_constraint_filter() {
+        // Uses current_node as from_alias since recursive case references current row
+        if let Some(constraint_filter) = self.generate_edge_constraint_filter(Some("current_node"), None) {
             where_conditions.push(constraint_filter);
+        }
+
+        // ✅ HOLISTIC FIX: Add relationship filters in heterogeneous polymorphic recursive case
+        if let Some(ref filters) = self.relationship_filters {
+            log::debug!("Adding relationship filters to heterogeneous polymorphic recursive case: {}", filters);
+            where_conditions.push(filters.clone());
         }
 
         let where_clause = where_conditions.join("\n      AND ");
@@ -1779,7 +1834,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let mut where_conditions = Vec::new();
 
         // Add edge constraints if defined in schema
-        if let Some(constraint_filter) = self.generate_edge_constraint_filter() {
+        // Uses default aliases (start_node, end_node) for base case
+        if let Some(constraint_filter) = self.generate_edge_constraint_filter(None, None) {
             where_conditions.push(constraint_filter);
         }
 
@@ -1790,6 +1846,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
             if let Some(ref filters) = self.end_node_filters {
                 where_conditions.push(filters.clone());
             }
+        }
+
+        // ✅ HOLISTIC FIX: Add relationship filters in FK-edge base case
+        // Note: In FK-edge patterns, relationship properties are typically embedded in the
+        // start node table (the table with the FK column), so this filter will reference
+        // the start_node_alias (or a separate rel alias if one is defined)
+        if let Some(ref filters) = self.relationship_filters {
+            log::debug!("Adding relationship filters to FK-edge base case: {}", filters);
+            where_conditions.push(filters.clone());
         }
 
         if !where_conditions.is_empty() {
@@ -1887,8 +1952,18 @@ impl<'a> VariableLengthCteGenerator<'a> {
         ];
 
         // Add edge constraints if defined in schema
-        if let Some(constraint_filter) = self.generate_edge_constraint_filter() {
+        // FK-edge APPEND: from=current_node (previous end), to=new_end (parent)
+        if let Some(constraint_filter) = self.generate_edge_constraint_filter(Some("current_node"), Some("new_end")) {
             where_conditions.push(constraint_filter);
+        }
+
+        // ✅ HOLISTIC FIX: Add relationship filters in FK-edge recursive (append) case
+        // In APPEND expansion, relationship properties are on current_node (the edge/FK table)
+        // Rewrite filter alias from 'start_node' to 'current_node'
+        if let Some(ref filters) = self.relationship_filters {
+            let rewritten_filter = filters.replace("start_node.", "current_node.");
+            log::debug!("Adding relationship filters to FK-edge recursive (append) case: {} -> {}", filters, rewritten_filter);
+            where_conditions.push(rewritten_filter);
         }
 
         let where_clause = where_conditions.join("\n      AND ");
@@ -1967,8 +2042,18 @@ impl<'a> VariableLengthCteGenerator<'a> {
         ];
 
         // Add edge constraints if defined in schema
-        if let Some(constraint_filter) = self.generate_edge_constraint_filter() {
+        // FK-edge PREPEND: from=new_start (child), to=current_node (previous start)
+        if let Some(constraint_filter) = self.generate_edge_constraint_filter(Some("new_start"), Some("current_node")) {
             where_conditions.push(constraint_filter);
+        }
+
+        // ✅ HOLISTIC FIX: Add relationship filters in FK-edge recursive (prepend) case
+        // In PREPEND expansion, relationship properties are on new_start (the edge/FK table)
+        // Rewrite filter alias from 'start_node' to 'new_start'
+        if let Some(ref filters) = self.relationship_filters {
+            let rewritten_filter = filters.replace("start_node.", "new_start.");
+            log::debug!("Adding relationship filters to FK-edge recursive (prepend) case: {} -> {}", filters, rewritten_filter);
+            where_conditions.push(rewritten_filter);
         }
 
         let where_clause = where_conditions.join("\n      AND ");
@@ -2093,8 +2178,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Add WHERE clause for start node filters (rewritten for rel table)
         let mut where_conditions = Vec::new();
 
-        // Add edge constraints if defined in schema
-        if let Some(constraint_filter) = self.generate_edge_constraint_filter() {
+        // Add edge constraints if defined in schema (FK-edge base case uses default aliases)
+        if let Some(constraint_filter) = self.generate_edge_constraint_filter(None, None) {
             where_conditions.push(constraint_filter);
         }
 
@@ -2112,6 +2197,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     filters.replace("end_node.", &format!("{}.", self.relationship_alias));
                 where_conditions.push(rewritten);
             }
+        }
+
+        // ✅ HOLISTIC FIX: Add relationship filters in denormalized base case
+        // In denormalized patterns, relationship properties are on the same edge table
+        if let Some(ref filters) = self.relationship_filters {
+            log::debug!("Adding relationship filters to denormalized base case: {}", filters);
+            where_conditions.push(filters.clone());
         }
 
         if !where_conditions.is_empty() {
@@ -2170,7 +2262,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
         ];
 
         // Add edge constraints if defined in schema
-        if let Some(constraint_filter) = self.generate_edge_constraint_filter() {
+        // Denormalized recursive: no separate node tables, constraints not applicable
+        if let Some(constraint_filter) = self.generate_edge_constraint_filter(None, None) {
             where_conditions.push(constraint_filter);
         }
 
@@ -2180,6 +2273,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     filters.replace("end_node.", &format!("{}.", self.relationship_alias));
                 where_conditions.push(rewritten);
             }
+        }
+
+        // ✅ HOLISTIC FIX: Add relationship filters in denormalized recursive case
+        if let Some(ref filters) = self.relationship_filters {
+            log::debug!("Adding relationship filters to denormalized recursive case: {}", filters);
+            where_conditions.push(filters.clone());
         }
 
         let where_clause = where_conditions.join("\n      AND ");
@@ -2329,6 +2428,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
             }
         }
 
+        // ✅ HOLISTIC FIX: Add relationship filters in mixed base case
+        if let Some(ref filters) = self.relationship_filters {
+            log::debug!("Adding relationship filters to mixed base case: {}", filters);
+            where_conditions.push(filters.clone());
+        }
+
         if !where_conditions.is_empty() {
             query.push_str(&format!("\n    WHERE {}", where_conditions.join(" AND ")));
         }
@@ -2437,6 +2542,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
             }
         }
 
+        // ✅ HOLISTIC FIX: Add relationship filters in mixed recursive case
+        if let Some(ref filters) = self.relationship_filters {
+            log::debug!("Adding relationship filters to mixed recursive case: {}", filters);
+            where_conditions.push(filters.clone());
+        }
+
         let where_clause = where_conditions.join("\n      AND ");
 
         format!(
@@ -2451,11 +2562,19 @@ impl<'a> VariableLengthCteGenerator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    /// Helper to create a minimal test schema for VLC tests
+    fn create_test_schema() -> GraphSchema {
+        GraphSchema::build(1, "test_db".to_string(), HashMap::new(), HashMap::new())
+    }
 
     #[test]
     fn test_variable_length_cte_generation() {
+        let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 3);
         let generator = VariableLengthCteGenerator::new(
+            &schema,  // Add schema parameter
             spec,
             "users",     // start table
             "user_id",   // start id column
@@ -2485,8 +2604,10 @@ mod tests {
 
     #[test]
     fn test_unbounded_variable_length() {
+        let schema = create_test_schema();
         let spec = VariableLengthSpec::unbounded();
         let generator = VariableLengthCteGenerator::new(
+            &schema,  // Add schema parameter
             spec,
             "users",       // start table
             "user_id",     // start id column
@@ -2524,8 +2645,10 @@ mod tests {
     #[test]
     fn test_polymorphic_edge_filter() {
         // Test single relationship type with polymorphic edge
+        let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 3);
         let generator = VariableLengthCteGenerator::new_with_polymorphic(
+            &schema,                              // Add schema parameter
             spec,
             "users",                              // start table
             "user_id",                            // start id column
@@ -2536,10 +2659,12 @@ mod tests {
             "user_id",                            // end id column
             "u1",                                 // start alias
             "u2",                                 // end alias
+            "r",                                  // relationship_cypher_alias (missing parameter)
             vec![],                               // no properties for test
             None,                                 // no shortest path mode
             None,                                 // no start node filters
             None,                                 // no end node filters
+            None,                                 // no relationship filters (missing parameter)
             None,                                 // no path variable
             Some(vec!["FOLLOWS".to_string()]),    // relationship type
             None,                                 // no edge_id
@@ -2564,8 +2689,10 @@ mod tests {
     #[test]
     fn test_polymorphic_edge_filter_multiple_types() {
         // Test multiple relationship types with polymorphic edge
+        let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 3);
         let generator = VariableLengthCteGenerator::new_with_polymorphic(
+            &schema,        // Add schema parameter
             spec,
             "users",                                                // start table
             "user_id",                                              // start id column
@@ -2576,10 +2703,12 @@ mod tests {
             "user_id",      // end id column
             "u1",           // start alias
             "u2",           // end alias
+            "r",            // relationship_cypher_alias (missing parameter)
             vec![],         // no properties for test
             None,           // no shortest path mode
             None,           // no start node filters
             None,           // no end node filters
+            None,           // no relationship filters (missing parameter)
             None,           // no path variable
             Some(vec!["FOLLOWS".to_string(), "LIKES".to_string()]), // multiple types
             None,           // no edge_id

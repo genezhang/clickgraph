@@ -1,8 +1,55 @@
 # ClickGraph Status
 
-*Updated: December 26, 2025*
+*Updated: December 27, 2025*
 
-## 🎯 Latest: **Multi-Schema Support Complete!** (Dec 26, 2025)
+## 🎯 Latest: **VLP Relationship Filters & Edge Constraints Complete!** (Dec 27, 2025)
+
+**Achievement**: Holistic fix for Variable-Length Path queries with relationship filters and edge constraints across all schema patterns!
+
+**Problems Fixed**:
+1. **Relationship filters populated but never used** in VLP CTEs
+2. **Wrong aliases for FK-edge patterns** (mapped to `rel` instead of `start_node`)
+3. **Edge constraints used fixed aliases** in recursive cases (should use `current_node`, `new_start`, etc.)
+
+**Solutions Implemented**:
+- ✅ **Pattern-aware alias mapping**: FK-edge → `start_node`, Standard/Denormalized → `rel`
+- ✅ **Recursive alias rewriting**: FK-edge APPEND (`current_node` → `new_start`), PREPEND (`start_node` → `current_node`)
+- ✅ **Dynamic constraint aliases**: Base cases use defaults, recursive cases pass actual aliases
+- ✅ **Outer query deduplication**: Added `get_variable_length_aliases()` helper to prevent duplicate filters
+- ✅ **All 5 schema patterns covered**: FK-edge, Standard, Denormalized, Mixed, Polymorphic
+
+**Test Coverage**:
+```cypher
+-- Relationship filter with constraint
+MATCH (f:DataFile {file_id: 1})-[r:COPIED_BY*1..3 {operation: 'clean'}]->(d:DataFile)
+RETURN f.path, d.path
+```
+
+**Generated SQL** (correct aliases):
+```sql
+-- Base case: start_node + end_node
+WHERE start_node.created_timestamp <= end_node.created_timestamp  -- constraint
+  AND rel.copy_operation_type = 'clean'  -- relationship filter
+
+-- Recursive case: current_node + end_node  
+WHERE current_node.created_timestamp <= end_node.created_timestamp  -- constraint
+  AND rel.copy_operation_type = 'clean'  -- relationship filter
+```
+
+**Verification**:
+- ✅ Build successful (99 warnings, pre-existing)
+- ✅ Lineage schema test: All paths found, invalid edges filtered by constraint
+- ✅ Added comprehensive test: `test_vlp_with_relationship_filters_and_constraints`
+
+**Files Modified**:
+- `src/render_plan/cte_extraction.rs` - Pattern-aware alias mapping
+- `src/clickhouse_query_generator/variable_length_cte.rs` - Relationship filters + dynamic constraint aliases
+- `src/render_plan/plan_builder.rs` - Outer query deduplication
+- `tests/integration/test_edge_constraints.py` - Added VLP test case
+
+---
+
+## 🎯 Previous: **Multi-Schema Support Complete!** (Dec 26, 2025)
 
 **Achievement**: Full support for loading multiple independent graph schemas from a single YAML file!
 

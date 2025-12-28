@@ -63,6 +63,7 @@ mod tests {
             from_node_properties: None,
             to_node_properties: None,
             is_fk_edge: false,
+            constraints: None,
         };
         relationships.insert("FOLLOWS".to_string(), rel_schema);
 

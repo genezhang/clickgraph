@@ -9,11 +9,14 @@ This directory contains scripts for setting up and testing the multi-schema arch
 ```bash
 # Run the setup script to create all databases and tables
 ./scripts/setup/setup_multi_schema_databases.sh
+
+# Setup lineage test data (for edge constraint tests)
+./scripts/setup/setup_lineage_test_data.sh
 ```
 
 This creates:
-- **4 databases**: brahmand, ldbc, travel, security
-- **30+ tables** across 6 schemas
+- **4 databases**: brahmand, ldbc, travel, security, lineage
+- **30+ tables** across 6+ schemas
 - **Sample data** for testing
 
 ### 2. Start ClickGraph Server
@@ -28,6 +31,31 @@ cargo run --bin clickgraph
 ```bash
 # Run comprehensive test suite
 ./scripts/test/test_multi_schema_queries.sh
+
+# Run edge constraint tests (includes VLP with relationship filters)
+pytest tests/integration/test_edge_constraints.py -v
+```
+
+## Available Setup Scripts
+
+### setup_multi_schema_databases.sh
+Sets up core test databases with multiple schemas for testing various features.
+
+### setup_lineage_test_data.sh ⭐ NEW (Dec 27, 2025)
+Sets up lineage database for testing edge constraints with VLP queries.
+
+**What it creates**:
+- `lineage` database
+- `data_files` table (4 files with timestamps)
+- `file_lineage` table (4 edges, including one that violates timestamp constraint)
+
+**Use case**: Testing VLP with relationship filters + edge constraints
+
+**Example query**:
+```cypher
+USE data_lineage
+MATCH (f:DataFile {file_id: 1})-[r:COPIED_BY*1..3 {operation: 'clean'}]->(d:DataFile)
+RETURN f.path, d.path
 ```
 
 ## Schema Overview

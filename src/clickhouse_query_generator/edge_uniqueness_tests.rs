@@ -2,13 +2,22 @@
 mod edge_uniqueness_tests {
     use crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGenerator;
     use crate::graph_catalog::config::Identifier;
+    use crate::graph_catalog::graph_schema::GraphSchema;
     use crate::query_planner::logical_plan::VariableLengthSpec;
+    use std::collections::HashMap;
+
+    /// Helper to create a minimal test schema for VLC tests
+    fn create_test_schema() -> GraphSchema {
+        GraphSchema::build(1, "test_db".to_string(), HashMap::new(), HashMap::new())
+    }
 
     #[test]
     fn test_default_edge_id_tuple() {
         // Test that when edge_id is None, we use tuple(from_id, to_id)
+        let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 2);
         let generator = VariableLengthCteGenerator::new(
+            &schema,  // Add schema as first parameter
             spec,
             "users",
             "user_id",
@@ -68,6 +77,7 @@ mod edge_uniqueness_tests {
     #[test]
     fn test_composite_edge_id() {
         // Test composite edge ID (like OnTime schema)
+        let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 2);
         let edge_id = Some(Identifier::Composite(vec![
             "FlightDate".to_string(),
@@ -77,6 +87,7 @@ mod edge_uniqueness_tests {
         ]));
 
         let generator = VariableLengthCteGenerator::new(
+            &schema,  // Add schema parameter
             spec,
             "airports",
             "airport_code",
@@ -130,10 +141,12 @@ mod edge_uniqueness_tests {
     #[test]
     fn test_simple_edge_id() {
         // Test single column edge ID
+        let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 2);
         let edge_id = Some(Identifier::Single("transaction_id".to_string()));
 
         let generator = VariableLengthCteGenerator::new(
+            &schema,  // Add schema parameter
             spec,
             "accounts",
             "account_id",

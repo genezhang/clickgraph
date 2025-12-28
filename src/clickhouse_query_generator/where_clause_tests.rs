@@ -4,18 +4,27 @@
 use crate::clickhouse_query_generator::variable_length_cte::{
     ShortestPathMode, VariableLengthCteGenerator,
 };
+use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_plan::VariableLengthSpec;
+use std::collections::HashMap;
 
 #[cfg(test)]
 mod where_clause_tests {
     use super::*;
 
+    /// Helper to create a minimal test schema for VLC tests
+    fn create_test_schema() -> GraphSchema {
+        GraphSchema::build(1, "test_db".to_string(), HashMap::new(), HashMap::new())
+    }
+
     #[test]
     fn test_start_node_filter_in_base_case() {
+        let schema = create_test_schema();
         let spec = VariableLengthSpec::unbounded();
         let start_filter = Some("start_node.full_name = 'Alice'".to_string());
 
         let generator = VariableLengthCteGenerator::new(
+            &schema,  // Add schema parameter
             spec,
             "users",
             "user_id",
@@ -52,10 +61,12 @@ mod where_clause_tests {
 
     #[test]
     fn test_end_node_filter_in_outer_cte() {
+        let schema = create_test_schema();
         let spec = VariableLengthSpec::unbounded();
         let end_filter = Some("end_full_name = 'Bob'".to_string());
 
         let generator = VariableLengthCteGenerator::new(
+            &schema,  // Add schema parameter
             spec,
             "users",
             "user_id",
@@ -97,11 +108,13 @@ mod where_clause_tests {
 
     #[test]
     fn test_both_start_and_end_filters() {
+        let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 5);
         let start_filter = Some("start_node.full_name = 'Alice'".to_string());
         let end_filter = Some("end_full_name = 'Bob'".to_string());
 
         let generator = VariableLengthCteGenerator::new(
+            &schema,  // Add schema parameter
             spec,
             "users",
             "user_id",
@@ -151,9 +164,11 @@ mod where_clause_tests {
     fn test_no_filters_simple_structure() {
         // Use a range pattern starting at 1 to avoid min_hops filtering
         // (Fixed patterns like *2 would use inline JOINs in practice, not CTEs)
+        let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 3); // *1..3
 
         let generator = VariableLengthCteGenerator::new(
+            &schema,  // Add schema parameter
             spec,
             "users",
             "user_id",

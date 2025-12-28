@@ -37,6 +37,17 @@ graph_schema:
         protocols: protocols
         bytes_sent: bytes_sent
 
+    # Pattern comprehension test tables
+    - label: PatternCompUser
+      database: brahmand
+      table: pattern_comp_users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: full_name
+        country: country
+        city: city
+
   edges:
     - type: FOLLOWS
       database: brahmand
@@ -80,17 +91,6 @@ graph_schema:
       to_node: User
       property_mappings:
         since_date: since_date
-
-    # Pattern comprehension test tables
-    - label: PatternCompUser
-      database: brahmand
-      table: pattern_comp_users
-      node_id: user_id
-      property_mappings:
-        user_id: user_id
-        name: full_name
-        country: country
-        city: city
 
     - type: PATTERN_COMP_FOLLOWS
       database: brahmand

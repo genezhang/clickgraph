@@ -421,7 +421,7 @@ mod tests {
                 ConnectedPattern {
                     start_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("david"),
-                        label: None,
+                        labels: None,
                         properties: Some(vec![Property::PropertyKV(PropertyKVPair {
                             key: "name",
                             value: Expression::Literal(Literal::String("David")),
@@ -436,14 +436,14 @@ mod tests {
                     },
                     end_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("otherPerson"),
-                        label: None,
+                        labels: None,
                         properties: None,
                     })),
                 },
                 ConnectedPattern {
                     start_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("otherPerson"),
-                        label: None,
+                        labels: None,
                         properties: None,
                     })),
                     relationship: RelationshipPattern {
@@ -455,7 +455,7 @@ mod tests {
                     },
                     end_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("b"),
-                        label: None,
+                        labels: None,
                         properties: None,
                     })),
                 },
@@ -605,7 +605,7 @@ mod tests {
                 ConnectedPattern {
                     start_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("p"),
-                        label: Some("Person"),
+                        labels: Some(vec!["Person"]),
                         properties: Some(vec![Property::PropertyKV(PropertyKVPair {
                             key: "name",
                             value: Expression::Literal(Literal::String("Tom Hardy")),
@@ -620,7 +620,7 @@ mod tests {
                     },
                     end_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("movie"),
-                        label: Some("Movie"),
+                        labels: Some(vec!["Movie"]),
                         properties: None,
                     })),
                 },
@@ -628,7 +628,7 @@ mod tests {
                 ConnectedPattern {
                     start_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("movie"),
-                        label: Some("Movie"),
+                        labels: Some(vec!["Movie"]),
                         properties: None,
                     })),
                     relationship: RelationshipPattern {
@@ -640,7 +640,7 @@ mod tests {
                     },
                     end_node: Rc::new(RefCell::new(NodePattern {
                         name: Some("director"),
-                        label: Some("Person"),
+                        labels: Some(vec!["Person"]),
                         properties: None,
                     })),
                 },
@@ -699,7 +699,7 @@ mod tests {
                         ConnectedPattern {
                             start_node: Rc::new(RefCell::new(NodePattern {
                                 name: Some("a"),
-                                label: None,
+                                labels: None,
                                 properties: None,
                             })),
                             relationship: RelationshipPattern {
@@ -711,7 +711,7 @@ mod tests {
                             },
                             end_node: Rc::new(RefCell::new(NodePattern {
                                 name: Some("c"),
-                                label: None,
+                                labels: None,
                                 properties: None,
                             })),
                         },
@@ -773,12 +773,12 @@ mod tests {
             path_patterns: vec![
                 (None, PathPattern::Node(NodePattern {
                     name: Some("a"),
-                    label: Some("Person"),
+                    labels: Some(vec!["Person"]),
                     properties: None,
                 })),
                 (None, PathPattern::Node(NodePattern {
                     name: Some("b"),
-                    label: Some("Person"),
+                    labels: Some(vec!["Person"]),
                     properties: None,
                 })),
             ],
@@ -822,7 +822,7 @@ mod tests {
             path_patterns: vec![PathPattern::ConnectedPattern(vec![ConnectedPattern {
                 start_node: Rc::new(RefCell::new(NodePattern {
                     name: Some("a"),
-                    label: None,
+                    labels: None,
                     properties: None,
                 })),
                 relationship: RelationshipPattern {
@@ -840,7 +840,7 @@ mod tests {
                 },
                 end_node: Rc::new(RefCell::new(NodePattern {
                     name: Some("b"),
-                    label: None,
+                    labels: None,
                     properties: None,
                 })),
             }])],
@@ -903,7 +903,7 @@ mod tests {
         let expected_match_clause = MatchClause {
             path_patterns: vec![(None, PathPattern::Node(NodePattern {
                 name: Some("n"),
-                label: None,
+                labels: None,
                 properties: Some(vec![Property::PropertyKV(PropertyKVPair {
                     key: "name",
                     value: Expression::Literal(Literal::String("Andres")),
@@ -993,7 +993,7 @@ mod tests {
         let expected_match_clause = MatchClause {
             path_patterns: vec![(None, PathPattern::Node(NodePattern {
                 name: Some("n"),
-                label: None,
+                labels: None,
                 properties: Some(vec![Property::PropertyKV(PropertyKVPair {
                     key: "name",
                     value: Expression::Literal(Literal::String("Andres")),
@@ -1063,7 +1063,7 @@ mod tests {
         let expected_match_clause = MatchClause {
             path_patterns: vec![(None, PathPattern::Node(NodePattern {
                 name: Some("andres"),
-                label: None,
+                labels: None,
                 properties: Some(vec![Property::PropertyKV(PropertyKVPair {
                     key: "name",
                     value: Expression::Literal(Literal::String("Andres")),
@@ -1148,7 +1148,7 @@ mod tests {
         let expected_match_clause = MatchClause {
             path_patterns: vec![(None, PathPattern::Node(NodePattern {
                 name: Some("p"),
-                label: Some("Person"),
+                labels: Some(vec!["Person"]),
                 properties: None,
             }))],
         };
@@ -1270,7 +1270,7 @@ mod tests {
         let expected_match_clause = MatchClause {
             path_patterns: vec![(None, PathPattern::Node(NodePattern {
                 name: Some("p"),
-                label: Some("Person"),
+                labels: Some(vec!["Person"]),
                 properties: None,
             }))],
         };

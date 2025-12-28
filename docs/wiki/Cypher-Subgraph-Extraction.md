@@ -29,7 +29,7 @@ GET SUBGRAPH [WITH PROP] [<step_count> STEPS] FROM {<vid>, <vid>...}
 | `OUT` | Outgoing edges | `-[r]->` | ✅ |
 | `BOTH` | Bidirectional | `-[r]-` (UNION ALL) | ✅ |
 | `<edge_type>` | Single edge type | `[:TYPE]` | ✅ |
-| `type1, type2` | Multiple types | `[:TYPE1\|TYPE2]` | ✅ |
+| `type1, type2` | Multiple types | `[:TYPE1|TYPE2]` | ✅ |
 | `YIELD VERTICES` | Return vertices | `RETURN neighbor` | ✅ |
 | `YIELD EDGES` | Return edges | `RETURN type(r), r.*` | ✅ |
 

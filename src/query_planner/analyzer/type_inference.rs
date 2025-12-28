@@ -141,7 +141,7 @@ impl TypeInference {
 
                 // NOW infer labels for THIS level using updated plan_ctx from children
                 // Use UNIFIED constraint-based inference: gather all known facts, query schema together
-                let (edge_types, left_label, right_label) = self.infer_pattern_types(
+                let (edge_types, left_label, mut right_label) = self.infer_pattern_types(
                     &rel.labels,
                     &rel.left_connection,
                     &rel.right_connection,
@@ -149,20 +149,109 @@ impl TypeInference {
                     graph_schema,
                 )?;
 
+                // **PART 2A: Multi-Type VLP End Node Inference**
+                // For variable-length paths with multiple relationship types:
+                // If end node has no label, infer possible labels from relationship schemas
+                // Example: (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)
+                //   FOLLOWS: User → User
+                //   AUTHORED: User → Post
+                //   Therefore: x can be User OR Post → infer x.labels = [User, Post]
+                let inferred_multi_labels = if right_label.is_none() 
+                    && rel.variable_length.is_some() 
+                    && rel.variable_length.as_ref().map_or(false, |vl| !vl.is_single_hop())
+                    && edge_types.as_ref().map_or(false, |types| types.len() > 1) 
+                {
+                    log::debug!(
+                        "🎯 TypeInference: Multi-type VLP candidate detected for '{}': VLP={:?}, edge_types={:?}",
+                        rel.right_connection,
+                        rel.variable_length,
+                        edge_types
+                    );
+                    
+                    // Collect to_node from each relationship type
+                    let mut to_node_labels = std::collections::HashSet::new();
+                    if let Some(ref types) = edge_types {
+                        for rel_type in types {
+                            // Use get_all_rel_schemas_by_type to handle composite keys
+                            let rel_schemas = graph_schema.get_all_rel_schemas_by_type(rel_type);
+                            log::debug!(
+                                "🎯 TypeInference: Found {} schema(s) for rel_type '{}'",
+                                rel_schemas.len(),
+                                rel_type
+                            );
+                            for rel_schema in rel_schemas {
+                                to_node_labels.insert(rel_schema.to_node.clone());
+                            }
+                        }
+                    }
+                    
+                    let inferred_labels: Vec<String> = to_node_labels.into_iter().collect();
+                    if !inferred_labels.is_empty() {
+                        log::info!(
+                            "🎯 TypeInference: Multi-type VLP auto-inference for '{}' → labels: {:?}",
+                            rel.right_connection,
+                            inferred_labels
+                        );
+                        
+                        // Update plan_ctx with inferred labels (plural)
+                        if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&rel.right_connection) {
+                            table_ctx.set_labels(Some(inferred_labels.clone()));
+                        } else {
+                            use crate::query_planner::plan_ctx::TableCtx;
+                            plan_ctx.insert_table_ctx(
+                                rel.right_connection.clone(),
+                                TableCtx::build(
+                                    rel.right_connection.clone(),
+                                    Some(inferred_labels.clone()),
+                                    vec![],  // properties: empty for now
+                                    false,   // is_rel: false (this is a node)
+                                    false    // explicit_alias: false (inferred)
+                                )
+                            );
+                        }
+                        
+                        // Return first label for backward compatibility with single-label logic
+                        // The full labels list is now stored in plan_ctx for path enumeration
+                        right_label = inferred_labels.first().cloned();
+                        Some(inferred_labels)
+                    } else {
+                        log::debug!(
+                            "🎯 TypeInference: No schemas found for edge_types {:?}",
+                            edge_types
+                        );
+                        None
+                    }
+                } else {
+                    log::debug!(
+                        "🎯 TypeInference: Multi-type VLP inference skipped for '{}': right_label={:?}, VLP={:?}, edge_types={:?}",
+                        rel.right_connection,
+                        right_label,
+                        rel.variable_length,
+                        edge_types
+                    );
+                    None
+                };
+
                 log::info!(
-                    "🔍 TypeInference: '{}' → [{}] → '{}' (labels: {:?}, {:?})",
+                    "🔍 TypeInference: '{}' → [{}] → '{}' (labels: {:?}, {:?}{})",
                     rel.left_connection,
                     edge_types.as_ref().map(|v| v.join("|")).unwrap_or_else(|| "?".to_string()),
                     rel.right_connection,
                     left_label,
-                    right_label
+                    right_label,
+                    if inferred_multi_labels.is_some() { 
+                        format!(" [multi-type VLP inferred: {:?}]", inferred_multi_labels.as_ref().unwrap())
+                    } else { 
+                        String::new() 
+                    }
                 );
 
                 // Check if we need to rebuild with inferred edge types
                 let needs_rebuild = left_transformed.is_yes() 
                     || center_transformed.is_yes() 
                     || right_transformed.is_yes()
-                    || (edge_types.is_some() && edge_types != rel.labels);
+                    || (edge_types.is_some() && edge_types != rel.labels)
+                    || inferred_multi_labels.is_some();
 
                 if needs_rebuild {
                     let new_rel = GraphRel {

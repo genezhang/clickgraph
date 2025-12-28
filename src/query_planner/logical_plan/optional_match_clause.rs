@@ -158,7 +158,7 @@ mod tests {
         let optional_match = ast::OptionalMatchClause {
             path_patterns: vec![ast::PathPattern::Node(ast::NodePattern {
                 name: Some("a"),
-                label: Some("User"),
+                labels: Some(vec!["User"]),
                 properties: None,
             })],
             where_clause: None,
@@ -179,7 +179,7 @@ mod tests {
         let optional_match = ast::OptionalMatchClause {
             path_patterns: vec![ast::PathPattern::Node(ast::NodePattern {
                 name: Some("a"),
-                label: Some("User"),
+                labels: Some(vec!["User"]),
                 properties: None,
             })],
             where_clause: Some(ast::WhereClause {

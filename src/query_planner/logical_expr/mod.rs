@@ -315,7 +315,8 @@ pub enum PathPattern {
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct NodePattern {
     pub name: Option<String>,
-    pub label: Option<String>,
+    pub label: Option<String>,  // Primary label - kept for backward compatibility
+    pub labels: Option<Vec<String>>,  // Multi-label support (GraphRAG polymorphic nodes)
     pub properties: Option<Vec<Property>>,
 }
 
@@ -491,9 +492,15 @@ impl<'a> From<open_cypher_parser::ast::PathPattern<'a>> for PathPattern {
 
 impl<'a> From<open_cypher_parser::ast::NodePattern<'a>> for NodePattern {
     fn from(value: open_cypher_parser::ast::NodePattern<'a>) -> Self {
+        // Convert Vec<&str> to Vec<String>
+        let labels_vec = value.labels.map(|ls| ls.into_iter().map(|s| s.to_string()).collect::<Vec<String>>());
+        // Set label to first element for backward compatibility
+        let first_label = labels_vec.as_ref().and_then(|ls| ls.first().cloned());
+        
         NodePattern {
             name: value.name.map(|s| s.to_string()),
-            label: value.label.map(|s| s.to_string()),
+            label: first_label,
+            labels: labels_vec,
             properties: value
                 .properties
                 .map(|props| props.into_iter().map(Property::from).collect()),
@@ -576,7 +583,7 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                 Arc::new(LogicalPlan::GraphNode(GraphNode {
                     input: Arc::new(LogicalPlan::Empty),
                     alias: node.name.unwrap_or("").to_string(),
-                    label: node.label.map(|s| s.to_string()),
+                    label: node.first_label().map(|s| s.to_string()),
                     is_denormalized: false,
             projected_columns: None,
                 }))
@@ -595,7 +602,7 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                     let start_node = LogicalPlan::GraphNode(GraphNode {
                         input: Arc::new(LogicalPlan::Empty),
                         alias: start.name.unwrap_or("").to_string(),
-                        label: start.label.map(|s| s.to_string()),
+                        label: start.first_label().map(|s| s.to_string()),
                         is_denormalized: false,
             projected_columns: None,
                     });
@@ -605,7 +612,7 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                     let end_node = LogicalPlan::GraphNode(GraphNode {
                         input: Arc::new(LogicalPlan::Empty),
                         alias: end.name.unwrap_or("").to_string(),
-                        label: end.label.map(|s| s.to_string()),
+                        label: end.first_label().map(|s| s.to_string()),
                         is_denormalized: false,
             projected_columns: None,
                     });
@@ -868,7 +875,7 @@ mod tests {
     fn test_node_pattern_from_ast() {
         let ast_node_pattern = ast::NodePattern {
             name: Some("employee"),
-            label: Some("Person"),
+            labels: Some(vec!["Person"]),
             properties: Some(vec![ast::Property::PropertyKV(ast::PropertyKVPair {
                 key: "department",
                 value: ast::Expression::Literal(ast::Literal::String("Engineering")),
@@ -933,12 +940,12 @@ mod tests {
     fn test_connected_pattern_from_ast() {
         let start_node = ast::NodePattern {
             name: Some("user"),
-            label: Some("User"),
+            labels: Some(vec!["User"]),
             properties: None,
         };
         let end_node = ast::NodePattern {
             name: Some("company"),
-            label: Some("Company"),
+            labels: Some(vec!["Company"]),
             properties: None,
         };
         let relationship = ast::RelationshipPattern {
@@ -990,7 +997,7 @@ mod tests {
     fn test_path_pattern_node_from_ast() {
         let ast_node = ast::NodePattern {
             name: Some("customer"),
-            label: Some("Customer"),
+            labels: Some(vec!["Customer"]),
             properties: None,
         };
         let ast_path_pattern = ast::PathPattern::Node(ast_node);

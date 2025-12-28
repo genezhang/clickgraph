@@ -555,10 +555,13 @@ mod tests {
             tuple_properties: None,
         }));
 
-        let result = CollectUnwindElimination::optimize(unwind_plan).unwrap();
+        let optimizer = CollectUnwindElimination;
+        let mut plan_ctx = PlanCtx::default();
+        let result = optimizer.optimize(unwind_plan, &mut plan_ctx).unwrap();
 
         // Should be optimized to Empty (the base)
-        assert!(matches!(result.as_ref(), LogicalPlan::Empty));
+        let plan = result.get_plan();
+        assert!(matches!(&*plan, LogicalPlan::Empty));
     }
 
     #[test]
@@ -601,15 +604,18 @@ mod tests {
             tuple_properties: None,
         }));
 
-        let result = CollectUnwindElimination::optimize(unwind_plan).unwrap();
+        let optimizer = CollectUnwindElimination;
+        let mut plan_ctx = PlanCtx::default();
+        let result = optimizer.optimize(unwind_plan, &mut plan_ctx).unwrap();
 
         // Should be a WITH with only 'u'
-        if let LogicalPlan::WithClause(with) = result.as_ref() {
+        let plan = result.get_plan();
+        if let LogicalPlan::WithClause(with) = &*plan {
             assert_eq!(with.items.len(), 1);
             assert_eq!(with.exported_aliases.len(), 1);
             assert_eq!(with.exported_aliases[0], "u");
         } else {
-            panic!("Expected WithClause, got {:?}", result);
+            panic!("Expected WithClause, got {:?}", plan);
         }
     }
 }

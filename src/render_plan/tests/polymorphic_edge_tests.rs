@@ -139,6 +139,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         },
     );
 
@@ -178,6 +179,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         },
     );
 
@@ -217,6 +219,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         },
     );
 
@@ -401,6 +404,7 @@ fn test_non_polymorphic_relationship() {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         },
     );
 
@@ -523,6 +527,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         },
     );
 

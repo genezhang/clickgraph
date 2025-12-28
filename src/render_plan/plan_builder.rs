@@ -425,11 +425,43 @@ fn rewrite_vlp_union_branch_aliases(plan: &mut RenderPlan) -> RenderPlanBuilderR
         log::info!("   Mapping: {} → {}", from, to);
     }
     
-    // Rewrite SELECT items using filtered VLP mappings
-    log::info!("🔍 VLP: Rewriting {} SELECT items", plan.select.items.len());
-    for (idx, select_item) in plan.select.items.iter_mut().enumerate() {
-        log::info!("   SELECT[{}]: {:?}", idx, select_item.expression);
-        rewrite_render_expr_for_vlp(&mut select_item.expression, &filtered_mappings);
+    // 🔧 CRITICAL: Check if SELECT items already reference CTE columns (end_type, end_id, end_properties)
+    // This happens for multi-type VLP with label(x) → PropertyAccessExp(x.end_type)
+    // In this case, we need SPECIAL rewriting:
+    //   - x.end_type should become vlp_multi_type_u_x.end_type (where vlp_multi_type_u_x is the CTE alias)
+    //   - NOT end_node.end_type (end_node doesn't exist in FROM - it's internal to VLP metadata)
+    let has_explicit_cte_columns = plan.select.items.iter().any(|item| {
+        use crate::render_plan::render_expr::RenderExpr;
+        match &item.expression {
+            RenderExpr::Raw(s) => {
+                s.contains("end_type") || s.contains("end_id") || s.contains("end_properties")
+            }
+            RenderExpr::PropertyAccessExp(prop_access) => {
+                use crate::graph_catalog::expression_parser::PropertyValue;
+                match &prop_access.column {
+                    PropertyValue::Column(col_name) => {
+                        col_name == "end_type" || col_name == "end_id" || col_name == "end_properties"
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    });
+    
+    if has_explicit_cte_columns {
+        log::info!("🎯 VLP: Explicit CTE columns detected - FROM should use Cypher alias, no rewriting needed!");
+        // With the correct FROM (vlp_multi_type_u_x AS x), everything works naturally:
+        //   - x.end_type → CTE column (direct access)
+        //   - x.name → property (SQL generator extracts from end_properties JSON)
+        // No table alias rewriting needed - the FROM clause is already correct!
+    } else {
+        // Rewrite SELECT items using filtered VLP mappings (for non-multi-type VLP)
+        log::info!("🔍 VLP: Rewriting {} SELECT items", plan.select.items.len());
+        for (idx, select_item) in plan.select.items.iter_mut().enumerate() {
+            log::info!("   SELECT[{}]: {:?}", idx, select_item.expression);
+            rewrite_render_expr_for_vlp(&mut select_item.expression, &filtered_mappings);
+        }
     }
     
     // CRITICAL: Also rewrite WHERE clause expressions
@@ -568,6 +600,41 @@ fn extract_vlp_alias_mappings(ctes: &CteItems) -> HashMap<String, String> {
     
     mappings
 }
+
+// ============================================================================
+// ARCHITECTURAL NOTE: Multi-Type VLP Alias Mapping Evolution (Dec 27, 2025)
+// ============================================================================
+//
+// PROBLEM: Multi-type VLP patterns like (u)-[:FOLLOWS|AUTHORED*1..2]->(x) create
+// 3 layers of aliases:
+//   1. Cypher aliases (u, x, r) - what users write
+//   2. VLP internal aliases (start_node, end_node) - metadata for recursion
+//   3. CTE names (vlp_multi_type_u_x) - actual table references
+//
+// FAILED APPROACH (removed Dec 27, 2025):
+// Attempted complex multi-pass rewriting with `rewrite_cte_column_refs()`:
+//   - Selectively rewrite CTE columns (end_type, end_id) to use CTE alias
+//   - Leave regular properties unchanged for JSON extraction
+//   - Result: Combinatorial complexity, error-prone, hard to maintain
+//
+// SUCCESSFUL APPROACH (implemented Dec 27, 2025):
+// Set correct alias at FROM clause (see lines 11780-11810):
+//   ```rust
+//   final_from = Some(FromTable::new(Some(ViewTableRef {
+//       name: cte.cte_name.clone(),           // vlp_multi_type_u_x
+//       alias: Some(cypher_end_alias.clone()), // x (Cypher alias!)
+//       use_final: false,
+//   })));
+//   ```
+// Generated SQL: `FROM vlp_multi_type_u_x AS x`
+// Then naturally:
+//   - x.end_type → CTE column (direct access)
+//   - x.name → property (SQL generator extracts from JSON)
+//   - No rewriting needed - aliases match naturally!
+//
+// LESSON: Set it right at the source, not through multi-pass rewriting.
+// Git history preserves the complex rewriting implementation for reference.
+// ============================================================================
 
 /// Recursively rewrite RenderExpr to use VLP table aliases
 fn rewrite_render_expr_for_vlp(expr: &mut RenderExpr, mappings: &HashMap<String, String>) {
@@ -11680,6 +11747,29 @@ impl RenderPlanBuilder for LogicalPlan {
             let filtered_joins_count = extracted_joins.len();
             extracted_joins.clear();
             log::info!("🎯 Multi-type VLP: Cleared {} extracted joins (not needed for multi-type VLP)", filtered_joins_count);
+            
+            // 🔧 CRITICAL FIX: Set FROM to use CTE with Cypher alias
+            // This is THE ROOT CAUSE FIX for all alias mapping issues!
+            //
+            // Instead of complex rewriting logic, set the correct alias at the source:
+            //   FROM vlp_multi_type_u_x AS x  (CTE name AS Cypher end alias)
+            //
+            // Then everything just works naturally:
+            //   - x.end_type → CTE column (direct access)
+            //   - x.name → property (SQL generator extracts from end_properties JSON)
+            //
+            if let Some(cte) = vlp_cte {
+                if let Some(cypher_end_alias) = &cte.vlp_cypher_end_alias {
+                    log::info!("🎯 Multi-type VLP: Setting FROM to CTE '{}' AS '{}'", 
+                              cte.cte_name, cypher_end_alias);
+                    final_from = Some(FromTable::new(Some(ViewTableRef {
+                        source: std::sync::Arc::new(LogicalPlan::Empty),
+                        name: cte.cte_name.clone(),
+                        alias: Some(cypher_end_alias.clone()),  // ✨ Use Cypher alias, not CTE name!
+                        use_final: false,
+                    })));
+                }
+            }
         } else if has_vlp_cte && vlp_aliases.is_some() {
             let (start_alias, end_alias) = vlp_aliases.unwrap();
             log::debug!("🎯 ENTERING VLP ENDPOINT JOIN CREATION BLOCK");
@@ -12355,26 +12445,54 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         });
 
-        // 🔧 CRITICAL FIX: Apply VLP alias rewriting for ALL RenderPlans, not just Union branches
-        // For multi-type VLP, rewrite SELECT items to use CTE columns directly
-        // CTE exports: end_type, end_id, end_properties (JSON)
-        // Instead of: SELECT x.name, x.email → SELECT end_type, end_id, end_properties
+        // 🔧 CRITICAL FIX: For multi-type VLP, check if SELECT items already reference CTE columns
+        // If label(x) or other functions are used, they're already mapped to CTE columns (e.g., end_type)
+        // Only rewrite to default CTE columns (end_type, end_id, end_properties) if needed
         if is_multi_type_vlp {
-            log::info!("🎯 Multi-type VLP: Rewriting SELECT items to use CTE columns");
-            final_select_items = vec![
-                SelectItem {
-                    expression: RenderExpr::Raw("end_type".to_string()),
-                    col_alias: Some(ColumnAlias("end_type".to_string())),
-                },
-                SelectItem {
-                    expression: RenderExpr::Raw("end_id".to_string()),
-                    col_alias: Some(ColumnAlias("end_id".to_string())),
-                },
-                SelectItem {
-                    expression: RenderExpr::Raw("end_properties".to_string()),
-                    col_alias: Some(ColumnAlias("end_properties".to_string())),
-                },
-            ];
+            log::info!("🎯 Multi-type VLP: Checking if SELECT items need rewriting");
+            
+            // Check if any SELECT item already references CTE columns (end_type, end_id, end_properties)
+            // This happens when label(x) → PropertyAccessExp(x.end_type) mapping occurred in projection_tagging.rs
+            let has_explicit_cte_columns = final_select_items.iter().any(|item| {
+                use crate::render_plan::render_expr::RenderExpr;
+                match &item.expression {
+                    RenderExpr::Raw(s) => {
+                        s.contains("end_type") || s.contains("end_id") || s.contains("end_properties")
+                    }
+                    RenderExpr::PropertyAccessExp(prop_access) => {
+                        // Check if the column being accessed is one of the CTE columns
+                        use crate::graph_catalog::expression_parser::PropertyValue;
+                        match &prop_access.column {
+                            PropertyValue::Column(col_name) => {
+                                col_name == "end_type" || col_name == "end_id" || col_name == "end_properties"
+                            }
+                            _ => false,
+                        }
+                    }
+                    _ => false,
+                }
+            });
+            
+            if !has_explicit_cte_columns {
+                log::info!("🎯 Multi-type VLP: No explicit CTE columns found, using default columns");
+                // Default: return full node structure (end_type, end_id, end_properties)
+                final_select_items = vec![
+                    SelectItem {
+                        expression: RenderExpr::Raw("end_type".to_string()),
+                        col_alias: Some(ColumnAlias("end_type".to_string())),
+                    },
+                    SelectItem {
+                        expression: RenderExpr::Raw("end_id".to_string()),
+                        col_alias: Some(ColumnAlias("end_id".to_string())),
+                    },
+                    SelectItem {
+                        expression: RenderExpr::Raw("end_properties".to_string()),
+                        col_alias: Some(ColumnAlias("end_properties".to_string())),
+                    },
+                ];
+            } else {
+                log::info!("🎯 Multi-type VLP: Explicit CTE columns found, keeping SELECT items as-is");
+            }
         }
         
         // This fixes the path function alias bug where length(p) generates t.hop_count but t doesn't exist

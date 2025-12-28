@@ -55,7 +55,7 @@ mod tests {
                 match &create_clause.path_patterns[0] {
                     PathPattern::Node(node) => {
                         assert_eq!(node.name, None);
-                        assert_eq!(node.label, None);
+                        assert_eq!(node.labels, None);
                         assert_eq!(node.properties, None);
                     }
                     other => panic!("Expected Node variant, got: {:?}", other),
@@ -78,7 +78,7 @@ mod tests {
                     match pattern {
                         PathPattern::Node(node) => {
                             assert_eq!(node.name, None);
-                            assert_eq!(node.label, None);
+                            assert_eq!(node.labels, None);
                             assert_eq!(node.properties, None);
                         }
                         other => panic!("Expected Node variant, got: {:?}", other),

@@ -73,6 +73,7 @@ fn setup_test_schema() {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         },
     );
 
@@ -105,6 +106,7 @@ fn setup_test_schema() {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         },
     );
 
@@ -137,6 +139,7 @@ fn setup_test_schema() {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         },
     );
 
@@ -169,6 +172,7 @@ fn setup_test_schema() {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         },
     );
 
@@ -201,6 +205,7 @@ fn setup_test_schema() {
             from_label_values: None,
             to_label_values: None,
             is_fk_edge: false,
+            constraints: None,
         },
     );
 

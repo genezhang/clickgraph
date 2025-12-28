@@ -13,16 +13,26 @@ pub struct CategorizedFilters {
 }
 
 /// Categorize filters based on which nodes/relationships they reference
+/// 
+/// This function properly separates WHERE clause predicates into:
+/// - start_node_filters: `WHERE a.prop = value` (start node)
+/// - end_node_filters: `WHERE b.prop = value` (end node)
+/// - relationship_filters: `WHERE r.prop = value` (relationship)
+/// - path_function_filters: `WHERE length(p) < 5` (path functions)
+/// 
+/// ✅ HOLISTIC FIX: `rel_alias` is now actually used to categorize relationship filters.
+/// Previously this parameter was ignored, causing relationship filters to be lost.
 pub fn categorize_filters(
     filter_expr: Option<&RenderExpr>,
     start_cypher_alias: &str,
     end_cypher_alias: &str,
-    _rel_alias: &str, // For future relationship filtering
+    rel_alias: &str, // ✅ FIXED: Now actually used for relationship filtering
 ) -> CategorizedFilters {
     log::debug!(
-        "Categorizing filters for start alias '{}' and end alias '{}'",
+        "Categorizing filters for start alias '{}', end alias '{}', rel alias '{}'",
         start_cypher_alias,
-        end_cypher_alias
+        end_cypher_alias,
+        rel_alias
     );
 
     let mut result = CategorizedFilters {
@@ -99,23 +109,32 @@ pub fn categorize_filters(
     for predicate in predicates {
         let refs_start = references_alias(&predicate, start_cypher_alias, "start_node");
         let refs_end = references_alias(&predicate, end_cypher_alias, "end_node");
+        // ✅ HOLISTIC FIX: Actually check if filter references relationship alias
+        let refs_rel = if !rel_alias.is_empty() {
+            references_alias(&predicate, rel_alias, "rel")
+        } else {
+            false
+        };
         let has_path_fn = contains_path_function(&predicate);
 
         crate::debug_println!("DEBUG: Categorizing predicate: {:?}", predicate);
-        println!(
-            "DEBUG: refs_start (alias '{}'): {}",
-            start_cypher_alias, refs_start
+        log::debug!(
+            "Categorize predicate - refs_start (alias '{}'): {}, refs_end (alias '{}'): {}, refs_rel (alias '{}'): {}, has_path_fn: {}",
+            start_cypher_alias, refs_start,
+            end_cypher_alias, refs_end,
+            rel_alias, refs_rel,
+            has_path_fn
         );
-        println!(
-            "DEBUG: refs_end (alias '{}'): {}",
-            end_cypher_alias, refs_end
-        );
-        crate::debug_println!("DEBUG: has_path_fn: {}", has_path_fn);
 
         if has_path_fn {
             // Path function filters (e.g., WHERE length(p) <= 3) go in path function filters
             crate::debug_println!("DEBUG: Going to path_fn_filters");
             path_fn_filters.push(predicate);
+        } else if refs_rel {
+            // ✅ HOLISTIC FIX: Relationship filters go to rel_filters (e.g., WHERE r.weight > 5)
+            crate::debug_println!("DEBUG: Going to rel_filters (references relationship alias)");
+            log::debug!("  -> relationship_filters (refs rel alias '{}')", rel_alias);
+            rel_filters.push(predicate);
         } else if refs_start && refs_end {
             // Filter references both nodes - can't categorize simply
             // For now, treat as start filter (will be in base case)
@@ -128,8 +147,10 @@ pub fn categorize_filters(
             crate::debug_println!("DEBUG: Going to end_filters");
             end_filters.push(predicate);
         } else {
-            // Doesn't reference nodes - might be relationship filter or constant
-            crate::debug_println!("DEBUG: Going to rel_filters");
+            // Doesn't reference any known alias - might be a constant or unrelated
+            // ✅ HOLISTIC FIX: Previously we put uncategorized filters here, which was wrong
+            crate::debug_println!("DEBUG: Uncategorized predicate (no alias match), treating as rel filter");
+            log::warn!("Filter predicate doesn't match any known alias: {:?}", predicate);
             rel_filters.push(predicate);
         }
     }

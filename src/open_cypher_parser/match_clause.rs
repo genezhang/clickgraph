@@ -86,7 +86,7 @@ mod tests {
                         // Expected empty node: no name, no label, no properties.
                         let expected = NodePattern {
                             name: None,
-                            label: None,
+                            labels: None,
                             properties: None,
                         };
                         assert_eq!(node, &expected);
@@ -113,7 +113,7 @@ mod tests {
                         (_, PathPattern::Node(node)) => {
                             let expected = NodePattern {
                                 name: None,
-                                label: None,
+                                labels: None,
                                 properties: None,
                             };
                             assert_eq!(node, &expected);

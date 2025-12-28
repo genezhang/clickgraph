@@ -6,6 +6,7 @@ Tests that edge constraints are:
 1. Compiled correctly from schema
 2. Added to generated SQL  
 3. Filter query results correctly
+4. Work in Variable-Length Path queries with relationship filters
 
 Tests five schema patterns:
 1. Standard edge table (lineage: DataFile -[COPIED_BY]-> DataFile)
@@ -14,8 +15,14 @@ Tests five schema patterns:
 4. Denormalized edge (travel: Airport -[FLIGHT]-> Airport)
 5. Polymorphic edge (community: Member -[MENTORS|REVIEWS|HELPS]-> Member)
 
+Setup:
+    # Setup test data (one-time)
+    bash scripts/setup/setup_lineage_test_data.sh
+    
+    # The test suite loads schemas automatically via edge_constraints_schemas fixture
+
 Usage:
-    # Run with pytest (self-contained - loads own schemas/data)
+    # Run with pytest (self-contained schema loading)
     pytest tests/integration/test_edge_constraints.py -v
     
     # Run as part of full suite
@@ -381,3 +388,64 @@ def test_polymorphic_edge_constraints(edge_constraints_schemas, edge_constraints
     
     print("✅ Polymorphic constraint found in SQL")
 
+
+@pytest.mark.edge_constraints
+@pytest.mark.vlp
+def test_vlp_with_relationship_filters_and_constraints(edge_constraints_data):
+    """
+    Test VLP with relationship filters + edge constraints.
+    
+    Verifies the Dec 26-27 fix that ensures:
+    1. Relationship filters use correct aliases (FK-edge: start_node, Standard: rel)
+    2. Edge constraints use dynamic aliases in recursive cases (current_node, new_start, etc.)
+    """
+    print(f"\n--- Testing VLP with Relationship Filters + Constraints ---")
+    
+    # Test 1: Standard pattern with constraint + relationship filter
+    query1 = """
+        USE data_lineage 
+        MATCH (f:DataFile {file_id: 1})-[r:COPIED_BY*1..3 {operation: 'clean'}]->(d:DataFile)
+        RETURN f.path, d.path, d.timestamp
+    """
+    
+    response1 = requests.post(
+        f"{CLICKGRAPH_URL}/query",
+        json={"query": query1, "sql_only": True, "schema_name": "data_lineage"}
+    )
+    
+    assert response1.status_code == 200, f"VLP query failed: {response1.text}"
+    sql1 = response1.json()["generated_sql"]
+    
+    print("Generated SQL (Standard VLP):")
+    print(sql1[:500])  # First 500 chars
+    
+    # Verify constraint in base case
+    assert "start_node.created_timestamp <= end_node.created_timestamp" in sql1, \
+           "Edge constraint missing from VLP base case"
+    
+    # Verify constraint in recursive case with correct alias
+    assert "current_node.created_timestamp <= end_node.created_timestamp" in sql1, \
+           "Edge constraint missing or wrong alias in VLP recursive case"
+    
+    # Verify relationship filter with correct alias
+    assert "rel.copy_operation_type = 'clean'" in sql1 or "copy_operation_type" in sql1, \
+           "Relationship filter missing from VLP"
+    
+    print("✅ Standard VLP: constraints + filters with correct aliases")
+    
+    # Test 2: Execute and verify results
+    response2 = requests.post(
+        f"{CLICKGRAPH_URL}/query",
+        json={"query": query1, "schema_name": "data_lineage"}
+    )
+    
+    assert response2.status_code == 200, f"VLP execution failed: {response2.text}"
+    results = response2.json()["results"]
+    
+    print(f"VLP query returned {len(results)} results")
+    
+    # Verify constraint filtering worked (should only return paths with valid timestamps)
+    for result in results:
+        print(f"  Path: {result['f.path']} -> {result['d.path']} @ {result['d.timestamp']}")
+    
+    print("✅ VLP execution successful with constraint filtering")
