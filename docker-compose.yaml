@@ -19,29 +19,7 @@ services:
       retries: 5
       start_period: 30s
     volumes:
-      - clickhouse_data:/var/lib/clickhouse  # Named volume - Windows MergeTree fix
-
-  neo4j:
-    image: neo4j:5.15-community
-    container_name: neo4j
-    environment:
-      NEO4J_AUTH: neo4j/test_password
-      NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_apoc_export_file_enabled: "true"
-      NEO4J_apoc_import_file_enabled: "true"
-      NEO4J_apoc_import_file_use__neo4j__config: "true"
-    ports:
-      - "7474:7474"  # HTTP
-      - "7687:7687"  # Bolt
-    volumes:
-      - neo4j_data:/data
-      - neo4j_logs:/logs
-    healthcheck:
-      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "test_password", "RETURN 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      - clickhouse_data:var/lib/clickhouse  # Named volume - Windows MergeTree fix
 
   clickgraph:
     image: genezhang/clickgraph:latest
@@ -61,10 +39,9 @@ services:
       GRAPH_CONFIG_PATH: "/app/test_integration.yaml"
     ports:
       - "8080:8080"
+      - "7687:7687"
     volumes:
       - ./tests/integration/test_integration.yaml:/app/test_integration.yaml:ro
 
 volumes:
   clickhouse_data:
-  neo4j_data:
-  neo4j_logs:
