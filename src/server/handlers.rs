@@ -185,6 +185,7 @@ pub async fn query_handler(
         payload.schema_name.as_deref().unwrap_or("default")
     };
 
+
     log::debug!("Using schema: {} ({})", schema_name, 
         if payload.schema_name.is_none() && !clean_query.to_uppercase().contains("USE ") {
             "explicit default - no USE clause"

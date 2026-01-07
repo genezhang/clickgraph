@@ -64,7 +64,7 @@ graph_schema:
     - type: AUTHORED
       database: brahmand
       table: posts_bench
-      from_id: user_id
+      from_id: author_id
       to_id: post_id
       from_node: User
       to_node: Post

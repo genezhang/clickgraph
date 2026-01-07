@@ -30,6 +30,11 @@ thread_local! {
     /// Example: "cnt_friend" → { "id" → "friend_id", "firstName" → "friend_firstName" }
     /// Populated from RenderPlan CTEs during SQL generation
     static CTE_PROPERTY_MAPPINGS: RefCell<HashMap<String, HashMap<String, String>>> = RefCell::new(HashMap::new());
+    
+    /// Thread-local set of table aliases that are multi-type VLP endpoints
+    /// Example: "x" for query (u)-[:FOLLOWS|AUTHORED*1..2]->(x)
+    /// Properties on these aliases need JSON extraction from end_properties column
+    static MULTI_TYPE_VLP_ALIASES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
 }
 
 /// Check if an expression contains a string literal (recursively for nested + operations)
@@ -134,6 +139,30 @@ fn populate_cte_property_mappings(plan: &RenderPlan) {
                 if !property_map.is_empty() {
                     log::debug!("🗺️  CTE '{}' property mapping: {:?}", cte.cte_name, property_map);
                     map.insert(cte.cte_name.clone(), property_map.clone());
+                }
+            }
+        }
+        
+        // Clear multi-type VLP aliases from previous queries (thread-local state)
+        MULTI_TYPE_VLP_ALIASES.with(|mvla| {
+            mvla.borrow_mut().clear();
+        });
+        
+        // Track multi-type VLP aliases for JSON property extraction
+        // Multi-type VLP CTEs have names like "vlp_multi_type_u_x"
+        // and their end_properties column contains JSON with node properties
+        for cte in &plan.ctes.0 {
+            if cte.cte_name.starts_with("vlp_multi_type_") {
+                // Extract Cypher alias from CTE metadata if available
+                if let Some(ref cypher_end_alias) = cte.vlp_cypher_end_alias {
+                    MULTI_TYPE_VLP_ALIASES.with(|mvla| {
+                        mvla.borrow_mut().insert(
+                            cypher_end_alias.clone(),
+                            cte.cte_name.clone()
+                        );
+                    });
+                    log::info!("🎯 Tracked multi-type VLP alias: '{}' → CTE '{}'", 
+                              cypher_end_alias, cte.cte_name);
                 }
             }
         }
@@ -1081,11 +1110,48 @@ impl RenderExpr {
                 table_alias,
                 column,
             }) => {
+                let col_name = column.raw();
+                log::info!("🔍 RenderExpr::PropertyAccessExp: {}.{}", table_alias.0, col_name);
+                
+                // Special case: Multi-type VLP properties stored in JSON
+                // Check if this table alias is a multi-type VLP endpoint
+                let multi_type_json_result = MULTI_TYPE_VLP_ALIASES.with(|mvla| {
+                    let aliases = mvla.borrow();
+                    log::info!("🔍 Checking MULTI_TYPE_VLP_ALIASES for '{}' (map has {} entries)", 
+                              table_alias.0, aliases.len());
+                    for (k, v) in aliases.iter() {
+                        log::info!("  - '{}' → '{}'", k, v);
+                    }
+                    
+                    if aliases.contains_key(&table_alias.0) {
+                        log::info!("🎯 Found '{}' in MULTI_TYPE_VLP_ALIASES!", table_alias.0);
+                        // Properties like end_type, end_id are direct CTE columns
+                        if matches!(col_name, "end_type" | "end_id" | "start_id" | "end_properties") {
+                            log::info!("🎯 Multi-type VLP CTE column: {}.{}", table_alias.0, col_name);
+                            return Some(format!("{}.{}", table_alias.0, col_name));
+                        }
+                        
+                        // Regular properties need JSON extraction from end_properties
+                        log::info!("🎯 Multi-type VLP JSON extraction: {}.{} → JSON_VALUE({}.end_properties, '$.{}')",
+                                  table_alias.0, col_name, table_alias.0, col_name);
+                        return Some(format!(
+                            "JSON_VALUE({}.end_properties, '$.{}')",
+                            table_alias.0, col_name
+                        ));
+                    } else {
+                        log::info!("❌ '{}' NOT found in MULTI_TYPE_VLP_ALIASES", table_alias.0);
+                    }
+                    None
+                });
+                
+                if let Some(sql) = multi_type_json_result {
+                    return sql;
+                }
+                
                 // Check if table_alias refers to a CTE and needs property mapping
                 let cte_mapped_result = CTE_PROPERTY_MAPPINGS.with(|cpm| {
                     let map = cpm.borrow();
                     if let Some(property_map) = map.get(&table_alias.0) {
-                        let col_name = column.raw();
                         if let Some(cte_col) = property_map.get(col_name) {
                             log::debug!("🔧 CTE property mapping: {}.{} → {}", table_alias.0, col_name, cte_col);
                             return Some(format!("{}.{}", table_alias.0, cte_col));

@@ -156,9 +156,11 @@ impl TypeInference {
                 //   FOLLOWS: User → User
                 //   AUTHORED: User → Post
                 //   Therefore: x can be User OR Post → infer x.labels = [User, Post]
+                // 
+                // NOTE: We include single-hop patterns (*1) because they can still have multiple
+                // relationship types, which means the end node can be of multiple types.
                 let inferred_multi_labels = if right_label.is_none() 
                     && rel.variable_length.is_some() 
-                    && rel.variable_length.as_ref().map_or(false, |vl| !vl.is_single_hop())
                     && edge_types.as_ref().map_or(false, |types| types.len() > 1) 
                 {
                     log::debug!(

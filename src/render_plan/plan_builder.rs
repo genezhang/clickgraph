@@ -559,6 +559,13 @@ fn extract_vlp_alias_mappings(ctes: &CteItems) -> HashMap<String, String> {
         log::info!("🔍 CTE[{}]: name={}, vlp_start={:?}, vlp_cypher_start={:?}", 
                    idx, cte.cte_name, cte.vlp_start_alias, cte.vlp_cypher_start_alias);
         
+        // Skip alias mappings for multi-type VLP CTEs - they use Cypher aliases directly
+        // and properties are extracted via JSON_VALUE() using the Cypher alias
+        if cte.cte_name.starts_with("vlp_multi_type_") {
+            log::info!("🔄 VLP: Skipping alias mapping for multi-type VLP CTE (uses Cypher alias directly)");
+            continue;
+        }
+        
         // Check if this is a VLP CTE with metadata
         if let (Some(cypher_start), Some(vlp_start)) = 
             (&cte.vlp_cypher_start_alias, &cte.vlp_start_alias) {
@@ -12451,6 +12458,12 @@ impl RenderPlanBuilder for LogicalPlan {
         if is_multi_type_vlp {
             log::info!("🎯 Multi-type VLP: Checking if SELECT items need rewriting");
             
+            // Check if SELECT has property access expressions (e.g., x.name, x.content)
+            // These should be kept as-is for JSON extraction during SQL generation
+            let has_property_access = final_select_items.iter().any(|item| {
+                matches!(item.expression, RenderExpr::PropertyAccessExp(_))
+            });
+            
             // Check if any SELECT item already references CTE columns (end_type, end_id, end_properties)
             // This happens when label(x) → PropertyAccessExp(x.end_type) mapping occurred in projection_tagging.rs
             let has_explicit_cte_columns = final_select_items.iter().any(|item| {
@@ -12473,8 +12486,11 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
             });
             
-            if !has_explicit_cte_columns {
-                log::info!("🎯 Multi-type VLP: No explicit CTE columns found, using default columns");
+            // Only use default columns if:
+            // 1. No explicit CTE columns AND
+            // 2. No property access expressions (meaning query is RETURN x, not RETURN x.name)
+            if !has_explicit_cte_columns && !has_property_access {
+                log::info!("🎯 Multi-type VLP: No explicit CTE columns or property access, using default columns");
                 // Default: return full node structure (end_type, end_id, end_properties)
                 final_select_items = vec![
                     SelectItem {

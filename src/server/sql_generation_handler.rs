@@ -50,7 +50,23 @@ pub async fn sql_generation_handler(
     }
 
     // Parse and validate schema name
-    let schema_name = payload.schema_name.as_deref().unwrap_or("default");
+    // First, do a quick parse to extract USE clause if present
+    let clean_query = payload.query.trim();
+    let schema_name = if clean_query.to_uppercase().starts_with("USE ") {
+        // Quick extraction of schema name from USE clause
+        match open_cypher_parser::parse_query(clean_query) {
+            Ok(ast) => {
+                if let Some(ref use_clause) = ast.use_clause {
+                    use_clause.database_name
+                } else {
+                    payload.schema_name.as_deref().unwrap_or("default")
+                }
+            }
+            Err(_) => payload.schema_name.as_deref().unwrap_or("default"),
+        }
+    } else {
+        payload.schema_name.as_deref().unwrap_or("default")
+    };
 
     // Check query cache first
     let cache_key = QueryCacheKey::new(&payload.query, schema_name);

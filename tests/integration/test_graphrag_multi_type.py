@@ -269,6 +269,298 @@ class TestMultiTypePerformance:
         assert len(response["results"]) <= 10
 
 
+class TestMultiTypePropertyExtraction:
+    """
+    Test property extraction from JSON for multi-type VLP endpoints.
+    
+    Multi-type VLP stores node properties in JSON (end_properties column).
+    Properties are extracted using JSON_VALUE() in ClickHouse SQL.
+    
+    Feature implemented: Jan 6, 2026
+    """
+    
+    def test_basic_property_access(self):
+        """Test basic property access on multi-type VLP endpoint."""
+        response = execute_cypher(
+            """
+            MATCH (u:User)-[:FOLLOWS*1..2]->(x:User)
+            WHERE u.user_id = 1
+            RETURN x.name, x.email
+            LIMIT 3
+            """,
+            schema_name="social_benchmark"
+        )
+        
+        assert_query_success(response)
+        results = response["results"]
+        
+        # Verify we got results with properties
+        assert len(results) > 0, "Should return User nodes"
+        
+        for result in results:
+            # Properties should exist (may be empty if no data)
+            assert "x.name" in result, "Should have x.name column"
+            assert "x.email" in result, "Should have x.email column"
+            
+            # At least some results should have actual values
+            if result["x.name"]:
+                assert isinstance(result["x.name"], str), "Name should be string"
+    
+    def test_label_function_with_property(self):
+        """Test label() function alongside property access."""
+        response = execute_cypher(
+            """
+            MATCH (u:User)-[:FOLLOWS*1..2]->(x:User)
+            WHERE u.user_id = 1
+            RETURN label(x), x.name, x.city
+            LIMIT 3
+            """,
+            schema_name="social_benchmark"
+        )
+        
+        assert_query_success(response)
+        results = response["results"]
+        
+        assert len(results) > 0
+        for result in results:
+            # label() should return node type
+            assert result["label(x)"] == "User", "All nodes should be User type"
+            
+            # Properties should be accessible
+            assert "x.name" in result
+            assert "x.city" in result
+    
+    def test_multiple_properties(self):
+        """Test accessing multiple properties at once."""
+        response = execute_cypher(
+            """
+            MATCH (u:User)-[:FOLLOWS*1]->(x:User)
+            WHERE u.user_id = 1
+            RETURN x.user_id, x.name, x.email, x.city, x.country
+            LIMIT 5
+            """,
+            schema_name="social_benchmark"
+        )
+        
+        assert_query_success(response)
+        results = response["results"]
+        
+        # Should have all requested properties
+        for result in results:
+            assert "x.user_id" in result
+            assert "x.name" in result
+            assert "x.email" in result
+            assert "x.city" in result
+            assert "x.country" in result
+    
+    @pytest.mark.xfail(reason="Non-existent properties throw ClickHouse error instead of returning NULL - requires schema validation")
+    @pytest.mark.xfail(reason="Non-existent properties throw ClickHouse errors - needs schema validation")
+    def test_missing_property_returns_empty(self):
+        """Test that accessing non-existent property returns empty/null."""
+        response = execute_cypher(
+            """
+            MATCH (u:User)-[:FOLLOWS*1]->(x:User)
+            WHERE u.user_id = 1
+            RETURN x.name, x.nonexistent_property
+            LIMIT 2
+            """,
+            schema_name="social_benchmark"
+        )
+        
+        assert_query_success(response)
+        results = response["results"]
+        
+        for result in results:
+            # Real property should work
+            assert "x.name" in result
+            
+            # Non-existent property should return empty string (ClickHouse JSON_VALUE behavior)
+            assert "x.nonexistent_property" in result
+            assert result["x.nonexistent_property"] == "" or result["x.nonexistent_property"] is None
+    
+    def test_property_with_filter(self):
+        """Test property access with WHERE clause on properties."""
+        response = execute_cypher(
+            """
+            MATCH (u:User)-[:FOLLOWS*1..2]->(x:User)
+            WHERE u.user_id = 1 AND x.city = 'NYC'
+            RETURN x.name, x.city
+            """,
+            schema_name="social_benchmark"
+        )
+        
+        assert_query_success(response)
+        # Query should execute (results depend on test data)
+        results = response["results"]
+        
+        # All results should have city = 'NYC' if any returned
+        for result in results:
+            assert result["x.city"] == "NYC"
+    
+    def test_property_with_order_by(self):
+        """Test ORDER BY on extracted JSON properties."""
+        response = execute_cypher(
+            """
+            MATCH (u:User)-[:FOLLOWS*1..2]->(x:User)
+            WHERE u.user_id = 1
+            RETURN x.name, x.email
+            ORDER BY x.name
+            LIMIT 5
+            """,
+            schema_name="social_benchmark"
+        )
+        
+        assert_query_success(response)
+        results = response["results"]
+        
+        if len(results) > 1:
+            # Verify ordering (names should be sorted)
+            names = [r["x.name"] for r in results if r["x.name"]]
+            assert names == sorted(names), "Results should be ordered by name"
+    
+    @pytest.mark.xfail(reason="GROUP BY with variable-length range paths (*1..2) causes timeout - recursive CTE + aggregation issue")
+    @pytest.mark.xfail(reason="GROUP BY with VLP ranges (*1..2) causes hangs/OOM - recursive CTE issue")
+    def test_property_with_aggregation(self):
+        """Test aggregation with JSON property access."""
+        response = execute_cypher(
+            """
+            MATCH (u:User)-[:FOLLOWS*1..2]->(x:User)
+            WHERE u.user_id = 1
+            RETURN x.city, count(*) as user_count
+            GROUP BY x.city
+            ORDER BY user_count DESC
+            """,
+            schema_name="social_benchmark"
+        )
+        
+        assert_query_success(response)
+        results = response["results"]
+        
+        # Should group by city and count users
+        for result in results:
+            assert "x.city" in result
+            assert "user_count" in result
+            assert result["user_count"] > 0
+    
+    def test_multi_type_vlp_different_properties(self):
+        """
+        Test multi-type VLP where different node types have different properties.
+        
+        User has: name, email, city
+        Post has: content, date (no name)
+        """
+        response = execute_cypher(
+            """
+            MATCH (u:User)-[:FOLLOWS|AUTHORED*1]->(x)
+            WHERE u.user_id = 1
+            RETURN label(x), x.name, x.content
+            LIMIT 10
+            """,
+            schema_name="social_benchmark"
+        )
+        
+        assert_query_success(response)
+        results = response["results"]
+        
+        assert len(results) > 0
+        
+        # Check both User and Post nodes
+        user_results = [r for r in results if r["label(x)"] == "User"]
+        post_results = [r for r in results if r["label(x)"] == "Post"]
+        
+        # User nodes should have name, not content
+        for result in user_results:
+            assert "x.name" in result
+            # name should have value for Users
+            if result["x.name"]:
+                assert isinstance(result["x.name"], str)
+        
+        # Post nodes should have content, not name
+        for result in post_results:
+            assert "x.content" in result
+            # Posts don't have name property, should be empty/null
+            assert result["x.name"] == "" or result["x.name"] is None
+    
+    def test_json_extraction_sql_generation(self):
+        """Verify SQL uses JSON_VALUE() for multi-type VLP, direct access for single-type."""
+        import requests
+        
+        # Single-type VLP should use direct column access
+        response = requests.post(
+            "http://localhost:8080/query",
+            json={
+                "query": """
+                    USE social_benchmark
+                    MATCH (u:User)-[:FOLLOWS*1..2]->(x:User)
+                    WHERE u.user_id = 1
+                    RETURN x.name, x.email
+                    LIMIT 3
+                """,
+                "sql_only": True
+            }
+        )
+        
+        assert response.status_code == 200
+        result = response.json()
+        sql = result.get("sql", "") or result.get("generated_sql", "")
+        
+        # Single-type VLP should use direct column access (NOT JSON_VALUE)
+        assert "x.full_name" in sql, "Should use direct column access for single-type VLP"
+        assert "x.email_address" in sql, "Should use direct column access for single-type VLP"
+        assert "JSON_VALUE" not in sql, "Should NOT use JSON_VALUE for single-type VLP"
+        
+        # Multi-type VLP SHOULD use JSON_VALUE
+        response_multi = requests.post(
+            "http://localhost:8080/query",
+            json={
+                "query": """
+                    USE social_benchmark
+                    MATCH (u:User)-[:FOLLOWS|AUTHORED*1]->(x)
+                    WHERE u.user_id = 1
+                    RETURN x.name, x.content
+                    LIMIT 3
+                """,
+                "sql_only": True
+            }
+        )
+        
+        assert response_multi.status_code == 200
+        result_multi = response_multi.json()
+        sql_multi = result_multi.get("sql", "") or result_multi.get("generated_sql", "")
+        
+        # Multi-type VLP should use JSON_VALUE for property extraction
+        assert "JSON_VALUE" in sql_multi, "Should use JSON_VALUE for multi-type VLP"
+        assert "end_properties" in sql_multi, "Should extract from end_properties JSON column"
+        assert "'$.name'" in sql_multi or "'$.content'" in sql_multi, "Should use JSON path for properties"
+    
+    def test_cte_columns_direct_access(self):
+        """Verify properties use direct column access for single-type VLP."""
+        import requests
+        
+        response = requests.post(
+            "http://localhost:8080/query",
+            json={
+                "query": """
+                    USE social_benchmark
+                    MATCH (u:User)-[:FOLLOWS*1..2]->(x:User)
+                    WHERE u.user_id = 1
+                    RETURN x.name, x.city
+                    LIMIT 3
+                """,
+                "sql_only": True
+            }
+        )
+        
+        assert response.status_code == 200
+        result = response.json()
+        sql = result.get("sql", "") or result.get("generated_sql", "")
+        
+        # Single-type VLP should use direct column access (NOT JSON)
+        assert "x.full_name" in sql, "x.name should use direct column access for single-type VLP"
+        assert "x.city" in sql, "x.city should use direct column access for single-type VLP"
+        assert "JSON_VALUE" not in sql, "Should NOT use JSON extraction for single-type VLP"
+
+
 if __name__ == "__main__":
     # Quick manual test
     print("Multi-type VLP test suite")

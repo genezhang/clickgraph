@@ -441,6 +441,41 @@ impl ProjectionTagging {
                     table_ctx.is_relation()
                 );
 
+                // Check if this is a multi-type VLP node (has multiple labels OR is endpoint of multi-type VLP)
+                // For multi-type VLP, property extraction happens at runtime via JSON
+                // so we skip strict compile-time property resolution
+                //
+                // Two ways to detect multi-type VLP:
+                // 1. table_ctx already has multiple labels set by TypeInference
+                // 2. No label set yet, but this node is the endpoint of a GraphRel with multiple edge types
+                let is_multi_type_vlp = if let Some(labels) = table_ctx.get_labels() {
+                    // Case 1: Labels already set by TypeInference
+                    labels.len() > 1 && !table_ctx.is_relation()
+                } else {
+                    // Case 2: Check if this is endpoint of multi-type VLP GraphRel by traversing up from Projection
+                    // Need to find parent plan - projection_tagging is called from analyze_with_graph_schema
+                    // which passes current plan, not parent. For now, assume false.
+                    // TODO: Add parent plan parameter or traverse from root
+                    false
+                };
+
+                if is_multi_type_vlp {
+                    log::info!(
+                        "🎯 projection_tagging: Skipping property resolution for multi-type VLP node '{}' (labels: {:?})",
+                        property_access.table_alias.0,
+                        table_ctx.get_labels()
+                    );
+                    // For multi-type VLP, leave property as-is without validation
+                    // SQL generation will handle JSON extraction
+                    // Still need to add it to table_ctx projections
+                    let projection_item = ProjectionItem {
+                        expression: item.expression.clone(),
+                        col_alias: item.col_alias.clone(),
+                    };
+                    table_ctx.insert_projection(projection_item);
+                    return Ok(());
+                }
+
                 // Get label for property resolution
                 let label = table_ctx.get_label_opt().unwrap_or_default();
                 let is_relation = table_ctx.is_relation();

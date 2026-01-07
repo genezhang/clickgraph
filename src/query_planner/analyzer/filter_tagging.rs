@@ -392,6 +392,46 @@ impl FilterTagging {
         FilterTagging
     }
 
+    /// Check if an alias is the endpoint of a multi-type VLP pattern.
+    /// A multi-type VLP pattern has a GraphRel with variable_length and multiple labels (relationship types).
+    fn is_multi_type_vlp_endpoint(plan: &LogicalPlan, alias: &str) -> bool {
+        use crate::query_planner::logical_plan::LogicalPlan;
+        
+        match plan {
+            LogicalPlan::GraphRel(gr) => {
+                // Check if this GraphRel:
+                // 1. Has variable length pattern
+                // 2. Has multiple relationship types (labels)
+                // 3. The alias matches the right_connection (endpoint)
+                if gr.variable_length.is_some() {
+                    if let Some(labels) = &gr.labels {
+                        if labels.len() > 1 && gr.right_connection == alias {
+                            return true;
+                        }
+                    }
+                }
+                // Recursively check children
+                Self::is_multi_type_vlp_endpoint(gr.left.as_ref(), alias) ||
+                Self::is_multi_type_vlp_endpoint(gr.center.as_ref(), alias) ||
+                Self::is_multi_type_vlp_endpoint(gr.right.as_ref(), alias)
+            }
+            LogicalPlan::Filter(f) => Self::is_multi_type_vlp_endpoint(f.input.as_ref(), alias),
+            LogicalPlan::Projection(p) => Self::is_multi_type_vlp_endpoint(p.input.as_ref(), alias),
+            LogicalPlan::Limit(l) => Self::is_multi_type_vlp_endpoint(l.input.as_ref(), alias),
+            LogicalPlan::Skip(s) => Self::is_multi_type_vlp_endpoint(s.input.as_ref(), alias),
+            LogicalPlan::OrderBy(o) => Self::is_multi_type_vlp_endpoint(o.input.as_ref(), alias),
+            LogicalPlan::GraphNode(gn) => Self::is_multi_type_vlp_endpoint(gn.input.as_ref(), alias),
+            LogicalPlan::Union(u) => {
+                u.inputs.iter().any(|input| Self::is_multi_type_vlp_endpoint(input.as_ref(), alias))
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                Self::is_multi_type_vlp_endpoint(cp.left.as_ref(), alias) ||
+                Self::is_multi_type_vlp_endpoint(cp.right.as_ref(), alias)
+            }
+            _ => false,
+        }
+    }
+
     /// Analyze a Union branch with property mapping but WITHOUT filter extraction.
     /// This keeps Filter nodes in the tree because each Union branch is self-contained
     /// and should not share filter state through plan_ctx.
@@ -550,6 +590,34 @@ impl FilterTagging {
                     table_ctx.is_relation(),
                     table_ctx.get_label_opt()
                 );
+
+                // Check if this is a multi-type VLP node (has multiple labels OR is endpoint of multi-type VLP)
+                // For multi-type VLP, property extraction happens at runtime via JSON
+                // so we skip strict compile-time validation
+                //
+                // Two ways to detect multi-type VLP:
+                // 1. table_ctx already has multiple labels set by TypeInference
+                // 2. No label set yet, but this node is the endpoint of a GraphRel with multiple edge types
+                let is_multi_type_vlp = if let Some(labels) = table_ctx.get_labels() {
+                    // Case 1: Labels already set by TypeInference
+                    labels.len() > 1
+                } else if plan.is_some() {
+                    // Case 2: Check if this is endpoint of multi-type VLP GraphRel
+                    Self::is_multi_type_vlp_endpoint(plan.unwrap(), &property_access.table_alias.0)
+                } else {
+                    false
+                };
+
+                if is_multi_type_vlp {
+                    log::info!(
+                        "🎯 filter_tagging: Skipping property validation for multi-type VLP node '{}' (labels: {:?})",
+                        property_access.table_alias.0,
+                        table_ctx.get_labels()
+                    );
+                    // For multi-type VLP, return property as-is without validation
+                    // SQL generation will handle JSON extraction
+                    return Ok(LogicalExpr::PropertyAccessExp(property_access));
+                }
 
                 // Get the label for this table
                 let label = table_ctx.get_label_opt().ok_or_else(|| {

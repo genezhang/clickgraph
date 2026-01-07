@@ -222,6 +222,8 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             let rel_table = self.get_rel_table_with_db(&hop.rel_type)?;
             let (from_col, to_col) = self.get_rel_columns(&hop.rel_type)?;
             let start_id_col = self.get_node_id_column(&hop.from_node_type)?;
+            log::info!("🔍 Hop {}: rel_type={}, from_node={}, to_node={}, from_col={}, to_col={}, start_id_col={}", 
+                hop_num, hop.rel_type, hop.from_node_type, hop.to_node_type, from_col, to_col, start_id_col);
             
             // Get target node info
             let end_table = self.get_node_table_with_db(&hop.to_node_type)?;
@@ -364,22 +366,22 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             }
         }
         
-        // Serialize all properties as JSON string
+        // Serialize all properties as JSON string using map() for proper JSON object format
         if let Ok(node_schema) = self.schema.get_nodes_schemas().get(node_type).ok_or("Node not found") {
             if !node_schema.property_mappings.is_empty() {
-                // Build named tuple for JSON: (prop1 AS prop1, prop2 AS prop2, ...)
-                // ClickHouse's toJSONString() with named tuples preserves native types
-                let mut tuple_items = Vec::new();
+                // Build map: map('key1', toString(value1), 'key2', toString(value2), ...)
+                // ClickHouse's toJSONString(map(...)) creates proper JSON objects
+                let mut map_items = Vec::new();
                 for (cypher_prop, prop_value) in &node_schema.property_mappings {
                     let column_name = match prop_value {
                         crate::graph_catalog::expression_parser::PropertyValue::Column(col) => col.clone(),
                         _ => continue, // Skip non-column property mappings
                     };
-                    tuple_items.push(format!("{}.{} AS {}", node_alias, column_name, cypher_prop));
+                    map_items.push(format!("'{}', toString({}.{})", cypher_prop, node_alias, column_name));
                 }
                 
-                if !tuple_items.is_empty() {
-                    items.push(format!("toJSONString(({}) ) AS end_properties", tuple_items.join(", ")));
+                if !map_items.is_empty() {
+                    items.push(format!("toJSONString(map({})) AS end_properties", map_items.join(", ")));
                 } else {
                     items.push("'{}' AS end_properties".to_string());
                 }
