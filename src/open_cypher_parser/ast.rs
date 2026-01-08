@@ -539,6 +539,13 @@ pub enum Expression<'a> {
     /// Returns a list of projected values from matched patterns
     /// Example: [(user)-[:FOLLOWS]->(follower) WHERE follower.active | follower.name]
     PatternComprehension(PatternComprehension<'a>),
+    /// Array subscript: array[index]
+    /// Access element at specified index (1-based in Cypher)
+    /// Example: labels(n)[1], list[0], [1,2,3][2]
+    ArraySubscript {
+        array: Box<Expression<'a>>,
+        index: Box<Expression<'a>>,
+    },
 }
 
 /// Lambda expression for ClickHouse array functions

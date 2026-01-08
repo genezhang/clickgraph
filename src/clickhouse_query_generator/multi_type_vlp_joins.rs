@@ -306,7 +306,8 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         }
         
         // Generate SELECT clause with type discriminator and IDs for outer JOINs
-        let select_items = self.generate_select_items(&end_node_alias, &end_node_type, &start_alias_sql);
+        let hop_count = hops.len();
+        let select_items = self.generate_select_items(&end_node_alias, &end_node_type, &start_alias_sql, hop_count, &path.hops);
         
         // Assemble final SQL
         let mut sql = format!("SELECT {}\nFROM {}", 
@@ -328,7 +329,9 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
     /// - `end_id`: ID of the end node as String (handles single/composite IDs)
     /// - `start_id`: ID of the start node as String (handles single/composite IDs)
     /// - `end_properties`: JSON string containing all node properties
-    fn generate_select_items(&self, node_alias: &str, node_type: &str, start_alias_sql: &str) -> Vec<String> {
+    /// - `hop_count`: Number of hops in the path (for length(p) function)
+    /// - `path_relationships`: Array of relationship types (for relationships(p) function)
+    fn generate_select_items(&self, node_alias: &str, node_type: &str, start_alias_sql: &str, hop_count: usize, hops: &[crate::query_planner::analyzer::multi_type_vlp_expansion::PathHop]) -> Vec<String> {
         let mut items = Vec::new();
         
         // Add type discriminator column
@@ -390,6 +393,16 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 items.push("'{}' AS end_properties".to_string());
             }
         }
+        
+        // Add hop_count for length(p) function support
+        items.push(format!("{} AS hop_count", hop_count));
+        
+        // Add path_relationships for relationships(p) function support
+        // Generate array of relationship types: ['FOLLOWS', 'AUTHORED', ...]
+        let rel_types: Vec<String> = hops.iter()
+            .map(|hop| format!("'{}'", hop.rel_type))
+            .collect();
+        items.push(format!("[{}] AS path_relationships", rel_types.join(", ")));
         
         items
     }

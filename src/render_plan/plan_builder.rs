@@ -16,7 +16,8 @@ use super::errors::RenderBuildError;
 use super::expression_utils::{references_alias as expr_references_alias, rewrite_aliases};
 use super::filter_pipeline::{
     categorize_filters, clean_last_node_filters, rewrite_expr_for_mixed_denormalized_cte,
-    rewrite_expr_for_var_len_cte, rewrite_vlp_internal_to_cypher_alias,
+    rewrite_expr_for_var_len_cte, rewrite_labels_subscript_for_multi_type_vlp,
+    rewrite_vlp_internal_to_cypher_alias,
 };
 use super::render_expr::{
     AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess,
@@ -96,6 +97,33 @@ fn strip_database_prefix(table_name: &str) -> String {
         .rsplit_once('.')
         .map(|(_, table)| table.to_string())
         .unwrap_or_else(|| table_name.to_string())
+}
+
+/// Check if the plan contains a multi-type variable-length path that requires CTE generation.
+/// Multi-type VLP cannot use simple JOIN-based plans.
+fn has_multi_type_vlp(plan: &LogicalPlan, schema: &crate::graph_catalog::graph_schema::GraphSchema) -> bool {
+    use crate::query_planner::logical_plan::LogicalPlan;
+    
+    match plan {
+        LogicalPlan::GraphRel(graph_rel) => {
+            // Check if it's a VLP pattern
+            if graph_rel.variable_length.is_some() {
+                let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
+                // Use the same logic as CTE extraction
+                crate::render_plan::cte_extraction::should_use_join_expansion_public(graph_rel, &rel_types, schema)
+            } else {
+                false
+            }
+        }
+        LogicalPlan::Projection(proj) => has_multi_type_vlp(&proj.input, schema),
+        LogicalPlan::Filter(filter) => has_multi_type_vlp(&filter.input, schema),
+        LogicalPlan::GroupBy(gb) => has_multi_type_vlp(&gb.input, schema),
+        LogicalPlan::OrderBy(order) => has_multi_type_vlp(&order.input, schema),
+        LogicalPlan::Limit(limit) => has_multi_type_vlp(&limit.input, schema),
+        LogicalPlan::Skip(skip) => has_multi_type_vlp(&skip.input, schema),
+        LogicalPlan::GraphJoins(joins) => has_multi_type_vlp(&joins.input, schema),
+        _ => false,
+    }
 }
 
 /// Get the anchor alias from a logical plan (for OPTIONAL MATCH join ordering).
@@ -314,7 +342,7 @@ pub(crate) trait RenderPlanBuilder {
 
     fn extract_skip(&self) -> Option<i64>;
 
-    fn extract_union(&self) -> RenderPlanBuilderResult<Option<Union>>;
+    fn extract_union(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<Option<Union>>;
 
     /// Extract UNWIND clause as ARRAY JOIN items
     fn extract_array_join(&self) -> RenderPlanBuilderResult<Vec<super::ArrayJoin>>;
@@ -2146,6 +2174,12 @@ fn build_chained_with_match_cte_plan(
                                                     crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
                                                         // Use ID-only helper for efficient GROUP BY
                                                         expand_table_alias_to_group_by_id_only(&alias.0, plan_to_render, schema, &cte_schemas, &cte_references_for_rendering)
+                                                    }
+                                                    crate::query_planner::logical_expr::LogicalExpr::ArraySubscript { array, .. } => {
+                                                        // For array subscripts (e.g., labels(x)[1]), only GROUP BY the array part
+                                                        // ClickHouse can't GROUP BY an array element, only the array itself
+                                                        let expr_vec: Vec<RenderExpr> = (**array).clone().try_into().ok().into_iter().collect();
+                                                        expr_vec
                                                     }
                                                     _ => {
                                                         // Not a TableAlias, convert normally
@@ -6022,9 +6056,37 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
 
                     // Rewrite path function calls: length(p), nodes(p), relationships(p)
-                    // Use table alias "t" to reference CTE columns (for variable-length paths)
+                    // Determine table alias based on pattern:
+                    // - Multi-type VLP (vlp_multi_type_X_Y): Use Y as the table alias (Cypher end alias)
+                    // - Single-type VLP: Use "t" for backward compatibility
                     if let Some(path_var_name) = &path_var {
-                        expr = rewrite_path_functions_with_table(&expr, path_var_name, "t");
+                        // Default table alias for VLP CTEs
+                        let mut table_alias_for_path = "t";
+                        
+                        // Try to extract FROM table information to detect multi-type VLP
+                        // Multi-type VLP CTEs are named like "vlp_multi_type_u_x" where "x" is the end alias
+                        // We can infer the alias from the CTE name pattern
+                        if let LogicalPlan::Projection(proj) = &self {
+                            // Look for FROM information in the input plan
+                            // This is a simplified heuristic - check if path exists
+                            // For multi-type VLP, the path variable exists and pattern contains multiple types
+                            if let Some(ref graph_rel) = get_graph_rel_from_plan(&proj.input) {
+                                if let Some(ref labels) = graph_rel.labels {
+                                    // If multiple relationship types, this is multi-type
+                                    if labels.len() > 1 {
+                                        // Multi-type pattern: use the path variable name as alias
+                                        // In multi-type VLP, the FROM is "vlp_multi_type_X_Y AS Y"
+                                        // So the table alias matches the right side of the GraphRel
+                                        if let LogicalPlan::GraphNode(ref right_node) = graph_rel.right.as_ref() {
+                                            table_alias_for_path = &right_node.alias;
+                                            log::debug!("🎯 Multi-type VLP detected: using end alias '{}' for path functions", table_alias_for_path);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        expr = rewrite_path_functions_with_table(&expr, path_var_name, table_alias_for_path);
                     }
 
                     // For fixed multi-hop patterns (no variable length), rewrite path functions
@@ -8619,12 +8681,7 @@ impl RenderPlanBuilder for LogicalPlan {
         }
     }
 
-    fn extract_union(&self) -> RenderPlanBuilderResult<Option<Union>> {
-        use crate::graph_catalog::graph_schema::GraphSchema;
-        use std::collections::HashMap;
-        let empty_schema =
-            GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new());
-
+    fn extract_union(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<Option<Union>> {
         let union_opt = match &self {
             LogicalPlan::Union(union) => {
                 log::info!("🔍 extract_union: Processing Union with {} branches", union.inputs.len());
@@ -8632,7 +8689,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 let mut render_plans: Vec<RenderPlan> = union
                     .inputs
                     .iter()
-                    .map(|input| input.to_render_plan(&empty_schema))
+                    .map(|input| input.to_render_plan(schema))
                     .collect::<Result<Vec<RenderPlan>, RenderBuildError>>()?;
                 
                 // CRITICAL FIX: Rewrite SELECT aliases for VLP Union branches
@@ -10985,20 +11042,27 @@ impl RenderPlanBuilder for LogicalPlan {
         // NEW ARCHITECTURE: Prioritize JOINs over CTEs
         // Only use CTEs for variable-length paths and complex cases
         // Try to build a simple JOIN-based plan first
-        crate::debug_println!("DEBUG: Trying try_build_join_based_plan");
-        log::info!("🚀🚀🚀 Trying try_build_join_based_plan for query");
-        match transformed_plan.try_build_join_based_plan(schema) {
-            Ok(plan) => {
-                crate::debug_println!("DEBUG: try_build_join_based_plan succeeded");
-                log::info!("✅ try_build_join_based_plan SUCCEEDED - VLP endpoint JOIN code below will NOT run!");
-                return Ok(plan);
-            }
-            Err(e) => {
-                crate::debug_println!(
-                    "DEBUG: try_build_join_based_plan failed: {:?}, falling back to CTE logic",
-                    e
-                );
-                log::info!("❌ try_build_join_based_plan FAILED: {:?}, falling back to CTE logic", e);
+        
+        // ⚠️ EXCEPTION: Skip JOIN-based plan for multi-type VLP
+        // Multi-type VLP requires CTE with UNION ALL, cannot use simple JOINs
+        if has_multi_type_vlp(&transformed_plan, schema) {
+            log::info!("🎯 Detected multi-type VLP - skipping try_build_join_based_plan, using CTE logic");
+        } else {
+            crate::debug_println!("DEBUG: Trying try_build_join_based_plan");
+            log::info!("🚀🚀🚀 Trying try_build_join_based_plan for query");
+            match transformed_plan.try_build_join_based_plan(schema) {
+                Ok(plan) => {
+                    crate::debug_println!("DEBUG: try_build_join_based_plan succeeded");
+                    log::info!("✅ try_build_join_based_plan SUCCEEDED - VLP endpoint JOIN code below will NOT run!");
+                    return Ok(plan);
+                }
+                Err(e) => {
+                    crate::debug_println!(
+                        "DEBUG: try_build_join_based_plan failed: {:?}, falling back to CTE logic",
+                        e
+                    );
+                    log::info!("❌ try_build_join_based_plan FAILED: {:?}, falling back to CTE logic", e);
+                }
             }
         }
 
@@ -11077,6 +11141,9 @@ impl RenderPlanBuilder for LogicalPlan {
             extracted_ctes =
                 transformed_plan.extract_ctes_with_context(last_node_alias, &mut context, schema)?;
             println!("DEBUG: Extracted {} CTEs", extracted_ctes.len());
+            for (i, cte) in extracted_ctes.iter().enumerate() {
+                println!("  DEBUG CTE[{}]: {}", i, cte.cte_name);
+            }
 
             // Check if we have a variable-length CTE (it will be a recursive RawSql CTE)
             let has_variable_length_cte = extracted_ctes.iter().any(|cte| {
@@ -11192,6 +11259,7 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         } else {
             println!("DEBUG: No last_node_cte, taking else branch");
+            println!("DEBUG: transformed_plan type = {:?}", std::mem::discriminant(&transformed_plan));
             // No CTE wrapper, but check for variable-length paths which generate CTEs directly
             // Extract CTEs with a dummy alias and context (variable-length doesn't use the alias)
             println!("DEBUG: About to call extract_ctes_with_context in else branch");
@@ -11705,9 +11773,16 @@ impl RenderPlanBuilder for LogicalPlan {
 
         // For variable-length paths, add joins to get full user data
         // FIX: Get VLP endpoint info from extracted CTEs (populated during CTE generation)
+        log::info!("🔍 Searching for VLP CTEs in {} extracted CTEs", extracted_ctes.len());
+        for (i, cte) in extracted_ctes.iter().enumerate() {
+            log::info!("  CTE[{}]: {}", i, cte.cte_name);
+        }
+        
         let vlp_cte = extracted_ctes.iter().find(|cte| {
             cte.cte_name.starts_with("vlp_") || cte.cte_name.starts_with("chained_path_")
         });
+        
+        log::info!("🔍 VLP CTE search result: {:?}", vlp_cte.map(|c| c.cte_name.as_str()));
         
         let has_vlp_cte = vlp_cte.is_some();
         
@@ -12360,7 +12435,47 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
 
+        // Rewrite path functions in GROUP BY expressions (length(p), nodes(p), relationships(p))
+        // This handles both single-type and multi-type VLP patterns
+        // NOTE: Use original plan (self), not transformed_plan, because GraphRel might be transformed away
+        if let Some(path_var_name) = get_path_variable(self) {
+            // Determine table alias based on pattern type
+            let table_alias_for_path = if let Some(graph_rel) = get_graph_rel_from_plan(self) {
+                if let Some(ref labels) = graph_rel.labels {
+                    if labels.len() > 1 {
+                        // Multi-type VLP: use end node alias
+                        if let LogicalPlan::GraphNode(ref right_node) = graph_rel.right.as_ref() {
+                            log::info!("🎯 GROUP BY path function rewriting: Multi-type VLP detected, using end alias '{}'", right_node.alias);
+                            right_node.alias.clone()
+                        } else {
+                            log::info!("🎯 GROUP BY path function rewriting: Multi-type VLP but no right node, using 't'");
+                            "t".to_string()
+                        }
+                    } else {
+                        log::info!("🎯 GROUP BY path function rewriting: Single-type VLP, using 't'");
+                        "t".to_string()
+                    }
+                } else {
+                    log::info!("🎯 GROUP BY path function rewriting: No labels, using 't'");
+                    "t".to_string()
+                }
+            } else {
+                log::info!("🎯 GROUP BY path function rewriting: No GraphRel found, using 't'");
+                "t".to_string()
+            };
+
+            log::info!("🎯 GROUP BY path function rewriting: {} expressions with table alias '{}'", 
+                       extracted_group_by_exprs.len(), table_alias_for_path);
+            extracted_group_by_exprs = extracted_group_by_exprs
+                .into_iter()
+                .map(|expr| {
+                    rewrite_path_functions_with_table(&expr, &path_var_name, &table_alias_for_path)
+                })
+                .collect();
+        }
+
         let mut extracted_order_by = transformed_plan.extract_order_by()?;
+        log::info!("🔍 Extracted {} ORDER BY items", extracted_order_by.len());
 
         // Rewrite ORDER BY expressions for variable-length paths ONLY for denormalized edges
         // For non-denormalized edges, the outer query JOINs with node tables, so a.name works directly
@@ -12383,12 +12498,30 @@ impl RenderPlanBuilder for LogicalPlan {
                     .collect();
             }
         }
+        
+        // 🎯 Rewrite ORDER BY expressions for multi-type VLP
+        // For multi-type VLP, labels(x)[1] should become x.end_type
+        // Check if any CTE is a multi-type VLP CTE
+        let has_multi_type_vlp_cte = extracted_ctes.iter().any(|cte| cte.cte_name.starts_with("vlp_multi_type_"));
+        if has_multi_type_vlp_cte {
+            log::info!("🎯 Multi-type VLP: Rewriting ORDER BY expressions");
+            extracted_order_by = extracted_order_by
+                .into_iter()
+                .map(|item| {
+                    let rewritten_expr = rewrite_labels_subscript_for_multi_type_vlp(&item.expression);
+                    OrderByItem {
+                        expression: rewritten_expr,
+                        order: item.order,
+                    }
+                })
+                .collect();
+        }
 
         let extracted_limit_item = transformed_plan.extract_limit();
 
         let extracted_skip_item = transformed_plan.extract_skip();
 
-        let extracted_union = transformed_plan.extract_union()?;
+        let extracted_union = transformed_plan.extract_union(schema)?;
 
         // Validate render plan before construction (for CTE path)
         if final_select_items.is_empty() {
@@ -12452,45 +12585,26 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         });
 
-        // 🔧 CRITICAL FIX: For multi-type VLP, check if SELECT items already reference CTE columns
-        // If label(x) or other functions are used, they're already mapped to CTE columns (e.g., end_type)
-        // Only rewrite to default CTE columns (end_type, end_id, end_properties) if needed
+        // 🔧 CRITICAL FIX: For multi-type VLP, check if we need to use default CTE columns
+        // ONLY use default columns for bare node returns like "RETURN x"
+        // For explicit returns like "RETURN label(x), x.name", keep the SELECT items as-is
         if is_multi_type_vlp {
             log::info!("🎯 Multi-type VLP: Checking if SELECT items need rewriting");
+            log::info!("🎯 Multi-type VLP: Current SELECT has {} items", final_select_items.len());
+            for (i, item) in final_select_items.iter().enumerate() {
+                log::info!("  [{}] {:?} AS {:?}", i, item.expression, item.col_alias);
+            }
             
-            // Check if SELECT has property access expressions (e.g., x.name, x.content)
-            // These should be kept as-is for JSON extraction during SQL generation
-            let has_property_access = final_select_items.iter().any(|item| {
-                matches!(item.expression, RenderExpr::PropertyAccessExp(_))
-            });
+            // Check if this is a bare node return (RETURN x)
+            // Bare node returns have a single SELECT item that is the node alias without properties
+            // We detect this by checking if:
+            // 1. Only one SELECT item
+            // 2. It's a TableAlias (not PropertyAccessExp, not Function, etc.)
+            let is_bare_node_return = final_select_items.len() == 1 &&
+                matches!(final_select_items[0].expression, RenderExpr::Raw(ref s) if s == "x" || s.contains("_node"));
             
-            // Check if any SELECT item already references CTE columns (end_type, end_id, end_properties)
-            // This happens when label(x) → PropertyAccessExp(x.end_type) mapping occurred in projection_tagging.rs
-            let has_explicit_cte_columns = final_select_items.iter().any(|item| {
-                use crate::render_plan::render_expr::RenderExpr;
-                match &item.expression {
-                    RenderExpr::Raw(s) => {
-                        s.contains("end_type") || s.contains("end_id") || s.contains("end_properties")
-                    }
-                    RenderExpr::PropertyAccessExp(prop_access) => {
-                        // Check if the column being accessed is one of the CTE columns
-                        use crate::graph_catalog::expression_parser::PropertyValue;
-                        match &prop_access.column {
-                            PropertyValue::Column(col_name) => {
-                                col_name == "end_type" || col_name == "end_id" || col_name == "end_properties"
-                            }
-                            _ => false,
-                        }
-                    }
-                    _ => false,
-                }
-            });
-            
-            // Only use default columns if:
-            // 1. No explicit CTE columns AND
-            // 2. No property access expressions (meaning query is RETURN x, not RETURN x.name)
-            if !has_explicit_cte_columns && !has_property_access {
-                log::info!("🎯 Multi-type VLP: No explicit CTE columns or property access, using default columns");
+            if is_bare_node_return {
+                log::info!("🎯 Multi-type VLP: Bare node return detected (RETURN x), using default CTE columns");
                 // Default: return full node structure (end_type, end_id, end_properties)
                 final_select_items = vec![
                     SelectItem {
@@ -12507,7 +12621,11 @@ impl RenderPlanBuilder for LogicalPlan {
                     },
                 ];
             } else {
-                log::info!("🎯 Multi-type VLP: Explicit CTE columns found, keeping SELECT items as-is");
+                log::info!("🎯 Multi-type VLP: Explicit RETURN items, keeping SELECT as-is (NOT a bare node return)");
+                // Keep the SELECT items as-is - they should already be properly mapped:
+                // - label(x) → x.end_type
+                // - x.name → JSON_VALUE(x.end_properties, '$.name')
+                // - Aggregates → count(*), etc.
             }
         }
         

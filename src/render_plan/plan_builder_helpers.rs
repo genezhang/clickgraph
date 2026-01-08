@@ -740,6 +740,10 @@ pub(super) fn is_standalone_expression(expr: &RenderExpr) -> bool {
                 && is_standalone_expression(&reduce.list)
                 && is_standalone_expression(&reduce.expression)
         }
+        RenderExpr::ArraySubscript { array, index } => {
+            // ArraySubscript is standalone if both array and index are standalone
+            is_standalone_expression(array) && is_standalone_expression(index)
+        }
         RenderExpr::MapLiteral(entries) => {
             // MapLiteral is standalone if all values are standalone
             entries.iter().all(|(_, v)| is_standalone_expression(v))
@@ -3883,5 +3887,24 @@ mod tests {
             }
             _ => panic!("Expected OperatorApplicationExp with AND"),
         }
+    }
+}
+
+/// Recursively find GraphRel in a logical plan tree
+/// Used to detect multi-type VLP patterns for correct table alias resolution
+pub(super) fn get_graph_rel_from_plan(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::GraphRel> {
+    use crate::query_planner::logical_plan::LogicalPlan;
+    
+    match plan {
+        LogicalPlan::GraphRel(rel) => Some(rel),
+        LogicalPlan::Filter(filter) => get_graph_rel_from_plan(&filter.input),
+        LogicalPlan::Projection(proj) => get_graph_rel_from_plan(&proj.input),
+        LogicalPlan::OrderBy(order) => get_graph_rel_from_plan(&order.input),
+        LogicalPlan::Limit(limit) => get_graph_rel_from_plan(&limit.input),
+        LogicalPlan::Skip(skip) => get_graph_rel_from_plan(&skip.input),
+        LogicalPlan::GroupBy(group) => get_graph_rel_from_plan(&group.input),
+        LogicalPlan::WithClause(with_clause) => get_graph_rel_from_plan(&with_clause.input),
+        LogicalPlan::GraphJoins(joins) => get_graph_rel_from_plan(&joins.input),
+        _ => None,
     }
 }

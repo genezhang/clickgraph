@@ -608,6 +608,52 @@ impl ProjectionTagging {
                 });
                 Ok(())
             }
+            LogicalExpr::ArraySubscript { array, index } => {
+                // Special case: labels(x)[1] or label(x) on multi-type VLP
+                // For multi-type VLP, labels(x) returns [x.end_type], so labels(x)[1] should just be x.end_type
+                if let LogicalExpr::ScalarFnCall(scalar_fn_call) = array.as_ref() {
+                    let fn_name_lower = scalar_fn_call.name.to_lowercase();
+                    if matches!(fn_name_lower.as_str(), "labels" | "label") {
+                        if let Some(LogicalExpr::TableAlias(TableAlias(alias))) = scalar_fn_call.args.first() {
+                            if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias) {
+                                // Check if this is multi-type VLP
+                                if let Some(labels) = table_ctx.get_labels() {
+                                    if labels.len() > 1 {
+                                        log::info!("🎯 {}({})[subscript] on multi-type VLP - unwrapping to x.end_type directly", fn_name_lower, alias);
+                                        // Return x.end_type directly (no array, no subscript)
+                                        item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(alias.clone()),
+                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column("end_type".to_string()),
+                                        });
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Normal case: process array and index, then reconstruct
+                let mut array_item = ProjectionItem {
+                    expression: (*array).clone(),
+                    col_alias: None,
+                };
+                Self::tag_projection(&mut array_item, plan_ctx, graph_schema)?;
+                
+                // Process index expression (might reference variables)
+                let mut index_item = ProjectionItem {
+                    expression: (*index).clone(),
+                    col_alias: None,
+                };
+                Self::tag_projection(&mut index_item, plan_ctx, graph_schema)?;
+                
+                // Reconstruct ArraySubscript with processed expressions
+                item.expression = LogicalExpr::ArraySubscript {
+                    array: Box::new(array_item.expression),
+                    index: Box::new(index_item.expression),
+                };
+                Ok(())
+            }
             LogicalExpr::ScalarFnCall(scalar_fn_call) => {
                 let fn_name_lower = scalar_fn_call.name.to_lowercase();
 

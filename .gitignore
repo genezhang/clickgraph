@@ -58,6 +58,12 @@ nohup.out
 SESSION_COMPLETE_*.md
 SESSION_SUMMARY_*.md
 
+# Temporary files created during development
+*.tmp
+MIGRATION_TO_BIGGER_MACHINE.md
+WORK_IN_PROGRESS_*.md
+TEST_FAILURES_*.md
+
 # Log files
 *.log
 server.log

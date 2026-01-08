@@ -170,21 +170,29 @@ pub async fn query_handler(
     let clean_query_string = open_cypher_parser::strip_comments(clean_query_with_comments);
     let clean_query = clean_query_string.as_str();
 
-    // Pre-parse to check for USE clause (minimal parse just to extract database selection)
-    // IMPORTANT: Parse the CLEAN query without CYPHER prefix
-    let schema_name = if let Ok(ast) = open_cypher_parser::parse_query(clean_query) {
-        if let Some(ref use_clause) = ast.use_clause {
-            use_clause.database_name
-        } else {
-            // ✅ EXPLICIT: Use "default" as the default schema name when no USE clause
-            // This is intentional and explicit, not a hidden fallback
-            payload.schema_name.as_deref().unwrap_or("default")
+    // 🔧 FIX: Validate query syntax FIRST before schema lookup
+    // This prevents misleading "Schema not found" errors when query has syntax errors
+    // Quick syntax validation (doesn't need full planning)
+    let schema_name = match open_cypher_parser::parse_query(clean_query) {
+        Ok(ast) => {
+            // Parse succeeded - extract schema name from USE clause
+            if let Some(ref use_clause) = ast.use_clause {
+                use_clause.database_name
+            } else {
+                // No USE clause - use request parameter or "default"
+                payload.schema_name.as_deref().unwrap_or("default")
+            }
         }
-    } else {
-        // Parse failed - use request parameter or explicit "default"
-        payload.schema_name.as_deref().unwrap_or("default")
+        Err(e) => {
+            // ❌ PARSE ERROR: Return immediately with clear error message
+            // Don't proceed to schema lookup (which would give misleading "Schema not found")
+            log::error!("Query parse failed during schema extraction: {}", e);
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("Query syntax error: {}. Check Cypher syntax before proceeding.", e),
+            ));
+        }
     };
-
 
     log::debug!("Using schema: {} ({})", schema_name, 
         if payload.schema_name.is_none() && !clean_query.to_uppercase().contains("USE ") {

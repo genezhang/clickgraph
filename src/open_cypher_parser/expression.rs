@@ -18,6 +18,7 @@ use super::{
         ExistsSubquery, Expression, FunctionCall, LambdaExpression, Literal, Operator,
         OperatorApplication, PatternComprehension, PropertyAccess, ReduceExpression,
     },
+    errors::OpenCypherParsingError,
     path_pattern, where_clause,
 };
 
@@ -33,39 +34,77 @@ pub fn parse_path_pattern_expression(input: &'_ str) -> IResult<&'_ str, Express
 
 // parse_postfix_expression
 fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    // First, parse a basic primary expression: literal, variable, or parenthesized expression.
-    let (input, expr) = alt((
-        parse_parameter,
+    // First, parse any primary expression (function call, literal, variable, etc.)
+    let (mut input, mut expr) = alt((
+        parse_exists_expression, // Must be before parse_function_call to catch EXISTS { }
+        parse_case_expression,
+        parse_reduce_expression, // Must be before parse_function_call to catch reduce(...)
+        parse_pattern_comprehension, // Must be before parse_list_literal to catch [(pattern) | ...]
+        parse_path_pattern_expression,
+        parse_function_call,
         parse_property_access,
+        parse_map_literal, // Must be before list_literal (different brackets anyway)
+        parse_list_literal,
+        parse_parameter,
         parse_literal_or_variable_expression,
         delimited(ws(char('(')), parse_expression, ws(char(')'))),
     ))
     .parse(input)?;
 
-    // Then, optionally, parse the postfix operator "IS NULL" or "IS NOT NULL".
-    let (input, opt_op) = nom::combinator::opt(preceded(
-        ws(tag_no_case("IS")),
-        alt((
-            map(
-                preceded(ws(tag_no_case("NOT")), ws(tag_no_case("NULL"))),
-                |_| Operator::IsNotNull,
-            ),
-            map(ws(tag_no_case("NULL")), |_| Operator::IsNull),
-        )),
-    ))
-    .parse(input)?;
+    // Then, parse any postfix operations in a loop
+    loop {
+        // Try to parse array subscript: expr[index]
+        // Need to be careful: [expr] could also be a list literal
+        // We check for [ immediately after the expression (with optional whitespace)
+        let subscript_attempt = nom::sequence::tuple((
+            multispace0,
+            char('['),
+            multispace0,
+            parse_expression,
+            multispace0,
+            char(']'),
+        ))(input);
 
-    if let Some(op) = opt_op {
-        Ok((
-            input,
-            Expression::OperatorApplicationExp(OperatorApplication {
+        if let Ok((new_input, (_, _, _, index_expr, _, _))) = subscript_attempt {
+            // Successfully parsed [index]
+            expr = Expression::ArraySubscript {
+                array: Box::new(expr),
+                index: Box::new(index_expr),
+            };
+            input = new_input;
+            continue; // Check for more postfix operations
+        }
+
+        // Try to parse IS NULL / IS NOT NULL
+        let null_check_result = nom::combinator::opt(preceded(
+            ws(tag_no_case::<_, _, OpenCypherParsingError>("IS")),
+            alt((
+                map(
+                    preceded(
+                        ws(tag_no_case::<_, _, OpenCypherParsingError>("NOT")),
+                        ws(tag_no_case::<_, _, OpenCypherParsingError>("NULL")),
+                    ),
+                    |_| Operator::IsNotNull,
+                ),
+                map(ws(tag_no_case::<_, _, OpenCypherParsingError>("NULL")), |_| Operator::IsNull),
+            )),
+        ))
+        .parse(input);
+
+        if let Ok((new_input, Some(op))) = null_check_result {
+            expr = Expression::OperatorApplicationExp(OperatorApplication {
                 operator: op,
                 operands: vec![expr],
-            }),
-        ))
-    } else {
-        Ok((input, expr))
+            });
+            input = new_input;
+            continue;
+        }
+
+        // No more postfix operations found
+        break;
     }
+
+    Ok((input, expr))
 }
 
 /// Parse EXISTS subquery expression
@@ -369,22 +408,9 @@ fn parse_reduce_body_expression(input: &'_ str) -> IResult<&'_ str, Expression<'
 }
 
 fn parse_primary(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    alt((
-        parse_exists_expression, // Must be before parse_function_call to catch EXISTS { }
-        parse_case_expression,
-        parse_reduce_expression, // Must be before parse_function_call to catch reduce(...)
-        parse_pattern_comprehension, // Must be before parse_list_literal to catch [(pattern) | ...]
-        parse_path_pattern_expression,
-        parse_function_call,
-        parse_postfix_expression,
-        parse_property_access,
-        parse_map_literal, // Must be before list_literal (different brackets anyway)
-        parse_list_literal,
-        parse_parameter,
-        parse_literal_or_variable_expression,
-        delimited(ws(char('(')), parse_expression, ws(char(')'))),
-    ))
-    .parse(input)
+    // Use parse_postfix_expression as the primary parser, which handles all atomic expressions
+    // plus postfix operations like [index] and IS NULL
+    parse_postfix_expression.parse(input)
 }
 
 pub fn parse_operator_symbols(input: &str) -> IResult<&str, Operator> {

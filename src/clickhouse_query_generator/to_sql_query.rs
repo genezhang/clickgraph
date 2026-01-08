@@ -1125,8 +1125,9 @@ impl RenderExpr {
                     
                     if aliases.contains_key(&table_alias.0) {
                         log::info!("🎯 Found '{}' in MULTI_TYPE_VLP_ALIASES!", table_alias.0);
-                        // Properties like end_type, end_id are direct CTE columns
-                        if matches!(col_name, "end_type" | "end_id" | "start_id" | "end_properties") {
+                        // Properties like end_type, end_id, hop_count, path_relationships are direct CTE columns
+                        if matches!(col_name, "end_type" | "end_id" | "start_id" | "end_properties" 
+                                             | "hop_count" | "path_relationships") {
                             log::info!("🎯 Multi-type VLP CTE column: {}.{}", table_alias.0, col_name);
                             return Some(format!("{}.{}", table_alias.0, col_name));
                         }
@@ -1408,6 +1409,13 @@ impl RenderExpr {
             RenderExpr::PatternCount(pc) => {
                 // Use the pre-generated SQL from PatternCount (correlated subquery)
                 pc.sql.clone()
+            }
+            RenderExpr::ArraySubscript { array, index } => {
+                // Array subscript in ClickHouse: array[index]
+                // Note: Cypher uses 1-based indexing, ClickHouse uses 1-based too
+                let array_sql = array.to_sql();
+                let index_sql = index.to_sql();
+                format!("{}[{}]", array_sql, index_sql)
             }
         }
     }

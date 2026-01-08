@@ -98,20 +98,9 @@ pub fn initial_analyzing(
     // Converts non-transitive patterns (e.g., IP-[DNS*]->Domain) to fixed-length
     log::info!("🔍 Running VLP Transitivity Check...");
     let vlp_transitivity_check = VlpTransitivityCheck::new();
-    let plan = match vlp_transitivity_check.analyze_with_graph_schema(
-        plan.clone(),
-        plan_ctx,
-        current_graph_schema,
-    ) {
-        Ok(transformed_plan) => {
-            log::info!("✓ VLP Transitivity Check completed successfully");
-            transformed_plan.get_plan()
-        }
-        Err(e) => {
-            log::warn!("⚠ VLP Transitivity Check failed: {:?}, continuing with original plan", e);
-            plan
-        }
-    };
+    let plan = vlp_transitivity_check
+        .analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)?
+        .get_plan();
 
     // Step 3: CTE Schema Resolver - register CTE schemas in plan_ctx for analyzer/planner
     // This runs after SchemaInference to ensure property mappings are available

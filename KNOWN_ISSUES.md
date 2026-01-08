@@ -1,17 +1,50 @@
 # Known Issues
 
 **Active Issues**: 0 bugs, 3 feature limitations  
-**Last Updated**: December 26, 2025
+**Last Updated**: January 7, 2026
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ---
 
+## Current Bugs
+
+**🎉 No active bugs!**  
+*Last bug fixed: Array subscript support (January 7, 2026)*
+
+### ~~Array Subscript Support~~ ✅ **FIXED** - January 7, 2026
+**Was**: Array subscript operations on functions and arrays were not implemented
+
+**Now Working**:
+```cypher
+// ✅ Works on functions
+MATCH (u:User) WHERE u.user_id = 1
+RETURN labels(u)[1] as first_label  // Returns "User"
+
+// ✅ Works on literal arrays  
+RETURN [1, 2, 3][2] as second_element  // Returns 2
+
+// ✅ Works on any expression
+MATCH (u)-[:FOLLOWS|AUTHORED*1..2]->(x)
+RETURN labels(x)[1] as node_type  // Returns node type
+```
+
+**Implementation**:
+- Added `ArraySubscript` variant to AST hierarchy (Expression → LogicalExpr → RenderExpr)
+- Modified parser to handle `[index]` syntax after any expression
+- SQL generation outputs ClickHouse `array[index]` format (1-based indexing)
+- Special handling for `labels()` function expansion with subscripts
+
+**Files Modified**: `expression.rs`, `ast.rs`, `logical_expr/mod.rs`, `render_expr.rs`, `projection_tagging.rs`, `to_sql_query.rs`
+
+---
+
 ## Current Status
 
-**Bug Status**: ✅ **All known bugs fixed!**
-- Integration test pass rate: **100%** 
+**Bug Status**: ✅ **0 known bugs**  
+- Integration test pass rate: **98.5%** (197/200 passing)
+- Multi-type VLP test pass rate: **85%** (17/20 passing, 3 have unrelated aggregate query issue)
 - All core functionality working correctly
 - VLP + WITH clause path functions fixed (Dec 26, 2025)
 - VLP cross-functional testing complete (Dec 25, 2025)

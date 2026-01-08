@@ -138,7 +138,6 @@ class TestMultiTypeWithPathFunctions:
             MATCH p = (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)
             WHERE u.user_id = 1
             RETURN length(p) as path_length, count(*) as cnt
-            GROUP BY path_length
             ORDER BY path_length
             """,
             schema_name="social_benchmark"
@@ -195,22 +194,20 @@ class TestMixedRecursiveNonRecursive:
         
         if cnt_1hop > 0:
             # User 1 has authored posts
-            # Now try 2-hop: should not find anything via AUTHORED->AUTHORED
+            # AUTHORED*2 should be rejected as semantically invalid (non-transitive relationship)
             response_2hop = execute_cypher(
                 """
                 MATCH (u:User)-[:AUTHORED*2]->(x)
                 WHERE u.user_id = 1
                 RETURN count(*) as cnt
                 """,
-                schema_name="social_benchmark"
+                schema_name="social_benchmark",
+                raise_on_error=False  # Don't raise, we expect an error
             )
             
-            assert_query_success(response_2hop)
-            results_2hop = response_2hop["results"]
-            cnt_2hop = results_2hop[0]["cnt"] if isinstance(results_2hop[0], dict) else results_2hop[0][0]
-            
-            # Should be 0 because Post->* via AUTHORED doesn't exist
-            assert cnt_2hop == 0, "AUTHORED*2 should return 0 (Post has no outgoing AUTHORED edges)"
+            # Should return an error about non-transitive relationship
+            assert "non-transitive" in str(response_2hop).lower(), \
+                f"Expected non-transitive error, got: {response_2hop}"
     
     def test_follows_continues_after_follows(self):
         """Verify FOLLOWS (User->User) can chain multiple times."""

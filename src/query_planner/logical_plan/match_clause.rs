@@ -7,7 +7,7 @@ use crate::{
         logical_plan::{
             errors::LogicalPlanError,
             plan_builder::LogicalPlanResult,
-            {CartesianProduct, GraphNode, GraphRel, LogicalPlan, ShortestPathMode, Union},
+            {CartesianProduct, GraphNode, GraphRel, LogicalPlan, ShortestPathMode, Union, VariableLengthSpec},
         },
         plan_ctx::{PlanCtx, TableCtx},
     },
@@ -1462,6 +1462,34 @@ fn traverse_connected_pattern_with_mode<'a>(
                 None
             };
 
+            // Handle variable-length patterns and multi-type relationships:
+            // - Single-type *1: (a)-[:TYPE*1]->(b) → simplify to regular relationship
+            // - Multi-type *1: (a)-[:TYPE1|TYPE2*1]->(b) → keep VLP for polymorphic nodes
+            // - Multi-type no VLP: (a)-[:TYPE1|TYPE2]->(b) → ADD implicit *1 for polymorphic handling
+            let is_multi_type = rel_labels.as_ref().map_or(false, |labels| labels.len() > 1);
+            
+            let variable_length = if let Some(vlp) = rel.variable_length.clone() {
+                // Has explicit VLP spec
+                let spec: VariableLengthSpec = vlp.into();
+                let is_exact_one_hop = spec.min_hops == Some(1) && spec.max_hops == Some(1);
+                
+                if is_exact_one_hop && !is_multi_type {
+                    log::info!("Simplifying *1 single-type pattern to regular relationship");
+                    None  // Remove *1 for single-type - treat as regular relationship
+                } else {
+                    Some(spec)  // Keep VLP for multi-type or ranges
+                }
+            } else if is_multi_type {
+                // Multi-type without VLP: add implicit *1 for proper polymorphic handling
+                log::info!("Adding implicit *1 for multi-type relationship (polymorphic end node)");
+                Some(VariableLengthSpec {
+                    min_hops: Some(1),
+                    max_hops: Some(1),
+                })
+            } else {
+                None  // Single-type, no VLP
+            };
+
             let graph_rel_node = GraphRel {
                 left: left_node,
                 center: generate_relationship_center(
@@ -1479,7 +1507,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 left_connection: left_conn,
                 right_connection: right_conn,
                 is_rel_anchor: false,
-                variable_length: rel.variable_length.clone().map(|v| v.into()),
+                variable_length,
                 shortest_path_mode: shortest_path_mode.clone(),
                 path_variable: path_variable.map(|s| s.to_string()),
                 where_predicate: None, // Will be populated by filter pushdown optimization
@@ -1599,7 +1627,23 @@ fn traverse_connected_pattern_with_mode<'a>(
                 left_connection: start_node_alias.clone(),
                 right_connection: end_node_alias.clone(),
                 is_rel_anchor: false,
-                variable_length: rel.variable_length.clone().map(|v| v.into()),
+                variable_length: {
+                    let is_multi_type = rel_labels.as_ref().map_or(false, |labels| labels.len() > 1);
+                    if let Some(vlp) = rel.variable_length.clone() {
+                        let spec: VariableLengthSpec = vlp.into();
+                        let is_exact_one_hop = spec.min_hops == Some(1) && spec.max_hops == Some(1);
+                        if is_exact_one_hop && !is_multi_type {
+                            None  // *1 single-type is same as regular relationship
+                        } else {
+                            Some(spec)  // Keep *1 for multi-type or ranges
+                        }
+                    } else if is_multi_type {
+                        // Add implicit *1 for multi-type without VLP (polymorphic end node)
+                        Some(VariableLengthSpec { min_hops: Some(1), max_hops: Some(1) })
+                    } else {
+                        None  // Single-type, no VLP
+                    }
+                },
                 shortest_path_mode: shortest_path_mode.clone(),
                 path_variable: path_variable.map(|s| s.to_string()),
                 where_predicate: None, // Will be populated by filter pushdown optimization
@@ -1837,7 +1881,23 @@ fn traverse_connected_pattern_with_mode<'a>(
                 left_connection: left_conn.clone(), // Left node is the start node (left_conn for Outgoing)
                 right_connection: right_conn.clone(), // Right node is the end node (right_conn for Outgoing)
                 is_rel_anchor: false,
-                variable_length: rel.variable_length.clone().map(|v| v.into()),
+                variable_length: {
+                    let is_multi_type = rel_labels.as_ref().map_or(false, |labels| labels.len() > 1);
+                    if let Some(vlp) = rel.variable_length.clone() {
+                        let spec: VariableLengthSpec = vlp.into();
+                        let is_exact_one_hop = spec.min_hops == Some(1) && spec.max_hops == Some(1);
+                        if is_exact_one_hop && !is_multi_type {
+                            None  // *1 single-type is same as regular relationship
+                        } else {
+                            Some(spec)  // Keep *1 for multi-type or ranges
+                        }
+                    } else if is_multi_type {
+                        // Add implicit *1 for multi-type without VLP (polymorphic end node)
+                        Some(VariableLengthSpec { min_hops: Some(1), max_hops: Some(1) })
+                    } else {
+                        None  // Single-type, no VLP
+                    }
+                },
                 shortest_path_mode: shortest_path_mode.clone(),
                 path_variable: path_variable.map(|s| s.to_string()),
                 where_predicate: {

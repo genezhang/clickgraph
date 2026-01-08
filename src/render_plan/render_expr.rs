@@ -701,6 +701,13 @@ pub enum RenderExpr {
 
     /// Pattern count: pre-rendered SQL for size((n)-[:REL]->())
     PatternCount(PatternCount),
+
+    /// Array subscript: array[index]
+    /// Access element at specified index (1-based in Cypher, 0-based in ClickHouse)
+    ArraySubscript {
+        array: Box<RenderExpr>,
+        index: Box<RenderExpr>,
+    },
 }
 
 /// Pattern count for size() on patterns
@@ -867,6 +874,10 @@ impl TryFrom<LogicalExpr> for RenderExpr {
             }
             LogicalExpr::InSubquery(subq) => RenderExpr::InSubquery(subq.try_into()?),
             LogicalExpr::Case(case) => RenderExpr::Case(case.try_into()?),
+            LogicalExpr::ArraySubscript { array, index } => RenderExpr::ArraySubscript {
+                array: Box::new(RenderExpr::try_from(*array)?),
+                index: Box::new(RenderExpr::try_from(*index)?),
+            },
             LogicalExpr::ExistsSubquery(exists) => {
                 // For EXISTS subqueries, generate SQL directly since they don't fit
                 // the normal RenderPlan structure (no select items needed)

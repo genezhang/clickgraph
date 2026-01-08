@@ -1,5 +1,5 @@
 use super::render_expr::{
-    AggregateFnCall, Column, Operator, OperatorApplication, RenderExpr, ScalarFnCall, TableAlias,
+    AggregateFnCall, Column, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
 
@@ -505,6 +505,63 @@ pub fn rewrite_expr_for_mixed_denormalized_cte(
                         _path_var,
                     )
                 })
+                .collect();
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: fn_call.name.clone(),
+                args: rewritten_args,
+            })
+        }
+        _ => expr.clone(),
+    }
+}
+
+/// Rewrite labels(x)[1] to x.end_type for multi-type VLP ORDER BY expressions
+/// 
+/// For multi-type VLP, the CTE contains:
+/// - end_type: the actual type name (User, Post, etc.)
+/// - end_id: the node ID as string
+/// - end_properties: JSON object with all properties
+///
+/// When a query uses `ORDER BY labels(x)[1]`, it should order by the end_type column
+pub fn rewrite_labels_subscript_for_multi_type_vlp(expr: &RenderExpr) -> RenderExpr {
+    log::info!("🔍 Rewriting ORDER BY expr: {:?}", expr);
+    match expr {
+        // Match the pattern: ArraySubscript(ScalarFnCall("labels", [TableAlias("x")]), Literal(1))
+        RenderExpr::ArraySubscript { array, index } => {
+            if let RenderExpr::ScalarFnCall(fn_call) = array.as_ref() {
+                if fn_call.name.to_lowercase() == "labels" || fn_call.name.to_lowercase() == "label" {
+                    if let Some(RenderExpr::Raw(alias)) = fn_call.args.first() {
+                        log::info!("🎯 Rewriting labels({})[1] to {}.end_type for ORDER BY", alias, alias);
+                        // Return x.end_type
+                        return RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(alias.clone()),
+                            column: crate::graph_catalog::expression_parser::PropertyValue::Column("end_type".to_string()),
+                        });
+                    }
+                }
+            }
+            // Not the pattern we're looking for, recursively process
+            RenderExpr::ArraySubscript {
+                array: Box::new(rewrite_labels_subscript_for_multi_type_vlp(array)),
+                index: Box::new(rewrite_labels_subscript_for_multi_type_vlp(index)),
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            let rewritten_operands = op
+                .operands
+                .iter()
+                .map(rewrite_labels_subscript_for_multi_type_vlp)
+                .collect();
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator.clone(),
+                operands: rewritten_operands,
+            })
+        }
+        RenderExpr::ScalarFnCall(fn_call) => {
+            let rewritten_args = fn_call
+                .args
+                .iter()
+                .map(rewrite_labels_subscript_for_multi_type_vlp)
                 .collect();
             RenderExpr::ScalarFnCall(ScalarFnCall {
                 name: fn_call.name.clone(),

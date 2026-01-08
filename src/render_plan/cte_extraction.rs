@@ -145,8 +145,11 @@ fn should_use_join_expansion(
     rel_types: &[String],
     schema: &GraphSchema,
 ) -> bool {
+    log::info!("🔍 VLP: should_use_join_expansion called with {} rel_types: {:?}", rel_types.len(), rel_types);
+    
     // Extract end node labels from right node
     let end_node_labels = extract_node_labels(&graph_rel.right);
+    log::info!("🔍 VLP: end_node_labels = {:?}", end_node_labels);
     
     // Case 1: End node has multiple explicit labels (x:User|Post)
     if let Some(ref labels) = end_node_labels {
@@ -163,12 +166,19 @@ fn should_use_join_expansion(
     // Case 2: Multiple relationship types that connect to different node types
     // This requires checking the schema to see what to_node each rel_type connects to
     if rel_types.len() > 1 {
+        log::info!("🔍 VLP: Checking if {} rel_types lead to different end node types...", rel_types.len());
         let mut end_types = std::collections::HashSet::new();
         for rel_type in rel_types {
+            log::info!("🔍 VLP: Looking up schema for rel_type '{}'...", rel_type);
             if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
+                log::info!("🔍 VLP: rel_type '{}' → to_node '{}'", rel_type, rel_schema.to_node);
                 end_types.insert(rel_schema.to_node.clone());
+            } else {
+                log::warn!("⚠️  VLP: Failed to get schema for rel_type '{}'", rel_type);
             }
         }
+        
+        log::info!("🔍 VLP: Found {} unique end_types: {:?}", end_types.len(), end_types);
         
         if end_types.len() > 1 {
             log::info!(
@@ -181,12 +191,21 @@ fn should_use_join_expansion(
         }
     }
     
-    log::debug!(
+    log::info!(
         "🎯 CTE: Single-type VLP - using recursive CTE (end_labels={:?}, rel_types={:?})",
         end_node_labels,
         rel_types
     );
     false
+}
+
+/// Public wrapper for should_use_join_expansion for use in plan_builder.rs
+pub(crate) fn should_use_join_expansion_public(
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+    rel_types: &[String],
+    schema: &GraphSchema,
+) -> bool {
+    should_use_join_expansion(graph_rel, rel_types, schema)
 }
 
 fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
@@ -459,6 +478,11 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
         RenderExpr::PatternCount(pc) => {
             // Use the pre-generated SQL from PatternCount
             pc.sql.clone()
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            let array_sql = render_expr_to_sql_string(array, alias_mapping);
+            let index_sql = render_expr_to_sql_string(index, alias_mapping);
+            format!("{}[{}]", array_sql, index_sql)
         }
         RenderExpr::Star => "*".to_string(),
         RenderExpr::Parameter(param) => format!("${}", param),
@@ -1345,9 +1369,14 @@ pub fn extract_ctes_with_context(
                 } else {
                     // ✅ Truly variable-length or shortest path → Check if multi-type
                     println!("CTE BRANCH: Variable-length pattern detected");
+                    log::info!("🔍 VLP: Variable-length or shortest path detected (not using chained JOINs)");
                     
                     // 🎯 CHECK FOR MULTI-TYPE VLP (Part 1D implementation)
                     let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
+                    log::info!("🔍 VLP: rel_types={:?}", rel_types);
+                    
+                    let is_multi_type_check = should_use_join_expansion(&graph_rel, &rel_types, schema);
+                    log::info!("🔍 VLP: should_use_join_expansion returned: {}", is_multi_type_check);
                     
                     if should_use_join_expansion(&graph_rel, &rel_types, schema) {
                         // Multi-type VLP: Use JOIN expansion with UNION ALL
@@ -1736,7 +1765,23 @@ pub fn extract_ctes_with_context(
 
                 if unique_labels.len() > 1 {
                     // Multiple distinct relationship types: create a UNION CTE
-                    let rel_tables = rel_types_to_table_names(&unique_labels);
+                    // Use schema from context instead of deprecated global schema function
+                    let rel_tables: Vec<String> = if let Some(schema) = context.schema() {
+                        unique_labels
+                            .iter()
+                            .map(|label| {
+                                if let Ok(rel_schema) = schema.get_rel_schema(label) {
+                                    format!("{}.{}", rel_schema.database, rel_schema.table_name)
+                                } else {
+                                    log::error!("❌ SCHEMA ERROR: Relationship type '{}' not found in schema", label);
+                                    format!("ERROR_SCHEMA_MISSING_{}", label)
+                                }
+                            })
+                            .collect()
+                    } else {
+                        log::error!("❌ SCHEMA ERROR: No schema in context for relationship types {:?}", unique_labels);
+                        unique_labels.iter().map(|label| format!("ERROR_SCHEMA_NOT_IN_CONTEXT_{}", label)).collect()
+                    };
                     crate::debug_print!(
                         "DEBUG cte_extraction: Resolved tables for labels {:?}: {:?}",
                         unique_labels,
@@ -1815,21 +1860,45 @@ pub fn extract_ctes_with_context(
                         }
                     } else {
                         // Regular multiple relationship types: UNION of different tables
-                        rel_tables
-                            .iter()
-                            .map(|table| {
-                                // Get the correct column names for this table
-                                let (from_col, to_col) = get_relationship_columns_by_table(table)
-                                    .unwrap_or((
-                                        "from_node_id".to_string(),
-                                        "to_node_id".to_string(),
-                                    )); // fallback
-                                format!(
-                                    "SELECT {} as from_node_id, {} as to_node_id FROM {}",
-                                    from_col, to_col, table
-                                )
-                            })
-                            .collect()
+                        // Use schema to get the correct column names for each relationship type
+                        if let Some(schema) = context.schema() {
+                            unique_labels
+                                .iter()
+                                .zip(rel_tables.iter())
+                                .map(|(label, table)| {
+                                    if let Ok(rel_schema) = schema.get_rel_schema(label) {
+                                        let from_col = &rel_schema.from_id;
+                                        let to_col = &rel_schema.to_id;
+                                        format!(
+                                            "SELECT {} as from_node_id, {} as to_node_id FROM {}",
+                                            from_col, to_col, table
+                                        )
+                                    } else {
+                                        // Fallback if schema lookup fails
+                                        format!(
+                                            "SELECT from_id as from_node_id, to_id as to_node_id FROM {}",
+                                            table
+                                        )
+                                    }
+                                })
+                                .collect()
+                        } else {
+                            // Fallback if no schema in context
+                            rel_tables
+                                .iter()
+                                .map(|table| {
+                                    let (from_col, to_col) = get_relationship_columns_by_table(table)
+                                        .unwrap_or((
+                                            "from_node_id".to_string(),
+                                            "to_node_id".to_string(),
+                                        ));
+                                    format!(
+                                        "SELECT {} as from_node_id, {} as to_node_id FROM {}",
+                                        from_col, to_col, table
+                                    )
+                                })
+                                .collect()
+                        }
                     };
 
                     let union_sql = union_queries.join(" UNION ALL ");
@@ -1929,6 +1998,7 @@ pub fn extract_ctes_with_context(
             extract_ctes_with_context(&graph_joins.input, last_node_alias, context, schema)
         }
         LogicalPlan::GroupBy(group_by) => {
+            log::info!("🔍 CTE extraction: Delegating from GroupBy to input plan");
             extract_ctes_with_context(&group_by.input, last_node_alias, context, schema)
         }
         LogicalPlan::OrderBy(order_by) => {
@@ -2125,6 +2195,11 @@ pub fn extract_ctes_with_context(
                                     log::warn!("⚠️ CTE Extraction: Could not find ID column for alias '{}', skipping from GROUP BY", alias.0);
                                     vec![]
                                 }
+                            }
+                            LogicalExpr::ArraySubscript { array, .. } => {
+                                // For array subscripts (e.g., labels(x)[1]), only GROUP BY the array part
+                                // ClickHouse can't GROUP BY an array element, only the array itself
+                                vec![(**array).clone()]
                             }
                             _ => {
                                 // For other expressions, use as-is in GROUP BY

@@ -49,6 +49,10 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
         | RenderExpr::Parameter(_) => false,
         // MapLiteral may contain aliases in its values
         RenderExpr::MapLiteral(entries) => entries.iter().any(|(_, v)| references_alias(v, alias)),
+        // ArraySubscript may contain aliases in array or index
+        RenderExpr::ArraySubscript { array, index } => {
+            references_alias(array, alias) || references_alias(index, alias)
+        }
     }
 }
 
@@ -106,6 +110,10 @@ pub fn rewrite_aliases(
             for (_, v) in entries {
                 rewrite_aliases(v, alias_map);
             }
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            rewrite_aliases(array, alias_map);
+            rewrite_aliases(index, alias_map);
         }
         // Simple expressions that don't contain aliases - no rewriting needed
         RenderExpr::Literal(_)

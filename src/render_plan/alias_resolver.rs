@@ -357,6 +357,11 @@ impl AliasResolverContext {
             // PatternComprehension will be rewritten during query planning, doesn't need alias transformation here
             LogicalExpr::PatternComprehension(pc) => LogicalExpr::PatternComprehension(pc),
 
+            LogicalExpr::ArraySubscript { array, index } => LogicalExpr::ArraySubscript {
+                array: Box::new(self.transform_expr(*array)),
+                index: Box::new(self.transform_expr(*index)),
+            },
+
             // These don't contain PropertyAccess
             LogicalExpr::Literal(_)
             | LogicalExpr::Raw(_)

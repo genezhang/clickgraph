@@ -92,6 +92,14 @@ pub enum LogicalExpr {
     /// Returns a list of projected values from matched patterns
     /// Will be rewritten to OPTIONAL MATCH + collect() during query planning
     PatternComprehension(PatternComprehensionExpr),
+
+    /// Array subscript: array[index]
+    /// Access element at specified index (1-based in Cypher, converted to 0-based for ClickHouse)
+    /// Example: labels(n)[1], list[0], [1,2,3][2]
+    ArraySubscript {
+        array: Box<LogicalExpr>,
+        index: Box<LogicalExpr>,
+    },
 }
 
 /// Pattern count for size() on patterns
@@ -728,6 +736,10 @@ impl<'a> From<open_cypher_parser::ast::Expression<'a>> for LogicalExpr {
                 // before reaching this point. If we get here, it's a bug.
                 panic!("PatternComprehension should have been rewritten during query planning. This is a bug!")
             }
+            Expression::ArraySubscript { array, index } => LogicalExpr::ArraySubscript {
+                array: Box::new(LogicalExpr::from(*array)),
+                index: Box::new(LogicalExpr::from(*index)),
+            },
         }
     }
 }
