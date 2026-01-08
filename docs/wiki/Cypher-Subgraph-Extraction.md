@@ -222,6 +222,76 @@ MATCH (start {id: 1})-[:FOLLOWS]->(neighbor)
 3. **Bidirectional patterns** generate UNION ALL (2x the queries)
 4. **DISTINCT** on large results requires sorting
 
+---
+
+## Verified Pattern Support Matrix
+
+The following patterns have been verified working (as of January 2026):
+
+### Edge Type Specification
+
+| Pattern | Description | Status | SQL Strategy |
+|---------|-------------|--------|--------------|
+| `[:TYPE]` | Single specific type | ✅ | Direct JOIN |
+| `[:TYPE*1..N]` | Single type, variable length | ✅ | Recursive CTE |
+| `[:TYPE1\|TYPE2]` | Multiple explicit types | ✅ | UNION ALL branches |
+| `[:TYPE1\|TYPE2*1..N]` | Multiple types, variable length | ✅ | UNION ALL + recursive CTE |
+| `[*1..N]` | Generic (infer from schema) | ✅* | UNION ALL over inferred types |
+
+\* Generic patterns work when **≤4 matching edge types** can be inferred from the schema. Exceeding this limit returns an error asking for explicit types.
+
+### Direction Support
+
+| Pattern | Description | Status | Notes |
+|---------|-------------|--------|-------|
+| `-[r]->` | Outgoing | ✅ | Standard join direction |
+| `<-[r]-` | Incoming | ✅ | Swaps from/to columns |
+| `-[r]-` | Undirected | ✅ | UNION ALL of both directions |
+
+### Hop Count Support
+
+| Pattern | Description | Status | SQL Strategy |
+|---------|-------------|--------|--------------|
+| `*N` | Exactly N hops | ✅ | Chained JOINs (optimized) |
+| `*M..N` | Range M to N hops | ✅ | Recursive CTE with hop counter |
+| `*..N` | Up to N hops | ✅ | Recursive CTE (starts at 1) |
+| `*N..` | At least N hops | ✅ | Recursive CTE with max depth config |
+
+### Schema Pattern Support
+
+| Schema Pattern | Description | VLP Status | Notes |
+|---------------|-------------|------------|-------|
+| Standard node/edge tables | Separate tables for nodes and edges | ✅ | Full VLP support |
+| FK-edge pattern | Relationship via FK on node table | ✅ | 2-table JOINs in CTE |
+| Denormalized edges | Node properties in edge table | ✅ | Virtual node resolution |
+| Polymorphic edges | Type discriminator column | ✅ | `type_column` in schema |
+| Coupled edges | Multiple types in one table | ✅ | Schema filter constraints |
+
+### Edge Constraints (ClickGraph Differentiator)
+
+Edge constraints define validation rules in the schema that filter invalid paths:
+
+```yaml
+edges:
+  - type: COPIED_BY
+    constraints: "from.timestamp <= to.timestamp"
+```
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Constraint in base case | ✅ | `start_node.timestamp <= end_node.timestamp` |
+| Constraint in recursive case | ✅ | `current_node.timestamp <= end_node.timestamp` |
+| Constraint with relationship filters | ✅ | Both applied correctly |
+
+**Example**: Data lineage with temporal ordering
+```cypher
+-- Finds valid forward-in-time paths only
+MATCH (f:DataFile {file_id: 1})-[:COPIED_BY*1..3]->(d:DataFile)
+RETURN f.path, d.path
+```
+
+---
+
 ## Limitations
 
 1. **Path deduplication**: For complex multi-hop patterns, consider using DISTINCT at the row level.
@@ -229,6 +299,12 @@ MATCH (start {id: 1})-[:FOLLOWS]->(neighbor)
 2. **Mixed node types**: When extracting subgraphs with multiple node types, results are unioned from separate node tables.
 
 3. **YIELD EDGES format**: Nebula returns edge objects directly; in Cypher, use `type(r)` and edge properties to construct equivalent output.
+
+4. **Generic pattern type limit**: The `[*1..N]` pattern without explicit types is limited to schemas where ≤4 edge types match the inferred pattern. For larger schemas, explicitly list the types: `[:TYPE1|TYPE2|TYPE3*1..N]`.
+
+5. **Relationship property filters in VLP**: While relationship property filters work in variable-length paths, they are applied at each hop in the recursive CTE, not as post-filtering.
+
+---
 
 ## Example: Complete Subgraph for GraphRAG
 

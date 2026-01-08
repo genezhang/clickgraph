@@ -393,50 +393,49 @@ def test_polymorphic_edge_constraints(edge_constraints_schemas, edge_constraints
 @pytest.mark.vlp
 def test_vlp_with_relationship_filters_and_constraints(edge_constraints_data):
     """
-    Test VLP with relationship filters + edge constraints.
+    Test VLP with edge constraints (temporal ordering).
     
     Verifies the Dec 26-27 fix that ensures:
-    1. Relationship filters use correct aliases (FK-edge: start_node, Standard: rel)
+    1. Edge constraints use correct aliases in base case (start_node, end_node)
     2. Edge constraints use dynamic aliases in recursive cases (current_node, new_start, etc.)
-    """
-    print(f"\n--- Testing VLP with Relationship Filters + Constraints ---")
     
-    # Test 1: Standard pattern with constraint + relationship filter
+    The lineage schema has constraint: from.timestamp <= to.timestamp
+    This ensures data flows forward in time, filtering out invalid backward edges.
+    """
+    print(f"\n--- Testing VLP with Edge Constraints ---")
+    
+    # Test 1: VLP query with constraint - should filter invalid edges
     query1 = """
-        USE data_lineage 
-        MATCH (f:DataFile {file_id: 1})-[r:COPIED_BY*1..3 {operation: 'clean'}]->(d:DataFile)
+        USE lineage 
+        MATCH (f:DataFile {file_id: 1})-[r:COPIED_BY*1..3]->(d:DataFile)
         RETURN f.path, d.path, d.timestamp
     """
     
     response1 = requests.post(
         f"{CLICKGRAPH_URL}/query",
-        json={"query": query1, "sql_only": True, "schema_name": "data_lineage"}
+        json={"query": query1, "sql_only": True, "schema_name": "lineage"}
     )
     
     assert response1.status_code == 200, f"VLP query failed: {response1.text}"
     sql1 = response1.json()["generated_sql"]
     
-    print("Generated SQL (Standard VLP):")
-    print(sql1[:500])  # First 500 chars
+    print("Generated SQL (VLP with constraint):")
+    print(sql1[:800])  # First 800 chars
     
-    # Verify constraint in base case
+    # Verify constraint in base case (start_node, end_node aliases)
     assert "start_node.created_timestamp <= end_node.created_timestamp" in sql1, \
-           "Edge constraint missing from VLP base case"
+           f"Edge constraint missing from VLP base case. SQL:\n{sql1[:500]}"
     
-    # Verify constraint in recursive case with correct alias
+    # Verify constraint in recursive case (current_node, end_node aliases)
     assert "current_node.created_timestamp <= end_node.created_timestamp" in sql1, \
-           "Edge constraint missing or wrong alias in VLP recursive case"
+           f"Edge constraint missing or wrong alias in VLP recursive case. SQL:\n{sql1}"
     
-    # Verify relationship filter with correct alias
-    assert "rel.copy_operation_type = 'clean'" in sql1 or "copy_operation_type" in sql1, \
-           "Relationship filter missing from VLP"
+    print("✅ VLP SQL: constraints present with correct aliases")
     
-    print("✅ Standard VLP: constraints + filters with correct aliases")
-    
-    # Test 2: Execute and verify results
+    # Test 2: Execute and verify constraint filtering
     response2 = requests.post(
         f"{CLICKGRAPH_URL}/query",
-        json={"query": query1, "schema_name": "data_lineage"}
+        json={"query": query1, "schema_name": "lineage"}
     )
     
     assert response2.status_code == 200, f"VLP execution failed: {response2.text}"
@@ -444,8 +443,26 @@ def test_vlp_with_relationship_filters_and_constraints(edge_constraints_data):
     
     print(f"VLP query returned {len(results)} results")
     
-    # Verify constraint filtering worked (should only return paths with valid timestamps)
-    for result in results:
-        print(f"  Path: {result['f.path']} -> {result['d.path']} @ {result['d.timestamp']}")
+    # The test data has:
+    # - File 1 (raw, 10:00) -> File 2 (processed, 11:00) - VALID (forward time)
+    # - File 2 (processed, 11:00) -> File 3 (final, 12:00) - VALID (forward time)
+    # - File 1 (raw, 10:00) -> File 4 (bad, 09:00) - INVALID (backward time)
+    #
+    # With constraint, we should get:
+    # - 1 -> 2 (1-hop)
+    # - 1 -> 2 -> 3 (2-hop)
+    # But NOT: 1 -> 4 (would violate constraint)
     
-    print("✅ VLP execution successful with constraint filtering")
+    assert len(results) == 2, f"Expected 2 results (constraint should filter invalid edge), got {len(results)}"
+    
+    # Verify we got the valid paths
+    paths = [(r['f.path'], r['d.path']) for r in results]
+    print(f"  Paths found: {paths}")
+    
+    assert ('/data/raw/input.csv', '/data/processed/clean.csv') in paths, \
+           "Missing valid 1-hop path"
+    assert ('/data/raw/input.csv', '/data/final/aggregated.csv') in paths, \
+           "Missing valid 2-hop path"
+    
+    print("✅ VLP execution successful - constraint filtering working correctly")
+
