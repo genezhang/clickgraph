@@ -152,19 +152,26 @@ fn unquoted_identifier(input: &str) -> IResult<&str, &str> {
     .parse(input)
 }
 
-/// Parse a numeric literal (integer or float)
-/// Matches: 123, -123, 3.14, -3.14, .5, -.5
+/// Parse a numeric literal (integer or float with optional scientific notation)
+/// Matches: 123, -123, 3.14, -3.14, .5, -.5, 1.5e10, -2.3e-5, 1e10
 fn parse_numeric_literal(input: &str) -> IResult<&str, &str> {
     recognize(pair(
         opt(char('-')),
-        alt((
-            // Float with integer part: 123.456 (must have digits after dot)
-            recognize((digit1, char('.'), digit1)),
-            // Float without integer part: .456
-            recognize(pair(char('.'), digit1)),
-            // Integer: 123 (no dot allowed - checked after float patterns)
-            digit1,
-        )),
+        pair(
+            alt((
+                // Float with integer part: 123.456 (must have digits after dot)
+                recognize((digit1, char('.'), digit1)),
+                // Float without integer part: .456
+                recognize(pair(char('.'), digit1)),
+                // Integer: 123 (no dot allowed - checked after float patterns)
+                digit1,
+            )),
+            // Optional scientific notation: e10, e-5, E+3
+            opt(recognize(pair(
+                alt((char('e'), char('E'))),
+                pair(opt(alt((char('+'), char('-')))), digit1),
+            ))),
+        ),
     ))
     .parse(input)
 }

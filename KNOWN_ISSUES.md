@@ -1,7 +1,7 @@
 # Known Issues
 
 **Active Issues**: 0 bugs, 3 feature limitations  
-**Last Updated**: January 7, 2026
+**Last Updated**: January 9, 2026
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -10,10 +10,42 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ## Current Bugs
 
-**🎉 No active bugs!**  
-*Last bug fixed: Array subscript support (January 7, 2026)*
+**🎉 No active bugs!**
 
-### ~~Array Subscript Support~~ ✅ **FIXED** - January 7, 2026
+---
+
+## Recently Fixed
+
+### ~~1. Parameterized Views with Relationships~~ ✅ **FIXED** - January 9, 2026
+**Was**: When both node table and edge table are parameterized views, parameters only applied to node tables, not relationship tables in VLP queries.
+
+**Root Cause**: 
+1. `graph_rel.center` is `Empty` for inferred relationship types, causing schema-based lookup without parameterized syntax
+2. Backticks from parameterized view syntax weren't stripped before schema lookup
+
+**Fix**: 
+- Created `rel_type_to_table_name_with_nodes_and_params()` for parameterized schema lookup
+- Added backtick stripping to `rel_table_plain` extraction for correct column lookup
+- Updated VLP code to extract view_parameter_values from node ViewScans
+
+**Test Results**: ✅ 6/6 GraphRAG parameterized view tests pass
+
+---
+
+### ~~2. Array Literals Not Supported~~ ✅ **FALSE ALARM** - January 9, 2026
+**Status**: ✅ Already working! Tests had bugs.
+
+**Discovery**: Array literals `[1, 2, 3]` and function calls like `cosineDistance([0.1, 0.2], [0.3, 0.4])` work perfectly! The parser already supports `Expression::List` and generates correct SQL.
+
+**Actual Issue**: Test file had bug checking `result.get("sql")` instead of `result.get("generated_sql")`.
+
+**Test Results**: 9/9 vector similarity tests now pass (100%) ✅
+
+---
+
+## Recently Fixed
+
+### Array Subscript Support ✅ **FIXED** - January 7, 2026
 **Was**: Array subscript operations on functions and arrays were not implemented
 
 **Now Working**:
@@ -102,7 +134,7 @@ The following Cypher features are **not implemented** (by design - read-only que
 
 ## Test Suite Status
 
-**Integration Tests**: ✅ **100% pass rate** (549 passed, 54 xfailed, 12 skipped)
+**Integration Tests**: ✅ **High pass rate** (549+ passed core tests)
 - Core queries: **549 passed** ✅
 - Security graph: **94 passed, 4 xfailed** ✅  
 - Variable-length paths: **24 passed, 1 skipped, 2 xfailed** ✅
@@ -111,6 +143,8 @@ The following Cypher features are **not implemented** (by design - read-only que
 - Property expressions: **28 passed, 3 xfailed** ✅
 - Node uniqueness: **4 passed** ✅
 - Multiple UNWIND: **7 passed** ✅
+- **GraphRAG + Parameterized Views**: **6/6 passing (100%)** ✅ (Jan 9, 2026)
+- **GraphRAG + Vector Similarity**: **9/9 passing (100%)** ✅ (Jan 9, 2026)
 
 **LDBC Benchmark**: **29/41 queries passing (70%)**
 - All SHORT queries pass ✅

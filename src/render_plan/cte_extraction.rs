@@ -284,6 +284,156 @@ fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
     result
 }
 
+/// Extract table name with parameterized view syntax if applicable.
+/// For parameterized views, returns `table(param1='value1', param2='value2')`.
+/// For regular tables, returns just the table name.
+/// 
+/// This is essential for VLP CTE generation where both node tables and relationship
+/// tables may be parameterized views (e.g., multi-tenant GraphRAG schemas).
+fn extract_parameterized_table_name(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::ViewScan(view_scan) => {
+            // Check if this is a parameterized view
+            if let (Some(ref param_names), Some(ref param_values)) = 
+                (&view_scan.view_parameter_names, &view_scan.view_parameter_values) 
+            {
+                if !param_names.is_empty() {
+                    // Generate parameterized view call: table(param1='value1', param2='value2')
+                    let param_pairs: Vec<String> = param_names
+                        .iter()
+                        .filter_map(|name| {
+                            param_values.get(name).map(|value| {
+                                // Escape single quotes in value for SQL safety
+                                let escaped_value = value.replace('\'', "''");
+                                format!("{} = '{}'", name, escaped_value)
+                            })
+                        })
+                        .collect();
+                    
+                    if !param_pairs.is_empty() {
+                        let result = format!("{}({})", view_scan.source_table, param_pairs.join(", "));
+                        log::debug!(
+                            "extract_parameterized_table_name: ViewScan '{}' → '{}'",
+                            view_scan.source_table, result
+                        );
+                        return Some(result);
+                    }
+                }
+            }
+            // No parameters - return plain table name
+            log::debug!("extract_parameterized_table_name: ViewScan '{}' (no params)", view_scan.source_table);
+            Some(view_scan.source_table.clone())
+        }
+        LogicalPlan::GraphNode(node) => {
+            log::debug!("extract_parameterized_table_name: GraphNode alias='{}', label={:?}", node.alias, node.label);
+            // First try to extract from the input (ViewScan/Scan)
+            if let Some(table) = extract_parameterized_table_name(&node.input) {
+                return Some(table);
+            }
+            // Fallback: use plain table name if label-based lookup needed
+            if let Some(label) = &node.label {
+                let table = label_to_table_name(label);
+                log::info!("extract_parameterized_table_name: Using label '{}' → table '{}' (no params)", label, table);
+                return Some(table);
+            }
+            None
+        }
+        LogicalPlan::GraphRel(rel) => {
+            log::debug!("extract_parameterized_table_name: GraphRel, recursing to left");
+            extract_parameterized_table_name(&rel.left)
+        }
+        LogicalPlan::Filter(filter) => {
+            extract_parameterized_table_name(&filter.input)
+        }
+        LogicalPlan::Projection(proj) => {
+            extract_parameterized_table_name(&proj.input)
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            if let Some(table) = extract_parameterized_table_name(&cp.right) {
+                return Some(table);
+            }
+            extract_parameterized_table_name(&cp.left)
+        }
+        _ => None,
+    }
+}
+
+/// Extract parameterized table name specifically from a ViewScan (used for relationship center)
+fn extract_parameterized_rel_table(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::ViewScan(view_scan) => {
+            // Check if this is a parameterized view
+            if let (Some(ref param_names), Some(ref param_values)) = 
+                (&view_scan.view_parameter_names, &view_scan.view_parameter_values) 
+            {
+                if !param_names.is_empty() {
+                    // Generate parameterized view call: table(param1='value1', param2='value2')
+                    let param_pairs: Vec<String> = param_names
+                        .iter()
+                        .filter_map(|name| {
+                            param_values.get(name).map(|value| {
+                                let escaped_value = value.replace('\'', "''");
+                                format!("{} = '{}'", name, escaped_value)
+                            })
+                        })
+                        .collect();
+                    
+                    if !param_pairs.is_empty() {
+                        let result = format!("{}({})", view_scan.source_table, param_pairs.join(", "));
+                        log::info!(
+                            "extract_parameterized_rel_table: Relationship '{}' → '{}'",
+                            view_scan.source_table, result
+                        );
+                        return Some(result);
+                    }
+                }
+            }
+            log::debug!("extract_parameterized_rel_table: '{}' (no params)", view_scan.source_table);
+            Some(view_scan.source_table.clone())
+        }
+        _ => None,
+    }
+}
+
+/// Extract view_parameter_values from a LogicalPlan (traverses to find ViewScan)
+/// This is used for multi-type VLP to get the parameter values from the query context
+fn extract_view_parameter_values(plan: &LogicalPlan) -> Option<std::collections::HashMap<String, String>> {
+    match plan {
+        LogicalPlan::ViewScan(view_scan) => {
+            let params = view_scan.view_parameter_values.clone().unwrap_or_default();
+            log::debug!("🔍 extract_view_parameter_values: ViewScan '{}' → params {:?}", view_scan.source_table, params);
+            if params.is_empty() {
+                None
+            } else {
+                Some(params)
+            }
+        }
+        LogicalPlan::GraphNode(node) => {
+            log::debug!("🔍 extract_view_parameter_values: GraphNode '{}' → recursing into input", node.alias);
+            extract_view_parameter_values(&node.input)
+        }
+        LogicalPlan::GraphRel(rel) => {
+            // Try left first, then center, then right
+            log::debug!("🔍 extract_view_parameter_values: GraphRel → trying left");
+            if let Some(left_params) = extract_view_parameter_values(&rel.left) {
+                return Some(left_params);
+            }
+            log::debug!("🔍 extract_view_parameter_values: GraphRel → trying center");
+            if let Some(center_params) = extract_view_parameter_values(&rel.center) {
+                return Some(center_params);
+            }
+            log::debug!("🔍 extract_view_parameter_values: GraphRel → trying right");
+            extract_view_parameter_values(&rel.right)
+        }
+        LogicalPlan::Filter(filter) => extract_view_parameter_values(&filter.input),
+        LogicalPlan::Projection(proj) => extract_view_parameter_values(&proj.input),
+        _ => {
+            log::debug!("🔍 extract_view_parameter_values: Unhandled plan type → None");
+            None
+        }
+    }
+}
+
 /// Convert a RenderExpr to a SQL string for use in CTE WHERE clauses
 fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> String {
     match expr {
@@ -559,6 +709,54 @@ pub fn rel_type_to_table_name_with_nodes(
             // NO FALLBACK - log error and return marker that will fail in ClickHouse
             log::error!(
                 "❌ SCHEMA ERROR: Relationship type '{}' (from_node={:?}, to_node={:?}) not found in schema. This should have been caught during query planning.",
+                rel_type, from_node, to_node
+            );
+            format!("ERROR_SCHEMA_MISSING_{}_FROM_{:?}_TO_{:?}", rel_type, from_node, to_node)
+        }
+    }
+}
+
+/// Convert a relationship type to its corresponding table name with parameterized view support
+/// This is used when the relationship doesn't come from a ViewScan (e.g., inferred from schema)
+/// but we still need to apply parameterized view syntax if the rel schema defines view_parameters.
+pub fn rel_type_to_table_name_with_nodes_and_params(
+    rel_type: &str,
+    from_node: Option<&str>,
+    to_node: Option<&str>,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+    view_parameter_values: &std::collections::HashMap<String, String>,
+) -> String {
+    match schema.get_rel_schema_with_nodes(rel_type, from_node, to_node) {
+        Ok(rel_schema) => {
+            let base_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+            
+            // Check if rel_schema has view_parameters and if we have values for them
+            if let Some(ref view_params) = rel_schema.view_parameters {
+                if !view_params.is_empty() && !view_parameter_values.is_empty() {
+                    // Build parameterized view syntax: `db.table`(param1 = 'value1', param2 = 'value2')
+                    let params: Vec<String> = view_params
+                        .iter()
+                        .filter_map(|param| {
+                            view_parameter_values.get(param).map(|value| {
+                                format!("{} = '{}'", param, value)
+                            })
+                        })
+                        .collect();
+                    
+                    if !params.is_empty() {
+                        let param_str = params.join(", ");
+                        log::info!("🔧 Applying parameterized view syntax to rel table: `{}`({})", base_table, param_str);
+                        return format!("`{}`({})", base_table, param_str);
+                    }
+                }
+            }
+            
+            // No parameterized view or no matching values - return plain table name
+            base_table
+        }
+        Err(_) => {
+            log::error!(
+                "❌ SCHEMA ERROR: Relationship type '{}' (from_node={:?}, to_node={:?}) not found in schema.",
                 rel_type, from_node, to_node
             );
             format!("ERROR_SCHEMA_MISSING_{}_FROM_{:?}_TO_{:?}", rel_type, from_node, to_node)
@@ -986,7 +1184,7 @@ pub fn extract_ctes_with_context(
         LogicalPlan::GraphRel(graph_rel) => {
             // Handle variable-length paths with context
             if let Some(spec) = &graph_rel.variable_length {
-                eprintln!("🔧 VLP: Entering variable-length path handling");
+                log::debug!("🔧 VLP: Entering variable-length path handling");
                 // Extract actual table names directly from ViewScan - with fallback to label lookup
                 let left_plan_desc = match graph_rel.left.as_ref() {
                     LogicalPlan::Empty => "Empty".to_string(),
@@ -998,7 +1196,8 @@ pub fn extract_ctes_with_context(
                     _ => "Other".to_string()
                 };
                 log::info!("🔍 VLP: Left plan = {}", left_plan_desc);
-                let start_table = extract_table_name(&graph_rel.left)
+                // 🔧 PARAMETERIZED VIEW FIX: Use extract_parameterized_table_name for parameterized view support
+                let start_table = extract_parameterized_table_name(&graph_rel.left)
                     .ok_or_else(|| RenderBuildError::MissingTableInfo("start node in VLP".to_string()))?;
                 
                 // 🎯 CHECK: Is this multi-type VLP? (end node has unknown type)
@@ -1013,7 +1212,8 @@ pub fn extract_ctes_with_context(
                     None
                 } else {
                     // Regular VLP: end_table must be in the plan
-                    Some(extract_table_name(&graph_rel.right)
+                    // 🔧 PARAMETERIZED VIEW FIX: Use extract_parameterized_table_name for parameterized view support
+                    Some(extract_parameterized_table_name(&graph_rel.right)
                         .ok_or_else(|| RenderBuildError::MissingTableInfo("end node in VLP".to_string()))?)
                 };
 
@@ -1023,11 +1223,28 @@ pub fn extract_ctes_with_context(
                 let start_label = extract_node_label_from_viewscan_with_schema(&graph_rel.left, schema).unwrap_or_default();
                 let end_label = extract_node_label_from_viewscan_with_schema(&graph_rel.right, schema).unwrap_or_default();
 
-                // Get rel_table from ViewScan's source_table (authoritative) or fall back to label lookup
+                // 🔧 PARAMETERIZED VIEW FIX: Get rel_table with parameterized view syntax if applicable
+                // First try to extract parameterized table from ViewScan, fallback to schema lookup
+                let center_plan_desc = match graph_rel.center.as_ref() {
+                    LogicalPlan::Empty => "Empty".to_string(),
+                    LogicalPlan::ViewScan(vs) => format!("ViewScan({})", vs.source_table),
+                    LogicalPlan::GraphNode(n) => format!("GraphNode({})", n.alias),
+                    LogicalPlan::GraphRel(_) => "GraphRel".to_string(),
+                    LogicalPlan::Filter(_) => "Filter".to_string(),
+                    LogicalPlan::Projection(_) => "Projection".to_string(),
+                    _ => "Other".to_string()
+                };
+                log::info!("🔍 VLP: Center plan = {}", center_plan_desc);
+                
                 let rel_table = match graph_rel.center.as_ref() {
-                    LogicalPlan::ViewScan(vs) => {
-                        // ViewScan has the authoritative table name
-                        vs.source_table.clone()
+                    LogicalPlan::ViewScan(_) => {
+                        // Use extract_parameterized_rel_table for parameterized view support
+                        let result = extract_parameterized_rel_table(graph_rel.center.as_ref());
+                        log::info!("🔍 VLP: extract_parameterized_rel_table returned: {:?}", result);
+                        result.unwrap_or_else(|| {
+                                log::warn!("Failed to extract parameterized rel table from ViewScan");
+                                "unknown_rel_table".to_string()
+                            })
                     }
                     _ => {
                         // Schema-based lookup with node types for polymorphic relationships
@@ -1050,14 +1267,31 @@ pub fn extract_ctes_with_context(
                             (Some(start_label.as_str()), Some(end_label.as_str()))
                         };
                         
-                        // Use schema lookup with node types if available
+                        // 🔧 PARAMETERIZED VIEW FIX: Extract view_parameter_values from node ViewScans
+                        // The node ViewScans have the parameter values; use them for the relationship table too
+                        let view_params = extract_view_parameter_values(&graph_rel.left)
+                            .or_else(|| extract_view_parameter_values(&graph_rel.right))
+                            .unwrap_or_default();
+                        
+                        // Use schema lookup with node types and parameterized view support
                         if let Some(schema) = context.schema() {
-                            rel_type_to_table_name_with_nodes(
-                                rel_type,
-                                lookup_from,
-                                lookup_to,
-                                schema
-                            )
+                            if !view_params.is_empty() {
+                                log::info!("🔧 VLP: Using parameterized view lookup with params: {:?}", view_params);
+                                rel_type_to_table_name_with_nodes_and_params(
+                                    rel_type,
+                                    lookup_from,
+                                    lookup_to,
+                                    schema,
+                                    &view_params
+                                )
+                            } else {
+                                rel_type_to_table_name_with_nodes(
+                                    rel_type,
+                                    lookup_from,
+                                    lookup_to,
+                                    schema
+                                )
+                            }
                         } else {
                             log::error!("❌ SCHEMA ERROR: Schema context required for relationship table lookup");
                             format!("ERROR_SCHEMA_CONTEXT_REQUIRED_{}", rel_type)
@@ -1065,15 +1299,27 @@ pub fn extract_ctes_with_context(
                     }
                 };
 
-                // Extract relationship columns from schema using the rel_table
-                eprintln!("🔧 VLP: About to extract rel columns for table: {}", rel_table);
-                eprintln!("🔧 VLP: Schema is explicitly passed as parameter");
-                eprintln!("🔧 VLP: Calling extract_relationship_columns_from_table_with_schema");
+                // For relationship column lookup, we need the plain table name (without parameters or backticks)
+                // Extract plain table name for schema lookups:
+                // 1. Remove parameterized suffix: `db.table`(param = 'value') → `db.table`
+                // 2. Remove backticks: `db.table` → db.table
+                let rel_table_plain = {
+                    let without_params = if rel_table.contains('(') {
+                        rel_table.split('(').next().unwrap_or(&rel_table).to_string()
+                    } else {
+                        rel_table.clone()
+                    };
+                    // Remove backticks that may be present from parameterized view syntax
+                    without_params.trim_matches('`').to_string()
+                };
+
+                // Extract relationship columns from schema using the plain table name
+                log::debug!("🔧 VLP: Extract rel columns for table: {} (plain: {})", rel_table, rel_table_plain);
                 // Use schema lookup for the relationship table columns
-                let rel_cols = extract_relationship_columns_from_table_with_schema(&rel_table, schema);
+                let rel_cols = extract_relationship_columns_from_table_with_schema(&rel_table_plain, schema);
                 let from_col = rel_cols.from_id;
                 let to_col = rel_cols.to_id;
-                eprintln!("🔧 VLP: Final columns: from_col='{}', to_col='{}' for table '{}'", from_col, to_col, rel_table);
+                log::debug!("🔧 VLP: Final columns: from_col='{}', to_col='{}' for table '{}'", from_col, to_col, rel_table);
 
                 // ⚠️ CRITICAL: Node ID Column Selection (Multi-Schema Support)
                 // ========================================================
@@ -1114,7 +1360,7 @@ pub fn extract_ctes_with_context(
                         }
                     } else {
                         // Fallback: use relationship's from_id
-                        eprintln!("⚠️ VLP: Could not find node schema for '{}', using relationship from_id '{}'", start_label, from_col);
+                        log::warn!("⚠️ VLP: Could not find node schema for '{}', using relationship from_id '{}'", start_label, from_col);
                         from_col.clone()
                     }
                 } else {
@@ -1133,7 +1379,7 @@ pub fn extract_ctes_with_context(
                         }
                     } else {
                         // Fallback: use relationship's to_id
-                        eprintln!("⚠️ VLP: Could not find node schema for '{}', using relationship to_id '{}'", end_label, to_col);
+                        log::warn!("⚠️ VLP: Could not find node schema for '{}', using relationship to_id '{}'", end_label, to_col);
                         to_col.clone()
                     }
                 } else {
@@ -1141,7 +1387,7 @@ pub fn extract_ctes_with_context(
                     to_col.clone()
                 };
                 
-                eprintln!("🔧 VLP: Node ID columns: start_id_col='{}', end_id_col='{}'", start_id_col, end_id_col);
+                log::debug!("🔧 VLP: Node ID columns: start_id_col='{}', end_id_col='{}'", start_id_col, end_id_col);
 
                 // Define aliases for traversal
                 // Note: GraphRel.left_connection and right_connection are ALREADY swapped based on direction
@@ -1427,12 +1673,22 @@ pub fn extract_ctes_with_context(
                             start_labels, rel_types, end_labels
                         );
                         
+                        // 🔧 PARAMETERIZED VIEW FIX: Extract view parameters from the graph pattern
+                        // Try to get from left (start node) first, then try right (end node)
+                        let view_parameter_values = extract_view_parameter_values(&graph_rel.left)
+                            .or_else(|| extract_view_parameter_values(&graph_rel.right))
+                            .unwrap_or_default();
+                        log::debug!(
+                            "🔧 Multi-type VLP: Extracted view_parameter_values: {:?}",
+                            view_parameter_values
+                        );
+                        
                         // Create the generator
                         use crate::clickhouse_query_generator::MultiTypeVlpJoinGenerator;
                         
                         // For multi-type VLP, we use start_filters_sql and end_filters_sql directly
                         // The schema filters are handled differently in JOIN expansion
-                        let mut generator = MultiTypeVlpJoinGenerator::new(
+                        let generator = MultiTypeVlpJoinGenerator::new(
                             schema,
                             start_labels,
                             rel_types,
@@ -1444,6 +1700,7 @@ pub fn extract_ctes_with_context(
                             end_filters_sql.clone(),
                             rel_filters_sql.clone(),
                             graph_rel.path_variable.clone(),
+                            view_parameter_values,
                         );
                         
                         // TODO: Add property projections based on what's needed in RETURN clause
@@ -1571,8 +1828,8 @@ pub fn extract_ctes_with_context(
 
                     // Choose generator based on denormalized status
                     let mut generator = if both_denormalized {
-                        eprintln!("🔧 CTE: Using denormalized generator for variable-length path (both nodes virtual)");
-                        eprintln!("🔧 CTE: rel_table={}, filter_properties count={}", rel_table, filter_properties.len());
+                        log::debug!("🔧 CTE: Using denormalized generator for variable-length path (both nodes virtual)");
+                        log::debug!("🔧 CTE: rel_table={}, filter_properties count={}", rel_table, filter_properties.len());
                         
                         // For denormalized nodes, extract ALL properties from the node schema
                         // (not just filter properties, since properties come from the edge table)
@@ -1588,15 +1845,15 @@ pub fn extract_ctes_with_context(
                                 schema_table == rel_table_name
                             }) {
                             
-                            eprintln!("🔧 CTE: Found node schema for table {}", rel_table);
+                            log::debug!("🔧 CTE: Found node schema for table {}", rel_table);
                             
                             // Add all from_node properties
                             if let Some(ref from_props) = node_schema.from_properties {
-                                eprintln!("🔧 CTE: Adding {} from_node properties", from_props.len());
-                                for (logical_prop, physical_col) in from_props {
+                                log::debug!("🔧 CTE: Adding {} from_node properties", from_props.len());
+                                for (logical_prop, _physical_col) in from_props {
                                     if !all_denorm_properties.iter().any(|p| 
                                         p.cypher_alias == graph_rel.left_connection && p.alias == *logical_prop) {
-                                        eprintln!("🔧 CTE: Adding from property: {} -> {}", logical_prop, physical_col);
+                                        log::trace!("🔧 CTE: Adding from property: {}", logical_prop);
                                         all_denorm_properties.push(NodeProperty {
                                             cypher_alias: graph_rel.left_connection.clone(),
                                             column_name: logical_prop.clone(),
@@ -1608,11 +1865,11 @@ pub fn extract_ctes_with_context(
                             
                             // Add all to_node properties
                             if let Some(ref to_props) = node_schema.to_properties {
-                                eprintln!("🔧 CTE: Adding {} to_node properties", to_props.len());
-                                for (logical_prop, physical_col) in to_props {
+                                log::debug!("🔧 CTE: Adding {} to_node properties", to_props.len());
+                                for (logical_prop, _physical_col) in to_props {
                                     if !all_denorm_properties.iter().any(|p| 
                                         p.cypher_alias == graph_rel.right_connection && p.alias == *logical_prop) {
-                                        eprintln!("🔧 CTE: Adding to property: {} -> {}", logical_prop, physical_col);
+                                        log::trace!("🔧 CTE: Adding to property: {}", logical_prop);
                                         all_denorm_properties.push(NodeProperty {
                                             cypher_alias: graph_rel.right_connection.clone(),
                                             column_name: logical_prop.clone(),
@@ -1622,10 +1879,10 @@ pub fn extract_ctes_with_context(
                                 }
                             }
                         } else {
-                            eprintln!("❌ CTE: No node schema found for table {}", rel_table);
+                            log::warn!("❌ CTE: No node schema found for table {}", rel_table);
                         }
                         
-                        eprintln!("🔧 CTE: Final all_denorm_properties count: {}", all_denorm_properties.len());
+                        log::debug!("🔧 CTE: Final all_denorm_properties count: {}", all_denorm_properties.len());
                         
                         VariableLengthCteGenerator::new_denormalized(
                             schema,
@@ -2406,9 +2663,10 @@ pub fn get_variable_length_denorm_info(plan: &LogicalPlan) -> Option<VariableLen
 
     match plan {
         LogicalPlan::GraphRel(rel) if rel.variable_length.is_some() => {
-            // Extract table names and id columns from the nodes' ViewScans
-            let start_table = extract_table_name(&rel.left);
-            let end_table = extract_table_name(&rel.right);
+            // 🔧 PARAMETERIZED VIEW FIX: Extract table names with parameterized view syntax
+            // This ensures outer JOINs also use parameterized views (tenant_id = 'value')
+            let start_table = extract_parameterized_table_name(&rel.left);
+            let end_table = extract_parameterized_table_name(&rel.right);
             let start_id_col = extract_id_column(&rel.left);
             let end_id_col = extract_id_column(&rel.right);
 
@@ -2801,17 +3059,23 @@ pub struct VlpContext {
     pub start_alias: String,
     pub start_table: String,
     pub start_id_col: String,
+    /// Parameterized table reference for start node (e.g., `db.table`(param='value'))
+    pub start_table_parameterized: Option<String>,
 
     /// End node information
     pub end_alias: String,
     pub end_table: String,
     pub end_id_col: String,
+    /// Parameterized table reference for end node (e.g., `db.table`(param='value'))
+    pub end_table_parameterized: Option<String>,
 
     /// Relationship information
     pub rel_alias: String,
     pub rel_table: String,
     pub rel_from_col: String,
     pub rel_to_col: String,
+    /// Parameterized table reference for relationship (e.g., `db.table`(param='value'))
+    pub rel_table_parameterized: Option<String>,
 
     /// For polymorphic edges: type column and value
     pub type_column: Option<String>,
@@ -2924,6 +3188,16 @@ pub fn build_vlp_context(
     let rel_table = extract_table_name(&graph_rel.center)?;
     let rel_cols = extract_relationship_columns(&graph_rel.center)?;
 
+    // 🔧 PARAMETERIZED VIEW FIX: Extract parameterized table names for chained join optimization
+    let start_table_parameterized = extract_parameterized_table_name(&graph_rel.left);
+    let end_table_parameterized = extract_parameterized_table_name(&graph_rel.right);
+    let rel_table_parameterized = extract_parameterized_rel_table(&graph_rel.center);
+    
+    log::debug!(
+        "build_vlp_context: start_table='{}' parameterized={:?}, end_table='{}' parameterized={:?}, rel_table='{}' parameterized={:?}",
+        start_table, start_table_parameterized, end_table, end_table_parameterized, rel_table, rel_table_parameterized
+    );
+
     // Extract polymorphic type info
     let (type_column, type_value) = if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
         (
@@ -2957,13 +3231,16 @@ pub fn build_vlp_context(
         start_alias,
         start_table,
         start_id_col,
+        start_table_parameterized,
         end_alias,
         end_table,
         end_id_col,
+        end_table_parameterized,
         rel_alias,
         rel_table,
         rel_from_col: rel_cols.from_id,
         rel_to_col: rel_cols.to_id,
+        rel_table_parameterized,
         type_column,
         type_value,
         from_node_properties,
@@ -3274,9 +3551,21 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
     let exact_hops = ctx.exact_hops.unwrap_or(1);
     let mut joins = Vec::new();
 
+    // 🔧 PARAMETERIZED VIEW FIX: Use parameterized table names if available, else fallback to plain names
+    let start_table_ref = ctx.start_table_parameterized.as_ref()
+        .unwrap_or(&ctx.start_table);
+    let end_table_ref = ctx.end_table_parameterized.as_ref()
+        .unwrap_or(&ctx.end_table);
+    let rel_table_ref = ctx.rel_table_parameterized.as_ref()
+        .unwrap_or(&ctx.rel_table);
+
     println!(
         "expand_fixed_length_joins_with_context: schema_type={:?}, {} hops from {} to {}",
         ctx.schema_type, exact_hops, ctx.start_alias, ctx.end_alias
+    );
+    log::debug!(
+        "expand_fixed_length_joins_with_context: start_table='{}', end_table='{}', rel_table='{}'",
+        start_table_ref, end_table_ref, rel_table_ref
     );
 
     match ctx.schema_type {
@@ -3287,7 +3576,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
             // No final node JOIN needed - end node properties come from rN.to_node_properties
 
             // First hop is the FROM table, not a JOIN
-            let from_table = ctx.rel_table.clone();
+            let from_table = rel_table_ref.clone();
             let from_alias = "r1".to_string();
 
             // Generate JOINs for hops 2..N
@@ -3296,7 +3585,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                 let prev_alias = format!("r{}", hop - 1);
 
                 joins.push(Join {
-                    table_name: ctx.rel_table.clone(),
+                    table_name: rel_table_ref.clone(),
                     table_alias: rel_alias.clone(),
                     joining_on: vec![OperatorApplication {
                         operator: Operator::Equal,
@@ -3333,7 +3622,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
             // FROM: start_node_table AS start_alias
             // JOINs: r1 ON start.id = r1.from_id, r2 ON r1.to_id = r2.from_id, ..., end ON rN.to_id = end.id
 
-            let from_table = ctx.start_table.clone();
+            let from_table = start_table_ref.clone();
             let from_alias = ctx.start_alias.clone();
 
             for hop in 1..=exact_hops {
@@ -3347,7 +3636,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
 
                 // Add relationship JOIN
                 joins.push(Join {
-                    table_name: ctx.rel_table.clone(),
+                    table_name: rel_table_ref.clone(),
                     table_alias: rel_alias.clone(),
                     joining_on: vec![OperatorApplication {
                         operator: Operator::Equal,
@@ -3369,10 +3658,10 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                 });
             }
 
-            // Add final node JOIN
+            // Add final node JOIN - use parameterized end table
             let last_rel = format!("r{}", exact_hops);
             joins.push(Join {
-                table_name: ctx.end_table.clone(),
+                table_name: end_table_ref.clone(),
                 table_alias: ctx.end_alias.clone(),
                 joining_on: vec![OperatorApplication {
                     operator: Operator::Equal,
@@ -3411,7 +3700,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
             // JOIN fs_objects AS m1 ON child.parent_id = m1.object_id  -- hop 1
             // JOIN fs_objects AS parent ON m1.parent_id = parent.object_id  -- hop 2
 
-            let from_table = ctx.start_table.clone();
+            let from_table = start_table_ref.clone();
             let from_alias = ctx.start_alias.clone();
 
             for hop in 1..=exact_hops {
@@ -3430,8 +3719,9 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
 
                 // FK-edge: prev_node.fk_col = current_node.id_col
                 // Example: child.parent_id = m1.object_id
+                // 🔧 PARAMETERIZED VIEW FIX: Use start_table_ref for FK-edge (self-referencing table)
                 joins.push(Join {
-                    table_name: ctx.start_table.clone(), // Same table as start (self-referencing)
+                    table_name: start_table_ref.clone(), // Same table as start (self-referencing)
                     table_alias: current_alias.clone(),
                     joining_on: vec![OperatorApplication {
                         operator: Operator::Equal,

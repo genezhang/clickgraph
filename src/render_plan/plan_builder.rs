@@ -6639,15 +6639,24 @@ impl RenderPlanBuilder for LogicalPlan {
                 log::debug!("🔍 GraphJoins.extract_from: {} joins, anchor_table={:?}", 
                     graph_joins.joins.len(), graph_joins.anchor_table);
                 
+                // 🔧 PARAMETERIZED VIEW FIX: Get parameterized table references from input plan
+                let parameterized_tables = extract_rel_and_node_tables(&graph_joins.input);
+                
                 // STEP 1: Find FROM marker (Join with empty joining_on)
                 // This is the authoritative source - it was set by graph_join_inference
                 for join in &graph_joins.joins {
                     if join.joining_on.is_empty() {
-                        log::info!("✅ Found FROM marker: table='{}' alias='{}'", 
-                            join.table_name, join.table_alias);
+                        // 🔧 PARAMETERIZED VIEW FIX: Use parameterized table reference if available
+                        let table_name = parameterized_tables
+                            .get(&join.table_alias)
+                            .cloned()
+                            .unwrap_or_else(|| join.table_name.clone());
+                        
+                        log::info!("✅ Found FROM marker: table='{}' (original='{}') alias='{}'", 
+                            table_name, join.table_name, join.table_alias);
                         return Ok(Some(FromTable::new(Some(super::ViewTableRef {
                             source: std::sync::Arc::new(LogicalPlan::Empty),
-                            name: join.table_name.clone(),
+                            name: table_name,
                             alias: Some(join.table_alias.clone()),
                             use_final: false,
                         }))));

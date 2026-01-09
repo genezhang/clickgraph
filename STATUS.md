@@ -2536,6 +2536,8 @@ SELECT name FROM users_by_tenant(tenant_id = $tenant_id)
 
 **Tests**:
 - `tests/integration/test_multi_tenant_parameterized_views.py`
+- `tests/integration/test_graphrag_parameterized_views.py` ⭐ NEW (Jan 9, 2026) - GraphRAG + multi-tenant
+- `tests/integration/test_graphrag_vector_similarity.py` ⭐ NEW (Jan 9, 2026) - Vector embeddings + graph
 - `tests/rust/unit/test_view_parameters.rs`
 
 ### 🎯 Multi-Tenant Patterns Supported

@@ -67,6 +67,10 @@ pub struct MultiTypeVlpJoinGenerator<'a> {
     
     // Path variable (if specified, e.g., "p" in "MATCH p = ...")
     path_variable: Option<String>,
+    
+    // 🔧 PARAMETERIZED VIEW FIX: View parameter values for multi-tenant queries
+    // Maps parameter name -> parameter value (e.g., "tenant_id" -> "tenant_a")
+    view_parameter_values: HashMap<String, String>,
 }
 
 impl<'a> MultiTypeVlpJoinGenerator<'a> {
@@ -83,6 +87,8 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
     /// * `start_filters` - Optional WHERE filters for start node
     /// * `end_filters` - Optional WHERE filters for end node
     /// * `rel_filters` - Optional WHERE filters for relationships
+    /// * `path_variable` - Optional path variable name (e.g., "p" in "MATCH p = ...")
+    /// * `view_parameter_values` - View parameters for parameterized views (e.g., {"tenant_id": "tenant_a"})
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         schema: &'a GraphSchema,
@@ -96,6 +102,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         end_filters: Option<String>,
         rel_filters: Option<String>,
         path_variable: Option<String>,
+        view_parameter_values: HashMap<String, String>,
     ) -> Self {
         let min_hops = spec.min_hops.unwrap_or(1) as usize;
         let max_hops = spec.max_hops.unwrap_or(10) as usize;
@@ -117,6 +124,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             rel_filters,
             properties: vec![],
             path_variable,
+            view_parameter_values,
         }
     }
     
@@ -417,16 +425,20 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
     }
     
     /// Get table name with database prefix for a node type
+    /// 🔧 PARAMETERIZED VIEW FIX: Applies view parameters if the node schema has view_parameters defined
     fn get_node_table_with_db(&self, node_type: &str) -> Result<String, String> {
         self.schema
             .get_nodes_schemas()
             .get(node_type)
             .map(|n| {
-                if n.database.is_empty() {
+                let base_table = if n.database.is_empty() {
                     n.table_name.clone()
                 } else {
                     format!("{}.{}", n.database, n.table_name)
-                }
+                };
+                
+                // Apply parameterized view syntax if the schema has view_parameters
+                self.apply_view_parameters(&base_table, &n.view_parameters)
             })
             .ok_or_else(|| format!("Node table not found for type '{}'", node_type))
     }
@@ -440,17 +452,52 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
     }
     
     /// Get table name with database prefix for a relationship type
+    /// 🔧 PARAMETERIZED VIEW FIX: Applies view parameters if the relationship schema has view_parameters defined
     fn get_rel_table_with_db(&self, rel_type: &str) -> Result<String, String> {
         self.schema
             .get_rel_schema(rel_type)
             .map(|r| {
-                if r.database.is_empty() {
+                let base_table = if r.database.is_empty() {
                     r.table_name.clone()
                 } else {
                     format!("{}.{}", r.database, r.table_name)
-                }
+                };
+                
+                // Apply parameterized view syntax if the schema has view_parameters
+                self.apply_view_parameters(&base_table, &r.view_parameters)
             })
             .map_err(|e| format!("Relationship table not found for type '{}': {}", rel_type, e))
+    }
+    
+    /// Apply view parameters to a table name, generating parameterized view syntax
+    /// Example: "graphrag.documents" + {"tenant_id": "tenant_a"} + [tenant_id] 
+    ///          → "`graphrag.documents`(tenant_id = 'tenant_a')"
+    fn apply_view_parameters(&self, base_table: &str, schema_params: &Option<Vec<String>>) -> String {
+        // Only apply if schema has view_parameters AND we have values for them
+        if let Some(param_names) = schema_params {
+            if param_names.is_empty() || self.view_parameter_values.is_empty() {
+                return base_table.to_string();
+            }
+            
+            // Collect matching parameters
+            let param_assignments: Vec<String> = param_names
+                .iter()
+                .filter_map(|name| {
+                    self.view_parameter_values.get(name).map(|value| {
+                        format!("{} = '{}'", name, value)
+                    })
+                })
+                .collect();
+            
+            if param_assignments.is_empty() {
+                return base_table.to_string();
+            }
+            
+            // Format: `db.table`(param = 'value')
+            format!("`{}`({})", base_table, param_assignments.join(", "))
+        } else {
+            base_table.to_string()
+        }
     }
     
     /// Get from_id and to_id columns for a relationship type

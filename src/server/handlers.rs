@@ -466,6 +466,9 @@ pub async fn query_handler(
                     })
                     .collect()
             });
+            
+            log::debug!("Handler: view_parameters from request: {:?}", payload.view_parameters);
+            log::debug!("Handler: converted view_parameter_values: {:?}", view_parameter_values);
 
             let logical_plan = match query_planner::evaluate_read_statement(
                 cypher_statement,

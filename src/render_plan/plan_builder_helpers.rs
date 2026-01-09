@@ -378,27 +378,44 @@ pub(super) fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
 }
 
 /// Helper function to extract the table reference with parameterized view syntax if applicable.
-/// For a ViewScan with view_parameter_names, returns `table_name(param1 = $param1, param2 = $param2)`.
+/// For a ViewScan with view_parameter_names, returns `table_name(param1='value1', param2='value2')`.
 /// For other cases, returns just the table name.
 /// 
 /// This is used for JOINs where parameterized views need to be called with parameters.
-/// Example: `JOIN friendships_by_tenant(tenant_id = $tenant_id) AS f ON ...`
+/// Example: `JOIN friendships_by_tenant(tenant_id='acme') AS f ON ...`
 pub(super) fn extract_parameterized_table_ref(plan: &LogicalPlan) -> Option<String> {
     match plan {
         // For CTEs, return the CTE name directly (no parameters)
         LogicalPlan::Cte(cte) => Some(cte.name.clone()),
         LogicalPlan::ViewScan(view_scan) => {
             // Check if this is a parameterized view
-            if let Some(ref param_names) = view_scan.view_parameter_names {
+            if let (Some(ref param_names), Some(ref param_values)) = 
+                (&view_scan.view_parameter_names, &view_scan.view_parameter_values) 
+            {
                 if !param_names.is_empty() {
-                    // Generate parameterized view call: table(param1 = $param1, param2 = $param2)
+                    // Generate parameterized view call with actual values: table(param1='value1', param2='value2')
                     let param_pairs: Vec<String> = param_names
                         .iter()
-                        .map(|name| format!("{} = ${}", name, name))
+                        .filter_map(|name| {
+                            param_values.get(name).map(|value| {
+                                // Escape single quotes in value for SQL safety
+                                let escaped_value = value.replace('\'', "''");
+                                format!("{} = '{}'", name, escaped_value)
+                            })
+                        })
                         .collect();
+                    
+                    if param_pairs.is_empty() {
+                        log::warn!(
+                            "extract_parameterized_table_ref: ViewScan '{}' expects parameters {:?} but none matched in values",
+                            view_scan.source_table, param_names
+                        );
+                        return Some(view_scan.source_table.clone());
+                    }
+                    
                     log::debug!(
-                        "extract_parameterized_table_ref: ViewScan '{}' has parameters {:?}, generating: {}({})",
-                        view_scan.source_table, param_names, view_scan.source_table, param_pairs.join(", ")
+                        "extract_parameterized_table_ref: ViewScan '{}' generating: {}({})",
+                        view_scan.source_table, view_scan.source_table, param_pairs.join(", ")
                     );
                     return Some(format!("{}({})", view_scan.source_table, param_pairs.join(", ")));
                 }

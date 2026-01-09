@@ -21,14 +21,30 @@ pub struct ViewTableRef {
 impl ViewTableRef {
     /// Build table reference with parameterized view syntax if applicable
     fn build_table_reference(scan: &ViewScan, base_name: &str) -> String {
-        if let Some(param_names) = &scan.view_parameter_names {
+        if let (Some(param_names), Some(param_values)) = 
+            (&scan.view_parameter_names, &scan.view_parameter_values) 
+        {
             if !param_names.is_empty() {
-                // Generate parameterized view call with $placeholder syntax
-                // e.g., view_name(tenant_id = $tenant_id, region = $region)
+                // Generate parameterized view call with actual values
+                // e.g., view_name(tenant_id='acme', region='US')
                 let param_pairs: Vec<String> = param_names
                     .iter()
-                    .map(|name| format!("{} = ${}", name, name))
+                    .filter_map(|name| {
+                        param_values.get(name).map(|value| {
+                            // Escape single quotes in value for SQL safety
+                            let escaped_value = value.replace('\'', "''");
+                            format!("{} = '{}'", name, escaped_value)
+                        })
+                    })
                     .collect();
+
+                if param_pairs.is_empty() {
+                    log::warn!(
+                        "ViewTableRef: View '{}' expects parameters {:?} but none matched in provided values",
+                        base_name, param_names
+                    );
+                    return base_name.to_string();
+                }
 
                 return format!("{}({})", base_name, param_pairs.join(", "));
             }
@@ -41,6 +57,7 @@ impl ViewTableRef {
     /// Create a new table reference
     pub fn new_table(scan: ViewScan, name: String) -> Self {
         let table_ref = Self::build_table_reference(&scan, &name);
+        log::debug!("ViewTableRef::new_table: base_name={}, table_ref={}", name, table_ref);
         let use_final = scan.use_final; // Extract before moving scan
         Self {
             source: Arc::new(LogicalPlan::ViewScan(Arc::new(scan))),

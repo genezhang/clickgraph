@@ -727,8 +727,14 @@ pub fn try_generate_view_scan(
     );
 
     // Set view parameters if this is a parameterized view
-    view_scan.view_parameter_names = view_parameter_names;
-    view_scan.view_parameter_values = view_parameter_values;
+    view_scan.view_parameter_names = view_parameter_names.clone();
+    view_scan.view_parameter_values = view_parameter_values.clone();
+    log::debug!(
+        "ViewScan created for '{}': param_names={:?}, param_values={:?}",
+        label,
+        view_parameter_names,
+        view_parameter_values
+    );
 
     // Set denormalized flag and properties from schema
     view_scan.is_denormalized = node_schema.is_denormalized;
