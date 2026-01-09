@@ -47,6 +47,11 @@ Content-Type: application/json
   - No `SET ROLE` overhead on query execution
   - Example: `"analyst"`, `"admin"`
 - `schema_name` (string, optional): Graph schema/database name to use for this query. Defaults to `"default"`. Enables multi-database support for queries. **Note**: The `USE` clause in the query itself takes precedence over this parameter.
+- `max_inferred_types` (integer, optional): Maximum number of relationship types to infer for generic patterns ✅ **[ADDED: v0.6.1]**
+  - Default: 5 (prevents excessive UNION expansion)
+  - Recommended for GraphRAG: 10-20 (complex knowledge graphs with many relationship types)
+  - Example: `{"query": "MATCH (n)-[*1..3]->(m) RETURN m", "max_inferred_types": 15}`
+  - Use case: Override when your schema has more than 5 relationship types between nodes
 
 **Response Format:**
 ```http

@@ -1,5 +1,20 @@
 ## [Unreleased]
 
+
+### 🚀 Features
+
+#### Configurable MAX_INFERRED_TYPES (Jan 8, 2026)
+
+**Made type inference limit configurable via query parameter to support GraphRAG use cases.**
+
+- **Query-level override**: `{"query": "...", "max_inferred_types": 10}`
+- **Default**: 5 relationship types (unified from previous inconsistent 4/5)
+- **Recommended for GraphRAG**: 10-20 types for complex knowledge graphs
+- **Use case**: Schemas with more than 5 relationship types between nodes
+- **Files**: `src/server/models.rs`, `src/query_planner/plan_ctx/mod.rs`, `src/query_planner/logical_plan/match_clause.rs`, `src/query_planner/analyzer/type_inference.rs`
+- **API**: Added `max_inferred_types` optional field to `/query` endpoint
+- **Commits**: ad7c77a (initial implementation), 16c3dce (unified default to 5)
+
 ### � Internal/Development
 
 #### GraphRAG Multi-Type VLP Foundation - Developer Preview (Dec 27, 2025)
@@ -464,7 +479,7 @@ RETURN u.name,
 - Add schema entity collection in VariableResolver for Projection scope
 - Add dedicated LabelInference analyzer pass
 - Enhance TypeInference to infer both node labels and edge types
-- Reduce MAX_INFERRED_TYPES from 20 to 5
+- Reduce MAX_INFERRED_TYPES from 20 to 5 (later made configurable in v0.6.1)
 - *(parser)* Add clear error messages for unsupported pattern comprehensions
 - *(parser)* Add clear error messages for bidirectional relationship patterns
 - *(parser)* Convert temporal property accessors to function calls
