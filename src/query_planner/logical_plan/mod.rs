@@ -51,8 +51,9 @@ pub fn evaluate_query(
     schema: &GraphSchema,
     tenant_id: Option<String>,
     view_parameter_values: Option<HashMap<String, String>>,
+    max_inferred_types: Option<usize>,
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
-    plan_builder::build_logical_plan(&query_ast, schema, tenant_id, view_parameter_values)
+    plan_builder::build_logical_plan(&query_ast, schema, tenant_id, view_parameter_values, max_inferred_types)
 }
 
 /// Evaluate a complete Cypher statement which may contain UNION clauses
@@ -61,10 +62,11 @@ pub fn evaluate_cypher_statement(
     schema: &GraphSchema,
     tenant_id: Option<String>,
     view_parameter_values: Option<HashMap<String, String>>,
+    max_inferred_types: Option<usize>,
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
     // If no union clauses, just evaluate the single query
     if statement.union_clauses.is_empty() {
-        return evaluate_query(statement.query, schema, tenant_id, view_parameter_values);
+        return evaluate_query(statement.query, schema, tenant_id, view_parameter_values, max_inferred_types);
     }
 
     // Build logical plans for all queries
@@ -78,6 +80,7 @@ pub fn evaluate_cypher_statement(
         schema,
         tenant_id.clone(),
         view_parameter_values.clone(),
+        max_inferred_types,
     )?;
     all_plans.push(first_plan);
     combined_ctx = Some(first_ctx);
@@ -99,6 +102,7 @@ pub fn evaluate_cypher_statement(
             schema,
             tenant_id.clone(),
             view_parameter_values.clone(),
+            max_inferred_types,
         )?;
         all_plans.push(plan);
         // Merge the context from this union branch into combined context

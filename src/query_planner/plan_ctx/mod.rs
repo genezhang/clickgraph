@@ -275,6 +275,10 @@ pub struct PlanCtx {
     /// Consumed by property expansion in renderer to prune unnecessary columns
     /// Example: If RETURN only uses friend.firstName, don't collect friend.* (200 columns)
     property_requirements: Option<PropertyRequirements>,
+    /// Maximum number of inferred edge types for generic patterns like [*1] (default: 4)
+    /// Can be overridden per-query via QueryRequest.max_inferred_types
+    /// Reasonable values for GraphRAG: 10-20 edge types
+    pub(crate) max_inferred_types: usize,
 }
 
 impl PlanCtx {
@@ -499,6 +503,7 @@ impl PlanCtx {
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
             property_requirements: None,
+            max_inferred_types: 4,
         }
     }
 
@@ -519,6 +524,7 @@ impl PlanCtx {
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
             property_requirements: None,
+            max_inferred_types: 4,
         }
     }
 
@@ -527,6 +533,16 @@ impl PlanCtx {
         schema: Arc<GraphSchema>,
         tenant_id: Option<String>,
         view_parameter_values: Option<HashMap<String, String>>,
+    ) -> Self {
+        Self::with_all_parameters(schema, tenant_id, view_parameter_values, 4)
+    }
+
+    /// Create a new PlanCtx with all parameters including max_inferred_types
+    pub fn with_all_parameters(
+        schema: Arc<GraphSchema>,
+        tenant_id: Option<String>,
+        view_parameter_values: Option<HashMap<String, String>>,
+        max_inferred_types: usize,
     ) -> Self {
         PlanCtx {
             alias_table_ctx_map: HashMap::new(),
@@ -543,6 +559,7 @@ impl PlanCtx {
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
             property_requirements: None,
+            max_inferred_types,
         }
     }
 
@@ -573,6 +590,7 @@ impl PlanCtx {
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
             property_requirements: None,
+            max_inferred_types: parent.max_inferred_types,
         }
     }
 
@@ -596,6 +614,7 @@ impl PlanCtx {
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
             property_requirements: None,
+            max_inferred_types: 4,
         }
     }
 

@@ -472,6 +472,7 @@ pub async fn query_handler(
                 &graph_schema,
                 payload.tenant_id.clone(),
                 view_parameter_values,
+                payload.max_inferred_types,
             ) {
                 Ok(plan) => plan,
                 Err(e) => {

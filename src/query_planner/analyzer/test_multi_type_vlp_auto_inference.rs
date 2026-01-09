@@ -167,7 +167,7 @@ mod tests {
         let ast = crate::open_cypher_parser::parse_query(cypher).expect("Failed to parse query");
         
         // Build initial logical plan
-        let (plan, mut plan_ctx) = evaluate_query(ast, &schema, None, None)
+        let (plan, mut plan_ctx) = evaluate_query(ast, &schema, None, None, None)
             .expect("Failed to build logical plan");
 
         println!("Initial plan:\n{:#?}", plan);
@@ -217,7 +217,7 @@ mod tests {
 
         let ast = crate::open_cypher_parser::parse_query(cypher).expect("Failed to parse query");
         
-        let (plan, mut plan_ctx) = evaluate_query(ast, &schema, None, None)
+        let (plan, mut plan_ctx) = evaluate_query(ast, &schema, None, None, None)
             .expect("Failed to build logical plan");
 
         println!("Initial plan_ctx for 'x': {:?}", plan_ctx.get_table_ctx("x"));
@@ -256,7 +256,7 @@ mod tests {
 
         let ast = crate::open_cypher_parser::parse_query(cypher).expect("Failed to parse query");
         
-        let (plan, mut plan_ctx) = evaluate_query(ast, &schema, None, None)
+        let (plan, mut plan_ctx) = evaluate_query(ast, &schema, None, None, None)
             .expect("Failed to build logical plan");
 
         let type_inference = TypeInference::new();
@@ -300,7 +300,7 @@ mod tests {
 
         let ast = crate::open_cypher_parser::parse_query(cypher).expect("Failed to parse query");
         
-        let (plan, mut plan_ctx) = evaluate_query(ast, &schema, None, None)
+        let (plan, mut plan_ctx) = evaluate_query(ast, &schema, None, None, None)
             .expect("Failed to build logical plan");
 
         let type_inference = TypeInference::new();

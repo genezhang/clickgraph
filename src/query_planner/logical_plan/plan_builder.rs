@@ -21,10 +21,15 @@ pub fn build_logical_plan(
     schema: &GraphSchema,
     tenant_id: Option<String>,
     view_parameter_values: Option<HashMap<String, String>>,
+    max_inferred_types: Option<usize>,
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
     let mut logical_plan: Arc<LogicalPlan> = Arc::new(LogicalPlan::Empty);
-    let mut plan_ctx =
-        PlanCtx::with_parameters(Arc::new(schema.clone()), tenant_id, view_parameter_values);
+    let mut plan_ctx = PlanCtx::with_all_parameters(
+        Arc::new(schema.clone()),
+        tenant_id,
+        view_parameter_values,
+        max_inferred_types.unwrap_or(4),
+    );
 
     log::debug!(
         "build_logical_plan: Processing query with {} MATCH clauses, {} optional_match_clauses",

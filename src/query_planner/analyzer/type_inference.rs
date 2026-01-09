@@ -690,10 +690,10 @@ impl TypeInference {
             .into_iter()
             .collect();
         
-        if unique_edge_types.len() > MAX_INFERRED_TYPES && known_edge_types.is_none() {
+        if unique_edge_types.len() > plan_ctx.max_inferred_types && known_edge_types.is_none() {
             return Err(AnalyzerError::InvalidPlan(format!(
                 "Too many matching relationship types ({}) for {:?}->{:?}. Max allowed is {}. Please specify explicit relationship type(s).",
-                unique_edge_types.len(), known_left_label, known_right_label, MAX_INFERRED_TYPES
+                unique_edge_types.len(), known_left_label, known_right_label, plan_ctx.max_inferred_types
             )));
         }
         
@@ -920,7 +920,7 @@ impl TypeInference {
         }
 
         // Check if too many types would result in excessive UNION branches
-        if matching_types.len() > MAX_INFERRED_TYPES {
+        if matching_types.len() > plan_ctx.max_inferred_types {
             let types_preview: Vec<_> = matching_types.iter().take(5).cloned().collect();
             let types_str = if matching_types.len() > 5 {
                 format!("{}, ...", types_preview.join(", "))
@@ -930,7 +930,7 @@ impl TypeInference {
 
             return Err(AnalyzerError::InvalidPlan(format!(
                 "Too many matching relationship types ({}) for {:?}->{:?}: [{}]. Max allowed is {}. Please specify explicit relationship type(s).",
-                matching_types.len(), left_label, right_label, types_str, MAX_INFERRED_TYPES
+                matching_types.len(), left_label, right_label, types_str, plan_ctx.max_inferred_types
             )));
         }
 

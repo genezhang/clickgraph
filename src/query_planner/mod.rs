@@ -48,6 +48,7 @@ pub fn evaluate_read_query(
         current_graph_schema,
         tenant_id,
         view_parameter_values,
+        None, // default max_inferred_types
     )?;
 
     let logical_plan =
@@ -78,12 +79,14 @@ pub fn evaluate_read_statement(
     current_graph_schema: &GraphSchema,
     tenant_id: Option<String>,
     view_parameter_values: Option<HashMap<String, String>>,
+    max_inferred_types: Option<usize>,
 ) -> Result<LogicalPlan, QueryPlannerError> {
     let (logical_plan, mut plan_ctx) = logical_plan::evaluate_cypher_statement(
         statement,
         current_graph_schema,
         tenant_id,
         view_parameter_values,
+        max_inferred_types,
     )?;
 
     let logical_plan =

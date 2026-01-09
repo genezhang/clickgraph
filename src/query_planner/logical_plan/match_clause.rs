@@ -34,7 +34,7 @@ const MAX_INFERRED_TYPES: usize = 4;
 /// - `Ok(Some(label))` - Successfully inferred label
 /// - `Ok(None)` - Cannot infer (multiple node types or no nodes in schema)
 /// - `Err(TooManyInferredTypes)` - Too many matches, user must specify explicit type
-fn infer_node_label_from_schema(schema: &GraphSchema) -> LogicalPlanResult<Option<String>> {
+fn infer_node_label_from_schema(schema: &GraphSchema, plan_ctx: &PlanCtx) -> LogicalPlanResult<Option<String>> {
     let node_schemas = schema.get_nodes_schemas();
 
     // Case 1: Single node type in schema - use it
@@ -55,7 +55,7 @@ fn infer_node_label_from_schema(schema: &GraphSchema) -> LogicalPlanResult<Optio
 
     // Case 3: Multiple node types - check if within limit for UNION generation
     let node_count = node_schemas.len();
-    if node_count <= MAX_INFERRED_TYPES {
+    if node_count <= plan_ctx.max_inferred_types {
         // Could potentially generate UNION of all types, but for now just log info
         log::info!(
             "Node inference: Schema has {} node types ({:?}), would need UNION for all",
@@ -116,6 +116,7 @@ fn infer_relationship_type_from_nodes(
     end_label: &Option<String>,
     direction: &ast::Direction,
     schema: &GraphSchema,
+    plan_ctx: &PlanCtx,
 ) -> LogicalPlanResult<Option<Vec<String>>> {
     let rel_schemas = schema.get_relationships_schemas();
 
@@ -268,7 +269,7 @@ fn infer_relationship_type_from_nodes(
     }
 
     // Check if too many types would result in excessive UNION branches
-    if matching_types.len() > MAX_INFERRED_TYPES {
+    if matching_types.len() > plan_ctx.max_inferred_types {
         let types_preview: Vec<_> = matching_types.iter().take(5).cloned().collect();
         let types_str = if matching_types.len() > 5 {
             format!("{}, ...", types_preview.join(", "))
@@ -278,12 +279,12 @@ fn infer_relationship_type_from_nodes(
 
         log::error!(
             "Relationship inference: Too many matching types ({}) for {:?}->{:?}: [{}]. Max allowed is {}.",
-            matching_types.len(), start_label, end_label, types_str, MAX_INFERRED_TYPES
+            matching_types.len(), start_label, end_label, types_str, plan_ctx.max_inferred_types
         );
 
         return Err(LogicalPlanError::TooManyInferredTypes {
             count: matching_types.len(),
-            max: MAX_INFERRED_TYPES,
+            max: plan_ctx.max_inferred_types,
             types: types_str,
         });
     }
@@ -1257,6 +1258,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                     &end_node_label,
                     &rel.direction,
                     graph_schema,
+                    plan_ctx,
                 )?
             }
         };
@@ -2072,7 +2074,7 @@ fn traverse_node_pattern(
     // === SINGLE-NODE-SCHEMA INFERENCE ===
     // If no label provided and schema has only one node type, use it
     if node_label.is_none() {
-        if let Ok(Some(inferred_label)) = infer_node_label_from_schema(plan_ctx.schema()) {
+        if let Ok(Some(inferred_label)) = infer_node_label_from_schema(plan_ctx.schema(), plan_ctx) {
             log::info!(
                 "Node '{}' label inferred as '{}' (single node type in schema)",
                 node_alias,
@@ -3245,12 +3247,14 @@ mod tests {
     fn test_infer_relationship_type_single_schema() {
         // When schema has only one relationship, use it regardless of node types
         let schema = create_single_relationship_schema();
+        let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
         let result = infer_relationship_type_from_nodes(
             &None, // untyped start
             &None, // untyped end
             &ast::Direction::Outgoing,
             &schema,
+            &plan_ctx,
         )
         .expect("Should not error");
 
@@ -3264,12 +3268,14 @@ mod tests {
     fn test_infer_relationship_type_from_start_node() {
         // (a:Airport)-[r]->() should infer FLIGHT (only edge from Airport)
         let schema = create_test_schema_with_relationships();
+        let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
         let result = infer_relationship_type_from_nodes(
             &Some("Airport".to_string()),
             &None,
             &ast::Direction::Outgoing,
             &schema,
+            &plan_ctx,
         )
         .expect("Should not error");
 
@@ -3283,12 +3289,14 @@ mod tests {
     fn test_infer_relationship_type_from_end_node() {
         // ()-[r]->(p:Post) should infer LIKES (only edge to Post)
         let schema = create_test_schema_with_relationships();
+        let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
         let result = infer_relationship_type_from_nodes(
             &None,
             &Some("Post".to_string()),
             &ast::Direction::Outgoing,
             &schema,
+            &plan_ctx,
         )
         .expect("Should not error");
 
@@ -3302,12 +3310,14 @@ mod tests {
     fn test_infer_relationship_type_from_both_nodes() {
         // (u:User)-[r]->(p:Post) should infer LIKES
         let schema = create_test_schema_with_relationships();
+        let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
         let result = infer_relationship_type_from_nodes(
             &Some("User".to_string()),
             &Some("Post".to_string()),
             &ast::Direction::Outgoing,
             &schema,
+            &plan_ctx,
         )
         .expect("Should not error");
 
@@ -3321,12 +3331,14 @@ mod tests {
     fn test_infer_relationship_type_multiple_matches() {
         // (u:User)-[r]->() should return LIKES, FOLLOWS, and MANAGES (multiple edges from User)
         let schema = create_test_schema_with_relationships();
+        let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
         let result = infer_relationship_type_from_nodes(
             &Some("User".to_string()),
             &None,
             &ast::Direction::Outgoing,
             &schema,
+            &plan_ctx,
         )
         .expect("Should not error");
 
@@ -3342,12 +3354,14 @@ mod tests {
     fn test_infer_relationship_type_incoming_direction() {
         // ()<-[r]-(p:Post) should infer LIKES (reversed direction)
         let schema = create_test_schema_with_relationships();
+        let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
         let result = infer_relationship_type_from_nodes(
             &None,
             &Some("Post".to_string()),
             &ast::Direction::Incoming,
             &schema,
+            &plan_ctx,
         )
         .expect("Should not error");
 
@@ -3370,12 +3384,14 @@ mod tests {
     fn test_infer_relationship_type_incoming_correct() {
         // (u:User)<-[r]-() should infer FOLLOWS (User is the to_node of FOLLOWS)
         let schema = create_test_schema_with_relationships();
+        let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
         let result = infer_relationship_type_from_nodes(
             &Some("User".to_string()),
             &None,
             &ast::Direction::Incoming,
             &schema,
+            &plan_ctx,
         )
         .expect("Should not error");
 
@@ -3392,12 +3408,14 @@ mod tests {
     fn test_infer_relationship_type_no_matches() {
         // (a:Airport)-[r]->(u:User) should find no matching relationships
         let schema = create_test_schema_with_relationships();
+        let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
         let result = infer_relationship_type_from_nodes(
             &Some("Airport".to_string()),
             &Some("User".to_string()),
             &ast::Direction::Outgoing,
             &schema,
+            &plan_ctx,
         )
         .expect("Should not error");
 
@@ -3411,9 +3429,10 @@ mod tests {
     fn test_infer_relationship_type_both_untyped_multi_schema() {
         // ()-[r]->() with multiple relationships should return None
         let schema = create_test_schema_with_relationships();
+        let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
         let result =
-            infer_relationship_type_from_nodes(&None, &None, &ast::Direction::Outgoing, &schema)
+            infer_relationship_type_from_nodes(&None, &None, &ast::Direction::Outgoing, &schema, &plan_ctx)
                 .expect("Should not error");
 
         // Both nodes untyped and schema has 3 relationships - cannot infer
@@ -3544,6 +3563,7 @@ mod tests {
         }
 
         let schema = GraphSchema::build(1, "test_db".to_string(), nodes, rels);
+        let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
         // (u:User)-[r]->() should fail with TooManyInferredTypes error
         let result = infer_relationship_type_from_nodes(
@@ -3551,6 +3571,7 @@ mod tests {
             &None,
             &ast::Direction::Outgoing,
             &schema,
+            &plan_ctx,
         );
 
         assert!(result.is_err());
@@ -3561,7 +3582,7 @@ mod tests {
                 types: _,
             } => {
                 assert_eq!(count, 6);
-                assert_eq!(max, MAX_INFERRED_TYPES);
+                assert_eq!(max, 4); // default max_inferred_types
             }
             other => panic!("Expected TooManyInferredTypes error, got: {:?}", other),
         }
@@ -3651,8 +3672,9 @@ mod tests {
     fn test_infer_node_label_single_node_schema() {
         // When schema has only one node type, infer it
         let schema = create_single_node_schema();
+        let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
-        let result = infer_node_label_from_schema(&schema).expect("should not error");
+        let result = infer_node_label_from_schema(&schema, &plan_ctx).expect("should not error");
 
         assert_eq!(result, Some("Person".to_string()));
     }
@@ -3661,8 +3683,9 @@ mod tests {
     fn test_infer_node_label_multi_node_schema() {
         // When schema has multiple node types, cannot infer (returns None)
         let schema = create_multi_node_schema();
+        let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
-        let result = infer_node_label_from_schema(&schema).expect("should not error");
+        let result = infer_node_label_from_schema(&schema, &plan_ctx).expect("should not error");
 
         // Should not auto-infer when multiple types exist
         assert_eq!(result, None);
@@ -3672,8 +3695,9 @@ mod tests {
     fn test_infer_node_label_empty_schema() {
         // When schema has no nodes, cannot infer
         let schema = create_empty_node_schema();
+        let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
-        let result = infer_node_label_from_schema(&schema).expect("should not error");
+        let result = infer_node_label_from_schema(&schema, &plan_ctx).expect("should not error");
 
         assert_eq!(result, None);
     }
@@ -3711,8 +3735,9 @@ mod tests {
         }
 
         let schema = GraphSchema::build(1, "test_db".to_string(), nodes, HashMap::new());
+        let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
-        let result = infer_node_label_from_schema(&schema).expect("should not error");
+        let result = infer_node_label_from_schema(&schema, &plan_ctx).expect("should not error");
 
         // Should not auto-infer when many types exist (just return None, no error)
         assert_eq!(result, None);
@@ -3757,9 +3782,10 @@ mod tests {
         );
 
         let schema = GraphSchema::build(1, "test_db".to_string(), nodes, HashMap::new());
+        let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
         // Should still infer the label - denormalized handling happens later
-        let result = infer_node_label_from_schema(&schema).expect("should not error");
+        let result = infer_node_label_from_schema(&schema, &plan_ctx).expect("should not error");
         assert_eq!(result, Some("Airport".to_string()));
     }
 
@@ -3829,6 +3855,7 @@ mod tests {
         );
 
         let schema = GraphSchema::build(1, "test_db".to_string(), nodes, rels);
+        let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
         // (u:User)-[r]->(g:Group) should infer MEMBER_OF since User is in from_label_values
         let result = infer_relationship_type_from_nodes(
@@ -3836,6 +3863,7 @@ mod tests {
             &Some("Group".to_string()),
             &ast::Direction::Outgoing,
             &schema,
+            &plan_ctx,
         )
         .expect("should not error");
 

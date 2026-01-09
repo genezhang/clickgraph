@@ -19,6 +19,9 @@ pub struct QueryRequest {
     pub view_parameters: Option<HashMap<String, Value>>,
     /// ClickHouse role name for RBAC via SET ROLE (requires database-managed users with granted roles)
     pub role: Option<String>,
+    /// Maximum number of inferred edge types for generic patterns like [*1] (default: 4)
+    /// Set higher for GraphRAG use cases with many edge types. Reasonable values: 4-20.
+    pub max_inferred_types: Option<usize>,
 }
 
 // #[derive(Debug, Serialize)]
