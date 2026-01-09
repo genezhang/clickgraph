@@ -620,6 +620,112 @@ class TestVLPEdgeCases:
         assert sql.count("INNER JOIN community.interactions") == 2, "Should have 2 edge JOINs for *2"
         
         print("✅ Polymorphic exact-hop VLP generates correct SQL")
+    
+    def test_zero_length_path_unbounded(self, schema_variation_data):
+        """
+        Test [*0..] pattern - zero or more hops should include starting node.
+        
+        Critical: Zero-length path means the result includes the starting node itself.
+        """
+        query = """
+            USE lineage
+            MATCH (f:DataFile)-[:COPIED_BY*0..]->(x:DataFile)
+            WHERE f.file_id = 1
+            RETURN x.file_id, x.path
+            ORDER BY x.file_id
+            LIMIT 5
+        """
+        
+        response = requests.post(
+            f"{CLICKGRAPH_URL}/query",
+            json={"query": query}
+        )
+        
+        assert response.status_code == 200, f"Query failed: {response.text}"
+        results = response.json().get("results", [])
+        
+        print(f"\n=== Zero-Length Path [*0..] ===")
+        print(f"Results: {len(results)} rows")
+        for r in results[:5]:
+            print(f"  {r}")
+        
+        # First result should be the starting node itself (file_id = 1)
+        assert len(results) >= 1, "Should have at least one result (starting node)"
+        first_result = results[0]
+        assert first_result.get("x.file_id") == 1, "First result should be starting node itself (0-hop path)"
+        
+        print("✅ Zero-length path [*0..] correctly includes starting node")
+    
+    def test_zero_length_path_bounded(self, schema_variation_data):
+        """
+        Test [*0..2] pattern - zero to 2 hops should include starting node.
+        
+        Should return: starting node + nodes at 1 and 2 hops away.
+        Uses standard schema (lineage) to avoid FK-edge bugs.
+        """
+        query = """
+            USE lineage
+            MATCH (f:DataFile)-[:COPIED_BY*0..2]->(x:DataFile)
+            WHERE f.file_id = 1
+            RETURN x.file_id, x.path
+            ORDER BY x.file_id
+            LIMIT 10
+        """
+        
+        response = requests.post(
+            f"{CLICKGRAPH_URL}/query",
+            json={"query": query}
+        )
+        
+        assert response.status_code == 200, f"Query failed: {response.text}"
+        results = response.json().get("results", [])
+        
+        print(f"\n=== Zero-Length Path [*0..2] ===")
+        print(f"Results: {len(results)} rows")
+        for r in results[:5]:
+            print(f"  File {r.get('x.file_id')}: {r.get('x.path')}")
+        
+        # First result should be the starting node itself (file_id = 1)
+        assert len(results) >= 1, "Should have at least one result"
+        file_ids = [r.get("x.file_id") for r in results]
+        assert 1 in file_ids, "Should include starting node (file_id = 1) via 0-hop path"
+        
+        # Should also have other files reached via 1-2 hops
+        assert len(file_ids) > 1, "Should include nodes reached via traversal (1-2 hops)"
+        
+        print("✅ Zero-length path [*0..2] correctly includes starting node and traversal results")
+    
+    def test_zero_length_with_polymorphic(self, schema_variation_data):
+        """
+        Test [*0..1] on polymorphic edges - verify starting node included.
+        """
+        query = """
+            USE community_polymorphic
+            MATCH (m:Member)-[:MENTORS*0..1]->(x:Member)
+            WHERE m.member_id = 1
+            RETURN x.member_id, x.username
+            ORDER BY x.member_id
+        """
+        
+        response = requests.post(
+            f"{CLICKGRAPH_URL}/query",
+            json={"query": query}
+        )
+        
+        assert response.status_code == 200, f"Query failed: {response.text}"
+        results = response.json().get("results", [])
+        
+        print(f"\n=== Zero-Length Polymorphic [*0..1] ===")
+        print(f"Results: {len(results)} rows")
+        for r in results:
+            print(f"  {r}")
+        
+        # First result should be the starting node (member_id = 1)
+        assert len(results) >= 1, "Should have at least one result"
+        member_ids = [r.get("x.member_id") for r in results]
+        assert 1 in member_ids, "Should include starting node (member_id = 1) via 0-hop path"
+        
+        print("✅ Zero-length path on polymorphic edges correctly includes starting node")
 
 
 if __name__ == "__main__":
