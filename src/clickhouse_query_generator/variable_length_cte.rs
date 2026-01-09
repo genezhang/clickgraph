@@ -1898,10 +1898,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// Used when start_node has a filter (e.g., WHERE child.name = 'notes.txt')
     fn generate_fk_edge_recursive_append(&self, max_hops: u32, cte_name: &str) -> String {
         // Edge tuple for the NEW edge being added (current → new_end)
-        // current.parent_id = new_end.object_id
+        // Use node IDs rather than FK column to avoid referencing columns that may not exist
+        // on the target node type (e.g., Folder doesn't have parent_folder_id)
         let edge_tuple_recursive = format!(
-            "tuple({}.{}, {}.{})",
-            "current_node", self.relationship_from_column, "new_end", self.end_node_id_column
+            "tuple(vp.end_id, {}.{})",
+            "new_end", self.end_node_id_column
         );
 
         // Build property selections
@@ -1943,7 +1944,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let edge_tuple_check = format!(
             "tuple(current_node.{}, new_end.{})",
-            self.relationship_from_column, self.end_node_id_column
+            self.end_node_id_column, self.end_node_id_column
         );
 
         let mut where_conditions = vec![
