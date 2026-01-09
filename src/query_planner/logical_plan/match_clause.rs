@@ -3527,7 +3527,7 @@ mod tests {
         );
 
         let mut rels = HashMap::new();
-        // Create 6 relationships from User to User (exceeds MAX_INFERRED_TYPES of 4)
+        // Create 6 relationships from User to User (exceeds MAX_INFERRED_TYPES of 5)
         for i in 1..=6 {
             rels.insert(
                 format!("REL_{}", i),
@@ -3582,7 +3582,7 @@ mod tests {
                 types: _,
             } => {
                 assert_eq!(count, 6);
-                assert_eq!(max, 4); // default max_inferred_types
+                assert_eq!(max, 5); // default max_inferred_types
             }
             other => panic!("Expected TooManyInferredTypes error, got: {:?}", other),
         }

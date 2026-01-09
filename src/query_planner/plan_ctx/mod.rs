@@ -275,7 +275,7 @@ pub struct PlanCtx {
     /// Consumed by property expansion in renderer to prune unnecessary columns
     /// Example: If RETURN only uses friend.firstName, don't collect friend.* (200 columns)
     property_requirements: Option<PropertyRequirements>,
-    /// Maximum number of inferred edge types for generic patterns like [*1] (default: 4)
+    /// Maximum number of inferred edge types for generic patterns like [*1] (default: 5)
     /// Can be overridden per-query via QueryRequest.max_inferred_types
     /// Reasonable values for GraphRAG: 10-20 edge types
     pub(crate) max_inferred_types: usize,
@@ -503,7 +503,7 @@ impl PlanCtx {
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
             property_requirements: None,
-            max_inferred_types: 4,
+            max_inferred_types: 5,
         }
     }
 
@@ -524,7 +524,7 @@ impl PlanCtx {
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
             property_requirements: None,
-            max_inferred_types: 4,
+            max_inferred_types: 5,
         }
     }
 

@@ -28,7 +28,7 @@ pub fn build_logical_plan(
         Arc::new(schema.clone()),
         tenant_id,
         view_parameter_values,
-        max_inferred_types.unwrap_or(4),
+        max_inferred_types.unwrap_or(5),
     );
 
     log::debug!(
