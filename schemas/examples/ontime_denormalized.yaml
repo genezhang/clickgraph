@@ -9,7 +9,7 @@ graph_schema:
   nodes:
     # Airport is a virtual node - all data comes from the flights table
     - label: Airport
-      database: test_integration
+      database: default
       table: flights  # Same table as the edge!
       node_id: code  # Logical property name for the airport code
       property_mappings: {}  # Empty - all properties are denormalized
@@ -29,7 +29,7 @@ graph_schema:
   edges:
     # Flight relationship - node properties declared in Airport node above
     - type: FLIGHT
-      database: test_integration
+      database: default
       table: flights
       from_id: Origin
       to_id: Dest
