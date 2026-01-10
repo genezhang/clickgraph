@@ -453,32 +453,15 @@ fn rewrite_vlp_union_branch_aliases(plan: &mut RenderPlan) -> RenderPlanBuilderR
         log::info!("   Mapping: {} → {}", from, to);
     }
     
-    // 🔧 CRITICAL: Check if SELECT items already reference CTE columns (end_type, end_id, end_properties)
-    // This happens for multi-type VLP with label(x) → PropertyAccessExp(x.end_type)
-    // In this case, we need SPECIAL rewriting:
-    //   - x.end_type should become vlp_multi_type_u_x.end_type (where vlp_multi_type_u_x is the CTE alias)
-    //   - NOT end_node.end_type (end_node doesn't exist in FROM - it's internal to VLP metadata)
-    let has_explicit_cte_columns = plan.select.items.iter().any(|item| {
-        use crate::render_plan::render_expr::RenderExpr;
-        match &item.expression {
-            RenderExpr::Raw(s) => {
-                s.contains("end_type") || s.contains("end_id") || s.contains("end_properties")
-            }
-            RenderExpr::PropertyAccessExp(prop_access) => {
-                use crate::graph_catalog::expression_parser::PropertyValue;
-                match &prop_access.column {
-                    PropertyValue::Column(col_name) => {
-                        col_name == "end_type" || col_name == "end_id" || col_name == "end_properties"
-                    }
-                    _ => false,
-                }
-            }
-            _ => false,
-        }
+    // 🔧 CRITICAL: Check if this is a multi-type VLP (from CTE name)
+    // Multi-type VLP CTEs use Cypher aliases directly in SELECT (e.g., x.end_type)
+    // and properties are extracted via JSON_VALUE() - no table alias rewriting needed
+    let is_multi_type_vlp = plan.ctes.0.iter().any(|cte| {
+        cte.cte_name.starts_with("vlp_multi_type_")
     });
     
-    if has_explicit_cte_columns {
-        log::info!("🎯 VLP: Explicit CTE columns detected - FROM should use Cypher alias, no rewriting needed!");
+    if is_multi_type_vlp {
+        log::info!("🎯 VLP: Multi-type VLP detected - FROM uses Cypher alias, no rewriting needed!");
         // With the correct FROM (vlp_multi_type_u_x AS x), everything works naturally:
         //   - x.end_type → CTE column (direct access)
         //   - x.name → property (SQL generator extracts from end_properties JSON)
@@ -597,14 +580,41 @@ fn extract_vlp_alias_mappings(ctes: &CteItems) -> HashMap<String, String> {
         // Check if this is a VLP CTE with metadata
         if let (Some(cypher_start), Some(vlp_start)) = 
             (&cte.vlp_cypher_start_alias, &cte.vlp_start_alias) {
-            log::info!("🔄 VLP mapping: {} → {}", cypher_start, vlp_start);
-            mappings.insert(cypher_start.clone(), vlp_start.clone());
+            // Check if this is a denormalized VLP (both nodes in same table)
+            let is_denormalized = cte.vlp_start_table == cte.vlp_end_table 
+                && cte.vlp_start_table.is_some();
+            
+            if is_denormalized {
+                // For denormalized VLP, map Cypher alias directly to VLP CTE alias
+                // (not to internal VLP aliases like "start_node")
+                let vlp_cte_alias = cte.cte_name
+                    .replace("vlp_cte", "vlp")
+                    .replace("chained_path_", "vlp");
+                log::info!("🔄 VLP mapping (denormalized): {} → {}", cypher_start, vlp_cte_alias);
+                mappings.insert(cypher_start.clone(), vlp_cte_alias.clone());
+            } else {
+                log::info!("🔄 VLP mapping: {} → {}", cypher_start, vlp_start);
+                mappings.insert(cypher_start.clone(), vlp_start.clone());
+            }
         }
         
         if let (Some(cypher_end), Some(vlp_end)) = 
             (&cte.vlp_cypher_end_alias, &cte.vlp_end_alias) {
-            log::info!("🔄 VLP mapping: {} → {}", cypher_end, vlp_end);
-            mappings.insert(cypher_end.clone(), vlp_end.clone());
+            // Check if this is a denormalized VLP (both nodes in same table)
+            let is_denormalized = cte.vlp_start_table == cte.vlp_end_table 
+                && cte.vlp_start_table.is_some();
+            
+            if is_denormalized {
+                // For denormalized VLP, map Cypher alias directly to VLP CTE alias
+                let vlp_cte_alias = cte.cte_name
+                    .replace("vlp_cte", "vlp")
+                    .replace("chained_path_", "vlp");
+                log::info!("🔄 VLP mapping (denormalized): {} → {}", cypher_end, vlp_cte_alias);
+                mappings.insert(cypher_end.clone(), vlp_cte_alias.clone());
+            } else {
+                log::info!("🔄 VLP mapping: {} → {}", cypher_end, vlp_end);
+                mappings.insert(cypher_end.clone(), vlp_end.clone());
+            }
         }
         
         // 🔧 FIX: Map "t" (generic path function alias) to the actual VLP CTE alias
