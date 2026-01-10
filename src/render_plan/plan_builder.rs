@@ -2640,6 +2640,20 @@ fn build_chained_with_match_cte_plan(
     }
 
     log::info!("🔧 build_chained_with_match_cte_plan: All WITH clauses processed ({} CTEs), rendering final plan", all_ctes.len());
+    
+    // DEBUG: Log the current_plan structure before rendering
+    log::warn!("🐛 DEBUG FINAL PLAN before render: discriminant={:?}", std::mem::discriminant(&current_plan));
+    if let LogicalPlan::Projection(proj) = &current_plan {
+        log::warn!("🐛 DEBUG: Projection -> input discriminant={:?}", std::mem::discriminant(proj.input.as_ref()));
+        if let LogicalPlan::GraphJoins(gj) = proj.input.as_ref() {
+            log::warn!("🐛 DEBUG: Found GraphJoins with {} joins:", gj.joins.len());
+            for (i, j) in gj.joins.iter().enumerate() {
+                log::warn!("🐛 DEBUG:   JOIN {}: table='{}', alias='{}', joining_on.len()={}", 
+                          i, j.table_name, j.table_alias, j.joining_on.len());
+            }
+            log::warn!("🐛 DEBUG: GraphJoins.cte_references = {:?}", gj.cte_references);
+        }
+    }
 
     // CRITICAL FIX: Before rendering, check if the final plan has GraphJoins with joins
     // that should be covered by the LAST CTE (the one with the most aliases).
@@ -7491,6 +7505,20 @@ impl RenderPlanBuilder for LogicalPlan {
                 joins
             }
             LogicalPlan::GraphJoins(graph_joins) => {
+                // 🔧 FIX: For GraphJoins with CTE references, delegate to input.extract_joins()
+                // The analyzer creates joins that reference CTEs (like "with_friend_cte_1"),
+                // but they're in the input plan, not in the deprecated graph_joins.joins field.
+                // We need to delegate to the input to get the actual joins.
+                if !graph_joins.cte_references.is_empty() {
+                    log::warn!("🔧 GraphJoins has {} CTE references - delegating to input.extract_joins()", 
+                               graph_joins.cte_references.len());
+                    for (alias, cte_name) in &graph_joins.cte_references {
+                        log::warn!("  CTE ref: {} → {}", alias, cte_name);
+                    }
+                    // Delegate to input to get the joins with CTE references
+                    return graph_joins.input.extract_joins(schema);
+                }
+                
                 // Check if input has a fixed-length variable-length pattern with >1 hops
                 // For those, we need to use the expanded JOINs from extract_joins on the input
                 // (which will call GraphRel.extract_joins -> expand_fixed_length_joins)
@@ -9520,6 +9548,56 @@ impl RenderPlanBuilder for LogicalPlan {
             ));
         }
 
+        // Check for GraphJoins with CTE references
+        // After WITH clauses are converted to CTEs, GraphJoins may have joins that reference CTEs
+        // These need special handling that try_build_join_based_plan doesn't provide
+        fn has_cte_joins(plan: &LogicalPlan, schema: &GraphSchema) -> bool {
+            match plan {
+                LogicalPlan::GraphJoins(gj) => {
+                    // Extract joins properly using extract_joins()
+                    match gj.input.extract_joins(schema) {
+                        Ok(joins) => {
+                            log::warn!("🐛 DEBUG has_cte_joins: Extracted {} joins from GraphJoins", joins.len());
+                            for (i, j) in joins.iter().enumerate() {
+                                log::warn!("🐛 DEBUG:   JOIN {}: table='{}', starts_with_with={}", 
+                                          i, j.table_name, j.table_name.starts_with("with_"));
+                            }
+                            // Check if any join references a CTE (table name starts with "with_")
+                            let has_cte = joins.iter().any(|j| j.table_name.starts_with("with_"));
+                            if has_cte {
+                                log::warn!("🐛 DEBUG: Found CTE reference in extracted joins!");
+                                return true;
+                            }
+                            has_cte_joins(&gj.input, schema)
+                        }
+                        Err(e) => {
+                            log::warn!("🐛 DEBUG has_cte_joins: Failed to extract joins: {}", e);
+                            false
+                        }
+                    }
+                }
+                LogicalPlan::Projection(p) => has_cte_joins(&p.input, schema),
+                LogicalPlan::Filter(f) => has_cte_joins(&f.input, schema),
+                LogicalPlan::Limit(l) => has_cte_joins(&l.input, schema),
+                LogicalPlan::OrderBy(o) => has_cte_joins(&o.input, schema),
+                LogicalPlan::Skip(s) => has_cte_joins(&s.input, schema),
+                LogicalPlan::GroupBy(g) => has_cte_joins(&g.input, schema),
+                _ => false,
+            }
+        }
+        
+        log::warn!("🐛 DEBUG: Checking for CTE joins in plan...");
+        if has_cte_joins(self, schema) {
+            println!(
+                "DEBUG: Plan contains CTE reference joins - need CTE-aware rendering"
+            );
+            log::warn!("❌ BLOCKING try_build_join_based_plan: Found CTE reference joins");
+            return Err(RenderBuildError::InvalidRenderPlan(
+                "CTE reference joins require CTE-aware rendering".to_string(),
+            ));
+        }
+        log::warn!("🐛 DEBUG: No CTE joins found, continuing with try_build_join_based_plan");
+
         // Check for WITH+aggregation followed by MATCH pattern
         // "MATCH (...) WITH x, count(*) AS cnt MATCH (x)-[...]->(y)" requires CTE
         // because aggregation must be computed before the second MATCH
@@ -11187,10 +11265,8 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan> {
-        println!(
-            "DEBUG: to_render_plan called for plan type: {:?}",
-            std::mem::discriminant(self)
-        );
+        eprintln!("🚨🚨🚨 to_render_plan ENTRY POINT 🚨🚨🚨");
+        log::warn!("🚨🚨🚨 to_render_plan ENTRY POINT LOG 🚨🚨🚨");
 
         // CRITICAL: Apply alias transformation BEFORE rendering
         // This rewrites denormalized node aliases to use relationship table aliases
@@ -11995,6 +12071,48 @@ impl RenderPlanBuilder for LogicalPlan {
         log::info!("🔍 VLP detection: has_vlp_cte={}, vlp_aliases={:?}", has_vlp_cte, vlp_aliases);
         log::info!("{}", "=".repeat(80));
         
+        // 🔧 CRITICAL: Check for WITH CTEs BEFORE any VLP endpoint processing
+        // Strategy: Check if there's a WithClause in the logical plan tree
+        log::warn!("🔍🔍🔍 CHECKING FOR WITH CTEs");
+        
+        // Check extracted_ctes first (for direct WITH in current plan)
+        let has_with_cte_in_extracted = extracted_ctes.iter().any(|cte| cte.cte_name.starts_with("with_"));
+        log::warn!("  - extracted_ctes check: {}", has_with_cte_in_extracted);
+        
+        // Check if there's a WithClause somewhere in the plan tree (recursive check)
+        fn has_with_clause_in_tree(plan: &LogicalPlan) -> bool {
+            match plan {
+                LogicalPlan::WithClause(_) => true,
+                LogicalPlan::ViewScan(vs) => vs.input.as_ref().map_or(false, |p| has_with_clause_in_tree(p)),
+                LogicalPlan::GraphNode(gn) => has_with_clause_in_tree(&gn.input),
+                LogicalPlan::GraphRel(gr) => {
+                    has_with_clause_in_tree(&gr.left) 
+                    || has_with_clause_in_tree(&gr.center) 
+                    || has_with_clause_in_tree(&gr.right)
+                }
+                LogicalPlan::Filter(f) => has_with_clause_in_tree(&f.input),
+                LogicalPlan::Projection(p) => has_with_clause_in_tree(&p.input),
+                LogicalPlan::GroupBy(g) => has_with_clause_in_tree(&g.input),
+                LogicalPlan::OrderBy(o) => has_with_clause_in_tree(&o.input),
+                LogicalPlan::Skip(s) => has_with_clause_in_tree(&s.input),
+                LogicalPlan::Limit(l) => has_with_clause_in_tree(&l.input),
+                LogicalPlan::Cte(c) => has_with_clause_in_tree(&c.input),
+                LogicalPlan::GraphJoins(gj) => has_with_clause_in_tree(&gj.input),
+                LogicalPlan::Union(u) => u.inputs.iter().any(|p| has_with_clause_in_tree(p)),
+                LogicalPlan::Unwind(u) => has_with_clause_in_tree(&u.input),
+                LogicalPlan::CartesianProduct(cp) => {
+                    has_with_clause_in_tree(&cp.left) || has_with_clause_in_tree(&cp.right)
+                }
+                _ => false,
+            }
+        }
+        
+        let has_with_clause_in_plan = has_with_clause_in_tree(&transformed_plan);
+        log::warn!("  - plan tree check: {}", has_with_clause_in_plan);
+        
+        let has_with_cte = has_with_cte_in_extracted || has_with_clause_in_plan;
+        log::warn!("🔍 FINAL has_with_cte = {}", has_with_cte);
+        
         // Check if this is a multi-type VLP CTE (needs special handling - direct SELECT, no JOINs)
         let is_multi_type_vlp = vlp_cte.map_or(false, |cte| cte.cte_name.starts_with("vlp_multi_type_"));
         log::info!("🎯 Multi-type VLP check: is_multi_type_vlp={}, vlp_cte={:?}", 
@@ -12036,10 +12154,90 @@ impl RenderPlanBuilder for LogicalPlan {
                     })));
                 }
             }
+        }
+        
+        // 🔧 CRITICAL FIX: Handle WITH CTE + VLP pattern
+        // Pattern: MATCH (root)-[:KNOWS*1..2]-(friend) WITH DISTINCT friend MATCH (friend)<-[:HAS_CREATOR]-(post)
+        // The WITH CTE (with_friend_cte_1) should be used as FROM for the second MATCH
+        if has_with_cte && !is_multi_type_vlp {
+            log::warn!("🔧🔧🔧 WITH CTE + VLP PATTERN DETECTED!");
+            let with_cte = extracted_ctes.iter().find(|cte| cte.cte_name.starts_with("with_")).unwrap();
+            log::warn!("   WITH CTE: {}", with_cte.cte_name);
+            
+            // Extract the WITH aliases from the CTE name
+            // Format: with_friend_cte_1 → "friend"
+            let with_alias_part = if let Some(stripped) = with_cte.cte_name.strip_prefix("with_") {
+                if let Some(cte_pos) = stripped.rfind("_cte") {
+                    &stripped[..cte_pos]
+                } else {
+                    stripped
+                }
+            } else {
+                ""
+            };
+            
+            log::warn!("   WITH CTE exports alias: '{}'", with_alias_part);
+            
+            // Override final_from to use the WITH CTE
+            final_from = Some(FromTable::new(Some(ViewTableRef {
+                source: std::sync::Arc::new(LogicalPlan::Empty),
+                name: with_cte.cte_name.clone(),
+                alias: Some(with_alias_part.to_string()),
+                use_final: false,
+            })));
+            
+            log::warn!("   Set FROM to: {} AS '{}'", with_cte.cte_name, with_alias_part);
+            log::warn!("   Keeping {} extracted_joins (subsequent pattern JOINs)", extracted_joins.len());
         } else if has_vlp_cte && vlp_aliases.is_some() {
             let (start_alias, end_alias) = vlp_aliases.unwrap();
             log::debug!("🎯 ENTERING VLP ENDPOINT JOIN CREATION BLOCK");
             log::debug!("🎯 start_alias='{}', end_alias='{}'", start_alias, end_alias);
+            
+            // 🔧 CRITICAL FIX: Check for WITH CTEs that should be used instead of VLP endpoint JOINs
+            // Pattern: MATCH (root)-[:KNOWS*1..2]-(friend) WITH DISTINCT friend MATCH (friend)<-[:HAS_CREATOR]-(post)
+            // Result: VLP creates vlp_cte1/vlp_cte2, WITH creates with_friend_cte_1
+            // The second MATCH should use with_friend_cte_1 as FROM, not add JOINs to Person table!
+            let with_cte = extracted_ctes.iter().find(|cte| cte.cte_name.starts_with("with_"));
+            
+            if let Some(with_cte) = with_cte {
+                log::warn!("🔧🔧🔧 DETECTED WITH CTE: {} (skipping VLP endpoint JOINs)", with_cte.cte_name);
+                log::warn!("   This CTE represents the output of MATCH+WITH, the second MATCH should use it!");
+                
+                // Extract the WITH aliases from the CTE name
+                // Format: with_friend_cte_1 → "friend"
+                let with_alias_part = if let Some(stripped) = with_cte.cte_name.strip_prefix("with_") {
+                    if let Some(cte_pos) = stripped.rfind("_cte") {
+                        &stripped[..cte_pos]
+                    } else {
+                        stripped
+                    }
+                } else {
+                    ""
+                };
+                
+                log::warn!("   WITH CTE exports alias: '{}'", with_alias_part);
+                
+                // The WITH CTE should be used as FROM with the exported alias
+                // Override the final_from that was set earlier
+                final_from = Some(FromTable::new(Some(ViewTableRef {
+                    source: std::sync::Arc::new(LogicalPlan::Empty),
+                    name: with_cte.cte_name.clone(),
+                    alias: Some(with_alias_part.to_string()),
+                    use_final: false,
+                })));
+                
+                log::warn!("   Set FROM to: {} AS '{}'", with_cte.cte_name, with_alias_part);
+                
+                // Don't add VLP endpoint JOINs - the WITH CTE already has them!
+                // Just keep any subsequent pattern JOINs (like the HAS_CREATOR → Post JOIN)
+                log::warn!("   Keeping {} subsequent pattern JOINs (not adding VLP endpoint JOINs)", extracted_joins.len());
+                
+                // Continue to the rest of the rendering (skip VLP endpoint JOIN generation)
+                // Jump past the VLP endpoint JOIN code to line ~12300+ where the final RenderPlan is built
+            } else {
+                // No WITH CTE - normal VLP endpoint JOIN handling
+                log::debug!("   No WITH CTE found, proceeding with normal VLP endpoint JOIN handling");
+                
             // ⚠️ COMPUTE VLP CTE ALIAS ONCE - use throughout this entire VLP handling section
             // Use PREFIX "vlp" instead of "t" to avoid collision with relationship aliases (t1, t2, ...)
             let vlp_cte_name = extracted_ctes
@@ -12446,6 +12644,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
                 extracted_joins.extend(rewritten_joins);
             }
+            } // end of else block for normal VLP handling (no WITH CTE)
         }
 
         // For multiple relationship types (UNION CTE), add joins to connect nodes

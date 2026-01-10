@@ -2203,7 +2203,45 @@ impl GraphJoinInference {
             }
             LogicalPlan::GraphNode(graph_node) => {
                 crate::debug_print!("🟢 GraphNode({}), recursing into input", graph_node.alias);
-                // NOTE: We do NOT add the node alias to joined_entities here.
+                
+                // CRITICAL FIX FOR IC9: Check if this node references a CTE from WITH clause
+                // If so, we need to ensure it's marked as a join target for subsequent patterns
+                // Example: WITH ... (friend) MATCH (friend)<-[:REL]-(other)
+                // The second MATCH creates GraphNode(friend) but it should JOIN to the CTE
+                log::info!(
+                    "🔍 GraphNode '{}' - checking for CTE reference",
+                    graph_node.alias
+                );
+                
+                if let Ok(table_ctx) = plan_ctx.get_table_ctx(&graph_node.alias) {
+                    log::info!("  ✓ Found TableCtx for '{}'", graph_node.alias);
+                    if let Some(cte_name) = table_ctx.get_cte_name() {
+                        log::info!(
+                            "🔍 GraphNode '{}' references CTE '{}' - marking as joined",
+                            graph_node.alias,
+                            cte_name
+                        );
+                        // Mark this alias as already joined (it comes from the CTE)
+                        // This prevents duplicate joins and ensures subsequent patterns
+                        // reference the CTE columns instead of creating new ViewScans
+                        joined_entities.insert(graph_node.alias.clone());
+                        
+                        // If this GraphNode has a ViewScan input, we should skip it
+                        // because the data comes from the CTE, not a fresh table scan
+                        // But we still need to recurse in case there's nested structure
+                        crate::debug_print!(
+                            "  ✓ Skipping ViewScan for '{}' (data from CTE '{}')",
+                            graph_node.alias,
+                            cte_name
+                        );
+                    } else {
+                        log::info!("  ✗ TableCtx for '{}' has NO CTE reference", graph_node.alias);
+                    }
+                } else {
+                    log::info!("  ✗ No TableCtx found for '{}'", graph_node.alias);
+                }
+                
+                // NOTE: We do NOT add the node alias to joined_entities here (unless from CTE).
                 // The relationship inference (infer_graph_join) will determine anchors
                 // based on direction and is_optional flags. This prevents breaking
                 // single-pattern MATCH queries where anchor is determined semantically.
