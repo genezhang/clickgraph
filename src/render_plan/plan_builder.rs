@@ -2872,6 +2872,60 @@ fn build_chained_with_match_cte_plan(
         }
     }
 
+    // 🔧 CRITICAL FIX: Also check JOINs for CTE references and apply rewriting
+    // When CTEs are in JOINs (not FROM), we still need to rewrite SELECT/GROUP BY/ORDER BY expressions
+    // Example: WITH friend ... MATCH (friend)<-[]-(post) has friend in a JOIN, not FROM
+    log::info!("🔧 build_chained_with_match_cte_plan: Checking {} JOINs for CTE references", render_plan.joins.0.len());
+    for join in &mut render_plan.joins.0 {
+        if join.table_name.starts_with("with_") {
+            log::info!("🔧 build_chained_with_match_cte_plan: Found CTE JOIN: {} AS {:?}", join.table_name, join.table_alias);
+            
+            // Build reverse_mapping for this CTE from cte_schemas
+            if let Some((_select_items, _names, _alias_to_id, property_mapping)) = cte_schemas.get(&join.table_name) {
+                log::info!("🔧 build_chained_with_match_cte_plan: Building reverse mapping from CTE '{}' with {} properties",
+                    join.table_name, property_mapping.len());
+                
+                let reverse_mapping = property_mapping.clone();
+                let join_alias: &str = &join.table_alias;
+                
+                // Rewrite SELECT items that reference this JOIN alias
+                log::info!("🔧 build_chained_with_match_cte_plan: Rewriting SELECT items for JOIN alias '{}'", join_alias);
+                render_plan.select.items = render_plan.select.items.into_iter().map(|mut item| {
+                    item.expression = rewrite_expression_simple(&item.expression, &reverse_mapping);
+                    item
+                }).collect();
+                
+                // Rewrite GROUP BY expressions
+                if !render_plan.group_by.0.is_empty() {
+                    log::info!("🔧 build_chained_with_match_cte_plan: Rewriting GROUP BY expressions for JOIN alias '{}'", join_alias);
+                    render_plan.group_by.0 = render_plan.group_by.0.iter().map(|expr| {
+                        rewrite_expression_simple(expr, &reverse_mapping)
+                    }).collect();
+                }
+                
+                // Rewrite ORDER BY expressions
+                if !render_plan.order_by.0.is_empty() {
+                    log::info!("🔧 build_chained_with_match_cte_plan: Rewriting ORDER BY expressions for JOIN alias '{}'", join_alias);
+                    for order_item in &mut render_plan.order_by.0 {
+                        order_item.expression = rewrite_expression_simple(&order_item.expression, &reverse_mapping);
+                    }
+                }
+                
+                // Rewrite JOIN condition itself to use CTE column names
+                log::info!("🔧 build_chained_with_match_cte_plan: Rewriting {} JOIN conditions for '{}'", 
+                    join.joining_on.len(), join_alias);
+                for condition in &mut join.joining_on {
+                    // Rewrite each operand in the condition
+                    for operand in &mut condition.operands {
+                        *operand = rewrite_expression_simple(operand, &reverse_mapping);
+                    }
+                }
+            } else {
+                log::warn!("⚠️ CTE '{}' not found in cte_schemas for JOIN rewriting", join.table_name);
+            }
+        }
+    }
+
     // Add all CTEs (innermost first, which is correct order for SQL)
     all_ctes.extend(render_plan.ctes.0.into_iter());
     render_plan.ctes = CteItems(all_ctes);
@@ -3046,6 +3100,50 @@ fn rewrite_render_plan_expressions(
     }
     
     log::info!("🔧 rewrite_render_plan_expressions: Complete");
+}
+/// Rewrite CTE column references from "alias.property" to "alias.alias_property"
+/// This is needed for VLP UNION queries where CTEs export columns like "friend_id"
+/// but logical expressions reference "friend.id"
+fn rewrite_cte_column_references(expr: &mut RenderExpr) {
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            let table_alias = &pa.table_alias.0;
+            let column_name = match &pa.column {
+                PropertyValue::Column(col) => col.clone(),
+                _ => return,
+            };
+            
+            // Check if this looks like a simple property reference (no underscore prefix)
+            // If so, rewrite it to include the alias prefix: "friend.id" → "friend.friend_id"
+            if !column_name.starts_with(&format!("{}_", table_alias)) {
+                let new_column = format!("{}_{}", table_alias, column_name);
+                log::debug!("🔧 rewrite_cte_column_references: {}.{} → {}.{}", 
+                    table_alias, column_name, table_alias, new_column);
+                pa.column = PropertyValue::Column(new_column);
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            // Recursively rewrite arguments
+            for arg in &mut agg.args {
+                rewrite_cte_column_references(arg);
+            }
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            // Recursively rewrite arguments
+            for arg in &mut func.args {
+                rewrite_cte_column_references(arg);
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            // Recursively rewrite all operands
+            for operand in &mut op.operands {
+                rewrite_cte_column_references(operand);
+            }
+        }
+        _ => {
+            // Other expression types don't need rewriting
+        }
+    }
 }
 
 /// Simple expression rewriter that uses only reverse_mapping (no CTE name or from_alias needed)
@@ -8967,9 +9065,27 @@ impl RenderPlanBuilder for LogicalPlan {
                 outer_aggregation_info.is_some()
             );
 
-            if let Some((outer_select, outer_group_by)) = outer_aggregation_info {
+            if let Some((mut outer_select, mut outer_group_by)) = outer_aggregation_info {
                 crate::debug_println!("DEBUG: Creating aggregation-aware UNION plan with {} outer SELECT items, {} GROUP BY",
                     outer_select.len(), outer_group_by.len());
+
+                // 🔧 CRITICAL FIX: Rewrite outer SELECT and GROUP BY expressions to use CTE column names
+                // The CTE exports columns like "friend_id", "friend_firstName" (underscore format)
+                // but logical expressions reference "friend.id", "friend.firstName" (dot format)
+                // We need to rewrite "friend.id" → "friend.friend_id" to match CTE columns
+                log::info!("🔧 try_build_join_based_plan: Rewriting {} outer SELECT items for CTE column names", outer_select.len());
+                for select_item in &mut outer_select {
+                    log::debug!("🔧 Before rewrite: {:?}", select_item.expression);
+                    rewrite_cte_column_references(&mut select_item.expression);
+                    log::debug!("🔧 After rewrite: {:?}", select_item.expression);
+                }
+                
+                log::info!("🔧 try_build_join_based_plan: Rewriting {} GROUP BY expressions for CTE column names", outer_group_by.len());
+                for group_by_expr in &mut outer_group_by {
+                    log::debug!("🔧 Before rewrite: {:?}", group_by_expr);
+                    rewrite_cte_column_references(group_by_expr);
+                    log::debug!("🔧 After rewrite: {:?}", group_by_expr);
+                }
 
                 // The union branches already have the correct base columns (no aggregation)
                 // We just need to apply outer SELECT and GROUP BY on top
