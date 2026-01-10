@@ -5328,6 +5328,25 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
             }
             LogicalPlan::GraphRel(rel) => {
+                // 🔧 VLP ENDPOINT FIX: For variable-length paths, check if alias is a VLP endpoint
+                // In denormalized schemas, VLP endpoints don't have separate node tables
+                // Their "ID column" is start_id or end_id in the VLP CTE
+                if rel.variable_length.is_some() {
+                    // Extract endpoint aliases from GraphRel connections
+                    // left_connection = start node, right_connection = end node
+                    let start_alias = &rel.left_connection;
+                    let end_alias = &rel.right_connection;
+                    
+                    if alias == start_alias {
+                        log::info!("🎯 VLP: Alias '{}' is VLP start endpoint -> using 'start_id' as ID column", alias);
+                        return Ok("start_id".to_string());
+                    }
+                    if alias == end_alias {
+                        log::info!("🎯 VLP: Alias '{}' is VLP end endpoint -> using 'end_id' as ID column", alias);
+                        return Ok("end_id".to_string());
+                    }
+                }
+                
                 // Check both left and right branches
                 if let Ok(id) = rel.left.find_id_column_for_alias(alias) {
                     return Ok(id);
