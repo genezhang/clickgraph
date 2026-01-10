@@ -681,7 +681,14 @@ pub fn label_to_table_name(label: &str) -> String {
     // Get the table name from the schema
     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
         if let Ok(schemas) = schemas_lock.try_read() {
-            if let Some(schema) = schemas.get("default") {
+            // Try "default" first, then fall back to first schema
+            let schema_opt = schemas.get("default")
+                .or_else(|| {
+                    log::warn!("No 'default' schema found, using first available schema for label '{}'", label);
+                    schemas.values().next()
+                });
+            
+            if let Some(schema) = schema_opt {
                 return label_to_table_name_with_schema(label, schema);
             }
         }
@@ -791,14 +798,21 @@ pub fn rel_type_to_table_name(rel_type: &str) -> String {
     // Get the table name from the schema
     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
         if let Ok(schemas) = schemas_lock.try_read() {
-            if let Some(schema) = schemas.get("default") {
+            // Try "default" first, then fall back to first schema
+            let schema_opt = schemas.get("default")
+                .or_else(|| {
+                    log::warn!("No 'default' schema found, using first available schema for rel_type '{}'", rel_type);
+                    schemas.values().next()
+                });
+            
+            if let Some(schema) = schema_opt {
                 return rel_type_to_table_name_with_schema(rel_type, schema);
             }
         }
     }
 
     // NO FALLBACK - log error and return marker
-    log::error!("❌ SCHEMA ERROR: GLOBAL_SCHEMAS not initialized or 'default' schema not found. Cannot resolve relationship type '{}' without schema.", rel_type);
+    log::error!("❌ SCHEMA ERROR: GLOBAL_SCHEMAS not initialized. Cannot resolve relationship type '{}' without schema.", rel_type);
     format!("ERROR_SCHEMA_NOT_INITIALIZED_{}", rel_type)
 }
 
@@ -846,7 +860,14 @@ pub fn extract_relationship_columns_from_table(table_name: &str) -> Relationship
     // Get columns from schema - this should be the single source of truth
     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
         if let Ok(schemas) = schemas_lock.try_read() {
-            if let Some(schema) = schemas.get("default") {
+            // Try "default" first, then fall back to first schema
+            let schema_opt = schemas.get("default")
+                .or_else(|| {
+                    log::warn!("No 'default' schema found, using first available schema for table '{}'", table_name);
+                    schemas.values().next()
+                });
+            
+            if let Some(schema) = schema_opt {
                 return extract_relationship_columns_from_table_with_schema(table_name, schema);
             }
         }
@@ -1274,27 +1295,23 @@ pub fn extract_ctes_with_context(
                             .unwrap_or_default();
                         
                         // Use schema lookup with node types and parameterized view support
-                        if let Some(schema) = context.schema() {
-                            if !view_params.is_empty() {
-                                log::info!("🔧 VLP: Using parameterized view lookup with params: {:?}", view_params);
-                                rel_type_to_table_name_with_nodes_and_params(
-                                    rel_type,
-                                    lookup_from,
-                                    lookup_to,
-                                    schema,
-                                    &view_params
-                                )
-                            } else {
-                                rel_type_to_table_name_with_nodes(
-                                    rel_type,
-                                    lookup_from,
-                                    lookup_to,
-                                    schema
-                                )
-                            }
+                        // 🔧 FIX: Use the schema parameter directly instead of context.schema()
+                        if !view_params.is_empty() {
+                            log::info!("🔧 VLP: Using parameterized view lookup with params: {:?}", view_params);
+                            rel_type_to_table_name_with_nodes_and_params(
+                                rel_type,
+                                lookup_from,
+                                lookup_to,
+                                schema,
+                                &view_params
+                            )
                         } else {
-                            log::error!("❌ SCHEMA ERROR: Schema context required for relationship table lookup");
-                            format!("ERROR_SCHEMA_CONTEXT_REQUIRED_{}", rel_type)
+                            rel_type_to_table_name_with_nodes(
+                                rel_type,
+                                lookup_from,
+                                lookup_to,
+                                schema
+                            )
                         }
                     }
                 };
@@ -2022,23 +2039,18 @@ pub fn extract_ctes_with_context(
 
                 if unique_labels.len() > 1 {
                     // Multiple distinct relationship types: create a UNION CTE
-                    // Use schema from context instead of deprecated global schema function
-                    let rel_tables: Vec<String> = if let Some(schema) = context.schema() {
-                        unique_labels
-                            .iter()
-                            .map(|label| {
-                                if let Ok(rel_schema) = schema.get_rel_schema(label) {
-                                    format!("{}.{}", rel_schema.database, rel_schema.table_name)
-                                } else {
-                                    log::error!("❌ SCHEMA ERROR: Relationship type '{}' not found in schema", label);
-                                    format!("ERROR_SCHEMA_MISSING_{}", label)
-                                }
-                            })
-                            .collect()
-                    } else {
-                        log::error!("❌ SCHEMA ERROR: No schema in context for relationship types {:?}", unique_labels);
-                        unique_labels.iter().map(|label| format!("ERROR_SCHEMA_NOT_IN_CONTEXT_{}", label)).collect()
-                    };
+                    // 🔧 FIX: Use the schema parameter directly instead of context.schema()
+                    let rel_tables: Vec<String> = unique_labels
+                        .iter()
+                        .map(|label| {
+                            if let Ok(rel_schema) = schema.get_rel_schema(label) {
+                                format!("{}.{}", rel_schema.database, rel_schema.table_name)
+                            } else {
+                                log::error!("❌ SCHEMA ERROR: Relationship type '{}' not found in schema", label);
+                                format!("ERROR_SCHEMA_MISSING_{}", label)
+                            }
+                        })
+                        .collect();
                     crate::debug_print!(
                         "DEBUG cte_extraction: Resolved tables for labels {:?}: {:?}",
                         unique_labels,
@@ -2046,60 +2058,38 @@ pub fn extract_ctes_with_context(
                     );
 
                     // Check if this is a polymorphic edge (all types map to same table with type_column)
-                    let is_polymorphic = if let Some(schema) = context.schema() {
-                        // Check if the first relationship type has a type_column (indicates polymorphic)
-                        if let Ok(rel_schema) = schema.get_rel_schema(&unique_labels[0]) {
-                            rel_schema.type_column.is_some()
-                        } else {
-                            false
-                        }
+                    // 🔧 FIX: Use the schema parameter directly
+                    let is_polymorphic = if let Ok(rel_schema) = schema.get_rel_schema(&unique_labels[0]) {
+                        rel_schema.type_column.is_some()
                     } else {
                         false
                     };
 
                     let union_queries: Vec<String> = if is_polymorphic {
                         // Polymorphic edge: all types share the same table, need type filters
-                        // Get schema info from context
-                        if let Some(schema) = context.schema() {
-                            if let Ok(rel_schema) = schema.get_rel_schema(&unique_labels[0]) {
-                                let table_name =
-                                    format!("{}.{}", rel_schema.database, rel_schema.table_name);
-                                let from_col = &rel_schema.from_id;
-                                let to_col = &rel_schema.to_id;
-                                let type_col = rel_schema
-                                    .type_column
-                                    .as_ref()
-                                    .expect("polymorphic edge must have type_column");
+                        // 🔧 FIX: Use the schema parameter directly
+                        if let Ok(rel_schema) = schema.get_rel_schema(&unique_labels[0]) {
+                            let table_name =
+                                format!("{}.{}", rel_schema.database, rel_schema.table_name);
+                            let from_col = &rel_schema.from_id;
+                            let to_col = &rel_schema.to_id;
+                            let type_col = rel_schema
+                                .type_column
+                                .as_ref()
+                                .expect("polymorphic edge must have type_column");
 
-                                // For polymorphic edges, use a single query with IN clause
-                                // This is more efficient than UNION of identical table scans
-                                // Include type_column for relationship property access
-                                let type_values: Vec<String> =
-                                    unique_labels.iter().map(|l| format!("'{}'", l)).collect();
-                                let type_in_clause = type_values.join(", ");
+                            // For polymorphic edges, use a single query with IN clause
+                            // This is more efficient than UNION of identical table scans
+                            // Include type_column for relationship property access
+                            let type_values: Vec<String> =
+                                unique_labels.iter().map(|l| format!("'{}'", l)).collect();
+                            let type_in_clause = type_values.join(", ");
 
-                                vec![format!(
-                                    "SELECT {from_col} as from_node_id, {to_col} as to_node_id, {type_col} as interaction_type FROM {table_name} WHERE {type_col} IN ({type_in_clause})"
-                                )]
-                            } else {
-                                // Fallback if schema lookup fails
-                                rel_tables
-                                    .iter()
-                                    .map(|table| {
-                                        let (from_col, to_col) =
-                                            get_relationship_columns_by_table(table).unwrap_or((
-                                                "from_node_id".to_string(),
-                                                "to_node_id".to_string(),
-                                            ));
-                                        format!(
-                                            "SELECT {} as from_node_id, {} as to_node_id FROM {}",
-                                            from_col, to_col, table
-                                        )
-                                    })
-                                    .collect()
-                            }
+                            vec![format!(
+                                "SELECT {from_col} as from_node_id, {to_col} as to_node_id, {type_col} as interaction_type FROM {table_name} WHERE {type_col} IN ({type_in_clause})"
+                            )]
                         } else {
-                            // No schema in context, fallback
+                            // Fallback if schema lookup fails
                             rel_tables
                                 .iter()
                                 .map(|table| {
@@ -2117,45 +2107,27 @@ pub fn extract_ctes_with_context(
                         }
                     } else {
                         // Regular multiple relationship types: UNION of different tables
-                        // Use schema to get the correct column names for each relationship type
-                        if let Some(schema) = context.schema() {
-                            unique_labels
-                                .iter()
-                                .zip(rel_tables.iter())
-                                .map(|(label, table)| {
-                                    if let Ok(rel_schema) = schema.get_rel_schema(label) {
-                                        let from_col = &rel_schema.from_id;
-                                        let to_col = &rel_schema.to_id;
-                                        format!(
-                                            "SELECT {} as from_node_id, {} as to_node_id FROM {}",
-                                            from_col, to_col, table
-                                        )
-                                    } else {
-                                        // Fallback if schema lookup fails
-                                        format!(
-                                            "SELECT from_id as from_node_id, to_id as to_node_id FROM {}",
-                                            table
-                                        )
-                                    }
-                                })
-                                .collect()
-                        } else {
-                            // Fallback if no schema in context
-                            rel_tables
-                                .iter()
-                                .map(|table| {
-                                    let (from_col, to_col) = get_relationship_columns_by_table(table)
-                                        .unwrap_or((
-                                            "from_node_id".to_string(),
-                                            "to_node_id".to_string(),
-                                        ));
+                        // 🔧 FIX: Use schema parameter to get the correct column names for each relationship type
+                        unique_labels
+                            .iter()
+                            .zip(rel_tables.iter())
+                            .map(|(label, table)| {
+                                if let Ok(rel_schema) = schema.get_rel_schema(label) {
+                                    let from_col = &rel_schema.from_id;
+                                    let to_col = &rel_schema.to_id;
                                     format!(
                                         "SELECT {} as from_node_id, {} as to_node_id FROM {}",
                                         from_col, to_col, table
                                     )
-                                })
+                                } else {
+                                    // Fallback if schema lookup fails
+                                    format!(
+                                        "SELECT from_id as from_node_id, to_id as to_node_id FROM {}",
+                                        table
+                                    )
+                                }
+                            })
                                 .collect()
-                        }
                     };
 
                     let union_sql = union_queries.join(" UNION ALL ");
@@ -2266,19 +2238,12 @@ pub fn extract_ctes_with_context(
             extract_ctes_with_context(&limit.input, last_node_alias, context, schema)
         }
         LogicalPlan::Cte(logical_cte) => {
-            // Use schema from context if available, otherwise create empty schema for tests
-            let schema = context.schema().cloned().unwrap_or_else(|| {
-                use crate::graph_catalog::graph_schema::GraphSchema;
-                GraphSchema::build(
-                    1,
-                    "test".to_string(),
-                    std::collections::HashMap::new(),
-                    std::collections::HashMap::new(),
-                )
-            });
+            // 🔧 FIX: Use the schema parameter directly instead of context.schema()
+            // The context.schema() was sometimes None, causing an empty schema fallback
+            // which led to node lookups failing in VLP queries
             Ok(vec![Cte::new(
                     logical_cte.name.clone(),
-                    super::CteContent::Structured(logical_cte.input.to_render_plan(&schema)?),
+                    super::CteContent::Structured(logical_cte.input.to_render_plan(schema)?),
                     false,
                 )])
         }
@@ -2324,10 +2289,8 @@ pub fn extract_ctes_with_context(
                 cte_name, wc.exported_aliases.len());
             
             // Build the CTE content by rendering the input plan as a RenderPlan
-            // Get schema from context
-            let schema = context.schema().ok_or(RenderBuildError::InvalidRenderPlan(
-                "Cannot generate WITH CTE: No schema found in context".to_string()
-            ))?;
+            // 🔧 FIX: Use the schema parameter directly instead of context.schema()
+            // The schema parameter is always passed and is the correct schema for this query
             
             // CRITICAL: Expand collect(node) to groupArray(tuple(...)) BEFORE creating Projection
             // This ensures the CTE has the proper aggregation structure

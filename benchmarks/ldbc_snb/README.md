@@ -5,7 +5,7 @@
 ### ClickHouse LDBC Instance
 - **Container**: `clickhouse-ldbc`
 - **Port**: 18123 (not default 8123)
-- **Credentials**: default/default
+- **Credentials**: test_user/test_pass
 - **Database**: ldbc
 - **Schema**: `benchmarks/ldbc_snb/schemas/ldbc_snb_complete.yaml`
 
@@ -15,8 +15,8 @@
 cd /home/gz/clickgraph
 
 export CLICKHOUSE_URL="http://localhost:18123"
-export CLICKHOUSE_USER="default"
-export CLICKHOUSE_PASSWORD="default"
+export CLICKHOUSE_USER="test_user"
+export CLICKHOUSE_PASSWORD="test_pass"
 export CLICKHOUSE_DATABASE="ldbc"
 export GRAPH_CONFIG_PATH="benchmarks/ldbc_snb/schemas/ldbc_snb_complete.yaml"
 export RUST_LOG=warn

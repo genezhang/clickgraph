@@ -190,17 +190,40 @@ pub async fn initialize_global_schema(
                 let mut schemas = HashMap::new();
                 let mut view_configs = HashMap::new();
                 let schema_count = schemas_list.len();
+                
+                // Check if "default" was explicitly set in config (from default_schema field)
+                let has_explicit_default = schemas_list.iter().any(|(name, _, _)| name == "default");
+                let mut first_schema_info: Option<(GraphSchema, GraphSchemaConfig)> = None;
 
                 for (schema_name, schema, config) in schemas_list {
-                    schemas.insert(schema_name.clone(), schema);
+                    // Skip "default" here if it was explicitly set - we'll add it after the loop
+                    if schema_name == "default" {
+                        // Store to add after processing all schemas
+                        schemas.insert("default".to_string(), schema.clone());
+                        view_configs.insert("default".to_string(), config.clone());
+                        log::info!("  ✓ Registered explicit default schema");
+                        continue;
+                    }
+                    
+                    schemas.insert(schema_name.clone(), schema.clone());
                     view_configs.insert(schema_name.clone(), config.clone());
                     log::info!("  ✓ Registered schema: {}", schema_name);
                     
-                    // Legacy: Set first schema as GLOBAL_SCHEMA_CONFIG
-                    if schemas.len() == 1 {
+                    // Legacy: Set first (non-default) schema as GLOBAL_SCHEMA_CONFIG
+                    if first_schema_info.is_none() {
                         GLOBAL_SCHEMA_CONFIG
                             .set(RwLock::new(config.clone()))
                             .map_err(|_| "Failed to initialize global view config")?;
+                        first_schema_info = Some((schema, config));
+                    }
+                }
+                
+                // If no explicit default was set, use the first schema as default
+                if !has_explicit_default {
+                    if let Some((schema, config)) = first_schema_info {
+                        schemas.insert("default".to_string(), schema);
+                        view_configs.insert("default".to_string(), config);
+                        log::info!("  ✓ First schema also registered as 'default'");
                     }
                 }
 

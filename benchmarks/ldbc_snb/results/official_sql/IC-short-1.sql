@@ -1,7 +1,7 @@
 -- LDBC Official Query: IC-short-1
 -- Status: PASS
--- Generated: 2025-12-21T09:22:44.174476
--- Database: ldbc
+-- Generated: 2026-01-09T17:20:49.217738
+-- Database: ldbc_snb
 
 -- Original Cypher Query:
 -- MATCH (n:Person {id: $personId })-[:IS_LOCATED_IN]->(p:City)
@@ -26,7 +26,7 @@ SELECT
       n.gender AS "gender", 
       n.creationDate AS "creationDate"
 FROM ldbc.Person AS n
-INNER JOIN ldbc.Person_isLocatedIn_Place AS t219 ON t219.PersonId = n.id
-INNER JOIN ldbc.Place AS p ON p.id = t219.CityId
-WHERE (n.id = $personId AND p.type = 'City')
+INNER JOIN ldbc.Person_isLocatedIn_Place AS t88 ON t88.PersonId = n.id
+INNER JOIN ldbc.Place AS p ON p.id = t88.CityId
+WHERE (n.id = $personId AND (p.type = 'City'))
 

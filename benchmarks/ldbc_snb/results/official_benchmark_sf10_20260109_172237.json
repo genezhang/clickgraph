@@ -1,0 +1,134 @@
+{
+  "benchmark": "LDBC SNB Official Queries",
+  "scale_factor": "sf10",
+  "timestamp": "2026-01-09T17:22:37.204150",
+  "clickgraph_url": "http://localhost:8080",
+  "schema_name": "ldbc_snb",
+  "total_queries": 17,
+  "passed": 4,
+  "failed": 13,
+  "pass_rate": "23%",
+  "total_time_sec": 1.7,
+  "avg_time_sec": 0.424,
+  "results": [
+    {
+      "query": "BI-18",
+      "status": "FAIL",
+      "rows": null,
+      "time_sec": 0.016,
+      "message": "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `t102.Person1Id` in scope SELECT person1.id AS person1Id, person2.id AS person2Id FROM"
+    },
+    {
+      "query": "BI-3",
+      "status": "FAIL",
+      "rows": null,
+      "time_sec": 0.009,
+      "message": "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 179. DB::Exception: Multiple table expressions with same alias post. In scope WITH RECURSIVE vlp_cte14 AS (SELECT start_node.id AS start_id, start_"
+    },
+    {
+      "query": "BI-6",
+      "status": "FAIL",
+      "rows": null,
+      "time_sec": 0.008,
+      "message": "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `like.PersonId` in scope SELECT person1.id AS `person1.id`, countDistinct((like.Person"
+    },
+    {
+      "query": "BI-7",
+      "status": "FAIL",
+      "rows": null,
+      "time_sec": 0.006,
+      "message": "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 179. DB::Exception: Multiple table expressions with same alias t120. In scope SELECT relatedTag.name AS `relatedTag.name`, countDistinct(comment.id"
+    },
+    {
+      "query": "BI-9",
+      "status": "FAIL",
+      "rows": null,
+      "time_sec": 0.01,
+      "message": "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Identifier 'current_node.TargetMessageId' cannot be resolved from table with name current_node. In scope SELECT vp.start_id, end"
+    },
+    {
+      "query": "IC-11",
+      "status": "FAIL",
+      "rows": null,
+      "time_sec": 0.008,
+      "message": "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 179. DB::Exception: Multiple table expressions with same alias workAt. In scope WITH RECURSIVE vlp_cte16 AS (SELECT start_node.from_id AS start_id,"
+    },
+    {
+      "query": "IC-12",
+      "status": "FAIL",
+      "rows": null,
+      "time_sec": 0.007,
+      "message": "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 179. DB::Exception: Multiple table expressions with same alias t131. In scope SELECT friend.id AS personId, friend.firstName AS personFirstName, fr"
+    },
+    {
+      "query": "IC-2",
+      "status": "FAIL",
+      "rows": null,
+      "time_sec": 0.007,
+      "message": "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression or function identifier `t134.id` in scope SELECT friend.id AS personId, friend.firstName AS personFirstName, "
+    },
+    {
+      "query": "IC-8",
+      "status": "FAIL",
+      "rows": null,
+      "time_sec": 0.005,
+      "message": "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 179. DB::Exception: Multiple table expressions with same alias t139. In scope SELECT person.id AS personId, person.firstName AS personFirstName, pe"
+    },
+    {
+      "query": "IC-9",
+      "status": "FAIL",
+      "rows": null,
+      "time_sec": 0.008,
+      "message": "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression identifier `friends` in scope WITH RECURSIVE with_friends_cte AS (SELECT root.id AS `root.id`, root.birthday "
+    },
+    {
+      "query": "IS-1",
+      "status": "PASS",
+      "rows": 1,
+      "time_sec": 0.038,
+      "message": "SUCCESS"
+    },
+    {
+      "query": "IS-2",
+      "status": "FAIL",
+      "rows": null,
+      "time_sec": 0.007,
+      "message": "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 60. DB::Exception: Unknown table expression identifier 'ldbc.with_message_messageCreationDate_messageId_cte_1' in scope SELECT start_node.CommentId"
+    },
+    {
+      "query": "IS-3",
+      "status": "FAIL",
+      "rows": null,
+      "time_sec": 0.005,
+      "message": "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 47. DB::Exception: Unknown expression identifier `friend.id` in scope SELECT friend.id AS personId, friend.firstName AS firstName, friend.lastName "
+    },
+    {
+      "query": "IS-4",
+      "status": "PASS",
+      "rows": 0,
+      "time_sec": 0.012,
+      "message": "SUCCESS"
+    },
+    {
+      "query": "IS-5",
+      "status": "PASS",
+      "rows": 0,
+      "time_sec": 0.039,
+      "message": "SUCCESS"
+    },
+    {
+      "query": "IS-6",
+      "status": "PASS",
+      "rows": 0,
+      "time_sec": 1.609,
+      "message": "SUCCESS"
+    },
+    {
+      "query": "IS-7",
+      "status": "FAIL",
+      "rows": null,
+      "time_sec": 0.024,
+      "message": "HTTP 500: Clickhouse Error: bad response: {\"exception\": \"Code: 179. DB::Exception: Multiple table expressions with same alias t153. In scope SELECT c.id AS commentId, c.content AS commentContent, c.creationDate"
+    }
+  ]
+}

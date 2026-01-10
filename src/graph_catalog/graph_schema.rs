@@ -673,8 +673,18 @@ impl GraphSchema {
     }
 
     pub fn get_node_schema(&self, node_label: &str) -> Result<&NodeSchema, GraphSchemaError> {
-        self.nodes.get(node_label).ok_or(GraphSchemaError::Node {
-            node_label: node_label.to_string(),
+        log::debug!("get_node_schema: Looking for node_label='{}' in schema (has {} nodes: {:?})", 
+            node_label, 
+            self.nodes.len(),
+            self.nodes.keys().take(5).collect::<Vec<_>>());
+        
+        self.nodes.get(node_label).ok_or_else(|| {
+            log::warn!("get_node_schema: Node '{}' NOT FOUND. Available nodes: {:?}", 
+                node_label, 
+                self.nodes.keys().collect::<Vec<_>>());
+            GraphSchemaError::Node {
+                node_label: node_label.to_string(),
+            }
         })
     }
 

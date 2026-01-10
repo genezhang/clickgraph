@@ -18,7 +18,7 @@ from datetime import datetime
 CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 BASE_DIR = Path(__file__).parent.parent
 RESULTS_DIR = BASE_DIR / "results" / "official_sql"
-DATABASE = "ldbc"
+DATABASE = "ldbc_snb"  # Schema name in ClickGraph
 
 # Sample parameters for queries (matching LDBC spec)
 PARAMS = {
@@ -97,7 +97,7 @@ class OfficialQueryAuditor:
                 f"{CLICKGRAPH_URL}/query",
                 json={
                     "query": query,
-                    "database": DATABASE,
+                    "schema_name": DATABASE,
                     "parameters": PARAMS,
                     "sql_only": True
                 },

@@ -46,7 +46,7 @@ Content-Type: application/json
   - Uses role-based connection pools for optimal performance
   - No `SET ROLE` overhead on query execution
   - Example: `"analyst"`, `"admin"`
-- `schema_name` (string, optional): Graph schema/database name to use for this query. Defaults to `"default"`. Enables multi-database support for queries. **Note**: The `USE` clause in the query itself takes precedence over this parameter.
+- `schema_name` (string, optional): Graph schema/database name to use for this query. Defaults to `"default"`. Enables multi-database support for queries. **Note**: The `USE` clause in the query itself takes precedence over this parameter. See [Default Schema Behavior](#default-schema-behavior) for details on how the default is determined.
 - `max_inferred_types` (integer, optional): Maximum number of relationship types to infer for generic patterns ✅ **[ADDED: v0.6.1]**
   - Default: 5 (prevents excessive UNION expansion)
   - Recommended for GraphRAG: 10-20 (complex knowledge graphs with many relationship types)
@@ -603,6 +603,23 @@ ClickGraph supports three ways to select a database, with the following preceden
 1. **USE clause in query** (highest priority)
 2. **Session/request parameter** (HTTP: `schema_name`, Bolt: `database`)
 3. **Default schema** ("default")
+
+### Default Schema Behavior
+
+When no `USE` clause or `schema_name` parameter is provided, ClickGraph uses the "default" schema. How the default is determined depends on your schema configuration:
+
+| Configuration | Default Schema |
+|--------------|----------------|
+| **Single schema file** | The schema is automatically the default |
+| **Multi-schema with `default_schema`** | The named schema becomes the default |
+| **Multi-schema without `default_schema`** | The **first schema** in the list becomes the default |
+
+This means:
+- **Most common case** (single schema): Just load your schema file - no configuration needed
+- **Multiple schemas**: Either specify `default_schema` explicitly, or the first schema is used
+- **Override per-request**: Use `schema_name` parameter or `USE` clause
+
+For full schema configuration details, see [Schema Reference - Default Schema Behavior](schema-reference.md#default-schema-behavior).
 
 ### Examples
 

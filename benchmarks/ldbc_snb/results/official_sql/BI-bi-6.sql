@@ -1,7 +1,7 @@
 -- LDBC Official Query: BI-bi-6
 -- Status: PASS
--- Generated: 2025-12-21T09:22:44.097192
--- Database: ldbc
+-- Generated: 2026-01-09T17:20:49.178515
+-- Database: ldbc_snb
 
 -- Original Cypher Query:
 -- MATCH (tag:Tag {name: $tag})<-[:HAS_TAG]-(message1:Message)-[:HAS_CREATOR]->(person1:Person)
@@ -18,22 +18,16 @@
 -- Generated ClickHouse SQL:
 SELECT 
       person1.id AS "person1.id", 
-      count(*) AS "authorityScore"
-FROM ldbc.Message AS message1
-LEFT JOIN ldbc.Person_likes_Message AS t177 ON t177.MessageId = message1.id
-INNER JOIN ldbc.Message_hasTag_Tag AS t175 ON t175.MessageId = message1.id
-INNER JOIN ldbc.Tag AS tag ON tag.id = t175.TagId
-INNER JOIN ldbc.Message_hasCreator_Person AS t176 ON t176.MessageId = message1.id
-INNER JOIN ldbc.Message_hasCreator_Person AS t176 ON t175.MessageId = t176.MessageId
-LEFT JOIN ldbc.Person AS person2 ON person2.id = t177.PersonId
-INNER JOIN ldbc.Message_hasCreator_Person AS t178 ON t177.PersonId = t178.PersonId
-LEFT JOIN ldbc.Message AS message2 ON message2.id = t178.MessageId
+      count(DISTINCT tuple(like.PersonId, like.MessageId)) AS "authorityScore"
+FROM ldbc.Message_hasTag_Tag AS t51
+INNER JOIN ldbc.Message_hasCreator_Person AS t52 ON t52.PersonId = person1.id
+LEFT JOIN ldbc.Message AS message2 ON message2.id = t54.MessageId
+INNER JOIN ldbc.Message AS message1 ON message1.id = t52.MessageId
+LEFT JOIN ldbc.Person_likes_Message AS t53 ON t53.MessageId = message1.id
 LEFT JOIN ldbc.Person_likes_Message AS like ON like.MessageId = message2.id
-INNER JOIN ldbc.Person AS person1 ON person1.id = t176.PersonId
-INNER JOIN ldbc.Person_likes_Message AS like ON t178.MessageId = like.MessageId
-LEFT JOIN Message_hasCreator_Person AS t178 ON t178.PersonId = person2.id
-INNER JOIN ldbc.Person_likes_Message AS t177 ON t175.MessageId = t177.MessageId
 LEFT JOIN ldbc.Person AS person3 ON person3.id = like.PersonId
+LEFT JOIN Message_hasCreator_Person AS t54 ON t54.PersonId = person2.id
+LEFT JOIN ldbc.Person AS person2 ON person2.id = t53.PersonId
 WHERE tag.name = $tag
 GROUP BY person1.id
 ORDER BY authorityScore DESC, person1.id ASC

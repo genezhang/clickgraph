@@ -226,9 +226,9 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         for (hop_idx, hop) in hops.iter().enumerate() {
             let hop_num = hop_idx + 1;
             
-            // Get relationship info
-            let rel_table = self.get_rel_table_with_db(&hop.rel_type)?;
-            let (from_col, to_col) = self.get_rel_columns(&hop.rel_type)?;
+            // Get relationship info using composite key lookup (TYPE::FROM::TO)
+            let rel_table = self.get_rel_table_with_db(&hop.rel_type, &hop.from_node_type, &hop.to_node_type)?;
+            let (from_col, to_col) = self.get_rel_columns(&hop.rel_type, &hop.from_node_type, &hop.to_node_type)?;
             let start_id_col = self.get_node_id_column(&hop.from_node_type)?;
             log::info!("🔍 Hop {}: rel_type={}, from_node={}, to_node={}, from_col={}, to_col={}, start_id_col={}", 
                 hop_num, hop.rel_type, hop.from_node_type, hop.to_node_type, from_col, to_col, start_id_col);
@@ -443,19 +443,21 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             .ok_or_else(|| format!("Node table not found for type '{}'", node_type))
     }
     
-    /// Get table name for a relationship type
-    fn get_rel_table(&self, rel_type: &str) -> Result<String, String> {
+    /// Get table name for a relationship type with node context
+    /// Uses composite key lookup for schemas that use TYPE::FROM::TO keys
+    fn get_rel_table(&self, rel_type: &str, from_node: &str, to_node: &str) -> Result<String, String> {
         self.schema
-            .get_rel_schema(rel_type)
+            .get_rel_schema_with_nodes(rel_type, Some(from_node), Some(to_node))
             .map(|r| r.table_name.clone())
-            .map_err(|e| format!("Relationship table not found for type '{}': {}", rel_type, e))
+            .map_err(|e| format!("Relationship table not found for type '{}' ({}->{}): {}", rel_type, from_node, to_node, e))
     }
     
-    /// Get table name with database prefix for a relationship type
+    /// Get table name with database prefix for a relationship type with node context
+    /// Uses composite key lookup for schemas that use TYPE::FROM::TO keys
     /// 🔧 PARAMETERIZED VIEW FIX: Applies view parameters if the relationship schema has view_parameters defined
-    fn get_rel_table_with_db(&self, rel_type: &str) -> Result<String, String> {
+    fn get_rel_table_with_db(&self, rel_type: &str, from_node: &str, to_node: &str) -> Result<String, String> {
         self.schema
-            .get_rel_schema(rel_type)
+            .get_rel_schema_with_nodes(rel_type, Some(from_node), Some(to_node))
             .map(|r| {
                 let base_table = if r.database.is_empty() {
                     r.table_name.clone()
@@ -466,7 +468,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 // Apply parameterized view syntax if the schema has view_parameters
                 self.apply_view_parameters(&base_table, &r.view_parameters)
             })
-            .map_err(|e| format!("Relationship table not found for type '{}': {}", rel_type, e))
+            .map_err(|e| format!("Relationship table not found for type '{}' ({}->{}): {}", rel_type, from_node, to_node, e))
     }
     
     /// Apply view parameters to a table name, generating parameterized view syntax
@@ -500,16 +502,18 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         }
     }
     
-    /// Get from_id and to_id columns for a relationship type
-    fn get_rel_columns(&self, rel_type: &str) -> Result<(String, String), String> {
+    /// Get from_id and to_id columns for a relationship type with node context
+    /// Uses composite key lookup for schemas that use TYPE::FROM::TO keys
+    fn get_rel_columns(&self, rel_type: &str, from_node: &str, to_node: &str) -> Result<(String, String), String> {
         let result = self.schema
-            .get_rel_schema(rel_type)
+            .get_rel_schema_with_nodes(rel_type, Some(from_node), Some(to_node))
             .map(|r| {
                 let cols = (r.from_id.clone(), r.to_id.clone());
-                log::info!("📋 Schema lookup for rel_type '{}': from_id='{}', to_id='{}'", rel_type, cols.0, cols.1);
+                log::info!("📋 Schema lookup for rel_type '{}' ({}->{}): from_id='{}', to_id='{}'", 
+                    rel_type, from_node, to_node, cols.0, cols.1);
                 cols
             })
-            .map_err(|e| format!("Relationship columns not found for type '{}': {}", rel_type, e));
+            .map_err(|e| format!("Relationship columns not found for type '{}' ({}->{}): {}", rel_type, from_node, to_node, e));
         
         if let Err(ref e) = result {
             log::error!("❌ Failed to get relationship columns: {}", e);

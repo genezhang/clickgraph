@@ -102,6 +102,57 @@ schemas:
 - **Schema Selection**: Use `USE <schema_name>` clause to switch between schemas
 - **Automatic Alias**: A `default` schema alias is created pointing to `default_schema`
 
+### Default Schema Behavior
+
+ClickGraph automatically establishes a "default" schema to simplify queries:
+
+| Configuration | Default Schema Behavior |
+|--------------|-------------------------|
+| **Single schema file** | The schema is automatically registered as `"default"` |
+| **Multi-schema with `default_schema`** | The named schema becomes `"default"` |
+| **Multi-schema without `default_schema`** | The **first schema** in the list becomes `"default"` |
+
+**Implications**:
+- Queries without `USE` clause or `schema_name` parameter use the default schema
+- The `USE <schema_name>` clause always works with any named schema
+- The `schema_name` API parameter can override the default for a single request
+- If both `USE` clause and `schema_name` parameter are provided, the `USE` clause takes precedence
+
+**Example - Single Schema (most common)**:
+```yaml
+# schemas/my_graph.yaml
+name: my_graph    # This becomes the "default" automatically
+graph_schema:
+  nodes:
+    - label: User
+      # ...
+```
+```cypher
+-- No USE clause needed
+MATCH (u:User) RETURN u.name
+```
+
+**Example - Multi-Schema with Explicit Default**:
+```yaml
+default_schema: social_network   # Explicitly set default
+
+schemas:
+  - name: social_network
+    # ...
+  - name: security_logs
+    # ...
+```
+
+**Example - Multi-Schema without Explicit Default**:
+```yaml
+# No default_schema specified - first one (social_network) becomes default
+schemas:
+  - name: social_network   # ← This becomes "default"
+    # ...
+  - name: security_logs
+    # ...
+```
+
 **Usage Example**:
 ```cypher
 -- Query social_network schema

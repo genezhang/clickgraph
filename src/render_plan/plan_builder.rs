@@ -286,7 +286,7 @@ fn generate_swapped_joins_for_optional_match(
 }
 
 pub(crate) trait RenderPlanBuilder {
-    fn extract_last_node_cte(&self) -> RenderPlanBuilderResult<Option<Cte>>;
+    fn extract_last_node_cte(&self, schema: &crate::graph_catalog::graph_schema::GraphSchema) -> RenderPlanBuilderResult<Option<Cte>>;
 
     fn extract_final_filters(&self) -> RenderPlanBuilderResult<Option<RenderExpr>>;
 
@@ -781,23 +781,34 @@ fn expand_table_alias_to_select_items(
         // STEP 2: Get columns from that CTE with this alias prefix
         if let Some((select_items, _, _, _)) = cte_schemas.get(cte_name) {
             log::info!("✅ expand_table_alias_to_select_items: Found CTE schema '{}' with {} items", cte_name, select_items.len());
-            // Calculate the CTE alias used in FROM clause (e.g., "with_a_b_cte" -> "a_b")
-            let cte_alias = cte_name
-                .strip_prefix("with_")
-                .and_then(|s| s.strip_suffix("_cte"))
-                .unwrap_or(cte_name);
+            // Calculate the CTE alias used in FROM clause
+            // Special case: __union_vlp is a pseudo-CTE representing UNION results
+            // The actual subquery alias is __union
+            let cte_alias = if cte_name == "__union_vlp" {
+                "__union".to_string()
+            } else {
+                // Normal CTE: strip prefixes/suffixes (e.g., "with_a_b_cte" -> "a_b")
+                cte_name
+                    .strip_prefix("with_")
+                    .and_then(|s| s.strip_suffix("_cte"))
+                    .unwrap_or(cte_name)
+                    .to_string()
+            };
             
-            let alias_prefix = format!("{}_", alias);
+            let alias_prefix_underscore = format!("{}_", alias);
+            let alias_prefix_dot = format!("{}.", alias);
             log::debug!("expand_table_alias_to_select_items: CTE '{}' has {} items", cte_name, select_items.len());
             let filtered_items: Vec<SelectItem> = select_items.iter()
                 .filter(|item| {
                     if let Some(col_alias) = &item.col_alias {
                         // Match columns that:
                         // 1. Start with alias_ (e.g., "friend_firstName" for alias "friend")
-                        // 2. OR exactly match the alias (e.g., "cnt" for alias "cnt" in WITH count() as cnt)
-                        let matches_prefix = col_alias.0.starts_with(&alias_prefix);
+                        // 2. Start with alias. (e.g., "friend.birthday" from UNION subqueries)
+                        // 3. OR exactly match the alias (e.g., "cnt" for alias "cnt" in WITH count() as cnt)
+                        let matches_underscore = col_alias.0.starts_with(&alias_prefix_underscore);
+                        let matches_dot = col_alias.0.starts_with(&alias_prefix_dot);
                         let matches_exact = col_alias.0 == alias;
-                        matches_prefix || matches_exact
+                        matches_underscore || matches_dot || matches_exact
                     } else {
                         false
                     }
@@ -807,20 +818,65 @@ fn expand_table_alias_to_select_items(
                     // The CTE has columns like "a_city", "a_name" (from col_alias)
                     // We need to reference them as: a_b.a_city, a_b.a_name
                     // NOT the original DB columns like: a_b.city, a_b.full_name
-                    let rewritten_expr = if let Some(ref cte_col_alias) = item.col_alias {
-                        // Use the CTE column name (e.g., "a_city") not the original DB column
-                        RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias(cte_alias.to_string()),
-                            column: PropertyValue::Column(cte_col_alias.0.clone()),
-                        })
+                    //
+                    // ALSO: For UNION subquery columns with dots (e.g., "friend.birthday"),
+                    // we reference them as quoted identifiers and output underscore aliases
+                    let (mut rewritten_expr, output_alias) = if let Some(ref cte_col_alias) = item.col_alias {
+                        // Check if column name has dots (from UNION subquery)
+                        let col_name = &cte_col_alias.0;
+                        if col_name.contains('.') {
+                            // UNION column with dot: reference as quoted identifier
+                            // e.g., "friend.birthday" -> __union."friend.birthday" AS friend_birthday
+                            let normalized_alias = col_name.replace('.', "_");
+                            (
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(cte_alias.to_string()),
+                                    column: PropertyValue::Column(col_name.clone()),
+                                }),
+                                Some(ColumnAlias(normalized_alias)),
+                            )
+                        } else {
+                            // Normal underscore column: use as-is
+                            (
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(cte_alias.to_string()),
+                                    column: PropertyValue::Column(col_name.clone()),
+                                }),
+                                item.col_alias.clone(),
+                            )
+                        }
                     } else {
                         // Fallback: use original expression (shouldn't happen for CTE columns)
-                        item.expression.clone()
+                        (item.expression.clone(), item.col_alias.clone())
                     };
+                    
+                    // 🔧 FIX: Wrap with any() aggregation if needed
+                    // When has_aggregation=true, non-ID columns must be wrapped with any()
+                    // to be valid in SELECT with GROUP BY
+                    if has_aggregation {
+                        // Check if this column is an ID column
+                        // ID columns end with "_id" or ".id" (e.g., "friend_id", "friend.id")
+                        let is_id_column = if let Some(ref alias_obj) = output_alias {
+                            let alias_str = &alias_obj.0;
+                            alias_str.ends_with("_id") || alias_str.ends_with(".id")
+                        } else {
+                            false
+                        };
+                        
+                        if !is_id_column {
+                            // Wrap non-ID column with anyLast() aggregation
+                            // Note: Use anyLast() not any() to avoid conflict with list predicate any() function
+                            rewritten_expr = RenderExpr::AggregateFnCall(AggregateFnCall {
+                                name: "anyLast".to_string(),
+                                args: vec![rewritten_expr],
+                            });
+                            log::debug!("🔧 expand_table_alias_to_select_items: Wrapped column '{:?}' with anyLast() for aggregation", output_alias);
+                        }
+                    }
                     
                     SelectItem {
                         expression: rewritten_expr,
-                        col_alias: item.col_alias.clone(),
+                        col_alias: output_alias,
                     }
                 })
                 .collect();
@@ -937,11 +993,25 @@ fn expand_table_alias_to_group_by_id_only(
 ) -> Vec<RenderExpr> {
     log::info!("🔧 expand_table_alias_to_group_by_id_only: Looking for ID column for alias '{}'", alias);
     
-    // FIRST: Check if this alias comes from a CTE (e.g., VLP CTE)
+    // FIRST: Check if this alias comes from a CTE (e.g., VLP CTE or UNION pseudo-CTE)
     if let Some(cte_name) = cte_references.get(alias) {
         log::info!("🔧 expand_table_alias_to_group_by_id_only: Alias '{}' is from CTE '{}'", alias, cte_name);
         if let Some((_items, _names, alias_to_id, _prop_map)) = cte_schemas.get(cte_name) {
             if let Some(id_col) = alias_to_id.get(alias) {
+                // Special case: __union_vlp is a pseudo-CTE representing UNION results
+                // For UNION subqueries, GROUP BY needs to reference: __union."friend.id"
+                // (table alias is __union, column name is "friend.id" with dots)
+                if cte_name == "__union_vlp" {
+                    // UNION subquery: use __union as table alias and "alias.id" as column
+                    let dot_column_name = format!("{}.{}", alias, id_col);
+                    log::info!("🔧 expand_table_alias_to_group_by_id_only: UNION pattern - using __union.\"{}\"", dot_column_name);
+                    return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias("__union".to_string()),
+                        column: PropertyValue::Column(dot_column_name),
+                    })];
+                }
+                
+                // Normal CTE: use alias as table and id column directly
                 log::info!("🔧 expand_table_alias_to_group_by_id_only: Using ID column '{}' from CTE schema for alias '{}'", id_col, alias);
                 return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(alias.to_string()),
@@ -5504,42 +5574,36 @@ impl RenderPlanBuilder for LogicalPlan {
         }
     }
 
-    fn extract_last_node_cte(&self) -> RenderPlanBuilderResult<Option<Cte>> {
+    fn extract_last_node_cte(&self, schema: &crate::graph_catalog::graph_schema::GraphSchema) -> RenderPlanBuilderResult<Option<Cte>> {
         let last_node_cte = match &self {
             LogicalPlan::Empty => None,
             LogicalPlan::ViewScan(_) => None,
-            LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_last_node_cte()?,
+            LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_last_node_cte(schema)?,
             LogicalPlan::GraphRel(graph_rel) => {
                 // Last node is at the top of the tree.
                 // process left node first.
-                let left_node_cte_opt = graph_rel.left.extract_last_node_cte()?;
+                let left_node_cte_opt = graph_rel.left.extract_last_node_cte(schema)?;
 
                 // If last node is still not found then check at the right tree
                 if left_node_cte_opt.is_none() {
-                    graph_rel.right.extract_last_node_cte()?
+                    graph_rel.right.extract_last_node_cte(schema)?
                 } else {
                     left_node_cte_opt
                 }
             }
-            LogicalPlan::Filter(filter) => filter.input.extract_last_node_cte()?,
-            LogicalPlan::Projection(projection) => projection.input.extract_last_node_cte()?,
-            LogicalPlan::GroupBy(group_by) => group_by.input.extract_last_node_cte()?,
-            LogicalPlan::OrderBy(order_by) => order_by.input.extract_last_node_cte()?,
-            LogicalPlan::Skip(skip) => skip.input.extract_last_node_cte()?,
-            LogicalPlan::Limit(limit) => limit.input.extract_last_node_cte()?,
-            LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_last_node_cte()?,
+            LogicalPlan::Filter(filter) => filter.input.extract_last_node_cte(schema)?,
+            LogicalPlan::Projection(projection) => projection.input.extract_last_node_cte(schema)?,
+            LogicalPlan::GroupBy(group_by) => group_by.input.extract_last_node_cte(schema)?,
+            LogicalPlan::OrderBy(order_by) => order_by.input.extract_last_node_cte(schema)?,
+            LogicalPlan::Skip(skip) => skip.input.extract_last_node_cte(schema)?,
+            LogicalPlan::Limit(limit) => limit.input.extract_last_node_cte(schema)?,
+            LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_last_node_cte(schema)?,
             LogicalPlan::Cte(logical_cte) => {
-                // let filters = logical_cte.input.extract_filters()?;
-                // let select_items = logical_cte.input.extract_select_items()?;
-                // let from_table = logical_cte.input.extract_from()?;
-                use crate::graph_catalog::graph_schema::GraphSchema;
-                use std::collections::HashMap;
-                let empty_schema =
-                    GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new());
+                // 🔧 FIX: Use the schema parameter instead of creating an empty schema
                 let render_cte = Cte::new(
                     strip_database_prefix(&logical_cte.name),
                     super::CteContent::Structured(
-                        logical_cte.input.to_render_plan(&empty_schema)?,
+                        logical_cte.input.to_render_plan(schema)?,
                     ),
                     false, // is_recursive
                 );
@@ -5547,21 +5611,21 @@ impl RenderPlanBuilder for LogicalPlan {
             }
             LogicalPlan::Union(union) => {
                 for input_plan in union.inputs.iter() {
-                    if let Some(cte) = input_plan.extract_last_node_cte()? {
+                    if let Some(cte) = input_plan.extract_last_node_cte(schema)? {
                         return Ok(Some(cte));
                     }
                 }
                 None
             }
             LogicalPlan::PageRank(_) => None,
-            LogicalPlan::Unwind(u) => u.input.extract_last_node_cte()?,
+            LogicalPlan::Unwind(u) => u.input.extract_last_node_cte(schema)?,
             LogicalPlan::CartesianProduct(cp) => {
                 // Try left first, then right
                 cp.left
-                    .extract_last_node_cte()?
-                    .or(cp.right.extract_last_node_cte()?)
+                    .extract_last_node_cte(schema)?
+                    .or(cp.right.extract_last_node_cte(schema)?)
             }
-            LogicalPlan::WithClause(wc) => wc.input.extract_last_node_cte()?,
+            LogicalPlan::WithClause(wc) => wc.input.extract_last_node_cte(schema)?,
         };
         Ok(last_node_cte)
     }
@@ -8853,17 +8917,15 @@ impl RenderPlanBuilder for LogicalPlan {
                 ));
             }
 
-            use crate::graph_catalog::graph_schema::GraphSchema;
-            use std::collections::HashMap;
-            let empty_schema =
-                GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new());
+            // 🔧 FIX: Use the schema parameter instead of creating an empty schema
+            // Creating an empty schema caused node lookups to fail in VLP queries
 
             // Build render plan for each Union branch
             // NOTE: Don't add LIMIT to branches - LIMIT applies to the combined UNION result
             let union_plans: Result<Vec<RenderPlan>, RenderBuildError> = union
                 .inputs
                 .iter()
-                .map(|branch| branch.to_render_plan(&empty_schema))
+                .map(|branch| branch.to_render_plan(schema))
                 .collect();
 
             let mut union_plans = union_plans?;
@@ -9572,13 +9634,10 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 // Build the inner query (WITH clause result) as a CTE
                 // Structure: SELECT <with_items> FROM <tables> GROUP BY <non-aggregates>
-                use crate::graph_catalog::graph_schema::GraphSchema;
-                use std::collections::HashMap;
-                let empty_schema =
-                    GraphSchema::build(1, "default".to_string(), HashMap::new(), HashMap::new());
+                // 🔧 FIX: Use the schema parameter instead of creating an empty schema
 
                 // Build render plan for the inner GroupBy's input (the WITH clause query)
-                let inner_render_plan = inner_group_by.input.to_render_plan(&empty_schema)?;
+                let inner_render_plan = inner_group_by.input.to_render_plan(schema)?;
 
                 // Extract GROUP BY expressions from SELECT items (non-aggregates)
                 // For node variables (WITH a where a is a table alias), only GROUP BY ID columns
@@ -11135,7 +11194,7 @@ impl RenderPlanBuilder for LogicalPlan {
         let mut final_from: Option<FromTable> = None;
         let final_filters: Option<RenderExpr>;
 
-        let last_node_cte_opt = transformed_plan.extract_last_node_cte()?;
+        let last_node_cte_opt = transformed_plan.extract_last_node_cte(schema)?;
         println!("DEBUG: last_node_cte_opt = {:?}", last_node_cte_opt.as_ref().map(|c| &c.cte_name));
 
         if let Some(last_node_cte) = last_node_cte_opt {
@@ -11953,7 +12012,11 @@ impl RenderPlanBuilder for LogicalPlan {
                 let start_id_col_for_cte = denorm_info_for_cte
                     .as_ref()
                     .and_then(|d| d.start_id_col.clone())
-                    .unwrap_or_else(|| get_node_id_column_for_alias(&start_alias));
+                    .or_else(|| get_node_id_column_for_alias_with_schema(&start_alias, self, schema))
+                    .unwrap_or_else(|| {
+                        log::error!("❌ SCHEMA ERROR: Could not determine ID column for optional VLP start alias '{}'", start_alias);
+                        format!("ERROR_NO_ID_COL_FOR_ALIAS_{}", start_alias)
+                    });
 
                 // For OPTIONAL VLP, use the Cypher alias (not VLP internal alias)
                 // Because we're not creating a start_node JOIN (start is already in FROM from required MATCH)
@@ -12012,28 +12075,44 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Get the actual table names and ID columns from:
                 // 1. Plan denorm info (extracted from original GraphRel before CTE extraction)
                 // 2. VLP CTE metadata (populated during CTE generation)
-                // 3. Fallback functions (last resort)
+                // 3. Schema lookup using plan context (proper fallback with schema parameter)
                 let start_table = denorm_info
                     .as_ref()
                     .and_then(|d| d.start_table.clone())
                     .or_else(|| vlp_cte.and_then(|c| c.vlp_start_table.clone()))
-                    .unwrap_or_else(|| get_node_table_for_alias(&start_alias));
+                    .or_else(|| get_node_table_for_alias_with_schema(&start_alias, self, schema))
+                    .unwrap_or_else(|| {
+                        log::error!("❌ SCHEMA ERROR: Could not determine table for alias '{}'", start_alias);
+                        format!("ERROR_NO_TABLE_FOR_ALIAS_{}", start_alias)
+                    });
                 let end_table = denorm_info
                     .as_ref()
                     .and_then(|d| d.end_table.clone())
                     .or_else(|| vlp_cte.and_then(|c| c.vlp_end_table.clone()))
-                    .unwrap_or_else(|| get_node_table_for_alias(&end_alias));
+                    .or_else(|| get_node_table_for_alias_with_schema(&end_alias, self, schema))
+                    .unwrap_or_else(|| {
+                        log::error!("❌ SCHEMA ERROR: Could not determine table for alias '{}'", end_alias);
+                        format!("ERROR_NO_TABLE_FOR_ALIAS_{}", end_alias)
+                    });
                 // 🔧 FIX: Use ID columns from VLP CTE metadata (from relationship schema) instead of denorm_info (from node schema)
                 // The VLP CTE has the authoritative column names from the relationship's from_id/to_id
                 // NOT the node schema's node_id field (e.g., DNS: rel.to_id = "query", not Domain.node_id = "name")
                 let start_id_col = vlp_cte
                     .and_then(|c| c.vlp_start_id_col.clone())
                     .or_else(|| denorm_info.as_ref().and_then(|d| d.start_id_col.clone()))
-                    .unwrap_or_else(|| get_node_id_column_for_alias(&start_alias));
+                    .or_else(|| get_node_id_column_for_alias_with_schema(&start_alias, self, schema))
+                    .unwrap_or_else(|| {
+                        log::error!("❌ SCHEMA ERROR: Could not determine ID column for alias '{}'", start_alias);
+                        format!("ERROR_NO_ID_COL_FOR_ALIAS_{}", start_alias)
+                    });
                 let end_id_col = vlp_cte
                     .and_then(|c| c.vlp_end_id_col.clone())
                     .or_else(|| denorm_info.as_ref().and_then(|d| d.end_id_col.clone()))
-                    .unwrap_or_else(|| get_node_id_column_for_alias(&end_alias));
+                    .or_else(|| get_node_id_column_for_alias_with_schema(&end_alias, self, schema))
+                    .unwrap_or_else(|| {
+                        log::error!("❌ SCHEMA ERROR: Could not determine ID column for alias '{}'", end_alias);
+                        format!("ERROR_NO_ID_COL_FOR_ALIAS_{}", end_alias)
+                    });
 
                 // Check denormalization status for each node
                 let start_is_denorm = denorm_info
@@ -12320,7 +12399,11 @@ impl RenderPlanBuilder for LogicalPlan {
                 // the left and we join on from_node_id.
                 let (cte_column, node_alias, id_column) = if edge.is_incoming {
                     // Incoming: join CTE's to_node_id to the right connection (labeled node)
-                    let id_col = get_node_id_column_for_alias(&edge.right_connection);
+                    let id_col = get_node_id_column_for_alias_with_schema(&edge.right_connection, self, schema)
+                        .unwrap_or_else(|| {
+                            log::error!("❌ SCHEMA ERROR: Could not determine ID column for incoming edge alias '{}'", edge.right_connection);
+                            format!("ERROR_NO_ID_COL_FOR_ALIAS_{}", edge.right_connection)
+                        });
                     log::info!(
                         "🎯 INCOMING EDGE: {} joins to_node_id = {}.{}",
                         edge.rel_alias,
@@ -12348,7 +12431,11 @@ impl RenderPlanBuilder for LogicalPlan {
                         )
                     } else {
                         // First hop: join on source node's ID column
-                        let source_id_col = get_node_id_column_for_alias(&edge.left_connection);
+                        let source_id_col = get_node_id_column_for_alias_with_schema(&edge.left_connection, self, schema)
+                            .unwrap_or_else(|| {
+                                log::error!("❌ SCHEMA ERROR: Could not determine ID column for outgoing edge alias '{}'", edge.left_connection);
+                                format!("ERROR_NO_ID_COL_FOR_ALIAS_{}", edge.left_connection)
+                            });
                         (
                             "from_node_id".to_string(),
                             edge.left_connection.clone(),
@@ -12405,7 +12492,7 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
         // For variable-length (recursive) CTEs, keep previous logic
-        if let Some(last_node_cte) = transformed_plan.extract_last_node_cte().ok().flatten() {
+        if let Some(last_node_cte) = transformed_plan.extract_last_node_cte(schema).ok().flatten() {
             if let super::CteContent::RawSql(_) = &last_node_cte.content {
                 let cte_name = last_node_cte.cte_name.clone();
                 if cte_name.starts_with("rel_") {

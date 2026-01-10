@@ -898,6 +898,24 @@ impl GraphJoinInference {
                 // Limit doesn't have expressions, just recurse
                 Self::plan_references_alias(&limit.input, alias)
             }
+            LogicalPlan::Union(union) => {
+                // Recurse into all Union branches - Projection may be inside each branch
+                union.inputs.iter().any(|input| Self::plan_references_alias(input, alias))
+            }
+            LogicalPlan::Unwind(unwind) => {
+                // Check if the unwind expression or output alias reference this alias
+                Self::expr_references_alias(&unwind.expression, alias)
+                    || Self::plan_references_alias(&unwind.input, alias)
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                // Recurse into both sides
+                Self::plan_references_alias(&cp.left, alias)
+                    || Self::plan_references_alias(&cp.right, alias)
+            }
+            LogicalPlan::WithClause(wc) => {
+                // Check exported aliases and recurse
+                Self::plan_references_alias(&wc.input, alias)
+            }
             _ => false, // ViewScan, Scan, Empty, etc.
         }
     }
@@ -986,18 +1004,69 @@ impl GraphJoinInference {
             }
         }
 
-        // If we found a FROM marker, use it as anchor but KEEP it in joins
-        // The extract_from() method looks for FROM markers in the joins vector
-        // The extract_joins() method filters them out (empty joining_on = FROM, not JOIN)
+        // If we found a FROM marker, use it as anchor but STILL reorder the other joins!
+        // Previously this returned early, but that skipped dependency-based reordering.
+        // FIX: Extract FROM marker, reorder the rest, then prepend FROM marker.
         if let Some(idx) = from_marker_index {
-            let from_alias = joins[idx].table_alias.clone();
+            let from_marker = joins[idx].clone();  // Keep the original FROM marker (preserves table_name!)
+            let from_alias = from_marker.table_alias.clone();
             crate::debug_print!(
-                "  🏠 Using '{}' as FROM clause (explicit marker) - keeping in joins for extract_from",
-                from_alias
+                "  🏠 Found FROM marker '{}' (table='{}') - will reorder other joins",
+                from_alias, from_marker.table_name
             );
-            // Return all joins INCLUDING the FROM marker
-            // extract_from will find it, extract_joins will skip it
-            return (Some(from_alias), joins);
+            
+            // Extract FROM marker and reorder the rest
+            let mut remaining_joins: Vec<Join> = joins.into_iter()
+                .enumerate()
+                .filter(|(i, _)| *i != idx)
+                .map(|(_, j)| j)
+                .collect();
+            
+            // From alias is available for dependency checking
+            let mut available_tables: std::collections::HashSet<String> = std::collections::HashSet::new();
+            available_tables.insert(from_alias.clone());
+            
+            // Reorder remaining joins
+            let mut ordered_joins = Vec::new();
+            let mut made_progress = true;
+            while made_progress && !remaining_joins.is_empty() {
+                made_progress = false;
+                let mut i = 0;
+                while i < remaining_joins.len() {
+                    let mut referenced_tables = std::collections::HashSet::new();
+                    let table_alias = remaining_joins[i].table_alias.clone();
+                    
+                    for condition in &remaining_joins[i].joining_on {
+                        for operand in &condition.operands {
+                            Self::extract_table_refs_from_expr(operand, &mut referenced_tables);
+                        }
+                    }
+                    referenced_tables.remove(&table_alias);
+                    
+                    let all_available = referenced_tables.iter().all(|t| available_tables.contains(t));
+                    if all_available {
+                        let join = remaining_joins.remove(i);
+                        available_tables.insert(table_alias);
+                        ordered_joins.push(join);
+                        made_progress = true;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            
+            // Any remaining joins (circular deps) go at the end
+            ordered_joins.extend(remaining_joins);
+            
+            // Prepend the ORIGINAL FROM marker (preserves table_name!)
+            let mut final_joins = vec![from_marker];
+            final_joins.extend(ordered_joins);
+            
+            crate::debug_print!(
+                "  🏠 Final JOIN order with FROM marker: {:?}",
+                final_joins.iter().map(|j| &j.table_alias).collect::<Vec<_>>()
+            );
+            return (Some(from_alias), final_joins);
         }
 
         // Collect all aliases that are being joined
@@ -1414,17 +1483,30 @@ impl GraphJoinInference {
                         let mut branch_joins: Vec<Join> = collected_graph_joins.clone();
                         let mut branch_joined_entities: HashSet<String> = HashSet::new();
 
+                        // Build pattern metadata for THIS branch (critical for is_referenced checks)
+                        // Each Union branch is a complete pattern (created by BidirectionalUnion)
+                        // and needs its own metadata for proper reference tracking
+                        let mut branch_plan_ctx = plan_ctx.clone();
+                        let branch_metadata = Self::build_pattern_metadata(branch.as_ref(), &branch_plan_ctx)
+                            .unwrap_or_default();
+                        
+                        log::debug!(
+                            "🔄 Union branch metadata: {} nodes, {} edges",
+                            branch_metadata.nodes.len(),
+                            branch_metadata.edges.len()
+                        );
+
                         // Collect additional joins for this specific branch
                         graph_join_inference.collect_graph_joins(
                             branch.clone(),
                             branch.clone(),
-                            &mut plan_ctx.clone(), // Clone PlanCtx for each branch
+                            &mut branch_plan_ctx, // Use branch-specific PlanCtx
                             graph_schema,
                             &mut branch_joins,
                             &mut branch_joined_entities,
                             &HashSet::new(), // Empty CTE scope for Union branches
                             &mut HashMap::new(), // Empty node_appearances for each Union branch
-                            &PatternGraphMetadata::default(), // Empty metadata for Union branch
+                            &branch_metadata, // Use branch-specific metadata
                         )?;
 
                         crate::debug_print!(
@@ -1654,19 +1736,24 @@ impl GraphJoinInference {
                     let mut inner_joined_entities = HashSet::new();
                     let inner_optional_aliases = std::collections::HashSet::new();
 
+                    // Build pattern metadata for inner scope (for proper reference checking)
+                    let mut inner_plan_ctx = plan_ctx.clone();
+                    let inner_metadata = Self::build_pattern_metadata(group_by.input.as_ref(), &inner_plan_ctx)
+                        .unwrap_or_default();
+
                     // IMPORTANT: We need to collect joins for the inner scope FIRST
                     // because collect_graph_joins stopped at the boundary during the main traversal
                     let graph_join_inference = GraphJoinInference;
                     graph_join_inference.collect_graph_joins(
                         group_by.input.clone(),
                         group_by.input.clone(), // root plan for inner scope
-                        &mut plan_ctx.clone(),  // Clone PlanCtx for inner scope
+                        &mut inner_plan_ctx,  // Use inner scope's PlanCtx
                         graph_schema,
                         &mut inner_joins,
                         &mut inner_joined_entities,
                         &HashSet::new(), // Empty CTE scope for inner GroupBy scope
                         &mut HashMap::new(), // Empty node_appearances for inner GroupBy scope
-                        &PatternGraphMetadata::default(), // Empty metadata for GroupBy inner scope
+                        &inner_metadata, // Use inner scope's metadata
                     )?;
 
                     crate::debug_print!(
@@ -4177,7 +4264,18 @@ impl GraphJoinInference {
                 continue; // Not a cross-branch node
             }
             
-            log::debug!("🔍 Potential cross-branch node '{}' appears in {} edges", 
+            // CRITICAL FIX: If the shared node IS REFERENCED, skip cross-branch join!
+            // When the node is referenced (used in RETURN/WHERE), we'll JOIN the node table,
+            // which provides the connection between edges. The cross-branch join would be
+            // redundant and can create circular dependencies.
+            // Cross-branch joins are only needed when we optimize away the node table JOIN.
+            if node_info.is_referenced {
+                log::debug!("🔍 Skipping cross-branch for '{}' - node IS REFERENCED (node table JOIN provides connection)", 
+                    node_alias);
+                continue;
+            }
+            
+            log::debug!("🔍 Potential cross-branch node '{}' appears in {} edges (NOT referenced)", 
                 node_alias, node_info.appearance_count);
             
             // Get all edges that use this node

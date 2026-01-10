@@ -37,14 +37,27 @@ impl VlpTransitivityCheck {
         Self
     }
 
+    /// Extract the base type name from a potentially composite key
+    /// "KNOWS::Person::Person" -> "KNOWS"
+    /// "KNOWS" -> "KNOWS"
+    fn extract_type_name(key: &str) -> &str {
+        // Composite keys have format "TYPE::FROM::TO"
+        // Split by "::" and take the first part
+        key.split("::").next().unwrap_or(key)
+    }
+
     /// Check if a relationship can be transitive (recursive)
     /// Returns true if the TO node can also be a FROM node for the same relationship type
     fn is_transitive_relationship(
         rel_type: &str,
         schema: &GraphSchema,
     ) -> Result<bool, AnalyzerError> {
+        // Extract base type name from potentially composite key
+        // "KNOWS::Person::Person" -> "KNOWS"
+        let base_type = Self::extract_type_name(rel_type);
+        
         // Get all relationship schemas for this type
-        let rel_schemas = schema.get_all_rel_schemas_by_type(rel_type);
+        let rel_schemas = schema.get_all_rel_schemas_by_type(base_type);
         
         if rel_schemas.is_empty() {
             return Err(AnalyzerError::RelationshipTypeNotFound(rel_type.to_string()));

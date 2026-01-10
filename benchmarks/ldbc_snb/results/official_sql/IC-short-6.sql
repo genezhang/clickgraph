@@ -1,7 +1,7 @@
 -- LDBC Official Query: IC-short-6
 -- Status: PASS
--- Generated: 2025-12-21T09:22:44.191359
--- Database: ldbc
+-- Generated: 2026-01-09T17:20:49.227695
+-- Database: ldbc_snb
 
 -- Original Cypher Query:
 -- MATCH (m:Message {id: $messageId })-[:REPLY_OF*0..]->(p:Post)<-[:CONTAINER_OF]-(f:Forum)-[:HAS_MODERATOR]->(mod:Person)
@@ -13,7 +13,7 @@
 --     mod.lastName AS moderatorLastName
 
 -- Generated ClickHouse SQL:
-WITH RECURSIVE vlp_cte27 AS (
+WITH RECURSIVE vlp_cte13 AS (
     SELECT 
         start_node.id as start_id,
         start_node.id as end_id,
@@ -31,7 +31,7 @@ WITH RECURSIVE vlp_cte27 AS (
         arrayConcat(vp.path_edges, [tuple(rel.MessageId, rel.TargetMessageId)]) as path_edges,
         arrayConcat(vp.path_relationships, ['REPLY_OF']) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.id]) as path_nodes
-    FROM vlp_cte27 vp
+    FROM vlp_cte13 vp
     JOIN ldbc.Post AS current_node ON vp.end_id = current_node.id
     JOIN ldbc.Message_replyOf_Message AS rel ON current_node.id = rel.MessageId
     JOIN ldbc.Post AS end_node ON rel.TargetMessageId = end_node.id
@@ -44,13 +44,13 @@ SELECT
       mod.id AS "moderatorId", 
       mod.firstName AS "moderatorFirstName", 
       mod.lastName AS "moderatorLastName"
-FROM vlp_cte27 AS vlp27
-JOIN ldbc.Message AS m ON vlp27.start_id = m.id
-JOIN ldbc.Post AS p ON vlp27.end_id = p.id
-INNER JOIN ldbc.Forum_containerOf_Post AS t226 ON t226.PostId = end_node.id
-INNER JOIN ldbc.Forum AS f ON f.id = t226.ForumId
-INNER JOIN ldbc.Forum_hasModerator_Person AS t227 ON t226.ForumId = t227.ForumId
-INNER JOIN ldbc.Person AS mod ON mod.id = t227.PersonId
+FROM vlp_cte13 AS vlp13
+JOIN ldbc.Message AS m ON vlp13.start_id = m.id
+JOIN ldbc.Post AS p ON vlp13.end_id = p.id
+INNER JOIN ldbc.Forum_containerOf_Post AS t95 ON t95.PostId = p.id
+INNER JOIN ldbc.Forum AS f ON f.id = t95.ForumId
+INNER JOIN ldbc.Forum_hasModerator_Person AS t96 ON t96.ForumId = f.id
+INNER JOIN ldbc.Person AS mod ON mod.id = t96.PersonId
 
 SETTINGS max_recursive_cte_evaluation_depth = 100
 

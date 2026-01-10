@@ -1,7 +1,7 @@
 -- LDBC Official Query: IC-short-3
 -- Status: PASS
--- Generated: 2025-12-21T09:22:44.182166
--- Database: ldbc
+-- Generated: 2026-01-09T17:20:49.222244
+-- Database: ldbc_snb
 
 -- Original Cypher Query:
 -- MATCH (n:Person {id: $personId })-[r:KNOWS]-(friend)
@@ -21,9 +21,7 @@ SELECT
       friend.firstName AS "firstName", 
       friend.lastName AS "lastName", 
       r.creationDate AS "friendshipCreationDate"
-FROM ldbc.Person AS n
-INNER JOIN ldbc.Person_knows_Person AS r ON r.Person1Id = n.id
-INNER JOIN ldbc.Person AS friend ON friend.id = r.Person2Id
+FROM ldbc.Person_knows_Person AS r
 WHERE n.id = $personId
 UNION ALL 
 SELECT 
@@ -31,9 +29,7 @@ SELECT
       friend.firstName AS "firstName", 
       friend.lastName AS "lastName", 
       r.creationDate AS "friendshipCreationDate"
-FROM ldbc.Person AS friend
-INNER JOIN ldbc.Person_knows_Person AS r ON r.Person1Id = friend.id
-INNER JOIN ldbc.Person AS n ON n.id = r.Person2Id
+FROM ldbc.Person_knows_Person AS r
 WHERE n.id = $personId
 ) AS __union
 ORDER BY "friendshipCreationDate" DESC

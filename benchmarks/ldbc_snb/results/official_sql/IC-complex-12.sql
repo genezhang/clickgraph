@@ -1,7 +1,7 @@
 -- LDBC Official Query: IC-complex-12
 -- Status: PASS
--- Generated: 2025-12-21T09:22:44.133940
--- Database: ldbc
+-- Generated: 2026-01-09T17:20:49.196097
+-- Database: ldbc_snb
 
 -- Original Cypher Query:
 -- MATCH (tag:Tag)-[:HAS_TYPE|IS_SUBCLASS_OF*0..]->(baseTagClass:TagClass)
@@ -28,14 +28,14 @@ SELECT
       groupArray(DISTINCT tag.name) AS "tagNames", 
       count(DISTINCT comment.id) AS "replyCount"
 FROM ldbc.Comment AS comment
-INNER JOIN ldbc.Comment_replyOf_Post AS t199 ON t199.CommentId = comment.id
-INNER JOIN ldbc.Comment_hasCreator_Person AS t198 ON t198.CommentId = comment.id
-INNER JOIN ldbc.Person AS friend ON friend.id = t198.PersonId
-INNER JOIN ldbc.Post AS t196 ON t196.id = t199.PostId
-INNER JOIN ldbc.Post_hasTag_Tag AS t200 ON t200.PostId = t196.id
-INNER JOIN ldbc.Comment_replyOf_Post AS t199 ON t198.CommentId = t199.CommentId
-INNER JOIN ldbc.Post_hasTag_Tag AS t200 ON t199.PostId = t200.PostId
-INNER JOIN ldbc.Tag AS tag ON tag.id = t200.TagId
+INNER JOIN ldbc.Comment_hasCreator_Person AS t71 ON t71.CommentId = comment.id
+INNER JOIN ldbc.Person AS friend ON friend.id = t71.PersonId
+INNER JOIN ldbc.Comment_replyOf_Post AS t72 ON t72.CommentId = comment.id
+INNER JOIN ldbc.Post AS t69 ON t69.id = t72.PostId
+INNER JOIN ldbc.Comment_hasCreator_Person AS t71 ON t71.MessageId = t72.CommentId
+INNER JOIN ldbc.Person_knows_Person AS t70 ON t70.Person2Id = t71.PersonId
+INNER JOIN ldbc.Post_hasTag_Tag AS t73 ON t73.PostId = t69.id
+INNER JOIN ldbc.Tag AS tag ON tag.id = t73.TagId
 WHERE tag.id IN tags
 GROUP BY friend.id, friend.firstName, friend.lastName
 ORDER BY replyCount DESC, toInt64(personId) ASC
