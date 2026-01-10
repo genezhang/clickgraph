@@ -12515,15 +12515,17 @@ impl RenderPlanBuilder for LogicalPlan {
                 } else {
                     // Different start and end nodes: Add JOINs to access node properties
                     // ✅ FIX: Check if nodes are denormalized - if so, skip JOINs (properties are in CTE)
-                    let start_is_denormalized = start_table.contains("ERROR_NODE_SCHEMA_MISSING");
-                    let end_is_denormalized = end_table.contains("ERROR_NODE_SCHEMA_MISSING");
+                    // For denormalized schemas, both nodes point to the same edge table (e.g., flights)
+                    // and the VLP CTE already includes all node properties from that table
+                    let is_denormalized_vlp = denorm_info.as_ref().map_or(false, |d| d.is_fully_denormalized());
                     
-                    log::info!("🔍 VLP endpoint JOIN decision: start_is_denormalized={}, end_is_denormalized={}", 
-                              start_is_denormalized, end_is_denormalized);
+                    log::info!("🔍 VLP endpoint JOIN decision: is_denormalized_vlp={}, start_table='{}', end_table='{}'", 
+                              is_denormalized_vlp, start_table, end_table);
                     
                     // For OPTIONAL VLP, skip the start node JOIN (it's already in FROM)
-                    if !vlp_is_optional && !start_is_denormalized {
-                        // Only add START node JOIN if node is NOT denormalized
+                    if !vlp_is_optional && !is_denormalized_vlp {
+                        // Only add START node JOIN if VLP is NOT fully denormalized
+                        // Denormalized VLP CTE already contains node properties
                         // 🔧 FIX: Use Cypher alias from VLP metadata instead of internal VLP alias
                         let start_node_alias = vlp_cte
                             .and_then(|c| c.vlp_cypher_start_alias.clone())
@@ -12554,47 +12556,48 @@ impl RenderPlanBuilder for LogicalPlan {
                             to_id_column: None,
                         });
                     } else {
-                        if start_is_denormalized {
-                            log::debug!("⏭️  SKIP START node JOIN: denormalized node (properties in CTE)");
+                        if is_denormalized_vlp {
+                            log::debug!("⏭️  SKIP START node JOIN: fully denormalized VLP (properties in CTE)");
                         } else {
                             log::debug!("⏭️  SKIP START node JOIN: vlp_is_optional={}", vlp_is_optional);
                         }
                     }
                     // Add END node JOIN to access node properties (unless denormalized)
                     // For OPTIONAL and REQUIRED VLP: Always use Cypher alias from VLP metadata
-                    if !end_is_denormalized {
+                    if !is_denormalized_vlp {
                         let end_node_alias = vlp_cte
                             .and_then(|c| c.vlp_cypher_end_alias.clone())
                             .unwrap_or_else(|| end_alias.clone());
                         
                         log::debug!("✅ Creating END node JOIN: {} AS {} (Cypher alias from VLP metadata)", 
                                   end_table, end_node_alias);
-                    extracted_joins.push(Join {
-                        table_name: end_table,
-                        table_alias: end_node_alias.clone(),
-                        joining_on: vec![OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(vlp_alias.clone()), // ✅ Use computed vlp_alias
-                                    column: PropertyValue::Column("end_id".to_string()),
-                                }),
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(end_node_alias.clone()),
-                                    column: PropertyValue::Column(end_id_col.clone()),
-                                }),
-                            ],
-                        }],
-                        join_type: vlp_join_type.clone(),
-                        pre_filter: None,
-                        from_id_column: None,
-                        to_id_column: None,
-                    });
+                        extracted_joins.push(Join {
+                            table_name: end_table,
+                            table_alias: end_node_alias.clone(),
+                            joining_on: vec![OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(vlp_alias.clone()), // ✅ Use computed vlp_alias
+                                        column: PropertyValue::Column("end_id".to_string()),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(end_node_alias.clone()),
+                                        column: PropertyValue::Column(end_id_col.clone()),
+                                    }),
+                                ],
+                            }],
+                            join_type: vlp_join_type.clone(),
+                            pre_filter: None,
+                            from_id_column: None,
+                            to_id_column: None,
+                        });
                     } else {
-                        log::debug!("⏭️  SKIP END node JOIN: denormalized node (properties in CTE)");
+                        log::debug!("⏭️  SKIP END node JOIN: fully denormalized VLP (properties in CTE)");
                     }
                 }
-            }
+
+            } // End of VLP endpoint JOIN creation scope
 
             // Re-add the subsequent pattern joins (chained patterns after VLP)
             // These joins reference the VLP endpoint aliases (e.g., g.group_id)
