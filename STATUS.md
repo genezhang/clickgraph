@@ -1,8 +1,36 @@
 # ClickGraph Status
 
-*Updated: January 7, 2026*
+*Updated: January 11, 2026*
 
-## 🎯 Latest: **OpenCypher-Compliant Per-MATCH WHERE Clauses!** (Jan 7, 2026)
+## 🎯 Latest: **Parser Enhancements + LDBC Progress!** (Jan 11, 2026)
+
+**Improvements**:
+1. ✅ **C++ Style `//` Comments** - Parser now supports `//` line comments in addition to `--` and `/* */`
+2. ✅ **Consecutive MATCH + WHERE** - Fixed OpenCypher compliance for per-MATCH WHERE clauses
+3. 🔍 **Scalar Aggregate Investigation** - Identified architectural limitation with TableAlias representation
+
+**LDBC Benchmark Status** (January 11, 2026):
+- **IS (Interactive Short)**: 4/4 tested (100%) - All passing!
+- **IC (Interactive Complex)**: 3/4 tested (75%) - IC-9 has CTE column naming issue  
+- **BI (Business Intelligence)**: Testing in progress
+
+**Parser Fixes**:
+- BI-1, BI-13 now parse successfully (previously failed on `//` comments)
+- IS-7 now executes successfully (consecutive MATCH + WHERE fix)
+
+**Known Architectural Issues** (See KNOWN_ISSUES.md):
+- Scalar aggregates in WITH with GROUP BY - TableAlias used for both entities and scalar values
+- CTE column naming with DISTINCT - dots vs underscores inconsistency
+
+**Next Priorities**:
+1. Fix IC-9 CTE column naming issue (WITH DISTINCT + WHERE clause)
+2. Test remaining IC/BI queries
+3. Address property resolution in WITH scopes
+4. Improve FROM clause propagation
+
+---
+
+## Previous: **OpenCypher-Compliant Per-MATCH WHERE Clauses!** (Jan 7, 2026)
 
 **Achievement**: Full OpenCypher grammar compliance for WHERE clauses within MATCH patterns!
 
