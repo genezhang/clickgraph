@@ -1,5 +1,5 @@
 use nom::character::complete::char;
-use nom::combinator::cut;
+use nom::combinator::{cut, opt};
 use nom::error::context;
 use nom::{
     bytes::complete::tag_no_case, character::complete::multispace0, multi::separated_list1,
@@ -10,6 +10,7 @@ use super::ast::{MatchClause, PathPattern};
 use super::errors::OpenCypherParsingError;
 use super::expression::parse_identifier;
 use super::path_pattern;
+use super::where_clause;
 
 pub fn parse_match_clause(
     input: &'_ str,
@@ -27,8 +28,13 @@ pub fn parse_match_clause(
     )
     .parse(input)?;
 
+    // Parse optional WHERE clause (per OpenCypher grammar: graph pattern can have WHERE)
+    let (input, _) = multispace0(input)?;
+    let (input, where_clause) = opt(where_clause::parse_where_clause).parse(input)?;
+
     let match_clause = MatchClause {
         path_patterns: pattern_parts,
+        where_clause,
     };
 
     Ok((input, match_clause))

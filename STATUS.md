@@ -1,8 +1,52 @@
 # ClickGraph Status
 
-*Updated: December 27, 2025*
+*Updated: January 7, 2026*
 
-## 🎯 Latest: **VLP Relationship Filters & Edge Constraints Complete!** (Dec 27, 2025)
+## 🎯 Latest: **OpenCypher-Compliant Per-MATCH WHERE Clauses!** (Jan 7, 2026)
+
+**Achievement**: Full OpenCypher grammar compliance for WHERE clauses within MATCH patterns!
+
+**Problem**: WHERE was only supported globally after all MATCH clauses, but OpenCypher grammar specifies `<graph pattern> ::= <path pattern list> [ <graph pattern where clause> ]`, meaning each MATCH can have its own WHERE.
+
+**Examples Now Working**:
+```cypher
+-- Per-MATCH WHERE (previously failed with "Unexpected tokens")
+MATCH (m:Message) WHERE m.id = 123 
+MATCH (m)<-[:REPLY_OF]-(c:Comment)
+RETURN m.id, c.id
+
+-- Multiple WHERE clauses
+MATCH (m:Message) WHERE m.id = 123 
+MATCH (c:Comment) WHERE c.id = 456
+RETURN m, c
+
+-- LDBC IS7 pattern
+MATCH (m:Message) WHERE m.id = $messageId
+MATCH (m)<-[:REPLY_OF]-(c:Comment)-[:HAS_CREATOR]->(p:Person)
+OPTIONAL MATCH (m)-[:HAS_CREATOR]->(a:Person)-[r:KNOWS]-(p)
+RETURN c.id, p.id
+```
+
+**Changes**:
+- ✅ Added `where_clause: Option<WhereClause<'a>>` to `MatchClause` AST
+- ✅ Parser now captures WHERE within each MATCH (`match_clause.rs`)
+- ✅ Query planner evaluates per-MATCH WHERE after pattern processing
+- ✅ Backward compatibility: global WHERE after all MATCH still works
+
+**Test Coverage**: 9/9 integration tests passing (100%)
+- `tests/integration/test_consecutive_match_with_where.py`
+- Covers: single WHERE, multiple WHERE, complex predicates, mixed patterns
+
+**Documentation**: `notes/consecutive-match-with-where.md`
+
+**Files Modified**:
+- `src/open_cypher_parser/ast.rs` - Updated MatchClause struct
+- `src/open_cypher_parser/match_clause.rs` - Added WHERE parsing
+- `src/query_planner/logical_plan/match_clause.rs` - WHERE evaluation
+
+---
+
+## Previous: **VLP Relationship Filters & Edge Constraints Complete!** (Dec 27, 2025)
 
 **Achievement**: Holistic fix for Variable-Length Path queries with relationship filters and edge constraints across all schema patterns!
 

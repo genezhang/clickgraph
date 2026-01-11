@@ -11,7 +11,7 @@ use crate::utils::cte_naming::generate_cte_base_name;
 
 use super::cte_generation::map_property_to_column_with_schema;
 use super::errors::RenderBuildError;
-use super::filter_pipeline::categorize_filters;
+use super::filter_pipeline::{categorize_filters, CategorizedFilters};
 use super::plan_builder::RenderPlanBuilder;
 use super::render_expr::{Literal, Operator, PropertyAccess, RenderExpr};
 use super::{Cte, CteContent, Join, JoinType};
@@ -1439,7 +1439,7 @@ pub fn extract_ctes_with_context(
                     if let Some(where_predicate) = &graph_rel.where_predicate {
                         log::info!("🔍 GraphRel has where_predicate: {:?}", where_predicate);
                         // Convert LogicalExpr to RenderExpr
-                        let mut render_expr = RenderExpr::try_from(where_predicate.clone())
+                        let render_expr = RenderExpr::try_from(where_predicate.clone())
                             .map_err(|e| {
                                 RenderBuildError::UnsupportedFeature(format!(
                                     "Failed to convert LogicalExpr to RenderExpr: {}",
@@ -1447,21 +1447,60 @@ pub fn extract_ctes_with_context(
                                 ))
                             })?;
 
-                        // Apply property mapping to the filter expression before categorization
-                        apply_property_mapping_to_expr(
-                            &mut render_expr,
-                            &LogicalPlan::GraphRel(graph_rel.clone()),
-                        );
-
-                        // Categorize filters - now passing actual rel_alias for relationship property filtering!
+                        // ⚠️ CRITICAL FIX (Jan 10, 2026): Schema-aware categorization for ALL schema variations!
+                        //
+                        // Problem: After property mapping, denormalized filters ALL have rel_alias:
+                        //   origin.code → f.Origin (f = relationship alias)
+                        //   dest.code → f.Dest (f = relationship alias)
+                        //
+                        // We can't categorize by table alias alone! Must check COLUMN NAME against schema.
+                        //
+                        // Solution: Pass schema and rel_labels so categorize_filters can check:
+                        //   - Is column in from_node_properties? → start_node_filter
+                        //   - Is column in to_node_properties? → end_node_filter  
+                        //   - Is column in property_mappings? → relationship_filter
+                        let rel_labels = graph_rel.labels.clone().unwrap_or_default();
                         let categorized = categorize_filters(
                             Some(&render_expr),
                             &start_alias,
                             &end_alias,
-                            &rel_alias, // ✅ FIXED: Pass actual relationship alias to capture relationship filters
+                            &rel_alias,
+                            schema,
+                            &rel_labels,
                         );
+                        log::info!("🔍 Categorized filters (BEFORE property mapping):");
+                        log::info!("  start_alias: {}, end_alias: {}, rel_alias: {}", start_alias, end_alias, rel_alias);
+                        log::info!("  start_node_filters: {:?}", categorized.start_node_filters);
+                        log::info!("  end_node_filters: {:?}", categorized.end_node_filters);
+                        log::info!("  relationship_filters: {:?}", categorized.relationship_filters);
 
-                        // Create alias mapping for node aliases
+                        // Now apply property mapping to each categorized filter separately
+                        let mut mapped_start = categorized.start_node_filters.clone();
+                        let mut mapped_end = categorized.end_node_filters.clone();
+                        let mut mapped_rel = categorized.relationship_filters.clone();
+                        let mut mapped_path = categorized.path_function_filters.clone();
+
+                        if let Some(ref mut expr) = mapped_start {
+                            apply_property_mapping_to_expr(expr, &LogicalPlan::GraphRel(graph_rel.clone()));
+                        }
+                        if let Some(ref mut expr) = mapped_end {
+                            apply_property_mapping_to_expr(expr, &LogicalPlan::GraphRel(graph_rel.clone()));
+                        }
+                        if let Some(ref mut expr) = mapped_rel {
+                            apply_property_mapping_to_expr(expr, &LogicalPlan::GraphRel(graph_rel.clone()));
+                        }
+                        if let Some(ref mut expr) = mapped_path {
+                            apply_property_mapping_to_expr(expr, &LogicalPlan::GraphRel(graph_rel.clone()));
+                        }
+
+                        let mapped_categorized = CategorizedFilters {
+                            start_node_filters: mapped_start,
+                            end_node_filters: mapped_end,
+                            relationship_filters: mapped_rel,
+                            path_function_filters: mapped_path,
+                        };
+
+                        // Create alias mapping for node aliases (standard 3-table schema)
                         let alias_mapping = [
                             (start_alias.clone(), "start_node".to_string()),
                             (end_alias.clone(), "end_node".to_string()),
@@ -1477,37 +1516,68 @@ pub fn extract_ctes_with_context(
                             "rel".to_string()
                         };
                         let rel_alias_mapping = [
-                            (rel_alias.clone(), rel_target_alias),
+                            (rel_alias.clone(), rel_target_alias.clone()),
                         ];
 
-                        let start_sql = categorized
-                            .start_node_filters
-                            .as_ref()
-                            .map(|expr| render_expr_to_sql_string(expr, &alias_mapping));
-                        let end_sql = categorized
-                            .end_node_filters
-                            .as_ref()
-                            .map(|expr| render_expr_to_sql_string(expr, &alias_mapping));
-                        // ✅ NEW: Convert relationship filters to SQL
-                        let rel_sql = categorized
+                        // ⚠️ CRITICAL FIX (Jan 10, 2026): Choose correct alias mapping based on expression content!
+                        //
+                        // For STANDARD schemas: Filter uses node alias (e.g., `a.name = 'Alice'`)
+                        //   → Use alias_mapping: a → start_node
+                        //
+                        // For DENORMALIZED schemas: Filter uses rel alias (e.g., `f.Origin = 'LAX'`)
+                        //   → Use rel_alias_mapping: f → rel
+                        //
+                        // We detect by checking if the filter expression references the rel_alias or node alias.
+                        
+                        // Helper to check if expression uses a specific table alias
+                        fn expr_uses_alias(expr: &RenderExpr, alias: &str) -> bool {
+                            match expr {
+                                RenderExpr::PropertyAccessExp(prop) => prop.table_alias.0 == alias,
+                                RenderExpr::OperatorApplicationExp(op) => {
+                                    op.operands.iter().any(|o| expr_uses_alias(o, alias))
+                                }
+                                _ => false,
+                            }
+                        }
+
+                        // Choose mapping based on which alias the filter uses
+                        let start_sql = mapped_categorized.start_node_filters.as_ref().map(|expr| {
+                            if expr_uses_alias(expr, &rel_alias) {
+                                // Denormalized: filter uses rel_alias after property mapping
+                                render_expr_to_sql_string(expr, &rel_alias_mapping)
+                            } else {
+                                // Standard: filter uses node alias
+                                render_expr_to_sql_string(expr, &alias_mapping)
+                            }
+                        });
+                        let end_sql = mapped_categorized.end_node_filters.as_ref().map(|expr| {
+                            if expr_uses_alias(expr, &rel_alias) {
+                                // Denormalized: filter uses rel_alias after property mapping
+                                render_expr_to_sql_string(expr, &rel_alias_mapping)
+                            } else {
+                                // Standard: filter uses node alias
+                                render_expr_to_sql_string(expr, &alias_mapping)
+                            }
+                        });
+                        // ✅ Relationship filters always use rel_alias_mapping
+                        let rel_sql = mapped_categorized
                             .relationship_filters
                             .as_ref()
                             .map(|expr| render_expr_to_sql_string(expr, &rel_alias_mapping));
 
-                        // For variable-length queries (not shortest path), store end filters in context for outer query
-                        if graph_rel.shortest_path_mode.is_none() {
-                            if let Some(end_filter_expr) = &categorized.end_node_filters {
-                                // 🆕 IMMUTABLE PATTERN: Update context immutably
-                                *context = context
-                                    .clone()
-                                    .with_end_filters_for_outer_query(end_filter_expr.clone());
-                            }
-                        }
+                        // Note: End node filters are placed INSIDE the CTE (via end_sql above).
+                        // Chained pattern filters (nodes outside VLP) are handled separately in
+                        // plan_builder.rs via references_only_vlp_aliases check.
 
-                        (start_sql, end_sql, rel_sql, Some(categorized))
+                        (start_sql, end_sql, rel_sql, Some(mapped_categorized))
                     } else {
                         (None, None, None, None)
                     };
+
+                log::info!("🔍 After categorization and mapping:");
+                log::info!("  start_filters_sql: {:?}", start_filters_sql);
+                log::info!("  end_filters_sql: {:?}", end_filters_sql);
+                log::info!("  rel_filters_sql: {:?}", rel_filters_sql);
 
                 // 🔧 BOUND NODE FIX: Extract filters from bound nodes (Filter → GraphNode)
                 // For queries like: MATCH (p1:Person {id: 1}), (p2:Person {id: 2}), path = shortestPath((p1)-[:KNOWS*]-(p2))
@@ -1900,6 +1970,10 @@ pub fn extract_ctes_with_context(
                         }
                         
                         log::debug!("🔧 CTE: Final all_denorm_properties count: {}", all_denorm_properties.len());
+                        log::info!("🔍 VLP CTE: Passing filters to new_denormalized:");
+                        log::info!("  combined_start_filters: {:?}", combined_start_filters);
+                        log::info!("  combined_end_filters: {:?}", combined_end_filters);
+                        log::info!("  rel_filters_sql: {:?}", rel_filters_sql);
                         
                         VariableLengthCteGenerator::new_denormalized(
                             schema,
@@ -2192,9 +2266,6 @@ pub fn extract_ctes_with_context(
                 &mut new_context.clone(),
                 schema,
             )?;
-
-            // Merge end filters from the new context back to the original context
-            *context = context.clone().merge_end_filters(&new_context);
 
             Ok(ctes)
         }

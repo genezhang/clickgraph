@@ -18,8 +18,6 @@ pub struct CteGenerationContext {
     variable_length_properties: HashMap<String, Vec<NodeProperty>>,
     /// WHERE filter expression to apply to variable-length CTEs
     filter_expr: Option<RenderExpr>,
-    /// End node filters to be applied in the outer query for variable-length paths
-    end_filters_for_outer_query: Option<RenderExpr>,
     /// Cypher aliases for start and end nodes (for filter rewriting)
     start_cypher_alias: Option<String>,
     end_cypher_alias: Option<String>,
@@ -35,7 +33,6 @@ impl Default for CteGenerationContext {
         Self {
             variable_length_properties: HashMap::new(),
             filter_expr: None,
-            end_filters_for_outer_query: None,
             start_cypher_alias: None,
             end_cypher_alias: None,
             schema: None,
@@ -53,7 +50,6 @@ impl CteGenerationContext {
         Self {
             variable_length_properties: HashMap::new(),
             filter_expr: None,
-            end_filters_for_outer_query: None,
             start_cypher_alias: None,
             end_cypher_alias: None,
             schema: Some(schema),
@@ -113,22 +109,6 @@ impl CteGenerationContext {
         self.filter_expr = Some(filter);
     }
 
-    pub(crate) fn get_end_filters_for_outer_query(&self) -> Option<&RenderExpr> {
-        self.end_filters_for_outer_query.as_ref()
-    }
-
-    // 🆕 IMMUTABLE: Returns new context
-    pub(crate) fn with_end_filters_for_outer_query(mut self, filters: RenderExpr) -> Self {
-        self.end_filters_for_outer_query = Some(filters);
-        self
-    }
-
-    // 🔧 DEPRECATED: Keep for compatibility
-    #[deprecated(note = "Use with_end_filters_for_outer_query() instead")]
-    pub(crate) fn set_end_filters_for_outer_query(&mut self, filters: RenderExpr) {
-        self.end_filters_for_outer_query = Some(filters);
-    }
-
     pub(crate) fn get_start_cypher_alias(&self) -> Option<&str> {
         self.start_cypher_alias.as_deref()
     }
@@ -159,14 +139,6 @@ impl CteGenerationContext {
     #[deprecated(note = "Use with_end_cypher_alias() instead")]
     pub(crate) fn set_end_cypher_alias(&mut self, alias: String) {
         self.end_cypher_alias = Some(alias);
-    }
-
-    // 🆕 MERGE HELPER: Merge another context's end filters into this one
-    pub(crate) fn merge_end_filters(mut self, other: &CteGenerationContext) -> Self {
-        if let Some(filters) = other.get_end_filters_for_outer_query() {
-            self.end_filters_for_outer_query = Some(filters.clone());
-        }
-        self
     }
 
     /// Store fixed-length path inline JOINs for later retrieval

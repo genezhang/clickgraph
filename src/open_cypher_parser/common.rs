@@ -61,7 +61,7 @@ pub fn strip_comments(input: &str) -> String {
         
         // Now handle comments (only when NOT in a string/identifier)
         
-        // Check for line comment
+        // Check for line comment (-- or //)
         if ch == '-' {
             if chars.peek() == Some(&'-') {
                 chars.next(); // consume second '-'
@@ -76,23 +76,41 @@ pub fn strip_comments(input: &str) -> String {
             }
         }
         
-        // Check for block comment
+        // Check for block comment or line comment
         if ch == '/' {
-            if chars.peek() == Some(&'*') {
-                chars.next(); // consume '*'
-                // Skip until */
-                let mut found_end = false;
-                while let Some(c) = chars.next() {
-                    if c == '*' && chars.peek() == Some(&'/') {
-                        chars.next(); // consume '/'
-                        found_end = true;
-                        break;
+            match chars.peek() {
+                Some(&'*') => {
+                    // Block comment /* */
+                    chars.next(); // consume '*'
+                    // Skip until */
+                    let mut found_end = false;
+                    while let Some(c) = chars.next() {
+                        if c == '*' && chars.peek() == Some(&'/') {
+                            chars.next(); // consume '/'
+                            found_end = true;
+                            break;
+                        }
                     }
+                    if !found_end {
+                        // Unclosed block comment - just continue
+                    }
+                    continue;
                 }
-                if !found_end {
-                    // Unclosed block comment - just continue
+                Some(&'/') => {
+                    // Line comment //
+                    chars.next(); // consume second '/'
+                    // Skip until newline
+                    while let Some(c) = chars.next() {
+                        if c == '\n' {
+                            result.push('\n'); // preserve newline
+                            break;
+                        }
+                    }
+                    continue;
                 }
-                continue;
+                _ => {
+                    // Just a regular '/' character
+                }
             }
         }
         
@@ -317,10 +335,21 @@ mod tests {
     fn test_strip_comments() {
         use super::strip_comments;
         
-        // Line comments
+        // Line comments (-- style)
         assert_eq!(
             strip_comments("-- Comment\nMATCH"),
             "\nMATCH"
+        );
+        
+        // Line comments (// style - Cypher standard)
+        assert_eq!(
+            strip_comments("// Comment\nMATCH"),
+            "\nMATCH"
+        );
+        
+        assert_eq!(
+            strip_comments("// LDBC Query\n// Description\n\nMATCH (n) RETURN n"),
+            "\n\n\nMATCH (n) RETURN n"
         );
         
         assert_eq!(
@@ -342,6 +371,11 @@ mod tests {
         // Mixed comments
         assert_eq!(
             strip_comments("-- Line\n/* Block */ MATCH"),
+            "\n MATCH"
+        );
+        
+        assert_eq!(
+            strip_comments("// Line\n/* Block */ MATCH"),
             "\n MATCH"
         );
         

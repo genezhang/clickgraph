@@ -1217,9 +1217,25 @@ RETURN [(u)-[:FOLLOWS]->(f) | f.name]  -- f is defined in pattern
 
 ### Limitations
 
-- ❌ Variable-length paths not supported in pattern comprehensions
-- ❌ Multiple patterns in single comprehension (use separate comprehensions)
-- ❌ Nested comprehensions with same variable names
+⚠️ **Important**: Pattern comprehensions are now fully supported but have some semantic differences from Neo4j:
+
+- ❌ **Variable-length paths**: VLP patterns `*1..3` inside pattern comprehensions are not yet supported
+- ⚠️ **Multiple pattern comprehensions**: Using multiple pattern comprehensions in the same RETURN may produce Cartesian products:
+  ```cypher
+  -- This creates a Cartesian product between the two comprehensions
+  MATCH (u:User)
+  RETURN size([(u)-[:FOLLOWS]->(f) | f]) AS follows,
+         size([(u)-[:LIKED]->(p) | p]) AS likes
+  -- If u has 10 follows and 10 likes, size() returns 100 each (10×10)
+  -- Workaround: Use separate queries or WITH clause subqueries
+  ```
+- ❌ **Multiple patterns in single comprehension**: Use separate comprehensions instead
+- ❌ **Nested comprehensions with same variable names**: May cause variable shadowing issues
+
+**Best Practices:**
+- For single pattern comprehensions, results are accurate
+- For counting patterns, prefer `size([(...)| 1])` syntax
+- For multiple metrics, consider using separate queries
 
 ### See Also
 

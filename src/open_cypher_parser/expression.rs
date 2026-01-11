@@ -55,7 +55,24 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
     loop {
         // Try to parse array subscript: expr[index]
         // Need to be careful: [expr] could also be a list literal
+        // Also careful: [(pattern) | projection] is a pattern comprehension, not subscript
         // We check for [ immediately after the expression (with optional whitespace)
+        
+        // First, peek to see if this looks like a subscript vs pattern comprehension
+        // Pattern comprehension starts with [(node) or [(path)
+        // Subscript has a simple expression like [0] or [i] or ["key"]
+        let looks_like_pattern_comp: IResult<_, _, nom::error::Error<_>> = nom::sequence::tuple((
+            multispace0::<_, nom::error::Error<_>>,
+            char('['),
+            multispace0,
+            char('('),
+        ))(input);
+        
+        if looks_like_pattern_comp.is_ok() {
+            // This looks like pattern comprehension [(...)], not a subscript - stop parsing postfix
+            break;
+        }
+        
         let subscript_attempt = nom::sequence::tuple((
             multispace0,
             char('['),
@@ -701,39 +718,12 @@ pub fn parse_function_call(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     
     // Then parse the comma-separated arguments within parentheses.
     // Need to try lambda first before regular expression
-    let args_result = delimited(
+    let (input, args) = delimited(
         ws(char('(')),
         separated_list0(ws(char(',')), alt((parse_lambda_expression, parse_expression))),
         ws(char(')')),
     )
-    .parse(input);
-    
-    // Check if we failed due to pattern comprehension syntax
-    let (input, args) = match args_result {
-        Ok(result) => result,
-        Err(nom::Err::Failure(e)) => {
-            // Check if the error is due to pattern comprehension
-            // Look ahead to see if we have [(pattern) | projection] syntax
-            if let Some(paren_pos) = input.find('(') {
-                let after_paren = &input[paren_pos + 1..];
-                if after_paren.trim_start().starts_with('[') {
-                    if let Some(bracket_end) = after_paren.find(']') {
-                        let inside_bracket = &after_paren[..bracket_end];
-                        if inside_bracket.contains('|') 
-                            && (inside_bracket.contains("->") || inside_bracket.contains("<-") || inside_bracket.contains("-[")) {
-                            // This is a pattern comprehension - provide clear error
-                            return Err(nom::Err::Failure(Error::new(
-                                input,
-                                ErrorKind::Tag,
-                            )));
-                        }
-                    }
-                }
-            }
-            return Err(nom::Err::Failure(e));
-        }
-        Err(e) => return Err(e),
-    };
+    .parse(input)?;
 
     Ok((
         input,
@@ -807,27 +797,9 @@ pub fn parse_map_literal(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 }
 
 pub fn parse_list_literal(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    // First, check for pattern comprehension syntax and reject it early with clear error
-    // Pattern comprehensions: [(pattern) | projection] - e.g., [(a)-[:R]->(b) | b.name]
-    if let Some(bracket_start) = input.find('[') {
-        let after_bracket = &input[bracket_start + 1..];
-        // Look for pattern-like syntax: starts with '(' and contains '-' before a potential '|'
-        if after_bracket.trim_start().starts_with('(') {
-            // Check if this looks like a path pattern by finding '-' followed by '[' or '>'
-            if let Some(pipe_pos) = after_bracket.find('|') {
-                let before_pipe = &after_bracket[..pipe_pos];
-                // If we see pattern-like characters (-, [, >, <) before |, it's likely a pattern comprehension
-                if before_pipe.contains("->") || before_pipe.contains("<-") || before_pipe.contains("-[") {
-                    return Err(nom::Err::Failure(nom::error::Error::new(
-                        input,
-                        nom::error::ErrorKind::Tag,
-                    )));
-                }
-            }
-        }
-    }
-    
     // Parse content within [ ... ] as a comma-separated list of expressions.
+    // Note: Pattern comprehensions [(pattern) | projection] are handled by
+    // parse_pattern_comprehension which comes before this in the alt() chain.
     let (input, exprs) = delimited(
         // Opening bracket with optional whitespace afterwards
         delimited(multispace0, char('['), multispace0),
@@ -1048,6 +1020,60 @@ pub fn parse_double_quoted_string_literal(input: &'_ str) -> IResult<&'_ str, Li
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_expression_pattern_comp_standalone() {
+        // Test parsing pattern comprehension by itself
+        let input = "[(p)-[:KNOWS]->(f) | f.firstName]";
+        let result = parse_expression(input);
+        match result {
+            Ok((remaining, expr)) => {
+                println!("Pattern comp standalone - Expression: {:?}", expr);
+                println!("Pattern comp standalone - Remaining: {:?}", remaining);
+                assert_eq!(remaining, "");
+                assert!(matches!(expr, Expression::PatternComprehension(_)));
+            }
+            Err(e) => {
+                panic!("Should parse pattern comprehension: {:?}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_expression_with_pattern_comp_in_remainder() {
+        // Test that when parsing WHERE clause expression, pattern comp in RETURN doesn't cause failure
+        // This tests the fix for the legacy pattern comp detection code that was blocking valid queries
+        let input = "true RETURN [(p)-[:KNOWS]->(f) | f.firstName]";
+        let result = parse_expression(input);
+        match result {
+            Ok((remaining, expr)) => {
+                assert!(matches!(expr, Expression::Literal(Literal::Boolean(true))));
+                assert!(remaining.trim().starts_with("RETURN"),
+                    "Expected RETURN to remain after parsing 'true', got: {}", remaining);
+            }
+            Err(e) => {
+                panic!("parse_expression should parse 'true' and leave RETURN as remainder: {:?}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_expression_equality_with_pattern_comp_in_remainder() {
+        // Test that equality expression stops before RETURN, even when pattern comp follows
+        let input = "p.id = 1 RETURN [(p)-[:KNOWS]->(f) | f.firstName]";
+        let result = parse_expression(input);
+        match result {
+            Ok((remaining, expr)) => {
+                println!("Expression: {:?}", expr);
+                println!("Remaining: {:?}", remaining);
+                assert!(remaining.trim().starts_with("RETURN"),
+                    "Expected RETURN to remain, got: {}", remaining);
+            }
+            Err(e) => {
+                panic!("parse_expression failed: {:?}", e);
+            }
+        }
+    }
 
     #[test]
     fn test_parse_operator_symbols() {

@@ -54,6 +54,7 @@ pub struct UseClause<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct MatchClause<'a> {
     pub path_patterns: Vec<(Option<&'a str>, PathPattern<'a>)>, // Vec of (optional path_var, pattern)
+    pub where_clause: Option<WhereClause<'a>>, // Optional WHERE clause per MATCH (OpenCypher grammar compliant)
 }
 
 #[derive(Debug, PartialEq, Clone)]

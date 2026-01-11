@@ -2244,6 +2244,13 @@ pub fn evaluate_match_clause_with_optional<'a>(
     }
 
     convert_properties_to_operator_application(plan_ctx)?;
+
+    // Apply WHERE clause if present (OpenCypher grammar allows WHERE per MATCH)
+    if let Some(where_clause) = &match_clause.where_clause {
+        use crate::query_planner::logical_plan::where_clause::evaluate_where_clause;
+        plan = evaluate_where_clause(where_clause, plan);
+    }
+
     Ok(plan)
 }
 
@@ -2694,6 +2701,7 @@ mod tests {
                 (None, ast::PathPattern::Node(node_pattern)),
                 (None, ast::PathPattern::ConnectedPattern(vec![connected_pattern])),
             ],
+            where_clause: None,
         };
 
         let result = evaluate_match_clause(&match_clause, initial_plan, &mut plan_ctx).unwrap();

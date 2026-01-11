@@ -3201,7 +3201,34 @@ impl GraphJoinInference {
                         Self::push_join_if_not_duplicate(collected_graph_joins, right_join);
                         joined_entities.insert(right_alias.to_string());
                     } else {
-                        log::debug!("⏭️  SKIP RIGHT node JOIN: {} (already in joined_entities)", right_alias);
+                        // CRITICAL FIX: Right node is already joined - add correlation condition to edge JOIN
+                        // This handles patterns like OPTIONAL MATCH (a)-[r:KNOWS]-(p) where p is already bound
+                        log::debug!("🔗 RIGHT node '{}' already joined - adding correlation to edge JOIN", right_alias);
+                        
+                        let resolved_right_id = Self::resolve_column(&right_id_col, right_cte_name, plan_ctx);
+                        let resolved_right_join_col = Self::resolve_column(right_join_col, rel_cte_name, plan_ctx);
+                        
+                        // Find the edge JOIN we just added and append the correlation condition
+                        if let Some(edge_join) = collected_graph_joins.iter_mut()
+                            .rev()  // Search from end (most recently added)
+                            .find(|j| j.table_alias == rel_alias)
+                        {
+                            let correlation_condition = OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(rel_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(resolved_right_join_col),
+                                    }),
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(right_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(resolved_right_id),
+                                    }),
+                                ],
+                            };
+                            edge_join.joining_on.push(correlation_condition);
+                            log::debug!("✓ Added correlation condition to edge JOIN '{}': connects to already-bound '{}'", rel_alias, right_alias);
+                        }
                     }
                 } else {
                     // Reverse order: RIGHT → EDGE → LEFT (right is available, connect to it first)
@@ -3273,7 +3300,34 @@ impl GraphJoinInference {
                         Self::push_join_if_not_duplicate(collected_graph_joins, left_join);
                         joined_entities.insert(left_alias.to_string());
                     } else {
-                        log::debug!("⏭️  SKIP LEFT node JOIN: {} (already in joined_entities)", left_alias);
+                        // CRITICAL FIX: Left node is already joined - add correlation condition to edge JOIN
+                        // This handles patterns where LEFT node is already bound from a previous MATCH
+                        log::debug!("🔗 LEFT node '{}' already joined - adding correlation to edge JOIN", left_alias);
+                        
+                        let resolved_left_id = Self::resolve_column(&left_id_col, left_cte_name, plan_ctx);
+                        let resolved_left_join_col = Self::resolve_column(left_join_col, rel_cte_name, plan_ctx);
+                        
+                        // Find the edge JOIN we just added and append the correlation condition
+                        if let Some(edge_join) = collected_graph_joins.iter_mut()
+                            .rev()  // Search from end (most recently added)
+                            .find(|j| j.table_alias == rel_alias)
+                        {
+                            let correlation_condition = OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(rel_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(resolved_left_join_col),
+                                    }),
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(left_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(resolved_left_id),
+                                    }),
+                                ],
+                            };
+                            edge_join.joining_on.push(correlation_condition);
+                            log::debug!("✓ Added correlation condition to edge JOIN '{}': connects to already-bound '{}'", rel_alias, left_alias);
+                        }
                     }
                 }
 

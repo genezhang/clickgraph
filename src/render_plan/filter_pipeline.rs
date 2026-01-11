@@ -1,7 +1,8 @@
 use super::render_expr::{
-    AggregateFnCall, Column, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
+    AggregateFnCall, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
+use crate::graph_catalog::graph_schema::GraphSchema;
 
 /// Represents categorized filters for different parts of a query
 #[derive(Debug, Clone)]
@@ -20,19 +21,30 @@ pub struct CategorizedFilters {
 /// - relationship_filters: `WHERE r.prop = value` (relationship)
 /// - path_function_filters: `WHERE length(p) < 5` (path functions)
 /// 
-/// ✅ HOLISTIC FIX: `rel_alias` is now actually used to categorize relationship filters.
-/// Previously this parameter was ignored, causing relationship filters to be lost.
+/// ⚠️ CRITICAL (Jan 10, 2026): Schema-aware categorization for ALL schema variations!
+/// 
+/// For denormalized edge tables, BOTH node and edge properties have the same table alias (rel alias).
+/// After property mapping: origin.code → f.Origin, dest.code → f.Dest (both use 'f' alias)
+/// We CANNOT categorize by table alias alone!
+/// 
+/// Solution: Check the COLUMN NAME against schema property mappings:
+/// - from_node_properties (e.g., Origin, OriginCity) → start_node_filters
+/// - to_node_properties (e.g., Dest, DestCity) → end_node_filters  
+/// - property_mappings in edge schema → relationship_filters
 pub fn categorize_filters(
     filter_expr: Option<&RenderExpr>,
     start_cypher_alias: &str,
     end_cypher_alias: &str,
-    rel_alias: &str, // ✅ FIXED: Now actually used for relationship filtering
+    rel_alias: &str,
+    schema: &GraphSchema,
+    rel_labels: &[String], // Relationship type(s) to check schema
 ) -> CategorizedFilters {
     log::debug!(
-        "Categorizing filters for start alias '{}', end alias '{}', rel alias '{}'",
+        "Categorizing filters for start alias '{}', end alias '{}', rel alias '{}', rel_labels: {:?}",
         start_cypher_alias,
         end_cypher_alias,
-        rel_alias
+        rel_alias,
+        rel_labels
     );
 
     let mut result = CategorizedFilters {
@@ -50,6 +62,54 @@ pub fn categorize_filters(
     log::trace!("Filter expression: {:?}", filter_expr.unwrap());
 
     let filter = filter_expr.unwrap();
+
+    // Helper to check if column belongs to from_node_properties, to_node_properties, or edge properties
+    // This is CRITICAL for denormalized edges where all properties share the same table alias!
+    fn check_column_ownership(
+        column_name: &str,
+        rel_labels: &[String],
+        schema: &GraphSchema,
+    ) -> ColumnOwnership {
+        // Try each relationship label
+        for rel_label in rel_labels {
+            if let Ok(rel_schema) = schema.get_rel_schema(rel_label) {
+                // Check from_node_properties (start node)
+                if let Some(from_props) = &rel_schema.from_node_properties {
+                    if from_props.values().any(|col| col == column_name) {
+                        log::debug!("Column '{}' found in from_node_properties → start node", column_name);
+                        return ColumnOwnership::FromNode;
+                    }
+                }
+                
+                // Check to_node_properties (end node)
+                if let Some(to_props) = &rel_schema.to_node_properties {
+                    if to_props.values().any(|col| col == column_name) {
+                        log::debug!("Column '{}' found in to_node_properties → end node", column_name);
+                        return ColumnOwnership::ToNode;
+                    }
+                }
+                
+                // Check property_mappings (relationship) - these are PropertyValue
+                for col_value in rel_schema.property_mappings.values() {
+                    if col_value.raw() == column_name {
+                        log::debug!("Column '{}' found in property_mappings → relationship", column_name);
+                        return ColumnOwnership::Relationship;
+                    }
+                }
+            }
+        }
+        
+        log::debug!("Column '{}' ownership unknown, defaulting to relationship", column_name);
+        ColumnOwnership::Unknown
+    }
+    
+    #[derive(Debug, PartialEq)]
+    enum ColumnOwnership {
+        FromNode,
+        ToNode,
+        Relationship,
+        Unknown,
+    }
 
     // Helper to check if an expression references a specific alias (checks both Cypher and SQL aliases)
     fn references_alias(expr: &RenderExpr, cypher_alias: &str, sql_alias: &str) -> bool {
@@ -109,31 +169,55 @@ pub fn categorize_filters(
     for predicate in predicates {
         let refs_start = references_alias(&predicate, start_cypher_alias, "start_node");
         let refs_end = references_alias(&predicate, end_cypher_alias, "end_node");
-        // ✅ HOLISTIC FIX: Actually check if filter references relationship alias
         let refs_rel = if !rel_alias.is_empty() {
             references_alias(&predicate, rel_alias, "rel")
         } else {
             false
         };
         let has_path_fn = contains_path_function(&predicate);
+        
+        // ⚠️ CRITICAL: For denormalized edges, check column ownership!
+        // If predicate references rel_alias, check if column belongs to from/to node or relationship
+        let column_ownership = if refs_rel && !rel_labels.is_empty() {
+            // Extract column name from predicate
+            if let Some(column_name) = extract_column_name(&predicate) {
+                check_column_ownership(&column_name, rel_labels, schema)
+            } else {
+                ColumnOwnership::Unknown
+            }
+        } else {
+            ColumnOwnership::Unknown
+        };
 
         crate::debug_println!("DEBUG: Categorizing predicate: {:?}", predicate);
         log::debug!(
-            "Categorize predicate - refs_start (alias '{}'): {}, refs_end (alias '{}'): {}, refs_rel (alias '{}'): {}, has_path_fn: {}",
-            start_cypher_alias, refs_start,
-            end_cypher_alias, refs_end,
-            rel_alias, refs_rel,
-            has_path_fn
+            "Categorize predicate - refs_start: {}, refs_end: {}, refs_rel: {}, column_ownership: {:?}, has_path_fn: {}",
+            refs_start, refs_end, refs_rel, column_ownership, has_path_fn
         );
 
         if has_path_fn {
             // Path function filters (e.g., WHERE length(p) <= 3) go in path function filters
             crate::debug_println!("DEBUG: Going to path_fn_filters");
             path_fn_filters.push(predicate);
+        } else if refs_rel && column_ownership == ColumnOwnership::FromNode {
+            // Column belongs to from_node_properties → start node filter
+            crate::debug_println!("DEBUG: Going to start_filters (denormalized from_node property)");
+            log::debug!("  -> start_node_filters (column in from_node_properties)");
+            start_filters.push(predicate);
+        } else if refs_rel && column_ownership == ColumnOwnership::ToNode {
+            // Column belongs to to_node_properties → end node filter
+            crate::debug_println!("DEBUG: Going to end_filters (denormalized to_node property)");
+            log::debug!("  -> end_node_filters (column in to_node_properties)");
+            end_filters.push(predicate);
+        } else if refs_rel && column_ownership == ColumnOwnership::Relationship {
+            // Column belongs to relationship property_mappings → relationship filter
+            crate::debug_println!("DEBUG: Going to rel_filters (edge property)");
+            log::debug!("  -> relationship_filters (column in property_mappings)");
+            rel_filters.push(predicate);
         } else if refs_rel {
-            // ✅ HOLISTIC FIX: Relationship filters go to rel_filters (e.g., WHERE r.weight > 5)
-            crate::debug_println!("DEBUG: Going to rel_filters (references relationship alias)");
-            log::debug!("  -> relationship_filters (refs rel alias '{}')", rel_alias);
+            // refs_rel but ownership unknown (fallback for non-denormalized or missing schema)
+            crate::debug_println!("DEBUG: Going to rel_filters (references relationship alias, ownership unknown)");
+            log::debug!("  -> relationship_filters (refs rel alias '{}', ownership unknown)", rel_alias);
             rel_filters.push(predicate);
         } else if refs_start && refs_end {
             // Filter references both nodes - can't categorize simply
@@ -152,6 +236,37 @@ pub fn categorize_filters(
             crate::debug_println!("DEBUG: Uncategorized predicate (no alias match), treating as rel filter");
             log::warn!("Filter predicate doesn't match any known alias: {:?}", predicate);
             rel_filters.push(predicate);
+        }
+    }
+    
+    // Helper to extract column name from a predicate (e.g., Origin from f.Origin = 'LAX')
+    fn extract_column_name(expr: &RenderExpr) -> Option<String> {
+        match expr {
+            RenderExpr::PropertyAccessExp(prop) => {
+                // PropertyAccess.column is directly a PropertyValue
+                match &prop.column {
+                    PropertyValue::Column(s) => Some(s.clone()),
+                    PropertyValue::Expression(s) => Some(s.clone()),
+                }
+            }
+            RenderExpr::OperatorApplicationExp(op) => {
+                // For comparison operators, check first operand (usually the property access)
+                if matches!(op.operator, Operator::Equal | Operator::NotEqual | 
+                           Operator::LessThan | Operator::LessThanEqual | 
+                           Operator::GreaterThan | Operator::GreaterThanEqual) {
+                    if let Some(first) = op.operands.first() {
+                        return extract_column_name(first);
+                    }
+                }
+                // For AND/OR, recursively check operands
+                for operand in &op.operands {
+                    if let Some(col) = extract_column_name(operand) {
+                        return Some(col);
+                    }
+                }
+                None
+            }
+            _ => None,
         }
     }
 

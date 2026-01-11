@@ -93,7 +93,7 @@ ClickGraph is designed for **analytical queries** over existing ClickHouse data,
 - ✅ Simple CASE: `CASE WHEN ... THEN ... END`
 - ⚠️ May have edge cases in complex GROUP BY scenarios
 
-### ✅ Recently Implemented (v0.5.3-v0.5.4)
+### ✅ Recently Implemented (v0.5.3-v0.6.0)
 
 - ✅ Path variables: `p = (a)-[:TYPE*]->(b)` with `nodes(p)`, `relationships(p)`, `length(p)`
 - ✅ `UNION`, `UNION ALL` between queries
@@ -101,11 +101,16 @@ ClickGraph is designed for **analytical queries** over existing ClickHouse data,
 - ✅ Cross-table query correlation with WITH...MATCH
 - ✅ Smart type inference for anonymous patterns
 - ✅ FK-Edge patterns for hierarchical data
+- ✅ **Pattern Comprehensions** (v0.6.0): `[(pattern) WHERE condition | projection]`
+  - Works in RETURN items
+  - Works nested inside functions like `size([(...)| ...])`
+  - ⚠️ Multiple comprehensions may create Cartesian products (see [Cypher-Language-Reference](Cypher-Language-Reference.md#limitations-1))
 
 ### ❌ Not Yet Implemented
 
 **Advanced Patterns:**
 - ❌ Relationship property constraints in patterns: `()-[r {since: 2020}]->()`
+- ❌ Variable-length paths inside pattern comprehensions
 
 **Subqueries:**
 - ❌ `CALL { ... }` subqueries

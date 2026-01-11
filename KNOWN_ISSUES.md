@@ -1,7 +1,7 @@
 # Known Issues
 
-**Active Issues**: 0 bugs, 3 feature limitations  
-**Last Updated**: January 9, 2026
+**Active Issues**: 5 bugs, 3 feature limitations  
+**Last Updated**: January 11, 2026
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -10,7 +10,70 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ## Current Bugs
 
-**🎉 No active bugs!**
+### 1. OPTIONAL MATCH + VLP Combination
+**Status**: 🐛 BUG  
+**Error**: `Identifier 'vlp66.name' cannot be resolved from subquery`  
+**Example**:
+```cypher
+MATCH (a:User) WHERE a.name = 'Alice'
+OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b:User)
+RETURN a.name, COUNT(DISTINCT b) as reachable
+```
+**Root Cause**: VLP alias rewriting incorrectly maps `a.name` → `vlp66.name` in outer query when VLP is in OPTIONAL MATCH  
+**Impact**: Blocks OPTIONAL MATCH combined with variable-length paths  
+**Files**: `cte_extraction.rs`, `plan_builder.rs`
+
+### 2. Relationship Alias ID Column Not Found
+**Status**: 🐛 BUG  
+**Error**: `Cannot find ID column for alias 'r'`  
+**Example**:
+```cypher
+MATCH (a:User)-[r:FOLLOWS]->(b) RETURN a, r, b
+```
+**Root Cause**: Returning relationship alias `r` directly fails to find edge ID column in some schemas  
+**Impact**: Blocks returning full relationship objects (workaround: return specific properties instead)  
+**Files**: `render_plan/`, `to_sql_query.rs`
+
+### 3. COLLECT/UNWIND 500 Errors
+**Status**: 🐛 BUG  
+**Error**: `500 Server Error: Internal Server Error`  
+**Example**:
+```cypher
+MATCH (u:User)-[:FOLLOWS]->(f)
+RETURN u.name, COLLECT(f.name) as followers
+```
+**Root Cause**: Server crashes on COLLECT/UNWIND aggregations  
+**Impact**: Blocks list collection operations  
+**Files**: `aggregations.rs`, `handler.rs`
+
+### 4. Scalar Aggregates in WITH Clause with GROUP BY
+**Status**: 🐛 BUG (ARCHITECTURAL)  
+**Error**: `Cannot find ID column for alias 'total' needed for GROUP BY aggregation`  
+**Example**:
+```cypher
+MATCH (m:Message)
+WITH count(m) AS total
+MATCH (m:Message)
+WITH total, count(m) AS cnt  -- Fails here
+RETURN total, cnt
+```
+**Root Cause**: System treats scalar CTE columns as table aliases (expecting ID/properties), not as scalar values  
+**Impact**: Blocks chained WITHs with scalar aggregates reused in subsequent GROUP BY  
+**Workaround**: None - requires architectural refactoring  
+**Note**: Fundamental design issue - `TableAlias` in logical plan represents both entities and scalar values  
+**Files**: `render_plan/plan_builder.rs:6015, 8836`, `logical_plan/mod.rs`
+
+### 5. COUNT with Explicit Relationship Type
+**Status**: 🐛 BUG  
+**Error**: `500 Server Error: Internal Server Error`  
+**Example**:
+```cypher
+MATCH (u:User)-[r:FOLLOWS]->()
+RETURN COUNT(r)
+```
+**Root Cause**: COUNT aggregation with typed relationship alias triggers server error  
+**Impact**: Workaround: use `COUNT(*)` or `COUNT(r.property)`  
+**Files**: `aggregations.rs`
 
 ---
 

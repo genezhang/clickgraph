@@ -16,6 +16,7 @@ This document analyzes the Cypher features used in official LDBC SNB benchmark q
 **Last Updated**: December 16, 2025 (Post-Issue #6 fixes)
 
 **Recent Enhancements**:
+- ✅ **Pattern Comprehensions** `[(pattern) | projection]` - IMPLEMENTED (Jan 2026)
 - ✅ `duration()` with map arguments - IMPLEMENTED (Dec 2025)
 - ✅ Temporal arithmetic (`datetime() + duration({days: N})`) - IMPLEMENTED (Dec 2025)
 - ✅ MapLiteral parsing (`{key: value}` syntax) - IMPLEMENTED (Dec 2025)
@@ -28,9 +29,9 @@ This document analyzes the Cypher features used in official LDBC SNB benchmark q
 
 **Recent Discoveries**:
 - ✅ `size()` on patterns - IMPLEMENTED (Dec 11, 2025) - Works for simple patterns!
+- ✅ **Pattern comprehensions** - IMPLEMENTED (Jan 2026) - Works with `size()` wrapper!
 - ✅ Most queries can work with existing features + minor workarounds
 - ✅ **BI8 now works directly** without pattern comprehension workaround!
-- ✅ **IC10 pattern comprehension** moved to blocked (requires parser extension)
 
 **Remaining Gaps** (known limitations with workarounds):
 - ⚠️ Pattern comprehension `[(p)-[:R]->(x) | x.prop]` - Use OPTIONAL MATCH + collect()
@@ -112,10 +113,18 @@ RETURN m.id, isComment, isPost
 
 ### 🚧 Deferred as Known Limitations
 
-| Feature | Queries Affected | Workaround |
+| Feature | Queries Affected | Status / Workaround |
 |---------|-----------------|------------|
-| **Pattern comprehension** `[(p)-[:R]->(x) \| x.prop]` | BI8, IC10 | Use OPTIONAL MATCH + collect() |
+| ~~**Pattern comprehension**~~ `[(p)-[:R]->(x) \| x.prop]` | BI8, IC10 | ✅ **IMPLEMENTED** (Jan 2026) - [See limitations](#pattern-comprehension-limitations) |
 | **CALL subquery** `CALL { ... }` | BI4, BI16 | Restructure with WITH clauses |
+
+#### Pattern Comprehension Limitations
+
+Pattern comprehensions are now supported but with some caveats:
+- ✅ Single pattern comprehension works correctly
+- ✅ `size([(...)| ...])` works as expected
+- ⚠️ Multiple comprehensions in same RETURN may create Cartesian products
+- ❌ Variable-length paths inside comprehensions not yet supported
 
 ### 🚫 Features Requiring External Libraries (Blocked)
 

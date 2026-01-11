@@ -43,6 +43,7 @@ pub fn evaluate_optional_match_clause<'a>(
             .iter()
             .map(|p| (None, p.clone())) // Wrap each pattern with None for path_variable
             .collect(),
+        where_clause: None, // WHERE clause handled separately for OPTIONAL MATCH
     };
 
     // Process the patterns using the _with_optional variant and pass is_optional=true

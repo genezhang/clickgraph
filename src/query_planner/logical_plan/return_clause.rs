@@ -192,30 +192,113 @@ fn property_key(prop: &PropertyAccess) -> String {
 
 /// Rewrite pattern comprehensions in return items
 /// Modifies the plan by adding OPTIONAL MATCH nodes and replaces pattern comprehensions with collect()
+/// Recursively rewrite pattern comprehensions within an expression.
+/// Returns (transformed_expression, pattern_comprehensions_found) where pattern_comprehensions_found
+/// is a list of (pattern, where_clause, projection) tuples that need OPTIONAL MATCH nodes added.
+fn rewrite_expression_pattern_comprehensions<'a>(
+    expr: Expression<'a>,
+) -> (Expression<'a>, Vec<(crate::open_cypher_parser::ast::PathPattern<'a>, Option<Box<Expression<'a>>>, Box<Expression<'a>>)>) {
+    use crate::open_cypher_parser::ast::*;
+    
+    match expr {
+        Expression::PatternComprehension(pc) => {
+            // Found a pattern comprehension - collect it and replace with collect(projection)
+            let collect_call = Expression::FunctionCallExp(FunctionCall {
+                name: "collect".to_string(),
+                args: vec![(*pc.projection).clone()],
+            });
+            (collect_call, vec![((*pc.pattern).clone(), pc.where_clause.clone(), pc.projection.clone())])
+        }
+        Expression::FunctionCallExp(func) => {
+            // Recursively process function arguments
+            let mut all_pcs = Vec::new();
+            let new_args: Vec<Expression<'a>> = func.args.into_iter().map(|arg| {
+                let (new_arg, pcs) = rewrite_expression_pattern_comprehensions(arg);
+                all_pcs.extend(pcs);
+                new_arg
+            }).collect();
+            (Expression::FunctionCallExp(FunctionCall {
+                name: func.name,
+                args: new_args,
+            }), all_pcs)
+        }
+        Expression::OperatorApplicationExp(op) => {
+            let mut all_pcs = Vec::new();
+            let new_operands: Vec<Expression<'a>> = op.operands.into_iter().map(|operand| {
+                let (new_op, pcs) = rewrite_expression_pattern_comprehensions(operand);
+                all_pcs.extend(pcs);
+                new_op
+            }).collect();
+            (Expression::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator,
+                operands: new_operands,
+            }), all_pcs)
+        }
+        Expression::List(items) => {
+            let mut all_pcs = Vec::new();
+            let new_items: Vec<Expression<'a>> = items.into_iter().map(|item| {
+                let (new_item, pcs) = rewrite_expression_pattern_comprehensions(item);
+                all_pcs.extend(pcs);
+                new_item
+            }).collect();
+            (Expression::List(new_items), all_pcs)
+        }
+        Expression::Case(case_expr) => {
+            let mut all_pcs = Vec::new();
+            
+            let new_expr = case_expr.expr.map(|e| {
+                let (new_e, pcs) = rewrite_expression_pattern_comprehensions(*e);
+                all_pcs.extend(pcs);
+                Box::new(new_e)
+            });
+            
+            let new_when_then: Vec<(Expression<'a>, Expression<'a>)> = case_expr.when_then.into_iter().map(|(when, then)| {
+                let (new_when, pcs1) = rewrite_expression_pattern_comprehensions(when);
+                let (new_then, pcs2) = rewrite_expression_pattern_comprehensions(then);
+                all_pcs.extend(pcs1);
+                all_pcs.extend(pcs2);
+                (new_when, new_then)
+            }).collect();
+            
+            let new_else = case_expr.else_expr.map(|e| {
+                let (new_e, pcs) = rewrite_expression_pattern_comprehensions(*e);
+                all_pcs.extend(pcs);
+                Box::new(new_e)
+            });
+            
+            (Expression::Case(Case {
+                expr: new_expr,
+                when_then: new_when_then,
+                else_expr: new_else,
+            }), all_pcs)
+        }
+        // For all other expression types, return as-is with no pattern comprehensions
+        other => (other, vec![])
+    }
+}
+
 fn rewrite_pattern_comprehensions<'a>(
     return_items: Vec<ReturnItem<'a>>,
     mut plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
 ) -> (Vec<ReturnItem<'a>>, Arc<LogicalPlan>) {
     let mut rewritten_items = Vec::new();
-    let mut pc_counter = 0;
 
     for item in return_items {
-        if let Expression::PatternComprehension(pc) = &item.expression {
-            // Generate unique alias for this pattern comprehension
-            pc_counter += 1;
-
-            // Build OPTIONAL MATCH clause from the pattern
+        // Recursively rewrite pattern comprehensions in the expression
+        let (rewritten_expr, pattern_comprehensions) = rewrite_expression_pattern_comprehensions(item.expression);
+        
+        // Add OPTIONAL MATCH nodes for each pattern comprehension found
+        for (pattern, where_clause, _projection) in pattern_comprehensions {
             let optional_match = crate::open_cypher_parser::ast::OptionalMatchClause {
-                path_patterns: vec![(*pc.pattern).clone()],
-                where_clause: pc.where_clause.as_ref().map(|w| {
+                path_patterns: vec![pattern],
+                where_clause: where_clause.as_ref().map(|w| {
                     crate::open_cypher_parser::ast::WhereClause {
                         conditions: (**w).clone(),
                     }
                 }),
             };
 
-            // Add OPTIONAL MATCH to the plan
             plan = match evaluate_optional_match_clause(&optional_match, plan.clone(), plan_ctx) {
                 Ok(new_plan) => new_plan,
                 Err(e) => {
@@ -223,32 +306,17 @@ fn rewrite_pattern_comprehensions<'a>(
                         "Failed to evaluate OPTIONAL MATCH for pattern comprehension: {:?}",
                         e
                     );
-                    // Keep original item and continue
-                    rewritten_items.push(item);
                     continue;
                 }
             };
-
-            // Replace pattern comprehension with collect(projection)
-            let collect_call = Expression::FunctionCallExp(
-                crate::open_cypher_parser::ast::FunctionCall {
-                    name: "collect".to_string(),
-                    args: vec![(*pc.projection).clone()],
-                },
-            );
-
-            // Create new return item with collect()
-            // If original item had no alias, we'll let the inference handle it later
-            let new_item = ReturnItem {
-                expression: collect_call,
-                alias: item.alias, // Keep original alias if present, None otherwise
-            };
-
-            rewritten_items.push(new_item);
-        } else {
-            // Not a pattern comprehension - keep as is
-            rewritten_items.push(item);
         }
+
+        // Create new return item with rewritten expression
+        let new_item = ReturnItem {
+            expression: rewritten_expr,
+            alias: item.alias,
+        };
+        rewritten_items.push(new_item);
     }
 
     (rewritten_items, plan)

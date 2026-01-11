@@ -2120,27 +2120,6 @@ fn build_chained_with_match_cte_plan(
                                 // Performance optimization: Wrap non-ID columns with ANY() when aggregating
                                 // This allows GROUP BY to only include ID column (more efficient)
                                 
-                                // Pre-check: If aggregation, verify all TableAlias items have ID columns
-                                if has_aggregation {
-                                    for item in items.iter() {
-                                        if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) = &item.expression {
-                                            match plan_to_render.find_id_column_with_cte_context(&alias.0, &cte_schemas, &cte_references_for_rendering) {
-                                                Ok(_) => {
-                                                    log::info!("✅ Pre-check: ID column found for alias '{}'", alias.0);
-                                                }
-                                                Err(e) => {
-                                                    log::error!("❌ Cannot find ID column for alias '{}': {:?}", alias.0, e);
-                                                    log::error!("❌ Available CTEs: {:?}", cte_schemas.keys());
-                                                    log::error!("❌ CTE references: {:?}", cte_references_for_rendering);
-                                                    return Err(RenderBuildError::InvalidRenderPlan(
-                                                        format!("Cannot find ID column for alias '{}' needed for GROUP BY aggregation. This alias may come from a CTE that hasn't been properly registered.", alias.0)
-                                                    ));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                
                                 let mut select_items: Vec<SelectItem> = items.iter()
                                     .flat_map(|item| {
                                         // Check if this is a TableAlias that needs expansion to ALL columns
@@ -2605,6 +2584,12 @@ fn build_chained_with_match_cte_plan(
             
             log::warn!("🔧 build_chained_with_match_cte_plan: Updated cte_references: '{}' → '{}' (plus {} individual aliases)", 
                        with_alias, cte_name, individual_aliases.len());
+            
+            // CRITICAL: Also update cte_references_for_rendering!
+            // This allows subsequent WITH clauses in THIS ITERATION to reference the new CTE
+            // Example: "WITH count(*) AS total" then "WITH total, year" - second WITH needs "total" in cte_references_for_rendering
+            cte_references_for_rendering = cte_references.clone();
+            log::info!("🔧 build_chained_with_match_cte_plan: Updated cte_references_for_rendering with {} entries", cte_references_for_rendering.len());
             
             log::info!("🔧 build_chained_with_match_cte_plan: Added '{}' to processed_cte_aliases", with_alias);
             
@@ -6027,32 +6012,38 @@ impl RenderPlanBuilder for LogicalPlan {
                                 // CONSOLIDATED (Dec 2025): Use unified expansion helper
                                 if has_aggregation || !has_aggregation {
                                     // Get ID column for this alias (needed for anyLast() wrapping determination)
-                                    let id_col = self.find_id_column_for_alias(&alias.0)
-                                        .map_err(|e| RenderBuildError::InvalidRenderPlan(
-                                            format!("Cannot find ID column for alias '{}': {}", alias.0, e)
-                                        ))?;
+                                    // If this fails, it means the alias is a scalar value (e.g., from WITH count(*) AS total)
+                                    // In that case, don't expand - just use the scalar value as-is
+                                    let id_col_result = self.find_id_column_for_alias(&alias.0);
                                     
-                                    if has_aggregation {
-                                        log::info!("🔧 Aggregation detected: wrapping non-ID columns with anyLast() for alias '{}', ID column='{}'",
-                                                   alias.0, id_col);
+                                    if let Err(_) = id_col_result {
+                                        log::info!("🔧 Alias '{}' has no ID column - treating as scalar value (not expanding)", alias.0);
+                                        // Don't expand - fall through to add the original TableAlias item
+                                    } else {
+                                        let id_col = id_col_result.unwrap();
+                                        
+                                        if has_aggregation {
+                                            log::info!("🔧 Aggregation detected: wrapping non-ID columns with anyLast() for alias '{}', ID column='{}'",
+                                                       alias.0, id_col);
+                                        }
+                                        
+                                        // Use unified expansion helper (consolidates RETURN/WITH logic)
+                                        use crate::render_plan::property_expansion::{
+                                            expand_alias_to_projection_items_unified, PropertyAliasFormat
+                                        };
+                                        
+                                        let property_items = expand_alias_to_projection_items_unified(
+                                            &alias.0,
+                                            properties,
+                                            &id_col,
+                                            actual_table_alias,
+                                            has_aggregation,  // Enables anyLast() wrapping for non-ID columns
+                                            PropertyAliasFormat::Underscore,
+                                        );
+                                        
+                                        expanded_items.extend(property_items);
+                                        continue; // Skip adding the TableAlias item itself
                                     }
-                                    
-                                    // Use unified expansion helper (consolidates RETURN/WITH logic)
-                                    use crate::render_plan::property_expansion::{
-                                        expand_alias_to_projection_items_unified, PropertyAliasFormat
-                                    };
-                                    
-                                    let property_items = expand_alias_to_projection_items_unified(
-                                        &alias.0,
-                                        properties,
-                                        &id_col,
-                                        actual_table_alias,
-                                        has_aggregation,  // Enables anyLast() wrapping for non-ID columns
-                                        PropertyAliasFormat::Underscore,
-                                    );
-                                    
-                                    expanded_items.extend(property_items);
-                                    continue; // Skip adding the TableAlias item itself
                                 }
                             }
                         }
@@ -7388,11 +7379,35 @@ impl RenderPlanBuilder for LogicalPlan {
                     let start_alias = graph_rel.left_connection.clone();
                     let end_alias = graph_rel.right_connection.clone();
 
+                    // For extract_final_filters, we only need to categorize path function filters
+                    // Schema-aware categorization is not needed here since this is just for
+                    // separating path functions from other filters. Use a dummy categorization.
+                    let rel_labels = graph_rel.labels.clone().unwrap_or_default();
+                    
+                    // Try to get schema for proper categorization
+                    use crate::server::GLOBAL_SCHEMAS;
+                    let schemas_lock = GLOBAL_SCHEMAS.get().expect("Schemas not initialized");
+                    let schemas = schemas_lock.try_read().expect("Failed to acquire schema lock");
+                    
+                    // Try to find a schema that has this relationship type
+                    let schema_for_categorization = if !rel_labels.is_empty() {
+                        schemas.values()
+                            .find(|s| rel_labels.iter().any(|label| s.get_rel_schema(label).is_ok()))
+                    } else {
+                        None
+                    };
+                    
+                    let schema_ref = schema_for_categorization.unwrap_or_else(|| {
+                        schemas.values().next().expect("At least one schema must be loaded")
+                    });
+                    
                     let categorized = categorize_filters(
                         Some(&filter_expr),
                         &start_alias,
                         &end_alias,
                         &graph_rel.alias,
+                        schema_ref,
+                        &rel_labels,
                     );
 
                     categorized.path_function_filters
@@ -11413,7 +11428,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
         let extracted_ctes: Vec<Cte>;
         let mut final_from: Option<FromTable> = None;
-        let final_filters: Option<RenderExpr>;
+        let mut final_filters: Option<RenderExpr>;
 
         let last_node_cte_opt = transformed_plan.extract_last_node_cte(schema)?;
         println!("DEBUG: last_node_cte_opt = {:?}", last_node_cte_opt.as_ref().map(|c| &c.cte_name));
@@ -11499,6 +11514,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             })));
                         }
                     }
+                    // VLP alias computed locally where needed
                 } else {
                     // Required VLP: Use CTE as FROM (original behavior)
                     let vlp_alias = var_len_cte.cte_name.replace("vlp_cte", "vlp").replace("chained_path_", "vlp");
@@ -11512,8 +11528,9 @@ impl RenderPlanBuilder for LogicalPlan {
                     })));
                 }
 
-                // Check if there are end filters stored in the context that need to be applied to the outer query
-                final_filters = context.get_end_filters_for_outer_query().cloned();
+                // Note: End node filters are now applied inside the CTE, not in outer query.
+                // Chained pattern filters (nodes outside VLP) are handled later via references_only_vlp_aliases.
+                final_filters = None;  // Will be populated by chained pattern logic below if needed
             } else {
                 // Extract from the CTE content (normal path)
                 let (cte_from, cte_filters) = match &last_node_cte.content {
@@ -11689,10 +11706,10 @@ impl RenderPlanBuilder for LogicalPlan {
                         }
                     }
 
-                    // Add user end filters from context
-                    if let Some(user_filters) = context.get_end_filters_for_outer_query() {
-                        filter_parts.push(user_filters.clone());
-                    }
+                    // Note: End node filters are applied inside the CTE, not rewritten to outer query.
+                    // The var_len_cte_alias is still needed for schema filters below.
+                    let var_len_cte_alias = var_len_cte.cte_name.replace("vlp_cte", "vlp").replace("chained_path_", "vlp");
+                    let _ = var_len_cte_alias; // Silence unused warning - used in collect_schema_filter_for_alias
 
                     // Helper to extract schema filter from ViewScan for a given alias
                     fn collect_schema_filter_for_alias(
@@ -12217,7 +12234,8 @@ impl RenderPlanBuilder for LogicalPlan {
             
             log::warn!("   Set FROM to: {} AS '{}'", with_cte.cte_name, with_alias_part);
             log::warn!("   Keeping {} extracted_joins (subsequent pattern JOINs)", extracted_joins.len());
-        } else if has_vlp_cte && vlp_aliases.is_some() {
+        } else if has_vlp_cte && vlp_aliases.is_some() && !is_multi_type_vlp {
+            // Skip this entire block for multi-type VLP (handled above with extracted_joins.clear())
             let (start_alias, end_alias) = vlp_aliases.unwrap();
             log::debug!("🎯 ENTERING VLP ENDPOINT JOIN CREATION BLOCK");
             log::debug!("🎯 start_alias='{}', end_alias='{}'", start_alias, end_alias);

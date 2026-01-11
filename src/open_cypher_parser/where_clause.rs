@@ -155,6 +155,25 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_where_with_pattern_comprehension_following() {
+        // WHERE true followed by RETURN with pattern comprehension
+        let input = "WHERE true RETURN [(p)-[:KNOWS]->(f) | f.firstName]";
+        let result = parse_where_clause(input);
+        match result {
+            Ok((remaining, clause)) => {
+                println!("WHERE parsed: {:?}", clause);
+                println!("Remaining: {:?}", remaining);
+                // Should have "RETURN..." as remaining
+                assert!(remaining.trim().starts_with("RETURN"), 
+                    "Expected RETURN to be in remaining, got: {}", remaining);
+            }
+            Err(e) => {
+                panic!("WHERE clause parsing failed unexpectedly: {:?}", e);
+            }
+        }
+    }
+
+    #[test]
     fn test_parse_where_or_invalid() {
         // OR without a left operand is also invalid
         let input = "WHERE OR r.prop = 1";

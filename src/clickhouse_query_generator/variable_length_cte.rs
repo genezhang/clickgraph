@@ -890,7 +890,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // This is needed when we have:
         // 1. Shortest path mode (which requires post-processing)
         // 2. min_hops > 1 (base case generates hop 1, but we need to filter)
-        let needs_inner_cte = self.shortest_path_mode.is_some() || min_hops > 1;
+        // 3. Denormalized VLP with end_node_filters (can't filter in base case, must wrap)
+        let denorm_needs_end_filter_wrapper = self.is_denormalized 
+            && self.end_node_filters.is_some() 
+            && self.shortest_path_mode.is_none();
+        let needs_inner_cte = self.shortest_path_mode.is_some() 
+            || min_hops > 1 
+            || denorm_needs_end_filter_wrapper;
         let recursive_cte_name = if needs_inner_cte {
             format!("{}_inner", self.cte_name)
         } else {
@@ -1027,17 +1033,42 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     self.cte_name, query_body, self.cte_name, self.cte_name, self.cte_name
                 )
             }
-            (None, Some(_end_filters)) => {
-                // For non-shortest-path mode, end filters are ALREADY applied in base/recursive cases
-                // (see generate_base_case and generate_recursive_case_with_cte_name)
-                // But we still need to apply min_hops filtering if min_hops > 1
-                if min_hops > 1 {
+            (None, Some(end_filters)) => {
+                // For denormalized VLP, end filters are NOT applied in base/recursive cases
+                // (to allow multi-hop paths). They must be applied in a wrapper CTE.
+                //
+                // For standard VLP, end filters ARE applied in base/recursive cases,
+                // so we don't need to filter again here.
+                if self.is_denormalized {
+                    // Denormalized: Apply end filter in wrapper CTE
+                    // The end_filters string uses "end_node.X" which maps to the CTE's output columns
+                    // But for denormalized, CTE columns use physical names (e.g., "Dest" not "end_node.code")
+                    // The filter was already rewritten during categorization, so it should use the rel alias
+                    // which maps to the CTE alias in the wrapper
+                    let rewritten_filter = end_filters.replace("end_node.", &format!("{}_inner.", self.cte_name));
+                    // Also handle rel alias replacement (e.g., "rel.Dest" -> "vlp_inner.Dest")
+                    let rewritten_filter = rewritten_filter.replace(&format!("{}.", self.relationship_alias), &format!("{}_inner.", self.cte_name));
+                    
+                    let min_hops_filter = if min_hops > 1 {
+                        format!(" AND hop_count >= {}", min_hops)
+                    } else {
+                        String::new()
+                    };
+                    
                     format!(
-                        "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE hop_count >= {}\n)",
-                        self.cte_name, query_body, self.cte_name, self.cte_name, min_hops
+                        "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE ({}){}\n)",
+                        self.cte_name, query_body, self.cte_name, self.cte_name, rewritten_filter, min_hops_filter
                     )
                 } else {
-                    format!("{} AS (\n{}\n)", self.cte_name, query_body)
+                    // Standard VLP: end filters already applied in base/recursive cases
+                    if min_hops > 1 {
+                        format!(
+                            "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE hop_count >= {}\n)",
+                            self.cte_name, query_body, self.cte_name, self.cte_name, min_hops
+                        )
+                    } else {
+                        format!("{} AS (\n{}\n)", self.cte_name, query_body)
+                    }
                 }
             }
             (None, None) => {
@@ -2191,14 +2222,31 @@ impl<'a> VariableLengthCteGenerator<'a> {
             where_conditions.push(rewritten);
         }
 
-        if self.shortest_path_mode.is_none() {
-            if let Some(ref filters) = self.end_node_filters {
-                // Rewrite end_node references to rel references
-                let rewritten =
-                    filters.replace("end_node.", &format!("{}.", self.relationship_alias));
-                where_conditions.push(rewritten);
-            }
-        }
+        // ⚠️ CRITICAL FIX (Jan 10, 2026): Don't add end_node_filters to denormalized VLP base case
+        //
+        // Problem: For multi-hop VLP (e.g., LAX→ORD→ATL), adding end_node filters to base case
+        // prevents intermediate paths from being generated.
+        //
+        // Example:
+        //   Query: MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport) WHERE a.code='LAX' AND b.code='ATL'
+        //   Base case SQL: SELECT ... FROM flights WHERE Origin='LAX' AND Dest='ATL'
+        //   Result: 0 rows (no direct LAX→ATL flight exists!)
+        //   Issue: LAX→ORD edge excluded because Dest='ORD' != 'ATL', recursion never starts
+        //
+        // Solution: Apply end_node_filters in OUTER query after VLP recursion completes:
+        //   Base case: SELECT ... FROM flights WHERE Origin='LAX'  (generates LAX→SFO, LAX→ORD)
+        //   Recursive: Extends to LAX→ORD→ATL
+        //   Outer query: SELECT * FROM vlp WHERE end_id='ATL'  (filters final result)
+        //
+        // This matches shortest_path_mode behavior where only start filters are in base case.
+        //
+        // if self.shortest_path_mode.is_none() {
+        //     if let Some(ref filters) = self.end_node_filters {
+        //         let rewritten =
+        //             filters.replace("end_node.", &format!("{}.", self.relationship_alias));
+        //         where_conditions.push(rewritten);
+        //     }
+        // }
 
         // ✅ HOLISTIC FIX: Add relationship filters in denormalized base case
         // In denormalized patterns, relationship properties are on the same edge table
@@ -2268,13 +2316,30 @@ impl<'a> VariableLengthCteGenerator<'a> {
             where_conditions.push(constraint_filter);
         }
 
-        if self.shortest_path_mode.is_none() {
-            if let Some(ref filters) = self.end_node_filters {
-                let rewritten =
-                    filters.replace("end_node.", &format!("{}.", self.relationship_alias));
-                where_conditions.push(rewritten);
-            }
-        }
+        // ⚠️ CRITICAL FIX (Jan 10, 2026): Don't add end_node_filters to recursive case either!
+        //
+        // Removing end_node_filters from base case alone isn't enough. The recursive case
+        // also filters new edges, preventing intermediate path extensions.
+        //
+        // Example: LAX→ORD (hop 1) trying to extend to ATL
+        //   Recursive JOIN: ... JOIN flights AS rel ON vp.end_id = rel.Origin WHERE rel.Dest='ATL'
+        //   This correctly finds ORD→ATL, giving us LAX→ORD→ATL ✓
+        //
+        // But if we filter in recursive, we miss other extensions:
+        //   LAX→SFO trying to extend: JOIN flights WHERE rel.Dest='ATL'
+        //   Finds SFO→? edges, but only if they end at ATL - limits exploration
+        //
+        // Solution: Let recursion explore ALL paths, filter end nodes in OUTER query.
+        //   Recursive: Extends all paths freely (generates full graph traversal)
+        //   Outer: SELECT * FROM vlp WHERE end_id='ATL' (filters final destinations)
+        //
+        // if self.shortest_path_mode.is_none() {
+        //     if let Some(ref filters) = self.end_node_filters {
+        //         let rewritten =
+        //             filters.replace("end_node.", &format!("{}.", self.relationship_alias));
+        //         where_conditions.push(rewritten);
+        //     }
+        // }
 
         // ✅ HOLISTIC FIX: Add relationship filters in denormalized recursive case
         if let Some(ref filters) = self.relationship_filters {

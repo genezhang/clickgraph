@@ -16,23 +16,7 @@ use super::{
 };
 
 fn parse_return_item(input: &'_ str) -> IResult<&'_ str, ReturnItem<'_>> {
-    let expr_result = parse_expression.parse(input);
-    
-    // Check for pattern comprehension and provide helpful error
-    let (input, expression) = match expr_result {
-        Ok(result) => result,
-        Err(nom::Err::Failure(e)) => {
-            // Check if this looks like pattern comprehension syntax
-            if input.contains("[(") && input.contains("|") && input.contains("->") {
-                return Err(nom::Err::Error(nom::error::Error::new(
-                    input,
-                    nom::error::ErrorKind::Tag,
-                )));
-            }
-            return Err(nom::Err::Failure(e));
-        }
-        Err(e) => return Err(e),
-    };
+    let (input, expression) = parse_expression.parse(input)?;
     
     let (input, alias) = opt(preceded(ws(tag_no_case("AS")), ws(parse_identifier))).parse(input)?;
 
@@ -264,6 +248,27 @@ mod tests {
                 }
             }
             Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_return_clause_with_pattern_comprehension() {
+        let input = "RETURN [(p)-[:KNOWS]->(f) | f.firstName]";
+        let res = parse_return_clause(input);
+        match res {
+            Ok((remaining, return_clause)) => {
+                println!("Parsed! Remaining: {:?}", remaining);
+                assert_eq!(remaining, "");
+                assert_eq!(return_clause.return_items.len(), 1);
+                let item = &return_clause.return_items[0];
+                println!("Return item expression: {:?}", item.expression);
+                if let Expression::PatternComprehension(_) = &item.expression {
+                    // Success - pattern comprehension was parsed correctly
+                } else {
+                    panic!("Expected PatternComprehension, got {:?}", item.expression);
+                }
+            }
+            Err(e) => panic!("Return clause parsing failed: {:?}", e),
         }
     }
 }

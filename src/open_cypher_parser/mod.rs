@@ -400,6 +400,21 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_where_with_pattern_comprehension_return() {
+        // This test case specifically tests WHERE followed by RETURN with pattern comprehension
+        let query = "MATCH (p:Person) WHERE true RETURN [(p)-[:KNOWS]->(f) | f.firstName] AS friends";
+        let parsed = parse_query(query);
+        match parsed {
+            Ok(ast) => {
+                assert!(!ast.match_clauses.is_empty(), "Expected MATCH clause");
+                assert!(ast.where_clause.is_some(), "Expected WHERE clause");
+                assert!(ast.return_clause.is_some(), "Expected RETURN clause");
+            }
+            Err(e) => panic!("Pattern comprehension query parsing failed: {:?}", e),
+        }
+    }
+
+    #[test]
     fn test_parse_full_read_query() {
         let input = "
         MATCH (david {name: 'David'})-[]-(otherPerson)-[]->(b)
@@ -1519,5 +1534,35 @@ mod tests {
             "Expected empty remaining after semicolon"
         );
         assert_eq!(stmt.union_clauses.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_full_query_with_pattern_comprehension() {
+        let query = "MATCH (p:Person) WHERE p.id = 1 RETURN [(p)-[:KNOWS]->(f) | f.firstName]";
+        let result = parse_query(query);
+        match result {
+            Ok(ast) => {
+                println!("Full query AST parsed successfully!");
+                println!("Match clauses: {:?}", ast.match_clauses.len());
+                println!("Where clause: {:?}", ast.where_clause.is_some());
+                println!("Return clause: {:?}", ast.return_clause.is_some());
+                
+                assert_eq!(ast.match_clauses.len(), 1, "Expected 1 MATCH clause");
+                assert!(ast.where_clause.is_some(), "Expected WHERE clause");
+                assert!(ast.return_clause.is_some(), "Expected RETURN clause");
+                
+                let return_clause = ast.return_clause.as_ref().unwrap();
+                assert_eq!(return_clause.return_items.len(), 1);
+                let item = &return_clause.return_items[0];
+                if let Expression::PatternComprehension(_) = &item.expression {
+                    println!("Pattern comprehension parsed correctly!");
+                } else {
+                    panic!("Expected PatternComprehension in RETURN, got {:?}", item.expression);
+                }
+            }
+            Err(e) => {
+                panic!("Failed to parse full query with pattern comprehension: {:?}", e);
+            }
+        }
     }
 }
