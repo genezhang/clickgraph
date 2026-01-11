@@ -1,0 +1,299 @@
+{
+  "timestamp": "2026-01-11T09:08:27.560481",
+  "results": [
+    {
+      "category": "interactive-short",
+      "query": "short-1",
+      "status": "PASS",
+      "error": null,
+      "rows": 0
+    },
+    {
+      "category": "interactive-short",
+      "query": "short-2",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "interactive-short",
+      "query": "short-3",
+      "status": "PASS",
+      "error": null,
+      "rows": 0
+    },
+    {
+      "category": "interactive-short",
+      "query": "short-4",
+      "status": "PASS",
+      "error": null,
+      "rows": 0
+    },
+    {
+      "category": "interactive-short",
+      "query": "short-5",
+      "status": "PASS",
+      "error": null,
+      "rows": 0
+    },
+    {
+      "category": "interactive-short",
+      "query": "short-6",
+      "status": "PASS",
+      "error": null,
+      "rows": 0
+    },
+    {
+      "category": "interactive-short",
+      "query": "short-7",
+      "status": "PASS",
+      "error": null,
+      "rows": 0
+    },
+    {
+      "category": "interactive-complex",
+      "query": "complex-1",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "interactive-complex",
+      "query": "complex-10",
+      "status": "ERROR",
+      "error": "400 Client Error: Bad Request for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "interactive-complex",
+      "query": "complex-11",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "interactive-complex",
+      "query": "complex-12",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "interactive-complex",
+      "query": "complex-13",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "interactive-complex",
+      "query": "complex-14",
+      "status": "ERROR",
+      "error": "400 Client Error: Bad Request for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "interactive-complex",
+      "query": "complex-2",
+      "status": "PASS",
+      "error": null,
+      "rows": 0
+    },
+    {
+      "category": "interactive-complex",
+      "query": "complex-3",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "interactive-complex",
+      "query": "complex-4",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "interactive-complex",
+      "query": "complex-5",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "interactive-complex",
+      "query": "complex-6",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "interactive-complex",
+      "query": "complex-7",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "interactive-complex",
+      "query": "complex-8",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "interactive-complex",
+      "query": "complex-9",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-1",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-10",
+      "status": "ERROR",
+      "error": "400 Client Error: Bad Request for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-11",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-12",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-13",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-14",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-15",
+      "status": "ERROR",
+      "error": "400 Client Error: Bad Request for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-16",
+      "status": "ERROR",
+      "error": "400 Client Error: Bad Request for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-17",
+      "status": "ERROR",
+      "error": "400 Client Error: Bad Request for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-18",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-19",
+      "status": "ERROR",
+      "error": "400 Client Error: Bad Request for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-2",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-20",
+      "status": "ERROR",
+      "error": "400 Client Error: Bad Request for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-3",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-4",
+      "status": "ERROR",
+      "error": "400 Client Error: Bad Request for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-5",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-6",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-7",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-8",
+      "status": "ERROR",
+      "error": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))",
+      "rows": null
+    },
+    {
+      "category": "bi",
+      "query": "bi-9",
+      "status": "ERROR",
+      "error": "500 Server Error: Internal Server Error for url: http://localhost:8080/query",
+      "rows": null
+    }
+  ],
+  "summary": {
+    "total": 41,
+    "pass": 7,
+    "fail": 0,
+    "error": 34,
+    "timeout": 0
+  }
+}
