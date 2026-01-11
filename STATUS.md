@@ -10,9 +10,19 @@
 3. 🔍 **Scalar Aggregate Investigation** - Identified architectural limitation with TableAlias representation
 
 **LDBC Benchmark Status** (January 11, 2026):
-- **IS (Interactive Short)**: 4/4 tested (100%) - All passing!
-- **IC (Interactive Complex)**: 3/4 tested (75%) - IC-9 has CTE column naming issue  
-- **BI (Business Intelligence)**: Testing in progress
+
+**Query Organization**:
+- **Official queries**: `benchmarks/ldbc_snb/queries/official/` (21 interactive, 20 BI)
+- **Adapted queries**: `benchmarks/ldbc_snb/queries/adapted/` (only when official doesn't work)
+- **Adaptation reasons**: Syntax workarounds, bug workarounds, schema mapping
+
+**Test Results**:
+- **IS (Interactive Short)**: 4/5 adapted passing (IS-1, IS-2, IS-3, IS-5 ✓)
+  - IS-7: Adapted version needed due to OPTIONAL MATCH + inline property bug
+  - Missing: IS-4, IS-6 (no files)
+- **IC (Interactive Complex)**: 3/4 tested (IC-1, IC-2, IC-3 ✓)
+  - IC-9: CTE column naming issue (WITH DISTINCT uses underscores)
+- **BI (Business Intelligence)**: Testing in progress (20 official queries)
 
 **Parser Fixes**:
 - BI-1, BI-13 now parse successfully (previously failed on `//` comments)
