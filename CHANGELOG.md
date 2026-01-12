@@ -1,5 +1,21 @@
 ## [Unreleased]
 
+---
+
+## [0.6.1] - 2026-01-12
+
+**Production Release: WITH Clause Fixes & GraphRAG Enhancements**
+
+This release brings critical WITH clause bug fixes, GraphRAG multi-type VLP support, and significant LDBC SNB benchmark progress (15/41 queries passing, 37%).
+
+**Key Improvements**:
+- 🐛 Fixed WITH + MATCH CartesianProduct recursion (+6 LDBC queries)
+- 🐛 Fixed chained WITH CTE name remapping (enables IC-1, IC-2)
+- 🚀 Per-MATCH WHERE clauses (OpenCypher-compliant)
+- 🚀 Configurable MAX_INFERRED_TYPES for GraphRAG use cases
+- 🧪 GraphRAG test coverage: 49/53 tests passing (92.5%)
+- 🧪 Comprehensive matrix tests: 231/354 passing (65.3%)
+
 ### 🐛 Bug Fixes
 
 #### WITH + MATCH Pattern (CartesianProduct) (Jan 12, 2026)

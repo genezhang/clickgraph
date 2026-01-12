@@ -1,7 +1,7 @@
 # Known Issues
 
-**Active Issues**: 3 bugs, 3 feature limitations  
-**Last Updated**: January 12, 2026 (WITH expression scope fix complete, documented short-7 pre-existing bug)
+**Active Issues**: 2 bugs, 3 feature limitations  
+**Last Updated**: January 12, 2026
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -23,42 +23,71 @@ RETURN a.name, COUNT(DISTINCT b) as reachable
 **Impact**: Blocks OPTIONAL MATCH combined with variable-length paths  
 **Files**: `cte_extraction.rs`, `plan_builder.rs`
 
-### 2. OPTIONAL MATCH JOIN Ordering with VLP (short-7)
+### 2. Duplicate CTE Names with Chained WITH and Scalar Aggregates
 **Status**: 🐛 BUG  
-**Error**: `Unknown expression or function identifier 't3.PersonId'`  
-**Example** (LDBC short-7 pattern):
-```cypher
-MATCH (m:Message {id: $messageId})<-[:REPLY_OF]-(c:Comment)-[:HAS_CREATOR]->(p:Person)
-OPTIONAL MATCH (m)-[:HAS_CREATOR]->(a:Person)-[r:KNOWS]-(p)
-RETURN ... ORDER BY ...
-```
-**Root Cause**: JOIN ordering issue when OPTIONAL MATCH references variables from earlier MATCH patterns. The VLP/JOIN generation creates table aliases that aren't properly resolved in the outer scope.  
-**Impact**: Blocks LDBC short-7 query  
-**Note**: This is a pre-existing bug that was masked by query caching - not caused by recent CTE fixes  
-**Files**: `render_plan/plan_builder.rs` (JOIN ordering in OPTIONAL MATCH context)
-
-### 3. Scalar Aggregates in WITH Clause with GROUP BY
-**Status**: 🐛 BUG (ARCHITECTURAL)  
-**Error**: `Cannot find ID column for alias 'total' needed for GROUP BY aggregation`  
+**Error**: `Syntax error: failed at position 362` (duplicate CTE name in SQL)  
 **Example**:
 ```cypher
 MATCH (m:Message)
 WITH count(m) AS total
 MATCH (m:Message)
-WITH total, count(m) AS cnt  -- Fails here
+WITH total, count(m) AS cnt  -- Generates duplicate CTE name
 RETURN total, cnt
 ```
-**Root Cause**: System treats scalar CTE columns as table aliases (expecting ID/properties), not as scalar values  
-**Impact**: Blocks chained WITHs with scalar aggregates reused in subsequent GROUP BY  
-**Workaround**: None - requires architectural refactoring  
-**Note**: Fundamental design issue - `TableAlias` in logical plan represents both entities and scalar values  
-**Files**: `render_plan/plan_builder.rs:6015, 8836`, `logical_plan/mod.rs`
+**Root Cause**: CTE naming logic generates the same name (`with_total_cte_1`) for both the first WITH and second WITH when reusing scalar aggregates. ClickHouse rejects duplicate CTE names.  
+**Generated SQL**:
+```sql
+WITH with_total_cte_1 AS (...),
+     with_total_cte_1 AS (...)  -- ERROR: duplicate name
+SELECT ...
+```
+**Impact**: Blocks chained WITHs that reference scalar aggregates from previous WITH clauses  
+**Workaround**: Avoid reusing scalar aggregate aliases across multiple WITH clauses  
+**Files**: `render_plan/plan_builder.rs` (CTE naming logic around `build_chained_with_match_cte_plan`)  
+**Note**: Jan 11 2026 - Previous attempt to fix this by treating scalars differently in TableAlias expansion was incorrect and caused relationship return bugs
 
 ---
 
 ## Recently Fixed
 
-### ~~1. WITH Clause Expression Scope Resolution~~ ✅ **FIXED** - January 12, 2026
+### ~~1. MULTI_TABLE_LABEL Node Expansion with Dotted Column Names~~ ✅ **FIXED** - January 12, 2026
+**Was**: For schemas where the same node label appears in multiple tables (MULTI_TABLE_LABEL, e.g., zeek IP nodes), full node expansion (`RETURN n`) failed with `Identifier 'n.id' cannot be resolved` because column names with multiple dots (like `id.orig_h`) were being truncated to just the first segment.
+
+**Example** (zeek schema with `id.orig_h` column):
+```cypher
+MATCH (n:IP) RETURN n
+-- Generated: SELECT n.id AS "n_ip", ...
+-- Should be:  SELECT n."id.orig_h" AS "n_ip", ...
+```
+
+**Root Cause**: 
+- For MULTI_TABLE_LABEL schemas, nodes are expanded into UNION branches
+- Each branch has `projected_columns` like `[("ip", "n.id.orig_h")]`
+- When extracting unqualified column names, code used `.split('.').nth(1)` 
+- For "n.id.orig_h", this gave ["n", "id", "orig", "h"][1] = "id" ❌
+- Should have preserved "id.orig_h" ✅
+
+**Fix**: Changed `plan_builder.rs` line 6337 from:
+```rust
+.split('.').nth(1)  // Takes only first segment after dot
+```
+To:
+```rust
+.splitn(2, '.').nth(1)  // Splits only on FIRST dot, preserves rest
+```
+
+**Result**: For "n.id.orig_h", now correctly extracts "id.orig_h"
+
+**Test Results**:
+- ✅ `MATCH (n:IP) RETURN n` generates correct SQL with `n."id.orig_h"`
+- ✅ Full node expansion works for all zeek schemas
+- ✅ Property-specific access (`RETURN n.ip`) still works correctly
+
+**Impact**: Unblocks ~78 comprehensive matrix tests that were skipped for MULTI_TABLE_LABEL schemas
+
+**Files**: `src/render_plan/plan_builder.rs` (line 6337)
+
+### ~~2. WITH Clause Expression Scope Resolution~~ ✅ **FIXED** - January 12, 2026
 **Was**: CASE expressions and complex expressions in WITH clauses referencing variables from prior WITH clauses failed with "Unknown expression identifier" errors because table aliases weren't being rewritten to CTE names.
 
 **Example**:
@@ -97,7 +126,7 @@ RETURN tag.id, valid
 
 **Impact**: Fixes IC-4 pattern queries with complex expressions in WITH clauses
 
-### ~~2. CTE Column Reference (Dot vs Underscore)~~ ✅ **FIXED** - January 12, 2026
+### ~~3. CTE Column Reference (Dot vs Underscore)~~ ✅ **FIXED** - January 12, 2026
 **Was**: When referencing CTE columns from another CTE, the system used dotted names (`cte_alias."tag.url"`) instead of underscore names (`cte_alias.tag_url`), causing "Unknown expression identifier" errors.
 
 **Root Cause**: 
@@ -114,7 +143,7 @@ RETURN tag.id, valid
 
 **Files**: `render_plan/plan_builder.rs` (expand_table_alias_to_select_items)
 
-### ~~3. VLP CTE Column Scoping Issue~~ ✅ **FIXED** - January 12, 2026
+### ~~4. VLP CTE Column Scoping Issue~~ ✅ **FIXED** - January 12, 2026
 **Was**: Queries mixing VLP with additional relationships and aggregations failed with "Unknown expression identifier" errors because aggregate-referenced columns weren't included in UNION SELECT.
 
 **Root Cause**: 
@@ -154,7 +183,7 @@ MATCH (p)-[:KNOWS*1..3]-(f)<-[:HAS_CREATOR]-(m) RETURN f.id, COUNT(DISTINCT m)
 
 **Impact**: Unblocks **IC-3, IC-9, BI-2, BI-9** and other VLP + aggregation queries
 
-### ~~4. WITH + MATCH Pattern (CartesianProduct)~~ ✅ **FIXED** - January 12, 2026
+### ~~5. WITH + MATCH Pattern (CartesianProduct)~~ ✅ **FIXED** - January 12, 2026
 **Was**: Queries with `MATCH ... WITH ... MATCH ...` pattern failed with \"Failed to process all WITH clauses after 1 iterations. Remaining aliases: [].\"
 
 **Root Cause**: 

@@ -708,6 +708,14 @@ pub enum RenderExpr {
         array: Box<RenderExpr>,
         index: Box<RenderExpr>,
     },
+    
+    /// Array slicing: array[from..to]
+    /// Extract subarray from index 'from' to 'to' (0-based, inclusive in Cypher)
+    ArraySlicing {
+        array: Box<RenderExpr>,
+        from: Option<Box<RenderExpr>>,
+        to: Option<Box<RenderExpr>>,
+    },
 }
 
 /// Pattern count for size() on patterns
@@ -877,6 +885,11 @@ impl TryFrom<LogicalExpr> for RenderExpr {
             LogicalExpr::ArraySubscript { array, index } => RenderExpr::ArraySubscript {
                 array: Box::new(RenderExpr::try_from(*array)?),
                 index: Box::new(RenderExpr::try_from(*index)?),
+            },
+            LogicalExpr::ArraySlicing { array, from, to } => RenderExpr::ArraySlicing {
+                array: Box::new(RenderExpr::try_from(*array)?),
+                from: from.map(|f| RenderExpr::try_from(*f)).transpose()?.map(Box::new),
+                to: to.map(|t| RenderExpr::try_from(*t)).transpose()?.map(Box::new),
             },
             LogicalExpr::ExistsSubquery(exists) => {
                 // For EXISTS subqueries, generate SQL directly since they don't fit

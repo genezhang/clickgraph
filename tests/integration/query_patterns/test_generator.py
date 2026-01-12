@@ -443,7 +443,7 @@ QUERY_TEMPLATES = [
     # Order and Limit
     QueryTemplate(
         category=QueryCategory.ORDER_LIMIT,
-        template="MATCH (n:{label}) WHERE n.{prop} IS NOT NULL RETURN n.{prop} ORDER BY n.{prop} DESC LIMIT 10 SKIP 5",
+        template="MATCH (n:{label}) WHERE n.{prop} IS NOT NULL RETURN n.{prop} ORDER BY n.{prop} DESC SKIP 5 LIMIT 10",
         description="ORDER BY with LIMIT and SKIP",
         placeholders=["label", "prop"],
         expected_to_work={

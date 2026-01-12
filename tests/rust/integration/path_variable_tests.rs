@@ -71,6 +71,7 @@ fn create_test_schema() -> GraphSchema {
             from_node_properties: None,
             to_node_properties: None,
             is_fk_edge: false,
+            constraints: None,
         },
     );
 
@@ -91,7 +92,7 @@ fn test_path_variable_sql_generation() {
 
     // Build logical plan
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None).expect("Failed to build logical plan");
+        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to build logical plan");
 
     // Build render plan
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
@@ -136,7 +137,7 @@ fn test_path_variable_with_properties() {
 
     // Build logical plan
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None).expect("Failed to build logical plan");
+        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to build logical plan");
 
     // Build render plan
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
@@ -172,7 +173,7 @@ fn test_non_path_variable_unchanged() {
 
     // Build logical plan
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None).expect("Failed to build logical plan");
+        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to build logical plan");
 
     // Build render plan
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)

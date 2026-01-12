@@ -1,7 +1,7 @@
 # ClickGraph Roadmap
 
-**Last Updated**: November 18, 2025  
-**Current Version**: v0.5.0 (Phase 2 Complete! 🎉)
+**Last Updated**: January 12, 2026  
+**Current Version**: v0.6.1 (Phase 3 In Progress)
 
 This document outlines planned features, enhancements, and benchmark tasks for ClickGraph development.
 
@@ -193,7 +193,7 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 
 ---
 
-### 🎯 Phase 3: Industry Benchmarks & Correctness (v0.6.0 - January-February 2026) 🆕
+### 🎯 Phase 3: Industry Benchmarks & Correctness (v0.6.1 - January-February 2026) 🆕
 **Focus**: LDBC SNB integration, validation, performance baselines  
 **Duration**: 4-6 weeks  
 **Started**: November 22, 2025
@@ -248,7 +248,7 @@ This document outlines planned features, enhancements, and benchmark tasks for C
 - ✅ 50+ Neo4j functions supported
 - ✅ Timezone-aware queries
 
-**v0.6.0 Release Goals**:
+**v0.6.1 Release Goals**:
 - AI/ML workloads fully supported
 - GraphRAG foundations in place
 - Near-complete Neo4j function parity

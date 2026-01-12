@@ -309,8 +309,8 @@ See [docs/wiki/](docs/wiki/) for detailed setup and configuration.
 See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 
 **Recent releases**:
-- **v0.6.1** (Dec 2025) - Edge constraints, VLP improvements
-- **v0.6.0** (Nov 2025) - Variable-length paths, OPTIONAL MATCH
+- **v0.6.1** (Jan 2026) - WITH clause fixes, GraphRAG multi-type VLP, LDBC SNB benchmark progress
+- **v0.6.0** (Dec 2025) - Edge constraints, VLP improvements, semantic validation
 - **v0.5.x** (Oct 2025) - Multi-schema, pattern comprehensions, PageRank
 
 ## Contributing

@@ -15,24 +15,27 @@
 - View-based graph analytics offer the benefits of zero-ETL without the hassle of data migration and duplicate cost, yet better performance and scalability than most of the native graph analytics options.
 - Neo4j Bolt protocol support gives instant access to the tools available, including graph visualization and the MCP server.
 ---
-## 🚀 What's New in v0.6.0 (December 22, 2025)
+## 🚀 What's New in v0.6.1 (January 12, 2026)
 
-### WIP Release: Semantic Validation & Architectural Improvements
+### Production Release: WITH Clause Fixes & GraphRAG Enhancements
 
-**v0.6.0 brings elegant semantic validation for variable-length paths and robust multi-table label support.**
+**v0.6.1 brings critical WITH clause fixes, GraphRAG multi-type VLP support, and LDBC SNB benchmark progress (15/41 queries passing).**
 
 ### Highlights ✨
 
-- **VLP Transitivity Check** - Semantic validation prevents invalid recursive patterns
-- **Multi-table label fixes** - Denormalization metadata, type inference improvements
-- **Performance optimization** - Skip unnecessary CTE generation for non-transitive relationships
-- **Test status** - 2446/3359 passing (72.8%), 98.6% unit test coverage
+- **WITH Clause Fixes** - Fixed CartesianProduct recursion and chained WITH CTE remapping (+6 LDBC queries)
+- **GraphRAG Multi-Type VLP** - Variable-length paths across heterogeneous graphs (18/20 tests passing)
+- **Per-MATCH WHERE** - OpenCypher-compliant consecutive MATCH clauses with individual WHERE clauses
+- **LDBC SNB Progress** - 15/41 queries passing (37%): IS queries 7/7 (100%), IC 4/14, BI 4/20
+- **Test Coverage** - 231/354 comprehensive matrix tests passing (65.3%)
 
-### New Features
+### Key Features
 
-- **Semantic VLP Validation** - Automatically detects non-transitive relationships (e.g., IP→Domain) and converts to single-hop patterns
-- **Architecture** - Analyzer-level validation instead of tactical SQL fixes
-- **Example**: `(IP)-[DNS_REQUESTED*]->(Domain)` → Simple single-hop query (Domain nodes can't start DNS_REQUESTED edges)
+- **WITH + MATCH Patterns** - Disconnected MATCH patterns separated by WITH now work correctly
+  - Example: `MATCH (p:Person)-[:KNOWS*1..2]-(f) WITH DISTINCT f MATCH (f)<-[:HAS_CREATOR]-(post) RETURN f, post`
+- **Chained WITH Clauses** - 3+ level chained WITHs generate correct SQL (enables IC-1, IC-2)
+- **Configurable Type Inference** - `max_inferred_types` parameter for complex GraphRAG schemas (default: 5)
+- **OpenCypher Per-MATCH WHERE** - Each MATCH clause can have its own WHERE (9/9 tests passing)
 - **ClickHouse function passthrough** - Make all ClickHouse functions available in Cypher through the pass-thru feature
 
 ### Bug Fixes 🐛
@@ -47,7 +50,7 @@
 - **Pattern Comprehensions** - Extract values from graph patterns into lists with `[(pattern) | expression]` syntax
 ---
 
-## 📦 Major Features & Capabilities (v0.5.0 - v0.6.0)
+## 📦 Major Features & Capabilities (v0.5.0 - v0.6.1)
 
 ### Advanced Schema Support
 
@@ -537,7 +540,7 @@ See `docs/configuration.md` for complete configuration documentation.
 
 ## 🧪 Development Status
 
-**Current Version**: v0.6.0 (December 22, 2025)
+**Current Version**: v0.6.1 (January 12, 2026)
 
 ### Test Coverage
 - ✅ **Rust Unit Tests**: 534/534 passing (100%)
@@ -566,7 +569,7 @@ See [STATUS.md](STATUS.md) and [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details.
 **Phase 2 (v0.5.0)** ✅ - Multi-tenancy, RBAC, auto-schema discovery
 **Phase 2.5 (v0.5.2)** ✅ - Schema variations (polymorphic, coupled edges)
 **Phase 2.6 (v0.5.3)** ✅ - Cypher functions (label, EXISTS, regex, collect)
-**Phase 3 (v0.6.0)** 🔄 - Additional graph algorithms, query optimization
+**Phase 3 (v0.6.1)** 🔄 - WITH clause fixes, GraphRAG support, LDBC SNB benchmark
 
 See [ROADMAP.md](ROADMAP.md) for detailed feature tracking.
 

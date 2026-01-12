@@ -547,6 +547,15 @@ pub enum Expression<'a> {
         array: Box<Expression<'a>>,
         index: Box<Expression<'a>>,
     },
+    /// Array slicing: array[from..to]
+    /// Extract subarray from index 'from' to 'to' (inclusive, 0-based in Cypher)
+    /// Both bounds are optional: [..3], [2..], [..]
+    /// Example: list[0..5], collect(n)[..10], [1,2,3,4,5][2..4]
+    ArraySlicing {
+        array: Box<Expression<'a>>,
+        from: Option<Box<Expression<'a>>>,
+        to: Option<Box<Expression<'a>>>,
+    },
 }
 
 /// Lambda expression for ClickHouse array functions

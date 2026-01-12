@@ -2885,6 +2885,8 @@ impl GraphJoinInference {
         collected_graph_joins: &mut Vec<Join>,
         joined_entities: &mut HashSet<String>,
     ) -> AnalyzerResult<()> {
+        log::warn!("🚨 handle_graph_pattern_v2 ENTER: rel={}, left={}, right={}, strategy={:?}",
+                 rel_alias, left_alias, right_alias, ctx.join_strategy);
         crate::debug_print!("    📐 handle_graph_pattern_v2: {}", ctx.debug_summary());
         crate::debug_print!(
             "    📐 Node labels: left='{}', right='{}'",
@@ -3159,6 +3161,8 @@ impl GraphJoinInference {
                     joined_entities.insert(rel_alias.to_string());
 
                     // JOIN: Right node (connects to edge via to_id)
+                    log::warn!("🚨 Checking RIGHT node '{}' - joined_entities={:?}, contains={}",
+                             right_alias, joined_entities, joined_entities.contains(right_alias));
                     if !joined_entities.contains(right_alias) {
                         let resolved_right_id = Self::resolve_column(&right_id_col, right_cte_name, plan_ctx);
                         let resolved_right_join_col = Self::resolve_column(right_join_col, rel_cte_name, plan_ctx);
@@ -4015,12 +4019,19 @@ impl GraphJoinInference {
         //   MATCH ()-[r:FOLLOWS]->() RETURN count(r)    → no node JOINs needed
         //   MATCH (a)-[r:FOLLOWS]->(b) RETURN a.name    → JOIN left node table for a.name
         //
-        // IMPORTANT: Skip this optimization for variable-length paths and shortest paths,
-        // as they generate CTEs that need node table JOINs for proper path construction.
-        // Also skip if this is not the first relationship processed (multi-hop patterns).
+        // IMPORTANT: Skip this optimization for:
+        // - Variable-length paths and shortest paths (need CTEs with node JOINs)
+        // - Multi-hop patterns (intermediate nodes needed for chaining JOINs)
         let is_vlp = graph_rel.variable_length.is_some();
         let is_shortest_path = graph_rel.shortest_path_mode.is_some();
         let is_first_relationship = joined_entities.is_empty();
+        
+        // CRITICAL: Detect multi-hop patterns using PatternGraphMetadata
+        // Multi-hop patterns like (a)-[t1]->(b)-[t2]->(c) have multiple edges in metadata.
+        // Even if intermediate nodes (b) aren't in RETURN, they're needed for JOIN chaining.
+        // Example: MATCH (u)-[:FOLLOWS]->(f1)-[:FOLLOWS]->(f2) RETURN f2.name
+        //   - f1 is NOT referenced, but we MUST JOIN users_bench AS f1 to chain t1→f1→t2
+        let is_multi_hop_pattern = pattern_metadata.edges.len() > 1;
         
         // Apply SingleTableScan optimization when:
         // 1. Neither node is referenced in RETURN/WHERE (unreferenced)
@@ -4028,7 +4039,8 @@ impl GraphJoinInference {
         // AND:
         // - Not a variable-length path (VLP needs CTEs)
         // - Not a shortest path
-        // - This is the first relationship (multi-hop needs node tables for chaining)
+        // - This is the first relationship AND it's a single-hop pattern
+        //   (multi-hop needs ALL node tables for chaining, even if unreferenced)
         //
         // Anonymous nodes with explicit label: (a:User) → has_label=true, needs JOIN if referenced
         // Anonymous nodes without label: () → has_label=false, never needs JOIN for its own table
@@ -4038,7 +4050,8 @@ impl GraphJoinInference {
         let apply_optimization = (both_nodes_anonymous || neither_node_referenced) 
             && !is_vlp 
             && !is_shortest_path 
-            && is_first_relationship;
+            && is_first_relationship
+            && !is_multi_hop_pattern;  // CRITICAL: Multi-hop patterns need node JOINs for chaining!
         
         if apply_optimization {
             crate::debug_print!("    ⚡ SingleTableScan: both_anonymous={}, neither_referenced={}, left_ref={}, right_ref={}", 
@@ -5704,8 +5717,9 @@ mod tests {
         // (p1)-[f1:FOLLOWS]->(p2)-[w1:WORKS_AT]->(c1)
         // In this case, c1 is the ending node, we are now joining in reverse order.
         // It means first we will join c1 -> w1, w1 -> p2, p2 -> f1, f1 -> p1.
-        // So the tables in the order of joining will be w1, p2, f1, p1.
-        // Note that c1 is not a part of the join, it is just the ending node.
+        // So the tables in the order of joining will be c1, w1, p2, f1, p1.
+        // FIX: Multi-hop patterns now correctly generate ALL node JOINs for proper chaining.
+        // Previously, SingleTableScan optimization incorrectly removed node JOINs.
 
         // Should create joins for all relationships in the chain
         match result {
@@ -5729,21 +5743,24 @@ mod tests {
                             .any(|&alias| alias == "f1" || alias == "w1"));
 
                         // Multi-hop pattern: (p1)-[f1:FOLLOWS]->(p2)-[w1:WORKS_AT]->(c1)
-                        // Actual: 3 joins after optimization (join order may vary: f1, w1, p2)
+                        // CORRECT: 5 joins - all nodes and edges for proper topological JOIN ordering
+                        // c1 (anchor/FROM marker), w1 (edge), p2 (intermediate), f1 (edge), p1 (end)
                         println!("Actual joins len: {}", graph_joins.joins.len());
                         let join_aliases: Vec<&String> =
                             graph_joins.joins.iter().map(|j| &j.table_alias).collect();
                         println!("Join aliases: {:?}", join_aliases);
-                        assert!(graph_joins.joins.len() == 3);
+                        assert!(graph_joins.joins.len() == 5);
 
-                        // Verify we have the expected join aliases: w1, f1, p2
+                        // Verify we have the expected join aliases: c1, w1, p2, f1, p1
                         let join_aliases: Vec<&String> =
                             graph_joins.joins.iter().map(|j| &j.table_alias).collect();
 
                         println!("Join aliases found: {:?}", join_aliases);
-                        assert!(join_aliases.contains(&&"w1".to_string()));
-                        assert!(join_aliases.contains(&&"f1".to_string()));
-                        assert!(join_aliases.contains(&&"p2".to_string()));
+                        assert!(join_aliases.contains(&&"c1".to_string()));  // anchor node
+                        assert!(join_aliases.contains(&&"w1".to_string()));  // first edge
+                        assert!(join_aliases.contains(&&"p2".to_string()));  // intermediate node
+                        assert!(join_aliases.contains(&&"f1".to_string()));  // second edge
+                        assert!(join_aliases.contains(&&"p1".to_string()));  // end node
 
                         // Verify each join has basic structure (skip detailed checks due to optimization variations)
                         for join in &graph_joins.joins {

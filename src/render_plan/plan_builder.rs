@@ -6332,8 +6332,10 @@ impl RenderPlanBuilder for LogicalPlan {
                         .iter()
                         .map(|(prop_name, qualified_col)| {
                             // Extract unqualified column: "p.first_name" -> "first_name"
+                            // 🔧 FIX: Handle column names with multiple dots like "n.id.orig_h" -> "id.orig_h"
+                            // Use splitn(2) to split only on the FIRST dot, keeping the rest intact
                             let unqualified = qualified_col
-                                .split('.')
+                                .splitn(2, '.')
                                 .nth(1)
                                 .unwrap_or(qualified_col)
                                 .to_string();
@@ -6360,8 +6362,20 @@ impl RenderPlanBuilder for LogicalPlan {
                             }
                         }
                     }
-                    // Standard nodes
-                    let properties = extract_sorted_properties(&scan.property_mapping);
+                    // Standard nodes - try property_mapping first
+                    let mut properties = extract_sorted_properties(&scan.property_mapping);
+                    
+                    // ZEEK FIX: If property_mapping is empty, try from_node_properties (for coupled edge schemas)
+                    if properties.is_empty() {
+                        if let Some(from_props) = &scan.from_node_properties {
+                            properties = extract_sorted_properties(from_props);
+                        }
+                        if properties.is_empty() {
+                            if let Some(to_props) = &scan.to_node_properties {
+                                properties = extract_sorted_properties(to_props);
+                            }
+                        }
+                    }
                     return Ok((properties, None));
                 }
             }
@@ -6896,43 +6910,76 @@ impl RenderPlanBuilder for LogicalPlan {
                                     has_aggregation
                                 );
 
-                                // CRITICAL FIX: If query has aggregation, wrap non-ID columns with anyLast()
-                                // This unifies WITH and RETURN aggregation logic
-                                // CONSOLIDATED (Dec 2025): Use unified expansion helper
-                                if has_aggregation || !has_aggregation {
-                                    // Get ID column for this alias (needed for anyLast() wrapping determination)
-                                    // If this fails, it means the alias is a scalar value (e.g., from WITH count(*) AS total)
-                                    // In that case, don't expand - just use the scalar value as-is
-                                    let id_col_result = self.find_id_column_for_alias(&alias.0);
+                                // Get ID column for this alias (needed for anyLast() wrapping determination)
+                                // For relationships, this will fail because they have from_id/to_id, not a single ID
+                                // That's OK - we can still expand properties, just use the first property as the "ID"
+                                let id_col_result = self.find_id_column_for_alias(&alias.0);
+                                
+                                if let Err(_) = id_col_result {
+                                    // No single ID column found
+                                    // This should only happen for relationships (which have from_id/to_id instead)
+                                    // Scalars from WITH are handled as PropertyAccessExp (e.g., total.total), not TableAlias
                                     
-                                    if let Err(_) = id_col_result {
-                                        log::info!("🔧 Alias '{}' has no ID column - treating as scalar value (not expanding)", alias.0);
-                                        // Don't expand - fall through to add the original TableAlias item
-                                    } else {
-                                        let id_col = id_col_result.unwrap();
+                                    if properties.iter().any(|(name, _)| name == "from_id" || name == "to_id") {
+                                        // This is a relationship alias - expand properties without anyLast()
+                                        // Relationships don't need aggregation wrapping
+                                        log::info!("🔧 Relationship alias '{}' detected (has from_id/to_id) - expanding {} properties without anyLast()",
+                                                   alias.0, properties.len());
                                         
-                                        if has_aggregation {
-                                            log::info!("🔧 Aggregation detected: wrapping non-ID columns with anyLast() for alias '{}', ID column='{}'",
-                                                       alias.0, id_col);
-                                        }
-                                        
-                                        // Use unified expansion helper (consolidates RETURN/WITH logic)
                                         use crate::render_plan::property_expansion::{
                                             expand_alias_to_projection_items_unified, PropertyAliasFormat
                                         };
                                         
+                                        // Use first property column as "ID" for expansion
+                                        let pseudo_id = properties[0].1.clone();
                                         let property_items = expand_alias_to_projection_items_unified(
                                             &alias.0,
                                             properties,
-                                            &id_col,
+                                            &pseudo_id,
                                             actual_table_alias,
-                                            has_aggregation,  // Enables anyLast() wrapping for non-ID columns
+                                            false,  // Never wrap relationship properties with anyLast()
                                             PropertyAliasFormat::Underscore,
                                         );
                                         
                                         expanded_items.extend(property_items);
                                         continue; // Skip adding the TableAlias item itself
+                                    } else {
+                                        // UNEXPECTED: Properties exist but no ID and no from_id/to_id
+                                        // This should not happen in normal operation:
+                                        // - Nodes have ID column
+                                        // - Relationships have from_id/to_id
+                                        // - Scalars from WITH use PropertyAccessExp, not TableAlias
+                                        log::warn!("⚠️ Alias '{}' has {} properties but no ID column and no from_id/to_id - this is unexpected. Properties: {:?}",
+                                                   alias.0, properties.len(), properties.iter().map(|(n, _)| n).collect::<Vec<_>>());
+                                        // Skip expansion to avoid SQL conflicts (duplicate alias errors)
+                                        // Continue to avoid adding raw TableAlias which would conflict with JOIN alias
+                                        continue;
                                     }
+                                } else {
+                                    // Node alias with proper ID column
+                                    let id_col = id_col_result.unwrap();
+                                    
+                                    if has_aggregation {
+                                        log::info!("🔧 Aggregation detected: wrapping non-ID columns with anyLast() for alias '{}', ID column='{}'",
+                                                   alias.0, id_col);
+                                    }
+                                    
+                                    // Use unified expansion helper (consolidates RETURN/WITH logic)
+                                    use crate::render_plan::property_expansion::{
+                                        expand_alias_to_projection_items_unified, PropertyAliasFormat
+                                    };
+                                    
+                                    let property_items = expand_alias_to_projection_items_unified(
+                                        &alias.0,
+                                        properties,
+                                        &id_col,
+                                        actual_table_alias,
+                                        has_aggregation,  // Enables anyLast() wrapping for non-ID columns
+                                        PropertyAliasFormat::Underscore,
+                                        );
+                                    
+                                    expanded_items.extend(property_items);
+                                    continue; // Skip adding the TableAlias item itself
                                 }
                             }
                         }
@@ -11878,11 +11925,84 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
 
-        let mut final_from = self.extract_from()?;
+        // 🔧 CRITICAL FIX FOR MULTI-HOP PATTERNS:
+        // Recursively search for FROM marker in GraphJoins, handling all plan structure variations.
+        // FROM markers are joins with empty joining_on, created by infer_graph_join for anchor nodes.
+        // They can be buried under Filter (WHERE), Limit, Skip, OrderBy, or other wrapper nodes.
+        //
+        // Examples that need FROM markers:
+        // - MATCH (u)-[:FOLLOWS]->(f1)-[:FOLLOWS]->(f2) WHERE u.user_id = 1
+        // - MATCH (a)-[]->(b)-[]->(c) WHERE a.id = 1 LIMIT 10
+        // - MATCH (x)-[]->(y)-[]->(z) ORDER BY x.name WHERE x.active = true
+        //
+        // Generic recursive search finds FROM marker at any depth, not just specific patterns.
+        fn find_from_marker_recursive(plan: &LogicalPlan) -> Option<FromTable> {
+            log::info!("🔍 find_from_marker_recursive: examining plan type: {:?}", std::mem::discriminant(plan));
+            match plan {
+                // Recurse through wrapper nodes (WHERE, LIMIT, ORDER BY, etc.)
+                LogicalPlan::Projection(proj) => {
+                    log::info!("  ↳ Recursing through Projection");
+                    find_from_marker_recursive(&proj.input)
+                }
+                LogicalPlan::Filter(filter) => {
+                    log::info!("  ↳ Recursing through Filter");
+                    find_from_marker_recursive(&filter.input)
+                }
+                LogicalPlan::Limit(limit) => {
+                    log::info!("  ↳ Recursing through Limit");
+                    find_from_marker_recursive(&limit.input)
+                }
+                LogicalPlan::Skip(skip) => {
+                    log::info!("  ↳ Recursing through Skip");
+                    find_from_marker_recursive(&skip.input)
+                }
+                LogicalPlan::OrderBy(order) => {
+                    log::info!("  ↳ Recursing through OrderBy");
+                    find_from_marker_recursive(&order.input)
+                }
+                LogicalPlan::GroupBy(group) => {
+                    log::info!("  ↳ Recursing through GroupBy");
+                    find_from_marker_recursive(&group.input)
+                }
+                
+                // Found GraphJoins - search for FROM marker
+                LogicalPlan::GraphJoins(graph_joins) => {
+                    log::info!("  ↳ Found GraphJoins with {} joins", graph_joins.joins.len());
+                    for (i, j) in graph_joins.joins.iter().enumerate() {
+                        log::info!("      Join[{}]: table='{}' alias='{}' joining_on.len={}", 
+                                  i, j.table_name, j.table_alias, j.joining_on.len());
+                    }
+                    graph_joins.joins.iter()
+                        .find(|j| j.joining_on.is_empty())
+                        .map(|from_marker| {
+                            log::info!("🏠 Found FROM marker: '{}' AS '{}' (recursive search)", 
+                                      from_marker.table_name, from_marker.table_alias);
+                            FromTable::new(Some(ViewTableRef {
+                                source: std::sync::Arc::new(LogicalPlan::Empty),
+                                name: from_marker.table_name.clone(),
+                                alias: Some(from_marker.table_alias.clone()),
+                                use_final: false,
+                            }))
+                        })
+                }
+                
+                // Stop recursion at other node types
+                _ => {
+                    log::info!("  ↳ Stopping recursion at node type: {:?}", std::mem::discriminant(plan));
+                    None
+                }
+            }
+        }
+
+        let from_marker_from = find_from_marker_recursive(core_plan);
+        let from_marker_present = from_marker_from.is_some();
+        let mut final_from = from_marker_from.or_else(|| core_plan.extract_from().ok().flatten());
+        
         log::debug!(
-            "🔍 build_simple_relationship_render_plan - extracted final_from from plan type: {:?}, is_some: {}",
-            std::mem::discriminant(self),
-            final_from.is_some()
+            "🔍 build_simple_relationship_render_plan - extracted final_from from core_plan type: {:?}, is_some: {}, from_marker_used: {}",
+            std::mem::discriminant(core_plan),
+            final_from.is_some(),
+            from_marker_present
         );
 
         // 🚀 CONSOLIDATED VLP FROM CLAUSE AND ALIAS REWRITING
@@ -12277,10 +12397,10 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
 
-        let extracted_joins = self.extract_joins(schema)?;
+        let mut extracted_joins = self.extract_joins(schema)?;
         println!(
-            "DEBUG: build_simple_relationship_render_plan - extracted_joins: {:?}",
-            extracted_joins
+            "DEBUG: build_simple_relationship_render_plan - extracted {} joins",
+            extracted_joins.len()
         );
 
         // Filter out JOINs that duplicate the FROM table

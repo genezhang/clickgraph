@@ -75,6 +75,7 @@ fn create_test_schema() -> GraphSchema {
         from_node_properties: None,
         to_node_properties: None,
         is_fk_edge: false,
+        constraints: None,
     };
 
     relationships.insert("FOLLOWS".to_string(), follows_schema);
@@ -96,7 +97,7 @@ fn test_cte_column_aliasing_underscore_convention() {
 
     // Build logical plan
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None)
+        build_logical_plan(&ast, &schema, None, None, None)
         .expect("Failed to build logical plan");
 
     // Render to SQL
@@ -175,7 +176,7 @@ fn test_cte_wildcard_expansion_underscore_convention() {
 
     // Build logical plan
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None)
+        build_logical_plan(&ast, &schema, None, None, None)
         .expect("Failed to build logical plan");
 
     // Render to SQL

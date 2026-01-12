@@ -30,33 +30,33 @@ graph_schema:
     
     # IP in dns_log table (source of DNS requests)
     - label: IP
-      database: test_zeek
+      database: zeek
       table: dns_log
-      node_id: ip
+      node_id: id.orig_h
       property_mappings: {}
       from_node_properties:
-        ip: orig_h
+        ip: id.orig_h
       to_node_properties:
-        ip: resp_h  # DNS server IP
+        ip: id.resp_h  # DNS server IP
 
     # IP in conn_log table (source/dest of connections)
     - label: IP
-      database: test_zeek
+      database: zeek
       table: conn_log
-      node_id: ip
+      node_id: id.orig_h
       property_mappings: {}
       from_node_properties:
-        ip: orig_h
-        port: orig_p
+        ip: id.orig_h
+        port: id.orig_p
       to_node_properties:
-        ip: resp_h
-        port: resp_p
+        ip: id.resp_h
+        port: id.resp_p
 
     # ========================================
     # Domain node (only in dns_log)
     # ========================================
     - label: Domain
-      database: test_zeek
+      database: zeek
       table: dns_log
       node_id: name
       property_mappings: {}
@@ -70,9 +70,9 @@ graph_schema:
     # NOTE: answers is an array - queries may need ARRAY JOIN or UNWIND
     # ========================================
     - label: ResolvedIP
-      database: test_zeek
+      database: zeek
       table: dns_log
-      node_id: ip
+      node_id: answers
       property_mappings: {}
       to_node_properties:
         ip: answers  # Array of resolved IPs
@@ -85,9 +85,9 @@ graph_schema:
     # REQUESTED: Source IP requested a domain lookup
     # (src:IP)-[:REQUESTED]->(d:Domain)
     - type: REQUESTED
-      database: test_zeek
+      database: zeek
       table: dns_log
-      from_id: orig_h
+      from_id: id.orig_h
       to_id: query
       from_node: IP
       to_node: Domain
@@ -96,7 +96,7 @@ graph_schema:
       property_mappings:
         uid: uid
         timestamp: ts
-        dns_server: resp_h
+        dns_server: id.resp_h
         qtype: qtype_name
         rcode: rcode_name
         answers: answers
@@ -105,7 +105,7 @@ graph_schema:
     # (d:Domain)-[:RESOLVED_TO]->(rip:ResolvedIP)
     # NOTE: answers is an array - this creates multiple edges per DNS response
     - type: RESOLVED_TO
-      database: test_zeek
+      database: zeek
       table: dns_log
       from_id: query
       to_id: answers
@@ -125,10 +125,10 @@ graph_schema:
     # ACCESSED: Source IP accessed destination IP
     # (src:IP)-[:ACCESSED]->(dest:IP)
     - type: ACCESSED
-      database: test_zeek
+      database: zeek
       table: conn_log
-      from_id: orig_h
-      to_id: resp_h
+      from_id: id.orig_h
+      to_id: id.resp_h
       from_node: IP
       to_node: IP
       edge_id: uid

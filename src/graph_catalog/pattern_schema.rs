@@ -608,7 +608,7 @@ impl PatternSchemaContext {
 
         // Fallback: Try property_mappings (for standalone node tables)
         if let Some(property_value) = node_schema.property_mappings.get(&id_property) {
-            let resolved = property_value.to_sql_column_only();
+            let resolved = property_value.raw().to_string();  // Use raw() instead of to_sql_column_only()
             log::info!("🔧 resolve_id_column: '{}' (Cypher) → '{}' (DB column) via property_mappings for table {}", 
                 id_property, resolved, node_schema.table_name);
             return Ok(resolved);

@@ -24,6 +24,7 @@ mod limit_clause;
 mod match_clause;
 mod optional_match_clause;
 mod order_by_clause;
+mod order_by_and_page_clause;
 mod path_pattern;
 mod remove_clause;
 mod return_clause;
@@ -151,12 +152,14 @@ pub fn parse_query_with_nom(
         opt(delete_clause::parse_delete_clause).parse(input)?;
     let (input, return_clause): (&str, Option<ReturnClause>) =
         opt(return_clause::parse_return_clause).parse(input)?;
-    let (input, order_by_clause): (&str, Option<OrderByClause>) =
-        opt(order_by_clause::parse_order_by_clause).parse(input)?;
-    let (input, skip_clause): (&str, Option<SkipClause>) =
-        opt(skip_clause::parse_skip_clause).parse(input)?;
-    let (input, limit_clause): (&str, Option<LimitClause>) =
-        opt(limit_clause::parse_limit_clause).parse(input)?;
+    
+    // Parse ORDER BY and pagination clauses (unified to support flexible ordering)
+    let (input, page_clause) = opt(order_by_and_page_clause::parse_order_by_and_page_clause).parse(input)?;
+    let (order_by_clause, skip_clause, limit_clause) = if let Some(clause) = page_clause {
+        (clause.order_by, clause.skip, clause.limit)
+    } else {
+        (None, None, None)
+    };
 
     let cypher_query = OpenCypherQueryAst {
         use_clause,

@@ -362,6 +362,12 @@ impl AliasResolverContext {
                 index: Box::new(self.transform_expr(*index)),
             },
 
+            LogicalExpr::ArraySlicing { array, from, to } => LogicalExpr::ArraySlicing {
+                array: Box::new(self.transform_expr(*array)),
+                from: from.map(|f| Box::new(self.transform_expr(*f))),
+                to: to.map(|t| Box::new(self.transform_expr(*t))),
+            },
+
             // These don't contain PropertyAccess
             LogicalExpr::Literal(_)
             | LogicalExpr::Raw(_)

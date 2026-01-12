@@ -100,6 +100,16 @@ pub enum LogicalExpr {
         array: Box<LogicalExpr>,
         index: Box<LogicalExpr>,
     },
+    
+    /// Array slicing: array[from..to]
+    /// Extract subarray from index 'from' to 'to' (0-based, inclusive in Cypher)
+    /// Both bounds are optional: [..3], [2..], [..]
+    /// Example: list[0..5], collect(n)[..10], [1,2,3,4,5][2..4]
+    ArraySlicing {
+        array: Box<LogicalExpr>,
+        from: Option<Box<LogicalExpr>>,
+        to: Option<Box<LogicalExpr>>,
+    },
 }
 
 /// Pattern count for size() on patterns
@@ -739,6 +749,11 @@ impl<'a> From<open_cypher_parser::ast::Expression<'a>> for LogicalExpr {
             Expression::ArraySubscript { array, index } => LogicalExpr::ArraySubscript {
                 array: Box::new(LogicalExpr::from(*array)),
                 index: Box::new(LogicalExpr::from(*index)),
+            },
+            Expression::ArraySlicing { array, from, to } => LogicalExpr::ArraySlicing {
+                array: Box::new(LogicalExpr::from(*array)),
+                from: from.map(|f| Box::new(LogicalExpr::from(*f))),
+                to: to.map(|t| Box::new(LogicalExpr::from(*t))),
             },
         }
     }

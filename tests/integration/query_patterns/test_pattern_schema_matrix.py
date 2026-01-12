@@ -447,7 +447,7 @@ class TestStandardSchema:
         ORDER BY with LIMIT and SKIP
         Schema: social_benchmark
         """
-        query = "MATCH (n:User) WHERE n.user_id IS NOT NULL RETURN n.user_id ORDER BY n.user_id DESC LIMIT 10 SKIP 5"
+        query = "MATCH (n:User) WHERE n.user_id IS NOT NULL RETURN n.user_id ORDER BY n.user_id DESC SKIP 5 LIMIT 10"
         result = execute_query(query, "social_benchmark")
         assert "error" not in result, f"Query failed: {result}"
 
@@ -456,7 +456,7 @@ class TestStandardSchema:
         ORDER BY with LIMIT and SKIP
         Schema: social_benchmark
         """
-        query = "MATCH (n:Post) WHERE n.post_id IS NOT NULL RETURN n.post_id ORDER BY n.post_id DESC LIMIT 10 SKIP 5"
+        query = "MATCH (n:Post) WHERE n.post_id IS NOT NULL RETURN n.post_id ORDER BY n.post_id DESC SKIP 5 LIMIT 10"
         result = execute_query(query, "social_benchmark")
         assert "error" not in result, f"Query failed: {result}"
 
@@ -465,7 +465,7 @@ class TestStandardSchema:
         ORDER BY with LIMIT and SKIP
         Schema: social_benchmark
         """
-        query = "MATCH (n:Post) WHERE n.post_id IS NOT NULL RETURN n.post_id ORDER BY n.post_id DESC LIMIT 10 SKIP 5"
+        query = "MATCH (n:Post) WHERE n.post_id IS NOT NULL RETURN n.post_id ORDER BY n.post_id DESC SKIP 5 LIMIT 10"
         result = execute_query(query, "social_benchmark")
         assert "error" not in result, f"Query failed: {result}"
 
@@ -921,7 +921,7 @@ class TestDenormalizedSchema:
         ORDER BY with LIMIT and SKIP
         Schema: ontime_flights
         """
-        query = "MATCH (n:Airport) WHERE n.state IS NOT NULL RETURN n.state ORDER BY n.state DESC LIMIT 10 SKIP 5"
+        query = "MATCH (n:Airport) WHERE n.state IS NOT NULL RETURN n.state ORDER BY n.state DESC SKIP 5 LIMIT 10"
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
@@ -930,7 +930,7 @@ class TestDenormalizedSchema:
         ORDER BY with LIMIT and SKIP
         Schema: ontime_flights
         """
-        query = "MATCH (n:Airport) WHERE n.city IS NOT NULL RETURN n.city ORDER BY n.city DESC LIMIT 10 SKIP 5"
+        query = "MATCH (n:Airport) WHERE n.city IS NOT NULL RETURN n.city ORDER BY n.city DESC SKIP 5 LIMIT 10"
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
@@ -939,7 +939,7 @@ class TestDenormalizedSchema:
         ORDER BY with LIMIT and SKIP
         Schema: ontime_flights
         """
-        query = "MATCH (n:Airport) WHERE n.code IS NOT NULL RETURN n.code ORDER BY n.code DESC LIMIT 10 SKIP 5"
+        query = "MATCH (n:Airport) WHERE n.code IS NOT NULL RETURN n.code ORDER BY n.code DESC SKIP 5 LIMIT 10"
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
@@ -1389,7 +1389,7 @@ class TestPolymorphicSchema:
         ORDER BY with LIMIT and SKIP
         Schema: social_polymorphic
         """
-        query = "MATCH (n:User) WHERE n.email IS NOT NULL RETURN n.email ORDER BY n.email DESC LIMIT 10 SKIP 5"
+        query = "MATCH (n:User) WHERE n.email IS NOT NULL RETURN n.email ORDER BY n.email DESC SKIP 5 LIMIT 10"
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
@@ -1398,7 +1398,7 @@ class TestPolymorphicSchema:
         ORDER BY with LIMIT and SKIP
         Schema: social_polymorphic
         """
-        query = "MATCH (n:User) WHERE n.user_id IS NOT NULL RETURN n.user_id ORDER BY n.user_id DESC LIMIT 10 SKIP 5"
+        query = "MATCH (n:User) WHERE n.user_id IS NOT NULL RETURN n.user_id ORDER BY n.user_id DESC SKIP 5 LIMIT 10"
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
@@ -1407,7 +1407,7 @@ class TestPolymorphicSchema:
         ORDER BY with LIMIT and SKIP
         Schema: social_polymorphic
         """
-        query = "MATCH (n:User) WHERE n.name IS NOT NULL RETURN n.name ORDER BY n.name DESC LIMIT 10 SKIP 5"
+        query = "MATCH (n:User) WHERE n.name IS NOT NULL RETURN n.name ORDER BY n.name DESC SKIP 5 LIMIT 10"
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
@@ -1857,7 +1857,7 @@ class TestCoupledSchema:
         ORDER BY with LIMIT and SKIP
         Schema: zeek_dns
         """
-        query = "MATCH (n:IP) WHERE n.ip_address IS NOT NULL RETURN n.ip_address ORDER BY n.ip_address DESC LIMIT 10 SKIP 5"
+        query = "MATCH (n:IP) WHERE n.ip_address IS NOT NULL RETURN n.ip_address ORDER BY n.ip_address DESC SKIP 5 LIMIT 10"
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
@@ -1866,7 +1866,7 @@ class TestCoupledSchema:
         ORDER BY with LIMIT and SKIP
         Schema: zeek_dns
         """
-        query = "MATCH (n:IP) WHERE n.ip_address IS NOT NULL RETURN n.ip_address ORDER BY n.ip_address DESC LIMIT 10 SKIP 5"
+        query = "MATCH (n:IP) WHERE n.ip_address IS NOT NULL RETURN n.ip_address ORDER BY n.ip_address DESC SKIP 5 LIMIT 10"
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
@@ -1875,7 +1875,7 @@ class TestCoupledSchema:
         ORDER BY with LIMIT and SKIP
         Schema: zeek_dns
         """
-        query = "MATCH (n:ResolvedIP) WHERE n.resolved_ip IS NOT NULL RETURN n.resolved_ip ORDER BY n.resolved_ip DESC LIMIT 10 SKIP 5"
+        query = "MATCH (n:ResolvedIP) WHERE n.resolved_ip IS NOT NULL RETURN n.resolved_ip ORDER BY n.resolved_ip DESC SKIP 5 LIMIT 10"
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 

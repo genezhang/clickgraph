@@ -809,6 +809,12 @@ pub(super) fn is_standalone_expression(expr: &RenderExpr) -> bool {
             // ArraySubscript is standalone if both array and index are standalone
             is_standalone_expression(array) && is_standalone_expression(index)
         }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            // ArraySlicing is standalone if array and optional bounds are standalone
+            is_standalone_expression(array)
+                && from.as_ref().map_or(true, |f| is_standalone_expression(f))
+                && to.as_ref().map_or(true, |t| is_standalone_expression(t))
+        }
         RenderExpr::MapLiteral(entries) => {
             // MapLiteral is standalone if all values are standalone
             entries.iter().all(|(_, v)| is_standalone_expression(v))

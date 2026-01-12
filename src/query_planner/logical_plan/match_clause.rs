@@ -449,20 +449,35 @@ pub fn try_generate_view_scan(
                                     full_table_name,
                                     rel_type
                                 );
+                                
+                                // 🔧 FIX: Populate property_mapping from from_props so full node expansion works
+                                let property_mapping: HashMap<String, crate::graph_catalog::expression_parser::PropertyValue> = from_props.iter()
+                                    .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+                                    .collect();
+                                
+                                // 🔧 FIX: Get the actual ID column name from node_id property
+                                let id_prop_name = node_schema.node_id.columns().first()
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(|| "id".to_string());
+                                let id_column = from_props.get(&id_prop_name)
+                                    .cloned()
+                                    .unwrap_or_else(|| id_prop_name.clone());
+                                
+                                log::info!(
+                                    "✓ FROM branch for '{}': id_prop='{}', id_column='{}', {} properties",
+                                    label, id_prop_name, id_column, property_mapping.len()
+                                );
+                                
                                 let mut from_scan = ViewScan::new(
                                     full_table_name.clone(),
                                     None,
-                                    HashMap::new(),
-                                    String::new(),
+                                    property_mapping.clone(),  // Use actual property mappings
+                                    id_column,                  // Use actual column name
                                     vec![],
                                     vec![],
                                 );
                                 from_scan.is_denormalized = true;
-                                from_scan.from_node_properties = Some(
-                                    from_props.iter()
-                                        .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
-                                        .collect()
-                                );
+                                from_scan.from_node_properties = Some(property_mapping);
                                 union_inputs
                                     .push(Arc::new(LogicalPlan::ViewScan(Arc::new(from_scan))));
                             }
@@ -477,20 +492,35 @@ pub fn try_generate_view_scan(
                                     full_table_name,
                                     rel_type
                                 );
+                                
+                                // 🔧 FIX: Populate property_mapping from to_props so full node expansion works
+                                let property_mapping: HashMap<String, crate::graph_catalog::expression_parser::PropertyValue> = to_props.iter()
+                                    .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
+                                    .collect();
+                                
+                                // 🔧 FIX: Get the actual ID column name from node_id property
+                                let id_prop_name = node_schema.node_id.columns().first()
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(|| "id".to_string());
+                                let id_column = to_props.get(&id_prop_name)
+                                    .cloned()
+                                    .unwrap_or_else(|| id_prop_name.clone());
+                                
+                                log::info!(
+                                    "✓ TO branch for '{}': id_prop='{}', id_column='{}', {} properties",
+                                    label, id_prop_name, id_column, property_mapping.len()
+                                );
+                                
                                 let mut to_scan = ViewScan::new(
                                     full_table_name.clone(),
                                     None,
-                                    HashMap::new(),
-                                    String::new(),
+                                    property_mapping.clone(),  // Use actual property mappings
+                                    id_column,                  // Use actual column name
                                     vec![],
                                     vec![],
                                 );
                                 to_scan.is_denormalized = true;
-                                to_scan.to_node_properties = Some(
-                                    to_props.iter()
-                                        .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
-                                        .collect()
-                                );
+                                to_scan.to_node_properties = Some(property_mapping);
                                 union_inputs
                                     .push(Arc::new(LogicalPlan::ViewScan(Arc::new(to_scan))));
                             }
@@ -677,7 +707,39 @@ pub fn try_generate_view_scan(
     );
 
     // Use property mapping from schema directly (already PropertyValue)
-    let property_mapping = node_schema.property_mappings.clone();
+    // 🔧 FIX: For denormalized nodes, property_mappings is often empty because properties
+    // are stored in from_properties/to_properties. Merge them into property_mapping
+    // so that full node expansion (RETURN n) works correctly for MULTI_TABLE_LABEL schemas.
+    let mut property_mapping = node_schema.property_mappings.clone();
+    
+    if node_schema.is_denormalized && property_mapping.is_empty() {
+        // Merge from_properties and to_properties into property_mapping
+        // This enables full node expansion to find the actual column names
+        if let Some(ref from_props) = node_schema.from_properties {
+            for (prop_name, col_name) in from_props.iter() {
+                property_mapping.insert(
+                    prop_name.clone(),
+                    crate::graph_catalog::expression_parser::PropertyValue::Column(col_name.clone()),
+                );
+            }
+        }
+        if let Some(ref to_props) = node_schema.to_properties {
+            for (prop_name, col_name) in to_props.iter() {
+                // Only add if not already present (from_properties takes precedence)
+                property_mapping.entry(prop_name.clone())
+                    .or_insert_with(|| crate::graph_catalog::expression_parser::PropertyValue::Column(col_name.clone()));
+            }
+        }
+        
+        if !property_mapping.is_empty() {
+            log::info!(
+                "✓ Populated property_mapping for denormalized node '{}' with {} properties: {:?}",
+                label,
+                property_mapping.len(),
+                property_mapping.keys().collect::<Vec<_>>()
+            );
+        }
+    }
 
     // Create fully qualified table name (database.table)
     let full_table_name = format!("{}.{}", node_schema.database, node_schema.table_name);
@@ -707,15 +769,55 @@ pub fn try_generate_view_scan(
     }
 
     // Create ViewScan with the actual table name from schema
-    let id_column = node_schema
-        .node_id
-        .columns()
-        .first()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            log::error!("Node schema for '{}' has no ID columns defined", label);
-            "id".to_string()
-        });
+    // 🔧 FIX: For denormalized nodes, node_id refers to the property name (e.g., "ip"),
+    // but we need the actual column name (e.g., "id.orig_h") for SQL generation.
+    // Look it up from from_properties/to_properties for denormalized schemas.
+    let id_column = if node_schema.is_denormalized {
+        // Get the node_id property name first
+        let id_prop_name = node_schema
+            .node_id
+            .columns()
+            .first()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "id".to_string());
+        
+        // Look up the actual column name from from_properties or to_properties
+        let actual_column = node_schema.from_properties
+            .as_ref()
+            .and_then(|props| props.get(&id_prop_name))
+            .or_else(|| {
+                node_schema.to_properties
+                    .as_ref()
+                    .and_then(|props| props.get(&id_prop_name))
+            })
+            .cloned()
+            .unwrap_or_else(|| {
+                log::warn!(
+                    "Denormalized node '{}' ID property '{}' not found in from/to_properties, using as-is",
+                    label,
+                    id_prop_name
+                );
+                id_prop_name.clone()
+            });
+        
+        log::info!(
+            "✓ Resolved denormalized node '{}' ID column: '{}' (property) → '{}' (column)",
+            label,
+            id_prop_name,
+            actual_column
+        );
+        actual_column
+    } else {
+        node_schema
+            .node_id
+            .columns()
+            .first()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                log::error!("Node schema for '{}' has no ID columns defined", label);
+                "id".to_string()
+            })
+    };
     
     let mut view_scan = ViewScan::new(
         full_table_name,  // Use fully qualified table name (database.table)

@@ -197,7 +197,7 @@ fn test_parameter_in_where_with_function_in_return() {
     let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
+        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
         .expect("Failed to render SQL");
     let sql = render_plan.to_sql();
@@ -217,7 +217,7 @@ fn test_function_with_parameter_in_where() {
     let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
+        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
         .expect("Failed to render SQL");
     let sql = render_plan.to_sql();
@@ -237,7 +237,7 @@ fn test_multiple_parameters_with_multiple_functions() {
     let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
+        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
         .expect("Failed to render SQL");
     let sql = render_plan.to_sql();
@@ -258,7 +258,7 @@ fn test_math_function_in_where_with_parameter() {
     let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
+        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
         .expect("Failed to render SQL");
     let sql = render_plan.to_sql();
@@ -278,7 +278,7 @@ fn test_string_function_with_parameters_in_return() {
     let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
+        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
         .expect("Failed to render SQL");
     let sql = render_plan.to_sql();
@@ -298,7 +298,7 @@ fn test_aggregation_function_with_parameter_filter() {
     let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
+        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
         .expect("Failed to render SQL");
     let sql = render_plan.to_sql();
@@ -319,7 +319,7 @@ fn test_nested_functions_with_properties() {
     let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
+        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
         .expect("Failed to render SQL");
     let sql = render_plan.to_sql();
@@ -340,7 +340,7 @@ fn test_case_expression_with_parameters() {
     let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
+        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
         .expect("Failed to render SQL");
     let sql = render_plan.to_sql();
@@ -360,7 +360,7 @@ fn test_function_on_parameter_in_return() {
     let schema = create_test_schema();
 
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None).expect("Failed to plan query");
+        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
         .expect("Failed to render SQL");
     let sql = render_plan.to_sql();

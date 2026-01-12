@@ -290,7 +290,7 @@ def generate_pattern_queries(
     
     queries.append((
         "order_limit_skip",
-        f"MATCH (n:{label}) WHERE n.{prop} IS NOT NULL RETURN n.{prop} ORDER BY n.{prop} DESC LIMIT 10 SKIP 5"
+        f"MATCH (n:{label}) WHERE n.{prop} IS NOT NULL RETURN n.{prop} ORDER BY n.{prop} DESC SKIP 5 LIMIT 10"
     ))
     
     # ===========================================

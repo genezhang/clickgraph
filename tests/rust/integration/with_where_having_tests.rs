@@ -63,7 +63,7 @@ fn test_with_aggregation_where_generates_having() {
 
     // Build logical plan
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None)
+        build_logical_plan(&ast, &schema, None, None, None)
         .expect("Failed to build logical plan");
 
     // Render to SQL
@@ -110,7 +110,7 @@ fn test_with_where_without_aggregation() {
 
     // Build logical plan
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None)
+        build_logical_plan(&ast, &schema, None, None, None)
         .expect("Failed to build logical plan");
 
     // Render to SQL
@@ -152,7 +152,7 @@ fn test_with_aggregation_multiple_conditions() {
 
     // Build logical plan
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None)
+        build_logical_plan(&ast, &schema, None, None, None)
         .expect("Failed to build logical plan");
 
     // Render to SQL

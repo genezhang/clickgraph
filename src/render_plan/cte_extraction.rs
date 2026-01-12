@@ -634,6 +634,29 @@ fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String
             let index_sql = render_expr_to_sql_string(index, alias_mapping);
             format!("{}[{}]", array_sql, index_sql)
         }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            // Use to_sql method which handles ClickHouse arraySlice generation
+            // This is a temporary delegation - ideally we'd use alias_mapping here too
+            // but to_sql() doesn't support it. For now, array slicing shouldn't have
+            // complex alias references that need mapping.
+            let array_sql = render_expr_to_sql_string(array, alias_mapping);
+            match (from, to) {
+                (Some(from_expr), Some(to_expr)) => {
+                    let from_sql = render_expr_to_sql_string(from_expr, alias_mapping);
+                    let to_sql = render_expr_to_sql_string(to_expr, alias_mapping);
+                    format!("arraySlice({}, {} + 1, {} - {} + 1)", array_sql, from_sql, to_sql, from_sql)
+                }
+                (Some(from_expr), None) => {
+                    let from_sql = render_expr_to_sql_string(from_expr, alias_mapping);
+                    format!("arraySlice({}, {} + 1)", array_sql, from_sql)
+                }
+                (None, Some(to_expr)) => {
+                    let to_sql = render_expr_to_sql_string(to_expr, alias_mapping);
+                    format!("arraySlice({}, 1, {} + 1)", array_sql, to_sql)
+                }
+                (None, None) => array_sql,
+            }
+        }
         RenderExpr::Star => "*".to_string(),
         RenderExpr::Parameter(param) => format!("${}", param),
         RenderExpr::MapLiteral(entries) => {

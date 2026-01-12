@@ -53,7 +53,7 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
 
     // Then, parse any postfix operations in a loop
     loop {
-        // Try to parse array subscript: expr[index]
+        // Try to parse array subscript OR slicing: expr[index] or expr[from..to]
         // Need to be careful: [expr] could also be a list literal
         // Also careful: [(pattern) | projection] is a pattern comprehension, not subscript
         // We check for [ immediately after the expression (with optional whitespace)
@@ -73,6 +73,34 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
             break;
         }
         
+        // Try to parse slicing first: [from..to], [..to], [from..], or [..]
+        let slicing_attempt = nom::sequence::tuple((
+            multispace0,
+            char('['),
+            multispace0,
+            // Optional from expression
+            nom::combinator::opt(parse_expression),
+            multispace0,
+            tag(".."),
+            multispace0,
+            // Optional to expression
+            nom::combinator::opt(parse_expression),
+            multispace0,
+            char(']'),
+        ))(input);
+
+        if let Ok((new_input, (_, _, _, from_expr, _, _, _, to_expr, _, _))) = slicing_attempt {
+            // Successfully parsed slicing [from..to]
+            expr = Expression::ArraySlicing {
+                array: Box::new(expr),
+                from: from_expr.map(Box::new),
+                to: to_expr.map(Box::new),
+            };
+            input = new_input;
+            continue; // Check for more postfix operations
+        }
+
+        // Try to parse array subscript: expr[index]
         let subscript_attempt = nom::sequence::tuple((
             multispace0,
             char('['),

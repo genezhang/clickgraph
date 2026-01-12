@@ -53,6 +53,12 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
         RenderExpr::ArraySubscript { array, index } => {
             references_alias(array, alias) || references_alias(index, alias)
         }
+        // ArraySlicing may contain aliases in array, from, and to
+        RenderExpr::ArraySlicing { array, from, to } => {
+            references_alias(array, alias)
+                || from.as_ref().map_or(false, |f| references_alias(f, alias))
+                || to.as_ref().map_or(false, |t| references_alias(t, alias))
+        }
     }
 }
 
@@ -114,6 +120,15 @@ pub fn rewrite_aliases(
         RenderExpr::ArraySubscript { array, index } => {
             rewrite_aliases(array, alias_map);
             rewrite_aliases(index, alias_map);
+        }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            rewrite_aliases(array, alias_map);
+            if let Some(f) = from {
+                rewrite_aliases(f, alias_map);
+            }
+            if let Some(t) = to {
+                rewrite_aliases(t, alias_map);
+            }
         }
         // Simple expressions that don't contain aliases - no rewriting needed
         RenderExpr::Literal(_)

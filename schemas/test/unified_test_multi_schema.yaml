@@ -215,23 +215,23 @@ schemas:
       nodes:
         - label: Airport
           database: travel
-          table: flights
-          node_id: origin_airport
+          table: flights_denorm
+          node_id: origin_code  # FIXED: Actual column name
           property_mappings:
-            code: origin_airport
-            name: origin_airport_name
-            city: origin_city
+            code: origin_code  # FIXED: Actual column name
+            name: origin_name  # FIXED: Actual column name  
+            country: origin_country  # FIXED: Actual column name
       edges:
         - type: FLIGHT
           database: travel
-          table: flights
-          from_id: origin_airport
-          to_id: dest_airport
+          table: flights_denorm
+          from_id: origin_code  # FIXED: Actual column name
+          to_id: dest_code  # FIXED: Actual column name
           from_node: Airport
           to_node: Airport
           property_mappings:
-            flight_date: flight_date
-            flight_number: flight_number
+            flight_id: flight_id
+            flight_num: flight_num
             departure_time: departure_time
             arrival_time: arrival_time
 
@@ -258,36 +258,37 @@ schemas:
     graph_schema:
       nodes:
         - label: IP
-          database: security
-          table: ip_addresses
-          node_id: ip
+          # For now, IP nodes come only from DNS as origin
+          database: zeek
+          table: dns_log
+          node_id: id.orig_h
           property_mappings:
-            ip: ip
+            ip: id.orig_h
         - label: Domain
-          database: security
-          table: dns
+          database: zeek
+          table: dns_log
           node_id: query
           property_mappings:
-            domain: query
+            name: query
       edges:
         - type: DNS_REQUESTED
-          database: security
-          table: dns
-          from_id: id_orig_h
+          database: zeek
+          table: dns_log
+          from_id: id.orig_h
           to_id: query
           from_node: IP
           to_node: Domain
           property_mappings:
-            ts: ts
-            query_type: qtype_name
-        - type: CONNECTED_TO
-          database: security
-          table: conn
-          from_id: id_orig_h
-          to_id: id_resp_h
-          from_node: IP
-          to_node: IP
-          property_mappings:
-            ts: ts
-            duration: duration
-            proto: proto
+            uid: uid
+            timestamp: ts
+            qtype: qtype_name
+            rcode: rcode_name
+            answers: answers
+        # NOTE: CONNECTED_TO disabled for now - requires full multi-table label support
+        # - type: CONNECTED_TO
+        #   database: zeek
+        #   table: conn_log
+        #   from_id: id.orig_h
+        #   to_id: id.resp_h
+        #   from_node: IP
+        #   to_node: IP

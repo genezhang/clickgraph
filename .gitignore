@@ -6,6 +6,8 @@
 /benchmarks/ldbc_snb/data/sf*
 /benchmarks/ldbc_snb/data/*.tar.zst
 
+/benchmarks/ldbc_snb/test_results*.json
+
 .env
 
 .DS_Store
