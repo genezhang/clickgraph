@@ -1,549 +1,135 @@
-## [Unreleased]
-
----
-
 ## [0.6.1] - 2026-01-12
-
-**Production Release: WITH Clause Fixes & GraphRAG Enhancements**
-
-This release brings critical WITH clause bug fixes, GraphRAG multi-type VLP support, and significant LDBC SNB benchmark progress (15/41 queries passing, 37%).
-
-**Key Improvements**:
-- 🐛 Fixed WITH + MATCH CartesianProduct recursion (+6 LDBC queries)
-- 🐛 Fixed chained WITH CTE name remapping (enables IC-1, IC-2)
-- 🚀 Per-MATCH WHERE clauses (OpenCypher-compliant)
-- 🚀 Configurable MAX_INFERRED_TYPES for GraphRAG use cases
-- 🧪 GraphRAG test coverage: 49/53 tests passing (92.5%)
-- 🧪 Comprehensive matrix tests: 231/354 passing (65.3%)
-
-### 🐛 Bug Fixes
-
-#### WITH + MATCH Pattern (CartesianProduct) (Jan 12, 2026)
-
-**Fixed queries with disconnected MATCH patterns separated by WITH clause.**
-
-- **Example now working**:
-  ```cypher
-  # Simple WITH + MATCH
-  MATCH (p:Person {id: 933})
-  WITH p.creationDate AS pcd
-  MATCH (p2:Person)
-  WHERE p2.creationDate >= pcd
-  RETURN p2.id
-  
-  # VLP + WITH + MATCH (IC-6)
-  MATCH (person:Person)-[:KNOWS*1..2]-(friend:Person)
-  WITH DISTINCT friend
-  MATCH (friend)<-[:HAS_CREATOR]-(post:Post)
-  RETURN friend.id, post.id
-  ```
-- **Root Cause**: Query planner generates `CartesianProduct` nodes for disconnected patterns. Two functions didn't handle CartesianProduct:
-  - `find_all_with_clauses_impl()` - couldn't detect WITH clauses inside CartesianProduct
-  - `replace_with_clause_with_cte_reference_v2()` - couldn't recurse to replace WITH with CTE references
-  - Result: Infinite loop trying to process detected but unreachable WITH clauses (hit 10 iteration limit)
-- **Fix**: Added CartesianProduct recursion to both functions (recurse into left and right branches)
-- **Impact**: **+6 LDBC queries** passing: IC-4, IC-6, BI-5, BI-11, BI-12, BI-19 → **15/41 total (37%)**
-- **Files Modified**: `src/render_plan/plan_builder.rs` (lines 4726-4732, 5910-5932)
-
----
-
-#### Chained WITH CTE Name Remapping (Jan 11, 2026)
-
-**Fixed 3+ level chained WITHs generating SQL with incorrect CTE references.**
-
-- **Example now working**:
-  ```cypher
-  # 3-level chained WITH
-  MATCH (p:Person) 
-  WITH p.lastName AS lnm 
-  WITH lnm 
-  WITH lnm 
-  RETURN lnm LIMIT 7
-  
-  # Multi-column with CASE expressions
-  MATCH (p:Person) 
-  WITH p.firstName AS name, CASE WHEN p.gender = 'male' THEN 1 ELSE 0 END AS isMale 
-  WITH name, isMale 
-  WITH name, isMale 
-  RETURN name, isMale
-  ```
-- **Root Cause**: `collapse_passthrough_with()` matched passthroughs by alias only. With multiple consecutive WITHs having same alias, it collapsed the outermost instead of the target, causing CTE name remapping to record wrong mappings.
-- **Fix**: Modified `collapse_passthrough_with()` to accept `target_cte_name` parameter (analyzer's CTE name). Now matches both alias AND analyzer CTE name from `wc.cte_references` to ensure exact passthrough WITH is collapsed.
-- **Impact**: Unlocks **LDBC IC-1, IC-2** and other complex queries with chained WITHs
-- **Test Results**: ✅ 2-level, 3-level, 4-level, and multi-column chained WITHs all working
-- **Files Modified**: `src/render_plan/plan_builder.rs` (lines 4823-4933, 2000-2040)
-
----
 
 ### 🚀 Features
 
-#### OpenCypher-Compliant Per-MATCH WHERE Clauses (Jan 7, 2026)
-
-**Consecutive MATCH clauses can now have their own WHERE clauses, per OpenCypher grammar.**
-
-- **OpenCypher Grammar**: `<graph pattern> ::= <path pattern list> [ <graph pattern where clause> ]`
-- **Examples now working**:
-  ```cypher
-  # Per-MATCH WHERE (previously failed with "Unexpected tokens")
-  MATCH (m:Message) WHERE m.id = 123 
-  MATCH (m)<-[:REPLY_OF]-(c:Comment)
-  RETURN m.id, c.id
-
-  # Multiple WHERE clauses
-  MATCH (m:Message) WHERE m.id = 123 
-  MATCH (c:Comment) WHERE c.id = 456
-  RETURN m, c
-
-  # LDBC IS7 pattern
-  MATCH (m:Message) WHERE m.id = $messageId
-  MATCH (m)<-[:REPLY_OF]-(c:Comment)-[:HAS_CREATOR]->(p:Person)
-  OPTIONAL MATCH (m)-[:HAS_CREATOR]->(a:Person)-[r:KNOWS]-(p)
-  RETURN c.id, p.id
-  ```
-- **Changes**:
-  - Added `where_clause: Option<WhereClause<'a>>` to `MatchClause` AST
-  - Parser captures WHERE within each MATCH (`match_clause.rs`)
-  - Query planner evaluates per-MATCH WHERE after pattern processing
-  - Backward compatibility: global WHERE after all MATCH still works
-- **Test Coverage**: 9/9 integration tests passing (100%)
-  - File: `tests/integration/test_consecutive_match_with_where.py`
-  - Covers: single WHERE, multiple WHERE, complex predicates, mixed patterns
-- **Documentation**: `notes/consecutive-match-with-where.md`
-- **Files Modified**:
-  - `src/open_cypher_parser/ast.rs` - Updated MatchClause struct
-  - `src/open_cypher_parser/match_clause.rs` - Added WHERE parsing
-  - `src/query_planner/logical_plan/match_clause.rs` - WHERE evaluation
-
-#### Configurable MAX_INFERRED_TYPES (Jan 8, 2026)
-
-**Made type inference limit configurable via query parameter to support GraphRAG use cases.**
-
-- **Query-level override**: `{"query": "...", "max_inferred_types": 10}`
-- **Default**: 5 relationship types (unified from previous inconsistent 4/5)
-- **Recommended for GraphRAG**: 10-20 types for complex knowledge graphs
-- **Use case**: Schemas with more than 5 relationship types between nodes
-- **Files**: `src/server/models.rs`, `src/query_planner/plan_ctx/mod.rs`, `src/query_planner/logical_plan/match_clause.rs`, `src/query_planner/analyzer/type_inference.rs`
-- **API**: Added `max_inferred_types` optional field to `/query` endpoint
-- **Commits**: ad7c77a (initial implementation), 16c3dce (unified default to 5)
-
-### � Internal/Development
-
-#### GraphRAG Multi-Type VLP Foundation - Developer Preview (Dec 27, 2025)
-
-**⚠️ NOT USER-FACING**: Foundation work only. SQL generation (Part 1D) required before feature is usable.
-
-**Implemented parsing and inference foundation for multi-type variable-length paths.**
-
-**The GraphRAG Use Case**: GraphRAG (Graph Retrieval-Augmented Generation) requires traversing heterogeneous graphs where relationships connect different node types. Example:
-```cypher
--- User can FOLLOW other Users OR AUTHOR Posts
-MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)
-RETURN x
-
--- Challenge: 'x' can be User OR Post - how to handle polymorphic end nodes?
-```
-
-**Components Implemented**:
-
-1. **Multi-Label Node Syntax (Part 1B)** ✅
-   - Added support for `(x:User|Post)` - explicit type unions
-   - Parser functions: `parse_node_labels()`, `parse_name_labels()`
-   - File: `src/open_cypher_parser/path_pattern.rs`
-   - Tests: 4 new unit tests passing
-   - Example: `(x:User|Post|Comment)` → labels = ["User", "Post", "Comment"]
-
-2. **Auto-Inference from Relationships (Part 2A)** ✅
-   - Automatically infer end node types from relationship schemas
-   - When: VLP + multi-type + unlabeled end node
-   - Logic: Extract `to_node` from each relationship type in schema
-   - File: `src/query_planner/analyzer/type_inference.rs` (lines 150-230)
-   - Tests: 4 new unit tests in `test_multi_type_vlp_auto_inference.rs`
-   - Example: `(u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)` → infers `x.labels = ["User", "Post"]`
-
-3. **Path Enumeration (Part 1C)** ✅
-   - Schema-validated generation of valid path combinations
-   - DFS exploration with `enumerate_vlp_paths()` function
-   - File: `src/query_planner/analyzer/multi_type_vlp_expansion.rs` (500 lines, new module)
-   - Tests: 5 new unit tests (single-hop, multi-hop, multi-type, no paths, range)
-   - Example paths for `User-[:FOLLOWS|AUTHORED*1..2]->User|Post`:
-     - [User-FOLLOWS->User] (1-hop)
-     - [User-AUTHORED->Post] (1-hop)
-     - [User-FOLLOWS->User-FOLLOWS->User] (2-hop)
-     - [User-FOLLOWS->User-AUTHORED->Post] (2-hop)
-
-4. **AST Changes (Part 1A)** ✅
-   - Changed `NodePattern.label: Option<&str>` → `labels: Option<Vec<&str>>`
-   - Updated 111 compilation errors across codebase
-   - File: `src/open_cypher_parser/ast.rs`
-
-5. **SQL Generation Design (Part 1D)** ✅
-   - Complete design document: `notes/multi-type-vlp-sql-generation-design.md`
-   - Strategy: UNION ALL of type-safe JOINs (not recursive CTE)
-   - Rationale: User.user_id ≠ Post.post_id (different ID domains, unsafe for recursion)
-   - Limitation: 3-hop maximum (combinatorial explosion)
-   - Status: Design complete, **implementation deferred** (requires 2-3 days CTE refactoring)
-
-6. **Integration Tests (Part 2B)** ✅
-   - Created `tests/integration/test_graphrag_auto_inference.py` with 5 test cases
-   - Tests: Basic inference, property access, explicit vs inferred, no inference when labeled, results validation
-   - Status: All tests created and ready, **currently skipped** (blocked on Part 1D SQL generation)
-
-**Test Statistics**:
-- Unit tests: 725/735 passing (98.6%)
-- New tests added: 13 (4 parsing + 5 path enumeration + 4 auto-inference)
-- Integration tests: 5 created, ready to enable after Part 1D
-
-**Documentation**:
-- Implementation summary: `notes/multi-type-vlp-implementation-summary.md`
-- SQL design: `notes/multi-type-vlp-sql-generation-design.md`
-- Requirements: `notes/graphrag-requirements-analysis.md`
-
-**Developer Capabilities** (not user-facing):
-- Parse multi-label syntax: `(x:User|Post)` → AST representation
-- Auto-infer end node types from relationship schemas
-- Enumerate valid paths based on schema graph
-- Store multi-label information in logical plan
-
-**Missing for User Execution**:
-- ❌ SQL generation (Part 1D) - users get errors when running queries
-- ❌ Property access on multi-type nodes
-- ❌ Result merging from UNION ALL branches
-- ❌ End-to-end query execution
-
-**Status**: Foundation complete, but **NOT USABLE** until Part 1D (SQL generation) is implemented. Estimated 2-3 days of CTE refactoring work required.
-
-**Files Added**:
-- `src/query_planner/analyzer/multi_type_vlp_expansion.rs` (500 lines)
-- `src/query_planner/analyzer/test_multi_type_vlp_auto_inference.rs` (280 lines)
-- `tests/integration/test_graphrag_auto_inference.py` (300 lines)
-- `notes/multi-type-vlp-sql-generation-design.md` (200 lines)
-- `notes/multi-type-vlp-implementation-summary.md` (400 lines)
-
-**Files Modified**:
-- `src/open_cypher_parser/ast.rs` - NodePattern.labels Vec
-- `src/open_cypher_parser/path_pattern.rs` - Multi-label parsing functions
-- `src/query_planner/analyzer/type_inference.rs` - Auto-inference logic
-- `src/query_planner/analyzer/mod.rs` - Module declarations
-
----
-
-## [0.6.1] - 2025-12-27
+- Integrate data_security schema, remove benchmark schemas from unified tests
+- Auto-load all test schemas at session start
+- Add PatternGraphMetadata POC for cleaner join inference evolution
+- Phase 1 - Use cached node references from PatternGraphMetadata
+- *(graph_join_inference)* Phase 2 - Simplified cross-branch detection using metadata
+- *(graph_join_inference)* Phase 4 - Add relationship uniqueness constraints
+- Complete fixed-length path inline JOIN optimization
+- Property pruning optimization with unified test infrastructure
+- Edge constraints for cross-node validation (8/8 tests passing)
+- Pattern Comprehensions and Multiple UNWIND support
+- Add multi-schema YAML support for loading multiple graph schemas
+- Add multi-schema database setup and test scripts
+- Add array subscript syntax support and complete multi-type VLP path functions
+- Make MAX_INFERRED_TYPES configurable via query parameter
 
 ### 🐛 Bug Fixes
 
-#### VLP Relationship Filters + Edge Constraints Holistic Fix (Dec 27, 2025) ⭐
+- Support anonymous nodes in graph patterns
+- Use node ID columns for VLP CTE generation
+- Optimize JOIN generation based on property usage, not node naming
+- Optimize JOIN generation based on property usage, not node naming
+- Permanently fix test infrastructure issues
+- Add filesystem and group membership test data to setup script
+- Add small-scale benchmark test data and cleanup obsolete scripts
+- Migrate from schema_name='default' to USE clause convention
+- Add missing matrix test schemas and USE clause support
+- Add USE clause to multi-hop pattern tests
+- Update social_polymorphic schema to use actual table names
+- Resolve ontime schema name conflict, add benchmark schemas back for matrix tests
+- Add flights to default db for ontime_benchmark - Copy flights to default database - Comprehensive matrix: +256 tests - Overall: +186 tests to 2947 - Session total: +1047 tests (+55 percent)
+- Restore ontime_flights schema name for pattern matrix tests - Revert ontime_denormalized back to ontime_flights - Remove ontime_benchmark from unified test loading - Update matrix conftest to use ontime_flights - Pattern schema matrix: 0/51 to 9/51 recovery - Overall: 2758 to 2958 (+200 tests) - Session: 1900 to 2958 (+1058 tests, +55.7 percent, 85.2 percent pass rate)
+- Add property_expressions schema to test loading - Fix database to default where tables actually exist - Replace CASE WHEN with if() for parsing compatibility - Add to load_test_schemas.py - Property expressions tests: 0/28 to 13/28 recovery - Overall: 2958 to 2976 (+18 tests) - Session: 1900 to 2976 (+1076 tests, +56.6 percent, 85.7 percent pass rate)
+- Add schema_name to role-based query tests - Role tests now use unified_test_schema - All 5 role-based tests now pass
+- Add missing property aliases to property_expressions schema
+- VLP cross-branch JOIN uses node alias instead of relationship alias
+- VLP transitivity check handles polymorphic relationships
+- All integration tests now passing or properly marked xfail
+- Add relationship labels to edge list test GraphRel structures
+- Update edge list test assertions for SingleTableScan optimization
+- Add proper GraphSchema to failing tests
+- Thread schema through single-hop query pipeline for edge constraints
+- *(vlp)* Fix denormalized VLP node ID selection (Dec 22 regression)
+- *(vlp)* Complete denormalized VLP with comprehensive fixes
+- VLP path functions in WITH clauses + CTE body rewriting
+- Remove escaped quotes and multi_schema loader entry from conftest
+- Load denormalized_flights_test schema with proper data
+- VLP WHERE clause alias resolution for denormalized schemas
+- Correct AUTHORED relationship schema in unified_test_multi_schema.yaml
+- Multi-type VLP architectural fix - FROM alias solves all mapping issues
+- Multi-type VLP JSON extraction - skip alias mapping for multi-type CTEs
+- FK-edge zero-length VLP edge tuple generation
+- Unify MAX_INFERRED_TYPES default to 5 for consistency
+- Parameterized views apply to both node and edge tables in VLP queries
+- Add anyLast() wrapping for CTE references in GROUP BY aggregations
+- Rewrite CTE column references in JOINs
+- VLP+WITH+MATCH pattern (ic9) - delegate to input.extract_joins() for CTE references
+- Add VLP endpoint detection in find_id_column_for_alias
+- Correct ontime_denormalized schema to use default database
+- Skip JOINs for fully denormalized VLP patterns
+- Map denormalized VLP endpoint aliases to CTE alias for rewriting
+- Consecutive MATCH with per-MATCH WHERE, comment support, scalar aggregate investigation
+- WITH expression scope - rewrite CASE expressions to use CTE columns
 
-**Fixed relationship filters and edge constraints in Variable-Length Path queries across all schema patterns.**
+### 💼 Other
 
-**Problems Fixed**:
+- Comprehensive test failure categorization (507 failures)
+- V0.6.1 - WITH clause fixes, GraphRAG enhancements, LDBC progress
 
-1. **Relationship filters populated but never used**: The `relationship_filters` field was being populated in `cte_extraction.rs` but never passed to CTE generators, causing WHERE clause filters to be ignored.
+### 🚜 Refactor
 
-2. **Wrong aliases for FK-edge patterns**: FK-edge patterns were using `rel` alias (from standard 3-table pattern) when they should use `start_node` (the table containing the FK).
-
-3. **Edge constraints used fixed aliases in recursive cases**: The `generate_edge_constraint_filter()` method always used `self.start_node_alias` and `self.end_node_alias`, but recursive cases use different aliases (`current_node`, `new_start`, `new_end`).
-
-**Root Causes**:
-- Relationship filters were extracted but never threaded through to CTE generators
-- Pattern detection happened too late (after filter processing)
-- Edge constraint compilation was hardcoded to base case aliases
-
-**Holistic Solution**:
-
-1. **Added relationship_filters field handling** throughout CTE generation:
-   - Added to all generator constructors: `new()`, `new_denormalized()`, `new_mixed()`, `new_with_fk_edge()`
-   - Applied in both base and recursive WHERE clauses
-   - FK-edge recursive cases rewrite aliases (`start_node` → `new_start` or `current_node`)
-
-2. **Pattern-aware alias mapping** in `cte_extraction.rs`:
-   - Added early FK-edge detection before filter processing
-   - Maps relationship filters to correct alias:
-     - FK-edge → `start_node` (the table with the FK)
-     - Standard/Denormalized/Polymorphic → `rel` (relationship table alias)
-
-3. **Dynamic constraint aliases** in `variable_length_cte.rs`:
-   - Changed `generate_edge_constraint_filter()` to accept `from_alias: Option<&str>`, `to_alias: Option<&str>`
-   - Base cases pass `None, None` (uses defaults)
-   - Recursive cases pass actual aliases:
-     - Standard: `Some("current_node"), None`
-     - FK-edge APPEND: `Some("current_node"), Some("new_end")`
-     - FK-edge PREPEND: `Some("new_start"), Some("current_node")`
-
-4. **Outer query filter deduplication**:
-   - Added `get_variable_length_aliases()` helper in `plan_builder.rs`
-   - Prevents duplicate relationship filters in outer query
-   - Checks if filter references VLP relationship alias
-
-**Coverage**: All 5 schema patterns verified:
-- ✅ FK-edge (2-way JOIN with FK in node table)
-- ✅ Standard (3-way JOIN: from_node → edge → to_node)
-- ✅ Denormalized (single table with node properties)
-- ✅ Mixed (partial denormalization)
-- ✅ Polymorphic (multiple edge types in one table)
-
-**Example**:
-```cypher
--- Query with relationship filter + constraint
-MATCH (f:DataFile {file_id: 1})-[r:COPIED_BY*1..3 {operation: 'clean'}]->(d:DataFile)
-RETURN f.path, d.path
-
--- Generated SQL (Standard pattern):
-WITH RECURSIVE vlp_cte AS (
-    -- Base case
-    SELECT ...
-    WHERE start_node.created_timestamp <= end_node.created_timestamp  -- constraint (correct alias)
-      AND rel.copy_operation_type = 'clean'  -- relationship filter (correct alias)
-    
-    UNION ALL
-    
-    -- Recursive case
-    SELECT ...
-    WHERE current_node.created_timestamp <= end_node.created_timestamp  -- constraint (correct alias!)
-      AND rel.copy_operation_type = 'clean'  -- relationship filter (correct alias)
-)
-```
-
-**Test Coverage**:
-- Added `test_vlp_with_relationship_filters_and_constraints` in `test_edge_constraints.py`
-- Verified constraint filtering blocks invalid edges (e.g., 4→2 with timestamp violation)
-- Verified relationship filters work in both base and recursive cases
-
-**Files Modified**:
-- `src/render_plan/cte_extraction.rs` (Lines 1040-1104) - Pattern-aware alias mapping
-- `src/clickhouse_query_generator/variable_length_cte.rs` (Multiple sections) - Relationship filters + dynamic constraints
-- `src/render_plan/plan_builder.rs` (Lines 560-570, 11360-11435) - Outer query deduplication
-- `tests/integration/test_edge_constraints.py` - Added comprehensive test case
-
----
-
-### 🐛 Bug Fixes (Previous)
-
-#### VLP Path Functions in WITH Clauses (Dec 26, 2025) ⭐
-
-**Fixed `length(path)` generating incorrect aliases in WITH clauses.**
-
-**Problem:**
-```cypher
-MATCH path = (u1:User)-[:FOLLOWS*1..2]->(u2:User)
-WITH u1, u2, length(path) as path_len
-WHERE path_len = 2
-RETURN u1.name, u2.name, path_len
--- Generated SQL had: SELECT start_node.age (WRONG)
--- Instead of: SELECT u1.age (CORRECT)
-```
-
-**Root Cause:**
-The `rewrite_vlp_union_branch_aliases` function was checking if endpoint aliases (u1, u2) had JOINs in the *outer* plan, but when rewriting CTE bodies (nested RenderPlans), those don't have JOINs yet. This caused incorrect rewriting: `u1` → `start_node`.
-
-**Fix:**
-Modified CTE body rewriting to ONLY apply `t` → `vlp_alias` mapping (for path functions like `length(path)`), excluding endpoint alias rewrites entirely. WITH CTEs have their own JOINs, so SELECT items should use Cypher aliases.
-
-**Verification:**
-- `test_vlp_with_filtering` ✅
-- `test_vlp_with_and_aggregation` ✅
-- All 24 VLP integration tests pass ✅
-
----
-
-### �🚀 Features
-
-#### Multiple UNWIND Clauses (Dec 25, 2025) ⭐
-
-**Complete support for multiple consecutive UNWIND clauses generating cartesian products.**
-
-**Syntax:**
-```cypher
-UNWIND [1, 2] AS x
-UNWIND [10, 20] AS y
-RETURN x, y
-```
-
-**What's New:**
-- ✅ **Multiple UNWIND support**: Chain unlimited UNWIND clauses for cartesian products
-- ✅ **Generic implementation**: Collects all UNWIND nodes, generates multiple ARRAY JOIN clauses
-- ✅ **Works with filtering**: WHERE clauses filter cartesian product results
-- ✅ **Works with aggregation**: COUNT, SUM, etc. over expanded rows
-- ✅ **Integration tests**: 7 comprehensive tests covering all use cases
-
-**Implementation Details:**
-- Parser: Changed `unwind_clause: Option` → `unwind_clauses: Vec` with `many0()`
-- SQL Generation: Recursive collection of all Unwind nodes
-- ClickHouse SQL: Multiple `ARRAY JOIN` clauses in sequence
-
-**Examples:**
-```cypher
--- Cartesian product: 4 rows (2×2)
-UNWIND [1, 2] AS x
-UNWIND [10, 20] AS y
-RETURN x, y
--- Results: (1,10), (1,20), (2,10), (2,20)
-
--- Triple UNWIND: 8 rows (2×2×2)
-UNWIND [1, 2] AS x  
-UNWIND [10, 20] AS y
-UNWIND [100, 200] AS z
-RETURN x, y, z
-
--- With filtering
-UNWIND [1, 2, 3] AS x
-UNWIND [10, 20, 30] AS y
-WHERE x + y > 25
-RETURN x, y
-
--- With aggregation
-UNWIND ['a', 'b'] AS letter
-UNWIND [1, 2, 3] AS num
-RETURN letter, count(*) AS count
-GROUP BY letter
-```
-
-**Impact**:
-- Unblocks 3 LDBC BI queries (bi-4, bi-13, bi-16)
-- Enables complex data expansion patterns
-- LDBC pass rate: 70% → 73% (+3%)
-
----
-
-#### Pattern Comprehensions (Dec 25, 2025) ⭐
-
-**Complete implementation of pattern comprehension syntax for concise list collection from graph patterns.**
-
-**Syntax:**
-```cypher
-[(pattern) WHERE condition | projection]
-```
-
-**What's New:**
-- ✅ **Basic pattern comprehensions**: `[(u)-[:FOLLOWS]->(f) | f.name]` - collect values from matched patterns
-- ✅ **Optional WHERE clause**: `[(u)-[:FOLLOWS]->(f) WHERE f.country = 'USA' | f.name]` - filter before projection
-- ✅ **Expression projections**: `[(u)-[:FOLLOWS]->(f) | f.name + ' from ' + f.country]` - computed values
-- ✅ **Multiple comprehensions**: Use multiple patterns in same RETURN/WITH clause
-- ✅ **Empty list handling**: Returns `[]` when no matches found
-- ✅ **Full documentation**: Complete section in Cypher Language Reference with examples
-
-**Implementation Details:**
-- Parser: `open_cypher_parser/expression.rs` - full syntax support
-- Rewriter: `query_planner/pattern_comprehension_rewriter.rs` - transforms to OPTIONAL MATCH + collect()
-- SQL Generation: LEFT JOIN with groupArray() aggregation
-- Tests: 5 integration tests covering all features
-
-**Examples:**
-```cypher
--- Social network - collect friend names
-MATCH (u:User) WHERE u.user_id = 1
-RETURN u.name, [(u)-[:FOLLOWS]->(f) | f.name] AS friends
-
--- E-commerce - expensive purchases only
-MATCH (c:Customer)
-RETURN c.name, [(c)-[:PURCHASED]->(p) WHERE p.price > 100 | p.name] AS luxury_items
-
--- Compare followers and following
-MATCH (u:User)
-RETURN u.name,
-       [(u)-[:FOLLOWS]->(f) | f.name] AS following,
-       [(u)<-[:FOLLOWS]-(f) | f.name] AS followers
-```
-
-**Use Cases:**
-- Friend recommendations (social networks)
-- Product bundles (e-commerce)
-- Citation analysis (knowledge graphs)
-- Activity tracking (event systems)
-
-**Related:**
-- Works seamlessly with OPTIONAL MATCH
-- Integrates with collect() aggregation
-- Supports all Cypher expressions in projections
-- Compatible with multi-schema architecture
-
----
-
-### 🐛 Bug Fixes
-
-#### Error Message Terminology Fix (Dec 25, 2025)
-
-**Fixed error messages to use correct graph terminology:**
-- Nodes: \"Missing **label** for node `{alias}`\"
-- Relationships: \"Missing **type** for relationship `{alias}`\" (was incorrectly saying \"label\")
-
-**Impact:**
-- Clearer error messages improve debugging experience
-- Helps users understand the difference between node labels and relationship types
-- Test coverage: 4 new tests in `test_count_relationships.py`
-
-**Files changed:**
-- `src/query_planner/plan_ctx/errors.rs` - Updated error enum definitions
-- `src/query_planner/plan_ctx/mod.rs` - Added `is_rel` parameter to `get_label_str()`
-
-**Related issue**: COUNT(r) investigation revealed incorrect terminology
-
----
-
-- *(schema)* **Edge Constraints for cross-node validation** (Dec 24-27, 2025) 🎯 **PRODUCTION-READY**
-  - Enables logical constraints between connected nodes (e.g., `from.timestamp <= to.timestamp`)
-  - Defined in schema YAML, automatically applied to all queries
-  - **Test Coverage**: 8/8 tests passing (100% of all schema patterns)
-  - Supports: Standard edge (3-table), FK-edge (1-table), Denormalized, Polymorphic, VLP schemas
-  - Single-hop: Constraints in JOIN ON clause
-  - Variable-length paths: Constraints in both base and recursive CTE WHERE clauses
-  - Resolves property names to physical columns based on node schemas
-  - **Documented**: Added to `docs/schema-reference.md` as key differentiator feature
+- *(graph_join_inference)* Phase 3 - Break up infer_graph_join() god method
+- [**breaking**] Migrate all integration tests to multi-schema format
+- [**breaking**] Remove obsolete unified_test_schema and cleanup
+- Consolidate denormalized_flights schema references
 
 ### 📚 Documentation
 
-- *(schema)* Added edge constraints to schema reference guide (Dec 27, 2025)
-  - Highlighted as key differentiator in opening section
-  - Comprehensive examples for all schema patterns
-  - Operator support and compilation details
-  - Known limitations documented for future enhancement
-
-### 🐛 Bug Fixes
-
-- *(schema)* Fixed edge constraints schema threading for VLP (Dec 27, 2025)
-  - **Root Cause**: VLP CTE generator used hardcoded "default" schema lookup → failed for named schemas
-  - **Fix**: Thread `schema: &'a GraphSchema` through entire VLP generation pipeline
-  - **Changes**: 
-    - Added lifetime parameter `'a` to `VariableLengthCteGenerator<'a>` struct
-    - Updated all constructors to accept schema parameter
-    - Eliminated hardcoded `for schema_name in ["default", ""]` loop
-    - Direct schema usage: `self.schema.get_relationships_schema_opt(rel_type)`
-  - **Impact**: VLP constraints now working for all schema patterns
-  - **Files Changed**: 
-    - `variable_length_cte.rs`: Added schema field and updated constraint compilation
-    - `cte_extraction.rs`: Pass schema to all VLP generator constructors
-  - See `SCHEMA_THREADING_ARCHITECTURE.md` for complete architecture explanation
-
-- *(schema)* Fixed edge constraints schema threading for single-hop (Dec 27, 2025)
-  - **Root Cause**: Hardcoded "default" schema lookup in `extract_joins()` failed for named schemas
-  - **Fix**: Thread `schema: &GraphSchema` parameter through `extract_joins()` trait
-  - **Impact**: FK-edge pattern now working, explicit schema handling prevents hidden bugs
-  - Updated 15+ call sites across plan_builder.rs
-  - Made "default" explicit with clear logging ("explicit default - no USE clause")
-  - Fail loudly on missing schema with available schemas list (no silent fallbacks)
-  - See `EDGE_CONSTRAINTS_FIX_SUMMARY.md` for technical details
-
-- *(optimization)* Property pruning optimization for memory-efficient queries (Dec 24, 2025)
-  - Reduces SQL column expansion from all properties to only needed ones
-  - 85-98% memory reduction for queries accessing few properties from wide tables
-  - Analyzer pass extracts property requirements from RETURN/WITH clauses
-  - Special handling for UNWIND property mapping (e.g., `UNWIND collect(f) AS friend, RETURN friend.name` → requires only `f.name`)
-  - Supports CASE expressions, nested binary operators, scalar/aggregate functions
-  - 34/34 unit tests passing (expanded from 19 to 34 tests, 79% increase)
-  - See `notes/property-pruning.md` for complete technical details
+- Update README.md with v0.6.0 and accumulated features
+- Update KNOWN_ISSUES.md with v0.6.0 fixes
+- Archive wiki for v0.6.0 release
+- Add release notes for v0.6.0
+- Fix ClickHouse function prefix (ch./chagg. not clickhouse.)
+- Fix composite node ID example (use nodes not edges)
+- Update STATUS and investigation plan with anonymous node fix
+- Update STATUS with property usage optimization and current test status
+- Complete test infrastructure documentation
+- Update STATUS with schema loading fix
+- Update STATUS - ALL INTEGRATION TESTS PASSING! 🎉
+- Add comprehensive architecture analysis for Scan/ViewScan/GraphNode relationships
+- Update gap analysis - Gap #2 already implemented
+- Add schema testing requirements (VLP multi-schema mandate)
+- Add VLP denormalized property handling TODO
+- Add session findings and feature analysis
+- Clean up KNOWN_ISSUES.md and add path function limitation
+- Update CHANGELOG and test infrastructure for VLP fixes
+- Add multi-schema configuration documentation
+- Add multi-schema setup guide
+- Update TESTING.md for multi-schema architecture
+- Update STATUS.md - remove load_test_schemas.py reference
+- Add VS Code terminal freeze prevention to TESTING.md
+- Document VLP WHERE clause bug discovery
+- Update Cypher-Subgraph-Extraction.md with verified pattern support matrix
+- Document max_inferred_types feature and update default to 5
+- Update STATUS with LDBC progress and IC-9 CTE naming issue
+- Systematic documentation cleanup and reorganization
+- Streamline STATUS.md to focus on current state (2822 → 322 lines)
+- LDBC benchmark baseline testing and analysis
+- Update README test coverage to 3000+ tests and reorganize features
 
 ### 🧪 Testing
 
-- *(tests)* Comprehensive property pruning test suite (20 analyzer tests, 14 data structure tests)
-  - Binary expression tests (simple and nested AND/OR)
-  - Function tests (scalar functions, aggregate functions with/without properties)
-  - CASE expression support
-  - Filter node tests with complex predicates
-  - OrderBy with multiple properties
-  - Mixed wildcard and specific requirement scenarios
-  - UNWIND property mapping tests (specific properties and wildcards)
-  - Edge case coverage (empty plans, literals, multiple aliases)
-- *(tests)* Validate property pruning with live ClickHouse queries
+- Update test expectations for known limitations
+- Add error message verification for known limitations
+- *(graph_join_inference)* Add comprehensive unit tests for Phase 4 uniqueness constraints
+- Add comprehensive VLP cross-functional testing
+- Add comprehensive GraphRAG schema variation tests
+- Add zero-length VLP tests for [*0..] and [*0..N] patterns
 
+### ⚙️ Miscellaneous Tasks
+
+- Update CHANGELOG.md [skip ci]
+- Add lineage test schema and cleanup temporary files
+- Move SCHEMA_THREADING_ARCHITECTURE.md to docs/development/
+- Ignore docs1 directory in gitignore
+- Clean up docs
+- More doc cleanup
+- More docs clean up, README
+- Remove unused Flight node from unified_test_schema.yaml
 ## [0.6.0] - 2025-12-22
 
 ### 🚀 Features
@@ -590,7 +176,7 @@ RETURN u.name,
 - Add schema entity collection in VariableResolver for Projection scope
 - Add dedicated LabelInference analyzer pass
 - Enhance TypeInference to infer both node labels and edge types
-- Reduce MAX_INFERRED_TYPES from 20 to 5 (later made configurable in v0.6.1)
+- Reduce MAX_INFERRED_TYPES from 20 to 5
 - *(parser)* Add clear error messages for unsupported pattern comprehensions
 - *(parser)* Add clear error messages for bidirectional relationship patterns
 - *(parser)* Convert temporal property accessors to function calls
