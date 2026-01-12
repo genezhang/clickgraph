@@ -69,6 +69,7 @@
 
 - Comprehensive test failure categorization (507 failures)
 - V0.6.1 - WITH clause fixes, GraphRAG enhancements, LDBC progress
+- Update Cargo.lock for v0.6.1 release
 
 ### 🚜 Refactor
 
@@ -110,6 +111,7 @@
 - Streamline STATUS.md to focus on current state (2822 → 322 lines)
 - LDBC benchmark baseline testing and analysis
 - Update README test coverage to 3000+ tests and reorganize features
+- Archive wiki documentation for v0.6.1 release
 
 ### 🧪 Testing
 
@@ -130,6 +132,7 @@
 - More doc cleanup
 - More docs clean up, README
 - Remove unused Flight node from unified_test_schema.yaml
+- Update CHANGELOG.md [skip ci]
 ## [0.6.0] - 2025-12-22
 
 ### 🚀 Features
