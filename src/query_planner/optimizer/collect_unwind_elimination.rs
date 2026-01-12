@@ -429,49 +429,45 @@ impl CollectUnwindElimination {
                                             alias_map.insert(unwound.clone(), source.clone());
 
                                             // Recursively optimize the WITH input
-                                            let (optimized_input, mut input_alias_map) = Self::optimize_node(with.input.clone())?;
+                                            let (optimized_input, input_alias_map) = Self::optimize_node(with.input.clone())?;
                                             
                                             // Merge alias maps
                                             alias_map.extend(input_alias_map);
                                             
                                             return Ok((optimized_input, alias_map));
+                                        } else {
                                             // Complex case: WITH has other items
-                                            // Strategy: Replace collect() with source, export under original name
+                                            // Strategy: Keep WITH but remove collect(), keep other items
                                             // Build alias map: UNWIND alias -> source for expression rewriting
                                             log::info!(
-                                                "🔥 CollectUnwindElimination: Complex elimination - WITH has {} other items, replacing collect with passthrough, mapping {} -> {}",
+                                                "🔥 CollectUnwindElimination: Complex elimination - WITH has {} other items, removing collect, mapping {} -> {}",
                                                 other_items.len(), unwound, source
                                             );
 
-                                            // Build new items: keep other items, replace collect with source
-                                            // BUT keep the collection name (not unwind name) since WITH still uses it
-                                            let mut new_items: Vec<ProjectionItem> = vec![];
-                                            
-                                            for item in &with.items {
-                                                if let Some(ref col_alias) = item.col_alias {
-                                                    if &col_alias.0 == collection_name {
-                                                        // Replace collect(source) with just source, keep original alias
-                                                        // This creates: f as friends (not f as friend!)
-                                                        new_items.push(ProjectionItem {
-                                                            expression: LogicalExpr::TableAlias(
-                                                                crate::query_planner::logical_expr::TableAlias(source.clone())
-                                                            ),
-                                                            col_alias: Some(crate::query_planner::logical_expr::ColumnAlias(
-                                                                collection_name.clone() // Keep as 'friends'
-                                                            )),
-                                                        });
+                                            // Build new items: keep other items, remove the collect entirely
+                                            let new_items: Vec<ProjectionItem> = with.items
+                                                .iter()
+                                                .filter(|item| {
+                                                    if let Some(ref col_alias) = item.col_alias {
+                                                        &col_alias.0 != collection_name
                                                     } else {
-                                                        new_items.push(item.clone());
+                                                        true
                                                     }
-                                                } else {
-                                                    new_items.push(item.clone());
-                                                }
-                                            }
+                                                })
+                                                .cloned()
+                                                .collect();
+
+                                            // Update exported aliases to remove the collection
+                                            let new_exported_aliases: Vec<String> = with.exported_aliases
+                                                .iter()
+                                                .filter(|a| *a != collection_name)
+                                                .cloned()
+                                                .collect();
 
                                             let (optimized_input, input_alias_map) =
                                                 Self::optimize_node(with.input.clone())?;
 
-                                            // Create modified WITH clause (keeps 'friends' not 'friend')
+                                            // Create modified WITH clause without the collect
                                             let new_with = Arc::new(LogicalPlan::WithClause(
                                                 WithClause {
                                                     input: optimized_input,
@@ -481,13 +477,12 @@ impl CollectUnwindElimination {
                                                     skip: with.skip,
                                                     limit: with.limit,
                                                     where_clause: with.where_clause.clone(),
-                                                    exported_aliases: with.exported_aliases.clone(), // Keep original
+                                                    exported_aliases: new_exported_aliases,
                                                     cte_references: with.cte_references.clone(),
                                                 },
                                             ));
 
-                                            // Now we need to map: UNWIND created 'friend' but we have 'friends' which points to 'f'
-                                            // So map: friend -> f (source)
+                                            // Map: UNWIND alias -> source variable
                                             let mut alias_map = HashMap::new();
                                             alias_map.insert(unwound.clone(), source.clone());
                                             alias_map.extend(input_alias_map);

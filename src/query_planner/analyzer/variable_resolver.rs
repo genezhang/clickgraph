@@ -280,6 +280,11 @@ impl VariableResolver {
                     cte_references.insert(alias.clone(), cte_name.clone());
                 }
 
+                log::warn!(
+                    "🔍 DEBUG VariableResolver: Building cte_references for WITH exporting {:?}: {:?}",
+                    wc.exported_aliases, cte_references
+                );
+
                 // Step 6: Return new WithClause with resolved data
                 let new_wc = WithClause {
                     input: new_input,
@@ -1015,15 +1020,46 @@ impl AnalyzerPass for VariableResolver {
     fn analyze(
         &self,
         logical_plan: Arc<LogicalPlan>,
-        _plan_ctx: &mut PlanCtx,
+        plan_ctx: &mut PlanCtx,
     ) -> Result<Transformed<Arc<LogicalPlan>>, AnalyzerError> {
         log::info!("🔍 VariableResolver: Starting variable resolution");
+
+        // CRITICAL: Sync CTE counter with plan_ctx to match CteSchemaResolver
+        // CteSchemaResolver runs first and increments plan_ctx.cte_counter
+        // We must continue from that counter to ensure consistent CTE naming
+        {
+            let mut counter = self.cte_counter.borrow_mut();
+            *counter = plan_ctx.cte_counter;
+            log::info!(
+                "🔍 VariableResolver: Synced CTE counter to {} from plan_ctx",
+                *counter
+            );
+        }
 
         // Start with root scope (no variables)
         let root_scope = ScopeContext::root();
 
         // Resolve the entire plan tree
         let result = self.resolve(logical_plan, &root_scope)?;
+
+        // DEBUG: Check result cte_references
+        fn count_cte_refs(plan: &LogicalPlan) -> usize {
+            match plan {
+                LogicalPlan::WithClause(wc) => {
+                    eprintln!("🔬 VariableResolver RESULT: WithClause has {} cte_references: {:?}", 
+                             wc.cte_references.len(), wc.cte_references);
+                    wc.cte_references.len() + count_cte_refs(&wc.input)
+                }
+                LogicalPlan::Projection(p) => count_cte_refs(&p.input),
+                LogicalPlan::Limit(l) => count_cte_refs(&l.input),
+                _ => 0,
+            }
+        }
+        let result_plan = match &result {
+            Transformed::Yes(p) | Transformed::No(p) => p.as_ref(),
+        };
+        let total_refs = count_cte_refs(result_plan);
+        eprintln!("🔬 VariableResolver: RETURNING plan with {} total cte_references", total_refs);
 
         log::info!(
             "🔍 VariableResolver: Completed - transformed: {}",

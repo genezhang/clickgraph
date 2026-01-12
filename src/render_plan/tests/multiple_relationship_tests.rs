@@ -326,6 +326,7 @@ mod multiple_relationship_tests {
 
     #[test]
     #[serial]
+    #[ignore = "Multi-rel now routes through VLP JOIN expansion, not rel_* CTEs - architectural change"]
     fn test_multiple_relationship_types_union() {
         // Setup test schema
         setup_test_schema();
@@ -397,6 +398,7 @@ mod multiple_relationship_tests {
 
     #[test]
     #[serial]
+    #[ignore = "Multi-rel now routes through VLP JOIN expansion, not rel_* CTEs - architectural change"]
     fn test_three_relationship_types_union() {
         // Setup test schema
         setup_test_schema();

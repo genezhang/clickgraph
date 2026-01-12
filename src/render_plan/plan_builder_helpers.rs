@@ -364,6 +364,10 @@ pub(super) fn is_node_denormalized(plan: &LogicalPlan) -> bool {
 
 /// Helper function to extract the actual table name from a LogicalPlan node
 /// Recursively traverses the plan tree to find the Scan or ViewScan node
+/// 
+/// NOTE: For GraphRel, this returns the relationship table (center), which is correct
+/// for most use cases. If you need the END NODE table from a nested GraphRel,
+/// use `extract_end_node_table_name` instead.
 pub(super) fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
     match plan {
         // For CTEs, return the CTE name directly (don't recurse into input)
@@ -373,6 +377,50 @@ pub(super) fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::GraphRel(rel) => extract_table_name(&rel.center),
         LogicalPlan::Filter(filter) => extract_table_name(&filter.input),
         LogicalPlan::Projection(proj) => extract_table_name(&proj.input),
+        _ => None,
+    }
+}
+
+/// Helper function to extract the END NODE table name from a LogicalPlan node.
+/// 
+/// CRITICAL: For nested GraphRel patterns (multi-hop traversals), this extracts
+/// the rightmost/terminal node's table, NOT the relationship table.
+/// 
+/// Example: For `(a)-[:REL1]-(b)-[:REL2]-(c)` represented as:
+///   GraphRel { left: GraphNode(a), center: REL1, right: GraphRel { left: b, center: REL2, right: c } }
+/// 
+/// - `extract_table_name` on the outer GraphRel would return REL1's table (WRONG for end node)
+/// - `extract_end_node_table_name` on the outer GraphRel.right would return c's table (CORRECT)
+pub(super) fn extract_end_node_table_name(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::Cte(cte) => Some(cte.name.clone()),
+        LogicalPlan::ViewScan(view_scan) => Some(view_scan.source_table.clone()),
+        LogicalPlan::GraphNode(node) => extract_end_node_table_name(&node.input),
+        // CRITICAL: For GraphRel, extract from the RIGHT side (end node), not CENTER (relationship)
+        LogicalPlan::GraphRel(rel) => extract_end_node_table_name(&rel.right),
+        LogicalPlan::Filter(filter) => extract_end_node_table_name(&filter.input),
+        LogicalPlan::Projection(proj) => extract_end_node_table_name(&proj.input),
+        _ => None,
+    }
+}
+
+/// Extract the ID column of the END NODE in a potentially nested GraphRel pattern.
+/// 
+/// Similar to `extract_end_node_table_name`, but for ID columns.
+/// For nested patterns like (a)-[r1]->(b)-[r2]->(c), when called on the outer GraphRel.right,
+/// this traverses through inner GraphRels to find the actual end node's ID column.
+/// 
+/// The difference from `extract_id_column` is:
+/// - `extract_id_column(&GraphRel)` returns rel.center's ID (relationship table's ID) 
+/// - `extract_end_node_id_column(&GraphRel)` returns the actual end node's ID (via rel.right)
+pub(super) fn extract_end_node_id_column(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::ViewScan(view_scan) => Some(view_scan.id_column.clone()),
+        LogicalPlan::GraphNode(node) => extract_end_node_id_column(&node.input),
+        // CRITICAL: For GraphRel, extract from the RIGHT side (end node), not CENTER (relationship)
+        LogicalPlan::GraphRel(rel) => extract_end_node_id_column(&rel.right),
+        LogicalPlan::Filter(filter) => extract_end_node_id_column(&filter.input),
+        LogicalPlan::Projection(proj) => extract_end_node_id_column(&proj.input),
         _ => None,
     }
 }
@@ -2596,6 +2644,9 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
             LogicalPlan::Filter(f) => contains_actual_with_clause(&f.input),
             LogicalPlan::GroupBy(gb) => contains_actual_with_clause(&gb.input),
             LogicalPlan::Union(u) => u.inputs.iter().any(|i| contains_actual_with_clause(i)),
+            LogicalPlan::CartesianProduct(cp) => {
+                contains_actual_with_clause(&cp.left) || contains_actual_with_clause(&cp.right)
+            }
             LogicalPlan::GraphNode(gn) => contains_actual_with_clause(&gn.input),
             LogicalPlan::Limit(l) => contains_actual_with_clause(&l.input),
             LogicalPlan::OrderBy(o) => contains_actual_with_clause(&o.input),
@@ -2699,6 +2750,10 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
             .inputs
             .iter()
             .any(|input| has_with_clause_in_graph_rel(input)),
+        // Check CartesianProduct - WITH clauses might be in either branch
+        LogicalPlan::CartesianProduct(cp) => {
+            has_with_clause_in_graph_rel(&cp.left) || has_with_clause_in_graph_rel(&cp.right)
+        }
         _ => false,
     }
 }

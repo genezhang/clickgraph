@@ -1,5 +1,63 @@
 ## [Unreleased]
 
+### 🐛 Bug Fixes
+
+#### WITH + MATCH Pattern (CartesianProduct) (Jan 12, 2026)
+
+**Fixed queries with disconnected MATCH patterns separated by WITH clause.**
+
+- **Example now working**:
+  ```cypher
+  # Simple WITH + MATCH
+  MATCH (p:Person {id: 933})
+  WITH p.creationDate AS pcd
+  MATCH (p2:Person)
+  WHERE p2.creationDate >= pcd
+  RETURN p2.id
+  
+  # VLP + WITH + MATCH (IC-6)
+  MATCH (person:Person)-[:KNOWS*1..2]-(friend:Person)
+  WITH DISTINCT friend
+  MATCH (friend)<-[:HAS_CREATOR]-(post:Post)
+  RETURN friend.id, post.id
+  ```
+- **Root Cause**: Query planner generates `CartesianProduct` nodes for disconnected patterns. Two functions didn't handle CartesianProduct:
+  - `find_all_with_clauses_impl()` - couldn't detect WITH clauses inside CartesianProduct
+  - `replace_with_clause_with_cte_reference_v2()` - couldn't recurse to replace WITH with CTE references
+  - Result: Infinite loop trying to process detected but unreachable WITH clauses (hit 10 iteration limit)
+- **Fix**: Added CartesianProduct recursion to both functions (recurse into left and right branches)
+- **Impact**: **+6 LDBC queries** passing: IC-4, IC-6, BI-5, BI-11, BI-12, BI-19 → **15/41 total (37%)**
+- **Files Modified**: `src/render_plan/plan_builder.rs` (lines 4726-4732, 5910-5932)
+
+---
+
+#### Chained WITH CTE Name Remapping (Jan 11, 2026)
+
+**Fixed 3+ level chained WITHs generating SQL with incorrect CTE references.**
+
+- **Example now working**:
+  ```cypher
+  # 3-level chained WITH
+  MATCH (p:Person) 
+  WITH p.lastName AS lnm 
+  WITH lnm 
+  WITH lnm 
+  RETURN lnm LIMIT 7
+  
+  # Multi-column with CASE expressions
+  MATCH (p:Person) 
+  WITH p.firstName AS name, CASE WHEN p.gender = 'male' THEN 1 ELSE 0 END AS isMale 
+  WITH name, isMale 
+  WITH name, isMale 
+  RETURN name, isMale
+  ```
+- **Root Cause**: `collapse_passthrough_with()` matched passthroughs by alias only. With multiple consecutive WITHs having same alias, it collapsed the outermost instead of the target, causing CTE name remapping to record wrong mappings.
+- **Fix**: Modified `collapse_passthrough_with()` to accept `target_cte_name` parameter (analyzer's CTE name). Now matches both alias AND analyzer CTE name from `wc.cte_references` to ensure exact passthrough WITH is collapsed.
+- **Impact**: Unlocks **LDBC IC-1, IC-2** and other complex queries with chained WITHs
+- **Test Results**: ✅ 2-level, 3-level, 4-level, and multi-column chained WITHs all working
+- **Files Modified**: `src/render_plan/plan_builder.rs` (lines 4823-4933, 2000-2040)
+
+---
 
 ### 🚀 Features
 

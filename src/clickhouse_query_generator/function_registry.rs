@@ -29,7 +29,8 @@ lazy_static::lazy_static! {
 
         // ===== DATETIME FUNCTIONS =====
 
-        // datetime() -> parseDateTime64BestEffort(arg, 3, 'UTC')
+        // datetime() -> parseDateTime64BestEffort(arg) with millisecond precision
+        // Returns DateTime64(3) type
         m.insert("datetime", FunctionMapping {
             neo4j_name: "datetime",
             clickhouse_name: "parseDateTime64BestEffort",
@@ -38,8 +39,25 @@ lazy_static::lazy_static! {
                     // datetime() with no args returns current timestamp
                     vec!["now64(3)".to_string()]
                 } else {
-                    // datetime(string) parses ISO8601
-                    vec![args[0].clone(), "3".to_string()]
+                    // datetime(string) parses ISO8601/various formats to DateTime64
+                    vec![args[0].clone(), "3".to_string()] // 3 = millisecond precision
+                }
+            }),
+        });
+
+        // toUnixTimestampMillis() -> toUnixTimestamp64Milli(parseDateTime64BestEffort(arg))
+        // Converts datetime string to Unix timestamp in milliseconds (Int64)
+        // For schemas that store dates as Int64 milliseconds (e.g., LDBC)
+        m.insert("tounixtimestampmillis", FunctionMapping {
+            neo4j_name: "toUnixTimestampMillis",
+            clickhouse_name: "toUnixTimestamp64Milli",
+            arg_transform: Some(|args| {
+                if args.is_empty() {
+                    // No args: return current time in milliseconds
+                    vec!["now64(3)".to_string()]
+                } else {
+                    // Parse string and convert to milliseconds since epoch
+                    vec![format!("parseDateTime64BestEffort({}, 3)", args[0])]
                 }
             }),
         });

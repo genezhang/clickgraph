@@ -16,14 +16,14 @@
 | Query | Status | Class | Notes |
 |-------|--------|-------|-------|
 | IS-1 | ✅ Pass | 1 | Person profile |
-| IS-2 | ✅ Pass | 1 | Recent messages |
+| IS-2 | ❌ Fail | X | WITH + VLP CTE reference bug |
 | IS-3 | ✅ Pass | 1 | Friends |
-| IS-4 | ⚠️ Missing | - | No file in dataset |
+| IS-4 | ✅ Pass | 1 | Message content |
 | IS-5 | ✅ Pass | 1 | Message creator |
-| IS-6 | ⚠️ Missing | - | No file in dataset |
-| IS-7 | ⚠️ Adapted | 2 | OPTIONAL MATCH + inline property bug |
+| IS-6 | ✅ Pass | 1 | Forum |
+| IS-7 | ✅ Pass | 1 | Replies (consecutive MATCH+WHERE fix resolved it!) |
 
-**Summary**: 4/5 Class 1, 1 Class 2, 2 missing files
+**Summary**: 6/7 Class 1, 1 Class X (WITH CTE bug)
 
 ## Interactive Complex (IC) - 14 queries
 

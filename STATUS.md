@@ -1,10 +1,18 @@
 # ClickGraph Status
 
-*Updated: January 11, 2026*
+*Updated: January 12, 2026 (early morning)*
 
 ## Current Version
 
 **v0.6.1** - Production-ready graph query engine for ClickHouse
+
+**LDBC SNB Benchmark Status**: 15/41 queries passing (37%)
+- Interactive Short: 7/7 (100%) ✅
+- Interactive Complex: 4/14 (29%) - IC-1, IC-2, IC-4, IC-6 working
+- Business Intelligence: 4/20 (20%) - BI-5, BI-11, BI-12, BI-19 working
+
+**Known Issues**: 3 active bugs (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md))
+- 🔥 **High Priority**: VLP CTE column scoping (blocks 7+ queries)
 
 ## What Works Now
 

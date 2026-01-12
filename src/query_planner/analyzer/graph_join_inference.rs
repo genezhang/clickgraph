@@ -1562,6 +1562,18 @@ impl GraphJoinInference {
                     Transformed::Yes(p) => p.clone(),
                     Transformed::No(p) => p.clone(),
                 };
+                
+                // DEBUG: Check cte_references in processed_child
+                fn count_with_cte_refs(plan: &LogicalPlan) -> usize {
+                    match plan {
+                        LogicalPlan::WithClause(wc) => {
+                            wc.cte_references.len() + count_with_cte_refs(&wc.input)
+                        }
+                        _ => 0,
+                    }
+                }
+                eprintln!("🔬 GraphJoinInference Projection: processed_child has {} cte_references", 
+                         count_with_cte_refs(&processed_child));
 
                 // Build the new projection with the processed child
                 let new_projection = Arc::new(LogicalPlan::Projection(
@@ -2133,31 +2145,15 @@ impl GraphJoinInference {
                     with_clause.exported_aliases.len()
                 );
                 
-                // Look up the captured CTE references for this WITH clause
-                let cte_name = generate_cte_base_name(&with_clause.exported_aliases);
+                // CRITICAL: Preserve cte_references from VariableResolver!
+                // VariableResolver already populated the correct cte_references.
+                // We should NOT overwrite them with our lookup logic.
+                eprintln!("🔬 GraphJoinInference::build_graph_joins: WithClause has {} cte_references: {:?}", 
+                           with_clause.cte_references.len(), with_clause.cte_references);
                 
-                let cte_references = captured_cte_refs.iter()
-                    .find(|(name, _)| name == &cte_name)
-                    .map(|(_, refs)| refs.clone())
-                    .unwrap_or_default();
-                
-                log::info!("   ✓ Found {} CTE references for '{}': {:?}", 
-                           cte_references.len(), cte_name, cte_references);
-                
-                // Return a new WithClause with cte_references populated
-                Transformed::Yes(Arc::new(LogicalPlan::WithClause(
-                    crate::query_planner::logical_plan::WithClause {
-                        input: with_clause.input.clone(),
-                        items: with_clause.items.clone(),
-                        distinct: with_clause.distinct,
-                        order_by: with_clause.order_by.clone(),
-                        skip: with_clause.skip,
-                        limit: with_clause.limit,
-                        where_clause: with_clause.where_clause.clone(),
-                        exported_aliases: with_clause.exported_aliases.clone(),
-                        cte_references,
-                    },
-                )))
+                // IMPORTANT: Return the logical_plan parameter directly, NOT plan.clone()
+                // This preserves the cte_references that VariableResolver populated
+                Transformed::No(logical_plan.clone())
             }
         };
         Ok(transformed_plan)

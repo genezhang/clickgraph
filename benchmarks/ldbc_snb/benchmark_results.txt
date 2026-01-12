@@ -1,0 +1,19 @@
+
+==================================================
+Testing Interactive Short (IS) Queries
+==================================================
+
+==================================================
+Testing Interactive Complex (IC) Queries
+==================================================
+
+==================================================
+Testing Business Intelligence (BI) Queries
+==================================================
+Traceback (most recent call last):
+  File "/home/gz/clickgraph/benchmarks/ldbc_snb/scripts/test_all_ldbc_queries.py", line 221, in <module>
+    main()
+  File "/home/gz/clickgraph/benchmarks/ldbc_snb/scripts/test_all_ldbc_queries.py", line 201, in main
+    with open(results_file, 'w') as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'benchmarks/ldbc_snb/test_results_20260111_195014.json'

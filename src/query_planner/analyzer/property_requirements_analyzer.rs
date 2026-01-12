@@ -859,7 +859,8 @@ mod tests {
     
     #[test]
     fn test_collect_with_property_access() {
-        // Test: collect(u.name) should require only u.name, not all u properties
+        // Test: collect(u.name) should NOT analyze argument - handled by UNWIND mapping
+        // This changed in commit 610f0ce: collect() args are analyzed via UNWIND, not directly
         let mut reqs = PropertyRequirements::new();
         
         let expr = LogicalExpr::AggregateFnCall(AggregateFnCall {
@@ -874,14 +875,14 @@ mod tests {
         
         PropertyRequirementsAnalyzer::analyze_expression(&expr, &mut reqs);
         
-        let u_props = reqs.get_requirements("u").unwrap();
-        assert_eq!(u_props.len(), 1);
-        assert!(u_props.contains("name"));
+        // collect() args are NOT analyzed directly - handled by UNWIND
+        assert!(reqs.get_requirements("u").is_none());
     }
     
     #[test]
     fn test_collect_without_property_marks_wildcard() {
-        // Test: collect(u) should mark u as wildcard
+        // Test: collect(u) should NOT analyze argument - handled by UNWIND mapping
+        // This changed in commit 610f0ce: collect() args are analyzed via UNWIND, not directly
         let mut reqs = PropertyRequirements::new();
         
         let expr = LogicalExpr::AggregateFnCall(AggregateFnCall {
@@ -891,7 +892,8 @@ mod tests {
         
         PropertyRequirementsAnalyzer::analyze_expression(&expr, &mut reqs);
         
-        assert!(reqs.requires_all("u"));
+        // collect() args are NOT analyzed directly - handled by UNWIND
+        assert!(!reqs.requires_all("u"));
     }
     
     #[test]

@@ -368,7 +368,8 @@ mod tests {
             Ok(ast) => {
                 // These clauses should be present.
                 assert!(!ast.match_clauses.is_empty(), "Expected MATCH clause");
-                assert!(ast.where_clause.is_some(), "Expected WHERE clause");
+                // WHERE clause is now part of MATCH clause per OpenCypher spec
+                assert!(ast.match_clauses[0].where_clause.is_some(), "Expected WHERE clause in MATCH clause");
                 assert!(ast.return_clause.is_some(), "Expected RETURN clause");
                 // The rest should be None.
                 assert!(ast.with_clause.is_none(), "Expected WITH clause to be None");
@@ -407,7 +408,8 @@ mod tests {
         match parsed {
             Ok(ast) => {
                 assert!(!ast.match_clauses.is_empty(), "Expected MATCH clause");
-                assert!(ast.where_clause.is_some(), "Expected WHERE clause");
+                // WHERE clause is now part of MATCH clause per OpenCypher spec
+                assert!(ast.match_clauses[0].where_clause.is_some(), "Expected WHERE clause in MATCH clause");
                 assert!(ast.return_clause.is_some(), "Expected RETURN clause");
             }
             Err(e) => panic!("Pattern comprehension query parsing failed: {:?}", e),
@@ -475,6 +477,7 @@ mod tests {
                     })),
                 },
             ]))],
+            where_clause: None,
         };
 
         assert_eq!(*match_clause, expected_match_clause);
@@ -660,35 +663,34 @@ mod tests {
                     })),
                 },
             ]))],
+            where_clause: Some(WhereClause {
+                conditions: Expression::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::And,
+                    operands: vec![
+                        // p IS NOT NULL
+                        Expression::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::IsNotNull,
+                            operands: vec![Expression::Variable("p")],
+                        }),
+                        // movie.name = 'Batman'
+                        Expression::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                Expression::PropertyAccessExp(PropertyAccess {
+                                    base: "movie",
+                                    key: "name",
+                                }),
+                                Expression::Literal(Literal::String("Batman")),
+                            ],
+                        }),
+                    ],
+                }),
+            }),
         };
         assert_eq!(*match_clause, expected_match_clause);
 
-        assert!(query_ast.where_clause.is_some(), "Expected WHERE clause");
-        let where_clause = query_ast.where_clause.unwrap();
-        let expected_where_clause = WhereClause {
-            conditions: Expression::OperatorApplicationExp(OperatorApplication {
-                operator: Operator::And,
-                operands: vec![
-                    // p IS NOT NULL
-                    Expression::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::IsNotNull,
-                        operands: vec![Expression::Variable("p")],
-                    }),
-                    // movie.name = 'Batman'
-                    Expression::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            Expression::PropertyAccessExp(PropertyAccess {
-                                base: "movie",
-                                key: "name",
-                            }),
-                            Expression::Literal(Literal::String("Batman")),
-                        ],
-                    }),
-                ],
-            }),
-        };
-        assert_eq!(where_clause, expected_where_clause);
+        // WHERE clause is now part of MATCH clause per OpenCypher grammar
+        // assert!(query_ast.where_clause.is_some(), "Expected WHERE clause");
 
         assert!(query_ast.return_clause.is_some(), "Expected RETURN clause");
         let return_clause = query_ast.return_clause.unwrap();
@@ -797,39 +799,38 @@ mod tests {
                     properties: None,
                 })),
             ],
+            where_clause: Some(WhereClause {
+                conditions: Expression::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::And,
+                    operands: vec![
+                        Expression::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                Expression::PropertyAccessExp(PropertyAccess {
+                                    base: "a",
+                                    key: "name",
+                                }),
+                                Expression::Literal(Literal::String("Node A")),
+                            ],
+                        }),
+                        Expression::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                Expression::PropertyAccessExp(PropertyAccess {
+                                    base: "b",
+                                    key: "name",
+                                }),
+                                Expression::Literal(Literal::String("Node B")),
+                            ],
+                        }),
+                    ],
+                }),
+            }),
         };
         assert_eq!(*match_clause, expected_match_clause);
 
-        assert!(query_ast.where_clause.is_some(), "Expected WHERE clause");
-        let where_clause = query_ast.where_clause.unwrap();
-        let expected_where_clause = WhereClause {
-            conditions: Expression::OperatorApplicationExp(OperatorApplication {
-                operator: Operator::And,
-                operands: vec![
-                    Expression::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            Expression::PropertyAccessExp(PropertyAccess {
-                                base: "a",
-                                key: "name",
-                            }),
-                            Expression::Literal(Literal::String("Node A")),
-                        ],
-                    }),
-                    Expression::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            Expression::PropertyAccessExp(PropertyAccess {
-                                base: "b",
-                                key: "name",
-                            }),
-                            Expression::Literal(Literal::String("Node B")),
-                        ],
-                    }),
-                ],
-            }),
-        };
-        assert_eq!(where_clause, expected_where_clause);
+        // WHERE clause is now part of MATCH clause per OpenCypher spec
+        // assert!(query_ast.where_clause.is_some(), "Expected WHERE clause");
 
         assert!(query_ast.create_clause.is_some(), "Expected CREATE clause");
         let create_clause = query_ast.create_clause.unwrap();
@@ -924,6 +925,7 @@ mod tests {
                     value: Expression::Literal(Literal::String("Andres")),
                 })]),
             }))],
+            where_clause: None,
         };
         assert_eq!(*match_clause, expected_match_clause);
 
@@ -1014,6 +1016,7 @@ mod tests {
                     value: Expression::Literal(Literal::String("Andres")),
                 })]),
             }))],
+            where_clause: None,
         };
         assert_eq!(*match_clause, expected_match_clause);
 
@@ -1084,6 +1087,7 @@ mod tests {
                     value: Expression::Literal(Literal::String("Andres")),
                 })]),
             }))],
+            where_clause: None,
         };
         assert_eq!(*match_clause, expected_match_clause);
 
@@ -1166,61 +1170,59 @@ mod tests {
                 labels: Some(vec!["Person"]),
                 properties: None,
             }))],
+            where_clause: Some(WhereClause {
+                conditions: Expression::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::And,
+                    operands: vec![
+                        // Left operand: p.name IN ['Alice', 'Bob']
+                        Expression::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::In,
+                            operands: vec![
+                                Expression::PropertyAccessExp(PropertyAccess {
+                                    base: "p",
+                                    key: "name",
+                                }),
+                                Expression::List(vec![
+                                    Expression::Literal(Literal::String("Alice")),
+                                    Expression::Literal(Literal::String("Bob")),
+                                ]),
+                            ],
+                        }),
+                        // Right operand: (p.age > 30 OR p.age < 20)
+                        Expression::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::Or,
+                            operands: vec![
+                                // p.age > 30
+                                Expression::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::GreaterThan,
+                                    operands: vec![
+                                        Expression::PropertyAccessExp(PropertyAccess {
+                                            base: "p",
+                                            key: "age",
+                                        }),
+                                        Expression::Literal(Literal::Integer(30)),
+                                    ],
+                                }),
+                                // p.age < 20
+                                Expression::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::LessThan,
+                                    operands: vec![
+                                        Expression::PropertyAccessExp(PropertyAccess {
+                                            base: "p",
+                                            key: "age",
+                                        }),
+                                        Expression::Literal(Literal::Integer(20)),
+                                    ],
+                                }),
+                            ],
+                        }),
+                    ],
+                }),
+            }),
         };
         assert_eq!(*match_clause, expected_match_clause);
 
-        assert!(query_ast.where_clause.is_some(), "Expected WHERE clause");
-        let where_clause = query_ast.where_clause.unwrap();
-        let expected_where_clause = WhereClause {
-            conditions: Expression::OperatorApplicationExp(OperatorApplication {
-                operator: Operator::And,
-                operands: vec![
-                    // Left operand: p.name IN ['Alice', 'Bob']
-                    Expression::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::In,
-                        operands: vec![
-                            Expression::PropertyAccessExp(PropertyAccess {
-                                base: "p",
-                                key: "name",
-                            }),
-                            Expression::List(vec![
-                                Expression::Literal(Literal::String("Alice")),
-                                Expression::Literal(Literal::String("Bob")),
-                            ]),
-                        ],
-                    }),
-                    // Right operand: (p.age > 30 OR p.age < 20)
-                    Expression::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::Or,
-                        operands: vec![
-                            // p.age > 30
-                            Expression::OperatorApplicationExp(OperatorApplication {
-                                operator: Operator::GreaterThan,
-                                operands: vec![
-                                    Expression::PropertyAccessExp(PropertyAccess {
-                                        base: "p",
-                                        key: "age",
-                                    }),
-                                    Expression::Literal(Literal::Integer(30)),
-                                ],
-                            }),
-                            // p.age < 20
-                            Expression::OperatorApplicationExp(OperatorApplication {
-                                operator: Operator::LessThan,
-                                operands: vec![
-                                    Expression::PropertyAccessExp(PropertyAccess {
-                                        base: "p",
-                                        key: "age",
-                                    }),
-                                    Expression::Literal(Literal::Integer(20)),
-                                ],
-                            }),
-                        ],
-                    }),
-                ],
-            }),
-        };
-        assert_eq!(where_clause, expected_where_clause);
+        // WHERE clause is now part of MATCH clause per OpenCypher spec
 
         assert!(query_ast.return_clause.is_some(), "Expected RETURN clause");
         let return_clause = query_ast.return_clause.unwrap();
@@ -1288,78 +1290,75 @@ mod tests {
                 labels: Some(vec!["Person"]),
                 properties: None,
             }))],
+            where_clause: Some(WhereClause {
+                conditions: Expression::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::And,
+                    operands: vec![
+                        Expression::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::And,
+                            operands: vec![
+                                Expression::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::In,
+                                    operands: vec![
+                                        Expression::PropertyAccessExp(PropertyAccess {
+                                            base: "p",
+                                            key: "name",
+                                        }),
+                                        Expression::List(vec![
+                                            Expression::Literal(Literal::String("Alice")),
+                                            Expression::Literal(Literal::String("Bob")),
+                                        ]),
+                                    ],
+                                }),
+                                Expression::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::NotIn,
+                                    operands: vec![
+                                        Expression::PropertyAccessExp(PropertyAccess {
+                                            base: "p",
+                                            key: "city",
+                                        }),
+                                        Expression::List(vec![
+                                            Expression::Literal(Literal::String("Chicago")),
+                                            Expression::Literal(Literal::String("Miami")),
+                                        ]),
+                                    ],
+                                }),
+                            ],
+                        }),
+                        Expression::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::Or,
+                            operands: vec![
+                                // p.age > 30
+                                Expression::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::GreaterThan,
+                                    operands: vec![
+                                        Expression::PropertyAccessExp(PropertyAccess {
+                                            base: "p",
+                                            key: "age",
+                                        }),
+                                        Expression::Literal(Literal::Integer(30)),
+                                    ],
+                                }),
+                                // p.age < 20
+                                Expression::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::LessThan,
+                                    operands: vec![
+                                        Expression::PropertyAccessExp(PropertyAccess {
+                                            base: "p",
+                                            key: "age",
+                                        }),
+                                        Expression::Literal(Literal::Integer(20)),
+                                    ],
+                                }),
+                            ],
+                        }),
+                    ],
+                }),
+            }),
         };
         assert_eq!(*match_clause, expected_match_clause);
 
-        assert!(query_ast.where_clause.is_some(), "Expected WHERE clause");
-        let where_clause = query_ast.where_clause.unwrap();
-
-        let expected_where_clause = WhereClause {
-            conditions: Expression::OperatorApplicationExp(OperatorApplication {
-                operator: Operator::And,
-                operands: vec![
-                    Expression::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::And,
-                        operands: vec![
-                            Expression::OperatorApplicationExp(OperatorApplication {
-                                operator: Operator::In,
-                                operands: vec![
-                                    Expression::PropertyAccessExp(PropertyAccess {
-                                        base: "p",
-                                        key: "name",
-                                    }),
-                                    Expression::List(vec![
-                                        Expression::Literal(Literal::String("Alice")),
-                                        Expression::Literal(Literal::String("Bob")),
-                                    ]),
-                                ],
-                            }),
-                            Expression::OperatorApplicationExp(OperatorApplication {
-                                operator: Operator::NotIn,
-                                operands: vec![
-                                    Expression::PropertyAccessExp(PropertyAccess {
-                                        base: "p",
-                                        key: "city",
-                                    }),
-                                    Expression::List(vec![
-                                        Expression::Literal(Literal::String("Chicago")),
-                                        Expression::Literal(Literal::String("Miami")),
-                                    ]),
-                                ],
-                            }),
-                        ],
-                    }),
-                    Expression::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::Or,
-                        operands: vec![
-                            // p.age > 30
-                            Expression::OperatorApplicationExp(OperatorApplication {
-                                operator: Operator::GreaterThan,
-                                operands: vec![
-                                    Expression::PropertyAccessExp(PropertyAccess {
-                                        base: "p",
-                                        key: "age",
-                                    }),
-                                    Expression::Literal(Literal::Integer(30)),
-                                ],
-                            }),
-                            // p.age < 20
-                            Expression::OperatorApplicationExp(OperatorApplication {
-                                operator: Operator::LessThan,
-                                operands: vec![
-                                    Expression::PropertyAccessExp(PropertyAccess {
-                                        base: "p",
-                                        key: "age",
-                                    }),
-                                    Expression::Literal(Literal::Integer(20)),
-                                ],
-                            }),
-                        ],
-                    }),
-                ],
-            }),
-        };
-        assert_eq!(where_clause, expected_where_clause);
+        // WHERE clause is now part of MATCH clause per OpenCypher spec
 
         assert!(query_ast.return_clause.is_some(), "Expected RETURN clause");
         let return_clause = query_ast.return_clause.unwrap();
@@ -1544,11 +1543,11 @@ mod tests {
             Ok(ast) => {
                 println!("Full query AST parsed successfully!");
                 println!("Match clauses: {:?}", ast.match_clauses.len());
-                println!("Where clause: {:?}", ast.where_clause.is_some());
                 println!("Return clause: {:?}", ast.return_clause.is_some());
                 
                 assert_eq!(ast.match_clauses.len(), 1, "Expected 1 MATCH clause");
-                assert!(ast.where_clause.is_some(), "Expected WHERE clause");
+                // WHERE clause is now part of MATCH clause per OpenCypher spec
+                assert!(ast.match_clauses[0].where_clause.is_some(), "Expected WHERE clause in MATCH clause");
                 assert!(ast.return_clause.is_some(), "Expected RETURN clause");
                 
                 let return_clause = ast.return_clause.as_ref().unwrap();

@@ -218,6 +218,20 @@ pub fn intermediate_analyzing(
     let transformed_plan = variable_resolver.analyze(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
     log::info!("🔍 ANALYZER: VariableResolver.analyze() completed");
+    
+    // DEBUG: Check cte_references RIGHT after VariableResolver
+    fn count_cte_refs_here(p: &LogicalPlan) -> usize {
+        match p {
+            LogicalPlan::WithClause(wc) => {
+                wc.cte_references.len() + count_cte_refs_here(&wc.input)
+            }
+            LogicalPlan::Projection(proj) => count_cte_refs_here(&proj.input),
+            LogicalPlan::Limit(l) => count_cte_refs_here(&l.input),
+            LogicalPlan::GraphJoins(gj) => count_cte_refs_here(&gj.input),  // ADD THIS
+            _ => 0,
+        }
+    }
+    eprintln!("🔬 ANALYZER: IMMEDIATELY after VariableResolver: {} cte_references", count_cte_refs_here(&plan));
 
     // CRITICAL: Populate GraphRel.cte_references AFTER VariableResolver
     // This tells the renderer which node connections come from CTEs
@@ -226,6 +240,7 @@ pub fn intermediate_analyzing(
     let transformed_plan = cte_ref_populator.analyze(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
     log::info!("🔍 ANALYZER: CteReferencePopulator.analyze() completed");
+    eprintln!("🔬 ANALYZER: After CteReferencePopulator: {} cte_references", count_cte_refs_here(&plan));
 
     let graph_join_inference = GraphJoinInference::new();
     let transformed_plan = graph_join_inference.analyze_with_graph_schema(
@@ -234,6 +249,7 @@ pub fn intermediate_analyzing(
         current_graph_schema,
     )?;
     let plan = transformed_plan.get_plan();
+    eprintln!("🔬 ANALYZER: After GraphJoinInference: {} cte_references", count_cte_refs_here(&plan));
 
     // CRITICAL: Resolve CTE column names AFTER join inference
     // GraphJoinInference populates CTE column mappings in plan_ctx
@@ -246,11 +262,13 @@ pub fn intermediate_analyzing(
         current_graph_schema,
     )?;
     let plan = transformed_plan.get_plan();
+    eprintln!("🔬 ANALYZER: After CteColumnResolver: {} cte_references", count_cte_refs_here(&plan));
 
     // Enrich Unwind nodes with tuple structure metadata for property-to-index mapping
     // This enables user.name → user.5 (tuple index) after UNWIND of collect(node)
     // Must run AFTER all analysis passes that might recreate Unwind nodes
     let plan = unwind_tuple_enricher::enrich_unwind_with_tuple_info(plan);
+    eprintln!("🔬 ANALYZER: After unwind_tuple_enricher: {} cte_references", count_cte_refs_here(&plan));
 
     // Collect+UNWIND Elimination - remove no-op patterns like WITH collect(x) as xs + UNWIND xs as x
     // This must run BEFORE PropertyRequirementsAnalyzer to eliminate patterns that would complicate analysis
@@ -265,6 +283,7 @@ pub fn intermediate_analyzing(
         }
     };
     log::info!("✓ Collect+UNWIND Elimination completed");
+    eprintln!("🔬 ANALYZER: After CollectUnwindElimination: {} cte_references", count_cte_refs_here(&plan));
 
     // Trivial WITH Elimination - remove pass-through WITH clauses that add no value
     // Run after collect+UNWIND elimination to clean up any resulting trivial WITHs
@@ -279,6 +298,7 @@ pub fn intermediate_analyzing(
         }
     };
     log::info!("✓ Trivial WITH Elimination completed");
+    eprintln!("🔬 ANALYZER: After TrivialWithElimination: {} cte_references", count_cte_refs_here(&plan));
 
     // Property Requirements Analysis - determine which properties are actually needed
     // This runs at the END of analysis, after all property references are stable
@@ -288,6 +308,7 @@ pub fn intermediate_analyzing(
     let transformed_plan = property_requirements_analyzer.analyze(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
     log::info!("✓ Property Requirements Analyzer completed");
+    eprintln!("🔬 ANALYZER: After PropertyRequirementsAnalyzer: {} cte_references", count_cte_refs_here(&plan));
 
     Ok(plan)
 }
