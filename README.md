@@ -27,7 +27,7 @@
 - **GraphRAG Multi-Type VLP** - Variable-length paths across heterogeneous graphs (18/20 tests passing)
 - **Per-MATCH WHERE** - OpenCypher-compliant consecutive MATCH clauses with individual WHERE clauses
 - **LDBC SNB Progress** - 15/41 queries passing (37%): IS queries 7/7 (100%), IC 4/14, BI 4/20
-- **Test Coverage** - 231/354 comprehensive matrix tests passing (65.3%)
+- **Test Coverage** - 3000+ tests across unit, integration, and benchmark suites
 
 ### Key Features
 
@@ -36,7 +36,8 @@
 - **Chained WITH Clauses** - 3+ level chained WITHs generate correct SQL (enables IC-1, IC-2)
 - **Configurable Type Inference** - `max_inferred_types` parameter for complex GraphRAG schemas (default: 5)
 - **OpenCypher Per-MATCH WHERE** - Each MATCH clause can have its own WHERE (9/9 tests passing)
-- **ClickHouse function passthrough** - Make all ClickHouse functions available in Cypher through the pass-thru feature
+- **Multiple UNWIND Clauses** - Cartesian product support for multiple consecutive UNWIND clauses (e.g., `UNWIND [1,2] AS x UNWIND [10,20] AS y` → 4 rows)
+- **Pattern Comprehensions** - Extract values from graph patterns into lists with `[(pattern) | expression]` syntax
 
 ### Bug Fixes 🐛
 
@@ -45,9 +46,6 @@
 - **VLP ID columns** - Use relationship schema columns (`from_id`/`to_id`)
 - **Cycle prevention** - Skip for single-hop patterns (can't have cycles)
 
-### New in the Main Branch
-- **Multiple UNWIND Clauses** - Cartesian product support for multiple consecutive UNWIND clauses (e.g., `UNWIND [1,2] AS x UNWIND [10,20] AS y` → 4 rows)
-- **Pattern Comprehensions** - Extract values from graph patterns into lists with `[(pattern) | expression]` syntax
 ---
 
 ## 📦 Major Features & Capabilities (v0.5.0 - v0.6.1)
