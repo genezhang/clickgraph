@@ -1,43 +1,156 @@
-# Development Process - ClickGraph Feature Development
+# Development Process - ClickGraph Development
 
-**Purpose**: Standardized process for adding features to ClickGraph, based on lessons learned from OPTIONAL MATCH, Variable-Length Paths, Shortest Path, PageRank, and other successful implementations.
+**Purpose**: Standardized process for bug fixes, improvements, and features in ClickGraph. Based on lessons learned from OPTIONAL MATCH, Variable-Length Paths, Shortest Path, PageRank implementations.
 
-**Last Updated**: November 6, 2025
+**Note**: ClickGraph is in **late-stage development**. Most work is now bug fixes, performance improvements, and refinements rather than new features.
+
+**Last Updated**: January 12, 2026
 
 ---
 
 ## 🎯 The Fundamental Process
 
-### Overview: 5-Phase Iterative Development
+### Overview: 6-Phase Iterative Development
 
 ```mermaid
 graph LR
-    A[1. DESIGN] --> B[2. IMPLEMENT]
-    B --> C[3. TEST]
-    C --> D[4. DEBUG]
-    D --> E[5. DOCUMENT]
-    E -.-> A
-    style A fill:#e1f5ff
-    style B fill:#fff4e1
-    style C fill:#e8f5e9
-    style D fill:#ffe1e1
-    style E fill:#f3e5f5
+    A[0. BRANCH] --> B[1. DESIGN]
+    B --> C[2. IMPLEMENT]
+    C --> D[3. TEST]
+    D --> E[4. DEBUG]
+    E --> F[5. DOCUMENT]
+    F --> G[6. PR & MERGE]
+    G -.-> A
+    style A fill:#fff9c4
+    style B fill:#e1f5ff
+    style C fill:#fff4e1
+    style D fill:#e8f5e9
+    style E fill:#ffe1e1
+    style F fill:#f3e5f5
+    style G fill:#c8e6c9
 ```
 
 **Key Principle**: Each phase has clear **entry criteria**, **exit criteria**, and **artifacts**.
+
+**⚠️ CRITICAL**: All development MUST start with Phase 0 (creating a feature branch) and end with Phase 6 (PR review and merge).
+
+---
+
+## Phase 0: CREATE FEATURE BRANCH 🌿
+
+**⚠️ REQUIRED FIRST STEP: Never develop on main branch!**
+
+### Entry Criteria
+- [ ] Clear task identified: bug fix, improvement, optimization, or feature
+- [ ] Main branch is up to date
+- [ ] Workspace is clean (no uncommitted changes)
+- [ ] Issue/bug is well-understood (if applicable)
+
+### Process Steps
+
+#### 0.1 Sync with Main Branch
+```bash
+# Ensure you're on main and up to date
+git checkout main
+git pull origin main
+
+# Verify clean state
+git status
+```
+
+#### 0.2 Create Feature Branch
+```bash
+# Create and switch to new branch
+git checkout -b <branch-type>/<descriptive-name>
+```
+
+**Branch Naming Convention** (in order of frequency):
+- **Bug Fixes**: `fix/<bug-description>` (e.g., `fix/optional-match-null-handling`) - MOST COMMON
+- **Performance**: `perf/<optimization>` (e.g., `perf/cte-optimization`) - COMMON
+- **Refactoring**: `refactor/<component>` (e.g., `refactor/logical-plan`) - COMMON
+- **Documentation**: `docs/<topic>` (e.g., `docs/update-cypher-reference`) - REGULAR
+- **Tests**: `test/<test-type>` (e.g., `test/integration-suite`) - REGULAR
+- **Features**: `feature/<feature-name>` (e.g., `feature/list-comprehensions`) - RARE
+
+**Examples** (typical scenarios):
+```bash
+# Bug fix (most common)
+git checkout -b fix/relationship-type-resolution
+
+# Performance improvement
+git checkout -b perf/join-elimination
+
+# Code refactoring
+git checkout -b refactor/simplify-query-planner
+
+# Test improvements
+git checkout -b test/edge-case-coverage
+
+# Documentation update
+git checkout -b docs/bolt-protocol-guide
+
+# New feature (rare)
+git checkout -b feature/list-comprehensions
+```
+
+#### 0.3 Verify Branch Creation
+```bash
+# Check current branch
+git branch --show-current
+
+# Should show your new branch name
+```
+
+### Exit Criteria
+- [ ] New feature branch created from updated main
+- [ ] Branch name follows naming convention
+- [ ] Ready to start development work
+
+### Artifacts
+- New Git branch ready for development
+
+**Common Mistakes to Avoid**:
+- ❌ Developing directly on main branch
+- ❌ Creating branch from outdated main
+- ❌ Vague branch names (e.g., `my-branch`, `test`, `tmp`)
+- ❌ Starting development with uncommitted changes
 
 ---
 
 ## Phase 1: DESIGN 📋
 
+**Note**: For simple bug fixes, this phase may be brief (5-10 minutes). For features or complex issues, invest more time here.
+
 ### Entry Criteria
-- [ ] Clear feature request or Cypher functionality to add
-- [ ] Understanding of OpenCypher specification for feature
-- [ ] Existing similar features identified (for reference)
+- [ ] **Feature branch created** (Phase 0 complete)
+- [ ] Clear understanding of: bug to fix, improvement to make, or feature to add
+- [ ] Root cause identified (for bug fixes)
+- [ ] OpenCypher spec reviewed (for features/Cypher-related changes)
+- [ ] Existing similar code identified (for reference)
 
 ### Process Steps
 
-#### 1.1 Understand the Cypher Feature
+#### 1.1 Understand the Requirement
+
+**For Bug Fixes** (most common):
+- What is the incorrect behavior?
+- What should the correct behavior be?
+- What is the root cause?
+- Which components are affected?
+- Are there related bugs to fix together?
+
+**For Performance Improvements**:
+- What is the current performance bottleneck?
+- What metrics are we optimizing (query time, memory, SQL efficiency)?
+- What is the target improvement?
+- Are there tradeoffs to consider?
+
+**For New Features** (rare):
+- What is the OpenCypher syntax?
+- What does this feature do semantically?
+- What SQL pattern will this translate to?
+
+#### 1.1 Understand the Cypher Feature (for features only)
 **Questions to Answer**:
 - What is the OpenCypher syntax? (Check `open_cypher_parser/open_cypher_specs/`)
 - What does this feature do semantically?
@@ -909,9 +1022,333 @@ LogicalPlan::Unwind(u) => {
 
 ---
 
-## 🔗 Related Documents
+---
+
+## Phase 6: PULL REQUEST & MERGE 🔀
+
+**⚠️ REQUIRED FINAL STEP: All code must be reviewed before merging to main!**
+
+### Entry Criteria
+- [ ] Phase 5 (Documentation) complete
+- [ ] All tests passing (unit + integration)
+- [ ] Code committed to feature branch
+- [ ] No uncommitted changes
+- [ ] Feature is fully functional and ready for review
+
+### Process Steps
+
+#### 6.1 Pre-PR Self-Review Checklist
+
+**Code Quality**:
+- [ ] All tests passing: `cargo test` (unit) and `pytest` (integration)
+- [ ] No compilation warnings
+- [ ] Code follows Rust style guidelines
+- [ ] No debug/temporary code left in (println!, commented blocks)
+- [ ] All new functions have doc comments
+- [ ] No unused imports or dead code
+
+**Documentation**:
+- [ ] **Cypher Language Reference updated** (PRIMARY - most important!)
+- [ ] `STATUS.md` updated (feature moved to "What Works")
+- [ ] `CHANGELOG.md` updated under `[Unreleased]` section
+- [ ] Feature note created in `notes/` (if major feature)
+- [ ] API documentation updated (if API changes)
+- [ ] Code comments explain "why", not "what"
+
+**Testing**:
+- [ ] Unit tests added for new code paths
+- [ ] Integration tests added for end-to-end scenarios
+- [ ] Edge cases tested
+- [ ] Error cases tested
+- [ ] Test coverage is reasonable (use `cargo tarpaulin` if needed)
+
+#### 6.2 Push Feature Branch
+
+```bash
+# Final commit with all changes
+git status
+git add <any remaining files>
+git commit -m "<type>: complete <feature> implementation"
+
+# Push to remote
+git push origin <branch-name>
+
+# If branch doesn't exist on remote yet:
+git push --set-upstream origin <branch-name>
+```
+
+#### 6.3 Create Pull Request
+
+**On GitHub**:
+1. Go to repository → Pull Requests → New Pull Request
+2. Select your feature branch as source, main as target
+3. Fill out PR template:
+
+**PR Title Format**:
+```
+<type>: Brief description (one line)
+
+Examples:
+feat: Add aggregate function support (COUNT, SUM, AVG)
+fix: Resolve OPTIONAL MATCH NULL handling in joins
+docs: Complete Cypher Language Reference for variable-length paths
+perf: Optimize CTE generation for simple patterns
+```
+
+**PR Description Template**:
+```markdown
+## Summary
+[Brief description of what this PR does]
+
+## Changes Made
+- [ ] List specific changes
+- [ ] Component 1: Description
+- [ ] Component 2: Description
+
+## Testing
+- Unit tests: XX passing
+- Integration tests: XX passing
+- Manual testing: [scenarios tested]
+
+## Documentation
+- [ ] Cypher Language Reference updated
+- [ ] STATUS.md updated
+- [ ] CHANGELOG.md updated
+- [ ] Feature note added (if applicable)
+
+## Examples
+```cypher
+# Example Cypher query showing new feature
+MATCH (n:User) RETURN count(n)
+```
+
+## Related Issues
+Closes #XX (if applicable)
+Related to #YY
+
+## Breaking Changes
+[ ] Yes - [describe]
+[X] No
+
+## Checklist
+- [ ] All tests passing
+- [ ] No compilation warnings
+- [ ] Documentation complete
+- [ ] Code reviewed by self
+- [ ] Ready for team review
+```
+
+#### 6.4 Address Review Comments
+
+**During Review Process**:
+1. **Respond to comments**: Acknowledge feedback, ask clarifying questions
+2. **Make revisions**: Address requested changes
+3. **Commit and push**: Additional commits to same branch
+   ```bash
+   git add <revised files>
+   git commit -m "fix: address review feedback - <specific change>"
+   git push origin <branch-name>
+   ```
+4. **Re-request review**: After addressing all comments
+5. **Resolve conversations**: Mark discussions as resolved when fixed
+
+**Review Response Best Practices**:
+- ✅ Be responsive to feedback
+- ✅ Explain reasoning for design decisions
+- ✅ Ask questions if suggestions are unclear
+- ✅ Keep discussions professional and constructive
+- ❌ Don't take criticism personally
+- ❌ Don't argue about style (follow project conventions)
+
+#### 6.5 Merge to Main
+
+**Prerequisites for Merge**:
+- [ ] All CI checks passing (if CI configured)
+- [ ] At least one approval from reviewer
+- [ ] All conversations resolved
+- [ ] No merge conflicts
+- [ ] Branch is up to date with main
+
+**Merge Options** (choose based on situation):
+
+1. **Squash and Merge** (RECOMMENDED for most features):
+   - Combines all commits into one
+   - Creates clean, linear history
+   - Use when: Multiple small commits during development
+   ```
+   Commit message format:
+   feat: Add aggregate function support (#123)
+   
+   - Implemented COUNT, SUM, AVG, MIN, MAX
+   - Added query planning support
+   - Comprehensive test coverage
+   ```
+
+2. **Merge Commit** (for preserving commit history):
+   - Keeps all individual commits
+   - Shows full development history
+   - Use when: Commits are well-organized and meaningful
+
+3. **Rebase and Merge** (for clean linear history):
+   - Replays commits on top of main
+   - No merge commit
+   - Use when: Commits are clean and you want linear history
+
+**After Merge**:
+```bash
+# Switch to main and pull
+git checkout main
+git pull origin main
+
+# Delete local feature branch
+git branch -d <branch-name>
+
+# Delete remote feature branch (usually done automatically by GitHub)
+git push origin --delete <branch-name>
+```
+
+#### 6.6 Post-Merge Verification
+
+```bash
+# Verify main branch
+git log --oneline -5
+
+# Run tests on main
+cargo test
+pytest tests/integration/
+
+# If tests fail on main (should never happen!):
+# - Investigate immediately
+# - Create hotfix branch if needed
+# - Revert merge if necessary: git revert -m 1 <merge-commit-hash>
+```
+
+### Exit Criteria
+- [ ] PR approved and merged to main
+- [ ] Feature branch deleted
+- [ ] Main branch tests passing
+- [ ] Documentation live in main branch
+- [ ] Feature available in main branch
+
+### Artifacts
+- Merged pull request
+- Updated main branch with feature
+- Closed feature branch
+
+### Common Issues & Solutions
+
+**Merge Conflicts**:
+```bash
+# Update your branch with latest main
+git checkout <your-branch>
+git fetch origin
+git merge origin/main
+
+# Resolve conflicts in files
+# After resolving:
+git add <resolved-files>
+git commit -m "merge: resolve conflicts with main"
+git push origin <your-branch>
+```
+
+**CI Failures**:
+- Check GitHub Actions logs
+- Reproduce failure locally
+- Fix issue and push additional commits
+
+**Forgotten Documentation**:
+- Add documentation in new commits to PR
+- Use "docs: add missing documentation" commit
+- Don't merge until documentation is complete
+
+### Emergency Hotfixes (Exception to Process)
+
+**Only for critical production issues**:
+```bash
+# Create hotfix branch from main
+git checkout main
+git pull origin main
+git checkout -b hotfix/<critical-issue>
+
+# Fix issue, test thoroughly
+git commit -m "hotfix: resolve critical bug in <component>"
+
+# Push and create PR with HOTFIX label
+git push origin hotfix/<critical-issue>
+
+# Fast-track review and merge
+```
+
+**Hotfix Criteria**:
+- ✅ Production is broken or severely degraded
+- ✅ Security vulnerability discovered
+- ✅ Data corruption risk
+- ❌ Regular bugs (use normal workflow)
+- ❌ Feature requests (use normal workflow)
+- ❌ Performance optimizations (use normal workflow)
+
+---
+
+## � Quick Reference: Bug Fix Workflow
+
+**Since bug fixes are the most common work, here's a streamlined guide:**
+
+### 1. Reproduce the Bug
+```bash
+# Create bug fix branch
+git checkout main && git pull
+git checkout -b fix/descriptive-bug-name
+
+# Reproduce the issue
+# - Run failing test
+# - Try manual query that fails
+# - Check logs for error
+```
+
+### 2. Identify Root Cause
+- Add debug logging (`eprintln!`, `tracing::debug!`)
+- Use `sql_only` mode to inspect generated SQL
+- Check server logs for stack traces
+- Trace code path from parser → planner → SQL gen
+
+### 3. Fix and Test
+```bash
+# Make minimal fix
+# Run relevant tests
+cargo test <test_name>
+pytest tests/integration/test_<relevant>.py
+
+# Verify fix works
+# Test edge cases
+```
+
+### 4. Submit PR
+```bash
+# Commit with clear message
+git add <files>
+git commit -m "fix: resolve <specific issue>
+
+Root cause: <brief explanation>
+Solution: <what you changed>
+Tests: <what you verified>"
+
+# Push and create PR
+git push origin fix/descriptive-bug-name
+```
+
+### Common Bug Patterns
+- **Alias propagation**: Check `plan_sanitization.rs` and `graph_traversal_planning.rs`
+- **Property mapping**: Verify schema lookups in `graph_catalog/`
+- **SQL generation**: Debug in `clickhouse_query_generator/`
+- **Type resolution**: Check analyzer passes in `query_planner/analyzer/`
+- **NULL handling**: Review LEFT JOIN logic for OPTIONAL MATCH
+
+---
+
+## �🔗 Related Documents
 
 - **Architecture**: `.github/copilot-instructions.md` - Project structure and conventions
+- **Git Workflow**: `docs/development/git-workflow.md` - Detailed Git commands and recovery
 - **Environment Setup**: `docs/development/environment-checklist.md` - Pre-session checklist
 - **Current Status**: `STATUS.md` - What works now
 - **Next Priorities**: `NEXT_STEPS.md` - What to build next
@@ -925,16 +1362,22 @@ LogicalPlan::Unwind(u) => {
 **The Process is a Guide, Not a Prison**:
 - For simple features: Skip formal design notes
 - For experiments: Skip integration tests initially
-- For bug fixes: Start with Phase 4 (Debug)
+- For bug fixes: Start with Phase 4 (Debug), but still create a branch!
 
-**But Always**:
-1. ✅ Test incrementally
-2. ✅ Check server logs
-3. ✅ Use sql_only for debugging
-4. ✅ Document when complete
-5. ✅ Keep main branch stable
+**But Always (Non-Negotiable)**:
+1. ✅ **Create feature branch** (Phase 0 - ALWAYS)
+2. ✅ Test incrementally
+3. ✅ Check server logs
+4. ✅ Use sql_only for debugging
+5. ✅ Document when complete
+6. ✅ **Submit PR for review** (Phase 6 - ALWAYS)
+7. ✅ Keep main branch stable (never commit directly!)
 
-**Remember**: "Good code is debuggable code." Add logging, test often, commit frequently.
+**The Two Absolutes**:
+- **Phase 0 (Branch)**: NEVER skip - protects main branch
+- **Phase 6 (PR & Merge)**: NEVER skip - ensures code quality and review
+
+**Remember**: "Good code is debuggable code." Add logging, test often, commit frequently. "Safe code is reviewed code." Always use pull requests.
 
 ---
 
