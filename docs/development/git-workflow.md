@@ -1,5 +1,64 @@
 # Git Workflow Best Practices
 
+**Last Updated**: January 12, 2026
+
+## \u26a0\ufe0f Critical Rule: Branch-Based Development with Pull Requests
+
+**ALL development MUST follow this workflow**:
+1. Create feature branch from main
+2. Develop and test on feature branch
+3. Submit pull request
+4. Get review and approval
+5. Merge to main
+6. Delete feature branch
+
+**Never commit directly to main branch!**
+
+---
+
+## Quick Reference
+
+### Starting New Work
+```bash
+# Update main
+git checkout main
+git pull origin main
+
+# Create branch (most work is bug fixes/improvements)
+git checkout -b fix/your-bug-fix        # Most common
+git checkout -b perf/your-optimization  # Common
+git checkout -b refactor/cleanup        # Common
+git checkout -b feature/new-feature     # Rare (late-stage dev)
+
+# Start developing...
+```
+
+### During Development
+```bash
+# Commit frequently
+git add <files>
+git commit -m "feat: add specific functionality"
+
+# Push to remote regularly
+git push origin feature/your-feature-name
+```
+
+### Finishing Work
+```bash
+# Run all tests
+cargo test
+pytest tests/integration/
+
+# Push final changes
+git push origin feature/your-feature-name
+
+# Create PR on GitHub
+# Get review, address feedback
+# Merge via GitHub UI
+```
+
+---
+
 ## The Problem We Had
 Lost working code during experimentation because we didn't commit incrementally or use git stash.
 
@@ -53,25 +112,46 @@ git stash push -m "Working ViewScan with all alias fixes"
 git stash pop  # Would have restored everything instantly!
 ```
 
-### 3. Use Feature Branches for Risky Changes
+### 3. Use Feature Branches for All Development (REQUIRED)
+
+**\u26a0\ufe0f This is now the REQUIRED workflow for all changes!**
 
 ```bash
-# Create branch for experiment
-git checkout -b experiment/cte-optimization
+# ALWAYS start from updated main
+git checkout main
+git pull origin main
 
-# Try changes
-# ... make changes ...
-# ... test ...
+# Create feature branch
+git checkout -b feature/your-feature-name
 
-# If it fails:
-git checkout graphview1  # Back to main branch
-git branch -D experiment/cte-optimization  # Delete failed experiment
+# Develop, test, commit
+git add <files>
+git commit -m "feat: implement core functionality"
 
-# If it succeeds:
-git checkout graphview1
-git merge experiment/cte-optimization
-git branch -d experiment/cte-optimization
+# Push to remote
+git push origin feature/your-feature-name
+
+# Create PR on GitHub for review
+# After approval and merge:
+git checkout main
+git pull origin main
+git branch -d feature/your-feature-name
 ```
+
+**Branch Naming Convention** (by frequency in late-stage development):
+- Bug fixes: `fix/<issue>` (e.g., `fix/null-handling`) - MOST COMMON
+- Performance: `perf/<optimization>` (e.g., `perf/join-optimization`) - COMMON
+- Refactoring: `refactor/<component>` (e.g., `refactor/query-planner`) - COMMON
+- Documentation: `docs/<topic>` (e.g., `docs/api-reference`) - REGULAR
+- Tests: `test/<area>` (e.g., `test/edge-cases`) - REGULAR
+- Features: `feature/<name>` (e.g., `feature/aggregate-functions`) - RARE
+
+**Why This Matters**:
+- \u2705 Keeps main branch stable and deployable
+- \u2705 Enables code review before merge
+- \u2705 Allows experimentation without risk
+- \u2705 Creates clear history of changes
+- \u2705 Prevents lost work from failed experiments
 
 ### 4. Frequent Status Checks
 
@@ -89,47 +169,73 @@ git diff --staged
 
 ## Recommended Workflow for This Project
 
-### Daily Development
+### Before Starting Any Work
 
 ```bash
-# Morning: Start fresh
-git status
-git diff  # Review any uncommitted changes
+# Ensure main is up to date
+git checkout main
+git pull origin main
 
-# After each successful fix:
-git add <specific-file>
-git commit -m "fix: specific issue"
-python test_viewscan.py  # Verify
+# Create feature branch
+git checkout -b <type>/<description>
 
-# Before risky changes:
-git stash push -m "Working state before <experiment>"
-
-# End of day:
-git status
-git log --oneline -5  # Review what you did
+# Verify you're on the right branch
+git branch --show-current
 ```
 
-### For Multi-Step Features
+### During Development (Feature Branch Workflow)
 
 ```bash
-# Start feature
-git checkout -b feature/shortest-path
+# Make changes and test frequently
+# ... edit code ...
+cargo test
 
-# Step 1: Add AST support
-git add ...
-git commit -m "feat(shortest-path): add AST parsing"
+# Commit after each logical unit
+git add <specific-file>
+git commit -m "feat: add specific functionality"
 
-# Step 2: Add query planning
-git add ...
-git commit -m "feat(shortest-path): add query planning"
+# Continue development
+# ... more edits ...
+git add <files>
+git commit -m "feat: implement additional logic"
 
-# Step 3: Add SQL generation
-git add ...
-git commit -m "feat(shortest-path): add SQL generation"
+# Push to remote regularly (backup + collaboration)
+git push origin <branch-name>
 
-# Step 4: Tests pass
-git checkout graphview1
-git merge feature/shortest-path
+# Before risky changes within branch:
+git stash push -m "Working state before <experiment>"
+
+# Run comprehensive tests before PR
+cargo test
+pytest tests/integration/
+```
+
+### Submitting Pull Request
+
+```bash
+# Final push
+git push origin <branch-name>
+
+# Create PR on GitHub:
+# 1. Go to repository
+# 2. Click "Pull Requests" -> "New Pull Request"
+# 3. Select your branch
+# 4. Fill out PR template with:
+#    - What changed
+#    - Why it changed
+#    - Test results
+#    - Documentation updates
+
+# Wait for review
+# Address feedback if needed:
+git add <revised-files>
+git commit -m "fix: address review feedback"
+git push origin <branch-name>
+
+# After PR approval and merge:
+git checkout main
+git pull origin main
+git branch -d <branch-name>
 ```
 
 ## What to Commit When
@@ -152,8 +258,10 @@ git merge feature/shortest-path
 
 ## Commit Message Format
 
+Follow [Conventional Commits](https://www.conventionalcommits.org/) specification:
+
 ```
-<type>: <short description>
+<type>(<scope>): <short description>
 
 <optional detailed description>
 
@@ -161,17 +269,24 @@ git merge feature/shortest-path
 ```
 
 **Types**:
-- `fix:` Bug fixes
 - `feat:` New features
+- `fix:` Bug fixes
 - `docs:` Documentation only
-- `test:` Test infrastructure
-- `refactor:` Code restructuring
+- `test:` Test infrastructure or new tests
+- `refactor:` Code restructuring (no functionality change)
 - `perf:` Performance improvements
+- `chore:` Maintenance tasks (dependency updates, etc.)
+- `ci:` CI/CD configuration changes
 
 **Examples**:
 ```bash
+# Simple fix
 git commit -m "fix: preserve Cypher variable aliases in plan sanitization"
 
+# Feature with scope
+git commit -m "feat(query-planner): add support for aggregate functions"
+
+# With detailed description
 git commit -m "feat: add schema lookup for relationship types
 
 Relationships now use GLOBAL_GRAPH_SCHEMA.get_rel_schema() to resolve
@@ -182,8 +297,87 @@ Files changed:
 - render_plan/plan_builder.rs: rel_type_to_table_name()
 - Tests pass: 261/262"
 
+# Documentation update
 git commit -m "docs: add ViewScan architecture guide"
+
+# Breaking change
+git commit -m "feat!: change schema configuration format
+
+BREAKING CHANGE: Schema YAML format updated to support
+polymorphic types. Old format no longer supported."
 ```
+
+## Pull Request Guidelines
+
+### PR Title Format
+```
+<type>: Brief description (one line)
+
+Examples:
+feat: Add aggregate function support (COUNT, SUM, AVG)
+fix: Resolve OPTIONAL MATCH NULL handling in joins
+docs: Complete Cypher Language Reference for VLP
+perf: Optimize CTE generation for simple patterns
+```
+
+### PR Description Template
+```markdown
+## Summary
+[Brief description of what this PR does]
+
+## Changes Made
+- Component 1: [specific change]
+- Component 2: [specific change]
+- ...
+
+## Testing
+- Unit tests: XX passing
+- Integration tests: XX passing
+- Manual testing: [scenarios tested]
+
+## Documentation
+- [ ] Cypher Language Reference updated
+- [ ] STATUS.md updated
+- [ ] CHANGELOG.md updated
+- [ ] Feature note added (if major feature)
+
+## Examples
+```cypher
+# Show example of new functionality
+MATCH (n:User) RETURN count(n)
+```
+
+## Related Issues
+Closes #XX
+Related to #YY
+
+## Breaking Changes
+- [ ] Yes - [describe changes and migration path]
+- [X] No
+
+## Checklist
+- [ ] All tests passing
+- [ ] No compilation warnings
+- [ ] Documentation complete
+- [ ] Code follows style guidelines
+- [ ] Ready for review
+```
+
+### Code Review Guidelines
+
+**For Reviewers**:
+- Focus on correctness, maintainability, performance
+- Check test coverage and edge cases
+- Verify documentation is complete
+- Be constructive and respectful
+- Approve when ready, request changes clearly
+
+**For Authors**:
+- Respond to all comments
+- Make requested changes promptly
+- Explain design decisions when needed
+- Re-request review after changes
+- Be open to feedback
 
 ## Recovery Commands
 
@@ -219,15 +413,65 @@ git stash pop stash@{0}
 
 - [ ] `git status` - Know what's uncommitted
 - [ ] `git diff` - Review changes
+- [ ] **On feature branch** - Never on main!
 - [ ] **`git stash push -m "..."`** or **`git commit`** - Save working state
-- [ ] `python test_viewscan.py` - Verify tests pass
+- [ ] Tests pass - `cargo test && pytest tests/integration/`
 - [ ] Now safe to experiment!
+
+## Branch Protection and Main Branch Rules
+
+### Main Branch Protection (ENFORCED)
+
+**The main branch is sacred**:
+- \u274c NEVER commit directly to main
+- \u274c NEVER push directly to main
+- \u274c NEVER force push to main
+- \u2705 ALWAYS use pull requests
+- \u2705 ALWAYS get code review
+- \u2705 ALWAYS ensure tests pass
+
+**Why?**:
+- Keeps main branch stable and deployable
+- Ensures all code is reviewed
+- Maintains clear history
+- Prevents accidental breakage
+- Enables safe experimentation
+
+### Exception: Emergency Hotfixes Only
+
+```bash
+# ONLY for critical production issues
+git checkout main
+git pull origin main
+git checkout -b hotfix/critical-bug
+
+# Fix, test thoroughly
+git commit -m "hotfix: resolve critical bug"
+git push origin hotfix/critical-bug
+
+# Create PR with "HOTFIX" label
+# Fast-track review, then merge
+```
+
+**Hotfix criteria**:
+- Production is broken
+- Security vulnerability
+- Data corruption risk
+- NOT for: regular bugs, features, optimizations
 
 ## After This Session
 
-### Immediate Next Steps
+### Immediate Next Steps (Updated Workflow)
 
-1. **Review and commit current changes**:
+1. **Ensure you're on a feature branch**:
+```bash
+git branch --show-current
+
+# If on main, create feature branch NOW:
+git checkout -b feature/current-work
+```
+
+2. **Review and commit current changes on feature branch**:
 ```bash
 git status
 git diff  # Review all changes
@@ -237,53 +481,130 @@ git add src/query_planner/analyzer/plan_sanitization.rs
 git commit -m "fix: preserve Cypher variable aliases in plan sanitization"
 
 git add src/query_planner/analyzer/graph_traversal_planning.rs
-git commit -m "fix: qualify columns in IN subqueries with table aliases
+git commit -m "fix: qualify columns in IN subqueries with table aliases"
 
-- Add table_alias parameter to build_insubquery()
-- Qualify columns in get_subplan()
-- Use schema columns instead of output aliases in WHERE
-- Fix all 7 call sites with correct aliases"
-
-git add src/clickhouse_query_generator/to_sql_query.rs
-git commit -m "fix: prevent CTE nesting and add SELECT * default"
-
-git add src/server/handlers.rs
-git commit -m "feat: add debug logging for full SQL queries"
-
-git add src/render_plan/plan_builder.rs
-git commit -m "feat: add schema lookup for relationship types"
-
-git add src/query_planner/logical_plan/match_clause.rs
-git commit -m "fix: pass labels to generate_scan for ViewScan resolution"
-
-# Documentation commits
-git add docs/ notes/ *.md
-git commit -m "docs: add ViewScan completion and testing guides"
-
-# Test infrastructure
-git add test_*.py test_server.ps1 docker-compose.test.yaml Dockerfile.test
-git commit -m "test: add comprehensive testing infrastructure
-
-- PowerShell test runner with PID tracking
-- Python test suite with 5 test cases
-- Docker Compose test environment
-- Testing guide documentation"
+# Continue for other logical groups...
 ```
 
-2. **Tag the working state**:
+3. **Push feature branch and create PR**:
 ```bash
-git tag -a viewscan-complete -m "ViewScan implementation complete (nodes + relationships)"
+# Push to remote
+git push origin feature/current-work
+
+# Create PR on GitHub:
+# - Fill out PR template
+# - Request review
+# - Address feedback
+# - Merge after approval
 ```
 
-3. **Push to remote**:
+4. **After merge, update local main**:
 ```bash
-git push origin graphview1
-git push --tags
+git checkout main
+git pull origin main
+git branch -d feature/current-work
+```
+
+### If You Have Uncommitted Experimental Changes
+
+```bash
+# On feature branch
+git status
+
+# Option 1: Commit if successful
+git add <files>
+git commit -m "feat: successful experiment"
+
+# Option 2: Stash if incomplete
+git stash push -m "WIP: experiment in progress"
+
+# Option 3: Discard if failed
+git checkout -- <files>
 ```
 
 ---
 
-**Key Principle**: Commit early, commit often, use stash liberally. Code is cheap, lost time is expensive.
+## Workflow Summary
+
+```
+                    Feature Development Lifecycle
+                    
+┌─────────────────────────────────────────────────────────────────┐
+│  1. START: Create feature branch from main                      │
+│     git checkout main && git pull && git checkout -b feature/X  │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+┌───────────────────────────▼─────────────────────────────────────┐
+│  2. DEVELOP: Work on feature branch                             │
+│     - Edit code                                                 │
+│     - Test frequently (cargo test, pytest)                      │
+│     - Commit incrementally (git commit -m "...")                │
+│     - Push regularly (git push origin feature/X)                │
+│     - Use git stash for experiments                             │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+┌───────────────────────────▼─────────────────────────────────────┐
+│  3. FINALIZE: Prepare for PR                                    │
+│     - Run full test suite                                       │
+│     - Update documentation                                      │
+│     - Self-review code                                          │
+│     - Final push                                                │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+┌───────────────────────────▼─────────────────────────────────────┐
+│  4. PR: Submit for review                                       │
+│     - Create PR on GitHub                                       │
+│     - Fill out template                                         │
+│     - Request reviewers                                         │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+┌───────────────────────────▼─────────────────────────────────────┐
+│  5. REVIEW: Address feedback                                    │
+│     - Respond to comments                                       │
+│     - Make requested changes                                    │
+│     - Push additional commits                                   │
+│     - Re-request review                                         │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+┌───────────────────────────▼─────────────────────────────────────┐
+│  6. MERGE: Integrate to main                                    │
+│     - Ensure CI passes                                          │
+│     - Get approval                                              │
+│     - Merge (Squash and Merge recommended)                      │
+│     - Delete feature branch                                     │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+┌───────────────────────────▼─────────────────────────────────────┐
+│  7. CLEANUP: Update local environment                           │
+│     git checkout main && git pull                               │
+│     git branch -d feature/X                                     │
+└─────────────────────────────────────────────────────────────────┘
+
+Main branch is ALWAYS stable and deployable!
+```
+
+---
+
+## Key Principles (TL;DR)
+
+1. **\u26a0\ufe0f NEVER commit directly to main** - Always use feature branches
+2. **\u2705 ALWAYS create PR** - All code must be reviewed
+3. **\ud83d\udd04 Commit frequently** - After each logical unit of work
+4. **\ud83d\udcbe Stash liberally** - Before risky experiments
+5. **\ud83e\uddea Test thoroughly** - Before submitting PR
+6. **\ud83d\udcdd Document completely** - Update all relevant docs
+7. **\ud83d\udc40 Review carefully** - Both your code and others'
+8. **\ud83e\uddf9 Keep main clean** - Stable and deployable always
+
+**Remember**: Branch early, commit often, PR always. Code is cheap, lost time is expensive, broken main is catastrophic.
+
+---
+
+**Last Updated**: January 12, 2026  
+**See Also**:
+- `DEVELOPMENT_PROCESS.md` - Complete 6-phase development process (with Phase 0: Branch and Phase 6: PR)
+- `.github/copilot-instructions.md` - Project conventions and Git workflow section
+- `docs/development/FEATURE_DOCUMENTATION_CHECKLIST.md` - Pre-PR documentation checklist
 
 
 
