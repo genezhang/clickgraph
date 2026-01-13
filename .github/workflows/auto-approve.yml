@@ -1,4 +1,8 @@
-name: Auto Approve & Auto Merge
+name: Auto Approve Documentation Changes
+
+# ⚠️ Note: Auto-merge is DISABLED to enforce manual code review
+# As per the branch workflow requirements (Jan 2026), all PRs require human review
+# before merging to main branch.
 
 on:
   pull_request_target:
@@ -30,32 +34,38 @@ jobs:
           docs/**
           .github/**
 
-    - name: Auto-approve documentation/formatting changes
+    - name: Label documentation/config changes (NO auto-merge)
       if: steps.changed-files.outputs.only_changed == 'true'
       uses: juliangruber/approve-pull-request-action@v2
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         number: ${{ github.event.pull_request.number }}
         body: |
-          🤖 Auto-approved because this PR only contains:
-
+          🤖 This PR only contains:
+          
           - 📝 Documentation changes (`.md` files)
           - ⚙️ Configuration changes (`.yml`/`.yaml` files)
-          - � CI/CD changes (`.github/` directory)
+          - 🔧 CI/CD changes (`.github/` directory)
+          
+          ✅ Auto-approved by bot, but **manual human review is required** before merge.
+          
+          Please review the changes and merge manually when ready.
 
-          These changes are safe to merge automatically.
-
-  auto-merge:
-    runs-on: ubuntu-latest
-    needs: auto-approve
-    permissions:
-      pull-requests: write
-      contents: write
-
-    steps:
-    - name: Auto-merge approved PRs
-      uses: peter-evans/enable-pull-request-automerge@v3
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        pull-request-number: ${{ github.event.pull_request.number }}
-        merge-method: squash
+  # AUTO-MERGE IS DISABLED
+  # All PRs require manual human review and merge
+  # To re-enable auto-merge, uncomment the job below:
+  #
+  # auto-merge:
+  #   runs-on: ubuntu-latest
+  #   needs: auto-approve
+  #   permissions:
+  #     pull-requests: write
+  #     contents: write
+  #
+  #   steps:
+  #   - name: Auto-merge approved PRs
+  #     uses: peter-evans/enable-pull-request-automerge@v3
+  #     with:
+  #       token: ${{ secrets.GITHUB_TOKEN }}
+  #       pull-request-number: ${{ github.event.pull_request.number }}
+  #       merge-method: squash
