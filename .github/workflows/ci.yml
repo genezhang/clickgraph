@@ -22,7 +22,7 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: 1.85
-        components: rustfmt
+        components: rustfmt, clippy
 
     - name: Code format check
       run: cargo fmt -- --check
