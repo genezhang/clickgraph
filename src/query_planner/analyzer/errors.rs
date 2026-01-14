@@ -88,7 +88,7 @@ pub enum AnalyzerError {
     OptimizerError { message: String },
 
     #[error("Invalid relationship pattern: ({from})-[:{rel_type}]->({to}). Schema defines {rel_type} as ({schema_from})-[:{rel_type}]->({schema_to}). Please add the missing relationship definition to your schema YAML.")]
-    InvalidRelationInQuery { 
+    InvalidRelationInQuery {
         rel_type: String,
         from: String,
         to: String,

@@ -53,7 +53,13 @@ pub fn evaluate_query(
     view_parameter_values: Option<HashMap<String, String>>,
     max_inferred_types: Option<usize>,
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
-    plan_builder::build_logical_plan(&query_ast, schema, tenant_id, view_parameter_values, max_inferred_types)
+    plan_builder::build_logical_plan(
+        &query_ast,
+        schema,
+        tenant_id,
+        view_parameter_values,
+        max_inferred_types,
+    )
 }
 
 /// Evaluate a complete Cypher statement which may contain UNION clauses
@@ -66,7 +72,13 @@ pub fn evaluate_cypher_statement(
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
     // If no union clauses, just evaluate the single query
     if statement.union_clauses.is_empty() {
-        return evaluate_query(statement.query, schema, tenant_id, view_parameter_values, max_inferred_types);
+        return evaluate_query(
+            statement.query,
+            schema,
+            tenant_id,
+            view_parameter_values,
+            max_inferred_types,
+        );
     }
 
     // Build logical plans for all queries
@@ -281,8 +293,9 @@ impl WithClause {
     fn validate_items(items: &[ProjectionItem]) -> Result<(), errors::LogicalPlanError> {
         for item in items {
             // Check if item has explicit alias or can extract one
-            let has_alias = item.col_alias.is_some() || Self::extract_alias_from_expr(&item.expression).is_some();
-            
+            let has_alias = item.col_alias.is_some()
+                || Self::extract_alias_from_expr(&item.expression).is_some();
+
             if !has_alias {
                 // Item has no extractable alias - this is an error
                 let expr_str = format!("{:?}", item.expression); // Use debug format for now
@@ -296,10 +309,13 @@ impl WithClause {
 
     /// Create a new WithClause with just the essential fields.
     /// Returns an error if any item lacks a required alias.
-    pub fn new(input: Arc<LogicalPlan>, items: Vec<ProjectionItem>) -> Result<Self, errors::LogicalPlanError> {
+    pub fn new(
+        input: Arc<LogicalPlan>,
+        items: Vec<ProjectionItem>,
+    ) -> Result<Self, errors::LogicalPlanError> {
         // Validate items before proceeding
         Self::validate_items(&items)?;
-        
+
         let exported_aliases = Self::extract_exported_aliases(&items);
         Ok(Self {
             input,
@@ -452,7 +468,7 @@ pub struct GraphRel {
     pub labels: Option<Vec<String>>, // Relationship type labels for [:TYPE1|TYPE2] patterns
     pub is_optional: Option<bool>, // For OPTIONAL MATCH: marks this relationship as optional (LEFT JOIN)
     pub anchor_connection: Option<String>, // For OPTIONAL MATCH: the connection from base MATCH (keeps WHERE filters)
-    
+
     /// CTE references for node connections
     /// Maps node alias → CTE name for left_connection and right_connection
     /// Example: {"b": "with_a_b_cte_1"} means left_connection="b" comes from CTE
@@ -757,6 +773,22 @@ impl Unwind {
     ///
     /// # Example
     /// ```rust
+    /// use clickgraph::query_planner::logical_plan::{Unwind, LogicalPlan};
+    /// use clickgraph::query_planner::logical_expr::{LogicalExpr, Literal};
+    /// use std::sync::Arc;
+    ///
+    /// // Create a sample Unwind node
+    /// let old_unwind = Unwind {
+    ///     input: Arc::new(LogicalPlan::get_empty_match_plan()),
+    ///     expression: LogicalExpr::Literal(Literal::String("test".to_string())),
+    ///     alias: "test_alias".to_string(),
+    ///     label: Some("test_label".to_string()),
+    ///     tuple_properties: Some(vec![]),
+    /// };
+    ///
+    /// // Create a transformed input plan
+    /// let transformed_input = Arc::new(LogicalPlan::get_empty_match_plan());
+    ///
     /// let new_unwind = old_unwind.with_new_input(transformed_input);
     /// // tuple_properties, label, expression, alias all preserved
     /// ```
@@ -789,9 +821,9 @@ impl Unwind {
         old_plan: Arc<LogicalPlan>,
     ) -> Transformed<Arc<LogicalPlan>> {
         match input_tf {
-            Transformed::Yes(new_input) => {
-                Transformed::Yes(Arc::new(LogicalPlan::Unwind(self.with_new_input(new_input))))
-            }
+            Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
+                self.with_new_input(new_input),
+            ))),
             Transformed::No(_) => Transformed::No(old_plan.clone()),
         }
     }
@@ -982,7 +1014,7 @@ impl GraphRel {
                 labels: self.labels.clone(),
                 is_optional: self.is_optional,
                 anchor_connection: self.anchor_connection.clone(),
-            cte_references: std::collections::HashMap::new(),
+                cte_references: std::collections::HashMap::new(),
             });
             Transformed::Yes(Arc::new(new_graph_rel))
         } else {
@@ -1088,7 +1120,7 @@ impl<'a> From<CypherReturnItem<'a>> for ProjectionItem {
         };
 
         ProjectionItem {
-            expression: value.expression.into(),
+            expression: LogicalExpr::try_from(value.expression).unwrap(),
             col_alias: value
                 .alias
                 .map(|alias| ColumnAlias(alias.to_string()))
@@ -1098,28 +1130,32 @@ impl<'a> From<CypherReturnItem<'a>> for ProjectionItem {
     }
 }
 
-impl<'a> From<WithItem<'a>> for ProjectionItem {
-    fn from(value: WithItem<'a>) -> Self {
-        ProjectionItem {
-            expression: value.expression.into(),
+impl<'a> TryFrom<WithItem<'a>> for ProjectionItem {
+    type Error = crate::query_planner::logical_expr::errors::LogicalExprError;
+
+    fn try_from(value: WithItem<'a>) -> Result<Self, Self::Error> {
+        Ok(ProjectionItem {
+            expression: LogicalExpr::try_from(value.expression)?,
             col_alias: value.alias.map(|alias| ColumnAlias(alias.to_string())),
-        }
+        })
     }
 }
 
-impl<'a> From<CypherOrderByItem<'a>> for OrderByItem {
-    fn from(value: CypherOrderByItem<'a>) -> Self {
-        OrderByItem {
+impl<'a> TryFrom<CypherOrderByItem<'a>> for OrderByItem {
+    type Error = crate::query_planner::logical_expr::errors::LogicalExprError;
+
+    fn try_from(value: CypherOrderByItem<'a>) -> Result<Self, Self::Error> {
+        Ok(OrderByItem {
             expression: if let CypherExpression::Variable(var) = value.expression {
                 LogicalExpr::ColumnAlias(ColumnAlias(var.to_string()))
             } else {
-                value.expression.into()
+                LogicalExpr::try_from(value.expression)?
             },
             order: match value.order {
                 CypherOrerByOrder::Asc => OrderByOrder::Asc,
                 CypherOrerByOrder::Desc => OrderByOrder::Desc,
             },
-        }
+        })
     }
 }
 
@@ -1307,9 +1343,7 @@ impl LogicalPlan {
                 with_clause.input.contains_variable_length_path()
             }
             // Leaf nodes
-            LogicalPlan::ViewScan(_)
-            | LogicalPlan::Empty
-            | LogicalPlan::PageRank(_) => false,
+            LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::PageRank(_) => false,
         }
     }
 }
@@ -1544,7 +1578,7 @@ mod tests {
             order: CypherOrerByOrder::Desc,
         };
 
-        let order_by_item = OrderByItem::from(ast_order_item);
+        let order_by_item = OrderByItem::try_from(ast_order_item).unwrap();
 
         match order_by_item.expression {
             LogicalExpr::ColumnAlias(alias) => assert_eq!(alias.0, "price"),

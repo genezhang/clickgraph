@@ -37,9 +37,9 @@
 /// ```
 /// use clickgraph::utils::cte_naming::generate_cte_name;
 ///
-/// assert_eq!(generate_cte_name(&["p"], 1), "with_p_cte_1");
-/// assert_eq!(generate_cte_name(&["p", "friends"], 1), "with_friends_p_cte_1");  // sorted!
-/// assert_eq!(generate_cte_name(&[], 1), "with_cte_1");
+/// assert_eq!(generate_cte_name(&["p" as &str], 1), "with_p_cte_1");
+/// assert_eq!(generate_cte_name(&["p" as &str, "friends" as &str], 1), "with_friends_p_cte_1");  // sorted!
+/// assert_eq!(generate_cte_name(&[] as &[&str], 1), "with_cte_1");
 /// ```
 pub fn generate_cte_name(aliases: &[impl AsRef<str>], counter: usize) -> String {
     let base = generate_cte_base_name(aliases);
@@ -57,15 +57,13 @@ pub fn generate_cte_name(aliases: &[impl AsRef<str>], counter: usize) -> String 
 /// ```
 /// use clickgraph::utils::cte_naming::generate_cte_base_name;
 ///
-/// assert_eq!(generate_cte_base_name(&["p"]), "with_p_cte");
-/// assert_eq!(generate_cte_base_name(&["p", "friends"]), "with_friends_p_cte");  // sorted!
-/// assert_eq!(generate_cte_base_name(&[]), "with_cte");
+/// assert_eq!(generate_cte_base_name(&["p" as &str]), "with_p_cte");
+/// assert_eq!(generate_cte_base_name(&["p" as &str, "friends" as &str]), "with_friends_p_cte");  // sorted!
+/// assert_eq!(generate_cte_base_name(&[] as &[&str]), "with_cte");
 /// ```
 pub fn generate_cte_base_name(aliases: &[impl AsRef<str>]) -> String {
     // Sort aliases to ensure consistent naming
-    let mut sorted_aliases: Vec<String> = aliases.iter()
-        .map(|s| s.as_ref().to_string())
-        .collect();
+    let mut sorted_aliases: Vec<String> = aliases.iter().map(|s| s.as_ref().to_string()).collect();
     sorted_aliases.sort();
 
     if sorted_aliases.is_empty() {
@@ -100,16 +98,16 @@ pub fn generate_cte_base_name(aliases: &[impl AsRef<str>]) -> String {
 pub fn extract_aliases_from_cte_name(cte_name: &str) -> Option<Vec<String>> {
     // Format: with_{aliases}_cte_{counter} or with_cte_{counter}
     let stripped = cte_name.strip_prefix("with_")?;
-    
+
     // Check if it's the "with_cte_{counter}" format (no aliases)
     if stripped.starts_with("cte_") {
         return Some(vec![]);
     }
-    
+
     // Find the last occurrence of "_cte"
     let cte_pos = stripped.rfind("_cte")?;
     let middle = &stripped[..cte_pos];
-    
+
     if middle.is_empty() {
         // This shouldn't happen with the starts_with check above, but be safe
         Some(vec![])
@@ -132,8 +130,14 @@ mod tests {
     #[test]
     fn test_generate_cte_name_multiple_aliases() {
         // Should sort alphabetically
-        assert_eq!(generate_cte_name(&["p", "friends"], 1), "with_friends_p_cte_1");
-        assert_eq!(generate_cte_name(&["friends", "p"], 1), "with_friends_p_cte_1");
+        assert_eq!(
+            generate_cte_name(&["p", "friends"], 1),
+            "with_friends_p_cte_1"
+        );
+        assert_eq!(
+            generate_cte_name(&["friends", "p"], 1),
+            "with_friends_p_cte_1"
+        );
         assert_eq!(generate_cte_name(&["z", "a", "m"], 1), "with_a_m_z_cte_1");
     }
 
@@ -145,7 +149,10 @@ mod tests {
     #[test]
     fn test_generate_cte_base_name() {
         assert_eq!(generate_cte_base_name(&["p"]), "with_p_cte");
-        assert_eq!(generate_cte_base_name(&["p", "friends"]), "with_friends_p_cte");
+        assert_eq!(
+            generate_cte_base_name(&["p", "friends"]),
+            "with_friends_p_cte"
+        );
         assert_eq!(generate_cte_base_name(&Vec::<String>::new()), "with_cte");
     }
 
@@ -159,10 +166,7 @@ mod tests {
             extract_aliases_from_cte_name("with_p_cte_1"),
             Some(vec!["p".to_string()])
         );
-        assert_eq!(
-            extract_aliases_from_cte_name("with_cte_1"),
-            Some(vec![])
-        );
+        assert_eq!(extract_aliases_from_cte_name("with_cte_1"), Some(vec![]));
         assert_eq!(extract_aliases_from_cte_name("invalid"), None);
         assert_eq!(extract_aliases_from_cte_name("with_only"), None);
     }
@@ -172,7 +176,7 @@ mod tests {
         let aliases = vec!["p", "friends", "age"];
         let cte_name = generate_cte_name(&aliases, 1);
         let extracted = extract_aliases_from_cte_name(&cte_name).unwrap();
-        
+
         // Should match sorted order
         let mut sorted = aliases.clone();
         sorted.sort();

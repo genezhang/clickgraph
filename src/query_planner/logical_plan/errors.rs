@@ -27,3 +27,9 @@ pub enum LogicalPlanError {
     #[error("Query planning error: {0}")]
     QueryPlanningError(String),
 }
+
+impl From<crate::query_planner::logical_expr::errors::LogicalExprError> for LogicalPlanError {
+    fn from(err: crate::query_planner::logical_expr::errors::LogicalExprError) -> Self {
+        LogicalPlanError::QueryPlanningError(format!("Logical expression error: {}", err))
+    }
+}

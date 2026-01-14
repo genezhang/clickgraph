@@ -140,16 +140,12 @@ impl AnalyzerPass for QueryValidation {
                         source: e,
                     })?;
 
-                let rel_schema = graph_schema.get_rel_schema_with_nodes(
-                    &rel_lable,
-                    Some(&from),
-                    Some(&to)
-                ).map_err(|e| {
-                    AnalyzerError::GraphSchema {
+                let rel_schema = graph_schema
+                    .get_rel_schema_with_nodes(&rel_lable, Some(&from), Some(&to))
+                    .map_err(|e| AnalyzerError::GraphSchema {
                         pass: Pass::QueryValidation,
                         source: e,
-                    }
-                })?;
+                    })?;
 
                 // IMPORTANT: Parser already normalizes GraphRel so that left=from_node, right=to_node ALWAYS.
                 // The Direction field only records the original syntax for display purposes.
@@ -162,26 +158,27 @@ impl AnalyzerPass for QueryValidation {
 
                 // Compare node labels - support filtered views (e.g., Company=Organisation, Country=Place)
                 // For exact label match, accept immediately
-                let from_label_match = schema_from.as_str() == query_from.as_str() || schema_from == "$any";
+                let from_label_match =
+                    schema_from.as_str() == query_from.as_str() || schema_from == "$any";
                 let to_label_match = schema_to.as_str() == query_to.as_str() || schema_to == "$any";
-                
+
                 // If labels don't match exactly, check if they map to same underlying table
                 // Example: Company (filter on Organisation table) should match Organisation
                 let from_matches = from_label_match || {
                     if let (Ok(query_node), Ok(schema_node)) = (
                         graph_schema.get_node_schema(query_from),
-                        graph_schema.get_node_schema(schema_from)
+                        graph_schema.get_node_schema(schema_from),
                     ) {
                         query_node.table_name == schema_node.table_name
                     } else {
                         false
                     }
                 };
-                
+
                 let to_matches = to_label_match || {
                     if let (Ok(query_node), Ok(schema_node)) = (
                         graph_schema.get_node_schema(query_to),
-                        graph_schema.get_node_schema(schema_to)
+                        graph_schema.get_node_schema(schema_to),
                     ) {
                         query_node.table_name == schema_node.table_name
                     } else {

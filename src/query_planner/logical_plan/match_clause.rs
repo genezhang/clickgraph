@@ -1,18 +1,24 @@
 use std::sync::Arc;
 
+use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::{
     open_cypher_parser::ast,
     query_planner::{
-        logical_expr::{Column, LogicalExpr, Operator, OperatorApplication, Property, PropertyAccess, TableAlias},
+        logical_expr::{
+            Column, LogicalExpr, Operator, OperatorApplication, Property, PropertyAccess,
+            TableAlias,
+        },
         logical_plan::{
             errors::LogicalPlanError,
             plan_builder::LogicalPlanResult,
-            {CartesianProduct, GraphNode, GraphRel, LogicalPlan, ShortestPathMode, Union, VariableLengthSpec},
+            {
+                CartesianProduct, GraphNode, GraphRel, LogicalPlan, ShortestPathMode, Union,
+                VariableLengthSpec,
+            },
         },
         plan_ctx::{PlanCtx, TableCtx},
     },
 };
-use crate::graph_catalog::expression_parser::PropertyValue;
 
 use super::{generate_id, ViewScan};
 use crate::graph_catalog::graph_schema::GraphSchema;
@@ -34,7 +40,10 @@ const MAX_INFERRED_TYPES: usize = 4;
 /// - `Ok(Some(label))` - Successfully inferred label
 /// - `Ok(None)` - Cannot infer (multiple node types or no nodes in schema)
 /// - `Err(TooManyInferredTypes)` - Too many matches, user must specify explicit type
-fn infer_node_label_from_schema(schema: &GraphSchema, plan_ctx: &PlanCtx) -> LogicalPlanResult<Option<String>> {
+fn infer_node_label_from_schema(
+    schema: &GraphSchema,
+    plan_ctx: &PlanCtx,
+) -> LogicalPlanResult<Option<String>> {
     let node_schemas = schema.get_nodes_schemas();
 
     // Case 1: Single node type in schema - use it
@@ -449,30 +458,34 @@ pub fn try_generate_view_scan(
                                     full_table_name,
                                     rel_type
                                 );
-                                
+
                                 // 🔧 FIX: Populate property_mapping from from_props so full node expansion works
                                 let property_mapping: HashMap<String, crate::graph_catalog::expression_parser::PropertyValue> = from_props.iter()
                                     .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
                                     .collect();
-                                
+
                                 // 🔧 FIX: Get the actual ID column name from node_id property
-                                let id_prop_name = node_schema.node_id.columns().first()
+                                let id_prop_name = node_schema
+                                    .node_id
+                                    .columns()
+                                    .first()
                                     .map(|s| s.to_string())
                                     .unwrap_or_else(|| "id".to_string());
-                                let id_column = from_props.get(&id_prop_name)
+                                let id_column = from_props
+                                    .get(&id_prop_name)
                                     .cloned()
                                     .unwrap_or_else(|| id_prop_name.clone());
-                                
+
                                 log::info!(
                                     "✓ FROM branch for '{}': id_prop='{}', id_column='{}', {} properties",
                                     label, id_prop_name, id_column, property_mapping.len()
                                 );
-                                
+
                                 let mut from_scan = ViewScan::new(
                                     full_table_name.clone(),
                                     None,
-                                    property_mapping.clone(),  // Use actual property mappings
-                                    id_column,                  // Use actual column name
+                                    property_mapping.clone(), // Use actual property mappings
+                                    id_column,                // Use actual column name
                                     vec![],
                                     vec![],
                                 );
@@ -492,30 +505,34 @@ pub fn try_generate_view_scan(
                                     full_table_name,
                                     rel_type
                                 );
-                                
+
                                 // 🔧 FIX: Populate property_mapping from to_props so full node expansion works
                                 let property_mapping: HashMap<String, crate::graph_catalog::expression_parser::PropertyValue> = to_props.iter()
                                     .map(|(k, v)| (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone())))
                                     .collect();
-                                
+
                                 // 🔧 FIX: Get the actual ID column name from node_id property
-                                let id_prop_name = node_schema.node_id.columns().first()
+                                let id_prop_name = node_schema
+                                    .node_id
+                                    .columns()
+                                    .first()
                                     .map(|s| s.to_string())
                                     .unwrap_or_else(|| "id".to_string());
-                                let id_column = to_props.get(&id_prop_name)
+                                let id_column = to_props
+                                    .get(&id_prop_name)
                                     .cloned()
                                     .unwrap_or_else(|| id_prop_name.clone());
-                                
+
                                 log::info!(
                                     "✓ TO branch for '{}': id_prop='{}', id_column='{}', {} properties",
                                     label, id_prop_name, id_column, property_mapping.len()
                                 );
-                                
+
                                 let mut to_scan = ViewScan::new(
                                     full_table_name.clone(),
                                     None,
-                                    property_mapping.clone(),  // Use actual property mappings
-                                    id_column,                  // Use actual column name
+                                    property_mapping.clone(), // Use actual property mappings
+                                    id_column,                // Use actual column name
                                     vec![],
                                     vec![],
                                 );
@@ -711,7 +728,7 @@ pub fn try_generate_view_scan(
     // are stored in from_properties/to_properties. Merge them into property_mapping
     // so that full node expansion (RETURN n) works correctly for MULTI_TABLE_LABEL schemas.
     let mut property_mapping = node_schema.property_mappings.clone();
-    
+
     if node_schema.is_denormalized && property_mapping.is_empty() {
         // Merge from_properties and to_properties into property_mapping
         // This enables full node expansion to find the actual column names
@@ -719,18 +736,25 @@ pub fn try_generate_view_scan(
             for (prop_name, col_name) in from_props.iter() {
                 property_mapping.insert(
                     prop_name.clone(),
-                    crate::graph_catalog::expression_parser::PropertyValue::Column(col_name.clone()),
+                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        col_name.clone(),
+                    ),
                 );
             }
         }
         if let Some(ref to_props) = node_schema.to_properties {
             for (prop_name, col_name) in to_props.iter() {
                 // Only add if not already present (from_properties takes precedence)
-                property_mapping.entry(prop_name.clone())
-                    .or_insert_with(|| crate::graph_catalog::expression_parser::PropertyValue::Column(col_name.clone()));
+                property_mapping
+                    .entry(prop_name.clone())
+                    .or_insert_with(|| {
+                        crate::graph_catalog::expression_parser::PropertyValue::Column(
+                            col_name.clone(),
+                        )
+                    });
             }
         }
-        
+
         if !property_mapping.is_empty() {
             log::info!(
                 "✓ Populated property_mapping for denormalized node '{}' with {} properties: {:?}",
@@ -780,7 +804,7 @@ pub fn try_generate_view_scan(
             .first()
             .map(|s| s.to_string())
             .unwrap_or_else(|| "id".to_string());
-        
+
         // Look up the actual column name from from_properties or to_properties
         let actual_column = node_schema.from_properties
             .as_ref()
@@ -799,7 +823,7 @@ pub fn try_generate_view_scan(
                 );
                 id_prop_name.clone()
             });
-        
+
         log::info!(
             "✓ Resolved denormalized node '{}' ID column: '{}' (property) → '{}' (column)",
             label,
@@ -818,14 +842,14 @@ pub fn try_generate_view_scan(
                 "id".to_string()
             })
     };
-    
+
     let mut view_scan = ViewScan::new(
-        full_table_name,  // Use fully qualified table name (database.table)
-        None,             // No filter condition yet
-        property_mapping, // Property mappings from schema
-        id_column,        // ID column from schema (first for composite)
+        full_table_name,        // Use fully qualified table name (database.table)
+        None,                   // No filter condition yet
+        property_mapping,       // Property mappings from schema
+        id_column,              // ID column from schema (first for composite)
         vec!["id".to_string()], // Basic output schema
-        vec![],           // No projections yet
+        vec![],                 // No projections yet
     );
 
     // Set view parameters if this is a parameterized view
@@ -915,19 +939,20 @@ pub fn try_generate_relationship_view_scan(
     let schema = plan_ctx.schema();
 
     // Look up the relationship schema for this type, using node labels for disambiguation
-    let rel_schema = match schema.get_rel_schema_with_nodes(rel_type, left_node_label, right_node_label) {
-        Ok(s) => s,
-        Err(e) => {
-            log::warn!(
+    let rel_schema =
+        match schema.get_rel_schema_with_nodes(rel_type, left_node_label, right_node_label) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!(
                 "Could not find relationship schema for type '{}' with nodes ({:?}, {:?}): {:?}",
                 rel_type,
                 left_node_label,
                 right_node_label,
                 e
             );
-            return None;
-        }
-    };
+                return None;
+            }
+        };
 
     // Log successful resolution
     log::info!(
@@ -1095,15 +1120,13 @@ fn generate_relationship_center(
                 "Trying to create Relationship ViewScan for type '{}'",
                 unique_labels[0]
             );
-            if let Some(view_scan) =
-                try_generate_relationship_view_scan(
-                    rel_alias,
-                    &unique_labels[0],
-                    left_node_label.as_ref().map(|s| s.as_str()),
-                    right_node_label.as_ref().map(|s| s.as_str()),
-                    plan_ctx
-                )
-            {
+            if let Some(view_scan) = try_generate_relationship_view_scan(
+                rel_alias,
+                &unique_labels[0],
+                left_node_label.as_ref().map(|s| s.as_str()),
+                right_node_label.as_ref().map(|s| s.as_str()),
+                plan_ctx,
+            ) {
                 log::info!(
                     "✓ Successfully created Relationship ViewScan for type '{}'",
                     unique_labels[0]
@@ -1112,7 +1135,7 @@ fn generate_relationship_center(
             } else {
                 // ViewScan creation failed - this is an error
                 return Err(LogicalPlanError::RelationshipNotFound(
-                    unique_labels[0].clone()
+                    unique_labels[0].clone(),
                 ));
             }
         } else {
@@ -1133,7 +1156,10 @@ fn generate_relationship_center(
     }
 }
 
-fn convert_properties(props: Vec<Property>, node_alias: &str) -> LogicalPlanResult<Vec<LogicalExpr>> {
+fn convert_properties(
+    props: Vec<Property>,
+    node_alias: &str,
+) -> LogicalPlanResult<Vec<LogicalExpr>> {
     let mut extracted_props: Vec<LogicalExpr> = vec![];
 
     for prop in props {
@@ -1253,7 +1279,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             .get(&(connected_pattern.start_node.as_ptr() as usize))
             .cloned()
             .unwrap_or_else(generate_id);
-        
+
         // CRITICAL FIX: Label resolution order:
         // 1. If AST has explicit label (Some(...)), use it
         // 2. Else if node exists in plan_ctx with label, use that
@@ -1264,7 +1290,11 @@ fn traverse_connected_pattern_with_mode<'a>(
             start_node_label_from_ast
         } else if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&start_node_alias) {
             if let Some(label) = table_ctx.get_label_opt() {
-                log::info!(">>> Found existing '{}' in plan_ctx with label: {}", start_node_alias, label);
+                log::info!(
+                    ">>> Found existing '{}' in plan_ctx with label: {}",
+                    start_node_alias,
+                    label
+                );
                 Some(label)
             } else {
                 None
@@ -1282,7 +1312,12 @@ fn traverse_connected_pattern_with_mode<'a>(
         let start_node_props = start_node_ref
             .properties
             .clone()
-            .map(|props| props.into_iter().map(Property::from).collect())
+            .map(|props| {
+                props
+                    .into_iter()
+                    .map(|p| Property::try_from(p).unwrap())
+                    .collect()
+            })
             .unwrap_or_else(Vec::new);
 
         // Extract end node info early - needed for filtering anonymous edge types
@@ -1293,13 +1328,17 @@ fn traverse_connected_pattern_with_mode<'a>(
             .cloned()
             .unwrap_or_else(generate_id);
         let end_node_label_from_ast = end_node_ref.first_label().map(|val| val.to_string());
-        
+
         // CRITICAL FIX: Same label resolution order as start_node
         let end_node_label = if end_node_label_from_ast.is_some() {
             end_node_label_from_ast
         } else if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&end_node_alias) {
             if let Some(label) = table_ctx.get_label_opt() {
-                log::info!(">>> Found existing '{}' in plan_ctx with label: {}", end_node_alias, label);
+                log::info!(
+                    ">>> Found existing '{}' in plan_ctx with label: {}",
+                    end_node_alias,
+                    label
+                );
                 Some(label)
             } else {
                 None
@@ -1325,17 +1364,14 @@ fn traverse_connected_pattern_with_mode<'a>(
                 // Filters by node compatibility when node types are known
                 let graph_schema = plan_ctx.schema();
                 let mut expanded_labels = Vec::new();
-                
+
                 // Get node labels for semantic expansion
                 let from_label = start_node_label.as_deref();
                 let to_label = end_node_label.as_deref();
-                
+
                 for label in labels.iter() {
-                    let variants = graph_schema.expand_generic_relationship_type(
-                        label,
-                        from_label,
-                        to_label,
-                    );
+                    let variants =
+                        graph_schema.expand_generic_relationship_type(label, from_label, to_label);
                     if variants.is_empty() {
                         // No expansion found, use original label (will fail later if truly missing)
                         expanded_labels.push(label.to_string());
@@ -1344,13 +1380,16 @@ fn traverse_connected_pattern_with_mode<'a>(
                         expanded_labels.extend(variants);
                     }
                 }
-                
+
                 // Deduplicate in case of overlapping expansions
                 let unique_labels: Vec<String> = {
                     let mut seen = std::collections::HashSet::new();
-                    expanded_labels.into_iter().filter(|l| seen.insert(l.clone())).collect()
+                    expanded_labels
+                        .into_iter()
+                        .filter(|l| seen.insert(l.clone()))
+                        .collect()
                 };
-                
+
                 Some(unique_labels)
             }
             None => {
@@ -1377,13 +1416,19 @@ fn traverse_connected_pattern_with_mode<'a>(
         // WITH boundaries and handles both node labels AND edge types.
         // The labels in start_node_label/end_node_label come from AST parsing or will be
         // inferred by TypeInference pass.
-        
+
         log::debug!(
             "Pattern processing: start='{}' ({}), end='{}' ({})",
             start_node_alias,
-            start_node_label.as_ref().map(|s| s.as_str()).unwrap_or("None"),
+            start_node_label
+                .as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("None"),
             end_node_alias,
-            end_node_label.as_ref().map(|s| s.as_str()).unwrap_or("None")
+            end_node_label
+                .as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("None")
         );
 
         // Polymorphic inference removed - TypeInference pass handles this
@@ -1405,7 +1450,12 @@ fn traverse_connected_pattern_with_mode<'a>(
         let rel_properties = rel
             .properties
             .clone()
-            .map(|props| props.into_iter().map(Property::from).collect())
+            .map(|props| {
+                props
+                    .into_iter()
+                    .map(|p| Property::try_from(p).unwrap())
+                    .collect()
+            })
             .unwrap_or_else(Vec::new);
 
         crate::debug_print!(
@@ -1417,7 +1467,12 @@ fn traverse_connected_pattern_with_mode<'a>(
         let end_node_props = end_node_ref
             .properties
             .clone()
-            .map(|props| props.into_iter().map(Property::from).collect())
+            .map(|props| {
+                props
+                    .into_iter()
+                    .map(|p| Property::try_from(p).unwrap())
+                    .collect()
+            })
             .unwrap_or_else(Vec::new);
 
         // if start alias already present in ctx map, it means the current nested connected pattern's start node will be connecting at right side plan and end node will be at the left
@@ -1483,7 +1538,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                             alias: end_node_alias.clone(),
                             label: end_node_label.clone().map(|s| s.to_string()),
                             is_denormalized: is_denorm,
-            projected_columns: None,
+                            projected_columns: None,
                         })),
                     )
                 }
@@ -1513,7 +1568,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                             alias: end_node_alias.clone(),
                             label: end_node_label.clone().map(|s| s.to_string()),
                             is_denormalized: is_denorm,
-            projected_columns: None,
+                            projected_columns: None,
                         })),
                         plan.clone(),
                     )
@@ -1545,7 +1600,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                             alias: end_node_alias.clone(),
                             label: end_node_label.clone().map(|s| s.to_string()),
                             is_denormalized: is_denorm,
-            projected_columns: None,
+                            projected_columns: None,
                         })),
                     )
                 }
@@ -1577,17 +1632,17 @@ fn traverse_connected_pattern_with_mode<'a>(
             // - Multi-type *1: (a)-[:TYPE1|TYPE2*1]->(b) → keep VLP for polymorphic nodes
             // - Multi-type no VLP: (a)-[:TYPE1|TYPE2]->(b) → ADD implicit *1 for polymorphic handling
             let is_multi_type = rel_labels.as_ref().map_or(false, |labels| labels.len() > 1);
-            
+
             let variable_length = if let Some(vlp) = rel.variable_length.clone() {
                 // Has explicit VLP spec
                 let spec: VariableLengthSpec = vlp.into();
                 let is_exact_one_hop = spec.min_hops == Some(1) && spec.max_hops == Some(1);
-                
+
                 if is_exact_one_hop && !is_multi_type {
                     log::info!("Simplifying *1 single-type pattern to regular relationship");
-                    None  // Remove *1 for single-type - treat as regular relationship
+                    None // Remove *1 for single-type - treat as regular relationship
                 } else {
-                    Some(spec)  // Keep VLP for multi-type or ranges
+                    Some(spec) // Keep VLP for multi-type or ranges
                 }
             } else if is_multi_type {
                 // Multi-type without VLP: add implicit *1 for proper polymorphic handling
@@ -1597,7 +1652,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                     max_hops: Some(1),
                 })
             } else {
-                None  // Single-type, no VLP
+                None // Single-type, no VLP
             };
 
             let graph_rel_node = GraphRel {
@@ -1667,12 +1722,23 @@ fn traverse_connected_pattern_with_mode<'a>(
         }
         // if end alias already present in ctx map, it means the current nested connected pattern's end node will be connecting at right side plan and start node will be at the left
         else if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&end_node_alias) {
-            log::info!(">>> Found existing TableCtx for '{}', updating with label: {:?}", end_node_alias, end_node_label);
+            log::info!(
+                ">>> Found existing TableCtx for '{}', updating with label: {:?}",
+                end_node_alias,
+                end_node_label
+            );
             if end_node_label.is_some() {
                 table_ctx.set_labels(end_node_label.clone().map(|l| vec![l]));
-                log::info!(">>> Updated '{}' with label: {}", end_node_alias, end_node_label.as_ref().unwrap());
+                log::info!(
+                    ">>> Updated '{}' with label: {}",
+                    end_node_alias,
+                    end_node_label.as_ref().unwrap()
+                );
             } else {
-                log::warn!(">>> end_node_label is None for '{}', cannot update TableCtx!", end_node_alias);
+                log::warn!(
+                    ">>> end_node_label is None for '{}', cannot update TableCtx!",
+                    end_node_alias
+                );
             }
             if !end_node_props.is_empty() {
                 table_ctx.append_properties(end_node_props);
@@ -1700,7 +1766,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 alias: start_node_alias.clone(),
                 label: start_node_label.clone().map(|s| s.to_string()),
                 is_denormalized: start_is_denorm,
-            projected_columns: None,
+                projected_columns: None,
             };
             plan_ctx.insert_table_ctx(
                 start_node_alias.clone(),
@@ -1738,20 +1804,24 @@ fn traverse_connected_pattern_with_mode<'a>(
                 right_connection: end_node_alias.clone(),
                 is_rel_anchor: false,
                 variable_length: {
-                    let is_multi_type = rel_labels.as_ref().map_or(false, |labels| labels.len() > 1);
+                    let is_multi_type =
+                        rel_labels.as_ref().map_or(false, |labels| labels.len() > 1);
                     if let Some(vlp) = rel.variable_length.clone() {
                         let spec: VariableLengthSpec = vlp.into();
                         let is_exact_one_hop = spec.min_hops == Some(1) && spec.max_hops == Some(1);
                         if is_exact_one_hop && !is_multi_type {
-                            None  // *1 single-type is same as regular relationship
+                            None // *1 single-type is same as regular relationship
                         } else {
-                            Some(spec)  // Keep *1 for multi-type or ranges
+                            Some(spec) // Keep *1 for multi-type or ranges
                         }
                     } else if is_multi_type {
                         // Add implicit *1 for multi-type without VLP (polymorphic end node)
-                        Some(VariableLengthSpec { min_hops: Some(1), max_hops: Some(1) })
+                        Some(VariableLengthSpec {
+                            min_hops: Some(1),
+                            max_hops: Some(1),
+                        })
                     } else {
-                        None  // Single-type, no VLP
+                        None // Single-type, no VLP
                     }
                 },
                 shortest_path_mode: shortest_path_mode.clone(),
@@ -1883,7 +1953,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 alias: start_node_alias.clone(),
                 label: start_node_label.clone().map(|s| s.to_string()),
                 is_denormalized: start_is_denorm,
-            projected_columns: None,
+                projected_columns: None,
             };
             crate::debug_print!(
                 "=== DISCONNECTED: start_graph_node created with is_denormalized={} ===",
@@ -1917,7 +1987,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 alias: end_node_alias.clone(),
                 label: end_node_label.clone().map(|s| s.to_string()),
                 is_denormalized: end_is_denorm,
-            projected_columns: None,
+                projected_columns: None,
             };
             plan_ctx.insert_table_ctx(
                 end_node_alias.clone(),
@@ -1992,20 +2062,24 @@ fn traverse_connected_pattern_with_mode<'a>(
                 right_connection: right_conn.clone(), // Right node is the end node (right_conn for Outgoing)
                 is_rel_anchor: false,
                 variable_length: {
-                    let is_multi_type = rel_labels.as_ref().map_or(false, |labels| labels.len() > 1);
+                    let is_multi_type =
+                        rel_labels.as_ref().map_or(false, |labels| labels.len() > 1);
                     if let Some(vlp) = rel.variable_length.clone() {
                         let spec: VariableLengthSpec = vlp.into();
                         let is_exact_one_hop = spec.min_hops == Some(1) && spec.max_hops == Some(1);
                         if is_exact_one_hop && !is_multi_type {
-                            None  // *1 single-type is same as regular relationship
+                            None // *1 single-type is same as regular relationship
                         } else {
-                            Some(spec)  // Keep *1 for multi-type or ranges
+                            Some(spec) // Keep *1 for multi-type or ranges
                         }
                     } else if is_multi_type {
                         // Add implicit *1 for multi-type without VLP (polymorphic end node)
-                        Some(VariableLengthSpec { min_hops: Some(1), max_hops: Some(1) })
+                        Some(VariableLengthSpec {
+                            min_hops: Some(1),
+                            max_hops: Some(1),
+                        })
                     } else {
-                        None  // Single-type, no VLP
+                        None // Single-type, no VLP
                     }
                 },
                 shortest_path_mode: shortest_path_mode.clone(),
@@ -2017,12 +2091,12 @@ fn traverse_connected_pattern_with_mode<'a>(
                     if shortest_path_mode.is_some() {
                         use crate::query_planner::logical_expr::{Operator, OperatorApplication};
                         let mut node_filters = vec![];
-                        
+
                         // Extract filters/properties for left node
                         if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&left_conn) {
                             // Get both existing filters AND unconverted properties
                             node_filters.extend(table_ctx.get_filters().iter().cloned());
-                            
+
                             // Convert any remaining properties to filters
                             let props = table_ctx.get_and_clear_properties();
                             if !props.is_empty() {
@@ -2045,12 +2119,12 @@ fn traverse_connected_pattern_with_mode<'a>(
                                 }
                             }
                         }
-                        
-                        // Extract filters/properties for right node  
+
+                        // Extract filters/properties for right node
                         if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&right_conn) {
                             // Get both existing filters AND unconverted properties
                             node_filters.extend(table_ctx.get_filters().iter().cloned());
-                            
+
                             // Convert any remaining properties to filters
                             let props = table_ctx.get_and_clear_properties();
                             if !props.is_empty() {
@@ -2073,7 +2147,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                                 }
                             }
                         }
-                        
+
                         // Combine all filters with AND
                         if !node_filters.is_empty() {
                             log::info!(
@@ -2081,12 +2155,17 @@ fn traverse_connected_pattern_with_mode<'a>(
                                 node_filters.len(),
                                 rel_alias
                             );
-                            Some(node_filters.into_iter().reduce(|acc, filter| {
-                                LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                                    operator: Operator::And,
-                                    operands: vec![acc, filter],
-                                })
-                            }).unwrap())
+                            Some(
+                                node_filters
+                                    .into_iter()
+                                    .reduce(|acc, filter| {
+                                        LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                                            operator: Operator::And,
+                                            operands: vec![acc, filter],
+                                        })
+                                    })
+                                    .unwrap(),
+                            )
                         } else {
                             None // No filters found
                         }
@@ -2182,7 +2261,8 @@ fn traverse_node_pattern(
     // === SINGLE-NODE-SCHEMA INFERENCE ===
     // If no label provided and schema has only one node type, use it
     if node_label.is_none() {
-        if let Ok(Some(inferred_label)) = infer_node_label_from_schema(plan_ctx.schema(), plan_ctx) {
+        if let Ok(Some(inferred_label)) = infer_node_label_from_schema(plan_ctx.schema(), plan_ctx)
+        {
             log::info!(
                 "Node '{}' label inferred as '{}' (single node type in schema)",
                 node_alias,
@@ -2195,7 +2275,12 @@ fn traverse_node_pattern(
     let node_props: Vec<Property> = node_pattern
         .properties
         .clone()
-        .map(|props| props.into_iter().map(Property::from).collect())
+        .map(|props| {
+            props
+                .into_iter()
+                .map(|p| Property::try_from(p).unwrap())
+                .collect()
+        })
         .unwrap_or_default();
 
     // if alias already present in ctx map then just add its conditions and do not add it in the logical plan
@@ -2239,7 +2324,7 @@ fn traverse_node_pattern(
                         alias: node_alias.clone(),
                         label: node_label.clone().map(|s| s.to_string()),
                         is_denormalized: is_denorm,
-            projected_columns: None,
+                        projected_columns: None,
                     }))
                 })
                 .collect();
@@ -2262,14 +2347,14 @@ fn traverse_node_pattern(
             projected_columns: None,
         };
         let new_node_plan = Arc::new(LogicalPlan::GraphNode(graph_node));
-        
+
         // Check if we need to create a CartesianProduct
         // For comma patterns like (a:User), (b:User), we need CROSS JOIN
         let has_existing_plan = match plan.as_ref() {
             LogicalPlan::Empty => false,
             _ => true,
         };
-        
+
         if has_existing_plan {
             // Create CartesianProduct to combine existing plan with new node
             // This generates: FROM existing_table CROSS JOIN new_node_table
@@ -2697,7 +2782,7 @@ mod tests {
         );
 
         let start_node = ast::NodePattern {
-            name: Some("user"),      // This exists in plan_ctx
+            name: Some("user"),             // This exists in plan_ctx
             labels: Some(vec!["Employee"]), // Different label
             properties: None,
         };
@@ -2801,7 +2886,10 @@ mod tests {
         let match_clause = ast::MatchClause {
             path_patterns: vec![
                 (None, ast::PathPattern::Node(node_pattern)),
-                (None, ast::PathPattern::ConnectedPattern(vec![connected_pattern])),
+                (
+                    None,
+                    ast::PathPattern::ConnectedPattern(vec![connected_pattern]),
+                ),
             ],
             where_clause: None,
         };
@@ -2875,7 +2963,7 @@ mod tests {
         // Create schema with Customer node
         use crate::graph_catalog::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema};
         use std::collections::HashMap;
-        
+
         let mut nodes = HashMap::new();
         nodes.insert(
             "Customer".to_string(),
@@ -2898,7 +2986,7 @@ mod tests {
                 label_value: None,
             },
         );
-        
+
         let schema = Arc::new(GraphSchema::build(
             1,
             "test".to_string(),
@@ -3025,7 +3113,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
-            constraints: None,
+                constraints: None,
             },
         );
         rels.insert(
@@ -3056,7 +3144,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
-            constraints: None,
+                constraints: None,
             },
         );
         rels.insert(
@@ -3087,10 +3175,10 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
-            constraints: None,
+                constraints: None,
             },
         );
-        
+
         // Add missing nodes for tests
         nodes.insert(
             "Person".to_string(),
@@ -3197,7 +3285,7 @@ mod tests {
                 label_value: None,
             },
         );
-        
+
         // Add missing relationships for tests
         rels.insert(
             "WORKS_AT".to_string(),
@@ -3227,7 +3315,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
-            constraints: None,
+                constraints: None,
             },
         );
         rels.insert(
@@ -3258,7 +3346,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
-            constraints: None,
+                constraints: None,
             },
         );
         rels.insert(
@@ -3289,7 +3377,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
-            constraints: None,
+                constraints: None,
             },
         );
 
@@ -3352,7 +3440,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
-            constraints: None,
+                constraints: None,
             },
         );
 
@@ -3547,9 +3635,14 @@ mod tests {
         let schema = create_test_schema_with_relationships();
         let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
-        let result =
-            infer_relationship_type_from_nodes(&None, &None, &ast::Direction::Outgoing, &schema, &plan_ctx)
-                .expect("Should not error");
+        let result = infer_relationship_type_from_nodes(
+            &None,
+            &None,
+            &ast::Direction::Outgoing,
+            &schema,
+            &plan_ctx,
+        )
+        .expect("Should not error");
 
         // Both nodes untyped and schema has 3 relationships - cannot infer
         assert!(result.is_none());
@@ -3673,7 +3766,7 @@ mod tests {
                     from_node_properties: None,
                     to_node_properties: None,
                     is_fk_edge: false,
-            constraints: None,
+                    constraints: None,
                 },
             );
         }
@@ -3966,7 +4059,7 @@ mod tests {
                 from_node_properties: None,
                 to_node_properties: None,
                 is_fk_edge: false,
-            constraints: None,
+                constraints: None,
             },
         );
 

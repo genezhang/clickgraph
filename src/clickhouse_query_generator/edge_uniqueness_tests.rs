@@ -17,7 +17,7 @@ mod edge_uniqueness_tests {
         let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 2);
         let generator = VariableLengthCteGenerator::new(
-            &schema,  // Add schema as first parameter
+            &schema, // Add schema as first parameter
             spec,
             "users",
             "user_id",
@@ -87,7 +87,7 @@ mod edge_uniqueness_tests {
         ]));
 
         let generator = VariableLengthCteGenerator::new(
-            &schema,  // Add schema parameter
+            &schema, // Add schema parameter
             spec,
             "airports",
             "airport_code",
@@ -146,7 +146,7 @@ mod edge_uniqueness_tests {
         let edge_id = Some(Identifier::Single("transaction_id".to_string()));
 
         let generator = VariableLengthCteGenerator::new(
-            &schema,  // Add schema parameter
+            &schema, // Add schema parameter
             spec,
             "accounts",
             "account_id",

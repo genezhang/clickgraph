@@ -1,5 +1,6 @@
 use super::render_expr::{
-    AggregateFnCall, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
+    AggregateFnCall, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall,
+    TableAlias,
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
@@ -14,19 +15,19 @@ pub struct CategorizedFilters {
 }
 
 /// Categorize filters based on which nodes/relationships they reference
-/// 
+///
 /// This function properly separates WHERE clause predicates into:
 /// - start_node_filters: `WHERE a.prop = value` (start node)
 /// - end_node_filters: `WHERE b.prop = value` (end node)
 /// - relationship_filters: `WHERE r.prop = value` (relationship)
 /// - path_function_filters: `WHERE length(p) < 5` (path functions)
-/// 
+///
 /// ⚠️ CRITICAL (Jan 10, 2026): Schema-aware categorization for ALL schema variations!
-/// 
+///
 /// For denormalized edge tables, BOTH node and edge properties have the same table alias (rel alias).
 /// After property mapping: origin.code → f.Origin, dest.code → f.Dest (both use 'f' alias)
 /// We CANNOT categorize by table alias alone!
-/// 
+///
 /// Solution: Check the COLUMN NAME against schema property mappings:
 /// - from_node_properties (e.g., Origin, OriginCity) → start_node_filters
 /// - to_node_properties (e.g., Dest, DestCity) → end_node_filters  
@@ -76,33 +77,45 @@ pub fn categorize_filters(
                 // Check from_node_properties (start node)
                 if let Some(from_props) = &rel_schema.from_node_properties {
                     if from_props.values().any(|col| col == column_name) {
-                        log::debug!("Column '{}' found in from_node_properties → start node", column_name);
+                        log::debug!(
+                            "Column '{}' found in from_node_properties → start node",
+                            column_name
+                        );
                         return ColumnOwnership::FromNode;
                     }
                 }
-                
+
                 // Check to_node_properties (end node)
                 if let Some(to_props) = &rel_schema.to_node_properties {
                     if to_props.values().any(|col| col == column_name) {
-                        log::debug!("Column '{}' found in to_node_properties → end node", column_name);
+                        log::debug!(
+                            "Column '{}' found in to_node_properties → end node",
+                            column_name
+                        );
                         return ColumnOwnership::ToNode;
                     }
                 }
-                
+
                 // Check property_mappings (relationship) - these are PropertyValue
                 for col_value in rel_schema.property_mappings.values() {
                     if col_value.raw() == column_name {
-                        log::debug!("Column '{}' found in property_mappings → relationship", column_name);
+                        log::debug!(
+                            "Column '{}' found in property_mappings → relationship",
+                            column_name
+                        );
                         return ColumnOwnership::Relationship;
                     }
                 }
             }
         }
-        
-        log::debug!("Column '{}' ownership unknown, defaulting to relationship", column_name);
+
+        log::debug!(
+            "Column '{}' ownership unknown, defaulting to relationship",
+            column_name
+        );
         ColumnOwnership::Unknown
     }
-    
+
     #[derive(Debug, PartialEq)]
     enum ColumnOwnership {
         FromNode,
@@ -175,7 +188,7 @@ pub fn categorize_filters(
             false
         };
         let has_path_fn = contains_path_function(&predicate);
-        
+
         // ⚠️ CRITICAL: For denormalized edges, check column ownership!
         // If predicate references rel_alias, check if column belongs to from/to node or relationship
         let column_ownership = if refs_rel && !rel_labels.is_empty() {
@@ -201,7 +214,9 @@ pub fn categorize_filters(
             path_fn_filters.push(predicate);
         } else if refs_rel && column_ownership == ColumnOwnership::FromNode {
             // Column belongs to from_node_properties → start node filter
-            crate::debug_println!("DEBUG: Going to start_filters (denormalized from_node property)");
+            crate::debug_println!(
+                "DEBUG: Going to start_filters (denormalized from_node property)"
+            );
             log::debug!("  -> start_node_filters (column in from_node_properties)");
             start_filters.push(predicate);
         } else if refs_rel && column_ownership == ColumnOwnership::ToNode {
@@ -216,8 +231,13 @@ pub fn categorize_filters(
             rel_filters.push(predicate);
         } else if refs_rel {
             // refs_rel but ownership unknown (fallback for non-denormalized or missing schema)
-            crate::debug_println!("DEBUG: Going to rel_filters (references relationship alias, ownership unknown)");
-            log::debug!("  -> relationship_filters (refs rel alias '{}', ownership unknown)", rel_alias);
+            crate::debug_println!(
+                "DEBUG: Going to rel_filters (references relationship alias, ownership unknown)"
+            );
+            log::debug!(
+                "  -> relationship_filters (refs rel alias '{}', ownership unknown)",
+                rel_alias
+            );
             rel_filters.push(predicate);
         } else if refs_start && refs_end {
             // Filter references both nodes - can't categorize simply
@@ -233,12 +253,17 @@ pub fn categorize_filters(
         } else {
             // Doesn't reference any known alias - might be a constant or unrelated
             // ✅ HOLISTIC FIX: Previously we put uncategorized filters here, which was wrong
-            crate::debug_println!("DEBUG: Uncategorized predicate (no alias match), treating as rel filter");
-            log::warn!("Filter predicate doesn't match any known alias: {:?}", predicate);
+            crate::debug_println!(
+                "DEBUG: Uncategorized predicate (no alias match), treating as rel filter"
+            );
+            log::warn!(
+                "Filter predicate doesn't match any known alias: {:?}",
+                predicate
+            );
             rel_filters.push(predicate);
         }
     }
-    
+
     // Helper to extract column name from a predicate (e.g., Origin from f.Origin = 'LAX')
     fn extract_column_name(expr: &RenderExpr) -> Option<String> {
         match expr {
@@ -251,9 +276,15 @@ pub fn categorize_filters(
             }
             RenderExpr::OperatorApplicationExp(op) => {
                 // For comparison operators, check first operand (usually the property access)
-                if matches!(op.operator, Operator::Equal | Operator::NotEqual | 
-                           Operator::LessThan | Operator::LessThanEqual | 
-                           Operator::GreaterThan | Operator::GreaterThanEqual) {
+                if matches!(
+                    op.operator,
+                    Operator::Equal
+                        | Operator::NotEqual
+                        | Operator::LessThan
+                        | Operator::LessThanEqual
+                        | Operator::GreaterThan
+                        | Operator::GreaterThanEqual
+                ) {
                     if let Some(first) = op.operands.first() {
                         return extract_column_name(first);
                     }
@@ -392,10 +423,7 @@ pub fn rewrite_expr_for_var_len_cte(
                 if prop.column.raw() == "*" {
                     new_prop.column = prop.column.clone();
                 } else {
-                    new_prop.column = PropertyValue::Column(format!(
-                        "start_{}",
-                        prop.column.raw()
-                    ));
+                    new_prop.column = PropertyValue::Column(format!("start_{}", prop.column.raw()));
                 }
             } else if prop.table_alias.0 == end_cypher_alias {
                 // End node properties stay as is
@@ -445,7 +473,7 @@ pub fn rewrite_expr_for_var_len_cte(
 }
 
 /// Rewrite VLP internal aliases (start_node, end_node) to Cypher aliases (a, b) for non-denormalized patterns
-/// 
+///
 /// Problem: VLP CTEs use start_node/end_node internally for recursion, but outer query JOINs use Cypher aliases
 /// Generated SQL: `SELECT start_node.name FROM vlp_cte JOIN users AS a` ❌ fails with "Unknown identifier start_node"
 /// Correct SQL:   `SELECT a.name FROM vlp_cte JOIN users AS a` ✅
@@ -461,7 +489,7 @@ pub fn rewrite_vlp_internal_to_cypher_alias(
     match expr {
         RenderExpr::PropertyAccessExp(prop) => {
             let mut new_prop = prop.clone();
-            
+
             // Rewrite VLP internal aliases to Cypher aliases
             if prop.table_alias.0 == "start_node" {
                 log::debug!("🔧 Rewriting start_node → {}", start_cypher_alias);
@@ -470,7 +498,7 @@ pub fn rewrite_vlp_internal_to_cypher_alias(
                 log::debug!("🔧 Rewriting end_node → {}", end_cypher_alias);
                 new_prop.table_alias = TableAlias(end_cypher_alias.to_string());
             }
-            
+
             RenderExpr::PropertyAccessExp(new_prop)
         }
         RenderExpr::OperatorApplicationExp(op) => {
@@ -495,11 +523,7 @@ pub fn rewrite_vlp_internal_to_cypher_alias(
                 .args
                 .iter()
                 .map(|arg| {
-                    rewrite_vlp_internal_to_cypher_alias(
-                        arg,
-                        start_cypher_alias,
-                        end_cypher_alias,
-                    )
+                    rewrite_vlp_internal_to_cypher_alias(arg, start_cypher_alias, end_cypher_alias)
                 })
                 .collect();
             RenderExpr::ScalarFnCall(ScalarFnCall {
@@ -512,11 +536,7 @@ pub fn rewrite_vlp_internal_to_cypher_alias(
                 .args
                 .iter()
                 .map(|arg| {
-                    rewrite_vlp_internal_to_cypher_alias(
-                        arg,
-                        start_cypher_alias,
-                        end_cypher_alias,
-                    )
+                    rewrite_vlp_internal_to_cypher_alias(arg, start_cypher_alias, end_cypher_alias)
                 })
                 .collect();
             RenderExpr::AggregateFnCall(AggregateFnCall {
@@ -631,7 +651,7 @@ pub fn rewrite_expr_for_mixed_denormalized_cte(
 }
 
 /// Rewrite labels(x)[1] to x.end_type for multi-type VLP ORDER BY expressions
-/// 
+///
 /// For multi-type VLP, the CTE contains:
 /// - end_type: the actual type name (User, Post, etc.)
 /// - end_id: the node ID as string
@@ -644,13 +664,20 @@ pub fn rewrite_labels_subscript_for_multi_type_vlp(expr: &RenderExpr) -> RenderE
         // Match the pattern: ArraySubscript(ScalarFnCall("labels", [TableAlias("x")]), Literal(1))
         RenderExpr::ArraySubscript { array, index } => {
             if let RenderExpr::ScalarFnCall(fn_call) = array.as_ref() {
-                if fn_call.name.to_lowercase() == "labels" || fn_call.name.to_lowercase() == "label" {
+                if fn_call.name.to_lowercase() == "labels" || fn_call.name.to_lowercase() == "label"
+                {
                     if let Some(RenderExpr::Raw(alias)) = fn_call.args.first() {
-                        log::info!("🎯 Rewriting labels({})[1] to {}.end_type for ORDER BY", alias, alias);
+                        log::info!(
+                            "🎯 Rewriting labels({})[1] to {}.end_type for ORDER BY",
+                            alias,
+                            alias
+                        );
                         // Return x.end_type
                         return RenderExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(alias.clone()),
-                            column: crate::graph_catalog::expression_parser::PropertyValue::Column("end_type".to_string()),
+                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                "end_type".to_string(),
+                            ),
                         });
                     }
                 }

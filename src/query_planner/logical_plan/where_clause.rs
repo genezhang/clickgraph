@@ -12,8 +12,11 @@ pub fn evaluate_where_clause<'a>(
     where_clause: &WhereClause<'a>,
     plan: Arc<LogicalPlan>,
 ) -> Arc<LogicalPlan> {
-    let predicates: LogicalExpr = where_clause.conditions.clone().into();
-    log::debug!("evaluate_where_clause: WHERE predicate after conversion: {:?}", predicates);
+    let predicates: LogicalExpr = LogicalExpr::try_from(where_clause.conditions.clone()).unwrap();
+    log::debug!(
+        "evaluate_where_clause: WHERE predicate after conversion: {:?}",
+        predicates
+    );
 
     // If input is a Union, push Filter into each branch
     // Each branch needs its own copy of the filter (will be mapped to correct columns by FilterTagging)

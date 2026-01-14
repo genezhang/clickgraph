@@ -33,7 +33,7 @@ pub fn evaluate_unwind_clause(
     plan_ctx: &mut PlanCtx,
 ) -> Arc<LogicalPlan> {
     // Convert the Cypher expression to a LogicalExpr
-    let expression = LogicalExpr::from(unwind_clause.expression.clone());
+    let expression = LogicalExpr::try_from(unwind_clause.expression.clone()).unwrap();
 
     // Register the UNWIND alias as a projection alias
     // This allows subsequent clauses (WHERE, RETURN) to reference it

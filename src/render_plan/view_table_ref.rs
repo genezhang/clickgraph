@@ -21,8 +21,8 @@ pub struct ViewTableRef {
 impl ViewTableRef {
     /// Build table reference with parameterized view syntax if applicable
     fn build_table_reference(scan: &ViewScan, base_name: &str) -> String {
-        if let (Some(param_names), Some(param_values)) = 
-            (&scan.view_parameter_names, &scan.view_parameter_values) 
+        if let (Some(param_names), Some(param_values)) =
+            (&scan.view_parameter_names, &scan.view_parameter_values)
         {
             if !param_names.is_empty() {
                 // Generate parameterized view call with actual values
@@ -57,7 +57,11 @@ impl ViewTableRef {
     /// Create a new table reference
     pub fn new_table(scan: ViewScan, name: String) -> Self {
         let table_ref = Self::build_table_reference(&scan, &name);
-        log::debug!("ViewTableRef::new_table: base_name={}, table_ref={}", name, table_ref);
+        log::debug!(
+            "ViewTableRef::new_table: base_name={}, table_ref={}",
+            name,
+            table_ref
+        );
         let use_final = scan.use_final; // Extract before moving scan
         Self {
             source: Arc::new(LogicalPlan::ViewScan(Arc::new(scan))),

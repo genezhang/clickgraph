@@ -379,7 +379,7 @@ impl AnalyzerPass for FilterTagging {
                     limit: with_clause.limit,
                     where_clause: with_clause.where_clause.clone(),
                     exported_aliases: with_clause.exported_aliases.clone(),
-                            cte_references: with_clause.cte_references.clone(),
+                    cte_references: with_clause.cte_references.clone(),
                 };
                 Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
             }
@@ -396,7 +396,7 @@ impl FilterTagging {
     /// A multi-type VLP pattern has a GraphRel with variable_length and multiple labels (relationship types).
     fn is_multi_type_vlp_endpoint(plan: &LogicalPlan, alias: &str) -> bool {
         use crate::query_planner::logical_plan::LogicalPlan;
-        
+
         match plan {
             LogicalPlan::GraphRel(gr) => {
                 // Check if this GraphRel:
@@ -411,22 +411,25 @@ impl FilterTagging {
                     }
                 }
                 // Recursively check children
-                Self::is_multi_type_vlp_endpoint(gr.left.as_ref(), alias) ||
-                Self::is_multi_type_vlp_endpoint(gr.center.as_ref(), alias) ||
-                Self::is_multi_type_vlp_endpoint(gr.right.as_ref(), alias)
+                Self::is_multi_type_vlp_endpoint(gr.left.as_ref(), alias)
+                    || Self::is_multi_type_vlp_endpoint(gr.center.as_ref(), alias)
+                    || Self::is_multi_type_vlp_endpoint(gr.right.as_ref(), alias)
             }
             LogicalPlan::Filter(f) => Self::is_multi_type_vlp_endpoint(f.input.as_ref(), alias),
             LogicalPlan::Projection(p) => Self::is_multi_type_vlp_endpoint(p.input.as_ref(), alias),
             LogicalPlan::Limit(l) => Self::is_multi_type_vlp_endpoint(l.input.as_ref(), alias),
             LogicalPlan::Skip(s) => Self::is_multi_type_vlp_endpoint(s.input.as_ref(), alias),
             LogicalPlan::OrderBy(o) => Self::is_multi_type_vlp_endpoint(o.input.as_ref(), alias),
-            LogicalPlan::GraphNode(gn) => Self::is_multi_type_vlp_endpoint(gn.input.as_ref(), alias),
-            LogicalPlan::Union(u) => {
-                u.inputs.iter().any(|input| Self::is_multi_type_vlp_endpoint(input.as_ref(), alias))
+            LogicalPlan::GraphNode(gn) => {
+                Self::is_multi_type_vlp_endpoint(gn.input.as_ref(), alias)
             }
+            LogicalPlan::Union(u) => u
+                .inputs
+                .iter()
+                .any(|input| Self::is_multi_type_vlp_endpoint(input.as_ref(), alias)),
             LogicalPlan::CartesianProduct(cp) => {
-                Self::is_multi_type_vlp_endpoint(cp.left.as_ref(), alias) ||
-                Self::is_multi_type_vlp_endpoint(cp.right.as_ref(), alias)
+                Self::is_multi_type_vlp_endpoint(cp.left.as_ref(), alias)
+                    || Self::is_multi_type_vlp_endpoint(cp.right.as_ref(), alias)
             }
             _ => false,
         }
@@ -501,9 +504,7 @@ impl FilterTagging {
                 Ok(gj.rebuild_or_clone(child_tf, plan.clone()))
             }
             // Leaf nodes - no transformation
-            LogicalPlan::ViewScan(_) | LogicalPlan::Empty => {
-                Ok(Transformed::No(plan.clone()))
-            }
+            LogicalPlan::ViewScan(_) | LogicalPlan::Empty => Ok(Transformed::No(plan.clone())),
             // For any other node types, fall back to regular analysis
             _ => self.analyze_with_graph_schema(plan, plan_ctx, graph_schema),
         }
@@ -524,29 +525,35 @@ impl FilterTagging {
                     property_access.table_alias.0,
                     property_access.column.raw()
                 );
-                
+
                 // DEBUG: Always write to file to see what properties we're processing
-                if property_access.table_alias.0 == "person" || property_access.table_alias.0 == "post" {
+                if property_access.table_alias.0 == "person"
+                    || property_access.table_alias.0 == "post"
+                {
                     use std::io::Write;
                     if let Ok(mut file) = std::fs::OpenOptions::new()
                         .create(true)
                         .append(true)
                         .open("/tmp/clickgraph_debug_labels.txt")
                     {
-                        writeln!(file, "\n=== FilterTagging processing {}.{} ===",
-                                 property_access.table_alias.0,
-                                 property_access.column.raw()).ok();
+                        writeln!(
+                            file,
+                            "\n=== FilterTagging processing {}.{} ===",
+                            property_access.table_alias.0,
+                            property_access.column.raw()
+                        )
+                        .ok();
                         writeln!(file, "About to call get_table_ctx...").ok();
                     }
                 }
 
-                // NOTE: We used to convert temporal property names (year, month, day) to function 
+                // NOTE: We used to convert temporal property names (year, month, day) to function
                 // calls here, but that was wrong. In Cypher, `r.year` is only a temporal accessor
-                // if `r` is a date/datetime type. Since we don't have type information at this 
-                // stage, we should treat them as property accesses first. Only if the property 
-                // is not found in the schema AND the base is known to be a temporal type, we 
+                // if `r` is a date/datetime type. Since we don't have type information at this
+                // stage, we should treat them as property accesses first. Only if the property
+                // is not found in the schema AND the base is known to be a temporal type, we
                 // would convert to a function call. For now, we always try property lookup first.
-                
+
                 // Get the table context for this alias
                 let table_ctx = plan_ctx
                     .get_table_ctx(&property_access.table_alias.0)
@@ -559,7 +566,12 @@ impl FilterTagging {
                             .open("/tmp/clickgraph_debug_labels.txt")
                         {
                             writeln!(file, "\n=== FilterTagging get_table_ctx Failed ===").ok();
-                            writeln!(file, "Looking for alias: '{}'", property_access.table_alias.0).ok();
+                            writeln!(
+                                file,
+                                "Looking for alias: '{}'",
+                                property_access.table_alias.0
+                            )
+                            .ok();
                             writeln!(file, "Error: {:?}", e).ok();
                             writeln!(file, "Available aliases in plan_ctx:").ok();
                             for (alias, ctx) in plan_ctx.iter_table_contexts() {
@@ -569,11 +581,12 @@ impl FilterTagging {
                                     alias,
                                     ctx.is_relation(),
                                     ctx.get_label_opt()
-                                ).ok();
+                                )
+                                .ok();
                             }
                             writeln!(file, "=== End ===\n").ok();
                         }
-                        
+
                         crate::debug_print!(
                             "FilterTagging: ERROR - Failed to get table_ctx for alias '{}': {:?}",
                             property_access.table_alias.0,
@@ -638,11 +651,12 @@ impl FilterTagging {
                                 alias,
                                 ctx.is_relation(),
                                 ctx.get_label_opt()
-                            ).ok();
+                            )
+                            .ok();
                         }
                         writeln!(file, "=== End ===\n").ok();
                     }
-                    
+
                     crate::debug_print!(
                         "FilterTagging: ERROR - No label found for alias '{}', is_relation={}",
                         property_access.table_alias.0,
@@ -815,8 +829,12 @@ impl FilterTagging {
                         // Get connected node labels for polymorphic relationship resolution
                         let from_node = table_ctx.get_from_node_label().map(|s| s.as_str());
                         let to_node = table_ctx.get_to_node_label().map(|s| s.as_str());
-                        let result = view_resolver
-                            .resolve_relationship_property(&label, &property_access.column.raw(), from_node, to_node);
+                        let result = view_resolver.resolve_relationship_property(
+                            &label,
+                            &property_access.column.raw(),
+                            from_node,
+                            to_node,
+                        );
                         println!(
                             "FilterTagging: resolve_relationship_property result: {:?}",
                             result
@@ -917,7 +935,7 @@ impl FilterTagging {
                                                         .to_string()
                                                 } else {
                                                     return Err(AnalyzerError::SchemaNotFound(
-                                                        "Node schema not found".to_string()
+                                                        "Node schema not found".to_string(),
                                                     ));
                                                 };
 
@@ -950,9 +968,10 @@ impl FilterTagging {
                                                     .to_string(),
                                             )
                                         } else {
-                                            return Err(AnalyzerError::SchemaNotFound(
-                                                format!("Node schema not found for label '{}'", label)
-                                            ));
+                                            return Err(AnalyzerError::SchemaNotFound(format!(
+                                                "Node schema not found for label '{}'",
+                                                label
+                                            )));
                                         }
                                     }
                                 };
@@ -1306,14 +1325,19 @@ impl FilterTagging {
         match expr {
             // When we have an operator application, process it separately.
             LogicalExpr::OperatorApplicationExp(mut op_app) => {
-                log::debug!("process_expr: OperatorApplication with operator={:?}, operands.len()={}", op_app.operator, op_app.operands.len());
-                
+                log::debug!(
+                    "process_expr: OperatorApplication with operator={:?}, operands.len()={}",
+                    op_app.operator,
+                    op_app.operands.len()
+                );
+
                 // CRITICAL: Handle NOT operator BEFORE recursing into operands
                 // Otherwise the operand (e.g., Equal(p.id, friend.id)) gets processed and extracted first
                 if op_app.operator == Operator::Not && op_app.operands.len() == 1 {
                     // Check if the operand (the expression under NOT) is single-table or cross-table
-                    let single_table = Self::get_table_alias_if_single_table_condition(&op_app.operands[0], false);
-                    
+                    let single_table =
+                        Self::get_table_alias_if_single_table_condition(&op_app.operands[0], false);
+
                     if single_table.is_none() {
                         // Cross-table condition under NOT (e.g., NOT (p.id = friend.id))
                         // Keep it intact - don't recurse into operands
@@ -1321,7 +1345,7 @@ impl FilterTagging {
                         let mut temp_props = Vec::new();
                         Self::collect_property_accesses(&op_app.operands[0], &mut temp_props);
                         extracted_projections.extend(temp_props);
-                        
+
                         // Return the entire NOT expression as-is for global WHERE clause
                         return Some(LogicalExpr::OperatorApplicationExp(op_app));
                     } else {
@@ -1331,13 +1355,13 @@ impl FilterTagging {
                         let mut temp_props = Vec::new();
                         Self::collect_property_accesses(&op_app.operands[0], &mut temp_props);
                         extracted_projections.extend(temp_props);
-                        
+
                         // Extract the entire NOT expression as a filter
                         extracted_filters.push(op_app);
-                        return None;  // Extracted - remove from remaining
+                        return None; // Extracted - remove from remaining
                     }
                 }
-                
+
                 // Check if the current operator is an Or.
                 let current_is_or = op_app.operator == Operator::Or;
 
@@ -1351,7 +1375,7 @@ impl FilterTagging {
                         return None;
                     }
                 }
-                
+
                 // Update our flag: once inside an Or, we stay inside.
                 let new_in_or = in_or || current_is_or;
 
@@ -1366,14 +1390,22 @@ impl FilterTagging {
                         extracted_projections,
                         new_in_or,
                     ) {
-                        log::debug!("process_expr: Operand[{}] returned Some: {:?}", i, new_operand);
+                        log::debug!(
+                            "process_expr: Operand[{}] returned Some: {:?}",
+                            i,
+                            new_operand
+                        );
                         new_operands.push(new_operand);
                     } else {
                         log::debug!("process_expr: Operand[{}] returned None (extracted)", i);
                     }
                 }
                 // Update the operator application with the processed operands.
-                log::debug!("process_expr: After processing operands, new_operands.len()={} (was {})", new_operands.len(), old_operands_len);
+                log::debug!(
+                    "process_expr: After processing operands, new_operands.len()={} (was {})",
+                    new_operands.len(),
+                    old_operands_len
+                );
                 op_app.operands = new_operands;
 
                 // TODO ALl aggregated functions will be evaluated in final where clause. We have to check what kind of fns we can put here.
@@ -1445,7 +1477,11 @@ impl FilterTagging {
 
                 // If after processing there is only one operand left and it is not unary then collapse the operator application.
                 if op_app.operands.len() == 1 && op_app.operator != Operator::Not {
-                    log::warn!("process_expr: Collapsing operator {:?} with single operand: {:?}", op_app.operator, op_app.operands[0]);
+                    log::warn!(
+                        "process_expr: Collapsing operator {:?} with single operand: {:?}",
+                        op_app.operator,
+                        op_app.operands[0]
+                    );
                     return Some(op_app.operands.into_iter().next().unwrap()); // unwrap is safe we are checking the len in condition
                 }
 

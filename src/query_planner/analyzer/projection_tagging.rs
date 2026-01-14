@@ -355,8 +355,11 @@ impl ProjectionTagging {
     ) -> AnalyzerResult<()> {
         match item.expression.clone() {
             LogicalExpr::TableAlias(table_alias) => {
-                log::info!("🔍 ProjectionTagging: Processing TableAlias '{}'", table_alias.0);
-                
+                log::info!(
+                    "🔍 ProjectionTagging: Processing TableAlias '{}'",
+                    table_alias.0
+                );
+
                 // Check if this is a projection alias (from WITH clause) rather than a table alias
                 if plan_ctx.is_projection_alias(&table_alias.0) {
                     // This is a projection alias (e.g., "follows" from "COUNT(b) as follows")
@@ -367,7 +370,11 @@ impl ProjectionTagging {
                 // if just table alias i.e MATCH (p:Post) Return p; then For final overall projection keep p.* and for p's projection keep *.
 
                 let table_ctx = plan_ctx.get_mut_table_ctx(&table_alias.0).map_err(|e| {
-                    log::error!("🚨 ProjectionTagging: Failed to get context for '{}': {:?}", table_alias.0, e);
+                    log::error!(
+                        "🚨 ProjectionTagging: Failed to get context for '{}': {:?}",
+                        table_alias.0,
+                        e
+                    );
                     AnalyzerError::PlanCtx {
                         pass: Pass::ProjectionTagging,
                         source: e,
@@ -375,8 +382,12 @@ impl ProjectionTagging {
                 })?;
 
                 // DEBUG: Log relationship detection
-                log::info!("🔍 ProjectionTagging: alias='{}', is_relation={}, has_label={}", 
-                    table_alias.0, table_ctx.is_relation(), table_ctx.get_label_opt().is_some());
+                log::info!(
+                    "🔍 ProjectionTagging: alias='{}', is_relation={}, has_label={}",
+                    table_alias.0,
+                    table_ctx.is_relation(),
+                    table_ctx.get_label_opt().is_some()
+                );
 
                 // Check if this is a path variable (has no label - path variables are registered without labels)
                 // Path variables should be kept as-is, not expanded to .*
@@ -408,7 +419,7 @@ impl ProjectionTagging {
                         ),
                     });
                     item.col_alias = Some(ColumnAlias(format!("{}.*", table_alias.0)));
-                    
+
                     // Log for relationship variables so we can track the expansion
                     if table_ctx.is_relation() {
                         log::info!(
@@ -417,7 +428,7 @@ impl ProjectionTagging {
                             table_alias.0
                         );
                     }
-                    
+
                     Ok(())
                 }
             }
@@ -511,16 +522,22 @@ impl ProjectionTagging {
                                 "ProjectionTagging: Resolving rel property: label={}, property={}, from_node={:?}, to_node={:?}",
                                 label, property_access.column.raw(), from_node, to_node
                             );
-                            view_resolver
-                                .resolve_relationship_property(&label, property_access.column.raw(), from_node, to_node)?
+                            view_resolver.resolve_relationship_property(
+                                &label,
+                                property_access.column.raw(),
+                                from_node,
+                                to_node,
+                            )?
                         } else {
                             // Check if this node is denormalized by looking up the schema
-                                    if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
+                            if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
                                 if node_schema.is_denormalized {
                                     // For denormalized nodes, prefer from_node_properties
                                     // (TO position would need UNION ALL which we handle separately)
                                     if let Some(ref from_props) = node_schema.from_properties {
-                                        if let Some(mapped) = from_props.get(property_access.column.raw()) {
+                                        if let Some(mapped) =
+                                            from_props.get(property_access.column.raw())
+                                        {
                                             crate::graph_catalog::expression_parser::PropertyValue::Column(
                                                 mapped.clone(),
                                             )
@@ -540,7 +557,9 @@ impl ProjectionTagging {
                                             }
                                         }
                                     } else if let Some(ref to_props) = node_schema.to_properties {
-                                        if let Some(mapped) = to_props.get(property_access.column.raw()) {
+                                        if let Some(mapped) =
+                                            to_props.get(property_access.column.raw())
+                                        {
                                             crate::graph_catalog::expression_parser::PropertyValue::Column(
                                                 mapped.clone(),
                                             )
@@ -556,8 +575,10 @@ impl ProjectionTagging {
                                     }
                                 } else {
                                     // Standard node - use ViewResolver
-                                    view_resolver
-                                        .resolve_node_property(&label, property_access.column.raw())?
+                                    view_resolver.resolve_node_property(
+                                        &label,
+                                        property_access.column.raw(),
+                                    )?
                                 }
                             } else {
                                 // Label not found in schema - use property as column name (identity mapping)
@@ -566,9 +587,8 @@ impl ProjectionTagging {
                                 )
                             }
                         }
-                    }  // End of Column(_) match arm
-                };  // End of match property_access.column
-
+                    } // End of Column(_) match arm
+                }; // End of match property_access.column
 
                 // Update the property access with the mapped column
                 let updated_property_access = PropertyAccess {
@@ -614,7 +634,9 @@ impl ProjectionTagging {
                 if let LogicalExpr::ScalarFnCall(scalar_fn_call) = array.as_ref() {
                     let fn_name_lower = scalar_fn_call.name.to_lowercase();
                     if matches!(fn_name_lower.as_str(), "labels" | "label") {
-                        if let Some(LogicalExpr::TableAlias(TableAlias(alias))) = scalar_fn_call.args.first() {
+                        if let Some(LogicalExpr::TableAlias(TableAlias(alias))) =
+                            scalar_fn_call.args.first()
+                        {
                             if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias) {
                                 // Check if this is multi-type VLP
                                 if let Some(labels) = table_ctx.get_labels() {
@@ -632,21 +654,21 @@ impl ProjectionTagging {
                         }
                     }
                 }
-                
+
                 // Normal case: process array and index, then reconstruct
                 let mut array_item = ProjectionItem {
                     expression: (*array).clone(),
                     col_alias: None,
                 };
                 Self::tag_projection(&mut array_item, plan_ctx, graph_schema)?;
-                
+
                 // Process index expression (might reference variables)
                 let mut index_item = ProjectionItem {
                     expression: (*index).clone(),
                     col_alias: None,
                 };
                 Self::tag_projection(&mut index_item, plan_ctx, graph_schema)?;
-                
+
                 // Reconstruct ArraySubscript with processed expressions
                 item.expression = LogicalExpr::ArraySubscript {
                     array: Box::new(array_item.expression),
@@ -775,9 +797,10 @@ impl ProjectionTagging {
                                                 ))?
                                                 .to_string()
                                         } else {
-                                            return Err(AnalyzerError::SchemaNotFound(
-                                                format!("Node schema not found for label '{}'", label)
-                                            ));
+                                            return Err(AnalyzerError::SchemaNotFound(format!(
+                                                "Node schema not found for label '{}'",
+                                                label
+                                            )));
                                         };
                                         item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
                                             table_alias: TableAlias(alias.clone()),
@@ -807,11 +830,12 @@ impl ProjectionTagging {
                                                 table_alias: TableAlias(alias.clone()),
                                                 column: crate::graph_catalog::expression_parser::PropertyValue::Column("end_type".to_string()),
                                             });
-                                            item.expression = LogicalExpr::List(vec![end_type_expr]);
+                                            item.expression =
+                                                LogicalExpr::List(vec![end_type_expr]);
                                             return Ok(());
                                         }
                                     }
-                                    
+
                                     // Regular node: use labels from table_ctx
                                     if let Some(labels) = table_ctx.get_labels() {
                                         // Create array literal: ['Label1', 'Label2', ...]
@@ -832,7 +856,7 @@ impl ProjectionTagging {
                                 if item.col_alias.is_none() {
                                     item.col_alias = Some(ColumnAlias(format!("label({})", alias)));
                                 }
-                                
+
                                 if !table_ctx.is_relation() {
                                     // Check if this binding has MULTIPLE labels (multi-type VLP pattern)
                                     // Multi-type VLP end nodes get multiple labels from TypeInference (Part 2A)
@@ -849,11 +873,15 @@ impl ProjectionTagging {
                                             return Ok(());
                                         }
                                     }
-                                    
+
                                     // Regular node: use first label from table_ctx
                                     if let Some(labels) = table_ctx.get_labels() {
                                         if let Some(first_label) = labels.first() {
-                                            log::info!("🔍 label({}) - using static label: {}", alias, first_label);
+                                            log::info!(
+                                                "🔍 label({}) - using static label: {}",
+                                                alias,
+                                                first_label
+                                            );
                                             // Return the first label as a scalar string literal
                                             item.expression = LogicalExpr::Literal(
                                                 crate::query_planner::logical_expr::Literal::String(
@@ -1212,7 +1240,7 @@ impl ProjectionTagging {
                     col_alias: None,
                 };
                 Self::tag_projection(&mut body_item, plan_ctx, graph_schema)?;
-                
+
                 item.expression = LogicalExpr::Lambda(LambdaExpr {
                     params: lambda_expr.params.clone(),
                     body: Box::new(body_item.expression),

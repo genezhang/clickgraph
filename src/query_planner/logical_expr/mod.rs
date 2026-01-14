@@ -12,6 +12,8 @@ use std::{fmt, sync::Arc};
 #[path = "../../utils/serde_arc.rs"]
 mod serde_arc;
 
+pub mod errors;
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum LogicalExpr {
     /// A literal, such as a number, string, boolean, or null.
@@ -100,7 +102,7 @@ pub enum LogicalExpr {
         array: Box<LogicalExpr>,
         index: Box<LogicalExpr>,
     },
-    
+
     /// Array slicing: array[from..to]
     /// Extract subarray from index 'from' to 'to' (0-based, inclusive in Cypher)
     /// Both bounds are optional: [..3], [2..], [..]
@@ -333,8 +335,8 @@ pub enum PathPattern {
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct NodePattern {
     pub name: Option<String>,
-    pub label: Option<String>,  // Primary label - kept for backward compatibility
-    pub labels: Option<Vec<String>>,  // Multi-label support (GraphRAG polymorphic nodes)
+    pub label: Option<String>, // Primary label - kept for backward compatibility
+    pub labels: Option<Vec<String>>, // Multi-label support (GraphRAG polymorphic nodes)
     pub properties: Option<Vec<Property>>,
 }
 
@@ -435,26 +437,37 @@ impl From<open_cypher_parser::ast::Direction> for Direction {
     }
 }
 
-impl<'a> From<open_cypher_parser::ast::OperatorApplication<'a>> for OperatorApplication {
-    fn from(value: open_cypher_parser::ast::OperatorApplication<'a>) -> Self {
-        OperatorApplication {
+impl<'a> TryFrom<open_cypher_parser::ast::OperatorApplication<'a>> for OperatorApplication {
+    type Error = errors::LogicalExprError;
+
+    fn try_from(
+        value: open_cypher_parser::ast::OperatorApplication<'a>,
+    ) -> Result<Self, Self::Error> {
+        let operands = value
+            .operands
+            .into_iter()
+            .map(LogicalExpr::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(OperatorApplication {
             operator: Operator::from(value.operator),
-            operands: value.operands.into_iter().map(LogicalExpr::from).collect(),
-        }
+            operands,
+        })
     }
 }
 
-impl<'a> From<open_cypher_parser::ast::FunctionCall<'a>> for LogicalExpr {
-    fn from(value: open_cypher_parser::ast::FunctionCall<'a>) -> Self {
+impl<'a> TryFrom<open_cypher_parser::ast::FunctionCall<'a>> for LogicalExpr {
+    type Error = errors::LogicalExprError;
+
+    fn try_from(value: open_cypher_parser::ast::FunctionCall<'a>) -> Result<Self, Self::Error> {
         let name_lower = value.name.to_lowercase();
 
         // Special handling for size() with pattern argument
         // size((n)-[:REL]->()) should become PatternCount
         if name_lower == "size" && value.args.len() == 1 {
             if let open_cypher_parser::ast::Expression::PathPattern(ref pp) = value.args[0] {
-                return LogicalExpr::PatternCount(PatternCount {
-                    pattern: PathPattern::from(pp.clone()),
-                });
+                return Ok(LogicalExpr::PatternCount(PatternCount {
+                    pattern: PathPattern::try_from(pp.clone())?,
+                }));
             }
         }
 
@@ -471,122 +484,185 @@ impl<'a> From<open_cypher_parser::ast::FunctionCall<'a>> for LogicalExpr {
             || (value.name.starts_with(CH_PASSTHROUGH_PREFIX)
                 && is_ch_passthrough_aggregate(&value.name));
 
+        let args = value
+            .args
+            .into_iter()
+            .map(LogicalExpr::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+
         if is_standard_agg || is_ch_agg {
-            LogicalExpr::AggregateFnCall(AggregateFnCall {
+            Ok(LogicalExpr::AggregateFnCall(AggregateFnCall {
                 name: value.name,
-                args: value.args.into_iter().map(LogicalExpr::from).collect(),
-            })
+                args,
+            }))
         } else {
-            LogicalExpr::ScalarFnCall(ScalarFnCall {
+            Ok(LogicalExpr::ScalarFnCall(ScalarFnCall {
                 name: value.name,
-                args: value.args.into_iter().map(LogicalExpr::from).collect(),
-            })
+                args,
+            }))
         }
     }
 }
 
-impl<'a> From<open_cypher_parser::ast::PathPattern<'a>> for PathPattern {
-    fn from(value: open_cypher_parser::ast::PathPattern<'a>) -> Self {
+impl<'a> TryFrom<open_cypher_parser::ast::PathPattern<'a>> for PathPattern {
+    type Error = errors::LogicalExprError;
+
+    fn try_from(value: open_cypher_parser::ast::PathPattern<'a>) -> Result<Self, Self::Error> {
         match value {
             open_cypher_parser::ast::PathPattern::Node(node) => {
-                PathPattern::Node(NodePattern::from(node))
+                Ok(PathPattern::Node(NodePattern::try_from(node)?))
             }
             open_cypher_parser::ast::PathPattern::ConnectedPattern(vec_conn) => {
-                PathPattern::ConnectedPattern(
-                    vec_conn.into_iter().map(ConnectedPattern::from).collect(),
-                )
+                let connected_patterns = vec_conn
+                    .into_iter()
+                    .map(ConnectedPattern::try_from)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(PathPattern::ConnectedPattern(connected_patterns))
             }
             open_cypher_parser::ast::PathPattern::ShortestPath(inner) => {
                 // Recursively convert the inner pattern and wrap it
-                PathPattern::ShortestPath(Box::new(PathPattern::from(*inner)))
+                Ok(PathPattern::ShortestPath(Box::new(PathPattern::try_from(
+                    *inner,
+                )?)))
             }
             open_cypher_parser::ast::PathPattern::AllShortestPaths(inner) => {
                 // Recursively convert the inner pattern and wrap it
-                PathPattern::AllShortestPaths(Box::new(PathPattern::from(*inner)))
+                Ok(PathPattern::AllShortestPaths(Box::new(
+                    PathPattern::try_from(*inner)?,
+                )))
             }
         }
     }
 }
 
-impl<'a> From<open_cypher_parser::ast::NodePattern<'a>> for NodePattern {
-    fn from(value: open_cypher_parser::ast::NodePattern<'a>) -> Self {
+impl<'a> TryFrom<open_cypher_parser::ast::NodePattern<'a>> for NodePattern {
+    type Error = errors::LogicalExprError;
+
+    fn try_from(value: open_cypher_parser::ast::NodePattern<'a>) -> Result<Self, Self::Error> {
         // Convert Vec<&str> to Vec<String>
-        let labels_vec = value.labels.map(|ls| ls.into_iter().map(|s| s.to_string()).collect::<Vec<String>>());
+        let labels_vec = value.labels.map(|ls| {
+            ls.into_iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<String>>()
+        });
         // Set label to first element for backward compatibility
         let first_label = labels_vec.as_ref().and_then(|ls| ls.first().cloned());
-        
-        NodePattern {
+
+        let properties = value
+            .properties
+            .map(|props| {
+                props
+                    .into_iter()
+                    .map(Property::try_from)
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?;
+
+        Ok(NodePattern {
             name: value.name.map(|s| s.to_string()),
             label: first_label,
             labels: labels_vec,
-            properties: value
-                .properties
-                .map(|props| props.into_iter().map(Property::from).collect()),
-        }
+            properties,
+        })
     }
 }
 
-impl<'a> From<open_cypher_parser::ast::Property<'a>> for Property {
-    fn from(value: open_cypher_parser::ast::Property<'a>) -> Self {
+impl<'a> TryFrom<open_cypher_parser::ast::Property<'a>> for Property {
+    type Error = errors::LogicalExprError;
+
+    fn try_from(value: open_cypher_parser::ast::Property<'a>) -> Result<Self, Self::Error> {
         match value {
             open_cypher_parser::ast::Property::PropertyKV(kv) => {
-                Property::PropertyKV(PropertyKVPair::from(kv))
+                Ok(Property::PropertyKV(PropertyKVPair::try_from(kv)?))
             }
-            open_cypher_parser::ast::Property::Param(s) => Property::Param(s.to_string()),
+            open_cypher_parser::ast::Property::Param(s) => Ok(Property::Param(s.to_string())),
         }
     }
 }
 
-impl<'a> From<open_cypher_parser::ast::PropertyKVPair<'a>> for PropertyKVPair {
-    fn from(value: open_cypher_parser::ast::PropertyKVPair<'a>) -> Self {
-        PropertyKVPair {
+impl<'a> TryFrom<open_cypher_parser::ast::PropertyKVPair<'a>> for PropertyKVPair {
+    type Error = errors::LogicalExprError;
+
+    fn try_from(value: open_cypher_parser::ast::PropertyKVPair<'a>) -> Result<Self, Self::Error> {
+        Ok(PropertyKVPair {
             key: value.key.to_string(),
-            value: LogicalExpr::from(value.value),
-        }
+            value: LogicalExpr::try_from(value.value)?,
+        })
     }
 }
 
-impl<'a> From<open_cypher_parser::ast::ConnectedPattern<'a>> for ConnectedPattern {
-    fn from(value: open_cypher_parser::ast::ConnectedPattern<'a>) -> Self {
-        ConnectedPattern {
-            start_node: Arc::new(NodePattern::from(value.start_node.borrow().clone())),
-            relationship: RelationshipPattern::from(value.relationship),
-            end_node: Arc::new(NodePattern::from(value.end_node.borrow().clone())),
-        }
+impl<'a> TryFrom<open_cypher_parser::ast::ConnectedPattern<'a>> for ConnectedPattern {
+    type Error = errors::LogicalExprError;
+
+    fn try_from(value: open_cypher_parser::ast::ConnectedPattern<'a>) -> Result<Self, Self::Error> {
+        Ok(ConnectedPattern {
+            start_node: Arc::new(NodePattern::try_from(value.start_node.borrow().clone())?),
+            relationship: RelationshipPattern::try_from(value.relationship)?,
+            end_node: Arc::new(NodePattern::try_from(value.end_node.borrow().clone())?),
+        })
     }
 }
 
-impl<'a> From<open_cypher_parser::ast::RelationshipPattern<'a>> for RelationshipPattern {
-    fn from(value: open_cypher_parser::ast::RelationshipPattern<'a>) -> Self {
-        RelationshipPattern {
+impl<'a> TryFrom<open_cypher_parser::ast::RelationshipPattern<'a>> for RelationshipPattern {
+    type Error = errors::LogicalExprError;
+
+    fn try_from(
+        value: open_cypher_parser::ast::RelationshipPattern<'a>,
+    ) -> Result<Self, Self::Error> {
+        let properties = value
+            .properties
+            .map(|props| {
+                props
+                    .into_iter()
+                    .map(Property::try_from)
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?;
+
+        Ok(RelationshipPattern {
             name: value.name.map(|s| s.to_string()),
             direction: Direction::from(value.direction),
             labels: value
                 .labels
                 .map(|labels| labels.into_iter().map(|s| s.to_string()).collect()),
-            properties: value
-                .properties
-                .map(|props| props.into_iter().map(Property::from).collect()),
-        }
+            properties,
+        })
     }
 }
 
-impl<'a> From<open_cypher_parser::ast::Case<'a>> for LogicalCase {
-    fn from(case: open_cypher_parser::ast::Case<'a>) -> Self {
-        LogicalCase {
-            expr: case.expr.map(|e| Box::new(LogicalExpr::from(*e))),
-            when_then: case
-                .when_then
-                .into_iter()
-                .map(|(when, then)| (LogicalExpr::from(when), LogicalExpr::from(then)))
-                .collect(),
-            else_expr: case.else_expr.map(|e| Box::new(LogicalExpr::from(*e))),
-        }
+impl<'a> TryFrom<open_cypher_parser::ast::Case<'a>> for LogicalCase {
+    type Error = errors::LogicalExprError;
+
+    fn try_from(case: open_cypher_parser::ast::Case<'a>) -> Result<Self, Self::Error> {
+        let expr = case
+            .expr
+            .map(|e| LogicalExpr::try_from(*e).map(Box::new))
+            .transpose()?;
+        let when_then = case
+            .when_then
+            .into_iter()
+            .map(|(when, then)| {
+                let w = LogicalExpr::try_from(when)?;
+                let t = LogicalExpr::try_from(then)?;
+                Ok((w, t))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let else_expr = case
+            .else_expr
+            .map(|e| LogicalExpr::try_from(*e).map(Box::new))
+            .transpose()?;
+        Ok(LogicalCase {
+            expr,
+            when_then,
+            else_expr,
+        })
     }
 }
 
-impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
-    fn from(exists: open_cypher_parser::ast::ExistsSubquery<'a>) -> Self {
+impl<'a> TryFrom<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
+    type Error = errors::LogicalExprError;
+
+    fn try_from(exists: open_cypher_parser::ast::ExistsSubquery<'a>) -> Result<Self, Self::Error> {
         use crate::query_planner::logical_plan::{Filter, GraphNode, GraphRel, LogicalPlan};
         use open_cypher_parser::ast::PathPattern as AstPathPattern;
 
@@ -603,7 +679,7 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                     alias: node.name.unwrap_or("").to_string(),
                     label: node.first_label().map(|s| s.to_string()),
                     is_denormalized: false,
-            projected_columns: None,
+                    projected_columns: None,
                 }))
             }
             AstPathPattern::ConnectedPattern(connected_patterns) => {
@@ -622,7 +698,7 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                         alias: start.name.unwrap_or("").to_string(),
                         label: start.first_label().map(|s| s.to_string()),
                         is_denormalized: false,
-            projected_columns: None,
+                        projected_columns: None,
                     });
 
                     let rel_scan = LogicalPlan::Empty;
@@ -632,7 +708,7 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                         alias: end.name.unwrap_or("").to_string(),
                         label: end.first_label().map(|s| s.to_string()),
                         is_denormalized: false,
-            projected_columns: None,
+                        projected_columns: None,
                     });
 
                     let direction = match rel.direction {
@@ -660,7 +736,7 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                             .map(|l| l.iter().map(|s| s.to_string()).collect()),
                         is_optional: None,
                         anchor_connection: None,
-            cte_references: std::collections::HashMap::new(),
+                        cte_references: std::collections::HashMap::new(),
                     }))
                 }
             }
@@ -670,7 +746,7 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
                     pattern: *inner,
                     where_clause: None,
                 };
-                return ExistsSubquery::from(inner_exists);
+                return ExistsSubquery::try_from(inner_exists);
             }
         };
 
@@ -678,83 +754,96 @@ impl<'a> From<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
         let plan = if let Some(where_clause) = exists.where_clause {
             Arc::new(LogicalPlan::Filter(Filter {
                 input: base_plan,
-                predicate: LogicalExpr::from(where_clause.conditions),
+                predicate: LogicalExpr::try_from(where_clause.conditions)?,
             }))
         } else {
             base_plan
         };
 
-        ExistsSubquery { subplan: plan }
+        Ok(ExistsSubquery { subplan: plan })
     }
 }
 
-impl<'a> From<open_cypher_parser::ast::Expression<'a>> for LogicalExpr {
-    fn from(expr: open_cypher_parser::ast::Expression<'a>) -> Self {
+impl<'a> std::convert::TryFrom<open_cypher_parser::ast::Expression<'a>> for LogicalExpr {
+    type Error = errors::LogicalExprError;
+
+    fn try_from(expr: open_cypher_parser::ast::Expression<'a>) -> Result<Self, Self::Error> {
         use open_cypher_parser::ast::Expression;
         match expr {
-            Expression::Literal(lit) => LogicalExpr::Literal(Literal::from(lit)),
+            Expression::Literal(lit) => Ok(LogicalExpr::Literal(Literal::from(lit))),
             Expression::Variable(s) => {
                 if s == "*" {
-                    LogicalExpr::Star
+                    Ok(LogicalExpr::Star)
                 } else {
                     // TODO revisit this
                     // LogicalExpr::Variable(s.to_string())
-                    LogicalExpr::TableAlias(TableAlias(s.to_string()))
+                    Ok(LogicalExpr::TableAlias(TableAlias(s.to_string())))
                 }
             }
-            Expression::Parameter(s) => LogicalExpr::Parameter(s.to_string()),
+            Expression::Parameter(s) => Ok(LogicalExpr::Parameter(s.to_string())),
             Expression::List(exprs) => {
-                LogicalExpr::List(exprs.into_iter().map(LogicalExpr::from).collect())
+                let logical_exprs = exprs
+                    .into_iter()
+                    .map(|e| Self::try_from(e))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(LogicalExpr::List(logical_exprs))
             }
-            Expression::FunctionCallExp(fc) => LogicalExpr::from(fc),
+            Expression::FunctionCallExp(fc) => LogicalExpr::try_from(fc),
             Expression::PropertyAccessExp(pa) => {
-                LogicalExpr::PropertyAccessExp(PropertyAccess::from(pa))
+                Ok(LogicalExpr::PropertyAccessExp(PropertyAccess::from(pa)))
             }
-            Expression::OperatorApplicationExp(oa) => {
-                LogicalExpr::OperatorApplicationExp(OperatorApplication::from(oa))
-            }
-            Expression::PathPattern(pp) => LogicalExpr::PathPattern(PathPattern::from(pp)),
-            Expression::Case(case) => LogicalExpr::Case(LogicalCase::from(case)),
+            Expression::OperatorApplicationExp(oa) => Ok(LogicalExpr::OperatorApplicationExp(
+                OperatorApplication::try_from(oa)?,
+            )),
+            Expression::PathPattern(pp) => Ok(LogicalExpr::PathPattern(PathPattern::try_from(pp)?)),
+            Expression::Case(case) => Ok(LogicalExpr::Case(LogicalCase::try_from(case)?)),
             Expression::ExistsExpression(exists) => {
                 // Convert the EXISTS pattern to a logical plan
                 // The pattern needs to be converted to a scan + filter structure
-                LogicalExpr::ExistsSubquery(ExistsSubquery::from(*exists))
+                Ok(LogicalExpr::ExistsSubquery(ExistsSubquery::try_from(
+                    *exists,
+                )?))
             }
-            Expression::ReduceExp(reduce) => LogicalExpr::ReduceExpr(ReduceExpr {
+            Expression::ReduceExp(reduce) => Ok(LogicalExpr::ReduceExpr(ReduceExpr {
                 accumulator: reduce.accumulator.to_string(),
-                initial_value: Box::new(LogicalExpr::from(*reduce.initial_value)),
+                initial_value: Box::new(Self::try_from(*reduce.initial_value)?),
                 variable: reduce.variable.to_string(),
-                list: Box::new(LogicalExpr::from(*reduce.list)),
-                expression: Box::new(LogicalExpr::from(*reduce.expression)),
-            }),
-            Expression::MapLiteral(entries) => LogicalExpr::MapLiteral(
-                entries
+                list: Box::new(Self::try_from(*reduce.list)?),
+                expression: Box::new(Self::try_from(*reduce.expression)?),
+            })),
+            Expression::MapLiteral(entries) => {
+                let logical_entries = entries
                     .into_iter()
-                    .map(|(k, v)| (k.to_string(), LogicalExpr::from(v)))
-                    .collect(),
-            ),
-            Expression::LabelExpression { variable, label } => LogicalExpr::LabelExpression {
+                    .map(|(k, v)| Self::try_from(v).map(|lv| (k.to_string(), lv)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(LogicalExpr::MapLiteral(logical_entries))
+            }
+            Expression::LabelExpression { variable, label } => Ok(LogicalExpr::LabelExpression {
                 variable: variable.to_string(),
                 label: label.to_string(),
-            },
-            Expression::Lambda(lambda) => LogicalExpr::Lambda(LambdaExpr {
-                params: lambda.params.iter().map(|s| s.to_string()).collect(),
-                body: Box::new(LogicalExpr::from(*lambda.body)),
             }),
+            Expression::Lambda(lambda) => Ok(LogicalExpr::Lambda(LambdaExpr {
+                params: lambda.params.iter().map(|s| s.to_string()).collect(),
+                body: Box::new(Self::try_from(*lambda.body)?),
+            })),
             Expression::PatternComprehension(pc) => {
                 // Pattern comprehensions should be rewritten during query planning
                 // before reaching this point. If we get here, it's a bug.
-                panic!("PatternComprehension should have been rewritten during query planning. This is a bug!")
+                Err(errors::LogicalExprError::PatternComprehensionNotRewritten)
             }
-            Expression::ArraySubscript { array, index } => LogicalExpr::ArraySubscript {
-                array: Box::new(LogicalExpr::from(*array)),
-                index: Box::new(LogicalExpr::from(*index)),
-            },
-            Expression::ArraySlicing { array, from, to } => LogicalExpr::ArraySlicing {
-                array: Box::new(LogicalExpr::from(*array)),
-                from: from.map(|f| Box::new(LogicalExpr::from(*f))),
-                to: to.map(|t| Box::new(LogicalExpr::from(*t))),
-            },
+            Expression::ArraySubscript { array, index } => Ok(LogicalExpr::ArraySubscript {
+                array: Box::new(LogicalExpr::try_from(*array)?),
+                index: Box::new(LogicalExpr::try_from(*index)?),
+            }),
+            Expression::ArraySlicing { array, from, to } => Ok(LogicalExpr::ArraySlicing {
+                array: Box::new(LogicalExpr::try_from(*array)?),
+                from: from
+                    .map(|f| LogicalExpr::try_from(*f).map(Box::new))
+                    .transpose()?,
+                to: to
+                    .map(|t| LogicalExpr::try_from(*t).map(Box::new))
+                    .transpose()?,
+            }),
         }
     }
 }
@@ -840,7 +929,7 @@ mod tests {
                 ast::Expression::Literal(ast::Literal::String("San Francisco")),
             ],
         };
-        let logical_operator_app = OperatorApplication::from(ast_operator_app);
+        let logical_operator_app = OperatorApplication::try_from(ast_operator_app).unwrap();
 
         assert_eq!(logical_operator_app.operator, Operator::Equal);
         assert_eq!(logical_operator_app.operands.len(), 2);
@@ -862,7 +951,7 @@ mod tests {
             name: "count".to_string(),
             args: vec![ast::Expression::Variable("person")],
         };
-        let logical_expr = LogicalExpr::from(ast_function_call);
+        let logical_expr = LogicalExpr::try_from(ast_function_call).unwrap();
 
         match logical_expr {
             LogicalExpr::AggregateFnCall(agg_fn) => {
@@ -883,7 +972,7 @@ mod tests {
             name: "length".to_string(),
             args: vec![ast::Expression::Variable("username")],
         };
-        let logical_expr = LogicalExpr::from(ast_function_call);
+        let logical_expr = LogicalExpr::try_from(ast_function_call).unwrap();
 
         match logical_expr {
             LogicalExpr::ScalarFnCall(scalar_fn) => {
@@ -908,7 +997,7 @@ mod tests {
                 value: ast::Expression::Literal(ast::Literal::String("Engineering")),
             })]),
         };
-        let logical_node_pattern = NodePattern::from(ast_node_pattern);
+        let logical_node_pattern = NodePattern::try_from(ast_node_pattern).unwrap();
 
         assert_eq!(logical_node_pattern.name, Some("employee".to_string()));
         assert_eq!(logical_node_pattern.label, Some("Person".to_string()));
@@ -920,7 +1009,10 @@ mod tests {
         match &properties[0] {
             Property::PropertyKV(kv) => {
                 assert_eq!(kv.key, "department");
-                assert_eq!(kv.value, LogicalExpr::Literal(Literal::String("Engineering".to_string())));
+                assert_eq!(
+                    kv.value,
+                    LogicalExpr::Literal(Literal::String("Engineering".to_string()))
+                );
             }
             _ => panic!("Expected PropertyKV"),
         }
@@ -938,7 +1030,8 @@ mod tests {
             })]),
             variable_length: None,
         };
-        let logical_relationship_pattern = RelationshipPattern::from(ast_relationship_pattern);
+        let logical_relationship_pattern =
+            RelationshipPattern::try_from(ast_relationship_pattern).unwrap();
 
         assert_eq!(
             logical_relationship_pattern.name,
@@ -988,7 +1081,7 @@ mod tests {
             relationship,
             end_node: Rc::new(RefCell::new(end_node)),
         };
-        let logical_connected_pattern = ConnectedPattern::from(ast_connected_pattern);
+        let logical_connected_pattern = ConnectedPattern::try_from(ast_connected_pattern).unwrap();
 
         assert_eq!(
             logical_connected_pattern.start_node.name,
@@ -1028,7 +1121,7 @@ mod tests {
             properties: None,
         };
         let ast_path_pattern = ast::PathPattern::Node(ast_node);
-        let logical_path_pattern = PathPattern::from(ast_path_pattern);
+        let logical_path_pattern = PathPattern::try_from(ast_path_pattern).unwrap();
 
         match logical_path_pattern {
             PathPattern::Node(node) => {
@@ -1043,12 +1136,12 @@ mod tests {
     fn test_logical_expr_from_expression_variable() {
         // Test star variable
         let ast_star = ast::Expression::Variable("*");
-        let logical_star = LogicalExpr::from(ast_star);
+        let logical_star = LogicalExpr::try_from(ast_star).unwrap();
         assert_eq!(logical_star, LogicalExpr::Star);
 
         // Test regular variable
         let ast_var = ast::Expression::Variable("product");
-        let logical_var = LogicalExpr::from(ast_var);
+        let logical_var = LogicalExpr::try_from(ast_var).unwrap();
         match logical_var {
             LogicalExpr::TableAlias(alias) => assert_eq!(alias.0, "product"),
             _ => panic!("Expected TableAlias"),
@@ -1062,7 +1155,7 @@ mod tests {
             ast::Expression::Literal(ast::Literal::String("user")),
             ast::Expression::Literal(ast::Literal::String("guest")),
         ]);
-        let logical_list = LogicalExpr::from(ast_list);
+        let logical_list = LogicalExpr::try_from(ast_list).unwrap();
 
         match logical_list {
             LogicalExpr::List(items) => {
@@ -1120,7 +1213,7 @@ mod tests {
                 name: func_name.to_string(),
                 args: vec![ast::Expression::Variable("revenue")],
             };
-            let logical_expr = LogicalExpr::from(ast_function_call);
+            let logical_expr = LogicalExpr::try_from(ast_function_call).unwrap();
 
             match logical_expr {
                 LogicalExpr::AggregateFnCall(agg_fn) => {
@@ -1139,7 +1232,7 @@ mod tests {
                 ast::Expression::Literal(ast::Literal::Integer(10)),
             ],
         };
-        let logical_expr = LogicalExpr::from(ast_scalar_function);
+        let logical_expr = LogicalExpr::try_from(ast_scalar_function).unwrap();
 
         match logical_expr {
             LogicalExpr::ScalarFnCall(scalar_fn) => {
@@ -1166,7 +1259,7 @@ mod tests {
                 name: func_name.to_string(),
                 args: vec![ast::Expression::Variable("user_id")],
             };
-            let logical_expr = LogicalExpr::from(ast_function_call);
+            let logical_expr = LogicalExpr::try_from(ast_function_call).unwrap();
 
             match logical_expr {
                 LogicalExpr::AggregateFnCall(agg_fn) => {
@@ -1184,7 +1277,7 @@ mod tests {
                 name: func_name.to_string(),
                 args: vec![ast::Expression::Variable("email")],
             };
-            let logical_expr = LogicalExpr::from(ast_function_call);
+            let logical_expr = LogicalExpr::try_from(ast_function_call).unwrap();
 
             match logical_expr {
                 LogicalExpr::ScalarFnCall(scalar_fn) => {
@@ -1226,5 +1319,32 @@ impl LogicalExpr {
             LogicalExpr::PatternCount(_) => true,
             _ => false,
         }
+    }
+}
+
+#[test]
+fn test_pattern_comprehension_error_instead_of_panic() {
+    // Test that PatternComprehension now returns an error instead of panicking
+    let pattern_comprehension = open_cypher_parser::ast::Expression::PatternComprehension(
+        open_cypher_parser::ast::PatternComprehension {
+            pattern: Box::new(open_cypher_parser::ast::PathPattern::Node(
+                open_cypher_parser::ast::NodePattern {
+                    name: Some("n"),
+                    labels: None,
+                    properties: None,
+                },
+            )),
+            where_clause: None,
+            projection: Box::new(open_cypher_parser::ast::Expression::Variable("n")),
+        },
+    );
+
+    // This should return an error, not panic
+    match LogicalExpr::try_from(pattern_comprehension) {
+        Ok(_) => panic!("PatternComprehension should have failed!"),
+        Err(errors::LogicalExprError::PatternComprehensionNotRewritten) => {
+            // Success - we got the expected error instead of a panic
+        }
+        Err(e) => panic!("Unexpected error: {:?}", e),
     }
 }

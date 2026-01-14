@@ -25,7 +25,7 @@ impl CteReferencePopulator {
     }
 
     /// Recursively populate cte_references in GraphRel nodes
-    /// 
+    ///
     /// @param plan: The plan to process
     /// @param available_ctes: Map of alias -> CTE name for all CTEs visible at this point
     fn populate(
@@ -45,10 +45,10 @@ impl CteReferencePopulator {
                         input_ctes.insert(alias.clone(), cte_name.clone());
                     }
                 }
-                
+
                 // Process the input with updated CTE context
                 let input_resolved = self.populate(wc.input.clone(), &input_ctes)?;
-                
+
                 if input_resolved.is_yes() {
                     let new_wc = WithClause {
                         input: input_resolved.get_plan(),
@@ -97,7 +97,11 @@ impl CteReferencePopulator {
                 let center_resolved = self.populate(rel.center.clone(), &child_ctes)?;
                 let right_resolved = self.populate(rel.right.clone(), &child_ctes)?;
 
-                if left_resolved.is_yes() || center_resolved.is_yes() || right_resolved.is_yes() || found_new_refs {
+                if left_resolved.is_yes()
+                    || center_resolved.is_yes()
+                    || right_resolved.is_yes()
+                    || found_new_refs
+                {
                     let new_rel = crate::query_planner::logical_plan::GraphRel {
                         left: left_resolved.get_plan(),
                         center: center_resolved.get_plan(),
@@ -119,7 +123,9 @@ impl CteReferencePopulator {
                         input: input_resolved.get_plan(),
                         ..proj.clone()
                     };
-                    Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(new_proj))))
+                    Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
+                        new_proj,
+                    ))))
                 } else {
                     Ok(Transformed::No(plan))
                 }
@@ -164,12 +170,15 @@ impl AnalyzerPass for CteReferencePopulator {
         _plan_ctx: &mut PlanCtx,
     ) -> Result<Transformed<Arc<LogicalPlan>>, AnalyzerError> {
         log::info!("🔍 CteReferencePopulator: Starting CTE reference population");
-        
+
         let empty_ctes = HashMap::new();
         let result = self.populate(logical_plan, &empty_ctes)?;
-        
-        log::info!("🔍 CteReferencePopulator: Completed - transformed: {}", result.is_yes());
-        
+
+        log::info!(
+            "🔍 CteReferencePopulator: Completed - transformed: {}",
+            result.is_yes()
+        );
+
         Ok(result)
     }
 }

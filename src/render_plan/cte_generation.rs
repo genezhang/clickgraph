@@ -151,8 +151,13 @@ impl CteGenerationContext {
         joins: Vec<super::Join>,
     ) {
         let key = format!("{}-{}", start_alias, end_alias);
-        log::info!("Storing fixed-length JOINs for {}: {} joins", key, joins.len());
-        self.fixed_length_joins.insert(key, (from_table, from_alias, joins));
+        log::info!(
+            "Storing fixed-length JOINs for {}: {} joins",
+            key,
+            joins.len()
+        );
+        self.fixed_length_joins
+            .insert(key, (from_table, from_alias, joins));
     }
 
     /// Retrieve fixed-length path inline JOINs if available
@@ -182,7 +187,7 @@ fn extract_node_label_from_plan(plan: &LogicalPlan) -> String {
 }
 
 /// Extract node label from a ViewScan plan
-/// 
+///
 /// ⚠️  TODO(schema-threading): Hardcoded "default" lookup - should pass schema parameter
 /// This is called during CTE generation for property wildcard expansion (*)
 /// Currently only affects VLP queries with `RETURN n.*` patterns

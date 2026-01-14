@@ -13,7 +13,11 @@ pub fn try_get_client() -> Option<Client> {
     // Database is optional - defaults to "default". All queries use fully-qualified table names anyway.
     let database = read_env_var("CLICKHOUSE_DATABASE").unwrap_or_else(|| "default".to_string());
 
-    log::info!("Connecting to ClickHouse at {} (database: {})", url, database);
+    log::info!(
+        "Connecting to ClickHouse at {} (database: {})",
+        url,
+        database
+    );
     Some(
         Client::default()
             .with_url(url)

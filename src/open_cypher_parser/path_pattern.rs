@@ -315,7 +315,6 @@ fn parse_node_labels(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'_ str>>> {
     Ok((current_input, Some(labels)))
 }
 
-
 type NameOrLabelWithProperties<'a> = (Option<&'a str>, Option<Vec<Property<'a>>>);
 type NameOrLabelsWithProperties<'a> = (Option<Vec<&'a str>>, Option<Vec<Property<'a>>>);
 
@@ -335,7 +334,13 @@ fn parse_name_label(
 // Parse node name and labels (with multi-label support)
 fn parse_name_labels(
     input: &'_ str,
-) -> IResult<&'_ str, (NameOrLabelWithProperties<'_>, NameOrLabelsWithProperties<'_>)> {
+) -> IResult<
+    &'_ str,
+    (
+        NameOrLabelWithProperties<'_>,
+        NameOrLabelsWithProperties<'_>,
+    ),
+> {
     let (input, _) = multispace0(input)?;
 
     separated_pair(
@@ -536,7 +541,7 @@ fn parse_variable_length_spec(input: &'_ str) -> IResult<&'_ str, Option<Variabl
 fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<RelationshipPattern<'_>>> {
     // Note: Removed bidirectional check - mixed-direction chains like
     // (a)<-[:]-(b)-[:]->(c) are valid Cypher patterns
-    
+
     let empty_incoming_relationship_parser =
         map(delimited(ws(tag("<-")), space0, ws(tag("-"))), |_| {
             RelationshipPattern {
@@ -1314,11 +1319,15 @@ mod tests {
         // Test: (x:User|Post) should parse with both labels
         let input = "(x:User|Post)";
         let result = parse_path_pattern(input);
-        
-        assert!(result.is_ok(), "Failed to parse multi-label node: {:?}", result);
+
+        assert!(
+            result.is_ok(),
+            "Failed to parse multi-label node: {:?}",
+            result
+        );
         let (remaining, path_pattern) = result.unwrap();
         assert_eq!(remaining, "", "Should consume entire input");
-        
+
         match path_pattern {
             PathPattern::Node(node) => {
                 assert_eq!(node.name, Some("x"), "Node name should be 'x'");
@@ -1338,11 +1347,15 @@ mod tests {
         // Test: (x:User|Post {id: 1}) with properties
         let input = "(x:User|Post {id: 1})";
         let result = parse_path_pattern(input);
-        
-        assert!(result.is_ok(), "Failed to parse multi-label node with properties: {:?}", result);
+
+        assert!(
+            result.is_ok(),
+            "Failed to parse multi-label node with properties: {:?}",
+            result
+        );
         let (remaining, path_pattern) = result.unwrap();
         assert_eq!(remaining, "", "Should consume entire input");
-        
+
         match path_pattern {
             PathPattern::Node(node) => {
                 assert_eq!(node.name, Some("x"));
@@ -1358,11 +1371,15 @@ mod tests {
         // Test: (x:Person|User|Admin) with three labels
         let input = "(x:Person|User|Admin)";
         let result = parse_path_pattern(input);
-        
-        assert!(result.is_ok(), "Failed to parse triple-label node: {:?}", result);
+
+        assert!(
+            result.is_ok(),
+            "Failed to parse triple-label node: {:?}",
+            result
+        );
         let (remaining, path_pattern) = result.unwrap();
         assert_eq!(remaining, "", "Should consume entire input");
-        
+
         match path_pattern {
             PathPattern::Node(node) => {
                 assert_eq!(node.name, Some("x"));
@@ -1381,20 +1398,24 @@ mod tests {
         // Test: (u:User)-[:FOLLOWS]->(x:User|Post) - multi-label as end node
         let input = "(u:User)-[:FOLLOWS]->(x:User|Post)";
         let result = parse_path_pattern(input);
-        
-        assert!(result.is_ok(), "Failed to parse connected pattern with multi-label end node: {:?}", result);
+
+        assert!(
+            result.is_ok(),
+            "Failed to parse connected pattern with multi-label end node: {:?}",
+            result
+        );
         let (remaining, path_pattern) = result.unwrap();
         assert_eq!(remaining, "", "Should consume entire input");
-        
+
         match path_pattern {
             PathPattern::ConnectedPattern(connected) => {
                 assert_eq!(connected.len(), 1);
-                
+
                 // Check start node
                 let start_node = connected[0].start_node.borrow();
                 assert_eq!(start_node.name, Some("u"));
                 assert_eq!(start_node.labels, Some(vec!["User"]));
-                
+
                 // Check end node has multiple labels
                 let end_node = connected[0].end_node.borrow();
                 assert_eq!(end_node.name, Some("x"));

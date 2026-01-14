@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    graph_catalog::{GraphSchema, NodeSchema, RelationshipSchema, NodeIdSchema},
+    graph_catalog::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema},
     open_cypher_parser::ast,
     query_planner::{
         logical_plan::{plan_builder::LogicalPlanResult, LogicalPlan},
@@ -76,8 +76,8 @@ pub fn evaluate_optional_match_clause<'a>(
 
 /// Create a test graph schema with User nodes and FOLLOWS relationships
 fn setup_test_graph_schema() -> GraphSchema {
-    use std::collections::HashMap;
     use crate::graph_catalog::expression_parser::PropertyValue;
+    use std::collections::HashMap;
 
     let mut nodes = HashMap::new();
     let mut relationships = HashMap::new();
@@ -96,12 +96,26 @@ fn setup_test_graph_schema() -> GraphSchema {
         primary_keys: "id".to_string(),
         node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
         property_mappings: [
-            ("name".to_string(), PropertyValue::Column("name".to_string())),
+            (
+                "name".to_string(),
+                PropertyValue::Column("name".to_string()),
+            ),
             ("age".to_string(), PropertyValue::Column("age".to_string())),
-            ("status".to_string(), PropertyValue::Column("status".to_string())),
-            ("user_id".to_string(), PropertyValue::Column("user_id".to_string())),
-            ("full_name".to_string(), PropertyValue::Column("name".to_string())),
-        ].into_iter().collect(),
+            (
+                "status".to_string(),
+                PropertyValue::Column("status".to_string()),
+            ),
+            (
+                "user_id".to_string(),
+                PropertyValue::Column("user_id".to_string()),
+            ),
+            (
+                "full_name".to_string(),
+                PropertyValue::Column("name".to_string()),
+            ),
+        ]
+        .into_iter()
+        .collect(),
         view_parameters: None,
         engine: None,
         use_final: None,
@@ -166,7 +180,7 @@ mod tests {
         };
 
         let input_plan = Arc::new(LogicalPlan::Empty);
-        
+
         // Set up test schema for the test
         let graph_schema = setup_test_graph_schema();
         let mut plan_ctx = PlanCtx::new(Arc::new(graph_schema));
@@ -198,7 +212,7 @@ mod tests {
         };
 
         let input_plan = Arc::new(LogicalPlan::Empty);
-        
+
         // Set up test schema for the test
         let graph_schema = setup_test_graph_schema();
         let mut plan_ctx = PlanCtx::new(Arc::new(graph_schema));

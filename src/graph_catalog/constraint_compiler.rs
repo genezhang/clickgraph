@@ -27,10 +27,9 @@
 /// //
 /// // (assuming property mapping: timestamp -> created_timestamp)
 /// ```
-
 use crate::graph_catalog::errors::GraphSchemaError;
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::graph_catalog::graph_schema::{NodeSchema, NodeIdSchema};
+use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema};
 
 /// Compile an edge constraint expression into SQL predicate
 ///
@@ -57,28 +56,18 @@ pub fn compile_constraint(
 ) -> Result<String, GraphSchemaError> {
     // Simple regex-based property reference replacement
     // Pattern: from.property or to.property
-    
+
     let mut compiled = constraint_expr.to_string();
-    
+
     // Find and replace all property references
     // Using simple string processing for now (can upgrade to proper parser if needed)
-    
+
     // Replace from.property references
-    compiled = replace_property_references(
-        &compiled,
-        "from.",
-        from_node_schema,
-        from_alias,
-    )?;
-    
+    compiled = replace_property_references(&compiled, "from.", from_node_schema, from_alias)?;
+
     // Replace to.property references
-    compiled = replace_property_references(
-        &compiled,
-        "to.",
-        to_node_schema,
-        to_alias,
-    )?;
-    
+    compiled = replace_property_references(&compiled, "to.", to_node_schema, to_alias)?;
+
     Ok(compiled)
 }
 
@@ -93,37 +82,34 @@ fn replace_property_references(
 ) -> Result<String, GraphSchemaError> {
     let mut result = String::new();
     let mut remaining = expr;
-    
+
     while let Some(pos) = remaining.find(prefix) {
         // Add everything before the match
         result.push_str(&remaining[..pos]);
-        
+
         // Skip the prefix
         remaining = &remaining[pos + prefix.len()..];
-        
+
         // Extract property name (alphanumeric + underscore)
         let property_end = remaining
             .find(|c: char| !c.is_alphanumeric() && c != '_')
             .unwrap_or(remaining.len());
-        
+
         let property_name = &remaining[..property_end];
-        
+
         // Resolve property to column
-        let column_name = resolve_property_to_column(
-            property_name,
-            node_schema,
-        )?;
-        
+        let column_name = resolve_property_to_column(property_name, node_schema)?;
+
         // Append alias.column to result
         result.push_str(&format!("{}.{}", alias, column_name));
-        
+
         // Continue with rest of expression
         remaining = &remaining[property_end..];
     }
-    
+
     // Add any remaining text
     result.push_str(remaining);
-    
+
     Ok(result)
 }
 
@@ -137,15 +123,13 @@ fn resolve_property_to_column(
     // Look up property in mappings
     match node_schema.property_mappings.get(property) {
         Some(PropertyValue::Column(col)) => Ok(col.clone()),
-        Some(PropertyValue::Expression(_)) => {
-            Err(GraphSchemaError::InvalidConfig {
-                message: format!(
-                    "Property '{}' mapped to expression, cannot use in edge constraints. \
+        Some(PropertyValue::Expression(_)) => Err(GraphSchemaError::InvalidConfig {
+            message: format!(
+                "Property '{}' mapped to expression, cannot use in edge constraints. \
                      Constraints only support simple column mappings.",
-                    property
-                ),
-            })
-        }
+                property
+            ),
+        }),
         None => {
             // Property not found - provide helpful error
             Err(GraphSchemaError::InvalidConfig {
@@ -154,7 +138,9 @@ fn resolve_property_to_column(
                      Available properties: {}",
                     property,
                     node_schema.primary_keys, // Using primary_keys as label proxy
-                    node_schema.property_mappings.keys()
+                    node_schema
+                        .property_mappings
+                        .keys()
                         .cloned()
                         .collect::<Vec<_>>()
                         .join(", ")
@@ -171,21 +157,15 @@ mod tests {
     use crate::graph_catalog::graph_schema::NodeIdSchema;
     use std::collections::HashMap;
 
-    fn create_test_node_schema(
-        label: &str,
-        properties: Vec<(&str, &str)>,
-    ) -> NodeSchema {
+    fn create_test_node_schema(label: &str, properties: Vec<(&str, &str)>) -> NodeSchema {
         let mut property_mappings = HashMap::new();
         let mut column_names = vec![];
-        
+
         for (prop, col) in properties {
-            property_mappings.insert(
-                prop.to_string(),
-                PropertyValue::Column(col.to_string()),
-            );
+            property_mappings.insert(prop.to_string(), PropertyValue::Column(col.to_string()));
             column_names.push(col.to_string());
         }
-        
+
         NodeSchema {
             database: "test_db".to_string(),
             table_name: format!("{}_table", label),
@@ -208,20 +188,18 @@ mod tests {
 
     #[test]
     fn test_compile_simple_temporal_constraint() {
-        let from_schema = create_test_node_schema(
-            "File",
-            vec![("timestamp", "created_at")],
-        );
+        let from_schema = create_test_node_schema("File", vec![("timestamp", "created_at")]);
         let to_schema = from_schema.clone();
-        
+
         let result = compile_constraint(
             "from.timestamp <= to.timestamp",
             &from_schema,
             &to_schema,
             "f",
             "t",
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         assert_eq!(result, "f.created_at <= t.created_at");
     }
 
@@ -229,21 +207,19 @@ mod tests {
     fn test_compile_composite_constraint() {
         let from_schema = create_test_node_schema(
             "File",
-            vec![
-                ("timestamp", "created_at"),
-                ("tenant", "tenant_id"),
-            ],
+            vec![("timestamp", "created_at"), ("tenant", "tenant_id")],
         );
         let to_schema = from_schema.clone();
-        
+
         let result = compile_constraint(
             "from.tenant = to.tenant AND from.timestamp < to.timestamp",
             &from_schema,
             &to_schema,
             "from_node",
             "to_node",
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         assert_eq!(
             result,
             "from_node.tenant_id = to_node.tenant_id AND from_node.created_at < to_node.created_at"
@@ -252,12 +228,9 @@ mod tests {
 
     #[test]
     fn test_compile_missing_property() {
-        let from_schema = create_test_node_schema(
-            "File",
-            vec![("timestamp", "created_at")],
-        );
+        let from_schema = create_test_node_schema("File", vec![("timestamp", "created_at")]);
         let to_schema = from_schema.clone();
-        
+
         let result = compile_constraint(
             "from.missing_prop = to.timestamp",
             &from_schema,
@@ -265,7 +238,7 @@ mod tests {
             "f",
             "t",
         );
-        
+
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("missing_prop"));
@@ -274,20 +247,18 @@ mod tests {
 
     #[test]
     fn test_compile_with_literals() {
-        let from_schema = create_test_node_schema(
-            "Event",
-            vec![("status", "event_status")],
-        );
+        let from_schema = create_test_node_schema("Event", vec![("status", "event_status")]);
         let to_schema = from_schema.clone();
-        
+
         let result = compile_constraint(
             "from.status = 'active' AND to.status = 'completed'",
             &from_schema,
             &to_schema,
             "e1",
             "e2",
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         assert_eq!(
             result,
             "e1.event_status = 'active' AND e2.event_status = 'completed'"
@@ -296,29 +267,20 @@ mod tests {
 
     #[test]
     fn test_compile_complex_expression() {
-        let from_schema = create_test_node_schema(
-            "Node",
-            vec![
-                ("val", "value"),
-                ("limit", "max_value"),
-            ],
-        );
-        let to_schema = create_test_node_schema(
-            "Node",
-            vec![
-                ("val", "value"),
-                ("threshold", "min_value"),
-            ],
-        );
-        
+        let from_schema =
+            create_test_node_schema("Node", vec![("val", "value"), ("limit", "max_value")]);
+        let to_schema =
+            create_test_node_schema("Node", vec![("val", "value"), ("threshold", "min_value")]);
+
         let result = compile_constraint(
             "(from.val + 10) <= to.threshold OR from.limit > to.val",
             &from_schema,
             &to_schema,
             "n1",
             "n2",
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         assert_eq!(
             result,
             "(n1.value + 10) <= n2.min_value OR n1.max_value > n2.value"

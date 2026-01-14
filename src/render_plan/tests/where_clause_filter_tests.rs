@@ -26,8 +26,8 @@ fn cypher_to_sql(cypher: &str) -> String {
     // Create proper test schema with User nodes
     let graph_schema = setup_test_graph_schema();
 
-    let (logical_plan, mut plan_ctx) =
-        build_logical_plan(&ast, &graph_schema, None, None, None).expect("Failed to build logical plan");
+    let (logical_plan, mut plan_ctx) = build_logical_plan(&ast, &graph_schema, None, None, None)
+        .expect("Failed to build logical plan");
 
     // Debug: Print logical plan before analyzer passes
     println!("Logical plan before analyzer passes: {:?}", logical_plan);
@@ -145,7 +145,7 @@ fn setup_test_graph_schema() -> GraphSchema {
         from_label_values: None,
         to_label_values: None,
         is_fk_edge: false,
-            constraints: None,
+        constraints: None,
     };
     relationships.insert("FOLLOWS".to_string(), follows_rel);
 

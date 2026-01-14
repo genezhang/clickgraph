@@ -87,10 +87,10 @@ fn is_valid_parameter_name(name: &str) -> bool {
 }
 
 /// Check if SQL contains unsubstituted $param placeholders
-/// 
+///
 /// Returns Some(param_name) if an unsubstituted placeholder is found,
 /// None if the SQL is clean.
-/// 
+///
 /// # Example
 /// ```ignore
 /// assert_eq!(find_unsubstituted_parameter("SELECT * FROM t"), None);
@@ -102,7 +102,7 @@ pub fn find_unsubstituted_parameter(sql: &str) -> Option<String> {
     while let Some(ch) = chars.next() {
         if ch == '$' {
             let mut param_name = String::new();
-            
+
             // Collect parameter name (alphanumeric + underscore)
             while let Some(&next_ch) = chars.peek() {
                 if next_ch.is_alphanumeric() || next_ch == '_' {
@@ -112,13 +112,13 @@ pub fn find_unsubstituted_parameter(sql: &str) -> Option<String> {
                     break;
                 }
             }
-            
+
             if !param_name.is_empty() && is_valid_parameter_name(&param_name) {
                 return Some(param_name);
             }
         }
     }
-    
+
     None
 }
 

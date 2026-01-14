@@ -5,7 +5,6 @@
 /// 2. WHERE clause after WITH
 ///
 /// The WHERE clause correctly becomes a HAVING clause in the generated SQL.
-
 use clickgraph::{
     graph_catalog::{
         expression_parser::PropertyValue,
@@ -58,13 +57,11 @@ fn test_with_aggregation_where_generates_having() {
     let cypher = "MATCH (a) WITH a, COUNT(*) as cnt WHERE cnt > 2 RETURN a, cnt";
 
     // Parse query
-    let ast = parse_query(cypher)
-        .expect("Failed to parse Cypher query");
+    let ast = parse_query(cypher).expect("Failed to parse Cypher query");
 
     // Build logical plan
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None, None)
-        .expect("Failed to build logical plan");
+        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to build logical plan");
 
     // Render to SQL
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
@@ -76,22 +73,34 @@ fn test_with_aggregation_where_generates_having() {
 
     // Assertions:
     // 1. SQL must contain "HAVING" keyword
-    assert!(sql.contains("HAVING"),
-        "Generated SQL must contain HAVING clause when WITH has WHERE after aggregation. SQL:\n{}", sql);
+    assert!(
+        sql.contains("HAVING"),
+        "Generated SQL must contain HAVING clause when WITH has WHERE after aggregation. SQL:\n{}",
+        sql
+    );
 
     // 2. SQL must contain the condition "cnt > 2" in HAVING context
-    assert!(sql.contains("> 2"),
-        "HAVING clause must contain 'cnt > 2' condition. SQL:\n{}", sql);
+    assert!(
+        sql.contains("> 2"),
+        "HAVING clause must contain 'cnt > 2' condition. SQL:\n{}",
+        sql
+    );
 
     // 3. SQL must contain GROUP BY (aggregation should generate grouping)
-    assert!(sql.contains("GROUP BY"),
-        "Generated SQL must contain GROUP BY when aggregation is used. SQL:\n{}", sql);
+    assert!(
+        sql.contains("GROUP BY"),
+        "Generated SQL must contain GROUP BY when aggregation is used. SQL:\n{}",
+        sql
+    );
 
     // 4. The HAVING should come AFTER GROUP BY in the SQL (standard SQL order)
     let group_by_pos = sql.find("GROUP BY").expect("GROUP BY must exist");
     let having_pos = sql.find("HAVING").expect("HAVING must exist");
-    assert!(having_pos > group_by_pos,
-        "HAVING must come after GROUP BY in generated SQL. SQL:\n{}", sql);
+    assert!(
+        having_pos > group_by_pos,
+        "HAVING must come after GROUP BY in generated SQL. SQL:\n{}",
+        sql
+    );
 
     println!("✓ Test passed: WITH + aggregation + WHERE correctly generates HAVING clause");
 }
@@ -105,13 +114,11 @@ fn test_with_where_without_aggregation() {
     let cypher = "MATCH (a) WITH a WHERE 1=1 RETURN a";
 
     // Parse query
-    let ast = parse_query(cypher)
-        .expect("Failed to parse Cypher query");
+    let ast = parse_query(cypher).expect("Failed to parse Cypher query");
 
     // Build logical plan
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None, None)
-        .expect("Failed to build logical plan");
+        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to build logical plan");
 
     // Render to SQL
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
@@ -123,16 +130,25 @@ fn test_with_where_without_aggregation() {
 
     // Assertions:
     // 1. SQL must contain WHERE clause (not HAVING since no GROUP BY)
-    assert!(sql.contains("WHERE"),
-        "Generated SQL must contain WHERE clause when no aggregation. SQL:\n{}", sql);
+    assert!(
+        sql.contains("WHERE"),
+        "Generated SQL must contain WHERE clause when no aggregation. SQL:\n{}",
+        sql
+    );
 
     // 2. SQL must NOT contain HAVING (no aggregation, so WHERE stays WHERE)
-    assert!(!sql.contains("HAVING"),
-        "Generated SQL must NOT contain HAVING when there's no aggregation. SQL:\n{}", sql);
+    assert!(
+        !sql.contains("HAVING"),
+        "Generated SQL must NOT contain HAVING when there's no aggregation. SQL:\n{}",
+        sql
+    );
 
     // 3. SQL must NOT contain GROUP BY (no aggregation)
-    assert!(!sql.contains("GROUP BY"),
-        "Generated SQL must NOT contain GROUP BY when no aggregation. SQL:\n{}", sql);
+    assert!(
+        !sql.contains("GROUP BY"),
+        "Generated SQL must NOT contain GROUP BY when no aggregation. SQL:\n{}",
+        sql
+    );
 
     println!("✓ Test passed: WITH + WHERE (no aggregation) correctly generates WHERE clause");
 }
@@ -147,13 +163,11 @@ fn test_with_aggregation_multiple_conditions() {
     let cypher = "MATCH (a) WITH a, COUNT(*) as cnt WHERE cnt > 2 AND cnt < 100 RETURN a, cnt";
 
     // Parse query
-    let ast = parse_query(cypher)
-        .expect("Failed to parse Cypher query");
+    let ast = parse_query(cypher).expect("Failed to parse Cypher query");
 
     // Build logical plan
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None, None)
-        .expect("Failed to build logical plan");
+        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to build logical plan");
 
     // Render to SQL
     let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
@@ -165,16 +179,27 @@ fn test_with_aggregation_multiple_conditions() {
 
     // Assertions:
     // 1. SQL must contain HAVING
-    assert!(sql.contains("HAVING"),
-        "Generated SQL must contain HAVING clause. SQL:\n{}", sql);
+    assert!(
+        sql.contains("HAVING"),
+        "Generated SQL must contain HAVING clause. SQL:\n{}",
+        sql
+    );
 
     // 2. SQL must contain both conditions
-    assert!(sql.contains("> 2") && sql.contains("< 100"),
-        "HAVING clause must contain both conditions. SQL:\n{}", sql);
+    assert!(
+        sql.contains("> 2") && sql.contains("< 100"),
+        "HAVING clause must contain both conditions. SQL:\n{}",
+        sql
+    );
 
     // 3. SQL must contain AND operator
-    assert!(sql.to_uppercase().contains("AND"),
-        "HAVING clause must contain AND operator for multiple conditions. SQL:\n{}", sql);
+    assert!(
+        sql.to_uppercase().contains("AND"),
+        "HAVING clause must contain AND operator for multiple conditions. SQL:\n{}",
+        sql
+    );
 
-    println!("✓ Test passed: Multiple conditions in WITH WHERE correctly generate complex HAVING clause");
+    println!(
+        "✓ Test passed: Multiple conditions in WITH WHERE correctly generate complex HAVING clause"
+    );
 }

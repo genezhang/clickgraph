@@ -57,7 +57,7 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
         // Need to be careful: [expr] could also be a list literal
         // Also careful: [(pattern) | projection] is a pattern comprehension, not subscript
         // We check for [ immediately after the expression (with optional whitespace)
-        
+
         // First, peek to see if this looks like a subscript vs pattern comprehension
         // Pattern comprehension starts with [(node) or [(path)
         // Subscript has a simple expression like [0] or [i] or ["key"]
@@ -67,12 +67,12 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
             multispace0,
             char('('),
         ))(input);
-        
+
         if looks_like_pattern_comp.is_ok() {
             // This looks like pattern comprehension [(...)], not a subscript - stop parsing postfix
             break;
         }
-        
+
         // Try to parse slicing first: [from..to], [..to], [from..], or [..]
         let slicing_attempt = nom::sequence::tuple((
             multispace0,
@@ -131,7 +131,10 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
                     ),
                     |_| Operator::IsNotNull,
                 ),
-                map(ws(tag_no_case::<_, _, OpenCypherParsingError>("NULL")), |_| Operator::IsNull),
+                map(
+                    ws(tag_no_case::<_, _, OpenCypherParsingError>("NULL")),
+                    |_| Operator::IsNull,
+                ),
             )),
         ))
         .parse(input);
@@ -306,15 +309,12 @@ fn parse_pattern_comprehension(input: &'_ str) -> IResult<&'_ str, Expression<'_
     let (input, _) = ws(char('[')).parse(input)?;
 
     // Parse the graph pattern (e.g., (a)-[:REL]->(b))
-    let (input, pattern) = ws(crate::open_cypher_parser::path_pattern::parse_path_pattern)
-        .parse(input)?;
+    let (input, pattern) =
+        ws(crate::open_cypher_parser::path_pattern::parse_path_pattern).parse(input)?;
 
     // Optional WHERE clause
-    let (input, where_clause) = opt(preceded(
-        ws(tag_no_case("WHERE")),
-        parse_expression,
-    ))
-    .parse(input)?;
+    let (input, where_clause) =
+        opt(preceded(ws(tag_no_case("WHERE")), parse_expression)).parse(input)?;
 
     // Parse '|' separator
     let (input, _) = ws(char('|')).parse(input)?;
@@ -340,7 +340,7 @@ fn parse_pattern_comprehension(input: &'_ str) -> IResult<&'_ str, Expression<'_
 fn parse_pattern_comprehension_projection(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     // We need to parse an expression but stop at ']'
     // Use a similar approach to parse_reduce_body_expression
-    
+
     let mut depth = 0;
     let mut i = 0;
     let bytes = input.as_bytes();
@@ -493,18 +493,12 @@ pub fn parse_operator_symbols(input: &str) -> IResult<&str, Operator> {
 fn parse_unary_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     alt((
         // Unary minus (negation)
-        map(
-            preceded(ws(tag("-")), parse_unary_expression),
-            |expr| {
-                Expression::OperatorApplicationExp(OperatorApplication {
-                    operator: Operator::Subtraction,
-                    operands: vec![
-                        Expression::Literal(Literal::Integer(0)),
-                        expr,
-                    ],
-                })
-            },
-        ),
+        map(preceded(ws(tag("-")), parse_unary_expression), |expr| {
+            Expression::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::Subtraction,
+                operands: vec![Expression::Literal(Literal::Integer(0)), expr],
+            })
+        }),
         // DISTINCT is a unary operator
         map(
             preceded(ws(tag_no_case("DISTINCT")), parse_unary_expression),
@@ -523,18 +517,19 @@ fn parse_unary_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 // Multiplicative operators: * / %
 fn parse_multiplicative_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     let (input, lhs) = parse_unary_expression(input)?;
-    
+
     let mut remaining_input = input;
     let mut final_expression = lhs;
-    
+
     loop {
         // Try to parse a multiplicative operator
         let op_result = ws(alt((
             map(tag_no_case("*"), |_| Operator::Multiplication),
             map(tag_no_case("/"), |_| Operator::Division),
             map(tag_no_case("%"), |_| Operator::ModuloDivision),
-        ))).parse(remaining_input);
-        
+        )))
+        .parse(remaining_input);
+
         match op_result {
             Ok((new_input, op)) => {
                 let (new_input, rhs) = parse_unary_expression(new_input)?;
@@ -554,17 +549,18 @@ fn parse_multiplicative_expression(input: &'_ str) -> IResult<&'_ str, Expressio
 // Additive operators: + -
 fn parse_additive_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     let (input, lhs) = parse_multiplicative_expression(input)?;
-    
+
     let mut remaining_input = input;
     let mut final_expression = lhs;
-    
+
     loop {
         // Try to parse an additive operator
         let op_result = ws(alt((
             map(tag_no_case("+"), |_| Operator::Addition),
             map(tag_no_case("-"), |_| Operator::Subtraction),
-        ))).parse(remaining_input);
-        
+        )))
+        .parse(remaining_input);
+
         match op_result {
             Ok((new_input, op)) => {
                 let (new_input, rhs) = parse_multiplicative_expression(new_input)?;
@@ -584,17 +580,17 @@ fn parse_additive_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>>
 // Comparison and string operators: = <> < > <= >= =~ IN NOT IN STARTS WITH ENDS WITH CONTAINS
 fn parse_comparison_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     let (input, lhs) = parse_additive_expression(input)?;
-    
+
     let mut remaining_input = input;
     let mut final_expression = lhs;
-    
+
     loop {
         // Try to parse a comparison operator
         let op_result = ws(alt((
             map(tag_no_case(">="), |_| Operator::GreaterThanEqual),
             map(tag_no_case("<="), |_| Operator::LessThanEqual),
             map(tag_no_case("<>"), |_| Operator::NotEqual),
-            map(tag_no_case("!="), |_| Operator::NotEqual),  // Add != support
+            map(tag_no_case("!="), |_| Operator::NotEqual), // Add != support
             map(tag_no_case("=~"), |_| Operator::RegexMatch),
             map(tag_no_case(">"), |_| Operator::GreaterThan),
             map(tag_no_case("<"), |_| Operator::LessThan),
@@ -610,8 +606,9 @@ fn parse_comparison_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_
             map(tag_no_case("CONTAINS"), |_| Operator::Contains),
             map(tag_no_case("NOT IN"), |_| Operator::NotIn),
             map(tag_no_case("IN"), |_| Operator::In),
-        ))).parse(remaining_input);
-        
+        )))
+        .parse(remaining_input);
+
         match op_result {
             Ok((new_input, op)) => {
                 let (new_input, rhs) = parse_additive_expression(new_input)?;
@@ -736,19 +733,22 @@ pub fn parse_function_call(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     // First, parse the function name - support dotted names like ch.arrayFilter
     // Parse identifier parts separated by dots
     let (input, name_parts) = separated_list0(char('.'), ws(parse_identifier)).parse(input)?;
-    
+
     // If no dots found, need at least one identifier
     if name_parts.is_empty() {
         return Err(nom::Err::Error(Error::new(input, ErrorKind::Alpha)));
     }
-    
+
     let name = name_parts.join(".");
-    
+
     // Then parse the comma-separated arguments within parentheses.
     // Need to try lambda first before regular expression
     let (input, args) = delimited(
         ws(char('(')),
-        separated_list0(ws(char(',')), alt((parse_lambda_expression, parse_expression))),
+        separated_list0(
+            ws(char(',')),
+            alt((parse_lambda_expression, parse_expression)),
+        ),
         ws(char(')')),
     )
     .parse(input)?;
@@ -766,24 +766,23 @@ pub fn parse_function_call(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 ///   elem -> elem.field = 'value'
 pub fn parse_lambda_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     // Try single parameter: x ->
-    let single_param = map(
-        terminated(ws(parse_identifier), ws(tag("->"))),
-        |param| vec![param],
-    );
-    
+    let single_param = map(terminated(ws(parse_identifier), ws(tag("->"))), |param| {
+        vec![param]
+    });
+
     // Try multiple parameters: (x, y) ->
     let multi_param = delimited(
         ws(char('(')),
         separated_list0(ws(char(',')), ws(parse_identifier)),
         delimited(ws(char(')')), ws(tag("->")), multispace0),
     );
-    
+
     // Parse parameters (single or multiple)
     let (input, params) = alt((multi_param, single_param)).parse(input)?;
-    
+
     // Parse the body expression
     let (input, body) = parse_expression(input)?;
-    
+
     Ok((
         input,
         Expression::Lambda(LambdaExpression {
@@ -861,57 +860,59 @@ pub fn parse_property_access(input: &'_ str) -> IResult<&'_ str, Expression<'_>>
     let (new_input, _) = char('.')(input)?;
     let (new_input, first_key) = parse_property_name(new_input)?;
     input = new_input;
-    
+
     // Build initial expression for base.first_property
     let base_expr = match parse_literal_or_variable_expression(base_str) {
         Ok((_, Expression::Variable(base))) => base,
         _ => return Err(nom::Err::Error(Error::new(input, ErrorKind::Float))),
     };
-    
+
     let mut current_expr = if first_key == "*" {
-        Expression::PropertyAccessExp(PropertyAccess { base: base_expr, key: "*" })
+        Expression::PropertyAccessExp(PropertyAccess {
+            base: base_expr,
+            key: "*",
+        })
     } else {
         match parse_literal_or_variable_expression(first_key) {
-            Ok((_, Expression::Variable(key))) => {
-                Expression::PropertyAccessExp(PropertyAccess { base: base_expr, key })
-            }
+            Ok((_, Expression::Variable(key))) => Expression::PropertyAccessExp(PropertyAccess {
+                base: base_expr,
+                key,
+            }),
             _ => return Err(nom::Err::Error(Error::new(input, ErrorKind::Float))),
         }
     };
-    
+
     // Try to parse additional chained properties: .property2.property3...
-    loop {
-        // Try to parse another .property
-        let chain_result = preceded(char('.'), parse_property_name).parse(input);
-        
-        match chain_result {
-            Ok((new_input, next_key)) => {
-                // Check if this is a temporal accessor - if so, convert to function call
-                let temporal_accessors = ["year", "month", "day", "hour", "minute", "second", 
-                                           "millisecond", "microsecond", "nanosecond"];
-                
-                if temporal_accessors.contains(&next_key) {
-                    // Convert current_expr.temporal_accessor to temporal_accessor(current_expr)
-                    return Ok((
-                        new_input,
-                        Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
-                            name: next_key.to_string(),
-                            args: vec![current_expr],
-                        }),
-                    ));
-                }
-                
-                // Not a temporal accessor - continue building property chain
-                // But we need PropertyAccess to support Expression as base, not just &str
-                // For now, we'll stop chaining after first property if not temporal
-                input = new_input;
-                break;
-            }
-            Err(_) => {
-                // No more properties to chain
-                break;
-            }
+    // Note: Currently only supports one additional property due to PropertyAccess limitations
+    if let Ok((new_input, next_key)) = preceded(char('.'), parse_property_name).parse(input) {
+        // Check if this is a temporal accessor - if so, convert to function call
+        let temporal_accessors = [
+            "year",
+            "month",
+            "day",
+            "hour",
+            "minute",
+            "second",
+            "millisecond",
+            "microsecond",
+            "nanosecond",
+        ];
+
+        if temporal_accessors.contains(&next_key) {
+            // Convert current_expr.temporal_accessor to temporal_accessor(current_expr)
+            return Ok((
+                new_input,
+                Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
+                    name: next_key.to_string(),
+                    args: vec![current_expr],
+                }),
+            ));
         }
+
+        // Not a temporal accessor - continue building property chain
+        // But we need PropertyAccess to support Expression as base, not just &str
+        // For now, we'll stop chaining after first property if not temporal
+        input = new_input;
     }
 
     Ok((input, current_expr))
@@ -940,8 +941,9 @@ pub fn parse_parameter(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
             map(tag_no_case("millisecond"), |_| "millisecond"),
             map(tag_no_case("microsecond"), |_| "microsecond"),
             map(tag_no_case("nanosecond"), |_| "nanosecond"),
-        ))
-    )).parse(input)?;
+        )),
+    ))
+    .parse(input)?;
 
     // If we found a temporal accessor, convert to function call
     if let Some(accessor) = temporal_accessor {
@@ -1076,11 +1078,17 @@ mod tests {
         match result {
             Ok((remaining, expr)) => {
                 assert!(matches!(expr, Expression::Literal(Literal::Boolean(true))));
-                assert!(remaining.trim().starts_with("RETURN"),
-                    "Expected RETURN to remain after parsing 'true', got: {}", remaining);
+                assert!(
+                    remaining.trim().starts_with("RETURN"),
+                    "Expected RETURN to remain after parsing 'true', got: {}",
+                    remaining
+                );
             }
             Err(e) => {
-                panic!("parse_expression should parse 'true' and leave RETURN as remainder: {:?}", e);
+                panic!(
+                    "parse_expression should parse 'true' and leave RETURN as remainder: {:?}",
+                    e
+                );
             }
         }
     }
@@ -1094,8 +1102,11 @@ mod tests {
             Ok((remaining, expr)) => {
                 println!("Expression: {:?}", expr);
                 println!("Remaining: {:?}", remaining);
-                assert!(remaining.trim().starts_with("RETURN"),
-                    "Expected RETURN to remain, got: {}", remaining);
+                assert!(
+                    remaining.trim().starts_with("RETURN"),
+                    "Expected RETURN to remain, got: {}",
+                    remaining
+                );
             }
             Err(e) => {
                 panic!("parse_expression failed: {:?}", e);
@@ -1573,7 +1584,7 @@ mod tests {
         // This is the failing case from bi-8
         let result = parse_expression("100 * size([(t)-[r]-(f) | f])");
         eprintln!("Parse result: {:#?}", result);
-        
+
         match result {
             Ok((rem, expr)) => {
                 eprintln!("SUCCESS - Remaining: '{}'", rem);

@@ -145,7 +145,7 @@ impl CleanupViewScanFilters {
                             alias: graph_node.alias.clone(),
                             label: graph_node.label.clone(),
                             is_denormalized: graph_node.is_denormalized,
-            projected_columns: None,
+                            projected_columns: None,
                         }),
                     )),
                     Transformed::No(_) => Transformed::No(logical_plan),
@@ -225,7 +225,7 @@ impl CleanupViewScanFilters {
                             optional_aliases: graph_joins.optional_aliases.clone(),
                             anchor_table: graph_joins.anchor_table.clone(),
                             cte_references: graph_joins.cte_references.clone(),
-                    correlation_predicates: vec![],
+                            correlation_predicates: vec![],
                         }),
                     )),
                     Transformed::No(_) => Transformed::No(logical_plan),
@@ -262,7 +262,6 @@ impl CleanupViewScanFilters {
 
             // Leaf nodes - no transformation needed
             LogicalPlan::Empty
-
             | LogicalPlan::PageRank(_)
             | LogicalPlan::Union(_)
             | LogicalPlan::Cte(_)

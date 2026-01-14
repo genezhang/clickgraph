@@ -17,7 +17,7 @@ pub struct OrderByAndPageClause<'a> {
 }
 
 /// Parse ORDER BY and pagination clause per OpenCypher spec:
-/// <order by and page clause> ::= 
+/// <order by and page clause> ::=
 ///     <order by clause> [ <offset clause> ] [ <limit clause> ]
 ///   | <offset clause> [ <limit clause> ]
 ///   | <limit clause>

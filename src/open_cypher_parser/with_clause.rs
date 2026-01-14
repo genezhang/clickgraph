@@ -24,7 +24,7 @@ use super::{
 
 fn parse_with_item(input: &'_ str) -> IResult<&'_ str, WithItem<'_>> {
     let expr_result = parse_expression.parse(input);
-    
+
     // Check for pattern comprehension and provide helpful error
     let (input, expression) = match expr_result {
         Ok(result) => result,
@@ -40,7 +40,7 @@ fn parse_with_item(input: &'_ str) -> IResult<&'_ str, WithItem<'_>> {
         }
         Err(e) => return Err(e),
     };
-    
+
     let (input, alias) = opt(preceded(ws(tag_no_case("AS")), ws(parse_identifier))).parse(input)?;
 
     let with_item = WithItem { expression, alias };

@@ -37,7 +37,8 @@ pub enum PropertyValue {
 impl PropertyValue {
     /// Apply table prefix to generate SQL
     pub fn to_sql(&self, table_alias: &str) -> String {
-        log::debug!("PropertyValue.to_sql called: variant={}, value='{}', table_alias='{}'",
+        log::debug!(
+            "PropertyValue.to_sql called: variant={}, value='{}', table_alias='{}'",
             match self {
                 PropertyValue::Column(_) => "Column",
                 PropertyValue::Expression(_) => "Expression",
@@ -63,7 +64,7 @@ impl PropertyValue {
                         let sql = ast.to_sql(table_alias);
                         log::debug!("✅ PropertyValue.to_sql: Successfully parsed expression '{}' -> SQL: '{}'", expr, sql);
                         sql
-                    },
+                    }
                     Err(e) => {
                         // Fallback: treat as raw SQL
                         log::warn!(

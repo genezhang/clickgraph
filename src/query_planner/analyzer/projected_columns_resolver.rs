@@ -33,9 +33,7 @@ impl ProjectedColumnsResolver {
     }
 
     /// Compute projected columns for a GraphNode based on its input (ViewScan)
-    fn compute_projected_columns_for_node(
-        node: &GraphNode,
-    ) -> Option<Vec<(String, String)>> {
+    fn compute_projected_columns_for_node(node: &GraphNode) -> Option<Vec<(String, String)>> {
         // The input should be a ViewScan (or through Filters, etc.)
         let view_scan = Self::find_view_scan(&node.input)?;
 
@@ -258,7 +256,6 @@ impl AnalyzerPass for ProjectedColumnsResolver {
 
             // Leaf nodes - no recursion needed
             LogicalPlan::Empty
-
             | LogicalPlan::ViewScan(_)
             | LogicalPlan::Cte(_)
             | LogicalPlan::PageRank(_)

@@ -1,11 +1,11 @@
 pub mod alias_resolver;
 pub mod cte_extraction;
 pub mod cte_generation;
-pub mod property_expansion;
 mod expression_utils;
 mod filter_pipeline;
 mod from_table;
 mod plan_builder_helpers;
+pub mod property_expansion;
 mod view_table_ref;
 
 use errors::RenderBuildError;
@@ -115,7 +115,7 @@ impl Join {
         if let Some(ref col) = self.from_id_column {
             return Some(col.clone());
         }
-        
+
         // Fallback: extract from joining_on condition
         if let Some(first_condition) = self.joining_on.first() {
             if first_condition.operands.len() >= 2 {
@@ -219,17 +219,17 @@ pub struct Cte {
     pub content: CteContent,
     pub is_recursive: bool,
     // VLP endpoint information (only populated for VLP CTEs)
-    pub vlp_start_alias: Option<String>,         // Internal alias used in VLP CTE (e.g., "start_node")
-    pub vlp_end_alias: Option<String>,           // Internal alias used in VLP CTE (e.g., "end_node")
-    pub vlp_start_table: Option<String>,         // Start node table name (e.g., "ldbc.Message")
-    pub vlp_end_table: Option<String>,           // End node table name (e.g., "ldbc.Post")
-    pub vlp_cypher_start_alias: Option<String>,  // Original Cypher alias for start node (e.g., "m")
-    pub vlp_cypher_end_alias: Option<String>,    // Original Cypher alias for end node (e.g., "p")
+    pub vlp_start_alias: Option<String>, // Internal alias used in VLP CTE (e.g., "start_node")
+    pub vlp_end_alias: Option<String>,   // Internal alias used in VLP CTE (e.g., "end_node")
+    pub vlp_start_table: Option<String>, // Start node table name (e.g., "ldbc.Message")
+    pub vlp_end_table: Option<String>,   // End node table name (e.g., "ldbc.Post")
+    pub vlp_cypher_start_alias: Option<String>, // Original Cypher alias for start node (e.g., "m")
+    pub vlp_cypher_end_alias: Option<String>, // Original Cypher alias for end node (e.g., "p")
     // 🔧 FIX: Store actual ID columns from relationship schema (not node schema)
     // For zeek DNS: start_id_col = "id.orig_h", end_id_col = "query" (from DNS_REQUESTED relationship)
     // NOT Domain.node_id = "name" (that's the logical name, not the column)
-    pub vlp_start_id_col: Option<String>,        // Actual ID column for start node JOIN (from rel.from_id)
-    pub vlp_end_id_col: Option<String>,          // Actual ID column for end node JOIN (from rel.to_id)
+    pub vlp_start_id_col: Option<String>, // Actual ID column for start node JOIN (from rel.from_id)
+    pub vlp_end_id_col: Option<String>,   // Actual ID column for end node JOIN (from rel.to_id)
 }
 
 impl Cte {
@@ -261,7 +261,7 @@ impl Cte {
         end_table: String,
         cypher_start_alias: String,
         cypher_end_alias: String,
-        start_id_col: String,  // 🔧 FIX: Add ID columns from relationship schema
+        start_id_col: String, // 🔧 FIX: Add ID columns from relationship schema
         end_id_col: String,
     ) -> Self {
         Self {

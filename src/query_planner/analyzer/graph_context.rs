@@ -79,10 +79,13 @@ pub fn get_graph_context<'a>(
     // This must happen before get_node_table_ctx/get_rel_table_ctx which create immutable borrows
     if let Some(labels) = &graph_rel.labels {
         if labels.len() > 1 {
-            let cte_name = format!("rel_{}_{}", graph_rel.left_connection, graph_rel.right_connection);
+            let cte_name = format!(
+                "rel_{}_{}",
+                graph_rel.left_connection, graph_rel.right_connection
+            );
             log::info!("🔍 graph_context: REL alias '{}' has {} labels - registering columns for multi-variant CTE: '{}'", 
                        graph_rel.alias, labels.len(), cte_name);
-            
+
             // Collect all column names from all relationship schemas
             let mut column_mappings: Vec<(String, String)> = Vec::new();
             for label in labels.iter() {
@@ -91,17 +94,20 @@ pub fn get_graph_context<'a>(
                     column_mappings.push((rel_schema.to_id.clone(), "to_node_id".to_string()));
                 }
             }
-            
+
             // Register all mappings
-            log::info!("🔧 Registering {} column mappings for multi-variant CTE '{}'", 
-                       column_mappings.len(), cte_name);
+            log::info!(
+                "🔧 Registering {} column mappings for multi-variant CTE '{}'",
+                column_mappings.len(),
+                cte_name
+            );
             for (schema_col, cte_col) in column_mappings {
                 log::debug!("🔧 Mapping {} → {}", schema_col, cte_col);
                 plan_ctx.register_cte_column(&cte_name, &schema_col, &cte_col);
             }
         }
     }
-    
+
     // get required information
     let left_alias = &graph_rel.left_connection;
     let rel_alias = &graph_rel.alias;
@@ -144,18 +150,17 @@ pub fn get_graph_context<'a>(
     // First, try to get node labels from context (if available)
     let left_label_hint = left_ctx.get_label_str().ok();
     let right_label_hint = right_ctx.get_label_str().ok();
-    
-    let rel_schema_for_inference =
-        graph_schema
-            .get_rel_schema_with_nodes(
-                &original_rel_label,
-                left_label_hint.as_deref(),
-                right_label_hint.as_deref()
-            )
-            .map_err(|e| AnalyzerError::GraphSchema {
-                pass: pass.clone(),
-                source: e,
-            })?;
+
+    let rel_schema_for_inference = graph_schema
+        .get_rel_schema_with_nodes(
+            &original_rel_label,
+            left_label_hint.as_deref(),
+            right_label_hint.as_deref(),
+        )
+        .map_err(|e| AnalyzerError::GraphSchema {
+            pass: pass.clone(),
+            source: e,
+        })?;
 
     // Try to get left label, or infer from relationship if anonymous
     // IMPORTANT: Must consider direction when inferring labels!
@@ -231,18 +236,25 @@ pub fn get_graph_context<'a>(
     // use the edge table instead of the node's "primary" table.
     // This handles cases where node data is denormalized onto edge tables.
     // Note: CTE names must NOT have database prefix for ClickHouse compatibility
-    
+
     // CRITICAL: Check if relationship center is wrapped in LogicalCte (for alternate relationships)
     // If so, extract the CTE name instead of using schema table name
     let rel_cte_name = if let LogicalPlan::Cte(cte) = graph_rel.center.as_ref() {
         // Alternate relationship types - center wrapped in CTE by GraphTraversalPlanning
-        log::info!("🔍 graph_context: REL alias '{}' uses CTE: '{}' (alternate relationships)", rel_alias, cte.name);
+        log::info!(
+            "🔍 graph_context: REL alias '{}' uses CTE: '{}' (alternate relationships)",
+            rel_alias,
+            cte.name
+        );
         cte.name.clone()
     } else if let Some(labels) = &graph_rel.labels {
         // Check if this is a multi-variant relationship (multiple labels for same rel type)
         // If so, a UNION CTE should have been created with name: rel_{left_connection}_{right_connection}
         if labels.len() > 1 {
-            let cte_name = format!("rel_{}_{}", graph_rel.left_connection, graph_rel.right_connection);
+            let cte_name = format!(
+                "rel_{}_{}",
+                graph_rel.left_connection, graph_rel.right_connection
+            );
             log::info!("🔍 graph_context: REL alias '{}' has {} labels - using multi-variant CTE: '{}' (mappings registered earlier)", 
                        rel_alias, labels.len(), cte_name);
             cte_name
@@ -250,55 +262,91 @@ pub fn get_graph_context<'a>(
             // Single label - use schema table name
             let rel_table_full = format!("{}.{}", rel_schema.database, rel_schema.table_name);
             let base_name = strip_database_prefix(&rel_table_full);
-            log::info!("🔍 graph_context: REL alias '{}' uses base table: '{}'", rel_alias, base_name);
+            log::info!(
+                "🔍 graph_context: REL alias '{}' uses base table: '{}'",
+                rel_alias,
+                base_name
+            );
             base_name
         }
     } else {
         // No labels specified - use schema table name
         let rel_table_full = format!("{}.{}", rel_schema.database, rel_schema.table_name);
         let base_name = strip_database_prefix(&rel_table_full);
-        log::info!("🔍 graph_context: REL alias '{}' uses base table: '{}'", rel_alias, base_name);
+        log::info!(
+            "🔍 graph_context: REL alias '{}' uses base table: '{}'",
+            rel_alias,
+            base_name
+        );
         base_name
     };
 
     // Left node: check if this alias references a CTE (from WITH clause export)
     let left_cte_name = if let Some(cte_name) = left_ctx.get_cte_name() {
         // This alias was exported from a WITH clause - use CTE instead of base table
-        log::info!("🔍 graph_context: LEFT alias '{}' has CTE reference: '{}'", left_alias, cte_name);
+        log::info!(
+            "🔍 graph_context: LEFT alias '{}' has CTE reference: '{}'",
+            left_alias,
+            cte_name
+        );
         cte_name.clone()
     } else if edge_has_node_properties(rel_schema, true) {
         // Edge has from_node_properties - node data is on edge table
-        log::info!("🔍 graph_context: LEFT alias '{}' uses edge properties: '{}'", left_alias, rel_cte_name);
+        log::info!(
+            "🔍 graph_context: LEFT alias '{}' uses edge properties: '{}'",
+            left_alias,
+            rel_cte_name
+        );
         rel_cte_name.clone()
     } else {
         // Base table name - strip database prefix for CTE compatibility
         let base_table_full = format!("{}.{}", left_schema.database, left_schema.table_name);
         let base_table = strip_database_prefix(&base_table_full);
-        log::info!("🔍 graph_context: LEFT alias '{}' uses base table: '{}'", left_alias, base_table);
+        log::info!(
+            "🔍 graph_context: LEFT alias '{}' uses base table: '{}'",
+            left_alias,
+            base_table
+        );
         base_table
     };
 
     // Right node: check CTE reference first, then edge properties, then base table
     let right_cte_name = if let Some(cte_name) = right_ctx.get_cte_name() {
         // This alias was exported from a WITH clause - use CTE instead of base table
-        log::info!("🔍 graph_context: RIGHT alias '{}' has CTE reference: '{}'", right_alias, cte_name);
+        log::info!(
+            "🔍 graph_context: RIGHT alias '{}' has CTE reference: '{}'",
+            right_alias,
+            cte_name
+        );
         cte_name.clone()
     } else if right_label == "$any" {
         // Polymorphic node - doesn't matter, won't be JOINed directly
         // But strip database prefix for consistency
         let base_table_full = format!("{}.{}", right_schema.database, right_schema.table_name);
         let base_table = strip_database_prefix(&base_table_full);
-        log::info!("🔍 graph_context: RIGHT alias '{}' is polymorphic, using: '{}'", right_alias, base_table);
+        log::info!(
+            "🔍 graph_context: RIGHT alias '{}' is polymorphic, using: '{}'",
+            right_alias,
+            base_table
+        );
         base_table
     } else if edge_has_node_properties(rel_schema, false) {
         // Edge has to_node_properties - node data is on edge table
-        log::info!("🔍 graph_context: RIGHT alias '{}' uses edge properties: '{}'", right_alias, rel_cte_name);
+        log::info!(
+            "🔍 graph_context: RIGHT alias '{}' uses edge properties: '{}'",
+            right_alias,
+            rel_cte_name
+        );
         rel_cte_name.clone()
     } else {
         // Base table name - strip database prefix for CTE compatibility
         let base_table_full = format!("{}.{}", right_schema.database, right_schema.table_name);
         let base_table = strip_database_prefix(&base_table_full);
-        log::info!("🔍 graph_context: RIGHT alias '{}' uses base table: '{}'", right_alias, base_table);
+        log::info!(
+            "🔍 graph_context: RIGHT alias '{}' uses base table: '{}'",
+            right_alias,
+            base_table
+        );
         base_table
     };
 

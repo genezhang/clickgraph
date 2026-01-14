@@ -364,7 +364,7 @@ pub(super) fn is_node_denormalized(plan: &LogicalPlan) -> bool {
 
 /// Helper function to extract the actual table name from a LogicalPlan node
 /// Recursively traverses the plan tree to find the Scan or ViewScan node
-/// 
+///
 /// NOTE: For GraphRel, this returns the relationship table (center), which is correct
 /// for most use cases. If you need the END NODE table from a nested GraphRel,
 /// use `extract_end_node_table_name` instead.
@@ -382,13 +382,13 @@ pub(super) fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
 }
 
 /// Helper function to extract the END NODE table name from a LogicalPlan node.
-/// 
+///
 /// CRITICAL: For nested GraphRel patterns (multi-hop traversals), this extracts
 /// the rightmost/terminal node's table, NOT the relationship table.
-/// 
+///
 /// Example: For `(a)-[:REL1]-(b)-[:REL2]-(c)` represented as:
 ///   GraphRel { left: GraphNode(a), center: REL1, right: GraphRel { left: b, center: REL2, right: c } }
-/// 
+///
 /// - `extract_table_name` on the outer GraphRel would return REL1's table (WRONG for end node)
 /// - `extract_end_node_table_name` on the outer GraphRel.right would return c's table (CORRECT)
 pub(super) fn extract_end_node_table_name(plan: &LogicalPlan) -> Option<String> {
@@ -405,13 +405,13 @@ pub(super) fn extract_end_node_table_name(plan: &LogicalPlan) -> Option<String> 
 }
 
 /// Extract the ID column of the END NODE in a potentially nested GraphRel pattern.
-/// 
+///
 /// Similar to `extract_end_node_table_name`, but for ID columns.
 /// For nested patterns like (a)-[r1]->(b)-[r2]->(c), when called on the outer GraphRel.right,
 /// this traverses through inner GraphRels to find the actual end node's ID column.
-/// 
+///
 /// The difference from `extract_id_column` is:
-/// - `extract_id_column(&GraphRel)` returns rel.center's ID (relationship table's ID) 
+/// - `extract_id_column(&GraphRel)` returns rel.center's ID (relationship table's ID)
 /// - `extract_end_node_id_column(&GraphRel)` returns the actual end node's ID (via rel.right)
 pub(super) fn extract_end_node_id_column(plan: &LogicalPlan) -> Option<String> {
     match plan {
@@ -428,7 +428,7 @@ pub(super) fn extract_end_node_id_column(plan: &LogicalPlan) -> Option<String> {
 /// Helper function to extract the table reference with parameterized view syntax if applicable.
 /// For a ViewScan with view_parameter_names, returns `table_name(param1='value1', param2='value2')`.
 /// For other cases, returns just the table name.
-/// 
+///
 /// This is used for JOINs where parameterized views need to be called with parameters.
 /// Example: `JOIN friendships_by_tenant(tenant_id='acme') AS f ON ...`
 pub(super) fn extract_parameterized_table_ref(plan: &LogicalPlan) -> Option<String> {
@@ -437,9 +437,10 @@ pub(super) fn extract_parameterized_table_ref(plan: &LogicalPlan) -> Option<Stri
         LogicalPlan::Cte(cte) => Some(cte.name.clone()),
         LogicalPlan::ViewScan(view_scan) => {
             // Check if this is a parameterized view
-            if let (Some(ref param_names), Some(ref param_values)) = 
-                (&view_scan.view_parameter_names, &view_scan.view_parameter_values) 
-            {
+            if let (Some(ref param_names), Some(ref param_values)) = (
+                &view_scan.view_parameter_names,
+                &view_scan.view_parameter_values,
+            ) {
                 if !param_names.is_empty() {
                     // Generate parameterized view call with actual values: table(param1='value1', param2='value2')
                     let param_pairs: Vec<String> = param_names
@@ -452,7 +453,7 @@ pub(super) fn extract_parameterized_table_ref(plan: &LogicalPlan) -> Option<Stri
                             })
                         })
                         .collect();
-                    
+
                     if param_pairs.is_empty() {
                         log::warn!(
                             "extract_parameterized_table_ref: ViewScan '{}' expects parameters {:?} but none matched in values",
@@ -460,12 +461,18 @@ pub(super) fn extract_parameterized_table_ref(plan: &LogicalPlan) -> Option<Stri
                         );
                         return Some(view_scan.source_table.clone());
                     }
-                    
+
                     log::debug!(
                         "extract_parameterized_table_ref: ViewScan '{}' generating: {}({})",
-                        view_scan.source_table, view_scan.source_table, param_pairs.join(", ")
+                        view_scan.source_table,
+                        view_scan.source_table,
+                        param_pairs.join(", ")
                     );
-                    return Some(format!("{}({})", view_scan.source_table, param_pairs.join(", ")));
+                    return Some(format!(
+                        "{}({})",
+                        view_scan.source_table,
+                        param_pairs.join(", ")
+                    ));
                 }
             }
             // No parameters - return plain table name
@@ -480,30 +487,33 @@ pub(super) fn extract_parameterized_table_ref(plan: &LogicalPlan) -> Option<Stri
 }
 
 /// Extract a mapping of alias → parameterized table reference from a LogicalPlan tree.
-/// 
+///
 /// This traverses the plan and builds a HashMap where:
 /// - Keys are aliases (from GraphNode.alias or GraphRel.alias)
 /// - Values are table references with parameterized view syntax if applicable
-/// 
+///
 /// For parameterized views, the value will be `table(param = $param)` format.
 /// For regular tables, the value is just the table name.
-/// 
+///
 /// This is used to fix JOINs generated from GraphJoins, ensuring that
 /// parameterized views are called correctly in all JOIN clauses.
-pub(super) fn extract_rel_and_node_tables(plan: &LogicalPlan) -> std::collections::HashMap<String, String> {
+pub(super) fn extract_rel_and_node_tables(
+    plan: &LogicalPlan,
+) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
-    
+
     match plan {
         LogicalPlan::GraphRel(gr) => {
             // Use the centralized helper to get parameterized table reference
             if let Some(parameterized_ref) = extract_parameterized_table_ref(&gr.center) {
                 log::debug!(
                     "extract_rel_and_node_tables: GraphRel alias='{}' → '{}'",
-                    gr.alias, parameterized_ref
+                    gr.alias,
+                    parameterized_ref
                 );
                 map.insert(gr.alias.clone(), parameterized_ref);
             }
-            
+
             // Recursively check left and right nodes
             map.extend(extract_rel_and_node_tables(&gr.left));
             map.extend(extract_rel_and_node_tables(&gr.right));
@@ -513,7 +523,8 @@ pub(super) fn extract_rel_and_node_tables(plan: &LogicalPlan) -> std::collection
             if let Some(parameterized_ref) = extract_parameterized_table_ref(&gn.input) {
                 log::debug!(
                     "extract_rel_and_node_tables: GraphNode alias='{}' → '{}'",
-                    gn.alias, parameterized_ref
+                    gn.alias,
+                    parameterized_ref
                 );
                 map.insert(gn.alias.clone(), parameterized_ref);
             }
@@ -533,7 +544,7 @@ pub(super) fn extract_rel_and_node_tables(plan: &LogicalPlan) -> std::collection
         }
         _ => {}
     }
-    
+
     map
 }
 
@@ -1094,9 +1105,7 @@ pub(super) fn rewrite_fixed_path_functions_with_info(
                                             |(rel_alias, id_col)| {
                                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                                     table_alias: TableAlias(rel_alias.clone()),
-                                                    column: PropertyValue::Column(
-                                                        id_col.clone(),
-                                                    ),
+                                                    column: PropertyValue::Column(id_col.clone()),
                                                 })
                                             },
                                         )
@@ -1293,9 +1302,11 @@ pub(super) fn rewrite_logical_path_functions(
     expr: &crate::query_planner::logical_expr::LogicalExpr,
     path_var_name: &str,
 ) -> crate::query_planner::logical_expr::LogicalExpr {
-    use crate::query_planner::logical_expr::{LogicalExpr, ScalarFnCall, TableAlias, PropertyAccess};
     use crate::graph_catalog::expression_parser::PropertyValue;
-    
+    use crate::query_planner::logical_expr::{
+        LogicalExpr, PropertyAccess, ScalarFnCall, TableAlias,
+    };
+
     match expr {
         LogicalExpr::ScalarFnCall(fn_call) => {
             // Check if this is a path function call with the path variable as argument
@@ -1355,10 +1366,12 @@ pub(super) fn rewrite_logical_path_functions(
                 .map(|operand| rewrite_logical_path_functions(operand, path_var_name))
                 .collect();
 
-            LogicalExpr::OperatorApplicationExp(crate::query_planner::logical_expr::OperatorApplication {
-                operator: op.operator.clone(),
-                operands: rewritten_operands,
-            })
+            LogicalExpr::OperatorApplicationExp(
+                crate::query_planner::logical_expr::OperatorApplication {
+                    operator: op.operator.clone(),
+                    operands: rewritten_operands,
+                },
+            )
         }
         _ => expr.clone(), // For other expression types, return as-is
     }
@@ -1372,9 +1385,8 @@ pub(super) fn get_node_table_for_alias(alias: &str) -> String {
     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
         if let Ok(schemas) = schemas_lock.try_read() {
             // Try "default" first, then fall back to first schema
-            let schema_opt = schemas.get("default")
-                .or_else(|| schemas.values().next());
-            
+            let schema_opt = schemas.get("default").or_else(|| schemas.values().next());
+
             if let Some(schema) = schema_opt {
                 // Look up the node type from the alias - this is a simplified lookup
                 // In a real implementation, we'd need to track node types per alias
@@ -1391,7 +1403,10 @@ pub(super) fn get_node_table_for_alias(alias: &str) -> String {
     }
 
     // No GLOBAL_SCHEMAS available at all
-    log::error!("❌ SCHEMA ERROR: GLOBAL_SCHEMAS not initialized. Cannot resolve alias '{}'.", alias);
+    log::error!(
+        "❌ SCHEMA ERROR: GLOBAL_SCHEMAS not initialized. Cannot resolve alias '{}'.",
+        alias
+    );
     format!("ERROR_SCHEMA_NOT_INITIALIZED_{}", alias)
 }
 
@@ -1404,9 +1419,8 @@ pub(super) fn get_node_id_columns_for_alias(alias: &str) -> Vec<String> {
     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
         if let Ok(schemas) = schemas_lock.try_read() {
             // Try "default" first, then fall back to first schema
-            let schema_opt = schemas.get("default")
-                .or_else(|| schemas.values().next());
-            
+            let schema_opt = schemas.get("default").or_else(|| schemas.values().next());
+
             if let Some(schema) = schema_opt {
                 // Look up the node type from the alias - this is a simplified lookup
                 if let Some(user_node) = schema.get_node_schema_opt("User") {
@@ -1418,20 +1432,26 @@ pub(super) fn get_node_id_columns_for_alias(alias: &str) -> Vec<String> {
                         .collect();
                 }
             } else {
-                log::error!("❌ SCHEMA ERROR: No schemas loaded. Cannot get ID columns for alias '{}'.", alias);
+                log::error!(
+                    "❌ SCHEMA ERROR: No schemas loaded. Cannot get ID columns for alias '{}'.",
+                    alias
+                );
                 return vec![format!("ERROR_NO_SCHEMA_FOR_{}", alias)];
             }
         }
     }
 
     // No GLOBAL_SCHEMAS available
-    log::error!("❌ SCHEMA ERROR: GLOBAL_SCHEMAS not initialized. Cannot get ID columns for alias '{}'.", alias);
+    log::error!(
+        "❌ SCHEMA ERROR: GLOBAL_SCHEMAS not initialized. Cannot get ID columns for alias '{}'.",
+        alias
+    );
     vec![format!("ERROR_SCHEMA_NOT_INITIALIZED_{}", alias)]
 }
 
 /// Backwards compatibility wrapper - returns first column only
 /// TODO: Update VLP code to use get_node_id_columns_for_alias directly
-/// 
+///
 /// Returns "id" as default if no specific column found - this is a safe default
 /// for most graph schemas. However, callers should verify the column exists.
 pub(super) fn get_node_id_column_for_alias(alias: &str) -> String {
@@ -1456,9 +1476,8 @@ pub(super) fn get_relationship_columns_from_schema(rel_type: &str) -> Option<(St
     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
         if let Ok(schemas) = schemas_lock.try_read() {
             // Try "default" first, then fall back to first schema
-            let schema_opt = schemas.get("default")
-                .or_else(|| schemas.values().next());
-            
+            let schema_opt = schemas.get("default").or_else(|| schemas.values().next());
+
             if let Some(schema) = schema_opt {
                 if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
                     return Some((
@@ -1481,9 +1500,8 @@ pub(super) fn get_relationship_columns_by_table(table_name: &str) -> Option<(Str
     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
         if let Ok(schemas) = schemas_lock.try_read() {
             // Try "default" first, then fall back to first schema
-            let schema_opt = schemas.get("default")
-                .or_else(|| schemas.values().next());
-            
+            let schema_opt = schemas.get("default").or_else(|| schemas.values().next());
+
             if let Some(schema) = schema_opt {
                 // Search through all relationship schemas for one with matching table name
                 for (_key, rel_schema) in schema.get_relationships_schemas().iter() {
@@ -1495,7 +1513,10 @@ pub(super) fn get_relationship_columns_by_table(table_name: &str) -> Option<(Str
                     }
                 }
             } else {
-                log::error!("❌ SCHEMA ERROR: No schemas loaded. Cannot get columns for table '{}'.", table_name);
+                log::error!(
+                    "❌ SCHEMA ERROR: No schemas loaded. Cannot get columns for table '{}'.",
+                    table_name
+                );
             }
         }
     }
@@ -1509,9 +1530,8 @@ pub(super) fn get_node_info_from_schema(node_label: &str) -> Option<(String, Vec
     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
         if let Ok(schemas) = schemas_lock.try_read() {
             // Try "default" first, then fall back to first schema
-            let schema_opt = schemas.get("default")
-                .or_else(|| schemas.values().next());
-            
+            let schema_opt = schemas.get("default").or_else(|| schemas.values().next());
+
             if let Some(schema) = schema_opt {
                 if let Ok(node_schema) = schema.get_node_schema(node_label) {
                     return Some((
@@ -1525,7 +1545,10 @@ pub(super) fn get_node_info_from_schema(node_label: &str) -> Option<(String, Vec
                     ));
                 }
             } else {
-                log::error!("❌ SCHEMA ERROR: No schemas loaded. Cannot get node info for label '{}'.", node_label);
+                log::error!(
+                    "❌ SCHEMA ERROR: No schemas loaded. Cannot get node info for label '{}'.",
+                    node_label
+                );
             }
         }
     }
@@ -1547,12 +1570,15 @@ pub(super) fn get_node_table_for_alias_with_schema(
 ) -> Option<String> {
     // Get the node label from the plan
     let label = get_node_label_for_alias(alias, plan)?;
-    
+
     // Look up the table from schema
     let node_schema = schema.get_node_schema(&label).ok()?;
-    
+
     // Return fully qualified table name
-    Some(format!("{}.{}", node_schema.database, node_schema.table_name))
+    Some(format!(
+        "{}.{}",
+        node_schema.database, node_schema.table_name
+    ))
 }
 
 /// Get node ID column for a given alias using plan context and schema
@@ -1564,10 +1590,10 @@ pub(super) fn get_node_id_column_for_alias_with_schema(
 ) -> Option<String> {
     // Get the node label from the plan
     let label = get_node_label_for_alias(alias, plan)?;
-    
+
     // Look up the node schema
     let node_schema = schema.get_node_schema(&label).ok()?;
-    
+
     // Return first ID column
     node_schema.node_id.columns().first().map(|s| s.to_string())
 }
@@ -1580,12 +1606,19 @@ pub(super) fn get_node_id_columns_for_alias_with_schema(
 ) -> Option<Vec<String>> {
     // Get the node label from the plan
     let label = get_node_label_for_alias(alias, plan)?;
-    
+
     // Look up the node schema
     let node_schema = schema.get_node_schema(&label).ok()?;
-    
+
     // Return all ID columns
-    Some(node_schema.node_id.columns().iter().map(|s| s.to_string()).collect())
+    Some(
+        node_schema
+            .node_id
+            .columns()
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    )
 }
 
 /// Get node info (table name and ID columns) for a given label using schema
@@ -1596,7 +1629,12 @@ pub(super) fn get_node_info_from_schema_with_schema(
     let node_schema = schema.get_node_schema(node_label).ok()?;
     Some((
         format!("{}.{}", node_schema.database, node_schema.table_name),
-        node_schema.node_id.columns().iter().map(|s| s.to_string()).collect(),
+        node_schema
+            .node_id
+            .columns()
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
     ))
 }
 
@@ -1653,9 +1691,10 @@ pub(super) fn has_multiple_relationship_types(plan: &LogicalPlan) -> bool {
                         label.split("::").next().unwrap_or(label.as_str())
                     })
                     .collect();
-                
+
                 // Deduplicate - [:FOLLOWS|FOLLOWS] or ["REQUESTED", "REQUESTED::IP::Domain"] treated as single type
-                let unique_base_types: std::collections::HashSet<_> = normalized_labels.into_iter().collect();
+                let unique_base_types: std::collections::HashSet<_> =
+                    normalized_labels.into_iter().collect();
                 if unique_base_types.len() > 1 {
                     return true;
                 }
@@ -2204,11 +2243,12 @@ pub(super) fn generate_polymorphic_edge_filters(
     let schema_lock = GLOBAL_SCHEMAS.get()?;
     let schemas = schema_lock.try_read().ok()?;
     // Try "default" first, then fall back to first schema
-    let schema = schemas.get("default")
-        .or_else(|| {
-            log::warn!("No 'default' schema found, using first available schema for polymorphic filters");
-            schemas.values().next()
-        })?;
+    let schema = schemas.get("default").or_else(|| {
+        log::warn!(
+            "No 'default' schema found, using first available schema for polymorphic filters"
+        );
+        schemas.values().next()
+    })?;
     let rel_schema = schema.get_rel_schema(rel_type).ok()?;
 
     // Check if this is a polymorphic edge
@@ -2633,7 +2673,6 @@ pub(super) fn find_nested_union(
 /// but the structure is still identifiable by having GraphJoins/Union inside GraphRel.right
 /// that contains a separate pattern (the first MATCH).
 pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
-
     // Helper to check if a plan contains actual WITH clause )
     fn contains_actual_with_clause(plan: &LogicalPlan) -> bool {
         match plan {
@@ -3558,7 +3597,7 @@ pub(super) fn combine_optional_filters_with_and(
 }
 
 /// Sort JOINs by dependency order to ensure referenced tables are defined before use.
-/// 
+///
 /// For example, if JOIN A references table B in its ON clause, then B must appear
 /// before A in the JOIN list. This is critical for OPTIONAL VLP queries where:
 /// `LEFT JOIN vlp_cte AS vlp1 ON vlp1.start_id = message.id`
@@ -3575,12 +3614,15 @@ pub(super) fn sort_joins_by_dependency(
     from_table: Option<&super::FromTable>,
 ) -> Vec<super::Join> {
     use std::collections::{HashMap, HashSet};
-    
-    println!("🔍 DEBUG sort_joins_by_dependency: Sorting {} JOINs by dependency", joins.len());
-    
+
+    println!(
+        "🔍 DEBUG sort_joins_by_dependency: Sorting {} JOINs by dependency",
+        joins.len()
+    );
+
     // Build a set of available aliases (FROM table + already processed JOINs)
     let mut available: HashSet<String> = HashSet::new();
-    
+
     // Add FROM table alias if present
     if let Some(from) = from_table {
         if let Some(table_ref) = &from.table {
@@ -3594,54 +3636,60 @@ pub(super) fn sort_joins_by_dependency(
             }
         }
     }
-    
+
     // Build dependency map: JOIN -> set of aliases it references in ON clause
     let mut dependencies: HashMap<usize, HashSet<String>> = HashMap::new();
-    
+
     for (idx, join) in joins.iter().enumerate() {
         let mut refs = HashSet::new();
-        
+
         // Extract all aliases referenced in joining_on conditions
         for condition in &join.joining_on {
             extract_referenced_aliases_from_op(condition, &mut refs);
         }
-        
+
         // Remove self-reference (the JOIN's own alias)
         refs.remove(&join.table_alias);
-        
+
         println!(
             "  DEBUG JOIN[{}] {} AS {} depends on: {:?}",
             idx, join.table_name, join.table_alias, refs
         );
-        
+
         dependencies.insert(idx, refs);
     }
-    
+
     // Topological sort: repeatedly find JOINs whose dependencies are all available
     let mut sorted = Vec::new();
     let mut remaining: Vec<usize> = (0..joins.len()).collect();
     let mut max_iterations = joins.len() * 2; // Prevent infinite loops
-    
-    println!("  DEBUG Starting topological sort with {} JOINs", remaining.len());
-    
+
+    println!(
+        "  DEBUG Starting topological sort with {} JOINs",
+        remaining.len()
+    );
+
     while !remaining.is_empty() && max_iterations > 0 {
         max_iterations -= 1;
-        
+
         // Find next JOIN that can be added (all dependencies available)
         let ready_idx = remaining.iter().position(|&idx| {
-            dependencies.get(&idx)
+            dependencies
+                .get(&idx)
                 .map(|deps| deps.iter().all(|dep| available.contains(dep)))
                 .unwrap_or(true)
         });
-        
+
         if let Some(pos) = ready_idx {
             let idx = remaining.remove(pos);
-            
+
             // Add this JOIN's alias to available set
             available.insert(joins[idx].table_alias.clone());
-            println!("  DEBUG Added JOIN[{}] {} AS {} to sorted list (available now: {:?})", 
-                     idx, joins[idx].table_name, joins[idx].table_alias, available);
-            
+            println!(
+                "  DEBUG Added JOIN[{}] {} AS {} to sorted list (available now: {:?})",
+                idx, joins[idx].table_name, joins[idx].table_alias, available
+            );
+
             sorted.push(idx);
         } else {
             // No progress possible - break to avoid infinite loop
@@ -3650,36 +3698,46 @@ pub(super) fn sort_joins_by_dependency(
                 "WARNING: Could not fully sort JOINs by dependency - {} remaining with circular dependencies", 
                 remaining.len()
             );
-            println!("  DEBUG Remaining JOINs: {:?}", remaining.iter().map(|&idx| 
-                format!("{} AS {}", joins[idx].table_name, joins[idx].table_alias)
-            ).collect::<Vec<_>>());
+            println!(
+                "  DEBUG Remaining JOINs: {:?}",
+                remaining
+                    .iter()
+                    .map(|&idx| format!("{} AS {}", joins[idx].table_name, joins[idx].table_alias))
+                    .collect::<Vec<_>>()
+            );
             println!("  DEBUG Available aliases: {:?}", available);
             for &idx in &remaining {
                 if let Some(deps) = dependencies.get(&idx) {
-                    println!("    JOIN[{}] {} AS {} needs: {:?}", 
-                             idx, joins[idx].table_name, joins[idx].table_alias, deps);
+                    println!(
+                        "    JOIN[{}] {} AS {} needs: {:?}",
+                        idx, joins[idx].table_name, joins[idx].table_alias, deps
+                    );
                 }
             }
             break;
         }
     }
-    
+
     // Add any remaining JOINs that couldn't be sorted
     for idx in remaining {
         sorted.push(idx);
     }
-    
-    println!("  DEBUG Sorted order: {:?}", sorted.iter().map(|&idx| 
-        format!("{} AS {}", joins[idx].table_name, joins[idx].table_alias)
-    ).collect::<Vec<_>>());
-    
+
+    println!(
+        "  DEBUG Sorted order: {:?}",
+        sorted
+            .iter()
+            .map(|&idx| format!("{} AS {}", joins[idx].table_name, joins[idx].table_alias))
+            .collect::<Vec<_>>()
+    );
+
     // Rebuild JOIN vector in sorted order
     let original_joins = joins.clone();
     joins.clear();
     for idx in sorted {
         joins.push(original_joins[idx].clone());
     }
-    
+
     joins
 }
 
@@ -4082,9 +4140,11 @@ mod tests {
 
 /// Recursively find GraphRel in a logical plan tree
 /// Used to detect multi-type VLP patterns for correct table alias resolution
-pub(super) fn get_graph_rel_from_plan(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::GraphRel> {
+pub(super) fn get_graph_rel_from_plan(
+    plan: &LogicalPlan,
+) -> Option<&crate::query_planner::logical_plan::GraphRel> {
     use crate::query_planner::logical_plan::LogicalPlan;
-    
+
     match plan {
         LogicalPlan::GraphRel(rel) => Some(rel),
         LogicalPlan::Filter(filter) => get_graph_rel_from_plan(&filter.input),

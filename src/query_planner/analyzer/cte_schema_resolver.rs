@@ -18,9 +18,7 @@ use std::sync::Arc;
 use crate::{
     graph_catalog::graph_schema::GraphSchema,
     query_planner::{
-        analyzer::{
-            analyzer_pass::{AnalyzerPass, AnalyzerResult},
-        },
+        analyzer::analyzer_pass::{AnalyzerPass, AnalyzerResult},
         logical_plan::{LogicalPlan, WithClause},
         plan_ctx::PlanCtx,
         transformed::Transformed,
@@ -55,10 +53,7 @@ impl CteSchemaResolver {
     }
 
     /// Process a WithClause and register its schema
-    fn register_with_clause_schema(
-        with_clause: &WithClause,
-        plan_ctx: &mut PlanCtx,
-    ) {
+    fn register_with_clause_schema(with_clause: &WithClause, plan_ctx: &mut PlanCtx) {
         // Generate CTE name using centralized utility
         let cte_counter = plan_ctx.cte_counter;
         plan_ctx.cte_counter += 1;
@@ -218,7 +213,6 @@ impl AnalyzerPass for CteSchemaResolver {
 
             // Leaf nodes - no recursion needed
             LogicalPlan::Empty
-
             | LogicalPlan::ViewScan(_)
             | LogicalPlan::Cte(_)
             | LogicalPlan::PageRank(_)

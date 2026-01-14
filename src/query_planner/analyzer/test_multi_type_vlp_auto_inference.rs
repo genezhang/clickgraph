@@ -9,9 +9,7 @@
 #[cfg(test)]
 mod tests {
     use crate::{
-        graph_catalog::graph_schema::{
-            GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema,
-        },
+        graph_catalog::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema},
         query_planner::{
             analyzer::{analyzer_pass::AnalyzerPass, type_inference::TypeInference},
             logical_plan::{evaluate_query, reset_alias_counter},
@@ -105,7 +103,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
         };
-        
+
         relationships.insert("FOLLOWS".to_string(), follows_schema.clone());
         relationships.insert("FOLLOWS::User::User".to_string(), follows_schema);
 
@@ -139,13 +137,13 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
         };
-        
+
         relationships.insert("AUTHORED".to_string(), authored_schema.clone());
         relationships.insert("AUTHORED::User::Post".to_string(), authored_schema);
 
         GraphSchema::build(
-            1,  // version
-            "test".to_string(),  // database
+            1,                  // version
+            "test".to_string(), // database
             nodes,
             relationships,
         )
@@ -156,7 +154,7 @@ mod tests {
         reset_alias_counter();
 
         let schema = create_test_schema();
-        
+
         // Query: (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)
         // Expected: x should be inferred as User OR Post
         let cypher = r#"
@@ -165,13 +163,16 @@ mod tests {
         "#;
 
         let ast = crate::open_cypher_parser::parse_query(cypher).expect("Failed to parse query");
-        
+
         // Build initial logical plan
-        let (plan, mut plan_ctx) = evaluate_query(ast, &schema, None, None, None)
-            .expect("Failed to build logical plan");
+        let (plan, mut plan_ctx) =
+            evaluate_query(ast, &schema, None, None, None).expect("Failed to build logical plan");
 
         println!("Initial plan:\n{:#?}", plan);
-        println!("Initial plan_ctx for 'x': {:?}", plan_ctx.get_table_ctx("x"));
+        println!(
+            "Initial plan_ctx for 'x': {:?}",
+            plan_ctx.get_table_ctx("x")
+        );
 
         // Run TypeInference analyzer pass
         let type_inference = TypeInference::new();
@@ -180,16 +181,20 @@ mod tests {
             .expect("TypeInference failed");
 
         let final_plan = transformed.get_plan();
-        
+
         println!("Final plan:\n{:#?}", final_plan);
         println!("Final plan_ctx for 'x': {:?}", plan_ctx.get_table_ctx("x"));
 
         // Verify that 'x' now has inferred labels [User, Post]
-        let x_table_ctx = plan_ctx.get_table_ctx("x").expect("Missing TableCtx for 'x'");
-        let x_labels = x_table_ctx.get_labels().expect("x should have inferred labels");
-        
+        let x_table_ctx = plan_ctx
+            .get_table_ctx("x")
+            .expect("Missing TableCtx for 'x'");
+        let x_labels = x_table_ctx
+            .get_labels()
+            .expect("x should have inferred labels");
+
         println!("Inferred labels for 'x': {:?}", x_labels);
-        
+
         // Should have both User and Post (order doesn't matter for HashSet collection)
         assert_eq!(x_labels.len(), 2, "Expected 2 inferred labels");
         assert!(
@@ -207,7 +212,7 @@ mod tests {
         reset_alias_counter();
 
         let schema = create_test_schema();
-        
+
         // Query: (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x:Post)
         // Expected: x already labeled, no inference needed
         let cypher = r#"
@@ -216,11 +221,14 @@ mod tests {
         "#;
 
         let ast = crate::open_cypher_parser::parse_query(cypher).expect("Failed to parse query");
-        
-        let (plan, mut plan_ctx) = evaluate_query(ast, &schema, None, None, None)
-            .expect("Failed to build logical plan");
 
-        println!("Initial plan_ctx for 'x': {:?}", plan_ctx.get_table_ctx("x"));
+        let (plan, mut plan_ctx) =
+            evaluate_query(ast, &schema, None, None, None).expect("Failed to build logical plan");
+
+        println!(
+            "Initial plan_ctx for 'x': {:?}",
+            plan_ctx.get_table_ctx("x")
+        );
 
         let type_inference = TypeInference::new();
         let transformed = type_inference
@@ -228,15 +236,17 @@ mod tests {
             .expect("TypeInference failed");
 
         let _final_plan = transformed.get_plan();
-        
+
         println!("Final plan_ctx for 'x': {:?}", plan_ctx.get_table_ctx("x"));
 
         // Verify that 'x' still has explicit label 'Post' (not [User, Post])
-        let x_table_ctx = plan_ctx.get_table_ctx("x").expect("Missing TableCtx for 'x'");
+        let x_table_ctx = plan_ctx
+            .get_table_ctx("x")
+            .expect("Missing TableCtx for 'x'");
         let x_labels = x_table_ctx.get_labels().expect("x should have label");
-        
+
         println!("Labels for 'x': {:?}", x_labels);
-        
+
         assert_eq!(x_labels.len(), 1, "Expected 1 explicit label");
         assert_eq!(x_labels[0], "Post", "Expected explicit 'Post' label");
     }
@@ -246,7 +256,7 @@ mod tests {
         reset_alias_counter();
 
         let schema = create_test_schema();
-        
+
         // Query: (u:User)-[:FOLLOWS|AUTHORED]->(x)  (single hop, not VLP)
         // Expected: No auto-inference for single-hop relationships
         let cypher = r#"
@@ -255,9 +265,9 @@ mod tests {
         "#;
 
         let ast = crate::open_cypher_parser::parse_query(cypher).expect("Failed to parse query");
-        
-        let (plan, mut plan_ctx) = evaluate_query(ast, &schema, None, None, None)
-            .expect("Failed to build logical plan");
+
+        let (plan, mut plan_ctx) =
+            evaluate_query(ast, &schema, None, None, None).expect("Failed to build logical plan");
 
         let type_inference = TypeInference::new();
         let transformed = type_inference
@@ -265,14 +275,16 @@ mod tests {
             .expect("TypeInference failed");
 
         let _final_plan = transformed.get_plan();
-        
+
         println!("Final plan_ctx for 'x': {:?}", plan_ctx.get_table_ctx("x"));
 
         // For single-hop multi-type relationships, TypeInference should still infer
         // both possible labels (standard behavior, not specific to VLP)
-        let x_table_ctx = plan_ctx.get_table_ctx("x").expect("Missing TableCtx for 'x'");
+        let x_table_ctx = plan_ctx
+            .get_table_ctx("x")
+            .expect("Missing TableCtx for 'x'");
         let x_labels_opt = x_table_ctx.get_labels();
-        
+
         // This test documents current behavior: single-hop multi-type may or may not infer
         // Adjust assertion based on actual behavior
         if let Some(x_labels) = x_labels_opt {
@@ -290,7 +302,7 @@ mod tests {
         reset_alias_counter();
 
         let schema = create_test_schema();
-        
+
         // Query: (u:User)-[:FOLLOWS*1..2]->(x)  (single type VLP)
         // Expected: x should be inferred as User (from FOLLOWS: User → User)
         let cypher = r#"
@@ -299,9 +311,9 @@ mod tests {
         "#;
 
         let ast = crate::open_cypher_parser::parse_query(cypher).expect("Failed to parse query");
-        
-        let (plan, mut plan_ctx) = evaluate_query(ast, &schema, None, None, None)
-            .expect("Failed to build logical plan");
+
+        let (plan, mut plan_ctx) =
+            evaluate_query(ast, &schema, None, None, None).expect("Failed to build logical plan");
 
         let type_inference = TypeInference::new();
         let transformed = type_inference
@@ -309,15 +321,19 @@ mod tests {
             .expect("TypeInference failed");
 
         let _final_plan = transformed.get_plan();
-        
+
         println!("Final plan_ctx for 'x': {:?}", plan_ctx.get_table_ctx("x"));
 
         // Verify that 'x' has inferred label 'User'
-        let x_table_ctx = plan_ctx.get_table_ctx("x").expect("Missing TableCtx for 'x'");
-        let x_labels = x_table_ctx.get_labels().expect("x should have inferred label");
-        
+        let x_table_ctx = plan_ctx
+            .get_table_ctx("x")
+            .expect("Missing TableCtx for 'x'");
+        let x_labels = x_table_ctx
+            .get_labels()
+            .expect("x should have inferred label");
+
         println!("Inferred labels for 'x': {:?}", x_labels);
-        
+
         assert_eq!(x_labels.len(), 1, "Expected 1 inferred label");
         assert_eq!(x_labels[0], "User", "Expected 'User' label from FOLLOWS");
     }

@@ -8,9 +8,11 @@ use crate::query_planner::logical_expr::LogicalExpr;
 
 use crate::query_planner::logical_expr::{
     AggregateFnCall as LogicalAggregateFnCall, Column as LogicalColumn,
-    ColumnAlias as LogicalColumnAlias, ConnectedPattern, Direction, ExistsSubquery as LogicalExistsSubquery,
-    InSubquery as LogicalInSubquery, Literal as LogicalLiteral, LogicalCase,
-    Operator as LogicalOperator, OperatorApplication as LogicalOperatorApplication, PathPattern, PropertyAccess as LogicalPropertyAccess, ScalarFnCall as LogicalScalarFnCall,
+    ColumnAlias as LogicalColumnAlias, ConnectedPattern, Direction,
+    ExistsSubquery as LogicalExistsSubquery, InSubquery as LogicalInSubquery,
+    Literal as LogicalLiteral, LogicalCase, Operator as LogicalOperator,
+    OperatorApplication as LogicalOperatorApplication, PathPattern,
+    PropertyAccess as LogicalPropertyAccess, ScalarFnCall as LogicalScalarFnCall,
     TableAlias as LogicalTableAlias,
 };
 use crate::query_planner::logical_plan::LogicalPlan;
@@ -26,10 +28,12 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
     // The subplan is typically a GraphRel representing a relationship pattern
     match exists.subplan.as_ref() {
         // For WITH clauses and other complex plans, use the full render pipeline
-        LogicalPlan::WithClause(_) | LogicalPlan::GraphJoins(_) | LogicalPlan::CartesianProduct(_) => {
+        LogicalPlan::WithClause(_)
+        | LogicalPlan::GraphJoins(_)
+        | LogicalPlan::CartesianProduct(_) => {
             use crate::clickhouse_query_generator::to_sql_query::render_plan_to_sql;
             use crate::render_plan::plan_builder::RenderPlanBuilder;
-            
+
             // Get schema from GLOBAL_SCHEMAS
             let schemas_lock = GLOBAL_SCHEMAS.get();
             let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
@@ -41,13 +45,13 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
                         "No schema available for EXISTS subquery".to_string(),
                     )
                 })?;
-            
+
             // Convert logical plan to render plan using the full pipeline
             let render_plan = exists.subplan.to_render_plan(schema)?;
-            
+
             // Generate SQL from render plan
             let sql = render_plan_to_sql(render_plan, 10); // Use default max_cte_depth
-            
+
             Ok(sql)
         }
         LogicalPlan::GraphRel(graph_rel) => {
@@ -70,7 +74,9 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
             let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
             let schema = schemas_guard.as_ref().and_then(|guard| {
                 // Try each schema until we find one with this relationship type
-                guard.values().find(|s| s.get_relationships_schema_opt(&rel_type).is_some())
+                guard
+                    .values()
+                    .find(|s| s.get_relationships_schema_opt(&rel_type).is_some())
             });
 
             // Look up the relationship table and columns using public accessors
@@ -78,7 +84,8 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
                 if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_type) {
                     // CRITICAL FIX: Use fully qualified table name (database.table) for EXISTS
                     // This fixes "Unknown table expression" errors when table name alone isn't enough
-                    let qualified_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+                    let qualified_table =
+                        format!("{}.{}", rel_schema.database, rel_schema.table_name);
                     let from_col = &rel_schema.from_id; // from_id is the FK column
 
                     // Get the start node's ID column from its label
@@ -136,7 +143,7 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
 ///
 /// For `size((tag)<-[:HAS_TAG]-(message:Message)-[:HAS_CREATOR]->(person))` generates:
 /// ```sql
-/// (SELECT COUNT(*) 
+/// (SELECT COUNT(*)
 ///  FROM Message_hasTag_Tag AS r1
 ///  INNER JOIN Message_hasCreator_Person AS r2 ON r1.MessageId = r2.MessageId
 ///  WHERE r1.TagId = tag.id)
@@ -148,11 +155,14 @@ fn generate_multi_hop_pattern_count_sql(
     use crate::server::GLOBAL_SCHEMAS;
 
     // Get the first relationship type to find the correct schema
-    let first_rel_type = connected_patterns.first()
+    let first_rel_type = connected_patterns
+        .first()
         .and_then(|conn| conn.relationship.labels.as_ref())
         .and_then(|labels| labels.first())
         .ok_or_else(|| {
-            RenderBuildError::InvalidRenderPlan("Multi-hop pattern missing relationship type".to_string())
+            RenderBuildError::InvalidRenderPlan(
+                "Multi-hop pattern missing relationship type".to_string(),
+            )
         })?;
 
     // CRITICAL FIX: Search all schemas for one that has the first relationship type
@@ -163,7 +173,9 @@ fn generate_multi_hop_pattern_count_sql(
         .as_ref()
         .and_then(|guard| {
             // Try each schema until we find one with this relationship type
-            guard.values().find(|s| s.get_relationships_schema_opt(first_rel_type).is_some())
+            guard
+                .values()
+                .find(|s| s.get_relationships_schema_opt(first_rel_type).is_some())
         })
         .ok_or_else(|| {
             RenderBuildError::InvalidRenderPlan(format!(
@@ -180,15 +192,19 @@ fn generate_multi_hop_pattern_count_sql(
         .as_ref()
         .and_then(|l| l.first())
         .ok_or_else(|| {
-            RenderBuildError::InvalidRenderPlan("Multi-hop pattern missing relationship type".to_string())
+            RenderBuildError::InvalidRenderPlan(
+                "Multi-hop pattern missing relationship type".to_string(),
+            )
         })?;
 
-    let first_rel_schema = schema.get_relationships_schema_opt(first_rel_type).ok_or_else(|| {
-        RenderBuildError::InvalidRenderPlan(format!(
-            "Relationship schema '{}' not found for multi-hop pattern",
-            first_rel_type
-        ))
-    })?;
+    let first_rel_schema = schema
+        .get_relationships_schema_opt(first_rel_type)
+        .ok_or_else(|| {
+            RenderBuildError::InvalidRenderPlan(format!(
+                "Relationship schema '{}' not found for multi-hop pattern",
+                first_rel_type
+            ))
+        })?;
 
     // Get start node ID for correlation
     // Try explicit label first, then infer from relationship schema
@@ -202,15 +218,18 @@ fn generate_multi_hop_pattern_count_sql(
             _ => first_rel_schema.from_node.clone(), // default
         }
     };
-    
-    let start_node_schema = schema.get_node_schema_opt(&start_node_label).ok_or_else(|| {
-        RenderBuildError::NodeSchemaNotFound(start_node_label.clone())
-    })?;
+
+    let start_node_schema = schema
+        .get_node_schema_opt(&start_node_label)
+        .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(start_node_label.clone()))?;
     let start_id_sql = start_node_schema.node_id.sql_tuple(start_alias);
 
     // Build FROM clause with JOINs
     let first_table = if !first_rel_schema.database.is_empty() {
-        format!("{}.{}", first_rel_schema.database, first_rel_schema.table_name)
+        format!(
+            "{}.{}",
+            first_rel_schema.database, first_rel_schema.table_name
+        )
     } else {
         first_rel_schema.table_name.clone()
     };
@@ -234,15 +253,19 @@ fn generate_multi_hop_pattern_count_sql(
             .as_ref()
             .and_then(|l| l.first())
             .ok_or_else(|| {
-                RenderBuildError::InvalidRenderPlan("Multi-hop pattern missing relationship type".to_string())
+                RenderBuildError::InvalidRenderPlan(
+                    "Multi-hop pattern missing relationship type".to_string(),
+                )
             })?;
 
-        let rel_schema = schema.get_relationships_schema_opt(rel_type).ok_or_else(|| {
-            RenderBuildError::InvalidRenderPlan(format!(
-                "Relationship schema '{}' not found for multi-hop pattern",
-                rel_type
-            ))
-        })?;
+        let rel_schema = schema
+            .get_relationships_schema_opt(rel_type)
+            .ok_or_else(|| {
+                RenderBuildError::InvalidRenderPlan(format!(
+                    "Relationship schema '{}' not found for multi-hop pattern",
+                    rel_type
+                ))
+            })?;
 
         let table = if !rel_schema.database.is_empty() {
             format!("{}.{}", rel_schema.database, rel_schema.table_name)
@@ -256,18 +279,51 @@ fn generate_multi_hop_pattern_count_sql(
         // Determine join condition based on how patterns connect
         // The end of previous pattern should match start of current pattern
         let prev_conn = &connected_patterns[idx - 1];
-        
+
         // Previous pattern's end column (where it points TO)
         let prev_end_col = match prev_conn.relationship.direction {
-            Direction::Outgoing => &schema.get_relationships_schema_opt(
-                prev_conn.relationship.labels.as_ref().unwrap().first().unwrap()
-            ).unwrap().to_id,
-            Direction::Incoming => &schema.get_relationships_schema_opt(
-                prev_conn.relationship.labels.as_ref().unwrap().first().unwrap()
-            ).unwrap().from_id,
-            _ => &schema.get_relationships_schema_opt(
-                prev_conn.relationship.labels.as_ref().unwrap().first().unwrap()
-            ).unwrap().to_id,
+            Direction::Outgoing => {
+                &schema
+                    .get_relationships_schema_opt(
+                        prev_conn
+                            .relationship
+                            .labels
+                            .as_ref()
+                            .unwrap()
+                            .first()
+                            .unwrap(),
+                    )
+                    .unwrap()
+                    .to_id
+            }
+            Direction::Incoming => {
+                &schema
+                    .get_relationships_schema_opt(
+                        prev_conn
+                            .relationship
+                            .labels
+                            .as_ref()
+                            .unwrap()
+                            .first()
+                            .unwrap(),
+                    )
+                    .unwrap()
+                    .from_id
+            }
+            _ => {
+                &schema
+                    .get_relationships_schema_opt(
+                        prev_conn
+                            .relationship
+                            .labels
+                            .as_ref()
+                            .unwrap()
+                            .first()
+                            .unwrap(),
+                    )
+                    .unwrap()
+                    .to_id
+            }
         };
 
         // Current pattern's start column (where it points FROM)
@@ -352,7 +408,9 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
             let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
             let schema = schemas_guard.as_ref().and_then(|guard| {
                 // Try each schema until we find one with this relationship type
-                guard.values().find(|s| s.get_relationships_schema_opt(&rel_type).is_some())
+                guard
+                    .values()
+                    .find(|s| s.get_relationships_schema_opt(&rel_type).is_some())
             });
 
             // Look up the relationship table and columns
@@ -520,7 +578,9 @@ fn generate_not_exists_from_path_pattern(
             let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
             let schema = schemas_guard.as_ref().and_then(|guard| {
                 // Try each schema until we find one with this relationship type
-                guard.values().find(|s| s.get_relationships_schema_opt(&rel_type).is_some())
+                guard
+                    .values()
+                    .find(|s| s.get_relationships_schema_opt(&rel_type).is_some())
             });
 
             // Look up the relationship table and columns
@@ -708,7 +768,7 @@ pub enum RenderExpr {
         array: Box<RenderExpr>,
         index: Box<RenderExpr>,
     },
-    
+
     /// Array slicing: array[from..to]
     /// Extract subarray from index 'from' to 'to' (0-based, inclusive in Cypher)
     ArraySlicing {
@@ -827,7 +887,7 @@ pub struct OperatorApplication {
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct PropertyAccess {
     pub table_alias: TableAlias,
-    pub column: PropertyValue,  // Use PropertyValue directly
+    pub column: PropertyValue, // Use PropertyValue directly
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -888,8 +948,14 @@ impl TryFrom<LogicalExpr> for RenderExpr {
             },
             LogicalExpr::ArraySlicing { array, from, to } => RenderExpr::ArraySlicing {
                 array: Box::new(RenderExpr::try_from(*array)?),
-                from: from.map(|f| RenderExpr::try_from(*f)).transpose()?.map(Box::new),
-                to: to.map(|t| RenderExpr::try_from(*t)).transpose()?.map(Box::new),
+                from: from
+                    .map(|f| RenderExpr::try_from(*f))
+                    .transpose()?
+                    .map(Box::new),
+                to: to
+                    .map(|t| RenderExpr::try_from(*t))
+                    .transpose()?
+                    .map(Box::new),
             },
             LogicalExpr::ExistsSubquery(exists) => {
                 // For EXISTS subqueries, generate SQL directly since they don't fit

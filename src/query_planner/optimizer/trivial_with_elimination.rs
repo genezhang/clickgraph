@@ -55,7 +55,7 @@ impl TrivialWithElimination {
             // Look for Projection/WithClause that has trivial WITH as input
             LogicalPlan::Projection(proj) => {
                 let optimized_input = Self::optimize_node(proj.input.clone())?;
-                
+
                 // Check if input is a trivial WITH that we can eliminate
                 if let LogicalPlan::WithClause(ref with) = optimized_input.as_ref() {
                     if Self::is_trivial_with(with) {
@@ -70,7 +70,7 @@ impl TrivialWithElimination {
                         )));
                     }
                 }
-                
+
                 Ok(Arc::new(LogicalPlan::Projection(
                     crate::query_planner::logical_plan::Projection {
                         input: optimized_input,
@@ -82,11 +82,13 @@ impl TrivialWithElimination {
 
             LogicalPlan::WithClause(with) => {
                 let optimized_input = Self::optimize_node(with.input.clone())?;
-                
+
                 // Check if input is also a trivial WITH
                 if let LogicalPlan::WithClause(ref inner_with) = optimized_input.as_ref() {
                     if Self::is_trivial_with(inner_with) {
-                        log::info!("🔥 TrivialWithElimination: Removing nested trivial WITH clause");
+                        log::info!(
+                            "🔥 TrivialWithElimination: Removing nested trivial WITH clause"
+                        );
                         // Skip the inner WITH
                         return Ok(Arc::new(LogicalPlan::WithClause(WithClause {
                             input: inner_with.input.clone(),
@@ -101,7 +103,7 @@ impl TrivialWithElimination {
                         })));
                     }
                 }
-                
+
                 Ok(Arc::new(LogicalPlan::WithClause(WithClause {
                     input: optimized_input,
                     items: with.items.clone(),
@@ -163,10 +165,11 @@ impl TrivialWithElimination {
     /// Check if a WITH clause is trivial (can be eliminated)
     fn is_trivial_with(with: &WithClause) -> bool {
         // Must not have ORDER BY, SKIP, LIMIT, WHERE
-        if with.order_by.is_some() 
-            || with.skip.is_some() 
-            || with.limit.is_some() 
-            || with.where_clause.is_some() {
+        if with.order_by.is_some()
+            || with.skip.is_some()
+            || with.limit.is_some()
+            || with.where_clause.is_some()
+        {
             return false;
         }
 
@@ -213,14 +216,14 @@ mod tests {
         // WITH a, b (simple pass-through)
         let with = WithClause {
             input: Arc::new(LogicalPlan::Empty),
-            items: vec![
-                ProjectionItem {
-                    expression: LogicalExpr::TableAlias(
-                        crate::query_planner::logical_expr::TableAlias("a".to_string())
-                    ),
-                    col_alias: Some(crate::query_planner::logical_expr::ColumnAlias("a".to_string())),
-                },
-            ],
+            items: vec![ProjectionItem {
+                expression: LogicalExpr::TableAlias(
+                    crate::query_planner::logical_expr::TableAlias("a".to_string()),
+                ),
+                col_alias: Some(crate::query_planner::logical_expr::ColumnAlias(
+                    "a".to_string(),
+                )),
+            }],
             distinct: false,
             order_by: None,
             skip: None,
@@ -254,17 +257,17 @@ mod tests {
     fn test_identifies_non_trivial_with_aggregation() {
         let with = WithClause {
             input: Arc::new(LogicalPlan::Empty),
-            items: vec![
-                ProjectionItem {
-                    expression: LogicalExpr::AggregateFnCall(
-                        crate::query_planner::logical_expr::AggregateFnCall {
-                            name: "count".to_string(),
-                            args: vec![],
-                        }
-                    ),
-                    col_alias: Some(crate::query_planner::logical_expr::ColumnAlias("cnt".to_string())),
-                },
-            ],
+            items: vec![ProjectionItem {
+                expression: LogicalExpr::AggregateFnCall(
+                    crate::query_planner::logical_expr::AggregateFnCall {
+                        name: "count".to_string(),
+                        args: vec![],
+                    },
+                ),
+                col_alias: Some(crate::query_planner::logical_expr::ColumnAlias(
+                    "cnt".to_string(),
+                )),
+            }],
             distinct: false,
             order_by: None,
             skip: None,

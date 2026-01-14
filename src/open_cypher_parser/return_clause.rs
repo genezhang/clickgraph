@@ -17,7 +17,7 @@ use super::{
 
 fn parse_return_item(input: &'_ str) -> IResult<&'_ str, ReturnItem<'_>> {
     let (input, expression) = parse_expression.parse(input)?;
-    
+
     let (input, alias) = opt(preceded(ws(tag_no_case("AS")), ws(parse_identifier))).parse(input)?;
 
     let return_item = ReturnItem { expression, alias };

@@ -29,8 +29,8 @@ pub struct VariableLengthCteGenerator<'a> {
     pub start_cypher_alias: String, // Original Cypher query alias (e.g., "u1")
     pub end_cypher_alias: String,   // Original Cypher query alias (e.g., "u2")
     pub relationship_cypher_alias: String, // Original Cypher relationship alias (e.g., "r" in [r:FOLLOWS*])
-    pub properties: Vec<NodeProperty>, // Properties to include in the CTE
-    pub database: Option<String>,   // Optional database prefix
+    pub properties: Vec<NodeProperty>,     // Properties to include in the CTE
+    pub database: Option<String>,          // Optional database prefix
     pub shortest_path_mode: Option<ShortestPathMode>, // Shortest path optimization mode
     pub start_node_filters: Option<String>, // WHERE clause for start node (e.g., "start_node.full_name = 'Alice'")
     pub end_node_filters: Option<String>, // WHERE clause for end node (e.g., "end_full_name = 'Bob'")
@@ -283,12 +283,20 @@ impl<'a> VariableLengthCteGenerator<'a> {
     ) -> Self {
         let database = std::env::var("CLICKHOUSE_DATABASE").ok();
 
-        eprintln!("🔧 GENERATOR: new_denormalized() called with {} properties", properties.len());
+        eprintln!(
+            "🔧 GENERATOR: new_denormalized() called with {} properties",
+            properties.len()
+        );
         for (i, prop) in properties.iter().enumerate() {
-            eprintln!("🔧 GENERATOR:   [{}] cypher_alias='{}', column_name='{}', alias='{}'",
-                     i, prop.cypher_alias, prop.column_name, prop.alias);
+            eprintln!(
+                "🔧 GENERATOR:   [{}] cypher_alias='{}', column_name='{}', alias='{}'",
+                i, prop.cypher_alias, prop.column_name, prop.alias
+            );
         }
-        eprintln!("🔧 GENERATOR: start_alias='{}', end_alias='{}'", start_alias, end_alias);
+        eprintln!(
+            "🔧 GENERATOR: start_alias='{}', end_alias='{}'",
+            start_alias, end_alias
+        );
 
         Self {
             schema,
@@ -498,7 +506,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// - Base case: WHERE clause (after node JOINs)
     /// - Recursive case: WHERE clause (validates each hop)
     /// Generate edge constraint filter with dynamic alias support
-    /// 
+    ///
     /// For recursive cases, pass the actual aliases used in that SQL block.
     /// If None, defaults to self.start_node_alias and self.end_node_alias.
     fn generate_edge_constraint_filter(
@@ -516,12 +524,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
                         // Get node schemas for from/to nodes
                         if let (Some(from_node_schema), Some(to_node_schema)) = (
                             self.schema.get_node_schema_opt(&rel_schema.from_node),
-                            self.schema.get_node_schema_opt(&rel_schema.to_node)
+                            self.schema.get_node_schema_opt(&rel_schema.to_node),
                         ) {
                             // Use provided aliases or fall back to defaults
                             let actual_from_alias = from_alias.unwrap_or(&self.start_node_alias);
                             let actual_to_alias = to_alias.unwrap_or(&self.end_node_alias);
-                            
+
                             // Compile the constraint expression
                             match crate::graph_catalog::constraint_compiler::compile_constraint(
                                 constraint_expr,
@@ -540,7 +548,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
                                 Err(e) => {
                                     log::warn!(
                                         "⚠️  Failed to compile VLP edge constraint for {}: {}",
-                                        rel_type, e
+                                        rel_type,
+                                        e
                                     );
                                 }
                             }
@@ -732,40 +741,59 @@ impl<'a> VariableLengthCteGenerator<'a> {
         logical_prop: &str,
         is_from_node: bool,
     ) -> Result<String, String> {
-        eprintln!("🔍 MAP: map_denormalized_property('{}', is_from_node={})", logical_prop, is_from_node);
-        eprintln!("🔍 MAP:   relationship_table = '{}'", self.relationship_table);
-        
+        eprintln!(
+            "🔍 MAP: map_denormalized_property('{}', is_from_node={})",
+            logical_prop, is_from_node
+        );
+        eprintln!(
+            "🔍 MAP:   relationship_table = '{}'",
+            self.relationship_table
+        );
+
         // For denormalized nodes, find the node schema that points to our relationship table
         let node_schemas = self.schema.get_nodes_schemas();
-        eprintln!("🔍 MAP:   Found {} node schemas in total", node_schemas.len());
-        
+        eprintln!(
+            "🔍 MAP:   Found {} node schemas in total",
+            node_schemas.len()
+        );
+
         // ✅ FIX: Strip database prefix for comparison (handles both "flights" and "db.flights")
-        let rel_table_name = self.relationship_table
+        let rel_table_name = self
+            .relationship_table
             .split('.')
             .last()
             .unwrap_or(&self.relationship_table);
-        eprintln!("🔍 MAP:   Comparing against table name: '{}'", rel_table_name);
-        
+        eprintln!(
+            "🔍 MAP:   Comparing against table name: '{}'",
+            rel_table_name
+        );
+
         for (label, schema) in node_schemas.iter() {
-            let schema_table = schema.table_name.split('.').last().unwrap_or(&schema.table_name);
-            eprintln!("🔍 MAP:     - '{}' -> table '{}' (stripped: '{}')", 
-                     label, schema.table_name, schema_table);
+            let schema_table = schema
+                .table_name
+                .split('.')
+                .last()
+                .unwrap_or(&schema.table_name);
+            eprintln!(
+                "🔍 MAP:     - '{}' -> table '{}' (stripped: '{}')",
+                label, schema.table_name, schema_table
+            );
         }
-        
+
         let node_schema = node_schemas
             .values()
             .find(|n| {
                 let schema_table = n.table_name.split('.').last().unwrap_or(&n.table_name);
-                schema_table == rel_table_name  // ✅ Compare without database prefix
+                schema_table == rel_table_name // ✅ Compare without database prefix
             })
             .ok_or_else(|| {
                 let msg = format!("No node schema found for table '{}'", rel_table_name);
                 eprintln!("❌ MAP: {}", msg);
                 msg
             })?;
-        
+
         eprintln!("✅ MAP:   Found matching node schema");
-        
+
         // Get the appropriate property mapping (from_properties or to_properties)
         let property_map = if is_from_node {
             eprintln!("🔍 MAP:   Looking in from_properties");
@@ -774,7 +802,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             eprintln!("🔍 MAP:   Looking in to_properties");
             node_schema.to_properties.as_ref()
         };
-        
+
         if let Some(map) = property_map {
             eprintln!("🔍 MAP:   Property map has {} entries:", map.len());
             for (key, val) in map.iter() {
@@ -783,7 +811,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         } else {
             eprintln!("❌ MAP:   Property map is None!");
         }
-        
+
         // Look up the physical column name
         let result = property_map
             .and_then(|map| map.get(logical_prop))
@@ -792,17 +820,24 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 let msg = format!(
                     "Property '{}' not found in {} for denormalized node in table '{}'",
                     logical_prop,
-                    if is_from_node { "from_properties" } else { "to_properties" },
+                    if is_from_node {
+                        "from_properties"
+                    } else {
+                        "to_properties"
+                    },
                     self.relationship_table
                 );
                 eprintln!("❌ MAP: {}", msg);
                 msg
             });
-        
+
         if let Ok(ref col) = result {
-            eprintln!("✅ MAP: Successfully mapped '{}' -> '{}'", logical_prop, col);
+            eprintln!(
+                "✅ MAP: Successfully mapped '{}' -> '{}'",
+                logical_prop, col
+            );
         }
-        
+
         result
     }
 
@@ -818,8 +853,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
             self.end_node_alias.clone(),
             self.start_node_table.clone(),
             self.end_node_table.clone(),
-            self.start_cypher_alias.clone(),  // Add Cypher alias
-            self.end_cypher_alias.clone(),    // Add Cypher alias
+            self.start_cypher_alias.clone(),   // Add Cypher alias
+            self.end_cypher_alias.clone(),     // Add Cypher alias
             self.start_node_id_column.clone(), // 🔧 FIX: Pass actual ID columns (from rel schema)
             self.end_node_id_column.clone(),
         )
@@ -891,12 +926,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // 1. Shortest path mode (which requires post-processing)
         // 2. min_hops > 1 (base case generates hop 1, but we need to filter)
         // 3. Denormalized VLP with end_node_filters (can't filter in base case, must wrap)
-        let denorm_needs_end_filter_wrapper = self.is_denormalized 
-            && self.end_node_filters.is_some() 
+        let denorm_needs_end_filter_wrapper = self.is_denormalized
+            && self.end_node_filters.is_some()
             && self.shortest_path_mode.is_none();
-        let needs_inner_cte = self.shortest_path_mode.is_some() 
-            || min_hops > 1 
-            || denorm_needs_end_filter_wrapper;
+        let needs_inner_cte =
+            self.shortest_path_mode.is_some() || min_hops > 1 || denorm_needs_end_filter_wrapper;
         let recursive_cte_name = if needs_inner_cte {
             format!("{}_inner", self.cte_name)
         } else {
@@ -1045,16 +1079,20 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     // But for denormalized, CTE columns use physical names (e.g., "Dest" not "end_node.code")
                     // The filter was already rewritten during categorization, so it should use the rel alias
                     // which maps to the CTE alias in the wrapper
-                    let rewritten_filter = end_filters.replace("end_node.", &format!("{}_inner.", self.cte_name));
+                    let rewritten_filter =
+                        end_filters.replace("end_node.", &format!("{}_inner.", self.cte_name));
                     // Also handle rel alias replacement (e.g., "rel.Dest" -> "vlp_inner.Dest")
-                    let rewritten_filter = rewritten_filter.replace(&format!("{}.", self.relationship_alias), &format!("{}_inner.", self.cte_name));
-                    
+                    let rewritten_filter = rewritten_filter.replace(
+                        &format!("{}.", self.relationship_alias),
+                        &format!("{}_inner.", self.cte_name),
+                    );
+
                     let min_hops_filter = if min_hops > 1 {
                         format!(" AND hop_count >= {}", min_hops)
                     } else {
                         String::new()
                     };
-                    
+
                     format!(
                         "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE ({}){}\n)",
                         self.cte_name, query_body, self.cte_name, self.cte_name, rewritten_filter, min_hops_filter
@@ -1488,7 +1526,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     where_conditions.push(filters.clone());
                 }
             }
-            
+
             // ✅ HOLISTIC FIX: Add relationship filters (e.g., WHERE r.weight > 0.5)
             // These filters apply to the relationship/edge table properties and must be applied
             // during traversal, not on the CTE output (which doesn't have these columns)
@@ -1617,7 +1655,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         // Add edge constraints if defined in schema
         // Recursive case: from=current_node, to=end_node_alias (same alias as base case)
-        if let Some(constraint_filter) = self.generate_edge_constraint_filter(Some("current_node"), None) {
+        if let Some(constraint_filter) =
+            self.generate_edge_constraint_filter(Some("current_node"), None)
+        {
             where_conditions.push(constraint_filter);
         }
 
@@ -1751,13 +1791,18 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         // Add edge constraints if defined in schema
         // Uses current_node as from_alias since recursive case references current row
-        if let Some(constraint_filter) = self.generate_edge_constraint_filter(Some("current_node"), None) {
+        if let Some(constraint_filter) =
+            self.generate_edge_constraint_filter(Some("current_node"), None)
+        {
             where_conditions.push(constraint_filter);
         }
 
         // ✅ HOLISTIC FIX: Add relationship filters in heterogeneous polymorphic recursive case
         if let Some(ref filters) = self.relationship_filters {
-            log::debug!("Adding relationship filters to heterogeneous polymorphic recursive case: {}", filters);
+            log::debug!(
+                "Adding relationship filters to heterogeneous polymorphic recursive case: {}",
+                filters
+            );
             where_conditions.push(filters.clone());
         }
 
@@ -1884,7 +1929,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // start node table (the table with the FK column), so this filter will reference
         // the start_node_alias (or a separate rel alias if one is defined)
         if let Some(ref filters) = self.relationship_filters {
-            log::debug!("Adding relationship filters to FK-edge base case: {}", filters);
+            log::debug!(
+                "Adding relationship filters to FK-edge base case: {}",
+                filters
+            );
             where_conditions.push(filters.clone());
         }
 
@@ -1985,7 +2033,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         // Add edge constraints if defined in schema
         // FK-edge APPEND: from=current_node (previous end), to=new_end (parent)
-        if let Some(constraint_filter) = self.generate_edge_constraint_filter(Some("current_node"), Some("new_end")) {
+        if let Some(constraint_filter) =
+            self.generate_edge_constraint_filter(Some("current_node"), Some("new_end"))
+        {
             where_conditions.push(constraint_filter);
         }
 
@@ -1994,7 +2044,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Rewrite filter alias from 'start_node' to 'current_node'
         if let Some(ref filters) = self.relationship_filters {
             let rewritten_filter = filters.replace("start_node.", "current_node.");
-            log::debug!("Adding relationship filters to FK-edge recursive (append) case: {} -> {}", filters, rewritten_filter);
+            log::debug!(
+                "Adding relationship filters to FK-edge recursive (append) case: {} -> {}",
+                filters,
+                rewritten_filter
+            );
             where_conditions.push(rewritten_filter);
         }
 
@@ -2075,7 +2129,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         // Add edge constraints if defined in schema
         // FK-edge PREPEND: from=new_start (child), to=current_node (previous start)
-        if let Some(constraint_filter) = self.generate_edge_constraint_filter(Some("new_start"), Some("current_node")) {
+        if let Some(constraint_filter) =
+            self.generate_edge_constraint_filter(Some("new_start"), Some("current_node"))
+        {
             where_conditions.push(constraint_filter);
         }
 
@@ -2084,7 +2140,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Rewrite filter alias from 'start_node' to 'new_start'
         if let Some(ref filters) = self.relationship_filters {
             let rewritten_filter = filters.replace("start_node.", "new_start.");
-            log::debug!("Adding relationship filters to FK-edge recursive (prepend) case: {} -> {}", filters, rewritten_filter);
+            log::debug!(
+                "Adding relationship filters to FK-edge recursive (prepend) case: {} -> {}",
+                filters,
+                rewritten_filter
+            );
             where_conditions.push(rewritten_filter);
         }
 
@@ -2115,11 +2175,23 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// For denormalized: FROM rel_table only (no node tables)
     fn generate_denormalized_base_case(&self, hop_count: u32) -> String {
         eprintln!("\n🔧 BASE_CASE: generate_denormalized_base_case() called");
-        eprintln!("🔧 BASE_CASE: self.properties.len() = {}", self.properties.len());
-        eprintln!("🔧 BASE_CASE: start_cypher_alias = '{}'", self.start_cypher_alias);
-        eprintln!("🔧 BASE_CASE: end_cypher_alias = '{}'", self.end_cypher_alias);
-        eprintln!("🔧 BASE_CASE: relationship_table = '{}'", self.relationship_table);
-        
+        eprintln!(
+            "🔧 BASE_CASE: self.properties.len() = {}",
+            self.properties.len()
+        );
+        eprintln!(
+            "🔧 BASE_CASE: start_cypher_alias = '{}'",
+            self.start_cypher_alias
+        );
+        eprintln!(
+            "🔧 BASE_CASE: end_cypher_alias = '{}'",
+            self.end_cypher_alias
+        );
+        eprintln!(
+            "🔧 BASE_CASE: relationship_table = '{}'",
+            self.relationship_table
+        );
+
         if hop_count != 1 {
             // Multi-hop base case not yet supported for denormalized
             return format!(
@@ -2133,39 +2205,58 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         // Build SELECT clause with denormalized properties
         let mut select_items = vec![
-            format!("{}.{} as start_id", self.relationship_alias, self.relationship_from_column),
-            format!("{}.{} as end_id", self.relationship_alias, self.relationship_to_column),
+            format!(
+                "{}.{} as start_id",
+                self.relationship_alias, self.relationship_from_column
+            ),
+            format!(
+                "{}.{} as end_id",
+                self.relationship_alias, self.relationship_to_column
+            ),
             "1 as hop_count".to_string(),
             format!("[{}] as path_edges", edge_tuple),
             self.generate_relationship_type_for_hop(1),
-            format!("[{}.{}, {}.{}] as path_nodes", 
-                self.relationship_alias, self.relationship_from_column,
-                self.relationship_alias, self.relationship_to_column),
+            format!(
+                "[{}.{}, {}.{}] as path_nodes",
+                self.relationship_alias,
+                self.relationship_from_column,
+                self.relationship_alias,
+                self.relationship_to_column
+            ),
         ];
 
         // Add denormalized node properties to CTE
         // For denormalized nodes, properties come directly from edge table
         // Use physical column names (e.g., "Origin", "OriginCityName") without prefixing
-        eprintln!("🔧 BASE_CASE: Processing {} properties...", self.properties.len());
+        eprintln!(
+            "🔧 BASE_CASE: Processing {} properties...",
+            self.properties.len()
+        );
         for (i, prop) in self.properties.iter().enumerate() {
             eprintln!("🔧 BASE_CASE: [{}] Processing prop: cypher_alias='{}', column_name='{}', alias='{}'",
                      i, prop.cypher_alias, prop.column_name, prop.alias);
-            
+
             if prop.cypher_alias == self.start_cypher_alias {
                 eprintln!("🔧 BASE_CASE:   [{}] Matches START alias", i);
                 // Start node property: use from_properties mapping
                 match self.map_denormalized_property(&prop.alias, true) {
                     Ok(physical_col) => {
-                        eprintln!("🔧 BASE_CASE:   [{}] Mapped to physical column: '{}'", i, physical_col);
+                        eprintln!(
+                            "🔧 BASE_CASE:   [{}] Mapped to physical column: '{}'",
+                            i, physical_col
+                        );
                         let sql_fragment = format!(
                             "{}.{} as {}",
                             self.relationship_alias,
                             physical_col,
-                            physical_col  // Use physical column name as alias
+                            physical_col // Use physical column name as alias
                         );
-                        eprintln!("🔧 BASE_CASE:   [{}] Adding to select: '{}'", i, sql_fragment);
+                        eprintln!(
+                            "🔧 BASE_CASE:   [{}] Adding to select: '{}'",
+                            i, sql_fragment
+                        );
                         select_items.push(sql_fragment);
-                    },
+                    }
                     Err(e) => {
                         eprintln!("❌ BASE_CASE:   [{}] Mapping FAILED: {}", i, e);
                         log::warn!("Could not map start property {}: {}", prop.alias, e);
@@ -2177,16 +2268,22 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 // End node property: use to_properties mapping
                 match self.map_denormalized_property(&prop.alias, false) {
                     Ok(physical_col) => {
-                        eprintln!("🔧 BASE_CASE:   [{}] Mapped to physical column: '{}'", i, physical_col);
+                        eprintln!(
+                            "🔧 BASE_CASE:   [{}] Mapped to physical column: '{}'",
+                            i, physical_col
+                        );
                         let sql_fragment = format!(
                             "{}.{} as {}",
                             self.relationship_alias,
                             physical_col,
-                            physical_col  // Use physical column name as alias
+                            physical_col // Use physical column name as alias
                         );
-                        eprintln!("🔧 BASE_CASE:   [{}] Adding to select: '{}'", i, sql_fragment);
+                        eprintln!(
+                            "🔧 BASE_CASE:   [{}] Adding to select: '{}'",
+                            i, sql_fragment
+                        );
                         select_items.push(sql_fragment);
-                    },
+                    }
                     Err(e) => {
                         eprintln!("❌ BASE_CASE:   [{}] Mapping FAILED: {}", i, e);
                         log::warn!("Could not map end property {}: {}", prop.alias, e);
@@ -2194,8 +2291,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 }
             }
         }
-        
-        eprintln!("🔧 BASE_CASE: After property processing, select_items.len() = {}", select_items.len());
+
+        eprintln!(
+            "🔧 BASE_CASE: After property processing, select_items.len() = {}",
+            select_items.len()
+        );
 
         let select_clause = select_items.join(",\n        ");
 
@@ -2251,7 +2351,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // ✅ HOLISTIC FIX: Add relationship filters in denormalized base case
         // In denormalized patterns, relationship properties are on the same edge table
         if let Some(ref filters) = self.relationship_filters {
-            log::debug!("Adding relationship filters to denormalized base case: {}", filters);
+            log::debug!(
+                "Adding relationship filters to denormalized base case: {}",
+                filters
+            );
             where_conditions.push(filters.clone());
         }
 
@@ -2271,12 +2374,23 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Build SELECT clause with denormalized properties
         let mut select_items = vec![
             "vp.start_id".to_string(),
-            format!("{}.{} as end_id", self.relationship_alias, self.relationship_to_column),
+            format!(
+                "{}.{} as end_id",
+                self.relationship_alias, self.relationship_to_column
+            ),
             "vp.hop_count + 1 as hop_count".to_string(),
-            format!("arrayConcat(vp.path_edges, [{}]) as path_edges", edge_tuple_recursive),
-            format!("arrayConcat(vp.path_relationships, {}) as path_relationships", self.get_relationship_type_array()),
-            format!("arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes", 
-                self.relationship_alias, self.relationship_to_column),
+            format!(
+                "arrayConcat(vp.path_edges, [{}]) as path_edges",
+                edge_tuple_recursive
+            ),
+            format!(
+                "arrayConcat(vp.path_relationships, {}) as path_relationships",
+                self.get_relationship_type_array()
+            ),
+            format!(
+                "arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes",
+                self.relationship_alias, self.relationship_to_column
+            ),
         ];
 
         // Add denormalized properties - carry forward start properties, get new end properties
@@ -2289,16 +2403,19 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 }
             }
             if prop.cypher_alias == self.end_cypher_alias {
-                // End properties: get from new edge's to_node columns  
+                // End properties: get from new edge's to_node columns
                 if let Ok(physical_col) = self.map_denormalized_property(&prop.alias, false) {
                     select_items.push(format!(
                         "{}.{} as {}",
                         self.relationship_alias,
                         physical_col,
-                        physical_col  // Use physical column name
+                        physical_col // Use physical column name
                     ));
                 } else {
-                    log::warn!("Could not map end property {} in recursive case", prop.alias);
+                    log::warn!(
+                        "Could not map end property {} in recursive case",
+                        prop.alias
+                    );
                 }
             }
         }
@@ -2343,7 +2460,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         // ✅ HOLISTIC FIX: Add relationship filters in denormalized recursive case
         if let Some(ref filters) = self.relationship_filters {
-            log::debug!("Adding relationship filters to denormalized recursive case: {}", filters);
+            log::debug!(
+                "Adding relationship filters to denormalized recursive case: {}",
+                filters
+            );
             where_conditions.push(filters.clone());
         }
 
@@ -2496,7 +2616,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         // ✅ HOLISTIC FIX: Add relationship filters in mixed base case
         if let Some(ref filters) = self.relationship_filters {
-            log::debug!("Adding relationship filters to mixed base case: {}", filters);
+            log::debug!(
+                "Adding relationship filters to mixed base case: {}",
+                filters
+            );
             where_conditions.push(filters.clone());
         }
 
@@ -2610,7 +2733,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         // ✅ HOLISTIC FIX: Add relationship filters in mixed recursive case
         if let Some(ref filters) = self.relationship_filters {
-            log::debug!("Adding relationship filters to mixed recursive case: {}", filters);
+            log::debug!(
+                "Adding relationship filters to mixed recursive case: {}",
+                filters
+            );
             where_conditions.push(filters.clone());
         }
 
@@ -2640,7 +2766,7 @@ mod tests {
         let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 3);
         let generator = VariableLengthCteGenerator::new(
-            &schema,  // Add schema parameter
+            &schema, // Add schema parameter
             spec,
             "users",     // start table
             "user_id",   // start id column
@@ -2673,7 +2799,7 @@ mod tests {
         let schema = create_test_schema();
         let spec = VariableLengthSpec::unbounded();
         let generator = VariableLengthCteGenerator::new(
-            &schema,  // Add schema parameter
+            &schema, // Add schema parameter
             spec,
             "users",       // start table
             "user_id",     // start id column
@@ -2714,7 +2840,7 @@ mod tests {
         let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 3);
         let generator = VariableLengthCteGenerator::new_with_polymorphic(
-            &schema,                              // Add schema parameter
+            &schema, // Add schema parameter
             spec,
             "users",                              // start table
             "user_id",                            // start id column
@@ -2758,7 +2884,7 @@ mod tests {
         let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 3);
         let generator = VariableLengthCteGenerator::new_with_polymorphic(
-            &schema,        // Add schema parameter
+            &schema, // Add schema parameter
             spec,
             "users",                                                // start table
             "user_id",                                              // start id column

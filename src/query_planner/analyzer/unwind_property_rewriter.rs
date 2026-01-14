@@ -1,3 +1,4 @@
+use crate::graph_catalog::expression_parser::PropertyValue;
 ///! Analyzer pass that rewrites property access expressions to use tuple indices
 ///! when the property access references an UNWIND variable backed by tuple_properties.
 ///!
@@ -10,12 +11,7 @@
 ///! After: `user.name` → PropertyAccess { table_alias: "user", column: "5" }
 ///!
 ///! This enables tuple index access after ARRAY JOIN: `user.5` instead of `user.full_name`
-
-use crate::query_planner::{
-    logical_expr::LogicalExpr,
-    logical_plan::LogicalPlan,
-};
-use crate::graph_catalog::expression_parser::PropertyValue;
+use crate::query_planner::{logical_expr::LogicalExpr, logical_plan::LogicalPlan};
 use std::sync::Arc;
 
 /// Main entry point: rewrites property access expressions throughout the plan tree
@@ -29,7 +25,7 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
         LogicalPlan::Unwind(u) => {
             // First, recurse into input
             let new_input = rewrite_plan(u.input.clone());
-            
+
             // Keep the Unwind unchanged (it already has tuple_properties)
             Arc::new(LogicalPlan::Unwind(
                 crate::query_planner::logical_plan::Unwind {
@@ -41,10 +37,10 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
                 },
             ))
         }
-        
+
         LogicalPlan::Projection(p) => {
             let new_input = rewrite_plan(p.input.clone());
-            
+
             // Build the new Projection first so we can search from its root
             let new_projection = Arc::new(LogicalPlan::Projection(
                 crate::query_planner::logical_plan::Projection {
@@ -53,7 +49,7 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
                     distinct: p.distinct,
                 },
             ));
-            
+
             // Rewrite expressions in projection items
             // IMPORTANT: Search from new_projection (which includes Unwind in its subtree),
             // not just from new_input (which might be Limit, missing the Unwind context)
@@ -68,7 +64,7 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
                     }
                 })
                 .collect();
-            
+
             Arc::new(LogicalPlan::Projection(
                 crate::query_planner::logical_plan::Projection {
                     input: new_input,
@@ -77,11 +73,11 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
                 },
             ))
         }
-        
+
         LogicalPlan::Filter(f) => {
             let new_input = rewrite_plan(f.input.clone());
             let new_predicate = rewrite_expr(&f.predicate, &new_input);
-            
+
             Arc::new(LogicalPlan::Filter(
                 crate::query_planner::logical_plan::Filter {
                     input: new_input,
@@ -89,18 +85,21 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
                 },
             ))
         }
-        
+
         LogicalPlan::GroupBy(g) => {
             let new_input = rewrite_plan(g.input.clone());
-            
+
             let new_expressions = g
                 .expressions
                 .iter()
                 .map(|expr| rewrite_expr(expr, &new_input))
                 .collect();
-            
-            let new_having = g.having_clause.as_ref().map(|h| rewrite_expr(h, &new_input));
-            
+
+            let new_having = g
+                .having_clause
+                .as_ref()
+                .map(|h| rewrite_expr(h, &new_input));
+
             Arc::new(LogicalPlan::GroupBy(
                 crate::query_planner::logical_plan::GroupBy {
                     input: new_input,
@@ -110,10 +109,10 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
                 },
             ))
         }
-        
+
         LogicalPlan::OrderBy(o) => {
             let new_input = rewrite_plan(o.input.clone());
-            
+
             let new_items = o
                 .items
                 .iter()
@@ -122,7 +121,7 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
                     order: item.order.clone(),
                 })
                 .collect();
-            
+
             Arc::new(LogicalPlan::OrderBy(
                 crate::query_planner::logical_plan::OrderBy {
                     input: new_input,
@@ -130,7 +129,7 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
                 },
             ))
         }
-        
+
         LogicalPlan::Limit(l) => {
             let new_input = rewrite_plan(l.input.clone());
             Arc::new(LogicalPlan::Limit(
@@ -140,55 +139,53 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
                 },
             ))
         }
-        
-        LogicalPlan::Skip(s) => {
-            Arc::new(LogicalPlan::Skip(
-                crate::query_planner::logical_plan::Skip {
-                    input: rewrite_plan(s.input.clone()),
-                    count: s.count,
-                },
-            ))
-        }
-        
+
+        LogicalPlan::Skip(s) => Arc::new(LogicalPlan::Skip(
+            crate::query_planner::logical_plan::Skip {
+                input: rewrite_plan(s.input.clone()),
+                count: s.count,
+            },
+        )),
+
         LogicalPlan::WithClause(wc) => {
             let mut new_wc = wc.clone();
             new_wc.input = rewrite_plan(wc.input.clone());
             Arc::new(LogicalPlan::WithClause(new_wc))
         }
-        
+
         LogicalPlan::GraphNode(gn) => {
             let mut new_gn = gn.clone();
             new_gn.input = rewrite_plan(gn.input.clone());
             Arc::new(LogicalPlan::GraphNode(new_gn))
         }
-        
+
         LogicalPlan::GraphRel(gr) => {
             let mut new_gr = gr.clone();
             new_gr.left = rewrite_plan(gr.left.clone());
             new_gr.right = rewrite_plan(gr.right.clone());
             Arc::new(LogicalPlan::GraphRel(new_gr))
         }
-        
+
         LogicalPlan::GraphJoins(gj) => {
             let mut new_gj = gj.clone();
             new_gj.input = rewrite_plan(gj.input.clone());
             Arc::new(LogicalPlan::GraphJoins(new_gj))
         }
-        
+
         LogicalPlan::Cte(cte) => {
             let mut new_cte = cte.clone();
             new_cte.input = rewrite_plan(cte.input.clone());
             // Note: CTEs are independent scopes, their definitions are not rewritten here
             Arc::new(LogicalPlan::Cte(new_cte))
         }
-        
+
         LogicalPlan::Union(u) => {
             let new_inputs = u
                 .inputs
                 .iter()
                 .map(|input| rewrite_plan(input.clone()))
                 .collect();
-            
+
             Arc::new(LogicalPlan::Union(
                 crate::query_planner::logical_plan::Union {
                     inputs: new_inputs,
@@ -196,17 +193,15 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
                 },
             ))
         }
-        
-        LogicalPlan::CartesianProduct(cp) => {
-            Arc::new(LogicalPlan::CartesianProduct(
-                crate::query_planner::logical_plan::CartesianProduct {
-                    left: rewrite_plan(cp.left.clone()),
-                    right: rewrite_plan(cp.right.clone()),
-                    ..cp.clone()
-                },
-            ))
-        }
-        
+
+        LogicalPlan::CartesianProduct(cp) => Arc::new(LogicalPlan::CartesianProduct(
+            crate::query_planner::logical_plan::CartesianProduct {
+                left: rewrite_plan(cp.left.clone()),
+                right: rewrite_plan(cp.right.clone()),
+                ..cp.clone()
+            },
+        )),
+
         // Base cases - no children to rewrite
         LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::PageRank(_) => plan.clone(),
     }
@@ -227,70 +222,70 @@ fn rewrite_expr(expr: &LogicalExpr, plan: &Arc<LogicalPlan>) -> LogicalExpr {
                     pa.table_alias.0,
                     new_column
                 );
-                
-                return LogicalExpr::PropertyAccessExp(crate::query_planner::logical_expr::PropertyAccess {
-                    table_alias: pa.table_alias.clone(),
-                    column: PropertyValue::Column(new_column),
-                });
+
+                return LogicalExpr::PropertyAccessExp(
+                    crate::query_planner::logical_expr::PropertyAccess {
+                        table_alias: pa.table_alias.clone(),
+                        column: PropertyValue::Column(new_column),
+                    },
+                );
             }
-            
+
             expr.clone()
         }
-        
+
         LogicalExpr::Operator(op) => {
             let new_operands = op
                 .operands
                 .iter()
                 .map(|operand| rewrite_expr(operand, plan))
                 .collect();
-            
-            LogicalExpr::Operator(
-                crate::query_planner::logical_expr::OperatorApplication {
-                    operator: op.operator.clone(),
-                    operands: new_operands,
-                },
-            )
+
+            LogicalExpr::Operator(crate::query_planner::logical_expr::OperatorApplication {
+                operator: op.operator.clone(),
+                operands: new_operands,
+            })
         }
-        
+
         LogicalExpr::ScalarFnCall(func) => {
             let new_args = func
                 .args
                 .iter()
                 .map(|arg| rewrite_expr(arg, plan))
                 .collect();
-            
+
             LogicalExpr::ScalarFnCall(crate::query_planner::logical_expr::ScalarFnCall {
                 name: func.name.clone(),
                 args: new_args,
             })
         }
-        
+
         LogicalExpr::AggregateFnCall(agg) => {
             // Just clone aggregate functions for now (they rarely contain property accesses)
             LogicalExpr::AggregateFnCall(agg.clone())
         }
-        
+
         LogicalExpr::Case(case) => {
             let new_expr = case.expr.as_ref().map(|e| Box::new(rewrite_expr(e, plan)));
-            
+
             let new_when_then = case
                 .when_then
                 .iter()
                 .map(|(when, then)| (rewrite_expr(when, plan), rewrite_expr(then, plan)))
                 .collect();
-            
+
             let new_else = case
                 .else_expr
                 .as_ref()
                 .map(|e| Box::new(rewrite_expr(e, plan)));
-            
+
             LogicalExpr::Case(crate::query_planner::logical_expr::LogicalCase {
                 expr: new_expr,
                 when_then: new_when_then,
                 else_expr: new_else,
             })
         }
-        
+
         // Literals, columns without table alias, etc. - pass through
         _ => expr.clone(),
     }
@@ -311,14 +306,14 @@ fn find_tuple_property_index(
                         PropertyValue::Column(name) => name.as_str(),
                         PropertyValue::Expression(_) => return None, // Can't rewrite expressions
                     };
-                    
+
                     // Find the index for this property
                     for (stored_prop, idx) in tuple_props {
                         if stored_prop == prop_name {
                             return Some((idx.to_string(), tuple_props.clone()));
                         }
                     }
-                    
+
                     log::debug!(
                         "Property '{}' not found in tuple_properties for alias '{}'",
                         prop_name,
@@ -326,11 +321,11 @@ fn find_tuple_property_index(
                     );
                 }
             }
-            
+
             // Recurse to input
             find_tuple_property_index(alias, column, &u.input)
         }
-        
+
         // Recurse through all other plan types
         LogicalPlan::Projection(p) => find_tuple_property_index(alias, column, &p.input),
         LogicalPlan::Filter(f) => find_tuple_property_index(alias, column, &f.input),
@@ -369,7 +364,7 @@ fn find_tuple_property_index(
             }
             find_tuple_property_index(alias, column, &cp.right)
         }
-        
+
         // Base cases
         LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::PageRank(_) => None,
     }

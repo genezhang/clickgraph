@@ -24,7 +24,7 @@ mod where_clause_tests {
         let start_filter = Some("start_node.full_name = 'Alice'".to_string());
 
         let generator = VariableLengthCteGenerator::new(
-            &schema,  // Add schema parameter
+            &schema, // Add schema parameter
             spec,
             "users",
             "user_id",
@@ -66,7 +66,7 @@ mod where_clause_tests {
         let end_filter = Some("end_full_name = 'Bob'".to_string());
 
         let generator = VariableLengthCteGenerator::new(
-            &schema,  // Add schema parameter
+            &schema, // Add schema parameter
             spec,
             "users",
             "user_id",
@@ -114,7 +114,7 @@ mod where_clause_tests {
         let end_filter = Some("end_full_name = 'Bob'".to_string());
 
         let generator = VariableLengthCteGenerator::new(
-            &schema,  // Add schema parameter
+            &schema, // Add schema parameter
             spec,
             "users",
             "user_id",
@@ -168,7 +168,7 @@ mod where_clause_tests {
         let spec = VariableLengthSpec::range(1, 3); // *1..3
 
         let generator = VariableLengthCteGenerator::new(
-            &schema,  // Add schema parameter
+            &schema, // Add schema parameter
             spec,
             "users",
             "user_id",

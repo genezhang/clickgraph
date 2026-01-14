@@ -908,8 +908,7 @@ fn test_denormalized_standalone_node_both_positions() {
     use crate::graph_catalog::expression_parser::PropertyValue;
     use crate::query_planner::logical_expr::{LogicalExpr, TableAlias};
     use crate::query_planner::logical_plan::{
-        GraphNode, LogicalPlan, Projection, ProjectionItem, Union, UnionType,
-        ViewScan,
+        GraphNode, LogicalPlan, Projection, ProjectionItem, Union, UnionType, ViewScan,
     };
     use crate::render_plan::plan_builder::RenderPlanBuilder;
     use std::sync::Arc;

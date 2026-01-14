@@ -82,7 +82,7 @@ async fn load_schemas_from_yaml_content(
     clickhouse_client: Option<&Client>,
 ) -> Result<Vec<(String, GraphSchema, GraphSchemaConfig)>, String> {
     use crate::graph_catalog::config::SchemaConfigFile;
-    
+
     let config_file: SchemaConfigFile = serde_yaml::from_str(yaml_content)
         .map_err(|e| format!("Failed to parse YAML config: {}", e))?;
 
@@ -92,41 +92,57 @@ async fn load_schemas_from_yaml_content(
         SchemaConfigFile::Single(config) => {
             // Single schema - use name from config or "default"
             let schema_name = config.name.clone().unwrap_or_else(|| "default".to_string());
-            
+
             let schema = if let Some(client) = clickhouse_client {
-                config.to_graph_schema_with_client(client).await
+                config
+                    .to_graph_schema_with_client(client)
+                    .await
                     .map_err(|e| format!("Failed to create schema: {}", e))?
             } else {
-                config.to_graph_schema()
+                config
+                    .to_graph_schema()
                     .map_err(|e| format!("Failed to create schema: {}", e))?
             };
-            
+
             results.push((schema_name, schema, config));
         }
-        SchemaConfigFile::Multi { default_schema, schemas } => {
+        SchemaConfigFile::Multi {
+            default_schema,
+            schemas,
+        } => {
             // Multiple schemas
             for config in schemas {
-                let schema_name = config.name.clone()
-                    .ok_or_else(|| "Each schema in multi-schema file must have a 'name' field".to_string())?;
-                
+                let schema_name = config.name.clone().ok_or_else(|| {
+                    "Each schema in multi-schema file must have a 'name' field".to_string()
+                })?;
+
                 let schema = if let Some(client) = clickhouse_client {
-                    config.to_graph_schema_with_client(client).await
+                    config
+                        .to_graph_schema_with_client(client)
+                        .await
                         .map_err(|e| format!("Failed to create schema '{}': {}", schema_name, e))?
                 } else {
-                    config.to_graph_schema()
+                    config
+                        .to_graph_schema()
                         .map_err(|e| format!("Failed to create schema '{}': {}", schema_name, e))?
                 };
-                
+
                 results.push((schema_name.clone(), schema, config));
             }
-            
+
             // If default_schema specified, add "default" alias
             if let Some(default_name) = default_schema {
-                if let Some(idx) = results.iter().position(|(name, _, _)| name == &default_name) {
+                if let Some(idx) = results
+                    .iter()
+                    .position(|(name, _, _)| name == &default_name)
+                {
                     let (_, schema, config) = results[idx].clone();
                     results.push(("default".to_string(), schema, config));
                 } else {
-                    return Err(format!("default_schema '{}' not found in schemas list", default_name));
+                    return Err(format!(
+                        "default_schema '{}' not found in schemas list",
+                        default_name
+                    ));
                 }
             }
         }
@@ -155,7 +171,11 @@ pub async fn initialize_global_schema(
         // Load schemas (supports both single and multi-schema formats)
         match load_schemas_from_yaml_content(&yaml_content, clickhouse_client.as_ref()).await {
             Ok(schemas_list) => {
-                log::info!("✓ Loaded {} schema(s) from YAML: {}", schemas_list.len(), yaml_config_path);
+                log::info!(
+                    "✓ Loaded {} schema(s) from YAML: {}",
+                    schemas_list.len(),
+                    yaml_config_path
+                );
 
                 // Validate schemas against ClickHouse if requested
                 if validate_schema {
@@ -168,9 +188,15 @@ pub async fn initialize_global_schema(
                                 ))
                                 .await
                             {
-                                Ok(_) => log::info!("  ✓ Schema '{}' validation passed", schema_name),
+                                Ok(_) => {
+                                    log::info!("  ✓ Schema '{}' validation passed", schema_name)
+                                }
                                 Err(e) => {
-                                    log::warn!("  ✗ Schema '{}' validation failed: {}", schema_name, e);
+                                    log::warn!(
+                                        "  ✗ Schema '{}' validation failed: {}",
+                                        schema_name,
+                                        e
+                                    );
                                     return Err(format!(
                                         "Schema '{}' validation failed: {}",
                                         schema_name, e
@@ -190,9 +216,10 @@ pub async fn initialize_global_schema(
                 let mut schemas = HashMap::new();
                 let mut view_configs = HashMap::new();
                 let schema_count = schemas_list.len();
-                
+
                 // Check if "default" was explicitly set in config (from default_schema field)
-                let has_explicit_default = schemas_list.iter().any(|(name, _, _)| name == "default");
+                let has_explicit_default =
+                    schemas_list.iter().any(|(name, _, _)| name == "default");
                 let mut first_schema_info: Option<(GraphSchema, GraphSchemaConfig)> = None;
 
                 for (schema_name, schema, config) in schemas_list {
@@ -204,11 +231,11 @@ pub async fn initialize_global_schema(
                         log::info!("  ✓ Registered explicit default schema");
                         continue;
                     }
-                    
+
                     schemas.insert(schema_name.clone(), schema.clone());
                     view_configs.insert(schema_name.clone(), config.clone());
                     log::info!("  ✓ Registered schema: {}", schema_name);
-                    
+
                     // Legacy: Set first (non-default) schema as GLOBAL_SCHEMA_CONFIG
                     if first_schema_info.is_none() {
                         GLOBAL_SCHEMA_CONFIG
@@ -217,7 +244,7 @@ pub async fn initialize_global_schema(
                         first_schema_info = Some((schema, config));
                     }
                 }
-                
+
                 // If no explicit default was set, use the first schema as default
                 if !has_explicit_default {
                     if let Some((schema, config)) = first_schema_info {
@@ -234,7 +261,10 @@ pub async fn initialize_global_schema(
                     .set(RwLock::new(view_configs))
                     .map_err(|_| "Failed to initialize global view configs")?;
 
-                println!("✓ Schema initialization complete (YAML mode, {} schema(s) registered)", schema_count);
+                println!(
+                    "✓ Schema initialization complete (YAML mode, {} schema(s) registered)",
+                    schema_count
+                );
                 return Ok(SchemaSource::Yaml);
             }
             Err(e) => {

@@ -299,20 +299,20 @@ mod performance_tests {
 #[cfg(test)]
 mod vlp_cte_scoping_tests {
     //! Tests for VLP CTE Column Scoping fix
-    //! 
+    //!
     //! Bug: When VLP patterns are followed by additional relationships and GROUP BY aggregations,
     //! columns from non-VLP nodes weren't available in CTE scope, causing
     //! "Unknown expression identifier" errors.
-    //! 
+    //!
     //! Fix: Collect aliases from aggregate expressions and include their ID columns in UNION SELECT
-    
+
     use super::*;
 
     #[test]
     fn test_vlp_with_additional_relationship_and_count_distinct() {
         // MATCH (p)-[:KNOWS*1..2]-(f)<-[:HAS_CREATOR]-(m)
         // RETURN f.id, COUNT(DISTINCT m)
-        // 
+        //
         // This is the core pattern that was failing before the fix.
         // The m.id needs to be included in the UNION SELECT for COUNT(DISTINCT m) to work.
         let cypher = "MATCH (p:Person {id: 933})-[:KNOWS*1..2]-(f:Person)<-[:HAS_CREATOR]-(m:Message) RETURN f.id, COUNT(DISTINCT m) AS messageCount";

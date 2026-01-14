@@ -2,7 +2,9 @@ use crate::{
     open_cypher_parser::ast::WithClause as AstWithClause,
     query_planner::{
         logical_expr::LogicalExpr,
-        logical_plan::{errors::LogicalPlanError, LogicalPlan, OrderByItem, ProjectionItem, WithClause},
+        logical_plan::{
+            errors::LogicalPlanError, LogicalPlan, OrderByItem, ProjectionItem, WithClause,
+        },
     },
 };
 use std::sync::Arc;
@@ -33,8 +35,8 @@ pub fn evaluate_with_clause<'a>(
     let projection_items: Vec<ProjectionItem> = with_clause
         .with_items
         .iter()
-        .map(|item| item.clone().into())
-        .collect();
+        .map(|item| ProjectionItem::try_from(item.clone()))
+        .collect::<Result<Vec<_>, _>>()?;
 
     println!(
         "WITH clause: Creating WithClause with {} items, distinct={}, order_by={:?}, skip={:?}, limit={:?}",
@@ -46,14 +48,15 @@ pub fn evaluate_with_clause<'a>(
     );
 
     // Create the new WithClause type with all modifiers - returns error if items lack required aliases
-    let mut with_node = WithClause::new(plan, projection_items)?.with_distinct(with_clause.distinct);
+    let mut with_node =
+        WithClause::new(plan, projection_items)?.with_distinct(with_clause.distinct);
 
     // Add ORDER BY if present
     if let Some(ref order_by_ast) = with_clause.order_by {
         let order_by_items: Vec<OrderByItem> = order_by_ast
             .order_by_items
             .iter()
-            .map(|item| item.clone().into())
+            .map(|item| OrderByItem::try_from(item.clone()).unwrap())
             .collect();
         with_node = with_node.with_order_by(order_by_items);
     }
@@ -70,7 +73,7 @@ pub fn evaluate_with_clause<'a>(
 
     // Add WHERE if present
     if let Some(ref where_ast) = with_clause.where_clause {
-        let predicate: LogicalExpr = where_ast.conditions.clone().into();
+        let predicate: LogicalExpr = LogicalExpr::try_from(where_ast.conditions.clone()).unwrap();
         with_node = with_node.with_where(predicate);
     }
 

@@ -71,7 +71,11 @@ pub fn rewrite_aliases(
     match expr {
         RenderExpr::PropertyAccessExp(prop) => {
             if let Some(new_alias) = alias_map.get(&prop.table_alias.0) {
-                log::debug!("🔄 Rewriting alias '{}' → '{}'", prop.table_alias.0, new_alias);
+                log::debug!(
+                    "🔄 Rewriting alias '{}' → '{}'",
+                    prop.table_alias.0,
+                    new_alias
+                );
                 prop.table_alias = TableAlias(new_alias.clone());
             }
         }
@@ -152,7 +156,9 @@ mod tests {
     fn test_references_alias() {
         let expr = RenderExpr::PropertyAccessExp(PropertyAccess {
             table_alias: TableAlias("users".to_string()),
-            column: crate::graph_catalog::expression_parser::PropertyValue::Column("name".to_string()),
+            column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                "name".to_string(),
+            ),
         });
 
         assert!(references_alias(&expr, "users"));

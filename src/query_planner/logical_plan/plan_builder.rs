@@ -38,11 +38,12 @@ pub fn build_logical_plan(
     );
 
     // 🚨 DIAGNOSTIC: Check if query is completely empty
-    if query_ast.match_clauses.is_empty() 
-        && query_ast.optional_match_clauses.is_empty() 
+    if query_ast.match_clauses.is_empty()
+        && query_ast.optional_match_clauses.is_empty()
         && query_ast.unwind_clauses.is_empty()
-        && query_ast.return_clause.is_none() 
-        && query_ast.with_clause.is_none() {
+        && query_ast.return_clause.is_none()
+        && query_ast.with_clause.is_none()
+    {
         log::error!("❌ EMPTY QUERY DETECTED: Parser returned empty AST!");
         log::error!("   This usually means:");
         log::error!("   1. Query has unsupported syntax (e.g., multi-line comments with -- style)");
@@ -50,8 +51,14 @@ pub fn build_logical_plan(
         log::error!("   3. Query might be using features not yet supported");
         log::error!("   Raw query AST dump:");
         log::error!("     - MATCH clauses: {}", query_ast.match_clauses.len());
-        log::error!("     - OPTIONAL MATCH: {}", query_ast.optional_match_clauses.len());
-        log::error!("     - RETURN clause: {}", query_ast.return_clause.is_some());
+        log::error!(
+            "     - OPTIONAL MATCH: {}",
+            query_ast.optional_match_clauses.len()
+        );
+        log::error!(
+            "     - RETURN clause: {}",
+            query_ast.return_clause.is_some()
+        );
         log::error!("     - WITH clause: {}", query_ast.with_clause.is_some());
         log::error!("     - WHERE clause: {}", query_ast.where_clause.is_some());
         log::error!("     - ORDER BY: {}", query_ast.order_by_clause.is_some());
@@ -59,7 +66,7 @@ pub fn build_logical_plan(
         log::error!("     - SKIP: {}", query_ast.skip_clause.is_some());
         log::error!("     - UNWIND: {}", !query_ast.unwind_clauses.is_empty());
         log::error!("     - CALL: {}", query_ast.call_clause.is_some());
-        
+
         return Err(LogicalPlanError::QueryPlanningError(
             "Parser returned empty query AST. This indicates unsupported syntax or parser failure. \
             Common causes: 1) Multi-line SQL-style comments (use /* */ instead of --), \
@@ -142,14 +149,15 @@ pub fn build_logical_plan(
         log::warn!("   2. Schema mismatch (labels/relationships not in YAML schema)");
         log::warn!("   3. Query pattern not yet supported by planner");
         log::warn!("   Plan type: Empty (no operations)");
-        
+
         return Err(LogicalPlanError::QueryPlanningError(
             "Query produced Empty logical plan. This indicates query parsed successfully \
             but planner could not generate a valid execution plan. Common causes: \
             1) Node labels or relationship types not defined in schema YAML, \
             2) Complex query patterns not yet supported, \
             3) All MATCH patterns filtered out. \
-            Check that all labels and relationship types exist in your schema.".to_string()
+            Check that all labels and relationship types exist in your schema."
+                .to_string(),
         ));
     }
 
@@ -158,7 +166,7 @@ pub fn build_logical_plan(
 
 /// Process a chain of WITH clauses recursively
 /// Handles patterns like: WITH a MATCH ... WITH a, b MATCH ... WITH a, b, c ...
-/// 
+///
 /// Key Implementation Detail: Creates a child scope after WITH clause evaluation.
 /// This child scope contains ONLY the exported aliases from WITH, ensuring proper
 /// scope isolation as per OpenCypher semantics.
@@ -217,10 +225,10 @@ fn process_with_clause_chain<'a>(
                 alias.clone(),
                 crate::query_planner::plan_ctx::TableCtx::build(
                     alias.clone(),
-                    None,                // No label for computed expressions
-                    vec![],              // No properties yet
-                    false,               // Not a relationship
-                    true,                // This is an explicit alias from WITH
+                    None,   // No label for computed expressions
+                    vec![], // No properties yet
+                    false,  // Not a relationship
+                    true,   // This is an explicit alias from WITH
                 ),
             );
         }

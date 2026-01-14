@@ -46,7 +46,7 @@ fn parse_pattern_with_optional_variable(
 ) -> IResult<&str, (Option<&str>, PathPattern<'_>), OpenCypherParsingError<'_>> {
     let mut input_after_var = input;
     let mut path_variable = None;
-    
+
     // Try to parse "varname = "
     if let Ok((rest, name)) = parse_identifier(input) {
         let (rest, _) = multispace0(rest)?;
@@ -56,7 +56,7 @@ fn parse_pattern_with_optional_variable(
             input_after_var = rest;
         }
     }
-    
+
     // Parse the pattern
     let (input, pattern) = path_parser(input_after_var)?;
     Ok((input, (path_variable, pattern)))
