@@ -1117,9 +1117,10 @@ impl<'a> From<CypherReturnItem<'a>> for ProjectionItem {
             match &value.expression {
                 // For property access like "u.name", use "u.name" as alias (Neo4j behavior)
                 // Neo4j returns qualified names by default: RETURN u.name → column "u.name"
-                CypherExpression::PropertyAccessExp(prop_access) => {
-                    Some(ColumnAlias(format!("{}.{}", prop_access.base, prop_access.key)))
-                }
+                CypherExpression::PropertyAccessExp(prop_access) => Some(ColumnAlias(format!(
+                    "{}.{}",
+                    prop_access.base, prop_access.key
+                ))),
                 // For simple variables like "u", use "u" as alias
                 CypherExpression::Variable(var) => Some(ColumnAlias(var.to_string())),
                 // For other expressions, no default alias

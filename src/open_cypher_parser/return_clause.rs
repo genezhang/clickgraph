@@ -18,7 +18,7 @@ use super::{
 fn parse_return_item(input: &'_ str) -> IResult<&'_ str, ReturnItem<'_>> {
     // Capture the original text of the expression using recognize
     let (input, expr_text) = recognize(parse_expression).parse(input)?;
-    
+
     // Parse the expression again to get the AST (recognize consumes but doesn't parse)
     let (_, expression) = parse_expression.parse(expr_text)?;
 
@@ -31,8 +31,8 @@ fn parse_return_item(input: &'_ str) -> IResult<&'_ str, ReturnItem<'_>> {
         None
     };
 
-    let return_item = ReturnItem { 
-        expression, 
+    let return_item = ReturnItem {
+        expression,
         alias,
         original_text,
     };
@@ -110,7 +110,7 @@ mod tests {
                 let expected = ReturnItem {
                     expression: Expression::Variable("a"),
                     alias: Some("alias"),
-                    original_text: None,  // No original_text when explicit alias is provided
+                    original_text: None, // No original_text when explicit alias is provided
                 };
                 assert_eq!(&return_item, &expected);
             }
@@ -297,7 +297,7 @@ mod tests {
     }
 
     // Tests for Neo4j-compatible alias behavior
-    
+
     #[test]
     fn test_original_text_preserves_spacing_arithmetic() {
         let input = "RETURN 1  +  1";
@@ -367,7 +367,7 @@ mod tests {
             Ok((_, return_clause)) => {
                 assert_eq!(return_clause.return_items.len(), 1);
                 let item = &return_clause.return_items[0];
-                assert_eq!(item.original_text, None);  // No original_text when explicit alias provided
+                assert_eq!(item.original_text, None); // No original_text when explicit alias provided
                 assert_eq!(item.alias, Some("airport_code"));
             }
             Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
@@ -381,15 +381,18 @@ mod tests {
         match res {
             Ok((_, return_clause)) => {
                 assert_eq!(return_clause.return_items.len(), 3);
-                
+
                 // First item: no alias, has original_text
                 assert_eq!(return_clause.return_items[0].original_text, Some("a.code"));
                 assert_eq!(return_clause.return_items[0].alias, None);
-                
+
                 // Second item: no alias, has original_text
-                assert_eq!(return_clause.return_items[1].original_text, Some("substring(a.code, 1, 3)"));
+                assert_eq!(
+                    return_clause.return_items[1].original_text,
+                    Some("substring(a.code, 1, 3)")
+                );
                 assert_eq!(return_clause.return_items[1].alias, None);
-                
+
                 // Third item: explicit alias, no original_text
                 assert_eq!(return_clause.return_items[2].original_text, None);
                 assert_eq!(return_clause.return_items[2].alias, Some("airport_name"));
