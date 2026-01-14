@@ -27,12 +27,12 @@ fn setup_denormalized_schema() -> GraphSchema {
         "code".to_string(),
         crate::graph_catalog::expression_parser::PropertyValue::Column("airport_code".to_string()),
     );
-    
+
     // Properties when Airport is the FROM node in a relationship
     let mut airport_from_props = HashMap::new();
     airport_from_props.insert("city".to_string(), "origin_city".to_string());
     airport_from_props.insert("state".to_string(), "origin_state".to_string());
-    
+
     // Properties when Airport is the TO node in a relationship
     let mut airport_to_props = HashMap::new();
     airport_to_props.insert("city".to_string(), "dest_city".to_string());
@@ -43,10 +43,7 @@ fn setup_denormalized_schema() -> GraphSchema {
         NodeSchema {
             database: "test_db".to_string(),
             table_name: "airports".to_string(),
-            column_names: vec![
-                "airport_id".to_string(),
-                "airport_code".to_string(),
-            ],
+            column_names: vec!["airport_id".to_string(), "airport_code".to_string()],
             primary_keys: "airport_id".to_string(),
             node_id: NodeIdSchema::single("airport_id".to_string(), "UInt64".to_string()),
             property_mappings: airport_props,
@@ -54,7 +51,7 @@ fn setup_denormalized_schema() -> GraphSchema {
             engine: None,
             use_final: None,
             filter: None,
-            is_denormalized: true,  // Has denormalized properties
+            is_denormalized: true, // Has denormalized properties
             from_properties: Some(airport_from_props),
             to_properties: Some(airport_to_props),
             denormalized_source_table: Some("flights".to_string()),
@@ -251,8 +248,7 @@ fn test_no_relationship_context() {
     // (they only exist in edge tables, need to know which edge)
     let result = map_property_to_column_with_relationship_context(
         "city", // Denormalized property
-        "Airport",
-        None, // No relationship context
+        "Airport", None, // No relationship context
         None,
     );
 
@@ -265,9 +261,7 @@ fn test_no_relationship_context() {
     // But non-denormalized properties should still work
     let result2 = map_property_to_column_with_relationship_context(
         "code", // Non-denormalized property (in node table)
-        "Airport",
-        None,
-        None,
+        "Airport", None, None,
     );
 
     assert!(result2.is_ok());
@@ -383,10 +377,10 @@ fn test_multiple_relationships_same_node() {
         result2.is_err(),
         "Should fail when accessing denormalized property through wrong relationship"
     );
-    
+
     // But non-denormalized properties should still work regardless of relationship
     let result3 = map_property_to_column_with_relationship_context(
-        "code",  // Non-denormalized property
+        "code", // Non-denormalized property
         "Airport",
         Some("AUTHORED"),
         None,
@@ -803,11 +797,9 @@ fn test_analyzer_denormalized_property_integration() {
         match plan {
             LogicalPlan::Projection(proj) => Some(proj.items.clone()),
             LogicalPlan::Filter(filter) => find_projection_items(&filter.input),
-            LogicalPlan::GraphRel(rel) => {
-                find_projection_items(&rel.left)
-                    .or_else(|| find_projection_items(&rel.right))
-                    .or_else(|| find_projection_items(&rel.center))
-            }
+            LogicalPlan::GraphRel(rel) => find_projection_items(&rel.left)
+                .or_else(|| find_projection_items(&rel.right))
+                .or_else(|| find_projection_items(&rel.center)),
             LogicalPlan::GraphNode(node) => find_projection_items(&node.input),
             LogicalPlan::GraphJoins(joins) => find_projection_items(&joins.input),
             _ => None,

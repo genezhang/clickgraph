@@ -148,12 +148,10 @@ impl NodeAccessStrategy {
     pub fn get_all_properties(&self) -> Vec<(String, String)> {
         match self {
             NodeAccessStrategy::OwnTable { properties, .. }
-            | NodeAccessStrategy::EmbeddedInEdge { properties, .. } => {
-                properties
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect()
-            }
+            | NodeAccessStrategy::EmbeddedInEdge { properties, .. } => properties
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
             NodeAccessStrategy::Virtual { .. } => Vec::new(),
         }
     }
@@ -1106,7 +1104,9 @@ impl PatternSchemaContext {
     /// - `Some(column_name)` if the edge has the property
     /// - `None` if property doesn't exist
     pub fn get_edge_property(&self, prop_name: &str) -> Option<String> {
-        self.edge.get_property_column(prop_name).map(|s| s.to_string())
+        self.edge
+            .get_property_column(prop_name)
+            .map(|s| s.to_string())
     }
 
     /// Get the table/alias to use when accessing properties for a node

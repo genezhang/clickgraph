@@ -33,7 +33,7 @@ impl ProjectedColumnsResolver {
     }
 
     /// Compute projected columns for a GraphNode based on its input (ViewScan)
-    /// 
+    ///
     /// # Arguments
     /// * `node` - The GraphNode to compute columns for
     /// * `plan_ctx` - PlanCtx for accessing PatternSchemaContext
@@ -84,7 +84,7 @@ impl ProjectedColumnsResolver {
     }
 
     /// Compute projected columns for denormalized nodes using PatternSchemaContext
-    /// 
+    ///
     /// Uses explicit role information from PatternSchemaContext instead of checking both property sets
     fn compute_denormalized_properties(
         alias: &str,
@@ -222,9 +222,7 @@ impl AnalyzerPass for ProjectedColumnsResolver {
                 // Compute projected columns for this node
                 // Standalone nodes don't have relationship context
                 let projected_columns = Self::compute_projected_columns_for_node(
-                    node,
-                    plan_ctx,
-                    None, // No relationship context for standalone nodes
+                    node, plan_ctx, None, // No relationship context for standalone nodes
                     None,
                 );
 

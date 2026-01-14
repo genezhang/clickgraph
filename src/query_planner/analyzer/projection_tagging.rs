@@ -305,8 +305,8 @@ impl ProjectionTagging {
                     if node_schema.is_denormalized {
                         // PRIMARY: Try PatternSchemaContext first - has explicit role information
                         let mut mapped_column = None;
-                        if let Some((owning_edge, _is_from, _, _)) = plan_ctx
-                            .get_denormalized_alias_info(&property_access.table_alias.0)
+                        if let Some((owning_edge, _is_from, _, _)) =
+                            plan_ctx.get_denormalized_alias_info(&property_access.table_alias.0)
                         {
                             if let Some(pattern_ctx) = plan_ctx.get_pattern_context(&owning_edge) {
                                 mapped_column = pattern_ctx.get_node_property(
@@ -469,8 +469,8 @@ impl ProjectionTagging {
                 // Get denormalized alias info and pattern context BEFORE mutable borrow
                 // (to avoid borrow checker issues)
                 // Clone pattern context so we don't hold immutable reference
-                let denorm_info = plan_ctx
-                    .get_denormalized_alias_info(&property_access.table_alias.0);
+                let denorm_info =
+                    plan_ctx.get_denormalized_alias_info(&property_access.table_alias.0);
                 let pattern_ctx_opt = denorm_info.as_ref().and_then(|(owning_edge, _, _, _)| {
                     plan_ctx.get_pattern_context(owning_edge).cloned()
                 });
@@ -595,7 +595,9 @@ impl ProjectionTagging {
                                                 crate::graph_catalog::expression_parser::PropertyValue::Column(
                                                     mapped.clone(),
                                                 )
-                                            } else if let Some(ref to_props) = node_schema.to_properties {
+                                            } else if let Some(ref to_props) =
+                                                node_schema.to_properties
+                                            {
                                                 if let Some(mapped) =
                                                     to_props.get(property_access.column.raw())
                                                 {
@@ -606,7 +608,8 @@ impl ProjectionTagging {
                                             } else {
                                                 crate::graph_catalog::expression_parser::PropertyValue::Column(property_access.column.raw().to_string())
                                             }
-                                        } else if let Some(ref to_props) = node_schema.to_properties {
+                                        } else if let Some(ref to_props) = node_schema.to_properties
+                                        {
                                             if let Some(mapped) =
                                                 to_props.get(property_access.column.raw())
                                             {

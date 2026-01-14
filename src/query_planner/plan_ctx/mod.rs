@@ -7,10 +7,7 @@ use std::{
 };
 
 use crate::{
-    graph_catalog::{
-        graph_schema::GraphSchema,
-        pattern_schema::PatternSchemaContext,
-    },
+    graph_catalog::{graph_schema::GraphSchema, pattern_schema::PatternSchemaContext},
     query_planner::{
         analyzer::property_requirements::PropertyRequirements,
         logical_expr::{LogicalExpr, Property},

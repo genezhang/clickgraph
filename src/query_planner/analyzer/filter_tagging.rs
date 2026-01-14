@@ -1744,7 +1744,7 @@ impl FilterTagging {
                             "find_property_in_viewscan_with_edge: Using PatternSchemaContext for alias='{}', edge='{}', property='{}'",
                             alias, rel.alias, property
                         );
-                        
+
                         if let Some(column) = pattern_ctx.get_node_property(alias, property) {
                             println!(
                                 "find_property_in_viewscan_with_edge: Found property '{}' -> '{}' via PatternSchemaContext",
@@ -1753,7 +1753,7 @@ impl FilterTagging {
                             return Some(column);
                         }
                     }
-                    
+
                     // FALLBACK: Legacy logic - check ViewScan's from_node_properties/to_node_properties
                     if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
                         // Use is_from_node to determine which properties to look at
