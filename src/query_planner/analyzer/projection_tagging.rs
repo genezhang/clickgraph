@@ -325,34 +325,6 @@ impl ProjectionTagging {
                         }
 
                         if let Some(mapped) = mapped_column {
-                            return Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: property_access.table_alias.clone(),
-                                column: mapped,
-                            }));
-                        }
-
-                        // FALLBACK: Legacy logic - try to_props then from_props
-                        let mapped_column = if let Some(ref to_props) = node_schema.to_properties {
-                            if let Some(mapped) = to_props.get(property_access.column.raw()) {
-                                Some(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()))
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }.or_else(|| {
-                            if let Some(ref from_props) = node_schema.from_properties {
-                                if let Some(mapped) = from_props.get(property_access.column.raw()) {
-                                    Some(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()))
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        });
-
-                        if let Some(mapped) = mapped_column {
                             log::debug!(
                                 "UNWIND property mapping: {}.{} -> {:?}",
                                 property_access.table_alias.0,
@@ -587,45 +559,10 @@ impl ProjectionTagging {
                                     if let Some(column) = column_from_pattern_ctx {
                                         crate::graph_catalog::expression_parser::PropertyValue::Column(column)
                                     } else {
-                                        // FALLBACK: Legacy logic - try from_props then to_props
-                                        if let Some(ref from_props) = node_schema.from_properties {
-                                            if let Some(mapped) =
-                                                from_props.get(property_access.column.raw())
-                                            {
-                                                crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                    mapped.clone(),
-                                                )
-                                            } else if let Some(ref to_props) =
-                                                node_schema.to_properties
-                                            {
-                                                if let Some(mapped) =
-                                                    to_props.get(property_access.column.raw())
-                                                {
-                                                    crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone())
-                                                } else {
-                                                    crate::graph_catalog::expression_parser::PropertyValue::Column(property_access.column.raw().to_string())
-                                                }
-                                            } else {
-                                                crate::graph_catalog::expression_parser::PropertyValue::Column(property_access.column.raw().to_string())
-                                            }
-                                        } else if let Some(ref to_props) = node_schema.to_properties
-                                        {
-                                            if let Some(mapped) =
-                                                to_props.get(property_access.column.raw())
-                                            {
-                                                crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                    mapped.clone(),
-                                                )
-                                            } else {
-                                                crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                    property_access.column.raw().to_string(),
-                                                )
-                                            }
-                                        } else {
-                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                property_access.column.raw().to_string(),
-                                            )
-                                        }
+                                        // No pattern context for denormalized node = bug in GraphJoinInference
+                                        crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                            property_access.column.raw().to_string(),
+                                        )
                                     }
                                 } else {
                                     // Standard node - use ViewResolver

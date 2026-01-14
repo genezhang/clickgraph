@@ -1753,36 +1753,7 @@ impl FilterTagging {
                             return Some(column);
                         }
                     }
-
-                    // FALLBACK: Legacy logic - check ViewScan's from_node_properties/to_node_properties
-                    if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
-                        // Use is_from_node to determine which properties to look at
-                        if is_from_node {
-                            if let Some(from_props) = &scan.from_node_properties {
-                                if let Some(prop_value) = from_props.get(property) {
-                                    if let crate::graph_catalog::expression_parser::PropertyValue::Column(col) = prop_value {
-                                        println!(
-                                            "FilterTagging: find_property_in_viewscan_with_edge - FALLBACK - edge '{}', found '{}' in from_node_properties -> '{}'",
-                                            owning_edge, property, col
-                                        );
-                                        return Some(col.clone());
-                                    }
-                                }
-                            }
-                        } else {
-                            if let Some(to_props) = &scan.to_node_properties {
-                                if let Some(prop_value) = to_props.get(property) {
-                                    if let crate::graph_catalog::expression_parser::PropertyValue::Column(col) = prop_value {
-                                        println!(
-                                            "FilterTagging: find_property_in_viewscan_with_edge - FALLBACK - edge '{}', found '{}' in to_node_properties -> '{}'",
-                                            owning_edge, property, col
-                                        );
-                                        return Some(col.clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    // No pattern context = bug in GraphJoinInference, don't hide it with fallback
                 }
 
                 // Recurse to find the owning edge

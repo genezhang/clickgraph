@@ -93,7 +93,7 @@ impl ProjectedColumnsResolver {
         rel_alias: Option<&str>,
         position: Option<NodePosition>,
     ) -> Option<Vec<(String, String)>> {
-        // If we have PatternSchemaContext, use it for explicit role-based resolution
+        // Use PatternSchemaContext for explicit role-based resolution
         if let (Some(rel), Some(pos)) = (rel_alias, position) {
             if let Some(strategy) = plan_ctx.get_node_strategy(alias, Some(rel)) {
                 // Use the strategy to get properties for this node's role
@@ -112,37 +112,7 @@ impl ProjectedColumnsResolver {
             }
         }
 
-        // Fallback: Check both property sets (legacy behavior for nodes not in a relationship pattern)
-        // This handles edge cases where denormalized nodes might not have pattern context
-        // For denormalized nodes, properties are in from_node_properties or to_node_properties
-        if let Some(from_props) = &scan.from_node_properties {
-            let mut properties: Vec<(String, String)> = from_props
-                .iter()
-                .map(|(prop_name, prop_value)| {
-                    let qualified = format!("{}.{}", alias, prop_value.raw());
-                    (prop_name.clone(), qualified)
-                })
-                .collect();
-            properties.sort_by(|a, b| a.0.cmp(&b.0));
-            if !properties.is_empty() {
-                return Some(properties);
-            }
-        }
-
-        if let Some(to_props) = &scan.to_node_properties {
-            let mut properties: Vec<(String, String)> = to_props
-                .iter()
-                .map(|(prop_name, prop_value)| {
-                    let qualified = format!("{}.{}", alias, prop_value.raw());
-                    (prop_name.clone(), qualified)
-                })
-                .collect();
-            properties.sort_by(|a, b| a.0.cmp(&b.0));
-            if !properties.is_empty() {
-                return Some(properties);
-            }
-        }
-
+        // No pattern context = bug in GraphJoinInference, don't hide it
         None
     }
 
