@@ -1,6 +1,8 @@
-## [0.6.1] - 2026-01-12
+## [0.6.1] - 2026-01-13
 
 ### 🚀 Features
+
+- **Neo4j-compatible field aliases**: RETURN clause now preserves exact expression text as field names when AS alias not specified (matches Neo4j behavior)
 
 - Integrate data_security schema, remove benchmark schemas from unified tests
 - Auto-load all test schemas at session start
