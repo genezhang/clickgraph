@@ -7085,6 +7085,14 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Found the matching node - extract ID column from its ViewScan
                 if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
                     return Ok(scan.id_column.clone());
+                } else if let LogicalPlan::Union(union_plan) = node.input.as_ref() {
+                    // For denormalized polymorphic nodes, the input is a UNION of ViewScans
+                    // All ViewScans should have the same id_column, so use the first one
+                    if let Some(first_input) = union_plan.inputs.first() {
+                        if let LogicalPlan::ViewScan(scan) = first_input.as_ref() {
+                            return Ok(scan.id_column.clone());
+                        }
+                    }
                 }
             }
             LogicalPlan::GraphRel(rel) => {
@@ -7245,17 +7253,23 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 // FALLBACK: Compute from ViewScan (for nodes without projected_columns)
                 if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
+                    log::debug!("get_properties_with_table_alias: GraphNode '{}' has ViewScan, is_denormalized={}, from_node_properties={:?}, to_node_properties={:?}",
+                        alias, scan.is_denormalized,
+                        scan.from_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()),
+                        scan.to_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()));
                     // For denormalized nodes with properties on the ViewScan (from standalone node query)
                     if scan.is_denormalized {
                         if let Some(from_props) = &scan.from_node_properties {
                             let properties = extract_sorted_properties(from_props);
                             if !properties.is_empty() {
+                                log::debug!("get_properties_with_table_alias: Returning {} from_node_properties for '{}'", properties.len(), alias);
                                 return Ok((properties, None)); // Use original alias
                             }
                         }
                         if let Some(to_props) = &scan.to_node_properties {
                             let properties = extract_sorted_properties(to_props);
                             if !properties.is_empty() {
+                                log::debug!("get_properties_with_table_alias: Returning {} to_node_properties for '{}'", properties.len(), alias);
                                 return Ok((properties, None));
                             }
                         }
@@ -7275,6 +7289,46 @@ impl RenderPlanBuilder for LogicalPlan {
                         }
                     }
                     return Ok((properties, None));
+                } else if let LogicalPlan::Union(union_plan) = node.input.as_ref() {
+                    // For denormalized polymorphic nodes, the input is a UNION of ViewScans
+                    // Each ViewScan has either from_node_properties or to_node_properties
+                    // Use the first available ViewScan to get the property list
+                    log::debug!(
+                        "get_properties_with_table_alias: GraphNode '{}' has Union with {} inputs",
+                        alias,
+                        union_plan.inputs.len()
+                    );
+                    if let Some(first_input) = union_plan.inputs.first() {
+                        if let LogicalPlan::ViewScan(scan) = first_input.as_ref() {
+                            log::debug!("get_properties_with_table_alias: First UNION input is ViewScan, is_denormalized={}, from_node_properties={:?}, to_node_properties={:?}",
+                                scan.is_denormalized,
+                                scan.from_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()),
+                                scan.to_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()));
+
+                            // Try from_node_properties first
+                            if let Some(from_props) = &scan.from_node_properties {
+                                let properties = extract_sorted_properties(from_props);
+                                if !properties.is_empty() {
+                                    log::debug!("get_properties_with_table_alias: Returning {} from_node_properties from UNION for '{}'", properties.len(), alias);
+                                    return Ok((properties, None));
+                                }
+                            }
+                            // Then try to_node_properties
+                            if let Some(to_props) = &scan.to_node_properties {
+                                let properties = extract_sorted_properties(to_props);
+                                if !properties.is_empty() {
+                                    log::debug!("get_properties_with_table_alias: Returning {} to_node_properties from UNION for '{}'", properties.len(), alias);
+                                    return Ok((properties, None));
+                                }
+                            }
+                            // Fallback to property_mapping
+                            let properties = extract_sorted_properties(&scan.property_mapping);
+                            if !properties.is_empty() {
+                                log::debug!("get_properties_with_table_alias: Returning {} property_mapping from UNION for '{}'", properties.len(), alias);
+                                return Ok((properties, None));
+                            }
+                        }
+                    }
                 }
             }
             LogicalPlan::GraphRel(rel) => {
