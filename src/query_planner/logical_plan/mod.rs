@@ -1102,30 +1102,35 @@ impl Union {
 
 impl<'a> From<CypherReturnItem<'a>> for ProjectionItem {
     fn from(value: CypherReturnItem<'a>) -> Self {
-        // Infer alias from expression if not explicitly provided with AS
-        let inferred_alias = if value.alias.is_none() {
+        // Determine the column alias using this priority:
+        // 1. Explicit AS alias (highest priority)
+        // 2. Original text from the query (preserves user input exactly)
+        // 3. Inferred from expression structure (fallback for backward compatibility)
+        let col_alias = if let Some(explicit_alias) = value.alias {
+            // Explicit AS alias takes precedence
+            Some(ColumnAlias(explicit_alias.to_string()))
+        } else if let Some(original_text) = value.original_text {
+            // Use captured original expression text (Neo4j behavior)
+            Some(ColumnAlias(original_text.to_string()))
+        } else {
+            // Fallback: infer from expression structure
             match &value.expression {
                 // For property access like "u.name", use "u.name" as alias (Neo4j behavior)
                 // Neo4j returns qualified names by default: RETURN u.name → column "u.name"
-                CypherExpression::PropertyAccessExp(prop_access) => {
-                    Some(format!("{}.{}", prop_access.base, prop_access.key))
-                }
+                CypherExpression::PropertyAccessExp(prop_access) => Some(ColumnAlias(format!(
+                    "{}.{}",
+                    prop_access.base, prop_access.key
+                ))),
                 // For simple variables like "u", use "u" as alias
-                CypherExpression::Variable(var) => Some(var.to_string()),
-                // For function calls, could infer from function name, but keep None for now
+                CypherExpression::Variable(var) => Some(ColumnAlias(var.to_string())),
+                // For other expressions, no default alias
                 _ => None,
             }
-        } else {
-            None
         };
 
         ProjectionItem {
             expression: LogicalExpr::try_from(value.expression).unwrap(),
-            col_alias: value
-                .alias
-                .map(|alias| ColumnAlias(alias.to_string()))
-                .or_else(|| inferred_alias.map(ColumnAlias)),
-            // belongs_to_table: None, // This will be set during planning phase
+            col_alias,
         }
     }
 }
@@ -1557,6 +1562,7 @@ mod tests {
         let ast_return_item = CypherReturnItem {
             expression: CypherExpression::Variable("customer_name"),
             alias: Some("full_name"),
+            original_text: None,
         };
 
         let projection_item = ProjectionItem::from(ast_return_item);

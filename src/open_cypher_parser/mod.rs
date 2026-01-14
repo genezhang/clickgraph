@@ -571,6 +571,7 @@ mod tests {
                     key: "name",
                 }),
                 alias: Some("otherName"),
+                original_text: None,
             }],
         };
         assert_eq!(return_clause, expected_return_clause);
@@ -718,6 +719,7 @@ mod tests {
                 ReturnItem {
                     expression: Expression::Variable("p"),
                     alias: Some("tom_hardy"),
+                    original_text: None,
                 },
                 // movie.name AS movieName
                 ReturnItem {
@@ -726,6 +728,7 @@ mod tests {
                         key: "name",
                     }),
                     alias: Some("movieName"),
+                    original_text: None,
                 },
                 // (a)-[]->(c)
                 ReturnItem {
@@ -751,6 +754,7 @@ mod tests {
                         },
                     ])),
                     alias: None,
+                    original_text: Some("(a)-[]->(c)"),
                 },
             ],
         };
@@ -893,6 +897,7 @@ mod tests {
             return_items: vec![ReturnItem {
                 expression: Expression::Variable("r"),
                 alias: None,
+                original_text: Some("r"),
             }],
         };
         assert_eq!(return_clause, expected_return_clause);
@@ -984,6 +989,7 @@ mod tests {
             return_items: vec![ReturnItem {
                 expression: Expression::Variable("n"),
                 alias: None,
+                original_text: Some("n"),
             }],
         };
         assert_eq!(return_clause, expected_return_clause);
@@ -1146,6 +1152,7 @@ mod tests {
             return_items: vec![ReturnItem {
                 expression: Expression::Variable("andres"),
                 alias: None,
+                original_text: Some("andres"),
             }],
         };
         assert_eq!(return_clause, expected_return_clause);
@@ -1266,6 +1273,7 @@ mod tests {
             return_items: vec![ReturnItem {
                 expression: Expression::Variable("p"),
                 alias: None,
+                original_text: Some("p"),
             }],
         };
         assert_eq!(return_clause, expected_return_clause);
@@ -1405,6 +1413,7 @@ mod tests {
             return_items: vec![ReturnItem {
                 expression: Expression::Variable("p"),
                 alias: None,
+                original_text: Some("p"),
             }],
         };
         assert_eq!(return_clause, expected_return_clause);

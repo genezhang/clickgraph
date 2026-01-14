@@ -110,6 +110,9 @@ pub struct ReturnClause<'a> {
 pub struct ReturnItem<'a> {
     pub expression: Expression<'a>,
     pub alias: Option<&'a str>,
+    /// Original text of the expression from the query, used as default alias when no explicit AS is provided
+    /// This preserves the exact user input including spacing, matching Neo4j's behavior
+    pub original_text: Option<&'a str>,
 }
 
 #[derive(Debug, PartialEq, Clone)]

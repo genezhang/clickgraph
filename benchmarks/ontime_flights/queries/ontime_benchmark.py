@@ -10,8 +10,8 @@ Schema: benchmarks/schemas/ontime_benchmark.yaml
 
 ClickHouse Connection:
   - Host: localhost:18123
-  - User: default
-  - Password: mypass
+  - User: test_user
+  - Password: test_pass
   - Database: default
   - Table: flights
 
