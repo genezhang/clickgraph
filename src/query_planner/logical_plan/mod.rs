@@ -773,6 +773,22 @@ impl Unwind {
     ///
     /// # Example
     /// ```rust
+    /// use clickgraph::query_planner::logical_plan::{Unwind, LogicalPlan};
+    /// use clickgraph::query_planner::logical_expr::{LogicalExpr, Literal};
+    /// use std::sync::Arc;
+    ///
+    /// // Create a sample Unwind node
+    /// let old_unwind = Unwind {
+    ///     input: Arc::new(LogicalPlan::get_empty_match_plan()),
+    ///     expression: LogicalExpr::Literal(Literal::String("test".to_string())),
+    ///     alias: "test_alias".to_string(),
+    ///     label: Some("test_label".to_string()),
+    ///     tuple_properties: Some(vec![]),
+    /// };
+    ///
+    /// // Create a transformed input plan
+    /// let transformed_input = Arc::new(LogicalPlan::get_empty_match_plan());
+    ///
     /// let new_unwind = old_unwind.with_new_input(transformed_input);
     /// // tuple_properties, label, expression, alias all preserved
     /// ```

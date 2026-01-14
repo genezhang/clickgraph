@@ -5710,9 +5710,12 @@ fn find_all_with_clauses_grouped(
 ///
 /// # Example
 /// ```rust
-/// let mut with_cte_render = render_without_with_detection(plan, schema)?;
-/// let mut all_ctes = Vec::new();
-/// hoist_nested_ctes(&mut with_cte_render, &mut all_ctes);
+/// // Create sample plan and schema (would be provided in real usage)
+/// // let plan = Arc::new(LogicalPlan::default()); // Placeholder
+/// // let schema = GraphSchema::default(); // Placeholder
+/// // let mut with_cte_render = render_without_with_detection(plan, &schema)?;
+/// // let mut all_ctes = Vec::new();
+/// // hoist_nested_ctes(&mut with_cte_render, &mut all_ctes);
 /// // all_ctes now contains any VLP CTEs that were nested in with_cte_render
 /// ```
 fn hoist_nested_ctes(from: &mut RenderPlan, to: &mut Vec<Cte>) {
@@ -6054,9 +6057,12 @@ fn prune_joins_covered_by_cte(
 ///
 /// # Example
 /// ```rust
-/// let mut with_cte_render = render_without_with_detection(plan, schema)?;
-/// let mut all_ctes = Vec::new();
-/// hoist_nested_ctes(&mut with_cte_render, &mut all_ctes);
+/// // Create sample plan and schema (would be provided in real usage)
+/// // let plan = Arc::new(LogicalPlan::default()); // Placeholder
+/// // let schema = GraphSchema::default(); // Placeholder
+/// // let mut with_cte_render = render_without_with_detection(plan, &schema)?;
+/// // let mut all_ctes = Vec::new();
+/// // hoist_nested_ctes(&mut with_cte_render, &mut all_ctes);
 /// // all_ctes now contains any VLP CTEs that were nested in with_cte_render
 /// ```
 

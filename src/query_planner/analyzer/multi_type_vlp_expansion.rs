@@ -75,11 +75,23 @@ impl PathEnumeration {
 /// Vector of valid path enumerations, filtered by schema constraints
 ///
 /// # Example
-/// ```
+/// ```rust
+/// use clickgraph::query_planner::analyzer::multi_type_vlp_expansion::enumerate_vlp_paths;
+/// use clickgraph::graph_catalog::graph_schema::GraphSchema;
+/// use std::collections::HashMap;
+///
+/// // Create a minimal schema for demonstration
+/// let schema = GraphSchema::build(
+///     1,
+///     "test_db".to_string(),
+///     HashMap::new(), // nodes
+///     HashMap::new(), // relationships
+/// );
+///
 /// let paths = enumerate_vlp_paths(
-///     &["User"],
-///     &["FOLLOWS", "AUTHORED"],
-///     &["User", "Post"],
+///     &["User".to_string()],
+///     &["FOLLOWS".to_string(), "AUTHORED".to_string()],
+///     &["User".to_string(), "Post".to_string()],
 ///     1,
 ///     2,
 ///     &schema

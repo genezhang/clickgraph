@@ -37,9 +37,9 @@
 /// ```
 /// use clickgraph::utils::cte_naming::generate_cte_name;
 ///
-/// assert_eq!(generate_cte_name(&["p"], 1), "with_p_cte_1");
-/// assert_eq!(generate_cte_name(&["p", "friends"], 1), "with_friends_p_cte_1");  // sorted!
-/// assert_eq!(generate_cte_name(&[], 1), "with_cte_1");
+/// assert_eq!(generate_cte_name(&["p" as &str], 1), "with_p_cte_1");
+/// assert_eq!(generate_cte_name(&["p" as &str, "friends" as &str], 1), "with_friends_p_cte_1");  // sorted!
+/// assert_eq!(generate_cte_name(&[] as &[&str], 1), "with_cte_1");
 /// ```
 pub fn generate_cte_name(aliases: &[impl AsRef<str>], counter: usize) -> String {
     let base = generate_cte_base_name(aliases);
@@ -57,9 +57,9 @@ pub fn generate_cte_name(aliases: &[impl AsRef<str>], counter: usize) -> String 
 /// ```
 /// use clickgraph::utils::cte_naming::generate_cte_base_name;
 ///
-/// assert_eq!(generate_cte_base_name(&["p"]), "with_p_cte");
-/// assert_eq!(generate_cte_base_name(&["p", "friends"]), "with_friends_p_cte");  // sorted!
-/// assert_eq!(generate_cte_base_name(&[]), "with_cte");
+/// assert_eq!(generate_cte_base_name(&["p" as &str]), "with_p_cte");
+/// assert_eq!(generate_cte_base_name(&["p" as &str, "friends" as &str]), "with_friends_p_cte");  // sorted!
+/// assert_eq!(generate_cte_base_name(&[] as &[&str]), "with_cte");
 /// ```
 pub fn generate_cte_base_name(aliases: &[impl AsRef<str>]) -> String {
     // Sort aliases to ensure consistent naming
