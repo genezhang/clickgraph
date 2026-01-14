@@ -883,47 +883,36 @@ pub fn parse_property_access(input: &'_ str) -> IResult<&'_ str, Expression<'_>>
     };
 
     // Try to parse additional chained properties: .property2.property3...
-    loop {
-        // Try to parse another .property
-        let chain_result = preceded(char('.'), parse_property_name).parse(input);
+    // Note: Currently only supports one additional property due to PropertyAccess limitations
+    if let Ok((new_input, next_key)) = preceded(char('.'), parse_property_name).parse(input) {
+        // Check if this is a temporal accessor - if so, convert to function call
+        let temporal_accessors = [
+            "year",
+            "month",
+            "day",
+            "hour",
+            "minute",
+            "second",
+            "millisecond",
+            "microsecond",
+            "nanosecond",
+        ];
 
-        match chain_result {
-            Ok((new_input, next_key)) => {
-                // Check if this is a temporal accessor - if so, convert to function call
-                let temporal_accessors = [
-                    "year",
-                    "month",
-                    "day",
-                    "hour",
-                    "minute",
-                    "second",
-                    "millisecond",
-                    "microsecond",
-                    "nanosecond",
-                ];
-
-                if temporal_accessors.contains(&next_key) {
-                    // Convert current_expr.temporal_accessor to temporal_accessor(current_expr)
-                    return Ok((
-                        new_input,
-                        Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
-                            name: next_key.to_string(),
-                            args: vec![current_expr],
-                        }),
-                    ));
-                }
-
-                // Not a temporal accessor - continue building property chain
-                // But we need PropertyAccess to support Expression as base, not just &str
-                // For now, we'll stop chaining after first property if not temporal
-                input = new_input;
-                break;
-            }
-            Err(_) => {
-                // No more properties to chain
-                break;
-            }
+        if temporal_accessors.contains(&next_key) {
+            // Convert current_expr.temporal_accessor to temporal_accessor(current_expr)
+            return Ok((
+                new_input,
+                Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
+                    name: next_key.to_string(),
+                    args: vec![current_expr],
+                }),
+            ));
         }
+
+        // Not a temporal accessor - continue building property chain
+        // But we need PropertyAccess to support Expression as base, not just &str
+        // For now, we'll stop chaining after first property if not temporal
+        input = new_input;
     }
 
     Ok((input, current_expr))
