@@ -1088,7 +1088,7 @@ impl<'a> From<CypherReturnItem<'a>> for ProjectionItem {
         };
 
         ProjectionItem {
-            expression: value.expression.into(),
+            expression: LogicalExpr::try_from(value.expression).unwrap(),
             col_alias: value
                 .alias
                 .map(|alias| ColumnAlias(alias.to_string()))
@@ -1098,28 +1098,32 @@ impl<'a> From<CypherReturnItem<'a>> for ProjectionItem {
     }
 }
 
-impl<'a> From<WithItem<'a>> for ProjectionItem {
-    fn from(value: WithItem<'a>) -> Self {
-        ProjectionItem {
-            expression: value.expression.into(),
+impl<'a> TryFrom<WithItem<'a>> for ProjectionItem {
+    type Error = crate::query_planner::logical_expr::errors::LogicalExprError;
+
+    fn try_from(value: WithItem<'a>) -> Result<Self, Self::Error> {
+        Ok(ProjectionItem {
+            expression: LogicalExpr::try_from(value.expression)?,
             col_alias: value.alias.map(|alias| ColumnAlias(alias.to_string())),
-        }
+        })
     }
 }
 
-impl<'a> From<CypherOrderByItem<'a>> for OrderByItem {
-    fn from(value: CypherOrderByItem<'a>) -> Self {
-        OrderByItem {
+impl<'a> TryFrom<CypherOrderByItem<'a>> for OrderByItem {
+    type Error = crate::query_planner::logical_expr::errors::LogicalExprError;
+
+    fn try_from(value: CypherOrderByItem<'a>) -> Result<Self, Self::Error> {
+        Ok(OrderByItem {
             expression: if let CypherExpression::Variable(var) = value.expression {
                 LogicalExpr::ColumnAlias(ColumnAlias(var.to_string()))
             } else {
-                value.expression.into()
+                LogicalExpr::try_from(value.expression)?
             },
             order: match value.order {
                 CypherOrerByOrder::Asc => OrderByOrder::Asc,
                 CypherOrerByOrder::Desc => OrderByOrder::Desc,
             },
-        }
+        })
     }
 }
 
@@ -1544,7 +1548,7 @@ mod tests {
             order: CypherOrerByOrder::Desc,
         };
 
-        let order_by_item = OrderByItem::from(ast_order_item);
+        let order_by_item = OrderByItem::try_from(ast_order_item).unwrap();
 
         match order_by_item.expression {
             LogicalExpr::ColumnAlias(alias) => assert_eq!(alias.0, "price"),

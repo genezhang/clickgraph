@@ -1282,7 +1282,7 @@ fn traverse_connected_pattern_with_mode<'a>(
         let start_node_props = start_node_ref
             .properties
             .clone()
-            .map(|props| props.into_iter().map(Property::from).collect())
+            .map(|props| props.into_iter().map(|p| Property::try_from(p).unwrap()).collect())
             .unwrap_or_else(Vec::new);
 
         // Extract end node info early - needed for filtering anonymous edge types
@@ -1405,7 +1405,7 @@ fn traverse_connected_pattern_with_mode<'a>(
         let rel_properties = rel
             .properties
             .clone()
-            .map(|props| props.into_iter().map(Property::from).collect())
+            .map(|props| props.into_iter().map(|p| Property::try_from(p).unwrap()).collect())
             .unwrap_or_else(Vec::new);
 
         crate::debug_print!(
@@ -1417,7 +1417,7 @@ fn traverse_connected_pattern_with_mode<'a>(
         let end_node_props = end_node_ref
             .properties
             .clone()
-            .map(|props| props.into_iter().map(Property::from).collect())
+            .map(|props| props.into_iter().map(|p| Property::try_from(p).unwrap()).collect())
             .unwrap_or_else(Vec::new);
 
         // if start alias already present in ctx map, it means the current nested connected pattern's start node will be connecting at right side plan and end node will be at the left
@@ -2195,7 +2195,7 @@ fn traverse_node_pattern(
     let node_props: Vec<Property> = node_pattern
         .properties
         .clone()
-        .map(|props| props.into_iter().map(Property::from).collect())
+        .map(|props| props.into_iter().map(|p| Property::try_from(p).unwrap()).collect())
         .unwrap_or_default();
 
     // if alias already present in ctx map then just add its conditions and do not add it in the logical plan
