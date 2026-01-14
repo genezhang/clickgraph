@@ -132,7 +132,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             labels: graph_rel.labels.clone(),
                             is_optional: graph_rel.is_optional, // Preserve optional flag
                             anchor_connection: graph_rel.anchor_connection.clone(),
-            cte_references: std::collections::HashMap::new(),
+                            cte_references: std::collections::HashMap::new(),
                         }));
 
                         // Rebuild projection with new GraphRel, and return without Filter wrapper
@@ -179,7 +179,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                         labels: graph_rel.labels.clone(),
                         is_optional: graph_rel.is_optional, // Preserve optional flag
                         anchor_connection: graph_rel.anchor_connection.clone(),
-            cte_references: std::collections::HashMap::new(),
+                        cte_references: std::collections::HashMap::new(),
                     }));
 
                     // Return the GraphRel directly, removing the Filter wrapper
@@ -294,8 +294,11 @@ impl OptimizerPass for FilterIntoGraphRel {
 
             // For all other node types, recurse through children
             LogicalPlan::GraphNode(graph_node) => {
-                log::info!("FilterIntoGraphRel: Processing GraphNode alias='{}'", graph_node.alias);
-                
+                log::info!(
+                    "FilterIntoGraphRel: Processing GraphNode alias='{}'",
+                    graph_node.alias
+                );
+
                 // CRITICAL FIX: Inject filters for THIS SPECIFIC ALIAS only
                 // Check if the child is a ViewScan and if we have filters for this GraphNode's alias
                 if let LogicalPlan::ViewScan(view_scan) = graph_node.input.as_ref() {
@@ -307,23 +310,26 @@ impl OptimizerPass for FilterIntoGraphRel {
                             graph_node.alias,
                             filters.len()
                         );
-                        
+
                         if !filters.is_empty() && view_scan.view_filter.is_none() {
                             log::info!(
                                 "FilterIntoGraphRel: Injecting {} filters for alias '{}' into its ViewScan",
                                 filters.len(),
                                 graph_node.alias
                             );
-                            
+
                             // Combine filters with AND
-                            use crate::query_planner::logical_expr::{Operator, OperatorApplication};
-                            let combined_predicate = filters.iter().cloned().reduce(|acc, filter| {
-                                LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                                    operator: Operator::And,
-                                    operands: vec![acc, filter],
-                                })
-                            });
-                            
+                            use crate::query_planner::logical_expr::{
+                                Operator, OperatorApplication,
+                            };
+                            let combined_predicate =
+                                filters.iter().cloned().reduce(|acc, filter| {
+                                    LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                                        operator: Operator::And,
+                                        operands: vec![acc, filter],
+                                    })
+                                });
+
                             if let Some(predicate) = combined_predicate {
                                 // Create new ViewScan with the filter
                                 let new_view_scan = Arc::new(LogicalPlan::ViewScan(Arc::new(
@@ -337,11 +343,17 @@ impl OptimizerPass for FilterIntoGraphRel {
                                         from_id: view_scan.from_id.clone(),
                                         to_id: view_scan.to_id.clone(),
                                         input: view_scan.input.clone(),
-                                        view_parameter_names: view_scan.view_parameter_names.clone(),
-                                        view_parameter_values: view_scan.view_parameter_values.clone(),
+                                        view_parameter_names: view_scan
+                                            .view_parameter_names
+                                            .clone(),
+                                        view_parameter_values: view_scan
+                                            .view_parameter_values
+                                            .clone(),
                                         use_final: view_scan.use_final,
                                         is_denormalized: view_scan.is_denormalized,
-                                        from_node_properties: view_scan.from_node_properties.clone(),
+                                        from_node_properties: view_scan
+                                            .from_node_properties
+                                            .clone(),
                                         to_node_properties: view_scan.to_node_properties.clone(),
                                         type_column: view_scan.type_column.clone(),
                                         type_values: view_scan.type_values.clone(),
@@ -350,17 +362,20 @@ impl OptimizerPass for FilterIntoGraphRel {
                                         schema_filter: view_scan.schema_filter.clone(),
                                     },
                                 )));
-                                
+
                                 // Create new GraphNode with updated ViewScan
-                                let new_graph_node = crate::query_planner::logical_plan::GraphNode {
-                                    input: new_view_scan,
-                                    alias: graph_node.alias.clone(),
-                                    label: graph_node.label.clone(),
-                                    is_denormalized: graph_node.is_denormalized,
-                                    projected_columns: graph_node.projected_columns.clone(),
-                                };
-                                
-                                return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(new_graph_node))));
+                                let new_graph_node =
+                                    crate::query_planner::logical_plan::GraphNode {
+                                        input: new_view_scan,
+                                        alias: graph_node.alias.clone(),
+                                        label: graph_node.label.clone(),
+                                        is_denormalized: graph_node.is_denormalized,
+                                        projected_columns: graph_node.projected_columns.clone(),
+                                    };
+
+                                return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(
+                                    new_graph_node,
+                                ))));
                             }
                         } else if !filters.is_empty() && view_scan.view_filter.is_some() {
                             log::info!(
@@ -375,7 +390,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                         );
                     }
                 }
-                
+
                 // Default: recursively optimize child
                 let child_tf = self.optimize(graph_node.input.clone(), plan_ctx)?;
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
@@ -644,7 +659,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                             alias: graph_node.alias.clone(),
                                             label: graph_node.label.clone(),
                                             is_denormalized: graph_node.is_denormalized,
-            projected_columns: None,
+                                            projected_columns: None,
                                         },
                                     ));
 
@@ -872,7 +887,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             labels: graph_rel.labels.clone(),
                             is_optional: graph_rel.is_optional,
                             anchor_connection: graph_rel.anchor_connection.clone(),
-            cte_references: std::collections::HashMap::new(),
+                            cte_references: std::collections::HashMap::new(),
                         }));
 
                         return Ok(Transformed::Yes(new_graph_rel));
@@ -897,7 +912,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                     "FilterIntoGraphRel: ViewScan handler reached for source_table='{}' (standalone, not part of GraphNode)",
                     view_scan.source_table
                 );
-                
+
                 // Don't inject filters here - they should have been handled by GraphNode case
                 // If we reach here, it's a ViewScan that doesn't have a corresponding GraphNode wrapper
                 // (e.g., relationship center ViewScans), which shouldn't get node property filters

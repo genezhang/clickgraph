@@ -184,7 +184,7 @@ pub struct NodeDefinition {
     /// Source table name
     pub table: String,
     /// Node identifier - PROPERTY NAME(S) for node ID (graph layer concept)
-    /// 
+    ///
     /// **Important**: These are Cypher property names, not database column names.
     /// Column names are resolved through property_mappings. If a property is not
     /// in property_mappings, an identity mapping is auto-generated (property → column).
@@ -764,7 +764,7 @@ fn build_relationship_schema(
         .get(&to_node)
         .map(|schema| schema.table_name.clone())
         .unwrap_or_else(|| to_node.clone()); // Fall back to to_node if not found
-        
+
     log::debug!(
         "Resolving relationship nodes: from_node='{}' -> from_table='{}', to_node='{}' -> to_table='{}'",
         from_node,
@@ -831,10 +831,10 @@ fn build_relationship_schema(
             .values()
             .flat_map(|pv| pv.get_columns())
             .collect(),
-        from_node,                          // 🟢 GRAPH: Store label from YAML
-        to_node,                            // 🟢 GRAPH: Store label from YAML
-        from_node_table: from_node_table,   // 🔵 RELATIONAL: Resolved table name
-        to_node_table: to_node_table,       // 🔵 RELATIONAL: Resolved table name
+        from_node,                        // 🟢 GRAPH: Store label from YAML
+        to_node,                          // 🟢 GRAPH: Store label from YAML
+        from_node_table: from_node_table, // 🔵 RELATIONAL: Resolved table name
+        to_node_table: to_node_table,     // 🔵 RELATIONAL: Resolved table name
         from_id: rel_def.from_id.clone(),
         to_id: rel_def.to_id.clone(),
         from_node_id_dtype: "UInt64".to_string(),
@@ -958,10 +958,10 @@ fn build_standard_edge_schema(
             .values()
             .flat_map(|pv| pv.get_columns())
             .collect(),
-        from_node: std_edge.from_node.clone(),          // 🟢 GRAPH: Store label from YAML
-        to_node: std_edge.to_node.clone(),              // 🟢 GRAPH: Store label from YAML
-        from_node_table: resolved_from_node,            // 🔵 RELATIONAL: Resolved table name
-        to_node_table: resolved_to_node,                // 🔵 RELATIONAL: Resolved table name
+        from_node: std_edge.from_node.clone(), // 🟢 GRAPH: Store label from YAML
+        to_node: std_edge.to_node.clone(),     // 🟢 GRAPH: Store label from YAML
+        from_node_table: resolved_from_node,   // 🔵 RELATIONAL: Resolved table name
+        to_node_table: resolved_to_node,       // 🔵 RELATIONAL: Resolved table name
         from_id: std_edge.from_id.clone(),
         to_id: std_edge.to_id.clone(),
         from_node_id_dtype: "UInt64".to_string(),
@@ -1029,10 +1029,10 @@ fn build_polymorphic_edge_schemas(
                 .values()
                 .flat_map(|pv| pv.get_columns())
                 .collect(),
-            from_node: from_node.clone(),               // 🟢 GRAPH: Label or "$any"
-            to_node: to_node.clone(),                   // 🟢 GRAPH: Label or "$any"
-            from_node_table: from_node.clone(),         // 🔵 RELATIONAL: Same as label for polymorphic
-            to_node_table: to_node.clone(),             // 🔵 RELATIONAL: Same as label for polymorphic
+            from_node: from_node.clone(), // 🟢 GRAPH: Label or "$any"
+            to_node: to_node.clone(),     // 🟢 GRAPH: Label or "$any"
+            from_node_table: from_node.clone(), // 🔵 RELATIONAL: Same as label for polymorphic
+            to_node_table: to_node.clone(), // 🔵 RELATIONAL: Same as label for polymorphic
             from_id: poly_edge.from_id.clone(),
             to_id: poly_edge.to_id.clone(),
             from_node_id_dtype: "UInt64".to_string(),
@@ -2323,9 +2323,7 @@ mod node_id_identity_mapping_tests {
             node_id: Identifier::Single("user_id".to_string()),
             label_column: None,
             label_value: None,
-            properties: HashMap::from([
-                ("name".to_string(), "full_name".to_string()),
-            ]),
+            properties: HashMap::from([("name".to_string(), "full_name".to_string())]),
             view_parameters: None,
             use_final: None,
             filter: None,
@@ -2341,15 +2339,15 @@ mod node_id_identity_mapping_tests {
             engine: None,
         };
 
-        let node_schema = build_node_schema(&node_def, &discovery)
-            .expect("Failed to build node schema");
+        let node_schema =
+            build_node_schema(&node_def, &discovery).expect("Failed to build node schema");
 
         // Verify that user_id has an identity mapping (user_id -> user_id)
         assert!(
             node_schema.property_mappings.contains_key("user_id"),
             "node_id property 'user_id' should have auto-generated identity mapping"
         );
-        
+
         let user_id_mapping = &node_schema.property_mappings["user_id"];
         assert_eq!(
             user_id_mapping.to_sql_column_only(),
@@ -2372,15 +2370,10 @@ mod node_id_identity_mapping_tests {
             label: "Account".to_string(),
             database: "test".to_string(),
             table: "accounts".to_string(),
-            node_id: Identifier::Composite(vec![
-                "tenant_id".to_string(),
-                "account_id".to_string(),
-            ]),
+            node_id: Identifier::Composite(vec!["tenant_id".to_string(), "account_id".to_string()]),
             label_column: None,
             label_value: None,
-            properties: HashMap::from([
-                ("balance".to_string(), "account_balance".to_string()),
-            ]),
+            properties: HashMap::from([("balance".to_string(), "account_balance".to_string())]),
             view_parameters: None,
             use_final: None,
             filter: None,
@@ -2396,8 +2389,8 @@ mod node_id_identity_mapping_tests {
             engine: None,
         };
 
-        let node_schema = build_node_schema(&node_def, &discovery)
-            .expect("Failed to build node schema");
+        let node_schema =
+            build_node_schema(&node_def, &discovery).expect("Failed to build node schema");
 
         // Verify both composite ID properties have identity mappings
         assert!(
@@ -2447,8 +2440,8 @@ mod node_id_identity_mapping_tests {
             engine: None,
         };
 
-        let node_schema = build_node_schema(&node_def, &discovery)
-            .expect("Failed to build node schema");
+        let node_schema =
+            build_node_schema(&node_def, &discovery).expect("Failed to build node schema");
 
         // Verify that explicit mapping is used, not identity mapping
         assert!(node_schema.property_mappings.contains_key("ip"));
@@ -2494,21 +2487,26 @@ graph_schema:
 
         assert_eq!(config.graph_schema.nodes.len(), 1);
         let node_def = &config.graph_schema.nodes[0];
-        
+
         // Verify composite node_id was parsed
         assert!(node_def.node_id.is_composite());
         assert_eq!(node_def.node_id.columns(), vec!["tenant_id", "account_id"]);
 
         // Convert to GraphSchema
-        let schema = config.to_graph_schema()
+        let schema = config
+            .to_graph_schema()
             .expect("Failed to convert composite schema to GraphSchema");
 
-        let node_schema = schema.get_node_schema_opt("Account")
+        let node_schema = schema
+            .get_node_schema_opt("Account")
             .expect("Account node should exist");
 
         // Verify NodeIdSchema has composite ID
         assert!(node_schema.node_id.is_composite());
-        assert_eq!(node_schema.node_id.columns(), vec!["tenant_id", "account_id"]);
+        assert_eq!(
+            node_schema.node_id.columns(),
+            vec!["tenant_id", "account_id"]
+        );
 
         // Verify identity mappings were auto-generated for both ID columns
         assert!(node_schema.property_mappings.contains_key("tenant_id"));

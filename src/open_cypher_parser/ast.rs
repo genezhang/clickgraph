@@ -200,9 +200,9 @@ pub enum PathPattern<'a> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct NodePattern<'a> {
-    pub name: Option<&'a str>,                    // `a` in `(a:Person)`
-    pub labels: Option<Vec<&'a str>>,             // `Person` in `(a:Person)` or `Person|Post` in `(a:Person|Post)`
-    pub properties: Option<Vec<Property<'a>>>,    // `{name: "Charlie Sheen"}`
+    pub name: Option<&'a str>,                 // `a` in `(a:Person)`
+    pub labels: Option<Vec<&'a str>>, // `Person` in `(a:Person)` or `Person|Post` in `(a:Person|Post)`
+    pub properties: Option<Vec<Property<'a>>>, // `{name: "Charlie Sheen"}`
 }
 
 impl<'a> NodePattern<'a> {
@@ -210,10 +210,11 @@ impl<'a> NodePattern<'a> {
     pub fn first_label(&self) -> Option<&'a str> {
         self.labels.as_ref().and_then(|l| l.first()).copied()
     }
-    
+
     /// Check if node has a specific label
     pub fn has_label(&self, label: &str) -> bool {
-        self.labels.as_ref()
+        self.labels
+            .as_ref()
             .map(|labels| labels.iter().any(|l| *l == label))
             .unwrap_or(false)
     }

@@ -235,7 +235,8 @@ impl AliasResolverContext {
                 let transformed_expr = self.transform_expr(u.expression.clone());
                 // Use with_new_input then modify expression to preserve all metadata
                 LogicalPlan::Unwind(
-                    u.with_new_input(transformed_input).with_new_expression(transformed_expr),
+                    u.with_new_input(transformed_input)
+                        .with_new_expression(transformed_expr),
                 )
             }
             LogicalPlan::CartesianProduct(cp) => {

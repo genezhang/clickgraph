@@ -361,7 +361,7 @@ impl PlanCtx {
         if let Some(ctx) = self.alias_table_ctx_map.get(alias) {
             return Ok(ctx);
         }
-        
+
         // WITH scope acts as a barrier - don't look beyond it
         // This implements WITH's shielding semantics: only exported variables are visible
         if self.is_with_scope {
@@ -369,12 +369,12 @@ impl PlanCtx {
                 alias: alias.to_string(),
             });
         }
-        
+
         // Search parent scope recursively (scope chain)
         if let Some(parent) = &self.parent_scope {
             return parent.get_table_ctx(alias);
         }
-        
+
         // Not found in any scope
         Err(PlanCtxError::TableCtx {
             alias: alias.to_string(),
@@ -412,7 +412,7 @@ impl PlanCtx {
     }
 
     /// Get mutable reference to table context in CURRENT SCOPE ONLY.
-    /// 
+    ///
     /// NOTE: This does NOT search parent scopes. Mutable access is restricted to
     /// the current scope to maintain proper scope isolation. If you need to mutate
     /// a variable from a parent scope (e.g., from WITH), it should already be in
@@ -440,7 +440,7 @@ impl PlanCtx {
     // }
 
     /// Get optional mutable reference to table context in CURRENT SCOPE ONLY.
-    /// 
+    ///
     /// NOTE: This does NOT search parent scopes. See get_mut_table_ctx() for rationale.
     pub fn get_mut_table_ctx_opt(&mut self, alias: &str) -> Option<&mut TableCtx> {
         self.alias_table_ctx_map.get_mut(alias)
@@ -678,8 +678,12 @@ impl PlanCtx {
 
                 // Extract property name from PropertyValue enum
                 let property_name = match &prop_access.column {
-                    crate::graph_catalog::expression_parser::PropertyValue::Column(col) => col.clone(),
-                    crate::graph_catalog::expression_parser::PropertyValue::Expression(expr) => expr.clone(),
+                    crate::graph_catalog::expression_parser::PropertyValue::Column(col) => {
+                        col.clone()
+                    }
+                    crate::graph_catalog::expression_parser::PropertyValue::Expression(expr) => {
+                        expr.clone()
+                    }
                 };
 
                 // CTE column name follows convention: variablename_propertyname
@@ -696,7 +700,12 @@ impl PlanCtx {
             }
         }
 
-        log::info!("📊 Registered CTE '{}' with {} columns: {:?}", cte_name, columns.len(), columns);
+        log::info!(
+            "📊 Registered CTE '{}' with {} columns: {:?}",
+            cte_name,
+            columns.len(),
+            columns
+        );
         self.cte_columns.insert(cte_name.to_string(), columns);
     }
 
@@ -746,11 +755,7 @@ impl PlanCtx {
     /// Example: WITH tag, post → stores tag: (false, ["Tag"]), post: (false, ["Post"])
     ///
     /// This enables property resolution after WITH: `WITH tag ... RETURN tag.name`
-    pub fn register_cte_entity_types(
-        &mut self,
-        cte_name: &str,
-        exported_aliases: &[String],
-    ) {
+    pub fn register_cte_entity_types(&mut self, cte_name: &str, exported_aliases: &[String]) {
         let mut entity_types = HashMap::new();
 
         for alias in exported_aliases {
@@ -778,7 +783,8 @@ impl PlanCtx {
             }
         }
 
-        self.cte_entity_types.insert(cte_name.to_string(), entity_types);
+        self.cte_entity_types
+            .insert(cte_name.to_string(), entity_types);
     }
 
     /// Get entity type information for a CTE alias
@@ -789,10 +795,12 @@ impl PlanCtx {
     ///
     /// # Returns
     /// Some((is_rel, labels)) if found, None otherwise
-    pub fn get_cte_entity_type(&self, cte_name: &str, alias: &str) -> Option<&(bool, Option<Vec<String>>)> {
-        self.cte_entity_types
-            .get(cte_name)?
-            .get(alias)
+    pub fn get_cte_entity_type(
+        &self,
+        cte_name: &str,
+        alias: &str,
+    ) -> Option<&(bool, Option<Vec<String>>)> {
+        self.cte_entity_types.get(cte_name)?.get(alias)
     }
 
     /// Get property requirements for optimization

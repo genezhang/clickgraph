@@ -164,8 +164,11 @@ mod tests {
                 println!("WHERE parsed: {:?}", clause);
                 println!("Remaining: {:?}", remaining);
                 // Should have "RETURN..." as remaining
-                assert!(remaining.trim().starts_with("RETURN"), 
-                    "Expected RETURN to be in remaining, got: {}", remaining);
+                assert!(
+                    remaining.trim().starts_with("RETURN"),
+                    "Expected RETURN to be in remaining, got: {}",
+                    remaining
+                );
             }
             Err(e) => {
                 panic!("WHERE clause parsing failed unexpectedly: {:?}", e);

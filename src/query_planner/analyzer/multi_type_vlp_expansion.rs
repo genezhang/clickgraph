@@ -102,13 +102,8 @@ pub fn enumerate_vlp_paths(
 
     // Generate paths for each length from min_hops to max_hops
     for length in min_hops..=max_hops {
-        let paths_of_length = generate_paths_of_length(
-            start_labels,
-            rel_types,
-            end_labels,
-            length,
-            schema,
-        );
+        let paths_of_length =
+            generate_paths_of_length(start_labels, rel_types, end_labels, length, schema);
         all_paths.extend(paths_of_length);
     }
 
@@ -241,7 +236,7 @@ fn find_edges_from_node<'a>(
 mod tests {
     use super::*;
     use crate::graph_catalog::config::Identifier;
-    use crate::graph_catalog::graph_schema::{NodeSchema, NodeIdSchema};
+    use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema};
     use std::collections::HashMap;
 
     fn create_test_schema() -> GraphSchema {
@@ -366,7 +361,7 @@ mod tests {
     #[test]
     fn test_enumerate_single_hop_single_type() {
         let schema = create_test_schema();
-        
+
         // Simple case: User -[FOLLOWS]-> User
         let paths = enumerate_vlp_paths(
             &[String::from("User")],
@@ -387,7 +382,7 @@ mod tests {
     #[test]
     fn test_enumerate_multi_type_single_hop() {
         let schema = create_test_schema();
-        
+
         // Multi-type: User -[FOLLOWS|AUTHORED]-> (User|Post)
         let paths = enumerate_vlp_paths(
             &[String::from("User")],
@@ -421,7 +416,7 @@ mod tests {
     #[test]
     fn test_enumerate_two_hop_multi_type() {
         let schema = create_test_schema();
-        
+
         // 2-hop: User -[FOLLOWS|AUTHORED*2]-> (User|Post)
         let paths = enumerate_vlp_paths(
             &[String::from("User")],
@@ -436,7 +431,7 @@ mod tests {
         // 1. User -[FOLLOWS]-> User -[FOLLOWS]-> User
         // 2. User -[FOLLOWS]-> User -[AUTHORED]-> Post
         // Note: User -[AUTHORED]-> Post -[???]-> ??? has no outgoing edges from Post
-        
+
         assert!(paths.len() >= 2, "Should have at least 2 valid 2-hop paths");
 
         // Check for User-FOLLOWS-User-FOLLOWS-User
@@ -446,7 +441,10 @@ mod tests {
                 && p.hops[1].rel_type == "FOLLOWS"
                 && p.end_type() == Some("User")
         });
-        assert!(double_follows.is_some(), "Should have User-FOLLOWS-User-FOLLOWS-User path");
+        assert!(
+            double_follows.is_some(),
+            "Should have User-FOLLOWS-User-FOLLOWS-User path"
+        );
 
         // Check for User-FOLLOWS-User-AUTHORED-Post
         let follows_authored = paths.iter().find(|p| {
@@ -455,13 +453,16 @@ mod tests {
                 && p.hops[1].rel_type == "AUTHORED"
                 && p.end_type() == Some("Post")
         });
-        assert!(follows_authored.is_some(), "Should have User-FOLLOWS-User-AUTHORED-Post path");
+        assert!(
+            follows_authored.is_some(),
+            "Should have User-FOLLOWS-User-AUTHORED-Post path"
+        );
     }
 
     #[test]
     fn test_no_valid_paths() {
         let schema = create_test_schema();
-        
+
         // Invalid: Post has no outgoing edges in our test schema
         let paths = enumerate_vlp_paths(
             &[String::from("Post")],
@@ -478,7 +479,7 @@ mod tests {
     #[test]
     fn test_path_enumeration_with_min_max_range() {
         let schema = create_test_schema();
-        
+
         // Range: User -[FOLLOWS*1..2]-> User
         let paths = enumerate_vlp_paths(
             &[String::from("User")],

@@ -1,15 +1,15 @@
 //! Variable-Length Path Transitivity Check
-//! 
+//!
 //! Validates that variable-length path patterns are semantically meaningful.
-//! 
+//!
 //! A VLP pattern `(a)-[r:TYPE*]->(b)` can only recurse if the relationship
 //! is transitive, meaning the TO node can also be a FROM node for the same
 //! relationship type.
-//! 
+//!
 //! Example:
 //!   ✓ Valid:   (Person)-[KNOWS*]->(Person)  - Person can KNOW another Person
 //!   ✗ Invalid: (IP)-[DNS_REQUESTED*]->(Domain) - Domain cannot DNS_REQUEST anything
-//! 
+//!
 //! For non-transitive patterns, this pass converts them to fixed-length (min_hops only):
 //!   `(a)-[r:TYPE*]->(b)` → `(a)-[r:TYPE*1]->(b)` (exactly 1 hop)
 //!   `(a)-[r:TYPE*2..]->(b)` → Semantic error (impossible, min_hops > 1 but non-transitive)
@@ -19,7 +19,7 @@ use std::sync::Arc;
 use crate::{
     graph_catalog::graph_schema::GraphSchema,
     query_planner::{
-        logical_plan::{LogicalPlan, GraphRel, VariableLengthSpec},
+        logical_plan::{GraphRel, LogicalPlan, VariableLengthSpec},
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
@@ -55,12 +55,14 @@ impl VlpTransitivityCheck {
         // Extract base type name from potentially composite key
         // "KNOWS::Person::Person" -> "KNOWS"
         let base_type = Self::extract_type_name(rel_type);
-        
+
         // Get all relationship schemas for this type
         let rel_schemas = schema.get_all_rel_schemas_by_type(base_type);
-        
+
         if rel_schemas.is_empty() {
-            return Err(AnalyzerError::RelationshipTypeNotFound(rel_type.to_string()));
+            return Err(AnalyzerError::RelationshipTypeNotFound(
+                rel_type.to_string(),
+            ));
         }
 
         // Check if ANY variant of this relationship type allows transitivity
@@ -68,12 +70,12 @@ impl VlpTransitivityCheck {
         // 1. from_node == to_node (self-loop like Person-KNOWS->Person), OR
         // 2. The to_node of one variant can be the from_node of another variant
         // 3. For polymorphic relationships: check if any to_label_value overlaps with from_label_values
-        
+
         // Collect all (from_node, to_node) pairs for this relationship type
         // For polymorphic relationships, use from_label_values and to_label_values
         let mut from_nodes = std::collections::HashSet::new();
         let mut to_nodes = std::collections::HashSet::new();
-        
+
         for rel_schema in &rel_schemas {
             // For polymorphic FROM side, use from_label_values if available
             if let Some(ref values) = rel_schema.from_label_values {
@@ -83,7 +85,7 @@ impl VlpTransitivityCheck {
             } else if rel_schema.from_node != "$any" {
                 from_nodes.insert(rel_schema.from_node.clone());
             }
-            
+
             // For polymorphic TO side, use to_label_values if available
             if let Some(ref values) = rel_schema.to_label_values {
                 for v in values {
@@ -92,9 +94,10 @@ impl VlpTransitivityCheck {
             } else if rel_schema.to_node != "$any" {
                 to_nodes.insert(rel_schema.to_node.clone());
             }
-            
+
             // Check for self-loop (from == to) - with polymorphic support
-            let from_set: std::collections::HashSet<_> = rel_schema.from_label_values
+            let from_set: std::collections::HashSet<_> = rel_schema
+                .from_label_values
                 .as_ref()
                 .map(|v| v.iter().cloned().collect())
                 .unwrap_or_else(|| {
@@ -104,7 +107,8 @@ impl VlpTransitivityCheck {
                     }
                     s
                 });
-            let to_set: std::collections::HashSet<_> = rel_schema.to_label_values
+            let to_set: std::collections::HashSet<_> = rel_schema
+                .to_label_values
                 .as_ref()
                 .map(|v| v.iter().cloned().collect())
                 .unwrap_or_else(|| {
@@ -114,7 +118,7 @@ impl VlpTransitivityCheck {
                     }
                     s
                 });
-            
+
             // If any value is in both from and to, it's a self-loop (transitive)
             if from_set.intersection(&to_set).next().is_some() {
                 log::info!(
@@ -126,10 +130,10 @@ impl VlpTransitivityCheck {
                 return Ok(true);
             }
         }
-        
+
         // Check if any to_node can also be a from_node (allows chaining)
         let can_chain = to_nodes.iter().any(|to| from_nodes.contains(to));
-        
+
         if can_chain {
             log::info!(
                 "✓ VLP transitivity: '{}' is transitive (to_nodes {:?} overlap with from_nodes {:?})",
@@ -145,7 +149,7 @@ impl VlpTransitivityCheck {
                 to_nodes
             );
         }
-        
+
         Ok(can_chain)
     }
 
@@ -194,7 +198,10 @@ impl VlpTransitivityCheck {
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         match plan.as_ref() {
             LogicalPlan::GraphRel(rel) => {
-                log::info!("🔍 VLP Transitivity Check: Found GraphRel, variable_length={:?}", rel.variable_length);
+                log::info!(
+                    "🔍 VLP Transitivity Check: Found GraphRel, variable_length={:?}",
+                    rel.variable_length
+                );
                 // Check if this is a variable-length path
                 if let Some(ref vlp_spec) = rel.variable_length {
                     log::info!("✓ VLP Transitivity Check: Has VLP spec: {:?}", vlp_spec);
@@ -204,55 +211,75 @@ impl VlpTransitivityCheck {
                         (Some(min), Some(max)) if min == max && min == 1 => false, // *1 is fine
                         _ => true, // *, *2, *1.., *2..5, etc. all need transitivity check
                     };
-                    
-                    log::info!("🔍 VLP Transitivity Check: needs_transitivity={}", needs_transitivity);
+
+                    log::info!(
+                        "🔍 VLP Transitivity Check: needs_transitivity={}",
+                        needs_transitivity
+                    );
                     if needs_transitivity {
                         log::info!("🔍 VLP Transitivity Check: Checking transitivity...");
                         // Get relationship type(s)
-                        let rel_types = rel.labels.as_ref()
-                            .ok_or_else(|| AnalyzerError::InvalidPlan(
-                                "Variable-length path missing relationship type".to_string()
-                            ))?;
+                        let rel_types = rel.labels.as_ref().ok_or_else(|| {
+                            AnalyzerError::InvalidPlan(
+                                "Variable-length path missing relationship type".to_string(),
+                            )
+                        })?;
                         log::info!("🔍 VLP Transitivity Check: rel_types={:?}", rel_types);
-                        
+
                         // For simplicity, check the first relationship type
                         // TODO: Handle multiple types (TYPE1|TYPE2)
-                        let rel_type = rel_types.first()
-                            .ok_or_else(|| AnalyzerError::InvalidPlan(
-                                "Variable-length path has empty relationship type list".to_string()
-                            ))?;
-                        
+                        let rel_type = rel_types.first().ok_or_else(|| {
+                            AnalyzerError::InvalidPlan(
+                                "Variable-length path has empty relationship type list".to_string(),
+                            )
+                        })?;
+
                         // Check if this relationship is transitive
-                        log::info!("⚠ VLP Transitivity Check: Checking if '{}' is transitive...", rel_type);
-                        let is_transitive = Self::is_transitive_relationship(rel_type, graph_schema)?;
-                        log::info!("⚠ VLP transitivity: '{}' is {}!", rel_type, if is_transitive { "TRANSITIVE" } else { "NON-TRANSITIVE" });
-                        
+                        log::info!(
+                            "⚠ VLP Transitivity Check: Checking if '{}' is transitive...",
+                            rel_type
+                        );
+                        let is_transitive =
+                            Self::is_transitive_relationship(rel_type, graph_schema)?;
+                        log::info!(
+                            "⚠ VLP transitivity: '{}' is {}!",
+                            rel_type,
+                            if is_transitive {
+                                "TRANSITIVE"
+                            } else {
+                                "NON-TRANSITIVE"
+                            }
+                        );
+
                         if !is_transitive {
                             // Validate - error if min_hops > 1
                             Self::validate_non_transitive(vlp_spec, rel_type)?;
-                            
+
                             // Remove variable_length entirely - becomes simple single-hop
                             log::info!(
                                 "→ Removing VLP from non-transitive [{}*] - converting to simple single-hop pattern",
                                 rel_type
                             );
-                            
+
                             // Create new GraphRel WITHOUT variable_length
                             let new_rel = GraphRel {
-                                variable_length: None,  // Remove VLP - just a normal edge
+                                variable_length: None, // Remove VLP - just a normal edge
                                 ..rel.clone()
                             };
-                            
+
                             return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphRel(new_rel))));
                         }
                     }
                 }
-                
+
                 // Recursively check child nodes
-                let left_result = self.check_transitivity_recursive(rel.left.clone(), plan_ctx, graph_schema)?;
-                let center_result = self.check_transitivity_recursive(rel.center.clone(), plan_ctx, graph_schema)?;
-                let right_result = self.check_transitivity_recursive(rel.right.clone(), plan_ctx, graph_schema)?;
-                
+                let left_result =
+                    self.check_transitivity_recursive(rel.left.clone(), plan_ctx, graph_schema)?;
+                let center_result =
+                    self.check_transitivity_recursive(rel.center.clone(), plan_ctx, graph_schema)?;
+                let right_result =
+                    self.check_transitivity_recursive(rel.right.clone(), plan_ctx, graph_schema)?;
+
                 if left_result.is_yes() || center_result.is_yes() || right_result.is_yes() {
                     let new_rel = GraphRel {
                         left: left_result.get_plan().clone(),
@@ -265,23 +292,30 @@ impl VlpTransitivityCheck {
                     Ok(Transformed::No(plan))
                 }
             }
-            
+
             // Recursively traverse other plan types
             LogicalPlan::Projection(proj) => {
-                let input_result = self.check_transitivity_recursive(proj.input.clone(), plan_ctx, graph_schema)?;
+                let input_result =
+                    self.check_transitivity_recursive(proj.input.clone(), plan_ctx, graph_schema)?;
                 if input_result.is_yes() {
                     let new_proj = crate::query_planner::logical_plan::Projection {
                         input: input_result.get_plan().clone(),
                         ..proj.clone()
                     };
-                    Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(new_proj))))
+                    Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
+                        new_proj,
+                    ))))
                 } else {
                     Ok(Transformed::No(plan))
                 }
             }
-            
+
             LogicalPlan::Filter(filter) => {
-                let input_result = self.check_transitivity_recursive(filter.input.clone(), plan_ctx, graph_schema)?;
+                let input_result = self.check_transitivity_recursive(
+                    filter.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 if input_result.is_yes() {
                     let new_filter = crate::query_planner::logical_plan::Filter {
                         input: input_result.get_plan().clone(),
@@ -292,22 +326,26 @@ impl VlpTransitivityCheck {
                     Ok(Transformed::No(plan))
                 }
             }
-            
+
             LogicalPlan::GraphJoins(joins) => {
-                let input_result = self.check_transitivity_recursive(joins.input.clone(), plan_ctx, graph_schema)?;
+                let input_result =
+                    self.check_transitivity_recursive(joins.input.clone(), plan_ctx, graph_schema)?;
                 if input_result.is_yes() {
                     let new_joins = crate::query_planner::logical_plan::GraphJoins {
                         input: input_result.get_plan().clone(),
                         ..joins.clone()
                     };
-                    Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphJoins(new_joins))))
+                    Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphJoins(
+                        new_joins,
+                    ))))
                 } else {
                     Ok(Transformed::No(plan))
                 }
             }
-            
+
             LogicalPlan::Limit(limit) => {
-                let input_result = self.check_transitivity_recursive(limit.input.clone(), plan_ctx, graph_schema)?;
+                let input_result =
+                    self.check_transitivity_recursive(limit.input.clone(), plan_ctx, graph_schema)?;
                 if input_result.is_yes() {
                     let new_limit = crate::query_planner::logical_plan::Limit {
                         input: input_result.get_plan().clone(),
@@ -318,7 +356,7 @@ impl VlpTransitivityCheck {
                     Ok(Transformed::No(plan))
                 }
             }
-            
+
             // Other plan types don't contain GraphRel, pass through
             _ => Ok(Transformed::No(plan)),
         }

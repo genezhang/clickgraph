@@ -60,7 +60,7 @@ impl SchemaInference {
                                     "SchemaInference: Resolving Empty → ViewScan for node '{}' with inferred label '{}'",
                                     graph_node.alias, label
                                 );
-                                
+
                                 // Create ViewScan using the inferred label
                                 if let Some(view_scan) = crate::query_planner::logical_plan::match_clause::try_generate_view_scan(
                                     &graph_node.alias,
@@ -87,7 +87,7 @@ impl SchemaInference {
                         }
                     }
                 }
-                
+
                 // Recurse into input (for ViewScan or other plan types)
                 let child_tf =
                     Self::push_inferred_table_names_to_scan(graph_node.input.clone(), plan_ctx)?;
@@ -99,7 +99,7 @@ impl SchemaInference {
                     Self::push_inferred_table_names_to_scan(graph_rel.left.clone(), plan_ctx)?;
                 let right_tf =
                     Self::push_inferred_table_names_to_scan(graph_rel.right.clone(), plan_ctx)?;
-                
+
                 // Check if center (relationship) is Empty - need to resolve to ViewScan
                 let center_tf = if matches!(graph_rel.center.as_ref(), LogicalPlan::Empty) {
                     // Get inferred relationship type from TableCtx
@@ -111,16 +111,24 @@ impl SchemaInference {
                                     "SchemaInference: Resolving Empty → ViewScan for relationship '{}' with inferred type '{}'",
                                     graph_rel.alias, rel_type
                                 );
-                                
+
                                 // Get left and right node labels for context
-                                let left_label = if let LogicalPlan::GraphNode(left_node) = graph_rel.left.as_ref() {
+                                let left_label = if let LogicalPlan::GraphNode(left_node) =
+                                    graph_rel.left.as_ref()
+                                {
                                     left_node.label.as_deref()
-                                } else { None };
-                                
-                                let right_label = if let LogicalPlan::GraphNode(right_node) = graph_rel.right.as_ref() {
+                                } else {
+                                    None
+                                };
+
+                                let right_label = if let LogicalPlan::GraphNode(right_node) =
+                                    graph_rel.right.as_ref()
+                                {
                                     right_node.label.as_deref()
-                                } else { None };
-                                
+                                } else {
+                                    None
+                                };
+
                                 // Create ViewScan for the relationship
                                 if let Some(view_scan) = crate::query_planner::logical_plan::match_clause::try_generate_relationship_view_scan(
                                     &graph_rel.alias,
@@ -143,10 +151,16 @@ impl SchemaInference {
                                     "SchemaInference: Relationship '{}' has multiple types {:?}, keeping Empty for UNION generation",
                                     graph_rel.alias, labels
                                 );
-                                Self::push_inferred_table_names_to_scan(graph_rel.center.clone(), plan_ctx)?
+                                Self::push_inferred_table_names_to_scan(
+                                    graph_rel.center.clone(),
+                                    plan_ctx,
+                                )?
                             }
                         } else {
-                            Self::push_inferred_table_names_to_scan(graph_rel.center.clone(), plan_ctx)?
+                            Self::push_inferred_table_names_to_scan(
+                                graph_rel.center.clone(),
+                                plan_ctx,
+                            )?
                         }
                     } else {
                         Self::push_inferred_table_names_to_scan(graph_rel.center.clone(), plan_ctx)?
@@ -154,7 +168,7 @@ impl SchemaInference {
                 } else {
                     Self::push_inferred_table_names_to_scan(graph_rel.center.clone(), plan_ctx)?
                 };
-                
+
                 graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
             }
             LogicalPlan::Cte(cte) => {

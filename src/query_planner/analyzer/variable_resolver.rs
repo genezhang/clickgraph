@@ -155,7 +155,6 @@ impl ScopeContext {
 
         None
     }
-
 }
 
 /// Variable Resolution Analyzer Pass
@@ -182,9 +181,13 @@ impl VariableResolver {
 
     /// Collect all GraphNode and GraphRel aliases from a plan tree
     /// This is used to populate scope with schema entities from MATCH patterns
-    /// 
+    ///
     /// Stops at WithClause boundaries (doesn't recurse past WITH)
-    fn collect_schema_entities(&self, plan: &Arc<LogicalPlan>, entities: &mut HashMap<String, EntityType>) {
+    fn collect_schema_entities(
+        &self,
+        plan: &Arc<LogicalPlan>,
+        entities: &mut HashMap<String, EntityType>,
+    ) {
         match plan.as_ref() {
             LogicalPlan::GraphNode(gn) => {
                 log::debug!("🔍 collect_schema_entities: Found GraphNode '{}'", gn.alias);
@@ -249,11 +252,16 @@ impl VariableResolver {
                 // Format: with_<alias1>_<alias2>_..._cte_<seq>
                 let cte_name = self.gen_cte_name(&wc.exported_aliases);
 
-                log::info!("🔍 VariableResolver: Generated CTE name '{}' from exported aliases {:?}", cte_name, wc.exported_aliases);
+                log::info!(
+                    "🔍 VariableResolver: Generated CTE name '{}' from exported aliases {:?}",
+                    cte_name,
+                    wc.exported_aliases
+                );
 
                 // Step 3: Create NEW scope for downstream
                 // Exported aliases from this WITH are visible downstream
-                let mut new_scope = ScopeContext::with_parent(scope.clone(), Some(cte_name.clone()));
+                let mut new_scope =
+                    ScopeContext::with_parent(scope.clone(), Some(cte_name.clone()));
 
                 for alias in &wc.exported_aliases {
                     new_scope.add_variable(
@@ -323,20 +331,26 @@ impl VariableResolver {
                 // Where 'b' is defined in MATCH after WITH, but before Projection
                 let mut schema_entities = HashMap::new();
                 self.collect_schema_entities(&new_input, &mut schema_entities);
-                log::info!("🔍 VariableResolver: Collected {} schema entities from input: {:?}", 
-                           schema_entities.len(), schema_entities.keys().collect::<Vec<_>>());
+                log::info!(
+                    "🔍 VariableResolver: Collected {} schema entities from input: {:?}",
+                    schema_entities.len(),
+                    schema_entities.keys().collect::<Vec<_>>()
+                );
 
                 // Build projection scope
                 // Start with current scope (or WITH exported scope if input is WithClause)
                 let mut projection_scope = if let LogicalPlan::WithClause(wc) = new_input.as_ref() {
                     log::info!("🔍 VariableResolver: Input is WithClause, adding {} exported aliases to scope",
                                wc.exported_aliases.len());
-                    
+
                     let mut with_scope = scope.clone();
                     for alias in &wc.exported_aliases {
                         if let Some(cte_name) = wc.cte_references.get(alias) {
-                            log::info!("🔍 VariableResolver: Adding WITH alias '{}' from CTE '{}'",
-                                       alias, cte_name);
+                            log::info!(
+                                "🔍 VariableResolver: Adding WITH alias '{}' from CTE '{}'",
+                                alias,
+                                cte_name
+                            );
                             with_scope.add_variable(
                                 alias.clone(),
                                 VarSource::CteColumn {
@@ -354,8 +368,11 @@ impl VariableResolver {
                 // CRITICAL FIX: Add all schema entities to projection scope
                 // This makes nodes/relationships from current MATCH visible in Projection
                 for (entity_alias, entity_type) in schema_entities {
-                    log::info!("🔍 VariableResolver: Adding schema entity '{}' ({:?}) to projection scope",
-                               entity_alias, entity_type);
+                    log::info!(
+                        "🔍 VariableResolver: Adding schema entity '{}' ({:?}) to projection scope",
+                        entity_alias,
+                        entity_type
+                    );
                     projection_scope.add_variable(
                         entity_alias.clone(),
                         VarSource::SchemaEntity {
@@ -404,7 +421,10 @@ impl VariableResolver {
                 // Resolve filter predicate
                 let resolved_predicate = self.resolve_expression(&filter.predicate, scope)?;
 
-                let pred_changed = !std::ptr::eq(&resolved_predicate as *const _, &filter.predicate as *const _);
+                let pred_changed = !std::ptr::eq(
+                    &resolved_predicate as *const _,
+                    &filter.predicate as *const _,
+                );
 
                 if input_changed || pred_changed {
                     let new_filter = crate::query_planner::logical_plan::Filter {
@@ -506,7 +526,8 @@ impl VariableResolver {
 
                 // Step 2: Resolve the expression being unwound (using current scope)
                 let resolved_expr = self.resolve_expression(&unwind.expression, scope)?;
-                let expr_changed = !std::ptr::eq(&resolved_expr as *const _, &unwind.expression as *const _);
+                let expr_changed =
+                    !std::ptr::eq(&resolved_expr as *const _, &unwind.expression as *const _);
 
                 // Step 3: IMPORTANT: Create new scope that includes the UNWIND alias
                 // The unwound variable is visible downstream as a schema entity
@@ -542,7 +563,10 @@ impl VariableResolver {
             }
 
             LogicalPlan::GraphNode(gn) => {
-                log::debug!("🔍 VariableResolver: Found GraphNode with alias '{}'", gn.alias);
+                log::debug!(
+                    "🔍 VariableResolver: Found GraphNode with alias '{}'",
+                    gn.alias
+                );
 
                 // CRITICAL: Add this node to the scope!
                 // This populates the scope with schema entities from MATCH
@@ -565,7 +589,7 @@ impl VariableResolver {
                         alias: gn.alias.clone(),
                         label: gn.label.clone(),
                         is_denormalized: gn.is_denormalized,
-            projected_columns: None,
+                        projected_columns: None,
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(new_gn))))
                 } else {
@@ -590,33 +614,46 @@ impl VariableResolver {
                 // Check if left_connection or right_connection refer to CTE variables
                 // If so, we need to track them in cte_references
                 let mut cte_refs = rel.cte_references.clone();
-                
+
                 // DEBUG: Log what's in scope
                 log::info!("🔍 VariableResolver [GraphRel alias='{}']: left_connection='{}', right_connection='{}'", 
                            rel.alias, rel.left_connection, rel.right_connection);
-                log::info!("🔍 VariableResolver [GraphRel alias='{}']: Scope has {} variables", 
-                           rel.alias, scope.visible_vars.len());
+                log::info!(
+                    "🔍 VariableResolver [GraphRel alias='{}']: Scope has {} variables",
+                    rel.alias,
+                    scope.visible_vars.len()
+                );
                 for (var_name, var_source) in scope.visible_vars.iter() {
                     log::info!("🔍   Scope variable: '{}' = {:?}", var_name, var_source);
                 }
-                
+
                 // Check left_connection
-                if let Some(VarSource::CteColumn { cte_name, .. }) = scope.lookup(&rel.left_connection) {
-                    log::info!("🔍 VariableResolver: left_connection '{}' is from CTE '{}'", 
-                               rel.left_connection, cte_name);
+                if let Some(VarSource::CteColumn { cte_name, .. }) =
+                    scope.lookup(&rel.left_connection)
+                {
+                    log::info!(
+                        "🔍 VariableResolver: left_connection '{}' is from CTE '{}'",
+                        rel.left_connection,
+                        cte_name
+                    );
                     cte_refs.insert(rel.left_connection.clone(), cte_name.clone());
                 }
-                
-                // Check right_connection  
-                if let Some(VarSource::CteColumn { cte_name, .. }) = scope.lookup(&rel.right_connection) {
-                    log::info!("🔍 VariableResolver: right_connection '{}' is from CTE '{}'", 
-                               rel.right_connection, cte_name);
+
+                // Check right_connection
+                if let Some(VarSource::CteColumn { cte_name, .. }) =
+                    scope.lookup(&rel.right_connection)
+                {
+                    log::info!(
+                        "🔍 VariableResolver: right_connection '{}' is from CTE '{}'",
+                        rel.right_connection,
+                        cte_name
+                    );
                     cte_refs.insert(rel.right_connection.clone(), cte_name.clone());
                 }
 
                 // Recurse into left, center, right
                 let left_resolved = self.resolve(rel.left.clone(), &new_scope)?;
-                
+
                 // CRITICAL FIX: If left is a WithClause, extract its exported scope for center/right
                 // This handles chained WITHs like: WITH a MATCH (a)-[:FOLLOWS]->(b) WITH a,b MATCH ...
                 // The second GraphRel needs "a" from the first WITH in its scope
@@ -643,14 +680,18 @@ impl VariableResolver {
                         }
                     }
                 };
-                
+
                 let center_resolved = self.resolve(rel.center.clone(), &center_right_scope)?;
                 let right_resolved = self.resolve(rel.right.clone(), &center_right_scope)?;
 
                 // Always create new GraphRel if we found CTE references, even if children didn't change
                 let has_cte_refs = !cte_refs.is_empty() && cte_refs != rel.cte_references;
-                
-                if left_resolved.is_yes() || center_resolved.is_yes() || right_resolved.is_yes() || has_cte_refs {
+
+                if left_resolved.is_yes()
+                    || center_resolved.is_yes()
+                    || right_resolved.is_yes()
+                    || has_cte_refs
+                {
                     let new_rel = crate::query_planner::logical_plan::GraphRel {
                         left: left_resolved.get_plan(),
                         center: center_resolved.get_plan(),
@@ -676,7 +717,10 @@ impl VariableResolver {
             }
 
             LogicalPlan::GraphJoins(gj) => {
-                log::debug!("🔍 VariableResolver: Processing GraphJoins with {} joins", gj.joins.len());
+                log::debug!(
+                    "🔍 VariableResolver: Processing GraphJoins with {} joins",
+                    gj.joins.len()
+                );
 
                 // Build scope with all table aliases from joins
                 let mut new_scope = scope.clone();
@@ -768,18 +812,18 @@ impl VariableResolver {
                         is_optional: cp.is_optional,
                         join_condition: cp.join_condition.clone(),
                     };
-                    Ok(Transformed::Yes(Arc::new(
-                        LogicalPlan::CartesianProduct(new_cp),
-                    )))
+                    Ok(Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(
+                        new_cp,
+                    ))))
                 } else {
                     Ok(Transformed::No(plan))
                 }
             }
 
             // Terminal nodes - no recursion, no changes
-            LogicalPlan::Empty
-            | LogicalPlan::ViewScan(_)
-            | LogicalPlan::PageRank(_) => Ok(Transformed::No(plan)),
+            LogicalPlan::Empty | LogicalPlan::ViewScan(_) | LogicalPlan::PageRank(_) => {
+                Ok(Transformed::No(plan))
+            }
 
             // Other node types - TODO
             _ => {
@@ -842,7 +886,10 @@ impl VariableResolver {
                     Some(VarSource::SchemaEntity { .. }) => {
                         // This is a schema entity (node/rel from MATCH)
                         // Leave as TableAlias - it will be expanded by renderer
-                        log::debug!("🔍 VariableResolver: '{}' is schema entity, keeping as TableAlias", alias.0);
+                        log::debug!(
+                            "🔍 VariableResolver: '{}' is schema entity, keeping as TableAlias",
+                            alias.0
+                        );
                         Ok(expr.clone())
                     }
 
@@ -1046,8 +1093,11 @@ impl AnalyzerPass for VariableResolver {
         fn count_cte_refs(plan: &LogicalPlan) -> usize {
             match plan {
                 LogicalPlan::WithClause(wc) => {
-                    eprintln!("🔬 VariableResolver RESULT: WithClause has {} cte_references: {:?}", 
-                             wc.cte_references.len(), wc.cte_references);
+                    eprintln!(
+                        "🔬 VariableResolver RESULT: WithClause has {} cte_references: {:?}",
+                        wc.cte_references.len(),
+                        wc.cte_references
+                    );
                     wc.cte_references.len() + count_cte_refs(&wc.input)
                 }
                 LogicalPlan::Projection(p) => count_cte_refs(&p.input),
@@ -1059,7 +1109,10 @@ impl AnalyzerPass for VariableResolver {
             Transformed::Yes(p) | Transformed::No(p) => p.as_ref(),
         };
         let total_refs = count_cte_refs(result_plan);
-        eprintln!("🔬 VariableResolver: RETURNING plan with {} total cte_references", total_refs);
+        eprintln!(
+            "🔬 VariableResolver: RETURNING plan with {} total cte_references",
+            total_refs
+        );
 
         log::info!(
             "🔍 VariableResolver: Completed - transformed: {}",

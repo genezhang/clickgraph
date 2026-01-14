@@ -21,7 +21,7 @@ fn empty_test_schema() -> GraphSchema {
 fn get_test_schema() -> GraphSchema {
     use crate::server::GLOBAL_SCHEMAS;
     const SCHEMA_NAME: &str = "default";
-    
+
     if let Some(schemas_lock) = GLOBAL_SCHEMAS.get() {
         if let Ok(schemas) = schemas_lock.try_read() {
             if let Some(schema) = schemas.get(SCHEMA_NAME) {
@@ -210,7 +210,7 @@ fn setup_test_schema() {
     );
 
     // Create node schemas
-    use crate::graph_catalog::graph_schema::{NodeSchema, NodeIdSchema};
+    use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema};
     let mut nodes = HashMap::new();
 
     // User node -> users table
@@ -342,8 +342,8 @@ mod multiple_relationship_tests {
 
         let query = parse_result.unwrap();
         let schema = get_test_schema();
-        let (logical_plan, _plan_ctx) =
-            build_logical_plan(&query, &schema, None, None, None).expect("Failed to build logical plan");
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
+            .expect("Failed to build logical plan");
 
         let render_plan = logical_plan.to_render_plan(&schema);
         assert!(
@@ -414,8 +414,8 @@ mod multiple_relationship_tests {
 
         let query = parse_result.unwrap();
         let schema = get_test_schema();
-        let (logical_plan, _plan_ctx) =
-            build_logical_plan(&query, &schema, None, None, None).expect("Failed to build logical plan");
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
+            .expect("Failed to build logical plan");
 
         let render_plan = logical_plan.to_render_plan(&schema);
         assert!(
@@ -507,8 +507,8 @@ mod multiple_relationship_tests {
 
         let query = parse_result.unwrap();
         let schema = get_test_schema();
-        let (logical_plan, _plan_ctx) =
-            build_logical_plan(&query, &schema, None, None, None).expect("Failed to build logical plan");
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
+            .expect("Failed to build logical plan");
 
         let render_plan = logical_plan.to_render_plan(&schema);
         assert!(
@@ -534,7 +534,7 @@ mod multiple_relationship_tests {
     // ==================== Multi-Hop Traversal Tests ====================
     // These tests verify the fix for the multi-hop join bug where the second
     // relationship's ON clause was being incorrectly filtered out.
-    // 
+    //
     // NOTE: These tests require complete schema setup including node tables.
     // The schema initialization isn't working properly in unit test context.
     // Multi-hop functionality is verified in integration tests instead.
@@ -558,8 +558,8 @@ mod multiple_relationship_tests {
 
         let query = parse_result.unwrap();
         let schema = get_test_schema();
-        let (logical_plan, _plan_ctx) =
-            build_logical_plan(&query, &schema, None, None, None).expect("Failed to build logical plan");
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
+            .expect("Failed to build logical plan");
 
         let render_plan = logical_plan.to_render_plan(&schema);
         assert!(
@@ -648,8 +648,8 @@ mod multiple_relationship_tests {
 
         let query = parse_result.unwrap();
         let schema = get_test_schema();
-        let (logical_plan, _plan_ctx) =
-            build_logical_plan(&query, &schema, None, None, None).expect("Failed to build logical plan");
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
+            .expect("Failed to build logical plan");
 
         let render_plan = logical_plan.to_render_plan(&schema);
         assert!(
@@ -710,8 +710,8 @@ mod multiple_relationship_tests {
 
         let query = parse_result.unwrap();
         let schema = get_test_schema();
-        let (logical_plan, _plan_ctx) =
-            build_logical_plan(&query, &schema, None, None, None).expect("Failed to build logical plan");
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
+            .expect("Failed to build logical plan");
 
         let render_plan = logical_plan.to_render_plan(&schema);
         assert!(
@@ -763,8 +763,8 @@ mod multiple_relationship_tests {
 
         let query = parse_result.unwrap();
         let schema = get_test_schema();
-        let (logical_plan, _plan_ctx) =
-            build_logical_plan(&query, &schema, None, None, None).expect("Failed to build logical plan");
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
+            .expect("Failed to build logical plan");
 
         let render_plan = logical_plan.to_render_plan(&schema);
         assert!(
@@ -808,8 +808,8 @@ mod multiple_relationship_tests {
 
         let query = parse_result.unwrap();
         let schema = get_test_schema();
-        let (logical_plan, _plan_ctx) =
-            build_logical_plan(&query, &schema, None, None, None).expect("Failed to build logical plan");
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
+            .expect("Failed to build logical plan");
 
         let render_plan = logical_plan.to_render_plan(&schema);
         assert!(
@@ -862,8 +862,8 @@ mod multiple_relationship_tests {
 
         let query = parse_result.unwrap();
         let schema = get_test_schema();
-        let (logical_plan, _plan_ctx) =
-            build_logical_plan(&query, &schema, None, None, None).expect("Failed to build logical plan");
+        let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
+            .expect("Failed to build logical plan");
 
         let render_plan = logical_plan.to_render_plan(&schema);
         assert!(

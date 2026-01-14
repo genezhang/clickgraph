@@ -15,9 +15,7 @@ use std::sync::Arc;
 use crate::{
     graph_catalog::graph_schema::GraphSchema,
     query_planner::{
-        analyzer::{
-            analyzer_pass::{AnalyzerPass, AnalyzerResult},
-        },
+        analyzer::analyzer_pass::{AnalyzerPass, AnalyzerResult},
         logical_expr::{
             AggregateFnCall, LogicalCase, LogicalExpr, OperatorApplication, PropertyAccess,
             ScalarFnCall,
@@ -35,10 +33,7 @@ pub struct CteColumnResolver;
 
 impl CteColumnResolver {
     /// Resolve a PropertyAccess expression to use CTE column names if applicable
-    fn resolve_property_access(
-        prop_access: &PropertyAccess,
-        plan_ctx: &PlanCtx,
-    ) -> PropertyAccess {
+    fn resolve_property_access(prop_access: &PropertyAccess, plan_ctx: &PlanCtx) -> PropertyAccess {
         let table_alias = &prop_access.table_alias.0;
 
         // Check if this table alias refers to a CTE
@@ -187,10 +182,7 @@ impl AnalyzerPass for CteColumnResolver {
                     self.analyze_with_graph_schema(rel.right.clone(), plan_ctx, _graph_schema)?;
 
                 // Rebuild if any child changed
-                if left_tf.is_yes()
-                    || center_tf.is_yes()
-                    || right_tf.is_yes()
-                {
+                if left_tf.is_yes() || center_tf.is_yes() || right_tf.is_yes() {
                     Transformed::Yes(Arc::new(LogicalPlan::GraphRel(
                         crate::query_planner::logical_plan::GraphRel {
                             left: left_tf.get_plan(),
@@ -250,8 +242,7 @@ impl AnalyzerPass for CteColumnResolver {
                     self.analyze_with_graph_schema(filter.input.clone(), plan_ctx, _graph_schema)?;
 
                 let resolved_predicate = Self::resolve_expr(&filter.predicate, plan_ctx);
-                let predicate_transformed =
-                    !matches!((&filter.predicate, &resolved_predicate), (a, b) if std::ptr::eq(a, b));
+                let predicate_transformed = !matches!((&filter.predicate, &resolved_predicate), (a, b) if std::ptr::eq(a, b));
 
                 if child_tf.is_yes() || predicate_transformed {
                     Transformed::Yes(Arc::new(LogicalPlan::Filter(Filter {
@@ -265,8 +256,11 @@ impl AnalyzerPass for CteColumnResolver {
 
             // GroupBy - resolve the group by expressions and having clause
             LogicalPlan::GroupBy(group_by) => {
-                let child_tf =
-                    self.analyze_with_graph_schema(group_by.input.clone(), plan_ctx, _graph_schema)?;
+                let child_tf = self.analyze_with_graph_schema(
+                    group_by.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
 
                 let resolved_expressions: Vec<LogicalExpr> = group_by
                     .expressions
@@ -294,8 +288,11 @@ impl AnalyzerPass for CteColumnResolver {
 
             // OrderBy - resolve the order by expressions
             LogicalPlan::OrderBy(order_by) => {
-                let child_tf =
-                    self.analyze_with_graph_schema(order_by.input.clone(), plan_ctx, _graph_schema)?;
+                let child_tf = self.analyze_with_graph_schema(
+                    order_by.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
 
                 let resolved_items: Vec<OrderByItem> = order_by
                     .items
@@ -417,7 +414,6 @@ impl AnalyzerPass for CteColumnResolver {
 
             // Leaf nodes - no recursion needed
             LogicalPlan::Empty
-
             | LogicalPlan::ViewScan(_)
             | LogicalPlan::Cte(_)
             | LogicalPlan::PageRank(_)
@@ -425,5 +421,4 @@ impl AnalyzerPass for CteColumnResolver {
             | LogicalPlan::CartesianProduct(_) => Transformed::No(logical_plan.clone()),
         })
     }
-
 }

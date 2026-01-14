@@ -12,25 +12,23 @@ use crate::{
         },
     },
 };
-use std::collections::HashMap;
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 // Import function translator for Neo4j -> ClickHouse function mappings
 use super::function_registry::get_function_mapping;
-use super::function_translator::{
-    get_ch_function_name, CH_PASSTHROUGH_PREFIX,
-};
+use super::function_translator::{get_ch_function_name, CH_PASSTHROUGH_PREFIX};
 
 /// Thread-local mapping of relationship alias → (from_id_column, to_id_column)
 /// Populated during JOIN rendering, used for IS NULL checks on relationship aliases
 thread_local! {
     static RELATIONSHIP_COLUMNS: RefCell<HashMap<String, (String, String)>> = RefCell::new(HashMap::new());
-    
+
     /// Thread-local mapping of CTE alias → property mapping (Cypher property → CTE column name)
     /// Example: "cnt_friend" → { "id" → "friend_id", "firstName" → "friend_firstName" }
     /// Populated from RenderPlan CTEs during SQL generation
     static CTE_PROPERTY_MAPPINGS: RefCell<HashMap<String, HashMap<String, String>>> = RefCell::new(HashMap::new());
-    
+
     /// Thread-local set of table aliases that are multi-type VLP endpoints
     /// Example: "x" for query (u)-[:FOLLOWS|AUTHORED*1..2]->(x)
     /// Properties on these aliases need JSON extraction from end_properties column
@@ -75,12 +73,12 @@ pub fn populate_relationship_columns_from_plan(plan: &RenderPlan) {
             cte_plans.push(cte_plan);
         }
     }
-    
+
     // Now populate the mapping (single borrow scope)
     RELATIONSHIP_COLUMNS.with(|rc| {
         let mut map = rc.borrow_mut();
         map.clear();
-        
+
         // Add joins from main plan - extract column from joining_on conditions
         for join in &plan.joins.0 {
             if let Some(from_col) = join.get_relationship_id_column() {
@@ -88,7 +86,7 @@ pub fn populate_relationship_columns_from_plan(plan: &RenderPlan) {
                 map.insert(join.table_alias.clone(), (from_col.clone(), from_col));
             }
         }
-        
+
         // Also process unions (each branch has its own joins)
         if let Some(ref union) = plan.union.0 {
             for union_plan in &union.input {
@@ -100,7 +98,7 @@ pub fn populate_relationship_columns_from_plan(plan: &RenderPlan) {
             }
         }
     });
-    
+
     // Process CTEs recursively AFTER releasing the borrow
     for cte_plan in cte_plans {
         populate_relationship_columns_from_plan(cte_plan);
@@ -113,18 +111,18 @@ fn populate_cte_property_mappings(plan: &RenderPlan) {
     CTE_PROPERTY_MAPPINGS.with(|cpm| {
         let mut map = cpm.borrow_mut();
         map.clear();
-        
+
         // Process each CTE in the plan
         for cte in &plan.ctes.0 {
             if let CteContent::Structured(ref cte_plan) = cte.content {
                 let mut property_map: HashMap<String, String> = HashMap::new();
-                
+
                 // Build property mapping from SELECT items
                 // Format: "property_name" → "cte_column_name"
                 for select_item in &cte_plan.select.items {
                     if let Some(ref col_alias) = select_item.col_alias {
                         let cte_col = col_alias.0.as_str();
-                        
+
                         // Handle patterns like "friend_id" or "friend.id" → property "id"
                         if let Some(underscore_pos) = cte_col.rfind('_') {
                             let property = &cte_col[underscore_pos + 1..];
@@ -135,19 +133,23 @@ fn populate_cte_property_mappings(plan: &RenderPlan) {
                         }
                     }
                 }
-                
+
                 if !property_map.is_empty() {
-                    log::debug!("🗺️  CTE '{}' property mapping: {:?}", cte.cte_name, property_map);
+                    log::debug!(
+                        "🗺️  CTE '{}' property mapping: {:?}",
+                        cte.cte_name,
+                        property_map
+                    );
                     map.insert(cte.cte_name.clone(), property_map.clone());
                 }
             }
         }
-        
+
         // Clear multi-type VLP aliases from previous queries (thread-local state)
         MULTI_TYPE_VLP_ALIASES.with(|mvla| {
             mvla.borrow_mut().clear();
         });
-        
+
         // Track multi-type VLP aliases for JSON property extraction
         // Multi-type VLP CTEs have names like "vlp_multi_type_u_x"
         // and their end_properties column contains JSON with node properties
@@ -156,28 +158,33 @@ fn populate_cte_property_mappings(plan: &RenderPlan) {
                 // Extract Cypher alias from CTE metadata if available
                 if let Some(ref cypher_end_alias) = cte.vlp_cypher_end_alias {
                     MULTI_TYPE_VLP_ALIASES.with(|mvla| {
-                        mvla.borrow_mut().insert(
-                            cypher_end_alias.clone(),
-                            cte.cte_name.clone()
-                        );
+                        mvla.borrow_mut()
+                            .insert(cypher_end_alias.clone(), cte.cte_name.clone());
                     });
-                    log::info!("🎯 Tracked multi-type VLP alias: '{}' → CTE '{}'", 
-                              cypher_end_alias, cte.cte_name);
+                    log::info!(
+                        "🎯 Tracked multi-type VLP alias: '{}' → CTE '{}'",
+                        cypher_end_alias,
+                        cte.cte_name
+                    );
                 }
             }
         }
-        
+
         // CRITICAL: Also scan main plan's FROM clause to map CTE aliases
         // Example: FROM with_cnt_friend_cte_1 AS cnt_friend
         // We need to map BOTH "with_cnt_friend_cte_1" AND "cnt_friend" to the same property mapping
         if let Some(ref from_table) = plan.from.0 {
             let table_name = &from_table.name;
             let alias = from_table.alias.as_ref().unwrap_or(table_name);
-            
+
             // If this FROM references a CTE (name starts with "with_" or matches a CTE name)
             if let Some(cte_mapping) = map.get(table_name).cloned() {
                 if alias != table_name {
-                    log::debug!("🔗 Aliasing CTE '{}' as '{}' with same property mapping", table_name, alias);
+                    log::debug!(
+                        "🔗 Aliasing CTE '{}' as '{}' with same property mapping",
+                        table_name,
+                        alias
+                    );
                     map.insert(alias.clone(), cte_mapping);
                 }
             }
@@ -189,10 +196,10 @@ fn populate_cte_property_mappings(plan: &RenderPlan) {
 pub fn render_plan_to_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
     // Pre-populate relationship columns mapping before rendering
     populate_relationship_columns_from_plan(&plan);
-    
+
     // Pre-populate CTE property mappings from CTE metadata
     populate_cte_property_mappings(&plan);
-    
+
     let mut sql = String::new();
 
     // If there's a Union, wrap it in a subquery for correct ClickHouse behavior.
@@ -408,7 +415,7 @@ impl ToSql for ArrayJoinItem {
         if self.0.is_empty() {
             return "".into();
         }
-        
+
         let mut sql = String::new();
         for array_join in &self.0 {
             sql.push_str(&format!(
@@ -469,11 +476,11 @@ impl ToSql for CteItems {
         // ClickHouse limitation: WITH RECURSIVE can only contain ONE recursive CTE
         // Solution: Keep first recursive CTE group in WITH RECURSIVE block,
         // wrap each additional recursive CTE group in a nested WITH RECURSIVE subquery
-        
+
         // Group CTEs: each recursive CTE with all following non-recursive CTEs (until next recursive or end)
         let mut cte_groups: Vec<Vec<&Cte>> = Vec::new();
         let mut current_group: Vec<&Cte> = Vec::new();
-        
+
         for cte in &self.0 {
             if cte.is_recursive {
                 // Start new group with this recursive CTE
@@ -486,28 +493,28 @@ impl ToSql for CteItems {
                 current_group.push(cte);
             }
         }
-        
+
         // Add final group
         if !current_group.is_empty() {
             cte_groups.push(current_group);
         }
-        
+
         // CRITICAL FIX: For groups 2+ that would be wrapped, extract trailing non-recursive CTEs
         // and move them to Group 1 (top level). This prevents:
         // 1. Duplicate CTE names (wrapper name = inner CTE name)
         // 2. Scope issues (WITH clause CTEs need to be accessible from final SELECT)
         if cte_groups.len() > 1 {
             let mut trailing_non_recursive: Vec<&Cte> = Vec::new();
-            
+
             // Process groups in reverse (from last to second)
             for group_idx in (1..cte_groups.len()).rev() {
                 let group = &mut cte_groups[group_idx];
-                
+
                 // Skip if first CTE isn't recursive (shouldn't happen based on grouping logic)
                 if group.is_empty() || !group[0].is_recursive {
                     continue;
                 }
-                
+
                 // Extract all trailing non-recursive CTEs from this group
                 let mut non_recursive_start = 1; // Start after the recursive CTE
                 for i in 1..group.len() {
@@ -515,20 +522,20 @@ impl ToSql for CteItems {
                         non_recursive_start = i + 1;
                     }
                 }
-                
+
                 if non_recursive_start < group.len() {
                     // Extract trailing non-recursive CTEs
                     let extracted: Vec<&Cte> = group.drain(non_recursive_start..).collect();
-                    trailing_non_recursive.splice(0..0, extracted);  // Prepend to maintain order
+                    trailing_non_recursive.splice(0..0, extracted); // Prepend to maintain order
                 }
             }
-            
+
             // Add extracted CTEs to Group 1 (top level)
             if !trailing_non_recursive.is_empty() {
                 cte_groups[0].extend(trailing_non_recursive);
             }
         }
-        
+
         // If no recursive CTEs at all
         if cte_groups.is_empty() || !cte_groups.iter().any(|g| g[0].is_recursive) {
             sql.push_str("WITH ");
@@ -541,7 +548,7 @@ impl ToSql for CteItems {
             }
             return sql;
         }
-        
+
         // Emit first group (WITH RECURSIVE block with first recursive CTE and its helpers)
         sql.push_str("WITH RECURSIVE ");
         let first_group = &cte_groups[0];
@@ -552,28 +559,28 @@ impl ToSql for CteItems {
             }
             sql.push('\n');
         }
-        
+
         // For additional groups (2nd recursive CTE onwards), wrap in subquery
         for group_idx in 1..cte_groups.len() {
             let group = &cte_groups[group_idx];
             let first_cte_in_group = group[0];
-            
+
             // Only wrap if this group has a recursive CTE
             if first_cte_in_group.is_recursive {
                 // Get the last CTE name in this group - that's what we'll expose
                 let last_cte_name = &group[group.len() - 1].cte_name;
-                
+
                 // Check if the first CTE already contains nested CTE definitions (VLP multi-tier pattern)
                 // This is indicated by the presence of multiple " AS (" in RawSql content
                 let first_cte_content = match &first_cte_in_group.content {
                     CteContent::RawSql(s) => Some(s.as_str()),
                     _ => None,
                 };
-                
+
                 let has_nested_ctes = first_cte_content
                     .map(|s| s.matches(" AS (").count() > 1)
                     .unwrap_or(false);
-                
+
                 if has_nested_ctes && group.len() == 1 {
                     // VLP CTE with multi-tier structure (e.g., "vlp_inner AS..., vlp AS...")
                     // Wrap the entire nested structure as-is
@@ -589,7 +596,7 @@ impl ToSql for CteItems {
                     sql.push_str(&format!("{} AS (\n", last_cte_name));
                     sql.push_str("  SELECT * FROM (\n");
                     sql.push_str("    WITH RECURSIVE ");
-                    
+
                     // Emit all CTEs in this group
                     for (i, cte) in group.iter().enumerate() {
                         sql.push_str(&cte.to_sql());
@@ -598,13 +605,13 @@ impl ToSql for CteItems {
                         }
                         sql.push('\n');
                     }
-                    
+
                     // Close the nested WITH and select the final CTE
                     sql.push_str("    SELECT * FROM ");
                     sql.push_str(last_cte_name);
                     sql.push_str("\n  )\n)");
                 }
-                
+
                 if group_idx + 1 < cte_groups.len() {
                     sql.push_str(",\n");
                 } else {
@@ -621,7 +628,7 @@ impl ToSql for CteItems {
                 }
             }
         }
-        
+
         sql
     }
 }
@@ -721,9 +728,12 @@ impl ToSql for Cte {
                 // Check if raw SQL already includes the CTE name and AS clause
                 // (legacy behavior from VariableLengthCteGenerator)
                 // or if we need to wrap it (new behavior from MultiTypeVlpJoinGenerator)
-                if sql.trim_start().to_lowercase().starts_with("with ") 
-                   || sql.trim_start().starts_with(&format!("{} AS", self.cte_name))
-                   || sql.contains(" AS (") {
+                if sql.trim_start().to_lowercase().starts_with("with ")
+                    || sql
+                        .trim_start()
+                        .starts_with(&format!("{} AS", self.cte_name))
+                    || sql.contains(" AS (")
+                {
                     // Already wrapped - use as-is
                     sql.clone()
                 } else {
@@ -1111,27 +1121,31 @@ impl RenderExpr {
                 column,
             }) => {
                 let col_name = column.raw();
-                log::info!("🔍 RenderExpr::PropertyAccessExp: {}.{}", table_alias.0, col_name);
-                
+                log::info!(
+                    "🔍 RenderExpr::PropertyAccessExp: {}.{}",
+                    table_alias.0,
+                    col_name
+                );
+
                 // Special case: Multi-type VLP properties stored in JSON
                 // Check if this table alias is a multi-type VLP endpoint
                 let multi_type_json_result = MULTI_TYPE_VLP_ALIASES.with(|mvla| {
                     let aliases = mvla.borrow();
-                    log::info!("🔍 Checking MULTI_TYPE_VLP_ALIASES for '{}' (map has {} entries)", 
+                    log::info!("🔍 Checking MULTI_TYPE_VLP_ALIASES for '{}' (map has {} entries)",
                               table_alias.0, aliases.len());
                     for (k, v) in aliases.iter() {
                         log::info!("  - '{}' → '{}'", k, v);
                     }
-                    
+
                     if aliases.contains_key(&table_alias.0) {
                         log::info!("🎯 Found '{}' in MULTI_TYPE_VLP_ALIASES!", table_alias.0);
                         // Properties like end_type, end_id, hop_count, path_relationships are direct CTE columns
-                        if matches!(col_name, "end_type" | "end_id" | "start_id" | "end_properties" 
+                        if matches!(col_name, "end_type" | "end_id" | "start_id" | "end_properties"
                                              | "hop_count" | "path_relationships") {
                             log::info!("🎯 Multi-type VLP CTE column: {}.{}", table_alias.0, col_name);
                             return Some(format!("{}.{}", table_alias.0, col_name));
                         }
-                        
+
                         // Regular properties need JSON extraction from end_properties
                         log::info!("🎯 Multi-type VLP JSON extraction: {}.{} → JSON_VALUE({}.end_properties, '$.{}')",
                                   table_alias.0, col_name, table_alias.0, col_name);
@@ -1144,37 +1158,46 @@ impl RenderExpr {
                     }
                     None
                 });
-                
+
                 if let Some(sql) = multi_type_json_result {
                     return sql;
                 }
-                
+
                 // Check if table_alias refers to a CTE and needs property mapping
                 let cte_mapped_result = CTE_PROPERTY_MAPPINGS.with(|cpm| {
                     let map = cpm.borrow();
                     if let Some(property_map) = map.get(&table_alias.0) {
                         if let Some(cte_col) = property_map.get(col_name) {
-                            log::debug!("🔧 CTE property mapping: {}.{} → {}", table_alias.0, col_name, cte_col);
+                            log::debug!(
+                                "🔧 CTE property mapping: {}.{} → {}",
+                                table_alias.0,
+                                col_name,
+                                cte_col
+                            );
                             return Some(format!("{}.{}", table_alias.0, cte_col));
                         }
                     }
                     None
                 });
-                
+
                 if let Some(sql) = cte_mapped_result {
                     return sql;
                 }
-                
+
                 // Property has been resolved from schema during query planning.
                 // Just use the resolved mapping directly.
                 column.to_sql(&table_alias.0)
             }
             RenderExpr::OperatorApplicationExp(op) => {
-                log::debug!("RenderExpr::to_sql() OperatorApplicationExp: operator={:?}, operands.len()={}", op.operator, op.operands.len());
+                log::debug!(
+                    "RenderExpr::to_sql() OperatorApplicationExp: operator={:?}, operands.len()={}",
+                    op.operator,
+                    op.operands.len()
+                );
                 for (i, operand) in op.operands.iter().enumerate() {
                     log::debug!("  operand[{}]: {:?}", i, operand);
                 }
-                
+
                 fn op_str(o: Operator) -> &'static str {
                     match o {
                         Operator::Addition => "+",
@@ -1208,15 +1231,19 @@ impl RenderExpr {
                 // Convert r.* to appropriate ID column for null checks (LEFT JOIN produces NULL for all columns)
                 // Since base tables have no NULLABLE columns, LEFT JOIN makes ALL columns NULL together,
                 // so checking ANY ID column is sufficient (even for composite keys).
-                if matches!(op.operator, Operator::IsNull | Operator::IsNotNull) 
+                if matches!(op.operator, Operator::IsNull | Operator::IsNotNull)
                     && op.operands.len() == 1
                 {
                     if let RenderExpr::PropertyAccessExp(prop) = &op.operands[0] {
                         let col_name = prop.column.raw();
                         if col_name == "*" {
                             let table_alias = &prop.table_alias.0;
-                            let op_str = if op.operator == Operator::IsNull { "IS NULL" } else { "IS NOT NULL" };
-                            
+                            let op_str = if op.operator == Operator::IsNull {
+                                "IS NULL"
+                            } else {
+                                "IS NOT NULL"
+                            };
+
                             // Look up the actual column name from the JOIN metadata (populated during rendering)
                             // This ensures we use the CORRECT column for the SPECIFIC relationship table
                             let id_col = RELATIONSHIP_COLUMNS.with(|rc| {
@@ -1235,7 +1262,7 @@ impl RenderExpr {
                                     )
                                 }
                             });
-                            
+
                             let id_sql = format!("{}.{}", table_alias, id_col);
                             return format!("{} {}", id_sql, op_str);
                         }
@@ -1423,7 +1450,7 @@ impl RenderExpr {
                 // - offset: 1-based index (Cypher uses 0-based, need to convert)
                 // - length: number of elements to extract
                 let array_sql = array.to_sql();
-                
+
                 match (from, to) {
                     (Some(from_expr), Some(to_expr)) => {
                         // [from..to] - both bounds specified
@@ -1630,8 +1657,12 @@ impl ToSql for OperatorApplication {
         let rendered: Vec<String> = self.operands.iter().map(|e| e.to_sql()).collect();
 
         // Debug operand information
-        log::debug!("OperatorApplication.to_sql(): operator={:?}, operands.len()={}, rendered.len()={}", 
-                    self.operator, self.operands.len(), rendered.len());
+        log::debug!(
+            "OperatorApplication.to_sql(): operator={:?}, operands.len()={}, rendered.len()={}",
+            self.operator,
+            self.operands.len(),
+            rendered.len()
+        );
         for (i, (op, r)) in self.operands.iter().zip(rendered.iter()).enumerate() {
             log::debug!("  operand[{}]: {:?} -> '{}'", i, op, r);
         }

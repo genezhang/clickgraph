@@ -1,7 +1,7 @@
 use clickgraph::{
     graph_catalog::{
         expression_parser::PropertyValue,
-        graph_schema::{GraphSchema, NodeSchema, NodeIdSchema},
+        graph_schema::{GraphSchema, NodeIdSchema, NodeSchema},
     },
     open_cypher_parser::parse_query,
     query_planner::logical_plan::plan_builder::build_logical_plan,
@@ -27,7 +27,10 @@ fn create_test_schema() -> GraphSchema {
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
-                props.insert("name".to_string(), PropertyValue::Column("name".to_string()));
+                props.insert(
+                    "name".to_string(),
+                    PropertyValue::Column("name".to_string()),
+                );
                 props.insert("age".to_string(), PropertyValue::Column("age".to_string()));
                 props
             },
@@ -56,7 +59,10 @@ fn create_test_schema() -> GraphSchema {
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
-                props.insert("total".to_string(), PropertyValue::Column("total".to_string()));
+                props.insert(
+                    "total".to_string(),
+                    PropertyValue::Column("total".to_string()),
+                );
                 props
             },
             view_parameters: None,
@@ -84,8 +90,14 @@ fn create_test_schema() -> GraphSchema {
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
-                props.insert("name".to_string(), PropertyValue::Column("name".to_string()));
-                props.insert("price".to_string(), PropertyValue::Column("price".to_string()));
+                props.insert(
+                    "name".to_string(),
+                    PropertyValue::Column("name".to_string()),
+                );
+                props.insert(
+                    "price".to_string(),
+                    PropertyValue::Column("price".to_string()),
+                );
                 props
             },
             view_parameters: None,
@@ -113,7 +125,10 @@ fn create_test_schema() -> GraphSchema {
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
-                props.insert("name".to_string(), PropertyValue::Column("name".to_string()));
+                props.insert(
+                    "name".to_string(),
+                    PropertyValue::Column("name".to_string()),
+                );
                 props
             },
             view_parameters: None,
@@ -141,7 +156,10 @@ fn create_test_schema() -> GraphSchema {
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
-                props.insert("value".to_string(), PropertyValue::Column("value".to_string()));
+                props.insert(
+                    "value".to_string(),
+                    PropertyValue::Column("value".to_string()),
+                );
                 props
             },
             view_parameters: None,
@@ -169,7 +187,10 @@ fn create_test_schema() -> GraphSchema {
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
-                props.insert("content".to_string(), PropertyValue::Column("content".to_string()));
+                props.insert(
+                    "content".to_string(),
+                    PropertyValue::Column("content".to_string()),
+                );
                 props
             },
             view_parameters: None,

@@ -476,15 +476,15 @@ impl GraphTRaversalPlanning {
             // The relationship UNION CTE is created in cte_extraction.rs
             // Nodes should just be regular scans/joins to base tables
             // Only wrap the relationship UNION in a CTE reference
-            
+
             let new_graph_rel = GraphRel {
-                left: graph_rel.left.clone(),  // Keep original node plan
+                left: graph_rel.left.clone(), // Keep original node plan
                 center: Arc::new(LogicalPlan::Cte(Cte {
                     input: rel_plan.clone(),
                     name: rel_cte_name,
                 })),
-                right: graph_rel.right.clone(),  // Keep original node plan
-                ..graph_rel.clone()  // Keep labels for schema lookups
+                right: graph_rel.right.clone(), // Keep original node plan
+                ..graph_rel.clone()             // Keep labels for schema lookups
             };
 
             Ok((new_graph_rel, ctxs_to_update))
@@ -514,28 +514,28 @@ impl GraphTRaversalPlanning {
 
                 // For alternate relationship types, only wrap the relationship in CTE
                 // Nodes remain as regular scans
-                
+
                 let new_graph_rel = GraphRel {
-                    left: graph_rel.left.clone(),  // Keep original node plan
+                    left: graph_rel.left.clone(), // Keep original node plan
                     center: Arc::new(LogicalPlan::Cte(Cte {
                         input: rel_plan.clone(),
                         name: rel_cte_name,
                     })),
-                    right: graph_rel.right.clone(),  // Keep original node plan
-                    ..graph_rel.clone()  // Keep labels for schema lookups
+                    right: graph_rel.right.clone(), // Keep original node plan
+                    ..graph_rel.clone()             // Keep labels for schema lookups
                 };
                 Ok((new_graph_rel, ctxs_to_update))
             } else {
                 // For alternate relationship types, only wrap the relationship in CTE
-                
+
                 let new_graph_rel = GraphRel {
-                    left: graph_rel.left.clone(),  // Keep original node plan
+                    left: graph_rel.left.clone(), // Keep original node plan
                     center: Arc::new(LogicalPlan::Cte(Cte {
                         input: rel_plan.clone(),
                         name: rel_cte_name,
                     })),
-                    right: graph_rel.right.clone(),  // Keep original node plan
-                    ..graph_rel.clone()  // Keep labels for schema lookups
+                    right: graph_rel.right.clone(), // Keep original node plan
+                    ..graph_rel.clone()             // Keep labels for schema lookups
                 };
 
                 Ok((new_graph_rel, ctxs_to_update))
@@ -591,10 +591,7 @@ impl GraphTRaversalPlanning {
             // let incoming_label = format!("{}_{}", graph_context.rel.label, Direction::Incoming);
 
             let rel_plan: Arc<LogicalPlan> = Arc::new(LogicalPlan::Union(Union {
-                inputs: vec![
-                    Arc::new(LogicalPlan::Empty),
-                    Arc::new(LogicalPlan::Empty),
-                ],
+                inputs: vec![Arc::new(LogicalPlan::Empty), Arc::new(LogicalPlan::Empty)],
                 union_type: UnionType::Distinct,
             }));
 
@@ -674,7 +671,10 @@ impl GraphTRaversalPlanning {
             let rel_cte_name = if let Some(labels) = &graph_rel.labels {
                 if labels.len() > 1 {
                     // Multi-variant relationship - use consistent naming with cte_extraction.rs
-                    format!("rel_{}_{}", graph_rel.left_connection, graph_rel.right_connection)
+                    format!(
+                        "rel_{}_{}",
+                        graph_rel.left_connection, graph_rel.right_connection
+                    )
                 } else {
                     // Single relationship - use label-based naming
                     format!(

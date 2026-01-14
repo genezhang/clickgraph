@@ -92,7 +92,7 @@ use crate::{
 /// Maximum number of relationship types that can be inferred when unspecified.
 /// Prevents excessive UNION ALL expansion that would generate extremely large queries.
 /// If inference would result in more types, user must specify explicit type(s).
-/// 
+///
 /// Limit of 5: Each inferred type creates a separate CTE branch in the query.
 /// For complex patterns with multiple inferences, this can combinatorially explode.
 /// Example: 5 edge types × 3 node labels = 15 CTE branches = very large SQL.
@@ -135,9 +135,12 @@ impl TypeInference {
                 // For multi-hop (a)-[r1]->(b)-[r2]->(c), we need to:
                 // 1. Process r1 first → establishes b's label
                 // 2. Then process r2 → can use b's label from step 1
-                let left_transformed = self.infer_labels_recursive(rel.left.clone(), plan_ctx, graph_schema)?;
-                let center_transformed = self.infer_labels_recursive(rel.center.clone(), plan_ctx, graph_schema)?;
-                let right_transformed = self.infer_labels_recursive(rel.right.clone(), plan_ctx, graph_schema)?;
+                let left_transformed =
+                    self.infer_labels_recursive(rel.left.clone(), plan_ctx, graph_schema)?;
+                let center_transformed =
+                    self.infer_labels_recursive(rel.center.clone(), plan_ctx, graph_schema)?;
+                let right_transformed =
+                    self.infer_labels_recursive(rel.right.clone(), plan_ctx, graph_schema)?;
 
                 // NOW infer labels for THIS level using updated plan_ctx from children
                 // Use UNIFIED constraint-based inference: gather all known facts, query schema together
@@ -156,12 +159,12 @@ impl TypeInference {
                 //   FOLLOWS: User → User
                 //   AUTHORED: User → Post
                 //   Therefore: x can be User OR Post → infer x.labels = [User, Post]
-                // 
+                //
                 // NOTE: We include single-hop patterns (*1) because they can still have multiple
                 // relationship types, which means the end node can be of multiple types.
-                let inferred_multi_labels = if right_label.is_none() 
-                    && rel.variable_length.is_some() 
-                    && edge_types.as_ref().map_or(false, |types| types.len() > 1) 
+                let inferred_multi_labels = if right_label.is_none()
+                    && rel.variable_length.is_some()
+                    && edge_types.as_ref().map_or(false, |types| types.len() > 1)
                 {
                     log::debug!(
                         "🎯 TypeInference: Multi-type VLP candidate detected for '{}': VLP={:?}, edge_types={:?}",
@@ -169,7 +172,7 @@ impl TypeInference {
                         rel.variable_length,
                         edge_types
                     );
-                    
+
                     // Collect to_node from each relationship type
                     let mut to_node_labels = std::collections::HashSet::new();
                     if let Some(ref types) = edge_types {
@@ -186,7 +189,7 @@ impl TypeInference {
                             }
                         }
                     }
-                    
+
                     let inferred_labels: Vec<String> = to_node_labels.into_iter().collect();
                     if !inferred_labels.is_empty() {
                         log::info!(
@@ -194,9 +197,11 @@ impl TypeInference {
                             rel.right_connection,
                             inferred_labels
                         );
-                        
+
                         // Update plan_ctx with inferred labels (plural)
-                        if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&rel.right_connection) {
+                        if let Some(table_ctx) =
+                            plan_ctx.get_mut_table_ctx_opt(&rel.right_connection)
+                        {
                             table_ctx.set_labels(Some(inferred_labels.clone()));
                         } else {
                             use crate::query_planner::plan_ctx::TableCtx;
@@ -205,13 +210,13 @@ impl TypeInference {
                                 TableCtx::build(
                                     rel.right_connection.clone(),
                                     Some(inferred_labels.clone()),
-                                    vec![],  // properties: empty for now
-                                    false,   // is_rel: false (this is a node)
-                                    false    // explicit_alias: false (inferred)
-                                )
+                                    vec![], // properties: empty for now
+                                    false,  // is_rel: false (this is a node)
+                                    false,  // explicit_alias: false (inferred)
+                                ),
                             );
                         }
-                        
+
                         // Return first label for backward compatibility with single-label logic
                         // The full labels list is now stored in plan_ctx for path enumeration
                         right_label = inferred_labels.first().cloned();
@@ -237,20 +242,26 @@ impl TypeInference {
                 log::info!(
                     "🔍 TypeInference: '{}' → [{}] → '{}' (labels: {:?}, {:?}{})",
                     rel.left_connection,
-                    edge_types.as_ref().map(|v| v.join("|")).unwrap_or_else(|| "?".to_string()),
+                    edge_types
+                        .as_ref()
+                        .map(|v| v.join("|"))
+                        .unwrap_or_else(|| "?".to_string()),
                     rel.right_connection,
                     left_label,
                     right_label,
-                    if inferred_multi_labels.is_some() { 
-                        format!(" [multi-type VLP inferred: {:?}]", inferred_multi_labels.as_ref().unwrap())
-                    } else { 
-                        String::new() 
+                    if inferred_multi_labels.is_some() {
+                        format!(
+                            " [multi-type VLP inferred: {:?}]",
+                            inferred_multi_labels.as_ref().unwrap()
+                        )
+                    } else {
+                        String::new()
                     }
                 );
 
                 // Check if we need to rebuild with inferred edge types
-                let needs_rebuild = left_transformed.is_yes() 
-                    || center_transformed.is_yes() 
+                let needs_rebuild = left_transformed.is_yes()
+                    || center_transformed.is_yes()
                     || right_transformed.is_yes()
                     || (edge_types.is_some() && edge_types != rel.labels)
                     || inferred_multi_labels.is_some();
@@ -269,7 +280,7 @@ impl TypeInference {
                         shortest_path_mode: rel.shortest_path_mode.clone(),
                         path_variable: rel.path_variable.clone(),
                         where_predicate: rel.where_predicate.clone(),
-                        labels: edge_types.or_else(|| rel.labels.clone()),  // Use inferred types
+                        labels: edge_types.or_else(|| rel.labels.clone()), // Use inferred types
                         is_optional: rel.is_optional,
                         anchor_connection: rel.anchor_connection.clone(),
                         cte_references: rel.cte_references.clone(),
@@ -282,8 +293,9 @@ impl TypeInference {
 
             LogicalPlan::WithClause(wc) => {
                 // Process input (pattern before WITH)
-                let input_transformed = self.infer_labels_recursive(wc.input.clone(), plan_ctx, graph_schema)?;
-                
+                let input_transformed =
+                    self.infer_labels_recursive(wc.input.clone(), plan_ctx, graph_schema)?;
+
                 if input_transformed.is_yes() {
                     let new_wc = crate::query_planner::logical_plan::WithClause {
                         input: input_transformed.get_plan().clone(),
@@ -303,21 +315,25 @@ impl TypeInference {
             }
 
             LogicalPlan::Projection(proj) => {
-                let input_transformed = self.infer_labels_recursive(proj.input.clone(), plan_ctx, graph_schema)?;
+                let input_transformed =
+                    self.infer_labels_recursive(proj.input.clone(), plan_ctx, graph_schema)?;
                 if input_transformed.is_yes() {
                     let new_proj = crate::query_planner::logical_plan::Projection {
                         input: input_transformed.get_plan().clone(),
                         items: proj.items.clone(),
                         distinct: proj.distinct,
                     };
-                    Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(new_proj))))
+                    Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
+                        new_proj,
+                    ))))
                 } else {
                     Ok(Transformed::No(plan))
                 }
             }
 
             LogicalPlan::Filter(filter) => {
-                let input_transformed = self.infer_labels_recursive(filter.input.clone(), plan_ctx, graph_schema)?;
+                let input_transformed =
+                    self.infer_labels_recursive(filter.input.clone(), plan_ctx, graph_schema)?;
                 if input_transformed.is_yes() {
                     let new_filter = crate::query_planner::logical_plan::Filter {
                         input: input_transformed.get_plan().clone(),
@@ -330,9 +346,11 @@ impl TypeInference {
             }
 
             LogicalPlan::CartesianProduct(cp) => {
-                let left_transformed = self.infer_labels_recursive(cp.left.clone(), plan_ctx, graph_schema)?;
-                let right_transformed = self.infer_labels_recursive(cp.right.clone(), plan_ctx, graph_schema)?;
-                
+                let left_transformed =
+                    self.infer_labels_recursive(cp.left.clone(), plan_ctx, graph_schema)?;
+                let right_transformed =
+                    self.infer_labels_recursive(cp.right.clone(), plan_ctx, graph_schema)?;
+
                 if left_transformed.is_yes() || right_transformed.is_yes() {
                     let new_cp = crate::query_planner::logical_plan::CartesianProduct {
                         left: left_transformed.get_plan().clone(),
@@ -340,7 +358,9 @@ impl TypeInference {
                         is_optional: cp.is_optional,
                         join_condition: cp.join_condition.clone(),
                     };
-                    Ok(Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(new_cp))))
+                    Ok(Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(
+                        new_cp,
+                    ))))
                 } else {
                     Ok(Transformed::No(plan))
                 }
@@ -354,10 +374,13 @@ impl TypeInference {
                         if let Some(labels) = &table_ctx.get_labels() {
                             if let Some(label) = labels.first() {
                                 log::info!("🏷️ TypeInference: Creating ViewScan for GraphNode '{}' with inferred label '{}'", node.alias, label);
-                                
+
                                 // Get node schema to create ViewScan
                                 if let Ok(node_schema) = graph_schema.get_node_schema(label) {
-                                    let full_table_name = format!("{}.{}", node_schema.database, node_schema.table_name);
+                                    let full_table_name = format!(
+                                        "{}.{}",
+                                        node_schema.database, node_schema.table_name
+                                    );
                                     let id_column = node_schema
                                         .node_id
                                         .columns()
@@ -366,7 +389,7 @@ impl TypeInference {
                                             format!("Node schema for label '{}' has no ID columns defined", label)
                                         ))?
                                         .to_string();
-                                    
+
                                     let mut view_scan = ViewScan::new(
                                         full_table_name,
                                         None,
@@ -375,7 +398,7 @@ impl TypeInference {
                                         vec!["id".to_string()],
                                         vec![],
                                     );
-                                    
+
                                     // Copy denormalization metadata from node_schema
                                     view_scan.is_denormalized = node_schema.is_denormalized;
                                     view_scan.from_node_properties = node_schema.from_properties.as_ref().map(|props| {
@@ -388,7 +411,7 @@ impl TypeInference {
                                             (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone()))
                                         }).collect()
                                     });
-                                    
+
                                     // Create new GraphNode with ViewScan input and label
                                     let new_node = GraphNode {
                                         input: Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))),
@@ -397,8 +420,10 @@ impl TypeInference {
                                         is_denormalized: node_schema.is_denormalized,
                                         projected_columns: None,
                                     };
-                                    
-                                    return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(new_node))));
+
+                                    return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(
+                                        new_node,
+                                    ))));
                                 }
                             }
                         }
@@ -407,15 +432,15 @@ impl TypeInference {
                 // No changes needed
                 Ok(Transformed::No(plan))
             }
-            
-            LogicalPlan::ViewScan(_)
-            | LogicalPlan::Empty => {
+
+            LogicalPlan::ViewScan(_) | LogicalPlan::Empty => {
                 // Leaf nodes - no recursion needed
                 Ok(Transformed::No(plan))
             }
 
             LogicalPlan::GraphJoins(gj) => {
-                let input_transformed = self.infer_labels_recursive(gj.input.clone(), plan_ctx, graph_schema)?;
+                let input_transformed =
+                    self.infer_labels_recursive(gj.input.clone(), plan_ctx, graph_schema)?;
                 if input_transformed.is_yes() {
                     let new_gj = crate::query_planner::logical_plan::GraphJoins {
                         input: input_transformed.get_plan().clone(),
@@ -432,7 +457,8 @@ impl TypeInference {
             }
 
             LogicalPlan::GroupBy(gb) => {
-                let input_transformed = self.infer_labels_recursive(gb.input.clone(), plan_ctx, graph_schema)?;
+                let input_transformed =
+                    self.infer_labels_recursive(gb.input.clone(), plan_ctx, graph_schema)?;
                 if input_transformed.is_yes() {
                     let new_gb = crate::query_planner::logical_plan::GroupBy {
                         input: input_transformed.get_plan().clone(),
@@ -448,7 +474,8 @@ impl TypeInference {
             }
 
             LogicalPlan::OrderBy(ob) => {
-                let input_transformed = self.infer_labels_recursive(ob.input.clone(), plan_ctx, graph_schema)?;
+                let input_transformed =
+                    self.infer_labels_recursive(ob.input.clone(), plan_ctx, graph_schema)?;
                 if input_transformed.is_yes() {
                     let new_ob = crate::query_planner::logical_plan::OrderBy {
                         input: input_transformed.get_plan().clone(),
@@ -461,7 +488,8 @@ impl TypeInference {
             }
 
             LogicalPlan::Limit(limit) => {
-                let input_transformed = self.infer_labels_recursive(limit.input.clone(), plan_ctx, graph_schema)?;
+                let input_transformed =
+                    self.infer_labels_recursive(limit.input.clone(), plan_ctx, graph_schema)?;
                 if input_transformed.is_yes() {
                     let new_limit = crate::query_planner::logical_plan::Limit {
                         input: input_transformed.get_plan().clone(),
@@ -478,7 +506,8 @@ impl TypeInference {
                 let mut transformed = false;
                 let mut new_inputs = Vec::new();
                 for input in &union.inputs {
-                    let input_tf = self.infer_labels_recursive(input.clone(), plan_ctx, graph_schema)?;
+                    let input_tf =
+                        self.infer_labels_recursive(input.clone(), plan_ctx, graph_schema)?;
                     if input_tf.is_yes() {
                         transformed = true;
                         new_inputs.push(input_tf.get_plan().clone());
@@ -486,7 +515,7 @@ impl TypeInference {
                         new_inputs.push(input.clone());
                     }
                 }
-                
+
                 if transformed {
                     let new_union = crate::query_planner::logical_plan::Union {
                         inputs: new_inputs,
@@ -504,12 +533,17 @@ impl TypeInference {
             }
 
             LogicalPlan::Unwind(unwind) => {
-                let input_transformed = self.infer_labels_recursive(unwind.input.clone(), plan_ctx, graph_schema)?;
-                
+                let input_transformed =
+                    self.infer_labels_recursive(unwind.input.clone(), plan_ctx, graph_schema)?;
+
                 // Try to infer the label from the expression being unwound
                 // We look at the plan structure directly since TypeInference runs before FilterTagging
-                let label = self.infer_unwind_element_label_from_plan(&unwind.expression, &unwind.input, plan_ctx);
-                
+                let label = self.infer_unwind_element_label_from_plan(
+                    &unwind.expression,
+                    &unwind.input,
+                    plan_ctx,
+                );
+
                 // Update plan_ctx if we inferred a label
                 if let Some(ref label_str) = label {
                     if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&unwind.alias) {
@@ -521,10 +555,11 @@ impl TypeInference {
                         );
                     }
                 }
-                
+
                 // Check if we need to rebuild
-                let needs_rebuild = input_transformed.is_yes() || (label.is_some() && label != unwind.label);
-                
+                let needs_rebuild =
+                    input_transformed.is_yes() || (label.is_some() && label != unwind.label);
+
                 if needs_rebuild {
                     let new_unwind = crate::query_planner::logical_plan::Unwind {
                         input: input_transformed.get_plan().clone(),
@@ -540,7 +575,8 @@ impl TypeInference {
             }
 
             LogicalPlan::Skip(skip) => {
-                let input_transformed = self.infer_labels_recursive(skip.input.clone(), plan_ctx, graph_schema)?;
+                let input_transformed =
+                    self.infer_labels_recursive(skip.input.clone(), plan_ctx, graph_schema)?;
                 if input_transformed.is_yes() {
                     let new_skip = crate::query_planner::logical_plan::Skip {
                         input: input_transformed.get_plan().clone(),
@@ -553,7 +589,8 @@ impl TypeInference {
             }
 
             LogicalPlan::Cte(cte) => {
-                let input_transformed = self.infer_labels_recursive(cte.input.clone(), plan_ctx, graph_schema)?;
+                let input_transformed =
+                    self.infer_labels_recursive(cte.input.clone(), plan_ctx, graph_schema)?;
                 if input_transformed.is_yes() {
                     let new_cte = crate::query_planner::logical_plan::Cte {
                         input: input_transformed.get_plan().clone(),
@@ -582,7 +619,7 @@ impl TypeInference {
     ///
     /// Returns: Some(vec![edge_type]) if inferred, None if couldn't infer
     /// Errors: TooManyInferredTypes if more than MAX_INFERRED_TYPES matches
-    
+
     /// **UNIFIED CONSTRAINT-BASED TYPE INFERENCE**
     ///
     /// Uses ALL known facts together to find matching patterns in schema:
@@ -611,24 +648,31 @@ impl TypeInference {
             .get_table_ctx(left_connection)
             .ok()
             .and_then(|ctx| ctx.get_label_opt());
-        
+
         let known_right_label = plan_ctx
             .get_table_ctx(right_connection)
             .ok()
             .and_then(|ctx| ctx.get_label_opt());
-        
+
         let known_edge_types = current_edge_types.clone();
-        
+
         log::debug!(
             "🔍 TypeInference: Constraints - left='{}' ({:?}), edge={:?}, right='{}' ({:?})",
-            left_connection, known_left_label, known_edge_types, right_connection, known_right_label
+            left_connection,
+            known_left_label,
+            known_edge_types,
+            right_connection,
+            known_right_label
         );
-        
+
         // STEP 2: Query schema with all constraints
         let rel_schemas = graph_schema.get_relationships_schemas();
-        
+
         // Find all relationships that match ALL known constraints
-        let matches: Vec<(&String, &crate::graph_catalog::graph_schema::RelationshipSchema)> = rel_schemas
+        let matches: Vec<(
+            &String,
+            &crate::graph_catalog::graph_schema::RelationshipSchema,
+        )> = rel_schemas
             .iter()
             .filter(|(key, rel_schema)| {
                 // Skip composite keys (those with "::") to avoid duplicates
@@ -636,7 +680,7 @@ impl TypeInference {
                 if key.contains("::") {
                     return false;
                 }
-                
+
                 // Check edge type constraint (if known)
                 if let Some(ref types) = known_edge_types {
                     // Extract base type name for comparison
@@ -645,30 +689,38 @@ impl TypeInference {
                         return false;
                     }
                 }
-                
+
                 // Check left node (from_node) constraint (if known)
                 if let Some(ref label) = known_left_label {
-                    if !self.node_matches_schema(label, &rel_schema.from_node, &rel_schema.from_label_values) {
+                    if !self.node_matches_schema(
+                        label,
+                        &rel_schema.from_node,
+                        &rel_schema.from_label_values,
+                    ) {
                         return false;
                     }
                 }
-                
+
                 // Check right node (to_node) constraint (if known)
                 if let Some(ref label) = known_right_label {
-                    if !self.node_matches_schema(label, &rel_schema.to_node, &rel_schema.to_label_values) {
+                    if !self.node_matches_schema(
+                        label,
+                        &rel_schema.to_node,
+                        &rel_schema.to_label_values,
+                    ) {
                         return false;
                     }
                 }
-                
+
                 true
             })
             .collect();
-        
+
         log::debug!(
             "🔍 TypeInference: Found {} matching relationship(s) in schema",
             matches.len()
         );
-        
+
         // STEP 3: Handle results
         if matches.is_empty() {
             // No matches - nothing to infer
@@ -681,7 +733,7 @@ impl TypeInference {
             }
             return Ok((known_edge_types, known_left_label, known_right_label));
         }
-        
+
         // Check if too many edge types
         let unique_edge_types: Vec<String> = matches
             .iter()
@@ -689,27 +741,33 @@ impl TypeInference {
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
-        
+
         if unique_edge_types.len() > plan_ctx.max_inferred_types && known_edge_types.is_none() {
             return Err(AnalyzerError::InvalidPlan(format!(
                 "Too many matching relationship types ({}) for {:?}->{:?}. Max allowed is {}. Please specify explicit relationship type(s).",
                 unique_edge_types.len(), known_left_label, known_right_label, plan_ctx.max_inferred_types
             )));
         }
-        
+
         // STEP 4: Infer missing values from matches
         let inferred_edge_types = if known_edge_types.is_some() {
             known_edge_types
         } else if unique_edge_types.len() == 1 {
-            log::info!("🔍 TypeInference: Inferred edge type '{}'", unique_edge_types[0]);
+            log::info!(
+                "🔍 TypeInference: Inferred edge type '{}'",
+                unique_edge_types[0]
+            );
             Some(unique_edge_types)
         } else if !unique_edge_types.is_empty() {
-            log::info!("🔍 TypeInference: Multiple edge types {:?}, will use UNION", unique_edge_types);
+            log::info!(
+                "🔍 TypeInference: Multiple edge types {:?}, will use UNION",
+                unique_edge_types
+            );
             Some(unique_edge_types)
         } else {
             None
         };
-        
+
         // Infer left node label (all matches should agree on from_node for single edge type)
         let inferred_left_label = if known_left_label.is_some() {
             known_left_label
@@ -719,16 +777,23 @@ impl TypeInference {
             Some(label)
         } else {
             // Multiple matches - check if they all have same from_node
-            let from_nodes: std::collections::HashSet<_> = matches.iter().map(|(_, s)| &s.from_node).collect();
+            let from_nodes: std::collections::HashSet<_> =
+                matches.iter().map(|(_, s)| &s.from_node).collect();
             if from_nodes.len() == 1 {
                 let label = matches[0].1.from_node.clone();
-                self.update_node_label_in_ctx(left_connection, &label, "from", "multiple edges", plan_ctx);
+                self.update_node_label_in_ctx(
+                    left_connection,
+                    &label,
+                    "from",
+                    "multiple edges",
+                    plan_ctx,
+                );
                 Some(label)
             } else {
                 None // Ambiguous, can't infer
             }
         };
-        
+
         // Infer right node label
         let inferred_right_label = if known_right_label.is_some() {
             known_right_label
@@ -738,29 +803,47 @@ impl TypeInference {
             Some(label)
         } else {
             // Multiple matches - check if they all have same to_node
-            let to_nodes: std::collections::HashSet<_> = matches.iter().map(|(_, s)| &s.to_node).collect();
+            let to_nodes: std::collections::HashSet<_> =
+                matches.iter().map(|(_, s)| &s.to_node).collect();
             if to_nodes.len() == 1 {
                 let label = matches[0].1.to_node.clone();
-                self.update_node_label_in_ctx(right_connection, &label, "to", "multiple edges", plan_ctx);
+                self.update_node_label_in_ctx(
+                    right_connection,
+                    &label,
+                    "to",
+                    "multiple edges",
+                    plan_ctx,
+                );
                 Some(label)
             } else {
                 None // Ambiguous, can't infer
             }
         };
-        
+
         log::info!(
             "🔍 TypeInference: Result - '{}' ({:?}) -[{:?}]-> '{}' ({:?})",
-            left_connection, inferred_left_label,
+            left_connection,
+            inferred_left_label,
             inferred_edge_types.as_ref().map(|v| v.join("|")),
-            right_connection, inferred_right_label
+            right_connection,
+            inferred_right_label
         );
-        
-        Ok((inferred_edge_types, inferred_left_label, inferred_right_label))
+
+        Ok((
+            inferred_edge_types,
+            inferred_left_label,
+            inferred_right_label,
+        ))
     }
-    
+
     /// Check if a query node label matches a schema node definition
     /// Supports: direct match, $any wildcard, polymorphic label_values
-    fn node_matches_schema(&self, query_label: &str, schema_node: &str, label_values: &Option<Vec<String>>) -> bool {
+    fn node_matches_schema(
+        &self,
+        query_label: &str,
+        schema_node: &str,
+        label_values: &Option<Vec<String>>,
+    ) -> bool {
         // Direct match
         if query_label == schema_node {
             return true;
@@ -777,13 +860,25 @@ impl TypeInference {
         }
         false
     }
-    
+
     /// Update or create TableCtx with inferred label
-    fn update_node_label_in_ctx(&self, node_alias: &str, label: &str, side: &str, edge_info: &str, plan_ctx: &mut PlanCtx) {
+    fn update_node_label_in_ctx(
+        &self,
+        node_alias: &str,
+        label: &str,
+        side: &str,
+        edge_info: &str,
+        plan_ctx: &mut PlanCtx,
+    ) {
         if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(node_alias) {
             table_ctx.set_labels(Some(vec![label.to_string()]));
-            log::info!("🏷️ TypeInference: UPDATED '{}' = '{}' (from {} side of {})", 
-                      node_alias, label, side, edge_info);
+            log::info!(
+                "🏷️ TypeInference: UPDATED '{}' = '{}' (from {} side of {})",
+                node_alias,
+                label,
+                side,
+                edge_info
+            );
         } else {
             use crate::query_planner::plan_ctx::TableCtx;
             plan_ctx.insert_table_ctx(
@@ -796,8 +891,13 @@ impl TypeInference {
                     false,
                 ),
             );
-            log::info!("🏷️ TypeInference: CREATED '{}' = '{}' (from {} side of {})", 
-                      node_alias, label, side, edge_info);
+            log::info!(
+                "🏷️ TypeInference: CREATED '{}' = '{}' (from {} side of {})",
+                node_alias,
+                label,
+                side,
+                edge_info
+            );
         }
     }
 
@@ -812,7 +912,10 @@ impl TypeInference {
     ) -> AnalyzerResult<Option<Vec<String>>> {
         // Strategy 1: If types already specified, use them
         if current_types.is_some() {
-            log::debug!("🔗 TypeInference: Edge types already specified: {:?}", current_types);
+            log::debug!(
+                "🔗 TypeInference: Edge types already specified: {:?}",
+                current_types
+            );
             return Ok(current_types.clone());
         }
 
@@ -843,7 +946,7 @@ impl TypeInference {
             .get_table_ctx(left_connection)
             .ok()
             .and_then(|ctx| ctx.get_label_opt().map(|s| s.to_string()));
-        
+
         let right_label = plan_ctx
             .get_table_ctx(right_connection)
             .ok()
@@ -851,7 +954,10 @@ impl TypeInference {
 
         log::debug!(
             "🔗 TypeInference: Inferring edge type for '{}' ({:?}) -> '{}' ({:?})",
-            left_connection, left_label, right_connection, right_label
+            left_connection,
+            left_label,
+            right_connection,
+            right_label
         );
 
         // If both labels unknown and multiple relationships exist, can't infer
@@ -894,7 +1000,7 @@ impl TypeInference {
                             if l == &rel_schema.to_node || &rel_schema.to_node == "$any" {
                                 return true;
                             }
-                            // Check polymorphic to_label_values  
+                            // Check polymorphic to_label_values
                             if let Some(values) = &rel_schema.to_label_values {
                                 return values.contains(l);
                             }
@@ -914,7 +1020,8 @@ impl TypeInference {
         if matching_types.is_empty() {
             log::debug!(
                 "🔗 TypeInference: No relationships found connecting {:?} -> {:?}",
-                left_label, right_label
+                left_label,
+                right_label
             );
             return Ok(None);
         }
@@ -937,7 +1044,9 @@ impl TypeInference {
         if matching_types.len() == 1 {
             log::info!(
                 "🔗 TypeInference: Inferred edge type '{}' from node labels {:?} -> {:?}",
-                matching_types[0], left_label, right_label
+                matching_types[0],
+                left_label,
+                right_label
             );
         } else {
             log::info!(
@@ -964,7 +1073,11 @@ impl TypeInference {
         // Try to get existing label from plan_ctx
         if let Ok(table_ctx) = plan_ctx.get_table_ctx(node_alias) {
             if let Some(label) = table_ctx.get_label_opt() {
-                log::debug!("🏷️ TypeInference: '{}' already has label: {}", node_alias, label);
+                log::debug!(
+                    "🏷️ TypeInference: '{}' already has label: {}",
+                    node_alias,
+                    label
+                );
                 return Ok(Some(label));
             }
         }
@@ -973,13 +1086,19 @@ impl TypeInference {
         let edge_types = match edge_types {
             Some(types) => types,
             None => {
-                log::debug!("🏷️ TypeInference: '{}' has no label and relationship has no types", node_alias);
+                log::debug!(
+                    "🏷️ TypeInference: '{}' has no label and relationship has no types",
+                    node_alias
+                );
                 return Ok(None);
             }
         };
 
         if edge_types.is_empty() {
-            log::debug!("🏷️ TypeInference: '{}' has no label and relationship has empty types", node_alias);
+            log::debug!(
+                "🏷️ TypeInference: '{}' has no label and relationship has empty types",
+                node_alias
+            );
             return Ok(None);
         }
 
@@ -995,21 +1114,32 @@ impl TypeInference {
         }
 
         let rel_type = &edge_types[0];
-        
-        log::debug!("🏷️ TypeInference: Trying to look up relationship schema for type '{}'", rel_type);
-        
+
+        log::debug!(
+            "🏷️ TypeInference: Trying to look up relationship schema for type '{}'",
+            rel_type
+        );
+
         // Look up relationship schema
-        let rel_schema = graph_schema.get_relationships_schema_opt(rel_type)
+        let rel_schema = graph_schema
+            .get_relationships_schema_opt(rel_type)
             .ok_or_else(|| {
-                log::error!("🏷️ TypeInference: Relationship type '{}' NOT FOUND in schema!", rel_type);
+                log::error!(
+                    "🏷️ TypeInference: Relationship type '{}' NOT FOUND in schema!",
+                    rel_type
+                );
                 AnalyzerError::InvalidPlan(format!(
                     "Relationship type '{}' not found in schema",
                     rel_type
                 ))
             })?;
 
-        log::debug!("🏷️ TypeInference: Found relationship schema for '{}': from_node={}, to_node={}", 
-                   rel_type, rel_schema.from_node, rel_schema.to_node);
+        log::debug!(
+            "🏷️ TypeInference: Found relationship schema for '{}': from_node={}, to_node={}",
+            rel_type,
+            rel_schema.from_node,
+            rel_schema.to_node
+        );
 
         // Infer label from schema based on whether node is on from or to side
         let inferred_label = if is_from_side {
@@ -1032,8 +1162,13 @@ impl TypeInference {
         if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(node_alias) {
             // TableCtx exists - update it with inferred label
             table_ctx.set_labels(Some(vec![inferred_label.clone()]));
-            log::info!("🏷️ TypeInference: UPDATED plan_ctx['{}'] = '{}' (from {} side of {})", 
-                      node_alias, inferred_label, if is_from_side { "from" } else { "to" }, rel_type);
+            log::info!(
+                "🏷️ TypeInference: UPDATED plan_ctx['{}'] = '{}' (from {} side of {})",
+                node_alias,
+                inferred_label,
+                if is_from_side { "from" } else { "to" },
+                rel_type
+            );
         } else {
             // TableCtx doesn't exist yet - CREATE it with inferred label
             // This happens for unlabeled intermediate nodes like (b) in (a)-[r1]->(b)-[r2]->(c)
@@ -1048,15 +1183,20 @@ impl TypeInference {
                     false,  // Not explicitly named by user (inferred)
                 ),
             );
-            log::info!("🏷️ TypeInference: CREATED plan_ctx['{}'] = '{}' (from {} side of {})", 
-                      node_alias, inferred_label, if is_from_side { "from" } else { "to" }, rel_type);
+            log::info!(
+                "🏷️ TypeInference: CREATED plan_ctx['{}'] = '{}' (from {} side of {})",
+                node_alias,
+                inferred_label,
+                if is_from_side { "from" } else { "to" },
+                rel_type
+            );
         }
 
         Ok(Some(inferred_label.clone()))
     }
 
     /// Infer the label/type of elements being unwound from an UNWIND expression.
-    /// 
+    ///
     /// Strategy:
     /// 1. If UNWIND input is a WithClause, check its projection items
     /// 2. Find the projection item that matches the UNWIND expression alias
@@ -1072,8 +1212,10 @@ impl TypeInference {
         input_plan: &Arc<LogicalPlan>,
         plan_ctx: &PlanCtx,
     ) -> Option<String> {
-        use crate::query_planner::logical_expr::{AggregateFnCall, TableAlias as TableAliasStruct, ColumnAlias};
-        
+        use crate::query_planner::logical_expr::{
+            AggregateFnCall, ColumnAlias, TableAlias as TableAliasStruct,
+        };
+
         // Extract alias name from expression
         let alias_name = match expression {
             LogicalExpr::TableAlias(table_alias) => &table_alias.0,
@@ -1082,14 +1224,14 @@ impl TypeInference {
                 return None;
             }
         };
-        
+
         // STRATEGY 1: Look at input plan directly (works before FilterTagging registers aliases)
         if let LogicalPlan::WithClause(with_clause) = input_plan.as_ref() {
             log::debug!(
                 "🔍 TypeInference::infer_unwind_element_label_from_plan: UNWIND input is WithClause, checking items for '{}'",
                 alias_name
             );
-            
+
             // Find the projection item matching this alias
             for item in &with_clause.items {
                 if let Some(col_alias) = &item.col_alias {
@@ -1099,14 +1241,18 @@ impl TypeInference {
                             alias_name,
                             item.expression
                         );
-                        
+
                         // Check if it's collect()
                         if let LogicalExpr::AggregateFnCall(agg_fn) = &item.expression {
-                            if agg_fn.name.eq_ignore_ascii_case("collect") && !agg_fn.args.is_empty() {
+                            if agg_fn.name.eq_ignore_ascii_case("collect")
+                                && !agg_fn.args.is_empty()
+                            {
                                 // Extract the first argument (the node being collected)
                                 if let LogicalExpr::TableAlias(collected_alias) = &agg_fn.args[0] {
                                     // Look up the label of the collected node
-                                    if let Ok(table_ctx) = plan_ctx.get_table_ctx(&collected_alias.0) {
+                                    if let Ok(table_ctx) =
+                                        plan_ctx.get_table_ctx(&collected_alias.0)
+                                    {
                                         if let Some(labels) = table_ctx.get_labels() {
                                             if let Some(first_label) = labels.first() {
                                                 log::info!(
@@ -1126,7 +1272,7 @@ impl TypeInference {
                 }
             }
         }
-        
+
         // STRATEGY 2: Check if it's already registered as projection alias (from earlier passes)
         if let Some(alias_expr) = plan_ctx.get_projection_alias_expr(alias_name) {
             log::debug!(
@@ -1134,7 +1280,7 @@ impl TypeInference {
                 alias_name,
                 alias_expr
             );
-            
+
             // Check if it's collect()
             if let LogicalExpr::AggregateFnCall(agg_fn) = alias_expr {
                 if agg_fn.name.eq_ignore_ascii_case("collect") && !agg_fn.args.is_empty() {
@@ -1156,7 +1302,7 @@ impl TypeInference {
                 }
             }
         }
-        
+
         // STRATEGY 3: Try direct table context lookup
         if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias_name) {
             if let Some(labels) = table_ctx.get_labels() {
@@ -1170,7 +1316,7 @@ impl TypeInference {
                 }
             }
         }
-        
+
         log::debug!(
             "🔍 TypeInference::infer_unwind_element_label_from_plan: No label found for '{}'",
             alias_name
@@ -1188,7 +1334,10 @@ impl AnalyzerPass for TypeInference {
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         log::info!("🏷️ TypeInference: Starting type inference pass");
         let result = self.infer_labels_recursive(logical_plan, plan_ctx, graph_schema)?;
-        log::info!("🏷️ TypeInference: Completed - plan transformed: {}", result.is_yes());
+        log::info!(
+            "🏷️ TypeInference: Completed - plan transformed: {}",
+            result.is_yes()
+        );
         Ok(result)
     }
 }

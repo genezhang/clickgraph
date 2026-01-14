@@ -165,7 +165,10 @@ impl<'a> ViewResolver<'a> {
                 log::error!("ViewResolver: Failed to get rel schema: {:?}", e);
                 AnalyzerError::RelationshipTypeNotFound(type_name.to_string())
             })?;
-        log::debug!("ViewResolver: Got rel schema: table_name={}", rel_schema.table_name);
+        log::debug!(
+            "ViewResolver: Got rel schema: table_name={}",
+            rel_schema.table_name
+        );
 
         // Try explicit mapping first, fallback to identity mapping (property name = column name)
         // This supports wide tables without requiring hundreds of explicit mappings

@@ -175,12 +175,10 @@ fn rewrite_aliases_in_expr(expr: &LogicalExpr, alias_map: &HashMap<String, Strin
                 .iter()
                 .map(|arg| rewrite_aliases_in_expr(arg, alias_map))
                 .collect();
-            LogicalExpr::AggregateFnCall(
-                crate::query_planner::logical_expr::AggregateFnCall {
-                    name: afc.name.clone(),
-                    args: new_args,
-                },
-            )
+            LogicalExpr::AggregateFnCall(crate::query_planner::logical_expr::AggregateFnCall {
+                name: afc.name.clone(),
+                args: new_args,
+            })
         }
 
         LogicalExpr::List(items) => {
@@ -213,17 +211,17 @@ impl OptimizerPass for CollectUnwindElimination {
 }
 
 impl CollectUnwindElimination {
-    fn optimize_node(plan: Arc<LogicalPlan>) -> OptimizerResult<(Arc<LogicalPlan>, HashMap<String, String>)> {
+    fn optimize_node(
+        plan: Arc<LogicalPlan>,
+    ) -> OptimizerResult<(Arc<LogicalPlan>, HashMap<String, String>)> {
         match plan.as_ref() {
             // Look for UNWIND following WITH that contains collect()
-            LogicalPlan::Unwind(unwind) => {
-                Self::try_eliminate_collect_unwind(unwind, plan.clone())
-            }
+            LogicalPlan::Unwind(unwind) => Self::try_eliminate_collect_unwind(unwind, plan.clone()),
 
             // Recursively optimize all child nodes and accumulate alias mappings
             LogicalPlan::Projection(proj) => {
                 let (optimized_input, mut alias_map) = Self::optimize_node(proj.input.clone())?;
-                
+
                 // Apply alias rewriting to projection items if we have mappings
                 let new_items: Vec<ProjectionItem> = if alias_map.is_empty() {
                     proj.items.clone()
@@ -236,7 +234,7 @@ impl CollectUnwindElimination {
                         })
                         .collect()
                 };
-                
+
                 let new_plan = Arc::new(LogicalPlan::Projection(
                     crate::query_planner::logical_plan::Projection {
                         input: optimized_input,
@@ -244,7 +242,7 @@ impl CollectUnwindElimination {
                         distinct: proj.distinct,
                     },
                 ));
-                
+
                 Ok((new_plan, alias_map))
             }
 
@@ -255,41 +253,50 @@ impl CollectUnwindElimination {
                 } else {
                     rewrite_aliases_in_expr(&filter.predicate, &alias_map)
                 };
-                Ok((Arc::new(LogicalPlan::Filter(
-                    crate::query_planner::logical_plan::Filter {
-                        input: optimized_input,
-                        predicate: new_predicate,
-                    },
-                )), alias_map))
+                Ok((
+                    Arc::new(LogicalPlan::Filter(
+                        crate::query_planner::logical_plan::Filter {
+                            input: optimized_input,
+                            predicate: new_predicate,
+                        },
+                    )),
+                    alias_map,
+                ))
             }
 
             LogicalPlan::WithClause(with) => {
                 let (optimized_input, alias_map) = Self::optimize_node(with.input.clone())?;
-                Ok((Arc::new(LogicalPlan::WithClause(WithClause {
-                    input: optimized_input,
-                    items: with.items.clone(),
-                    distinct: with.distinct,
-                    order_by: with.order_by.clone(),
-                    skip: with.skip,
-                    limit: with.limit,
-                    where_clause: with.where_clause.clone(),
-                    exported_aliases: with.exported_aliases.clone(),
-                    cte_references: with.cte_references.clone(),
-                })), alias_map))
+                Ok((
+                    Arc::new(LogicalPlan::WithClause(WithClause {
+                        input: optimized_input,
+                        items: with.items.clone(),
+                        distinct: with.distinct,
+                        order_by: with.order_by.clone(),
+                        skip: with.skip,
+                        limit: with.limit,
+                        where_clause: with.where_clause.clone(),
+                        exported_aliases: with.exported_aliases.clone(),
+                        cte_references: with.cte_references.clone(),
+                    })),
+                    alias_map,
+                ))
             }
 
             LogicalPlan::GraphJoins(gj) => {
                 let (optimized_input, alias_map) = Self::optimize_node(gj.input.clone())?;
-                Ok((Arc::new(LogicalPlan::GraphJoins(
-                    crate::query_planner::logical_plan::GraphJoins {
-                        input: optimized_input,
-                        joins: gj.joins.clone(),
-                        optional_aliases: gj.optional_aliases.clone(),
-                        anchor_table: gj.anchor_table.clone(),
-                        cte_references: gj.cte_references.clone(),
-                        correlation_predicates: gj.correlation_predicates.clone(),
-                    },
-                )), alias_map))
+                Ok((
+                    Arc::new(LogicalPlan::GraphJoins(
+                        crate::query_planner::logical_plan::GraphJoins {
+                            input: optimized_input,
+                            joins: gj.joins.clone(),
+                            optional_aliases: gj.optional_aliases.clone(),
+                            anchor_table: gj.anchor_table.clone(),
+                            cte_references: gj.cte_references.clone(),
+                            correlation_predicates: gj.correlation_predicates.clone(),
+                        },
+                    )),
+                    alias_map,
+                ))
             }
 
             LogicalPlan::GroupBy(gb) => {
@@ -297,15 +304,21 @@ impl CollectUnwindElimination {
                 let new_expressions = if alias_map.is_empty() {
                     gb.expressions.clone()
                 } else {
-                    gb.expressions.iter().map(|e| rewrite_aliases_in_expr(e, &alias_map)).collect()
+                    gb.expressions
+                        .iter()
+                        .map(|e| rewrite_aliases_in_expr(e, &alias_map))
+                        .collect()
                 };
-                Ok((Arc::new(LogicalPlan::GroupBy(
-                    crate::query_planner::logical_plan::GroupBy {
-                        input: optimized_input,
-                        expressions: new_expressions,
-                        ..gb.clone()
-                    },
-                )), alias_map))
+                Ok((
+                    Arc::new(LogicalPlan::GroupBy(
+                        crate::query_planner::logical_plan::GroupBy {
+                            input: optimized_input,
+                            expressions: new_expressions,
+                            ..gb.clone()
+                        },
+                    )),
+                    alias_map,
+                ))
             }
 
             LogicalPlan::OrderBy(ob) => {
@@ -313,43 +326,53 @@ impl CollectUnwindElimination {
                 let new_items = if alias_map.is_empty() {
                     ob.items.clone()
                 } else {
-                    ob.items.iter().map(|item| {
-                        crate::query_planner::logical_plan::OrderByItem {
+                    ob.items
+                        .iter()
+                        .map(|item| crate::query_planner::logical_plan::OrderByItem {
                             expression: rewrite_aliases_in_expr(&item.expression, &alias_map),
                             order: item.order.clone(),
-                        }
-                    }).collect()
+                        })
+                        .collect()
                 };
-                Ok((Arc::new(LogicalPlan::OrderBy(
-                    crate::query_planner::logical_plan::OrderBy {
-                        input: optimized_input,
-                        items: new_items,
-                    },
-                )), alias_map))
+                Ok((
+                    Arc::new(LogicalPlan::OrderBy(
+                        crate::query_planner::logical_plan::OrderBy {
+                            input: optimized_input,
+                            items: new_items,
+                        },
+                    )),
+                    alias_map,
+                ))
             }
 
             LogicalPlan::Limit(l) => {
                 let (optimized_input, alias_map) = Self::optimize_node(l.input.clone())?;
-                Ok((Arc::new(LogicalPlan::Limit(
-                    crate::query_planner::logical_plan::Limit {
-                        input: optimized_input,
-                        count: l.count,
-                    },
-                )), alias_map))
+                Ok((
+                    Arc::new(LogicalPlan::Limit(
+                        crate::query_planner::logical_plan::Limit {
+                            input: optimized_input,
+                            count: l.count,
+                        },
+                    )),
+                    alias_map,
+                ))
             }
 
             LogicalPlan::Skip(s) => {
                 let (optimized_input, alias_map) = Self::optimize_node(s.input.clone())?;
-                Ok((Arc::new(LogicalPlan::Skip(
-                    crate::query_planner::logical_plan::Skip {
-                        input: optimized_input,
-                        count: s.count,
-                    },
-                )), alias_map))
+                Ok((
+                    Arc::new(LogicalPlan::Skip(
+                        crate::query_planner::logical_plan::Skip {
+                            input: optimized_input,
+                            count: s.count,
+                        },
+                    )),
+                    alias_map,
+                ))
             }
 
             // Base cases - no children to recurse into
-            LogicalPlan::ViewScan(_) 
+            LogicalPlan::ViewScan(_)
             | LogicalPlan::GraphNode(_)
             | LogicalPlan::GraphRel(_)
             | LogicalPlan::CartesianProduct(_)
@@ -369,8 +392,13 @@ impl CollectUnwindElimination {
         unwind: &Unwind,
         unwind_plan: Arc<LogicalPlan>,
     ) -> OptimizerResult<(Arc<LogicalPlan>, HashMap<String, String>)> {
-        log::info!("🔥 CollectUnwindElimination: Examining UNWIND node, alias='{}', expression={:?}", unwind.alias, unwind.expression);
-        log::info!("🔥 CollectUnwindElimination: UNWIND input type={}", 
+        log::info!(
+            "🔥 CollectUnwindElimination: Examining UNWIND node, alias='{}', expression={:?}",
+            unwind.alias,
+            unwind.expression
+        );
+        log::info!(
+            "🔥 CollectUnwindElimination: UNWIND input type={}",
             match unwind.input.as_ref() {
                 LogicalPlan::WithClause(_) => "WithClause",
                 LogicalPlan::Projection(_) => "Projection",
@@ -379,7 +407,7 @@ impl CollectUnwindElimination {
                 _ => "Other",
             }
         );
-        
+
         // Check if UNWIND expression is a simple TableAlias
         if let LogicalExpr::TableAlias(ref unwind_alias) = unwind.expression {
             let collection_name = &unwind_alias.0;
@@ -429,11 +457,12 @@ impl CollectUnwindElimination {
                                             alias_map.insert(unwound.clone(), source.clone());
 
                                             // Recursively optimize the WITH input
-                                            let (optimized_input, input_alias_map) = Self::optimize_node(with.input.clone())?;
-                                            
+                                            let (optimized_input, input_alias_map) =
+                                                Self::optimize_node(with.input.clone())?;
+
                                             // Merge alias maps
                                             alias_map.extend(input_alias_map);
-                                            
+
                                             return Ok((optimized_input, alias_map));
                                         } else {
                                             // Complex case: WITH has other items
@@ -445,7 +474,8 @@ impl CollectUnwindElimination {
                                             );
 
                                             // Build new items: keep other items, remove the collect entirely
-                                            let new_items: Vec<ProjectionItem> = with.items
+                                            let new_items: Vec<ProjectionItem> = with
+                                                .items
                                                 .iter()
                                                 .filter(|item| {
                                                     if let Some(ref col_alias) = item.col_alias {
@@ -458,7 +488,8 @@ impl CollectUnwindElimination {
                                                 .collect();
 
                                             // Update exported aliases to remove the collection
-                                            let new_exported_aliases: Vec<String> = with.exported_aliases
+                                            let new_exported_aliases: Vec<String> = with
+                                                .exported_aliases
                                                 .iter()
                                                 .filter(|a| *a != collection_name)
                                                 .cloned()
@@ -468,8 +499,8 @@ impl CollectUnwindElimination {
                                                 Self::optimize_node(with.input.clone())?;
 
                                             // Create modified WITH clause without the collect
-                                            let new_with = Arc::new(LogicalPlan::WithClause(
-                                                WithClause {
+                                            let new_with =
+                                                Arc::new(LogicalPlan::WithClause(WithClause {
                                                     input: optimized_input,
                                                     items: new_items,
                                                     distinct: with.distinct,
@@ -479,8 +510,7 @@ impl CollectUnwindElimination {
                                                     where_clause: with.where_clause.clone(),
                                                     exported_aliases: new_exported_aliases,
                                                     cte_references: with.cte_references.clone(),
-                                                },
-                                            ));
+                                                }));
 
                                             // Map: UNWIND alias -> source variable
                                             let mut alias_map = HashMap::new();
@@ -500,13 +530,16 @@ impl CollectUnwindElimination {
 
         // Pattern not found or not optimizable - optimize children and return
         let (optimized_input, alias_map) = Self::optimize_node(unwind.input.clone())?;
-        Ok((Arc::new(LogicalPlan::Unwind(Unwind {
-            input: optimized_input,
-            expression: unwind.expression.clone(),
-            alias: unwind.alias.clone(),
-            label: unwind.label.clone(),
-            tuple_properties: unwind.tuple_properties.clone(),
-        })), alias_map))
+        Ok((
+            Arc::new(LogicalPlan::Unwind(Unwind {
+                input: optimized_input,
+                expression: unwind.expression.clone(),
+                alias: unwind.alias.clone(),
+                label: unwind.label.clone(),
+                tuple_properties: unwind.tuple_properties.clone(),
+            })),
+            alias_map,
+        ))
     }
 }
 

@@ -165,7 +165,7 @@ pub async fn query_handler(
     let replan_option = query_cache::ReplanOption::from_query_prefix(&payload.query)
         .unwrap_or(query_cache::ReplanOption::Default);
     let clean_query_with_comments = query_cache::ReplanOption::strip_prefix(&payload.query);
-    
+
     // Strip SQL-style comments (-- and /* */) before parsing
     let clean_query_string = open_cypher_parser::strip_comments(clean_query_with_comments);
     let clean_query = clean_query_string.as_str();
@@ -189,17 +189,23 @@ pub async fn query_handler(
             log::error!("Query parse failed during schema extraction: {}", e);
             return Err((
                 StatusCode::BAD_REQUEST,
-                format!("Query syntax error: {}. Check Cypher syntax before proceeding.", e),
+                format!(
+                    "Query syntax error: {}. Check Cypher syntax before proceeding.",
+                    e
+                ),
             ));
         }
     };
 
-    log::debug!("Using schema: {} ({})", schema_name, 
+    log::debug!(
+        "Using schema: {} ({})",
+        schema_name,
         if payload.schema_name.is_none() && !clean_query.to_uppercase().contains("USE ") {
             "explicit default - no USE clause"
         } else {
             "from query or parameter"
-        });
+        }
+    );
 
     // Generate cache key (view_parameters are NOT part of the key)
     // They will be substituted at execution time via $placeholder syntax
@@ -251,7 +257,9 @@ pub async fn query_handler(
         };
 
         // Check for unsubstituted $param placeholders before executing
-        if let Some(missing_param) = parameter_substitution::find_unsubstituted_parameter(&final_sql) {
+        if let Some(missing_param) =
+            parameter_substitution::find_unsubstituted_parameter(&final_sql)
+        {
             return Err((
                 StatusCode::BAD_REQUEST,
                 format!("Missing required parameter: '{}'. Parameterized views require view_parameters to be provided.", missing_param),
@@ -310,11 +318,15 @@ pub async fn query_handler(
         let graph_schema = match graph_catalog::get_graph_schema_by_name(schema_name).await {
             Ok(schema) => schema,
             Err(e) => {
-                log::error!("Schema '{}' not found. Available schemas: {:?}", 
-                    schema_name, 
-                    graph_catalog::list_available_schemas().await);
-                return Err((StatusCode::BAD_REQUEST, 
-                    format!("Schema '{}' not found. {}", schema_name, e)));
+                log::error!(
+                    "Schema '{}' not found. Available schemas: {:?}",
+                    schema_name,
+                    graph_catalog::list_available_schemas().await
+                );
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("Schema '{}' not found. {}", schema_name, e),
+                ));
             }
         };
 
@@ -466,9 +478,15 @@ pub async fn query_handler(
                     })
                     .collect()
             });
-            
-            log::debug!("Handler: view_parameters from request: {:?}", payload.view_parameters);
-            log::debug!("Handler: converted view_parameter_values: {:?}", view_parameter_values);
+
+            log::debug!(
+                "Handler: view_parameters from request: {:?}",
+                payload.view_parameters
+            );
+            log::debug!(
+                "Handler: converted view_parameter_values: {:?}",
+                view_parameter_values
+            );
 
             let logical_plan = match query_planner::evaluate_read_statement(
                 cypher_statement,

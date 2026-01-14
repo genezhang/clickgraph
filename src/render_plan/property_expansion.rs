@@ -1,5 +1,5 @@
 //! Property Expansion Utilities
-//! 
+//!
 //! Centralized functions for expanding node/edge aliases to their properties.
 //! This consolidates the property expansion logic that was previously duplicated
 //! across multiple locations in the codebase.
@@ -9,14 +9,14 @@
 //! RETURN and WITH clauses have identical structure per OpenCypher grammar:
 //! - Both have: projection items + ORDER BY + SKIP + LIMIT
 //! - Difference: WITH has optional WHERE clause
-//! 
+//!
 //! ## Consolidation (Dec 2025)
-//! 
+//!
 //! Property expansion logic was duplicated across 4 locations (~150 lines).
 //! Now consolidated into:
 //! - `expand_alias_properties_core()` - Type-agnostic core logic
 //! - Type-specific wrappers for LogicalExpr and RenderExpr
-//! 
+//!
 //! This enables:
 //! 1. Property pruning optimization (via PropertyRequirements)
 //! 2. Single source of truth for expansion logic
@@ -28,15 +28,14 @@ use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::{
     analyzer::property_requirements::PropertyRequirements,
     logical_expr::{
-        AggregateFnCall, ColumnAlias, LogicalExpr, PropertyAccess, 
-        ScalarFnCall, TableAlias,
+        AggregateFnCall, ColumnAlias, LogicalExpr, PropertyAccess, ScalarFnCall, TableAlias,
     },
     logical_plan::ProjectionItem,
 };
 
 use super::render_expr::{
-    Column, PropertyAccess as RenderPropertyAccess, RenderExpr, TableAlias as RenderTableAlias,
-    AggregateFnCall as RenderAggregateFnCall, ColumnAlias as RenderColumnAlias,
+    AggregateFnCall as RenderAggregateFnCall, Column, ColumnAlias as RenderColumnAlias,
+    PropertyAccess as RenderPropertyAccess, RenderExpr, TableAlias as RenderTableAlias,
 };
 use super::SelectItem;
 
@@ -59,7 +58,7 @@ use super::SelectItem;
 //=============================================================================
 
 /// Intermediate representation of an expanded property
-/// 
+///
 /// This is the type-agnostic output of core expansion logic,
 /// converted to specific expression types by wrapper functions.
 #[derive(Clone, Debug)]
@@ -119,13 +118,16 @@ pub fn expand_alias_properties_core(
 ) -> Vec<ExpandedProperty> {
     let table_alias_to_use = actual_table_alias.unwrap_or_else(|| alias.to_string());
     let total_properties = properties.len();
-    
+
     // Determine which properties to expand based on requirements
     let properties_to_expand = if let Some(reqs) = property_requirements {
         if reqs.requires_all(alias) {
             // Wildcard - expand all properties
-            log::info!("🔧 expand_alias_properties_core: Alias '{}' requires ALL {} properties (wildcard)", 
-                       alias, total_properties);
+            log::info!(
+                "🔧 expand_alias_properties_core: Alias '{}' requires ALL {} properties (wildcard)",
+                alias,
+                total_properties
+            );
             properties
         } else if let Some(required_props) = reqs.get_requirements(alias) {
             // Filter to only required properties
@@ -136,7 +138,7 @@ pub fn expand_alias_properties_core(
                     required_props.contains(prop_name) || col_name == id_column
                 })
                 .collect();
-            
+
             let pruned_count = total_properties - filtered.len();
             if pruned_count > 0 {
                 log::info!("✂️  expand_alias_properties_core: Alias '{}' pruned {} properties ({} → {} columns, {:.1}% reduction)", 
@@ -147,7 +149,7 @@ pub fn expand_alias_properties_core(
                 log::debug!("🔧 expand_alias_properties_core: Alias '{}' using all {} properties (all were required)", 
                            alias, filtered.len());
             }
-            
+
             filtered
         } else {
             // No requirements for this alias - use all properties (safe default)
@@ -161,7 +163,7 @@ pub fn expand_alias_properties_core(
                    total_properties, alias);
         properties
     };
-    
+
     // Convert to ExpandedProperty with anyLast() wrapping info
     properties_to_expand
         .into_iter()
@@ -170,7 +172,7 @@ pub fn expand_alias_properties_core(
             // - We're in an aggregation context (needs_aggregation = true)
             // - AND this is not the ID column (IDs are grouped, not aggregated)
             let needs_wrap = needs_aggregation && col_name != id_column;
-            
+
             ExpandedProperty {
                 property_name: prop_name,
                 column_name: col_name,
@@ -216,19 +218,19 @@ pub fn expand_alias_to_projection_items_unified(
         id_column,
         actual_table_alias.clone(),
         needs_aggregation,
-        None,  // No pruning in analyzer phase
+        None, // No pruning in analyzer phase
     );
-    
+
     expanded
         .into_iter()
         .map(|prop| {
             let table_alias = TableAlias(prop.table_alias);
-            
+
             let base_expr = LogicalExpr::PropertyAccessExp(PropertyAccess {
                 table_alias: table_alias.clone(),
                 column: PropertyValue::Column(prop.column_name),
             });
-            
+
             let expr = if prop.needs_anylast_wrap {
                 LogicalExpr::AggregateFnCall(AggregateFnCall {
                     name: "anyLast".to_string(),
@@ -237,13 +239,13 @@ pub fn expand_alias_to_projection_items_unified(
             } else {
                 base_expr
             };
-            
+
             let col_alias_name = match alias_format {
                 PropertyAliasFormat::Underscore => format!("{}_{}", alias, prop.property_name),
                 PropertyAliasFormat::Dot => format!("{}.{}", alias, prop.property_name),
                 PropertyAliasFormat::PropertyOnly => prop.property_name.clone(),
             };
-            
+
             ProjectionItem {
                 expression: expr,
                 col_alias: Some(ColumnAlias(col_alias_name)),
@@ -304,19 +306,19 @@ pub fn expand_alias_to_select_items_unified(
         id_column,
         actual_table_alias.clone(),
         needs_aggregation,
-        property_requirements,  // PRUNING HAPPENS HERE
+        property_requirements, // PRUNING HAPPENS HERE
     );
-    
+
     expanded
         .into_iter()
         .map(|prop| {
             let table_alias = RenderTableAlias(prop.table_alias);
-            
+
             let base_expr = RenderExpr::PropertyAccessExp(RenderPropertyAccess {
                 table_alias: table_alias.clone(),
                 column: PropertyValue::Column(prop.column_name),
             });
-            
+
             let expr = if prop.needs_anylast_wrap {
                 RenderExpr::AggregateFnCall(RenderAggregateFnCall {
                     name: "anyLast".to_string(),
@@ -325,13 +327,13 @@ pub fn expand_alias_to_select_items_unified(
             } else {
                 base_expr
             };
-            
+
             let col_alias_name = match alias_format {
                 PropertyAliasFormat::Underscore => format!("{}_{}", alias, prop.property_name),
                 PropertyAliasFormat::Dot => format!("{}.{}", alias, prop.property_name),
                 PropertyAliasFormat::PropertyOnly => prop.property_name.clone(),
             };
-            
+
             SelectItem {
                 expression: expr,
                 col_alias: Some(RenderColumnAlias(col_alias_name)),
@@ -438,14 +440,12 @@ pub fn expand_alias_to_select_items(
 
     properties
         .into_iter()
-        .map(|(prop_name, col_name)| {
-            SelectItem {
-                expression: RenderExpr::PropertyAccessExp(RenderPropertyAccess {
-                    table_alias: RenderTableAlias(table_alias_to_use.clone()),
-                    column: PropertyValue::Column(col_name),
-                }),
-                col_alias: Some(RenderColumnAlias(format!("{}_{}", alias, prop_name))),
-            }
+        .map(|(prop_name, col_name)| SelectItem {
+            expression: RenderExpr::PropertyAccessExp(RenderPropertyAccess {
+                table_alias: RenderTableAlias(table_alias_to_use.clone()),
+                column: PropertyValue::Column(col_name),
+            }),
+            col_alias: Some(RenderColumnAlias(format!("{}_{}", alias, prop_name))),
         })
         .collect()
 }
@@ -474,7 +474,7 @@ pub fn expand_collect_to_group_array(
     property_requirements: Option<&PropertyRequirements>,
 ) -> LogicalExpr {
     let total_properties = properties.len();
-    
+
     // Filter properties based on requirements (property pruning optimization)
     let properties_to_collect = if let Some(reqs) = property_requirements {
         if reqs.requires_all(alias) {
@@ -486,11 +486,9 @@ pub fn expand_collect_to_group_array(
             // Filter to only required properties
             let filtered: Vec<_> = properties
                 .into_iter()
-                .filter(|(prop_name, _col_name)| {
-                    required_props.contains(prop_name)
-                })
+                .filter(|(prop_name, _col_name)| required_props.contains(prop_name))
                 .collect();
-            
+
             let pruned_count = total_properties - filtered.len();
             if pruned_count > 0 {
                 log::info!("✂️  expand_collect_to_group_array: Alias '{}' pruned {} properties ({} → {} columns, {:.1}% reduction)", 
@@ -501,7 +499,7 @@ pub fn expand_collect_to_group_array(
                 log::debug!("🔧 expand_collect_to_group_array: Alias '{}' using all {} properties (all were required)", 
                            alias, filtered.len());
             }
-            
+
             filtered
         } else {
             // No requirements for this alias - use all properties (safe default)
@@ -515,7 +513,7 @@ pub fn expand_collect_to_group_array(
                    total_properties, alias);
         properties
     };
-    
+
     // Create property access expressions for filtered properties
     let prop_exprs: Vec<LogicalExpr> = properties_to_collect
         .into_iter()
@@ -556,14 +554,7 @@ mod tests {
             ("age".to_string(), "age".to_string()),
         ];
 
-        let expanded = expand_alias_properties_core(
-            "u",
-            properties,
-            "user_id",
-            None,
-            false,
-            None,
-        );
+        let expanded = expand_alias_properties_core("u", properties, "user_id", None, false, None);
 
         assert_eq!(expanded.len(), 3);
         assert_eq!(expanded[0].property_name, "id");
@@ -580,26 +571,20 @@ mod tests {
         ];
 
         let expanded = expand_alias_properties_core(
-            "u",
-            properties,
-            "user_id",
-            None,
-            true,  // needs_aggregation = true
+            "u", properties, "user_id", None, true, // needs_aggregation = true
             None,
         );
 
         // ID column should NOT be wrapped with anyLast()
         assert!(!expanded[0].needs_anylast_wrap);
-        
+
         // Non-ID columns SHOULD be wrapped
         assert!(expanded[1].needs_anylast_wrap);
     }
 
     #[test]
     fn test_expand_alias_properties_core_with_actual_table_alias() {
-        let properties = vec![
-            ("name".to_string(), "full_name".to_string()),
-        ];
+        let properties = vec![("name".to_string(), "full_name".to_string())];
 
         let expanded = expand_alias_properties_core(
             "p",
@@ -627,18 +612,12 @@ mod tests {
         reqs.require_property("u", "firstName");
         reqs.require_property("u", "email");
 
-        let expanded = expand_alias_properties_core(
-            "u",
-            properties,
-            "user_id",
-            None,
-            false,
-            Some(&reqs),
-        );
+        let expanded =
+            expand_alias_properties_core("u", properties, "user_id", None, false, Some(&reqs));
 
         // Should have ID (always included) + firstName + email = 3 properties
         assert_eq!(expanded.len(), 3);
-        
+
         let prop_names: Vec<_> = expanded.iter().map(|p| p.property_name.as_str()).collect();
         assert!(prop_names.contains(&"id"));
         assert!(prop_names.contains(&"firstName"));
@@ -656,16 +635,10 @@ mod tests {
         ];
 
         let mut reqs = PropertyRequirements::new();
-        reqs.require_all("u");  // Wildcard
+        reqs.require_all("u"); // Wildcard
 
-        let expanded = expand_alias_properties_core(
-            "u",
-            properties,
-            "user_id",
-            None,
-            false,
-            Some(&reqs),
-        );
+        let expanded =
+            expand_alias_properties_core("u", properties, "user_id", None, false, Some(&reqs));
 
         // Wildcard should include all properties
         assert_eq!(expanded.len(), 3);
@@ -678,16 +651,10 @@ mod tests {
             ("name".to_string(), "full_name".to_string()),
         ];
 
-        let reqs = PropertyRequirements::new();  // Empty requirements
+        let reqs = PropertyRequirements::new(); // Empty requirements
 
-        let expanded = expand_alias_properties_core(
-            "u",
-            properties,
-            "user_id",
-            None,
-            false,
-            Some(&reqs),
-        );
+        let expanded =
+            expand_alias_properties_core("u", properties, "user_id", None, false, Some(&reqs));
 
         // No requirements for this alias - should include all (safe default)
         assert_eq!(expanded.len(), 2);
@@ -726,7 +693,7 @@ mod tests {
             properties,
             "user_id",
             None,
-            true,  // needs_aggregation
+            true, // needs_aggregation
             PropertyAliasFormat::Underscore,
         );
 
@@ -791,8 +758,9 @@ mod tests {
 
         // Should only have ID + firstName = 2 items
         assert_eq!(items.len(), 2);
-        
-        let aliases: Vec<_> = items.iter()
+
+        let aliases: Vec<_> = items
+            .iter()
             .map(|item| item.col_alias.as_ref().unwrap().0.as_str())
             .collect();
         assert!(aliases.contains(&"u.id"));
@@ -803,9 +771,7 @@ mod tests {
 
     #[test]
     fn test_expand_alias_to_select_items_unified_underscore_format() {
-        let properties = vec![
-            ("name".to_string(), "full_name".to_string()),
-        ];
+        let properties = vec![("name".to_string(), "full_name".to_string())];
 
         let items = expand_alias_to_select_items_unified(
             "p",
@@ -831,12 +797,8 @@ mod tests {
             ("age".to_string(), "age".to_string()),
         ];
 
-        let items = expand_alias_to_properties(
-            "p",
-            properties,
-            None,
-            PropertyAliasFormat::Underscore,
-        );
+        let items =
+            expand_alias_to_properties("p", properties, None, PropertyAliasFormat::Underscore);
 
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].col_alias.as_ref().unwrap().0, "p_name");
@@ -845,25 +807,16 @@ mod tests {
 
     #[test]
     fn test_expand_alias_dot_format() {
-        let properties = vec![
-            ("name".to_string(), "full_name".to_string()),
-        ];
+        let properties = vec![("name".to_string(), "full_name".to_string())];
 
-        let items = expand_alias_to_properties(
-            "p",
-            properties,
-            None,
-            PropertyAliasFormat::Dot,
-        );
+        let items = expand_alias_to_properties("p", properties, None, PropertyAliasFormat::Dot);
 
         assert_eq!(items[0].col_alias.as_ref().unwrap().0, "p.name");
     }
 
     #[test]
     fn test_expand_alias_with_actual_table_alias() {
-        let properties = vec![
-            ("name".to_string(), "full_name".to_string()),
-        ];
+        let properties = vec![("name".to_string(), "full_name".to_string())];
 
         let items = expand_alias_to_properties(
             "p",

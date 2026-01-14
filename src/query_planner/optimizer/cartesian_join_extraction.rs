@@ -44,26 +44,33 @@ impl OptimizerPass for CartesianJoinExtraction {
                     Transformed::Yes(p) | Transformed::No(p) => p.clone(),
                 };
 
-                log::info!("🔍 CartesianJoinExtraction: Filter child is {:?}", std::mem::discriminant(child_plan.as_ref()));
-                
+                log::info!(
+                    "🔍 CartesianJoinExtraction: Filter child is {:?}",
+                    std::mem::discriminant(child_plan.as_ref())
+                );
+
                 // Special case: Filter above WithClause - need to push filter down to CartesianProduct inside WITH
                 if let LogicalPlan::WithClause(with_clause) = child_plan.as_ref() {
                     // Check if WithClause contains CartesianProduct
                     if let LogicalPlan::CartesianProduct(cp) = with_clause.input.as_ref() {
                         log::info!("🔍 CartesianJoinExtraction: Found Filter above WithClause(CartesianProduct)!");
-                        
+
                         // Get aliases from left and right sides
                         let left_aliases = collect_aliases_from_plan(&cp.left);
                         let right_aliases = collect_aliases_from_plan(&cp.right);
 
                         // Check if the filter predicate references both sides
                         let filter_aliases = collect_aliases_from_expr(&filter.predicate);
-                        
+
                         let refs_left = filter_aliases.iter().any(|a| left_aliases.contains(a));
                         let refs_right = filter_aliases.iter().any(|a| right_aliases.contains(a));
-                        
-                        log::info!("🔍 CartesianJoinExtraction: Filter refs_left={}, refs_right={}", refs_left, refs_right);
-                        
+
+                        log::info!(
+                            "🔍 CartesianJoinExtraction: Filter refs_left={}, refs_right={}",
+                            refs_left,
+                            refs_right
+                        );
+
                         if refs_left && refs_right {
                             // This filter bridges both sides - extract it as a join condition
                             let (join_conditions, remaining_filters) = partition_filter_conditions(
@@ -71,15 +78,16 @@ impl OptimizerPass for CartesianJoinExtraction {
                                 &left_aliases,
                                 &right_aliases,
                             );
-                            
+
                             // Create new CartesianProduct with join_condition
                             let new_cp = CartesianProduct {
                                 left: cp.left.clone(),
                                 right: cp.right.clone(),
                                 is_optional: cp.is_optional,
-                                join_condition: join_conditions.or_else(|| cp.join_condition.clone()),
+                                join_condition: join_conditions
+                                    .or_else(|| cp.join_condition.clone()),
                             };
-                            
+
                             // Create new WithClause with updated CartesianProduct
                             let new_with = crate::query_planner::logical_plan::WithClause {
                                 input: Arc::new(LogicalPlan::CartesianProduct(new_cp)),
@@ -92,7 +100,7 @@ impl OptimizerPass for CartesianJoinExtraction {
                                 exported_aliases: with_clause.exported_aliases.clone(),
                                 cte_references: with_clause.cte_references.clone(),
                             };
-                            
+
                             // If there are remaining filters, wrap the WithClause
                             if let Some(remaining) = remaining_filters {
                                 log::info!("✅ CartesianJoinExtraction: Extracted join condition, keeping remaining filter above WITH");
@@ -415,9 +423,9 @@ impl OptimizerPass for CartesianJoinExtraction {
             }
 
             // Leaf nodes - no transformation
-            LogicalPlan::Empty
-            | LogicalPlan::ViewScan(_)
-            | LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
+            LogicalPlan::Empty | LogicalPlan::ViewScan(_) | LogicalPlan::PageRank(_) => {
+                Transformed::No(logical_plan.clone())
+            }
 
             LogicalPlan::WithClause(with_clause) => {
                 let child_tf = self.optimize(with_clause.input.clone(), plan_ctx)?;
@@ -614,14 +622,17 @@ fn partition_filter_conditions(
     right_aliases: &HashSet<String>,
 ) -> (Option<LogicalExpr>, Option<LogicalExpr>) {
     use crate::query_planner::logical_expr::{Operator, OperatorApplication};
-    
+
     // If it's an AND expression, split it
     if let LogicalExpr::OperatorApplicationExp(op_app) = predicate {
         if op_app.operator == Operator::And {
-            log::info!("🔍 CartesianJoinExtraction: Splitting AND expression with {} operands", op_app.operands.len());
+            log::info!(
+                "🔍 CartesianJoinExtraction: Splitting AND expression with {} operands",
+                op_app.operands.len()
+            );
             let mut join_conditions = Vec::new();
             let mut where_conditions = Vec::new();
-            
+
             // Split each operand
             for operand in &op_app.operands {
                 // Check if this operand contains correlated subquery
@@ -634,9 +645,9 @@ fn partition_filter_conditions(
                     let pred_aliases = collect_aliases_from_expr(operand);
                     let refs_left = pred_aliases.iter().any(|a| left_aliases.contains(a));
                     let refs_right = pred_aliases.iter().any(|a| right_aliases.contains(a));
-                    
+
                     log::info!("🔍 CartesianJoinExtraction: Operand aliases={:?}, refs_left={}, refs_right={}", pred_aliases, refs_left, refs_right);
-                    
+
                     if refs_left && refs_right {
                         // This operand is a join condition
                         log::info!("✅ CartesianJoinExtraction: Operand is cross-pattern - adding to JOIN conditions");
@@ -648,7 +659,7 @@ fn partition_filter_conditions(
                     }
                 }
             }
-            
+
             // Combine join conditions with AND if multiple
             let join_expr = if join_conditions.is_empty() {
                 log::info!("🔍 CartesianJoinExtraction: No join conditions extracted");
@@ -657,13 +668,16 @@ fn partition_filter_conditions(
                 log::info!("✅ CartesianJoinExtraction: 1 join condition extracted");
                 Some(join_conditions[0].clone())
             } else {
-                log::info!("✅ CartesianJoinExtraction: {} join conditions extracted - combining with AND", join_conditions.len());
+                log::info!(
+                    "✅ CartesianJoinExtraction: {} join conditions extracted - combining with AND",
+                    join_conditions.len()
+                );
                 Some(LogicalExpr::OperatorApplicationExp(OperatorApplication {
                     operator: Operator::And,
                     operands: join_conditions,
                 }))
             };
-            
+
             // Combine where conditions with AND if multiple
             let where_expr = if where_conditions.is_empty() {
                 log::info!("🔍 CartesianJoinExtraction: No WHERE conditions remaining");
@@ -678,11 +692,11 @@ fn partition_filter_conditions(
                     operands: where_conditions,
                 }))
             };
-            
+
             return (join_expr, where_expr);
         }
     }
-    
+
     // Not an AND expression - check the whole predicate
     // CRITICAL: Check if predicate contains correlated subquery (NOT PathPattern, EXISTS, size())
     // These MUST stay in WHERE clause - ClickHouse doesn't support correlated subqueries in JOIN ON

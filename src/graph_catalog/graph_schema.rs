@@ -154,8 +154,8 @@ pub struct RelationshipSchema {
     /// 🔵 RELATIONAL SPACE: Table name for target node (e.g., "products_bench")
     /// Used for SQL generation and JOIN construction
     pub to_node_table: String,
-    pub from_id: String,   // Column name for source node ID (e.g., "user1_id")
-    pub to_id: String,     // Column name for target node ID (e.g., "user2_id")
+    pub from_id: String, // Column name for source node ID (e.g., "user1_id")
+    pub to_id: String,   // Column name for target node ID (e.g., "user2_id")
     pub from_node_id_dtype: String,
     pub to_node_id_dtype: String,
     pub property_mappings: HashMap<String, PropertyValue>,
@@ -238,12 +238,12 @@ pub struct RelationshipSchema {
     /// SQL expression with 'from.property' and 'to.property' references
     /// Compiled to additional JOIN ON condition beyond ID equality
     /// Use AND/OR for composite logic
-    /// 
+    ///
     /// Examples:
     ///   - "from.timestamp < to.timestamp"  (chronological ordering)
     ///   - "from.app_id = to.app_id"  (context preservation)
     ///   - "from.timestamp + 300 > to.timestamp AND from.country = to.country"
-    /// 
+    ///
     /// Applied as:
     /// - Single-hop: Additional condition in JOIN ON clause
     /// - VLP: Additional condition in recursive CTE JOIN
@@ -474,7 +474,7 @@ pub struct GraphSchema {
     /// Maps node label -> metadata
     #[serde(skip)]
     denormalized_nodes: HashMap<String, ProcessedNodeMetadata>,
-    
+
     /// Secondary index: relationship type name -> composite keys
     /// Enables O(1) lookup of all relationships by type without scanning
     /// Example: "HAS_TAG" -> ["HAS_TAG::Post::Tag", "HAS_TAG::Comment::Tag", "HAS_TAG::Message::Tag"]
@@ -497,7 +497,7 @@ impl GraphSchema {
     ) -> GraphSchema {
         // Build denormalized node metadata
         let denormalized_nodes = Self::build_denormalized_metadata(&relationships);
-        
+
         // Build secondary index for fast relationship type lookup
         let rel_type_index = Self::build_rel_type_index(&relationships);
 
@@ -510,10 +510,10 @@ impl GraphSchema {
             rel_type_index,
         }
     }
-    
+
     /// Build secondary index: relationship type -> list of composite keys
     /// Enables O(1) lookup by type name without iterating through all relationships
-    /// 
+    ///
     /// NOTE: When both simple key ("TYPE") and composite key ("TYPE::FROM::TO") exist
     /// for the same relationship, we only include the composite key. This is because
     /// the config.rs inserts both for backward compatibility, but we only want to
@@ -522,11 +522,12 @@ impl GraphSchema {
         relationships: &HashMap<String, RelationshipSchema>,
     ) -> HashMap<String, Vec<String>> {
         let mut index: HashMap<String, Vec<String>> = HashMap::new();
-        
+
         // First pass: collect all composite keys (those containing "::")
         // Skip simple keys that have a corresponding composite key
-        let mut composite_types: std::collections::HashSet<String> = std::collections::HashSet::new();
-        
+        let mut composite_types: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
         for composite_key in relationships.keys() {
             if composite_key.contains("::") {
                 // Extract base type name from composite key
@@ -535,7 +536,7 @@ impl GraphSchema {
                 }
             }
         }
-        
+
         // Second pass: build index, skipping simple keys when composite exists
         for composite_key in relationships.keys() {
             let type_name = if composite_key.contains("::") {
@@ -544,18 +545,21 @@ impl GraphSchema {
             } else {
                 // This is a simple key - skip if we have composite keys for this type
                 if composite_types.contains(composite_key) {
-                    log::debug!("Skipping simple key '{}' in favor of composite key", composite_key);
+                    log::debug!(
+                        "Skipping simple key '{}' in favor of composite key",
+                        composite_key
+                    );
                     continue;
                 }
                 composite_key.as_str()
             };
-            
+
             index
                 .entry(type_name.to_string())
                 .or_insert_with(Vec::new)
                 .push(composite_key.clone());
         }
-        
+
         index
     }
 
@@ -673,15 +677,19 @@ impl GraphSchema {
     }
 
     pub fn get_node_schema(&self, node_label: &str) -> Result<&NodeSchema, GraphSchemaError> {
-        log::debug!("get_node_schema: Looking for node_label='{}' in schema (has {} nodes: {:?})", 
-            node_label, 
+        log::debug!(
+            "get_node_schema: Looking for node_label='{}' in schema (has {} nodes: {:?})",
+            node_label,
             self.nodes.len(),
-            self.nodes.keys().take(5).collect::<Vec<_>>());
-        
+            self.nodes.keys().take(5).collect::<Vec<_>>()
+        );
+
         self.nodes.get(node_label).ok_or_else(|| {
-            log::warn!("get_node_schema: Node '{}' NOT FOUND. Available nodes: {:?}", 
-                node_label, 
-                self.nodes.keys().collect::<Vec<_>>());
+            log::warn!(
+                "get_node_schema: Node '{}' NOT FOUND. Available nodes: {:?}",
+                node_label,
+                self.nodes.keys().collect::<Vec<_>>()
+            );
             GraphSchemaError::Node {
                 node_label: node_label.to_string(),
             }
@@ -689,29 +697,38 @@ impl GraphSchema {
     }
 
     pub fn get_rel_schema(&self, rel_label: &str) -> Result<&RelationshipSchema, GraphSchemaError> {
-        log::debug!("⚠️ get_rel_schema (OLD METHOD) called with rel_label='{}'", rel_label);
-        
+        log::debug!(
+            "⚠️ get_rel_schema (OLD METHOD) called with rel_label='{}'",
+            rel_label
+        );
+
         // First try exact match (simple key for backward compatibility)
         if let Some(schema) = self.relationships.get(rel_label) {
             log::debug!("get_rel_schema: Found simple key '{}'", rel_label);
             return Ok(schema);
         }
-        
+
         // Check if this is a composite key (TYPE::FROM::TO)
         if rel_label.contains("::") {
             // It's a composite key - try to decompose and look up
-            log::debug!("get_rel_schema: Input '{}' is a composite key, attempting lookup", rel_label);
-            
+            log::debug!(
+                "get_rel_schema: Input '{}' is a composite key, attempting lookup",
+                rel_label
+            );
+
             // Composite keys are stored as-is in the HashMap, so try direct lookup
             if let Some(schema) = self.relationships.get(rel_label) {
                 return Ok(schema);
             }
-            
+
             // If direct lookup failed, the composite key doesn't exist
             // This might happen if code passes a composite key that wasn't registered
-            log::warn!("get_rel_schema: Composite key '{}' not found in schema", rel_label);
+            log::warn!(
+                "get_rel_schema: Composite key '{}' not found in schema",
+                rel_label
+            );
         }
-        
+
         // If not found, it might be a composite key query from old code
         // Return error - caller should use get_rel_schema_with_nodes for composite lookups
         log::error!(
@@ -722,7 +739,7 @@ impl GraphSchema {
             rel_label: rel_label.to_string(),
         })
     }
-    
+
     /// Get relationship schema by type and node types (supports composite keys)
     pub fn get_rel_schema_with_nodes(
         &self,
@@ -746,10 +763,11 @@ impl GraphSchema {
             }
             log::debug!(
                 "get_rel_schema_with_nodes: Composite key '{}' not found, trying simple key '{}'",
-                composite_key, rel_type
+                composite_key,
+                rel_type
             );
         }
-        
+
         // Fall back to simple key (for relationships that don't have node-specific variants)
         self.relationships
             .get(rel_type)
@@ -763,7 +781,7 @@ impl GraphSchema {
                 }
             })
     }
-    
+
     /// Get all relationship schemas matching a type name
     /// O(1) lookup using secondary index instead of O(n) iteration
     pub fn get_all_rel_schemas_by_type(&self, rel_type: &str) -> Vec<&RelationshipSchema> {
@@ -779,24 +797,24 @@ impl GraphSchema {
     }
 
     /// Find all relationship types that match a generic pattern, filtering by node type compatibility.
-    /// 
+    ///
     /// This performs **semantic expansion** based on node types, not just pattern matching.
-    /// 
+    ///
     /// For example:
     /// - Query: `(m:Message)-[:HAS_TAG]->(t:Tag)`
     /// - Message is polymorphic: [Post, Comment]
     /// - Result: Only [POST_HAS_TAG, COMMENT_HAS_TAG], NOT FORUM_HAS_TAG
-    /// 
+    ///
     /// Strategy:
     /// 1. Try exact match first (if relationship exists, return it)
     /// 2. Pattern match to find candidates (e.g., *_HAS_TAG)
     /// 3. Filter candidates by from_node/to_node compatibility with provided node labels
-    /// 
+    ///
     /// Parameters:
     /// - generic_name: The relationship type name (e.g., "HAS_TAG")
     /// - from_label: Optional source node label (e.g., "Message", "University")
     /// - to_label: Optional target node label (e.g., "Tag", "City")
-    /// 
+    ///
     /// Returns empty vec if no matches found.
     pub fn expand_generic_relationship_type(
         &self,
@@ -806,13 +824,13 @@ impl GraphSchema {
     ) -> Vec<String> {
         // Use composite key index for direct O(1) lookup by type name
         // No more pattern matching - rely on proper schema definition
-        
+
         // Get all composite keys for this relationship type from the index
         let composite_keys = match self.rel_type_index.get(generic_name) {
             Some(keys) => keys.clone(),
             None => return Vec::new(), // Type not found in schema
         };
-        
+
         // If no node labels provided, return all matches
         if from_label.is_none() && to_label.is_none() {
             if !composite_keys.is_empty() {
@@ -825,17 +843,21 @@ impl GraphSchema {
             }
             return composite_keys;
         }
-        
+
         // Resolve labels to table names
         // Some labels like "University" map to table "Organisation"
         // We need to match against the actual table name, not the label
         let from_table_name = from_label.and_then(|label| {
-            self.nodes.get(label).map(|schema| schema.table_name.as_str())
+            self.nodes
+                .get(label)
+                .map(|schema| schema.table_name.as_str())
         });
         let to_table_name = to_label.and_then(|label| {
-            self.nodes.get(label).map(|schema| schema.table_name.as_str())
+            self.nodes
+                .get(label)
+                .map(|schema| schema.table_name.as_str())
         });
-        
+
         log::debug!(
             "Resolving labels: from_label={:?} -> from_table={:?}, to_label={:?} -> to_table={:?}",
             from_label,
@@ -843,7 +865,7 @@ impl GraphSchema {
             to_label,
             to_table_name
         );
-        
+
         // Filter by node compatibility using EXACT matching
         // When node labels are specified, we want exact from_node/to_node matches
         // not "smart" polymorphic compatibility
@@ -858,13 +880,13 @@ impl GraphSchema {
                 let to_ok = to_label.map_or(true, |t| {
                     to_table_name.map_or(schema.to_node == t, |table| schema.to_node == table)
                 });
-                
+
                 if from_ok && to_ok {
                     compatible.push(composite_key.clone());
                 }
             }
         }
-        
+
         if !compatible.is_empty() {
             log::debug!(
                 "Found {} compatible '{}' relationship(s) for ({:?})-[]->({:?}): {:?}",
@@ -875,15 +897,15 @@ impl GraphSchema {
                 compatible
             );
         }
-        
+
         compatible
     }
-    
+
     /// Check if a relationship is compatible with given source/target node labels.
-    /// 
+    ///
     /// Handles polymorphic nodes by checking if the relationship's from_node/to_node
     /// matches any concrete type that the polymorphic node can represent.
-    /// 
+    ///
     /// Example:
     /// - Relationship: POST_HAS_TAG (Post → Tag)
     /// - Query node: Message (polymorphic: Post | Comment)
@@ -900,19 +922,19 @@ impl GraphSchema {
         } else {
             true // No constraint on source node
         };
-        
+
         // Check to_node compatibility
         let to_ok = if let Some(to) = to_label {
             self.is_node_type_compatible(&rel_schema.to_node, to)
         } else {
             true // No constraint on target node
         };
-        
+
         from_ok && to_ok
     }
-    
+
     /// Check if a relationship node type is compatible with a query node label.
-    /// 
+    ///
     /// Returns true if:
     /// 1. They match exactly (Post == Post)
     /// 2. Query label is polymorphic and the relationship node type could be one of its concrete types
@@ -921,7 +943,7 @@ impl GraphSchema {
     /// - Message with label_column="type" represents entities from Post and Comment tables
     /// - POST_HAS_TAG with from_node="Post" is compatible (Post is a Message type)
     /// - FORUM_HAS_TAG with from_node="Forum" is NOT compatible (Forum is not a Message type)
-    /// 
+    ///
     /// Detection heuristic:
     /// - If query node has label_column (polymorphic) and rel node exists as a separate node,
     ///   check if a relationship exists that connects them via the type discriminator
@@ -930,7 +952,7 @@ impl GraphSchema {
         if rel_node_type == query_label {
             return true;
         }
-        
+
         // Check if query label is polymorphic
         if let Some(query_node_schema) = self.nodes.get(query_label) {
             // Polymorphic node check: has label_column (type discriminator)
@@ -939,42 +961,42 @@ impl GraphSchema {
                 // is a valid type by checking:
                 // 1. If there's a node definition for rel_node_type (e.g., Post exists)
                 // 2. If that node's table could map to the same data as the polymorphic node
-                
+
                 // Heuristic: If the rel_node_type exists as a node AND has a relationship
                 // defined with that type, it's likely a concrete type
-                
+
                 // Better heuristic for LDBC: Check if rel_node_type appears in relationship
                 // names that involve this polymorphic node's concrete types
                 // E.g., POST_HAS_TAG suggests Post is a concrete type
                 // COMMENT_HAS_TAG suggests Comment is a concrete type
                 // FORUM_HAS_TAG does NOT match Message pattern
-                
+
                 // Check if we have relationships named like "{REL_NODE_TYPE}_*"
                 // If Message is polymorphic and we see POST_HAS_TAG and COMMENT_HAS_TAG,
                 // then Post and Comment are the concrete types
-                
+
                 // For now, use a simple check: does the table name match?
                 // Message points to Message table, Post points to Post table
                 // If rel_node_type table != query_label table, but query has label_column,
                 // check if rel_node_type could be a valid type value
-                
+
                 if let Some(rel_node_schema) = self.nodes.get(rel_node_type) {
                     // If the polymorphic node's table is different from the concrete node's table,
                     // they're not compatible (Message table vs Post table)
                     // UNLESS the polymorphic node is a view that unions multiple tables
-                    
+
                     // Simplified check: If polymorphic node table name matches or contains
                     // the concrete type name, it's compatible
                     // E.g., Message table for Message label, Post table for Post label
                     // Since Message is a union view, check if it could contain Post rows
-                    
+
                     // Most reliable: check if the rel_node_type appears in the label_value
                     // But label_value is not always set. Alternative: check naming convention
-                    
+
                     // LDBC-specific heuristic: Message represents Post and Comment
                     // because we see POST_* and COMMENT_* relationships in the schema
                     // This is implicit in the schema design
-                    
+
                     // For now, return true if rel_node exists (backward compatibility)
                     // but log that we're using a weak heuristic
                     log::debug!(
@@ -982,71 +1004,79 @@ impl GraphSchema {
                         rel_node_type,
                         query_label
                     );
-                    
+
                     // BETTER CHECK: See if relationship pattern suggests they're related
                     // Count relationships that start with rel_node_type prefix
                     let rel_prefix = format!("{}_", rel_node_type.to_uppercase());
-                    let has_typed_relationships = self.relationships.keys()
+                    let has_typed_relationships = self
+                        .relationships
+                        .keys()
                         .any(|k| k.starts_with(&rel_prefix));
-                    
+
                     if has_typed_relationships {
                         // This suggests rel_node_type is a concrete entity type
                         // Now check if it makes sense as a component of the polymorphic node
-                        
+
                         // For Message (union view of Post+Comment), Post and Comment have different tables
                         // But they're still valid because Message is designed to represent both
-                        // 
+                        //
                         // Key insight: If the polymorphic node has a label_column but different table,
                         // it's likely a union view. In this case, the concrete types ARE compatible
                         // even though tables differ.
                         //
                         // Only reject if the concrete type is clearly unrelated (different domain)
                         // E.g., Forum is not part of Message union
-                        
+
                         // Heuristic: Check if rel_node_type name appears in the polymorphic table name
                         // Message doesn't contain "Forum" → Forum incompatible
                         // Message doesn't contain "Post" or "Comment" either (weak check)
-                        
+
                         // Better: For polymorphic union nodes, check if table names suggest union
                         // Message table with type column suggests it's a union
                         // If query is for Message and rel is Post, check if "post" or "Post" appears
                         // in any relationship type involving Message
-                        
+
                         // Most practical: Accept Post and Comment as Message components,
                         // reject Forum. Use the presence of "Message" in relationship definitions
                         // or explicit type checking.
-                        
+
                         // FINAL HEURISTIC: If polymorphic table name is a generic/abstract name
                         // (like "Message") and concrete is specific (like "Post"), accept it
                         // UNLESS the concrete type name suggests it's from a different domain
-                        
+
                         // Check if rel_node_type is explicitly excluded
                         // Forum is NOT a Message, but Post and Comment ARE
                         let polymorphic_table_lc = query_node_schema.table_name.to_lowercase();
                         let concrete_type_lc = rel_node_type.to_lowercase();
-                        
+
                         // If the polymorphic node and concrete type are in the same "family"
                         // (both related to messaging), accept. Reject if clearly different.
                         // Heuristic: Forum != Message (different concepts)
                         //            Post ~= Message (Post is a type of Message)
                         //            Comment ~= Message (Comment is a type of Message)
-                        
+
                         // Simple check: if concrete type is "Forum" and polymorphic is "Message", reject
                         if polymorphic_table_lc == "message" && concrete_type_lc == "forum" {
-                            log::debug!("Rejecting Forum as incompatible with Message (different domain)");
+                            log::debug!(
+                                "Rejecting Forum as incompatible with Message (different domain)"
+                            );
                             return false;
                         }
-                        
+
                         // Accept other combinations for union views
-                        log::debug!("Accepting '{}' as compatible with '{}' polymorphic union", rel_node_type, query_label);
+                        log::debug!(
+                            "Accepting '{}' as compatible with '{}' polymorphic union",
+                            rel_node_type,
+                            query_label
+                        );
                         return true;
                     }
-                    
+
                     return true; // Fallback to permissive
                 }
             }
         }
-        
+
         false
     }
 

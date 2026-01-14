@@ -3,8 +3,8 @@ use ast::{
     OpenCypherQueryAst, OptionalMatchClause, OrderByClause, RemoveClause, ReturnClause, SetClause,
     SkipClause, UnionClause, UnionType, UnwindClause, UseClause, WhereClause, WithClause,
 };
-use common::ws;
 pub use common::strip_comments;
+use common::ws;
 use errors::OpenCypherParsingError;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case};
@@ -23,8 +23,8 @@ mod expression;
 mod limit_clause;
 mod match_clause;
 mod optional_match_clause;
-mod order_by_clause;
 mod order_by_and_page_clause;
+mod order_by_clause;
 mod path_pattern;
 mod remove_clause;
 mod return_clause;
@@ -152,9 +152,10 @@ pub fn parse_query_with_nom(
         opt(delete_clause::parse_delete_clause).parse(input)?;
     let (input, return_clause): (&str, Option<ReturnClause>) =
         opt(return_clause::parse_return_clause).parse(input)?;
-    
+
     // Parse ORDER BY and pagination clauses (unified to support flexible ordering)
-    let (input, page_clause) = opt(order_by_and_page_clause::parse_order_by_and_page_clause).parse(input)?;
+    let (input, page_clause) =
+        opt(order_by_and_page_clause::parse_order_by_and_page_clause).parse(input)?;
     let (order_by_clause, skip_clause, limit_clause) = if let Some(clause) = page_clause {
         (clause.order_by, clause.skip, clause.limit)
     } else {
@@ -372,7 +373,10 @@ mod tests {
                 // These clauses should be present.
                 assert!(!ast.match_clauses.is_empty(), "Expected MATCH clause");
                 // WHERE clause is now part of MATCH clause per OpenCypher spec
-                assert!(ast.match_clauses[0].where_clause.is_some(), "Expected WHERE clause in MATCH clause");
+                assert!(
+                    ast.match_clauses[0].where_clause.is_some(),
+                    "Expected WHERE clause in MATCH clause"
+                );
                 assert!(ast.return_clause.is_some(), "Expected RETURN clause");
                 // The rest should be None.
                 assert!(ast.with_clause.is_none(), "Expected WITH clause to be None");
@@ -406,13 +410,17 @@ mod tests {
     #[test]
     fn test_parse_where_with_pattern_comprehension_return() {
         // This test case specifically tests WHERE followed by RETURN with pattern comprehension
-        let query = "MATCH (p:Person) WHERE true RETURN [(p)-[:KNOWS]->(f) | f.firstName] AS friends";
+        let query =
+            "MATCH (p:Person) WHERE true RETURN [(p)-[:KNOWS]->(f) | f.firstName] AS friends";
         let parsed = parse_query(query);
         match parsed {
             Ok(ast) => {
                 assert!(!ast.match_clauses.is_empty(), "Expected MATCH clause");
                 // WHERE clause is now part of MATCH clause per OpenCypher spec
-                assert!(ast.match_clauses[0].where_clause.is_some(), "Expected WHERE clause in MATCH clause");
+                assert!(
+                    ast.match_clauses[0].where_clause.is_some(),
+                    "Expected WHERE clause in MATCH clause"
+                );
                 assert!(ast.return_clause.is_some(), "Expected RETURN clause");
             }
             Err(e) => panic!("Pattern comprehension query parsing failed: {:?}", e),
@@ -437,49 +445,52 @@ mod tests {
         let match_clause = &query_ast.match_clauses[0];
 
         let expected_match_clause = MatchClause {
-            path_patterns: vec![(None, PathPattern::ConnectedPattern(vec![
-                ConnectedPattern {
-                    start_node: Rc::new(RefCell::new(NodePattern {
-                        name: Some("david"),
-                        labels: None,
-                        properties: Some(vec![Property::PropertyKV(PropertyKVPair {
-                            key: "name",
-                            value: Expression::Literal(Literal::String("David")),
-                        })]),
-                    })),
-                    relationship: RelationshipPattern {
-                        name: None,
-                        direction: Direction::Either,
-                        labels: None,
-                        properties: None,
-                        variable_length: None,
+            path_patterns: vec![(
+                None,
+                PathPattern::ConnectedPattern(vec![
+                    ConnectedPattern {
+                        start_node: Rc::new(RefCell::new(NodePattern {
+                            name: Some("david"),
+                            labels: None,
+                            properties: Some(vec![Property::PropertyKV(PropertyKVPair {
+                                key: "name",
+                                value: Expression::Literal(Literal::String("David")),
+                            })]),
+                        })),
+                        relationship: RelationshipPattern {
+                            name: None,
+                            direction: Direction::Either,
+                            labels: None,
+                            properties: None,
+                            variable_length: None,
+                        },
+                        end_node: Rc::new(RefCell::new(NodePattern {
+                            name: Some("otherPerson"),
+                            labels: None,
+                            properties: None,
+                        })),
                     },
-                    end_node: Rc::new(RefCell::new(NodePattern {
-                        name: Some("otherPerson"),
-                        labels: None,
-                        properties: None,
-                    })),
-                },
-                ConnectedPattern {
-                    start_node: Rc::new(RefCell::new(NodePattern {
-                        name: Some("otherPerson"),
-                        labels: None,
-                        properties: None,
-                    })),
-                    relationship: RelationshipPattern {
-                        name: None,
-                        direction: Direction::Outgoing,
-                        variable_length: None,
-                        labels: None,
-                        properties: None,
+                    ConnectedPattern {
+                        start_node: Rc::new(RefCell::new(NodePattern {
+                            name: Some("otherPerson"),
+                            labels: None,
+                            properties: None,
+                        })),
+                        relationship: RelationshipPattern {
+                            name: None,
+                            direction: Direction::Outgoing,
+                            variable_length: None,
+                            labels: None,
+                            properties: None,
+                        },
+                        end_node: Rc::new(RefCell::new(NodePattern {
+                            name: Some("b"),
+                            labels: None,
+                            properties: None,
+                        })),
                     },
-                    end_node: Rc::new(RefCell::new(NodePattern {
-                        name: Some("b"),
-                        labels: None,
-                        properties: None,
-                    })),
-                },
-            ]))],
+                ]),
+            )],
             where_clause: None,
         };
 
@@ -621,51 +632,54 @@ mod tests {
         assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
         let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
-            path_patterns: vec![(None, PathPattern::ConnectedPattern(vec![
-                // (p:Person {name: 'Tom Hardy'})-[r:ACTED_IN]->(movie:Movie)
-                ConnectedPattern {
-                    start_node: Rc::new(RefCell::new(NodePattern {
-                        name: Some("p"),
-                        labels: Some(vec!["Person"]),
-                        properties: Some(vec![Property::PropertyKV(PropertyKVPair {
-                            key: "name",
-                            value: Expression::Literal(Literal::String("Tom Hardy")),
-                        })]),
-                    })),
-                    relationship: RelationshipPattern {
-                        name: Some("r"),
-                        direction: Direction::Outgoing,
-                        variable_length: None,
-                        labels: Some(vec!["ACTED_IN"]),
-                        properties: None,
+            path_patterns: vec![(
+                None,
+                PathPattern::ConnectedPattern(vec![
+                    // (p:Person {name: 'Tom Hardy'})-[r:ACTED_IN]->(movie:Movie)
+                    ConnectedPattern {
+                        start_node: Rc::new(RefCell::new(NodePattern {
+                            name: Some("p"),
+                            labels: Some(vec!["Person"]),
+                            properties: Some(vec![Property::PropertyKV(PropertyKVPair {
+                                key: "name",
+                                value: Expression::Literal(Literal::String("Tom Hardy")),
+                            })]),
+                        })),
+                        relationship: RelationshipPattern {
+                            name: Some("r"),
+                            direction: Direction::Outgoing,
+                            variable_length: None,
+                            labels: Some(vec!["ACTED_IN"]),
+                            properties: None,
+                        },
+                        end_node: Rc::new(RefCell::new(NodePattern {
+                            name: Some("movie"),
+                            labels: Some(vec!["Movie"]),
+                            properties: None,
+                        })),
                     },
-                    end_node: Rc::new(RefCell::new(NodePattern {
-                        name: Some("movie"),
-                        labels: Some(vec!["Movie"]),
-                        properties: None,
-                    })),
-                },
-                // (movie:Movie)<-[:DIRECTED]-(director:Person)
-                ConnectedPattern {
-                    start_node: Rc::new(RefCell::new(NodePattern {
-                        name: Some("movie"),
-                        labels: Some(vec!["Movie"]),
-                        properties: None,
-                    })),
-                    relationship: RelationshipPattern {
-                        name: None,
-                        direction: Direction::Incoming,
-                        variable_length: None,
-                        labels: Some(vec!["DIRECTED"]),
-                        properties: None,
+                    // (movie:Movie)<-[:DIRECTED]-(director:Person)
+                    ConnectedPattern {
+                        start_node: Rc::new(RefCell::new(NodePattern {
+                            name: Some("movie"),
+                            labels: Some(vec!["Movie"]),
+                            properties: None,
+                        })),
+                        relationship: RelationshipPattern {
+                            name: None,
+                            direction: Direction::Incoming,
+                            variable_length: None,
+                            labels: Some(vec!["DIRECTED"]),
+                            properties: None,
+                        },
+                        end_node: Rc::new(RefCell::new(NodePattern {
+                            name: Some("director"),
+                            labels: Some(vec!["Person"]),
+                            properties: None,
+                        })),
                     },
-                    end_node: Rc::new(RefCell::new(NodePattern {
-                        name: Some("director"),
-                        labels: Some(vec!["Person"]),
-                        properties: None,
-                    })),
-                },
-            ]))],
+                ]),
+            )],
             where_clause: Some(WhereClause {
                 conditions: Expression::OperatorApplicationExp(OperatorApplication {
                     operator: Operator::And,
@@ -791,16 +805,22 @@ mod tests {
         let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
             path_patterns: vec![
-                (None, PathPattern::Node(NodePattern {
-                    name: Some("a"),
-                    labels: Some(vec!["Person"]),
-                    properties: None,
-                })),
-                (None, PathPattern::Node(NodePattern {
-                    name: Some("b"),
-                    labels: Some(vec!["Person"]),
-                    properties: None,
-                })),
+                (
+                    None,
+                    PathPattern::Node(NodePattern {
+                        name: Some("a"),
+                        labels: Some(vec!["Person"]),
+                        properties: None,
+                    }),
+                ),
+                (
+                    None,
+                    PathPattern::Node(NodePattern {
+                        name: Some("b"),
+                        labels: Some(vec!["Person"]),
+                        properties: None,
+                    }),
+                ),
             ],
             where_clause: Some(WhereClause {
                 conditions: Expression::OperatorApplicationExp(OperatorApplication {
@@ -920,14 +940,17 @@ mod tests {
         assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
         let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
-            path_patterns: vec![(None, PathPattern::Node(NodePattern {
-                name: Some("n"),
-                labels: None,
-                properties: Some(vec![Property::PropertyKV(PropertyKVPair {
-                    key: "name",
-                    value: Expression::Literal(Literal::String("Andres")),
-                })]),
-            }))],
+            path_patterns: vec![(
+                None,
+                PathPattern::Node(NodePattern {
+                    name: Some("n"),
+                    labels: None,
+                    properties: Some(vec![Property::PropertyKV(PropertyKVPair {
+                        key: "name",
+                        value: Expression::Literal(Literal::String("Andres")),
+                    })]),
+                }),
+            )],
             where_clause: None,
         };
         assert_eq!(*match_clause, expected_match_clause);
@@ -1011,14 +1034,17 @@ mod tests {
         assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
         let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
-            path_patterns: vec![(None, PathPattern::Node(NodePattern {
-                name: Some("n"),
-                labels: None,
-                properties: Some(vec![Property::PropertyKV(PropertyKVPair {
-                    key: "name",
-                    value: Expression::Literal(Literal::String("Andres")),
-                })]),
-            }))],
+            path_patterns: vec![(
+                None,
+                PathPattern::Node(NodePattern {
+                    name: Some("n"),
+                    labels: None,
+                    properties: Some(vec![Property::PropertyKV(PropertyKVPair {
+                        key: "name",
+                        value: Expression::Literal(Literal::String("Andres")),
+                    })]),
+                }),
+            )],
             where_clause: None,
         };
         assert_eq!(*match_clause, expected_match_clause);
@@ -1082,14 +1108,17 @@ mod tests {
         assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
         let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
-            path_patterns: vec![(None, PathPattern::Node(NodePattern {
-                name: Some("andres"),
-                labels: None,
-                properties: Some(vec![Property::PropertyKV(PropertyKVPair {
-                    key: "name",
-                    value: Expression::Literal(Literal::String("Andres")),
-                })]),
-            }))],
+            path_patterns: vec![(
+                None,
+                PathPattern::Node(NodePattern {
+                    name: Some("andres"),
+                    labels: None,
+                    properties: Some(vec![Property::PropertyKV(PropertyKVPair {
+                        key: "name",
+                        value: Expression::Literal(Literal::String("Andres")),
+                    })]),
+                }),
+            )],
             where_clause: None,
         };
         assert_eq!(*match_clause, expected_match_clause);
@@ -1168,11 +1197,14 @@ mod tests {
         assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
         let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
-            path_patterns: vec![(None, PathPattern::Node(NodePattern {
-                name: Some("p"),
-                labels: Some(vec!["Person"]),
-                properties: None,
-            }))],
+            path_patterns: vec![(
+                None,
+                PathPattern::Node(NodePattern {
+                    name: Some("p"),
+                    labels: Some(vec!["Person"]),
+                    properties: None,
+                }),
+            )],
             where_clause: Some(WhereClause {
                 conditions: Expression::OperatorApplicationExp(OperatorApplication {
                     operator: Operator::And,
@@ -1288,11 +1320,14 @@ mod tests {
         assert!(!query_ast.match_clauses.is_empty(), "Expected MATCH clause");
         let match_clause = &query_ast.match_clauses[0];
         let expected_match_clause = MatchClause {
-            path_patterns: vec![(None, PathPattern::Node(NodePattern {
-                name: Some("p"),
-                labels: Some(vec!["Person"]),
-                properties: None,
-            }))],
+            path_patterns: vec![(
+                None,
+                PathPattern::Node(NodePattern {
+                    name: Some("p"),
+                    labels: Some(vec!["Person"]),
+                    properties: None,
+                }),
+            )],
             where_clause: Some(WhereClause {
                 conditions: Expression::OperatorApplicationExp(OperatorApplication {
                     operator: Operator::And,
@@ -1431,7 +1466,10 @@ mod tests {
             stmt.union_clauses.is_empty(),
             "Expected no UNION clauses for single query"
         );
-        assert!(!stmt.query.match_clauses.is_empty(), "Expected MATCH clause");
+        assert!(
+            !stmt.query.match_clauses.is_empty(),
+            "Expected MATCH clause"
+        );
     }
 
     #[test]
@@ -1547,23 +1585,32 @@ mod tests {
                 println!("Full query AST parsed successfully!");
                 println!("Match clauses: {:?}", ast.match_clauses.len());
                 println!("Return clause: {:?}", ast.return_clause.is_some());
-                
+
                 assert_eq!(ast.match_clauses.len(), 1, "Expected 1 MATCH clause");
                 // WHERE clause is now part of MATCH clause per OpenCypher spec
-                assert!(ast.match_clauses[0].where_clause.is_some(), "Expected WHERE clause in MATCH clause");
+                assert!(
+                    ast.match_clauses[0].where_clause.is_some(),
+                    "Expected WHERE clause in MATCH clause"
+                );
                 assert!(ast.return_clause.is_some(), "Expected RETURN clause");
-                
+
                 let return_clause = ast.return_clause.as_ref().unwrap();
                 assert_eq!(return_clause.return_items.len(), 1);
                 let item = &return_clause.return_items[0];
                 if let Expression::PatternComprehension(_) = &item.expression {
                     println!("Pattern comprehension parsed correctly!");
                 } else {
-                    panic!("Expected PatternComprehension in RETURN, got {:?}", item.expression);
+                    panic!(
+                        "Expected PatternComprehension in RETURN, got {:?}",
+                        item.expression
+                    );
                 }
             }
             Err(e) => {
-                panic!("Failed to parse full query with pattern comprehension: {:?}", e);
+                panic!(
+                    "Failed to parse full query with pattern comprehension: {:?}",
+                    e
+                );
             }
         }
     }

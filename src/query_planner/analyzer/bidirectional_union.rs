@@ -24,8 +24,7 @@ use crate::query_planner::logical_expr::{
     Direction, LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias,
 };
 use crate::query_planner::logical_plan::{
-    Filter, GraphNode, GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem,
-    Union, UnionType,
+    Filter, GraphNode, GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem, Union, UnionType,
 };
 use crate::query_planner::plan_ctx::PlanCtx;
 use crate::query_planner::transformed::Transformed;
@@ -263,7 +262,7 @@ fn transform_bidirectional(
                         alias: graph_node.alias.clone(),
                         label: graph_node.label.clone(),
                         is_denormalized: graph_node.is_denormalized,
-            projected_columns: None,
+                        projected_columns: None,
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(new_node))))
                 }
@@ -341,7 +340,6 @@ fn transform_bidirectional(
         | LogicalPlan::Empty
         | LogicalPlan::PageRank(_)
         | LogicalPlan::GraphJoins(_)
-
         | LogicalPlan::Cte(_) => Ok(Transformed::No(plan.clone())),
 
         // WithClause is a BOUNDARY - transform its input independently, don't propagate Union beyond
@@ -369,7 +367,7 @@ fn transform_bidirectional(
                         limit: with_clause.limit,
                         where_clause: with_clause.where_clause.clone(),
                         exported_aliases: with_clause.exported_aliases.clone(),
-                            cte_references: with_clause.cte_references.clone(),
+                        cte_references: with_clause.cte_references.clone(),
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::WithClause(
                         new_with,
@@ -764,7 +762,7 @@ fn apply_direction_combination_inner(
                 labels: graph_rel.labels.clone(),
                 is_optional: graph_rel.is_optional,
                 anchor_connection: graph_rel.anchor_connection.clone(),
-            cte_references: std::collections::HashMap::new(),
+                cte_references: std::collections::HashMap::new(),
             }))
         }
         LogicalPlan::Projection(proj) => {

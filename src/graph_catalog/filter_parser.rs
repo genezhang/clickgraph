@@ -577,7 +577,10 @@ mod tests {
     #[test]
     fn test_or_expression() {
         let filter = SchemaFilter::new("port = 80 OR port = 443").unwrap();
-        assert_eq!(filter.to_sql("t").unwrap(), "((t.port = 80) OR (t.port = 443))");
+        assert_eq!(
+            filter.to_sql("t").unwrap(),
+            "((t.port = 80) OR (t.port = 443))"
+        );
     }
 
     #[test]
