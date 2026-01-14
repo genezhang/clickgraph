@@ -482,6 +482,12 @@ pub struct CoupledEdgeContext {
 /// ```
 #[derive(Debug, Clone)]
 pub struct PatternSchemaContext {
+    /// Query alias for the left (source/from) node (e.g., "a", "user1")
+    pub left_node_alias: String,
+    /// Query alias for the right (target/to) node (e.g., "b", "user2")
+    pub right_node_alias: String,
+    /// Query alias for the relationship/edge (e.g., "r", "follows")
+    pub rel_alias: String,
     /// Access strategy for the left (source/from) node
     pub left_node: NodeAccessStrategy,
     /// Access strategy for the right (target/to) node
@@ -509,6 +515,8 @@ impl PatternSchemaContext {
     ///
     /// # Arguments
     ///
+    /// * `left_node_alias` - Query alias for the left/from node (e.g., "a")
+    /// * `right_node_alias` - Query alias for the right/to node (e.g., "b")
     /// * `left_node_schema` - Schema for the left/from node
     /// * `right_node_schema` - Schema for the right/to node
     /// * `rel_schema` - Schema for the relationship/edge
@@ -517,6 +525,8 @@ impl PatternSchemaContext {
     /// * `rel_types` - The relationship type(s) being matched
     /// * `prev_edge_info` - Previous edge info for multi-hop coupling detection
     pub fn analyze(
+        left_node_alias: &str,
+        right_node_alias: &str,
         left_node_schema: &NodeSchema,
         right_node_schema: &NodeSchema,
         rel_schema: &RelationshipSchema,
@@ -560,6 +570,9 @@ impl PatternSchemaContext {
         );
 
         Ok(PatternSchemaContext {
+            left_node_alias: left_node_alias.to_string(),
+            right_node_alias: right_node_alias.to_string(),
+            rel_alias: rel_alias.to_string(),
             left_node,
             right_node,
             edge,
@@ -1009,6 +1022,97 @@ impl PatternSchemaContext {
             },
             self.join_strategy.description(),
         )
+    }
+
+    // ========================================================================
+    // Property Resolution Helper Methods (Phase 1A)
+    // ========================================================================
+
+    /// Get the NodeAccessStrategy for a given node alias
+    ///
+    /// # Arguments
+    /// * `node_alias` - The query alias for the node (e.g., "a", "user1")
+    ///
+    /// # Returns
+    /// - `Some(&NodeAccessStrategy)` if the alias matches left or right node
+    /// - `None` if the alias doesn't match this pattern
+    pub fn get_node_strategy(&self, node_alias: &str) -> Option<&NodeAccessStrategy> {
+        if node_alias == self.left_node_alias {
+            Some(&self.left_node)
+        } else if node_alias == self.right_node_alias {
+            Some(&self.right_node)
+        } else {
+            None
+        }
+    }
+
+    /// Get property column name for a node
+    ///
+    /// # Arguments
+    /// * `node_alias` - The query alias for the node (e.g., "a", "user1")
+    /// * `prop_name` - The Cypher property name (e.g., "name", "city")
+    ///
+    /// # Returns
+    /// - `Some(column_name)` if the node is part of this pattern and has the property
+    /// - `None` if the node doesn't match or property doesn't exist
+    pub fn get_node_property(&self, node_alias: &str, prop_name: &str) -> Option<String> {
+        self.get_node_strategy(node_alias)?
+            .get_property_column(prop_name)
+            .map(|s| s.to_string())
+    }
+
+    /// Get property column name for the edge/relationship
+    ///
+    /// # Arguments
+    /// * `prop_name` - The Cypher property name (e.g., "since", "weight")
+    ///
+    /// # Returns
+    /// - `Some(column_name)` if the edge has the property
+    /// - `None` if property doesn't exist
+    pub fn get_edge_property(&self, prop_name: &str) -> Option<String> {
+        self.edge.get_property_column(prop_name).map(|s| s.to_string())
+    }
+
+    /// Get the table/alias to use when accessing properties for a node
+    ///
+    /// # Arguments
+    /// * `node_alias` - The query alias for the node (e.g., "a", "user1")
+    ///
+    /// # Returns
+    /// - For OwnTable: the node's table name
+    /// - For EmbeddedInEdge: the edge alias (properties come from edge table)
+    /// - For Virtual or unknown: None
+    pub fn get_node_source_alias(&self, node_alias: &str) -> Option<String> {
+        self.get_node_strategy(node_alias)?
+            .property_source_alias()
+            .map(|s| s.to_string())
+    }
+
+    /// Get the table alias for the edge/relationship
+    ///
+    /// # Returns
+    /// The relationship alias from the query (e.g., "r", "follows")
+    pub fn get_edge_source_alias(&self) -> String {
+        self.rel_alias.clone()
+    }
+
+    /// Get the node position for a given alias
+    ///
+    /// # Arguments
+    /// * `node_alias` - The query alias for the node
+    ///
+    /// # Returns
+    /// - `Some(NodePosition::Left)` if this is the left/from node
+    /// - `Some(NodePosition::Right)` if this is the right/to node
+    /// - `None` if the alias doesn't match this pattern
+    pub fn get_node_position(&self, node_alias: &str) -> Option<NodePosition> {
+        if node_alias == self.left_node_alias {
+            Some(NodePosition::Left)
+        } else if node_alias == self.right_node_alias {
+            Some(NodePosition::Right)
+        } else {
+            None
+        }
     }
 }
 

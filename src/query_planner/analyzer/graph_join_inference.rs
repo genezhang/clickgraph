@@ -2822,6 +2822,8 @@ impl GraphJoinInference {
 
         // 4. Compute PatternSchemaContext
         let ctx = PatternSchemaContext::analyze(
+            left_alias,
+            right_alias,
             left_node_schema,
             right_node_schema,
             rel_schema,
