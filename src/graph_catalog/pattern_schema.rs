@@ -143,6 +143,20 @@ impl NodeAccessStrategy {
             NodeAccessStrategy::Virtual { .. } => None,
         }
     }
+
+    /// Get all property mappings as a vector of (property_name, column_name) tuples
+    pub fn get_all_properties(&self) -> Vec<(String, String)> {
+        match self {
+            NodeAccessStrategy::OwnTable { properties, .. }
+            | NodeAccessStrategy::EmbeddedInEdge { properties, .. } => {
+                properties
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            }
+            NodeAccessStrategy::Virtual { .. } => Vec::new(),
+        }
+    }
 }
 
 // ============================================================================

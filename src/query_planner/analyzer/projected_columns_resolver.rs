@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use crate::{
-    graph_catalog::graph_schema::GraphSchema,
+    graph_catalog::{graph_schema::GraphSchema, pattern_schema::NodePosition},
     query_planner::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
@@ -33,13 +33,30 @@ impl ProjectedColumnsResolver {
     }
 
     /// Compute projected columns for a GraphNode based on its input (ViewScan)
-    fn compute_projected_columns_for_node(node: &GraphNode) -> Option<Vec<(String, String)>> {
+    /// 
+    /// # Arguments
+    /// * `node` - The GraphNode to compute columns for
+    /// * `plan_ctx` - PlanCtx for accessing PatternSchemaContext
+    /// * `rel_alias` - Optional relationship alias (for denormalized nodes)
+    /// * `position` - Optional node position in pattern (Left/Right, for denormalized nodes)
+    fn compute_projected_columns_for_node(
+        node: &GraphNode,
+        plan_ctx: &PlanCtx,
+        rel_alias: Option<&str>,
+        position: Option<NodePosition>,
+    ) -> Option<Vec<(String, String)>> {
         // The input should be a ViewScan (or through Filters, etc.)
         let view_scan = Self::find_view_scan(&node.input)?;
 
-        // Handle denormalized nodes specially
+        // Handle denormalized nodes using PatternSchemaContext
         if view_scan.is_denormalized {
-            return Self::compute_denormalized_properties(&node.alias, view_scan);
+            return Self::compute_denormalized_properties(
+                &node.alias,
+                view_scan,
+                plan_ctx,
+                rel_alias,
+                position,
+            );
         }
 
         // Standard node: property_mapping contains property_name -> db_column
@@ -66,11 +83,37 @@ impl ProjectedColumnsResolver {
         }
     }
 
-    /// Compute projected columns for denormalized nodes
+    /// Compute projected columns for denormalized nodes using PatternSchemaContext
+    /// 
+    /// Uses explicit role information from PatternSchemaContext instead of checking both property sets
     fn compute_denormalized_properties(
         alias: &str,
         scan: &ViewScan,
+        plan_ctx: &PlanCtx,
+        rel_alias: Option<&str>,
+        position: Option<NodePosition>,
     ) -> Option<Vec<(String, String)>> {
+        // If we have PatternSchemaContext, use it for explicit role-based resolution
+        if let (Some(rel), Some(pos)) = (rel_alias, position) {
+            if let Some(strategy) = plan_ctx.get_node_strategy(alias, Some(rel)) {
+                // Use the strategy to get properties for this node's role
+                let properties = strategy.get_all_properties();
+                let mut result: Vec<(String, String)> = properties
+                    .into_iter()
+                    .map(|(prop_name, prop_value)| {
+                        let qualified = format!("{}.{}", alias, prop_value);
+                        (prop_name, qualified)
+                    })
+                    .collect();
+                result.sort_by(|a, b| a.0.cmp(&b.0));
+                if !result.is_empty() {
+                    return Some(result);
+                }
+            }
+        }
+
+        // Fallback: Check both property sets (legacy behavior for nodes not in a relationship pattern)
+        // This handles edge cases where denormalized nodes might not have pattern context
         // For denormalized nodes, properties are in from_node_properties or to_node_properties
         if let Some(from_props) = &scan.from_node_properties {
             let mut properties: Vec<(String, String)> = from_props
@@ -102,6 +145,59 @@ impl ProjectedColumnsResolver {
 
         None
     }
+
+    /// Process a node within a relationship context, providing position information
+    fn process_node_in_rel_context(
+        &self,
+        node_plan: &Arc<LogicalPlan>,
+        plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
+        rel_alias: &str,
+        position: NodePosition,
+    ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
+        // If it's a GraphNode, process with context
+        if let LogicalPlan::GraphNode(node) = node_plan.as_ref() {
+            // Recurse into input
+            let child_tf =
+                self.analyze_with_graph_schema(node.input.clone(), plan_ctx, graph_schema)?;
+
+            // Compute projected columns with relationship context
+            let projected_columns = Self::compute_projected_columns_for_node(
+                node,
+                plan_ctx,
+                Some(rel_alias),
+                Some(position),
+            );
+
+            if projected_columns.is_some() {
+                log::debug!(
+                    "🔧 ProjectedColumnsResolver: Computed {} columns for node '{}' ({:?} in rel '{}')",
+                    projected_columns.as_ref().unwrap().len(),
+                    node.alias,
+                    position,
+                    rel_alias
+                );
+            }
+
+            // Rebuild if changed
+            if child_tf.is_yes() || projected_columns.is_some() {
+                Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(
+                    GraphNode {
+                        input: child_tf.get_plan(),
+                        alias: node.alias.clone(),
+                        label: node.label.clone(),
+                        is_denormalized: node.is_denormalized,
+                        projected_columns,
+                    },
+                ))))
+            } else {
+                Ok(Transformed::No(node_plan.clone()))
+            }
+        } else {
+            // Not a GraphNode, recurse normally
+            self.analyze_with_graph_schema(node_plan.clone(), plan_ctx, graph_schema)
+        }
+    }
 }
 
 impl AnalyzerPass for ProjectedColumnsResolver {
@@ -124,7 +220,13 @@ impl AnalyzerPass for ProjectedColumnsResolver {
                     self.analyze_with_graph_schema(node.input.clone(), plan_ctx, _graph_schema)?;
 
                 // Compute projected columns for this node
-                let projected_columns = Self::compute_projected_columns_for_node(node);
+                // Standalone nodes don't have relationship context
+                let projected_columns = Self::compute_projected_columns_for_node(
+                    node,
+                    plan_ctx,
+                    None, // No relationship context for standalone nodes
+                    None,
+                );
 
                 if projected_columns.is_some() {
                     log::debug!(
@@ -148,14 +250,29 @@ impl AnalyzerPass for ProjectedColumnsResolver {
                 }
             }
 
-            // GraphRel - recurse into children
+            // GraphRel - process nodes with relationship context
             LogicalPlan::GraphRel(rel) => {
-                let left_tf =
-                    self.analyze_with_graph_schema(rel.left.clone(), plan_ctx, _graph_schema)?;
+                // Process left node with Left position context
+                let left_tf = self.process_node_in_rel_context(
+                    &rel.left,
+                    plan_ctx,
+                    _graph_schema,
+                    &rel.alias,
+                    NodePosition::Left,
+                )?;
+
+                // Process relationship center (ViewScan for the edge table)
                 let center_tf =
                     self.analyze_with_graph_schema(rel.center.clone(), plan_ctx, _graph_schema)?;
-                let right_tf =
-                    self.analyze_with_graph_schema(rel.right.clone(), plan_ctx, _graph_schema)?;
+
+                // Process right node with Right position context
+                let right_tf = self.process_node_in_rel_context(
+                    &rel.right,
+                    plan_ctx,
+                    _graph_schema,
+                    &rel.alias,
+                    NodePosition::Right,
+                )?;
 
                 if left_tf.is_yes() || center_tf.is_yes() || right_tf.is_yes() {
                     Transformed::Yes(Arc::new(LogicalPlan::GraphRel(GraphRel {
