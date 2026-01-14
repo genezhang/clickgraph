@@ -7,7 +7,10 @@ use std::{
 };
 
 use crate::{
-    graph_catalog::graph_schema::GraphSchema,
+    graph_catalog::{
+        graph_schema::GraphSchema,
+        pattern_schema::PatternSchemaContext,
+    },
     query_planner::{
         analyzer::property_requirements::PropertyRequirements,
         logical_expr::{LogicalExpr, Property},
@@ -279,6 +282,12 @@ pub struct PlanCtx {
     /// Can be overridden per-query via QueryRequest.max_inferred_types
     /// Reasonable values for GraphRAG: 10-20 edge types
     pub(crate) max_inferred_types: usize,
+    /// Pattern schema contexts for each relationship in the query
+    /// Map: relationship alias (e.g., "r", "follows") → PatternSchemaContext
+    /// Populated during graph pattern analysis, consumed by property resolution
+    /// Enables property resolver to determine node access strategies (OwnTable vs EmbeddedInEdge)
+    /// and make role (from/to) explicit via NodeAccessStrategy::is_from_node field
+    pattern_contexts: HashMap<String, Arc<PatternSchemaContext>>,
 }
 
 impl PlanCtx {
@@ -504,6 +513,7 @@ impl PlanCtx {
             cte_entity_types: HashMap::new(),
             property_requirements: None,
             max_inferred_types: 5,
+            pattern_contexts: HashMap::new(),
         }
     }
 
@@ -525,6 +535,7 @@ impl PlanCtx {
             cte_entity_types: HashMap::new(),
             property_requirements: None,
             max_inferred_types: 5,
+            pattern_contexts: HashMap::new(),
         }
     }
 
@@ -560,6 +571,7 @@ impl PlanCtx {
             cte_entity_types: HashMap::new(),
             property_requirements: None,
             max_inferred_types,
+            pattern_contexts: HashMap::new(),
         }
     }
 
@@ -591,6 +603,7 @@ impl PlanCtx {
             cte_entity_types: HashMap::new(),
             property_requirements: None,
             max_inferred_types: parent.max_inferred_types,
+            pattern_contexts: HashMap::new(), // New scope - patterns computed fresh
         }
     }
 
@@ -615,6 +628,7 @@ impl PlanCtx {
             cte_entity_types: HashMap::new(),
             property_requirements: None,
             max_inferred_types: 4,
+            pattern_contexts: HashMap::new(),
         }
     }
 
@@ -835,6 +849,88 @@ impl fmt::Display for PlanCtx {
         }
         writeln!(f, "\n---- PlanCtx Ends Here ----")?;
         Ok(())
+    }
+}
+
+impl PlanCtx {
+    // ========================================================================
+    // Pattern Schema Context Management (Phase 1A-2)
+    // ========================================================================
+
+    /// Register a PatternSchemaContext for a relationship pattern
+    ///
+    /// This is called during graph pattern analysis (graph_join_inference.rs)
+    /// after computing the PatternSchemaContext for each relationship.
+    ///
+    /// # Arguments
+    /// * `rel_alias` - The relationship alias (e.g., "r", "follows")
+    /// * `ctx` - The analyzed pattern schema context
+    pub fn register_pattern_context(&mut self, rel_alias: String, ctx: PatternSchemaContext) {
+        crate::debug_print!(
+            "🔧 PlanCtx::register_pattern_context: rel='{}', left_node='{}', right_node='{}'",
+            rel_alias,
+            ctx.left_node_alias,
+            ctx.right_node_alias
+        );
+        self.pattern_contexts.insert(rel_alias, Arc::new(ctx));
+    }
+
+    /// Get the PatternSchemaContext for a relationship
+    ///
+    /// # Arguments
+    /// * `rel_alias` - The relationship alias (e.g., "r", "follows")
+    ///
+    /// # Returns
+    /// - `Some(&PatternSchemaContext)` if the relationship has been analyzed
+    /// - `None` if the relationship pattern hasn't been registered yet
+    pub fn get_pattern_context(&self, rel_alias: &str) -> Option<&PatternSchemaContext> {
+        self.pattern_contexts.get(rel_alias).map(|arc| arc.as_ref())
+    }
+
+    /// Get the NodeAccessStrategy for a specific node variable
+    ///
+    /// This is the key method for property resolution - given a node alias,
+    /// it finds which relationship pattern(s) the node appears in and returns
+    /// the appropriate access strategy.
+    ///
+    /// # Arguments
+    /// * `node_alias` - The node variable alias (e.g., "a", "user")
+    /// * `edge_alias` - Optional relationship context for multi-hop disambiguation
+    ///
+    /// # Returns
+    /// - `Some(&NodeAccessStrategy)` if the node is part of a registered pattern
+    /// - `None` if the node isn't part of any relationship pattern (standalone node)
+    ///
+    /// # Notes
+    /// For multi-hop queries where same node appears in multiple edges (e.g., `(a)-[r1]->(b)-[r2]->(c)`),
+    /// the node `b` has different strategies in context of r1 (right/to_node) vs r2 (left/from_node).
+    /// If `edge_alias` is provided, it disambiguates which pattern to use.
+    pub fn get_node_strategy(
+        &self,
+        node_alias: &str,
+        edge_alias: Option<&str>,
+    ) -> Option<&crate::graph_catalog::pattern_schema::NodeAccessStrategy> {
+        // If edge_alias is provided, use it directly
+        if let Some(rel_alias) = edge_alias {
+            if let Some(ctx) = self.get_pattern_context(rel_alias) {
+                return ctx.get_node_strategy(node_alias);
+            }
+        }
+
+        // Otherwise, search all patterns for this node
+        // (Returns first match - caller should provide edge_alias for disambiguation)
+        for ctx in self.pattern_contexts.values() {
+            if let Some(strategy) = ctx.get_node_strategy(node_alias) {
+                return Some(strategy);
+            }
+        }
+
+        None
+    }
+
+    /// Get all pattern contexts (for debugging)
+    pub fn get_all_pattern_contexts(&self) -> &HashMap<String, Arc<PatternSchemaContext>> {
+        &self.pattern_contexts
     }
 }
 
