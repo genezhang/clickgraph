@@ -7254,8 +7254,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 // FALLBACK: Compute from ViewScan (for nodes without projected_columns)
                 if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
                     log::debug!("get_properties_with_table_alias: GraphNode '{}' has ViewScan, is_denormalized={}, from_node_properties={:?}, to_node_properties={:?}",
-                        alias, scan.is_denormalized, 
-                        scan.from_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()), 
+                        alias, scan.is_denormalized,
+                        scan.from_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()),
                         scan.to_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()));
                     // For denormalized nodes with properties on the ViewScan (from standalone node query)
                     if scan.is_denormalized {
@@ -7293,14 +7293,18 @@ impl RenderPlanBuilder for LogicalPlan {
                     // For denormalized polymorphic nodes, the input is a UNION of ViewScans
                     // Each ViewScan has either from_node_properties or to_node_properties
                     // Use the first available ViewScan to get the property list
-                    log::debug!("get_properties_with_table_alias: GraphNode '{}' has Union with {} inputs", alias, union_plan.inputs.len());
+                    log::debug!(
+                        "get_properties_with_table_alias: GraphNode '{}' has Union with {} inputs",
+                        alias,
+                        union_plan.inputs.len()
+                    );
                     if let Some(first_input) = union_plan.inputs.first() {
                         if let LogicalPlan::ViewScan(scan) = first_input.as_ref() {
                             log::debug!("get_properties_with_table_alias: First UNION input is ViewScan, is_denormalized={}, from_node_properties={:?}, to_node_properties={:?}",
-                                scan.is_denormalized, 
-                                scan.from_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()), 
+                                scan.is_denormalized,
+                                scan.from_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()),
                                 scan.to_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()));
-                            
+
                             // Try from_node_properties first
                             if let Some(from_props) = &scan.from_node_properties {
                                 let properties = extract_sorted_properties(from_props);
