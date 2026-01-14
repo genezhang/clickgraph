@@ -354,6 +354,7 @@ fn rewrite_pattern_comprehensions<'a>(
         let new_item = ReturnItem {
             expression: rewritten_expr,
             alias: item.alias,
+            original_text: item.original_text,
         };
         rewritten_items.push(new_item);
     }

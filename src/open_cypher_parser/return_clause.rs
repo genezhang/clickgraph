@@ -1,7 +1,7 @@
 use nom::{
     bytes::complete::tag_no_case,
     character::complete::{char, multispace0},
-    combinator::{cut, opt},
+    combinator::{cut, opt, recognize},
     error::context,
     multi::separated_list1,
     sequence::{delimited, preceded},
@@ -16,11 +16,26 @@ use super::{
 };
 
 fn parse_return_item(input: &'_ str) -> IResult<&'_ str, ReturnItem<'_>> {
-    let (input, expression) = parse_expression.parse(input)?;
+    // Capture the original text of the expression using recognize
+    let (input, expr_text) = recognize(parse_expression).parse(input)?;
+    
+    // Parse the expression again to get the AST (recognize consumes but doesn't parse)
+    let (_, expression) = parse_expression.parse(expr_text)?;
 
     let (input, alias) = opt(preceded(ws(tag_no_case("AS")), ws(parse_identifier))).parse(input)?;
 
-    let return_item = ReturnItem { expression, alias };
+    // Only store original_text when no explicit alias is provided
+    let original_text = if alias.is_none() {
+        Some(expr_text.trim())
+    } else {
+        None
+    };
+
+    let return_item = ReturnItem { 
+        expression, 
+        alias,
+        original_text,
+    };
     Ok((input, return_item))
 }
 
@@ -77,6 +92,7 @@ mod tests {
                 let expected = ReturnItem {
                     expression: Expression::Variable("a"),
                     alias: None,
+                    original_text: Some("a"),
                 };
                 assert_eq!(&return_item, &expected);
             }
@@ -94,6 +110,7 @@ mod tests {
                 let expected = ReturnItem {
                     expression: Expression::Variable("a"),
                     alias: Some("alias"),
+                    original_text: None,  // No original_text when explicit alias is provided
                 };
                 assert_eq!(&return_item, &expected);
             }
@@ -140,6 +157,7 @@ mod tests {
                 let expected_item = ReturnItem {
                     expression: Expression::Variable("a"),
                     alias: None,
+                    original_text: Some("a"),
                 };
                 assert_eq!(&return_clause.return_items[0], &expected_item);
             }
@@ -158,14 +176,17 @@ mod tests {
                 let expected_item1 = ReturnItem {
                     expression: Expression::Variable("a"),
                     alias: None,
+                    original_text: Some("a"),
                 };
                 let expected_item2 = ReturnItem {
                     expression: Expression::Variable("b"),
                     alias: Some("aliasB"),
+                    original_text: None,
                 };
                 let expected_item3 = ReturnItem {
                     expression: Expression::Variable("c"),
                     alias: None,
+                    original_text: Some("c"),
                 };
                 assert_eq!(&return_clause.return_items[0], &expected_item1);
                 assert_eq!(&return_clause.return_items[1], &expected_item2);
@@ -186,14 +207,17 @@ mod tests {
                 let expected_item1 = ReturnItem {
                     expression: Expression::Variable("a"),
                     alias: Some("a_alias"),
+                    original_text: None,
                 };
                 let expected_item2 = ReturnItem {
                     expression: Expression::Variable("b"),
                     alias: None,
+                    original_text: Some("b"),
                 };
                 let expected_item3 = ReturnItem {
                     expression: Expression::Variable("c"),
                     alias: Some("c_alias"),
+                    original_text: None,
                 };
                 assert_eq!(&return_clause.return_items[0], &expected_item1);
                 assert_eq!(&return_clause.return_items[1], &expected_item2);
@@ -269,6 +293,108 @@ mod tests {
                 }
             }
             Err(e) => panic!("Return clause parsing failed: {:?}", e),
+        }
+    }
+
+    // Tests for Neo4j-compatible alias behavior
+    
+    #[test]
+    fn test_original_text_preserves_spacing_arithmetic() {
+        let input = "RETURN 1  +  1";
+        let res = parse_return_clause(input);
+        match res {
+            Ok((_, return_clause)) => {
+                assert_eq!(return_clause.return_items.len(), 1);
+                let item = &return_clause.return_items[0];
+                assert_eq!(item.original_text, Some("1  +  1"));
+                assert_eq!(item.alias, None);
+            }
+            Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_original_text_function_call() {
+        let input = "RETURN substring('hello', 1, 3)";
+        let res = parse_return_clause(input);
+        match res {
+            Ok((_, return_clause)) => {
+                assert_eq!(return_clause.return_items.len(), 1);
+                let item = &return_clause.return_items[0];
+                assert_eq!(item.original_text, Some("substring('hello', 1, 3)"));
+                assert_eq!(item.alias, None);
+            }
+            Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_original_text_function_with_spacing() {
+        let input = "RETURN substring( 'hello' , 1 , 3 )";
+        let res = parse_return_clause(input);
+        match res {
+            Ok((_, return_clause)) => {
+                assert_eq!(return_clause.return_items.len(), 1);
+                let item = &return_clause.return_items[0];
+                // trim() removes leading/trailing whitespace but preserves internal spacing
+                assert_eq!(item.original_text, Some("substring( 'hello' , 1 , 3 )"));
+                assert_eq!(item.alias, None);
+            }
+            Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_original_text_property_access() {
+        let input = "RETURN a.code";
+        let res = parse_return_clause(input);
+        match res {
+            Ok((_, return_clause)) => {
+                assert_eq!(return_clause.return_items.len(), 1);
+                let item = &return_clause.return_items[0];
+                assert_eq!(item.original_text, Some("a.code"));
+                assert_eq!(item.alias, None);
+            }
+            Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_original_text_not_set_with_explicit_alias() {
+        let input = "RETURN a.code AS airport_code";
+        let res = parse_return_clause(input);
+        match res {
+            Ok((_, return_clause)) => {
+                assert_eq!(return_clause.return_items.len(), 1);
+                let item = &return_clause.return_items[0];
+                assert_eq!(item.original_text, None);  // No original_text when explicit alias provided
+                assert_eq!(item.alias, Some("airport_code"));
+            }
+            Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_original_text_multiple_items_mixed() {
+        let input = "RETURN a.code, substring(a.code, 1, 3), a.name AS airport_name";
+        let res = parse_return_clause(input);
+        match res {
+            Ok((_, return_clause)) => {
+                assert_eq!(return_clause.return_items.len(), 3);
+                
+                // First item: no alias, has original_text
+                assert_eq!(return_clause.return_items[0].original_text, Some("a.code"));
+                assert_eq!(return_clause.return_items[0].alias, None);
+                
+                // Second item: no alias, has original_text
+                assert_eq!(return_clause.return_items[1].original_text, Some("substring(a.code, 1, 3)"));
+                assert_eq!(return_clause.return_items[1].alias, None);
+                
+                // Third item: explicit alias, no original_text
+                assert_eq!(return_clause.return_items[2].original_text, None);
+                assert_eq!(return_clause.return_items[2].alias, Some("airport_name"));
+            }
+            Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
         }
     }
 }
