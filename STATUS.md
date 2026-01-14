@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: January 12, 2026 (early morning)*
+*Updated: January 13, 2026*
 
 ## Current Version
 
@@ -95,6 +95,11 @@ RETURN u.name, [(u)-[:FOLLOWS]->(f) | f.name] AS friends
 MATCH (m:Message) WHERE m.id = 123
 MATCH (m)<-[:REPLY_OF]-(c:Comment)
 RETURN m, c
+
+-- Neo4j-compatible field aliases (expressions without AS)
+MATCH (a:User)
+RETURN a.name, substring(a.email, 0, 10), a.age * 2
+-- Result fields: "a.name", "substring(a.email, 0, 10)", "a.age * 2"
 ```
 
 **Multi-Schema Support**
