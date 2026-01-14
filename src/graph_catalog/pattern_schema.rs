@@ -314,6 +314,28 @@ impl EdgeAccessStrategy {
             _ => None,
         }
     }
+
+    /// Get property column name for an edge property
+    ///
+    /// # Arguments
+    /// * `prop_name` - The Cypher property name to look up
+    ///
+    /// # Returns
+    /// - `Some(&str)` if the property exists in the edge schema
+    /// - `None` if not found
+    pub fn get_property_column(&self, prop_name: &str) -> Option<&str> {
+        match self {
+            EdgeAccessStrategy::SeparateTable { properties, .. }
+            | EdgeAccessStrategy::Polymorphic { properties, .. } => {
+                properties.get(prop_name).map(|s| s.as_str())
+            }
+            EdgeAccessStrategy::FkEdge { .. } => {
+                // For FK edges, properties are on the node table
+                // These are resolved through the node's property mappings
+                None
+            }
+        }
+    }
 }
 // ============================================================================
 
