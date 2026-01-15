@@ -13,7 +13,7 @@ use errors::RenderBuildError;
 use render_expr::{ColumnAlias, OperatorApplication, RenderExpr};
 
 pub use cte_generation::CteGenerationContext;
-pub use cte_manager::{CteManager, CteStrategy, CteError, CteGenerationResult};
+pub use cte_manager::{CteError, CteGenerationResult, CteManager, CteStrategy};
 pub use filter_pipeline::CategorizedFilters;
 pub use from_table::FromTable;
 pub use view_table_ref::ViewTableRef;

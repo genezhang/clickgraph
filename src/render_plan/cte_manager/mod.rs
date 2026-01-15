@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use crate::clickhouse_query_generator::variable_length_cte::NodeProperty;
 use crate::graph_catalog::graph_schema::GraphSchema;
-use crate::graph_catalog::{NodeAccessStrategy, EdgeAccessStrategy, PatternSchemaContext, JoinStrategy, NodePosition};
+use crate::graph_catalog::{
+    EdgeAccessStrategy, JoinStrategy, NodeAccessStrategy, NodePosition, PatternSchemaContext,
+};
 use crate::query_planner::logical_plan::VariableLengthSpec;
 use crate::render_plan::cte_generation::CteGenerationContext;
 use crate::render_plan::errors::RenderBuildError;
@@ -91,21 +93,21 @@ impl CteManager {
         );
 
         match pattern_ctx.join_strategy {
-            JoinStrategy::Traditional { .. } => {
-                Ok(CteStrategy::Traditional(TraditionalCteStrategy::new(pattern_ctx)?))
-            }
-            JoinStrategy::SingleTableScan { .. } => {
-                Ok(CteStrategy::Denormalized(DenormalizedCteStrategy::new(pattern_ctx)?))
-            }
+            JoinStrategy::Traditional { .. } => Ok(CteStrategy::Traditional(
+                TraditionalCteStrategy::new(pattern_ctx)?,
+            )),
+            JoinStrategy::SingleTableScan { .. } => Ok(CteStrategy::Denormalized(
+                DenormalizedCteStrategy::new(pattern_ctx)?,
+            )),
             JoinStrategy::FkEdgeJoin { .. } => {
                 Ok(CteStrategy::FkEdge(FkEdgeCteStrategy::new(pattern_ctx)?))
             }
-            JoinStrategy::MixedAccess { joined_node, .. } => {
-                Ok(CteStrategy::MixedAccess(MixedAccessCteStrategy::new(pattern_ctx)?))
-            }
-            JoinStrategy::EdgeToEdge { .. } => {
-                Ok(CteStrategy::EdgeToEdge(EdgeToEdgeCteStrategy::new(pattern_ctx)?))
-            }
+            JoinStrategy::MixedAccess { joined_node, .. } => Ok(CteStrategy::MixedAccess(
+                MixedAccessCteStrategy::new(pattern_ctx)?,
+            )),
+            JoinStrategy::EdgeToEdge { .. } => Ok(CteStrategy::EdgeToEdge(
+                EdgeToEdgeCteStrategy::new(pattern_ctx)?,
+            )),
             JoinStrategy::CoupledSameRow { .. } => {
                 Ok(CteStrategy::Coupled(CoupledCteStrategy::new(pattern_ctx)?))
             }
@@ -237,11 +239,14 @@ impl FkEdgeCteStrategy {
     pub fn new(pattern_ctx: &PatternSchemaContext) -> Result<Self, CteError> {
         // Validate that this is an FK-edge schema
         match &pattern_ctx.edge {
-            EdgeAccessStrategy::FkEdge { node_table, fk_column } => {
+            EdgeAccessStrategy::FkEdge {
+                node_table,
+                fk_column,
+            } => {
                 // For FK-edge, we need to determine the ID column
                 // This typically comes from the node schema, but for now we'll assume "id"
                 let id_column = "id".to_string(); // TODO: Get from node schema
-                
+
                 Ok(Self {
                     pattern_ctx: pattern_ctx.clone(),
                     node_table: node_table.clone(),
@@ -250,14 +255,20 @@ impl FkEdgeCteStrategy {
                 })
             }
             _ => Err(CteError::InvalidStrategy(
-                "FkEdgeCteStrategy requires EdgeAccessStrategy::FkEdge".into()
+                "FkEdgeCteStrategy requires EdgeAccessStrategy::FkEdge".into(),
             )),
         }
     }
 
-    pub fn generate_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<CteGenerationResult, CteError> {
+    pub fn generate_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<CteGenerationResult, CteError> {
         // Generate CTE name
-        let cte_name = format!("vlp_{}_{}_{}",
+        let cte_name = format!(
+            "vlp_{}_{}_{}",
             self.pattern_ctx.left_node_alias,
             self.pattern_ctx.right_node_alias,
             context.spec.effective_min_hops()
@@ -279,13 +290,18 @@ impl FkEdgeCteStrategy {
         match &pattern_ctx.edge {
             EdgeAccessStrategy::FkEdge { .. } => Ok(()),
             _ => Err(CteError::SchemaValidationError(
-                "FkEdgeCteStrategy requires EdgeAccessStrategy::FkEdge".into()
+                "FkEdgeCteStrategy requires EdgeAccessStrategy::FkEdge".into(),
             )),
         }
     }
 
     /// Generate the complete recursive CTE SQL for FK-edge pattern
-    fn generate_recursive_cte_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<String, CteError> {
+    fn generate_recursive_cte_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
         let min_hops = context.spec.effective_min_hops();
         let max_hops = context.spec.max_hops;
 
@@ -295,40 +311,57 @@ impl FkEdgeCteStrategy {
         // Generate recursive case if needed
         let needs_recursion = max_hops.map_or(true, |max| max > min_hops);
         let recursive_case = if needs_recursion {
-            format!("\n    UNION ALL\n{}", self.generate_recursive_case_sql(context, properties, filters)?)
+            format!(
+                "\n    UNION ALL\n{}",
+                self.generate_recursive_case_sql(context, properties, filters)?
+            )
         } else {
             String::new()
         };
 
         // Build complete CTE
-        let cte_name = format!("vlp_{}_{}_{}",
-            self.pattern_ctx.left_node_alias,
-            self.pattern_ctx.right_node_alias,
-            min_hops
+        let cte_name = format!(
+            "vlp_{}_{}_{}",
+            self.pattern_ctx.left_node_alias, self.pattern_ctx.right_node_alias, min_hops
         );
 
         Ok(format!(
             "WITH RECURSIVE {} AS (\n{}{}\n) SELECT * FROM {}",
-            cte_name,
-            base_case,
-            recursive_case,
-            cte_name
+            cte_name, base_case, recursive_case, cte_name
         ))
     }
 
     /// Generate the base case SQL (1-hop traversal) for FK-edge
-    fn generate_base_case_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<String, CteError> {
+    fn generate_base_case_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
         // For FK-edge, we traverse from parent to child (or child to parent depending on direction)
         // The FK column points from child to parent, so we join child.fk_column = parent.id
-        
+
         let mut select_items = vec![
-            format!("{}.{} as start_id", self.pattern_ctx.left_node_alias, self.id_column),
-            format!("{}.{} as end_id", self.pattern_ctx.right_node_alias, self.id_column),
+            format!(
+                "{}.{} as start_id",
+                self.pattern_ctx.left_node_alias, self.id_column
+            ),
+            format!(
+                "{}.{} as end_id",
+                self.pattern_ctx.right_node_alias, self.id_column
+            ),
             "1 as hop_count".to_string(),
-            format!("[{}.{}] as path_edges", self.pattern_ctx.left_node_alias, self.fk_column), // FK column represents the edge
-            format!("[{}.{}, {}.{}] as path_nodes",
-                self.pattern_ctx.left_node_alias, self.id_column,
-                self.pattern_ctx.right_node_alias, self.id_column),
+            format!(
+                "[{}.{}] as path_edges",
+                self.pattern_ctx.left_node_alias, self.fk_column
+            ), // FK column represents the edge
+            format!(
+                "[{}.{}, {}.{}] as path_nodes",
+                self.pattern_ctx.left_node_alias,
+                self.id_column,
+                self.pattern_ctx.right_node_alias,
+                self.id_column
+            ),
         ];
 
         // Add properties from both nodes
@@ -339,10 +372,14 @@ impl FkEdgeCteStrategy {
         // FROM clause: join the same table using FK relationship
         let from_clause = format!(
             "    FROM {} {}\n    JOIN {} {} ON {}.{} = {}.{}",
-            self.node_table, self.pattern_ctx.left_node_alias,
-            self.node_table, self.pattern_ctx.right_node_alias,
-            self.pattern_ctx.left_node_alias, self.fk_column,
-            self.pattern_ctx.right_node_alias, self.id_column
+            self.node_table,
+            self.pattern_ctx.left_node_alias,
+            self.node_table,
+            self.pattern_ctx.right_node_alias,
+            self.pattern_ctx.left_node_alias,
+            self.fk_column,
+            self.pattern_ctx.right_node_alias,
+            self.id_column
         );
 
         // Build WHERE clause from filters
@@ -350,15 +387,19 @@ impl FkEdgeCteStrategy {
 
         Ok(format!(
             "    SELECT\n        {}\n{}{}",
-            select_clause,
-            from_clause,
-            where_clause
+            select_clause, from_clause, where_clause
         ))
     }
 
     /// Generate the recursive case SQL (extending paths by 1 hop) for FK-edge
-    fn generate_recursive_case_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<String, CteError> {
-        let cte_name = format!("vlp_{}_{}_{}",
+    fn generate_recursive_case_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
+        let cte_name = format!(
+            "vlp_{}_{}_{}",
             self.pattern_ctx.left_node_alias,
             self.pattern_ctx.right_node_alias,
             context.spec.effective_min_hops()
@@ -367,10 +408,19 @@ impl FkEdgeCteStrategy {
         // Build SELECT clause for recursive case
         let mut select_items = vec![
             format!("{}.start_id", cte_name),
-            format!("{}.{} as end_id", self.pattern_ctx.right_node_alias, self.id_column),
+            format!(
+                "{}.{} as end_id",
+                self.pattern_ctx.right_node_alias, self.id_column
+            ),
             format!("{}.hop_count + 1 as hop_count", cte_name),
-            format!("arrayConcat({}.path_edges, [{}]) as path_edges", cte_name, self.fk_column),
-            format!("arrayConcat({}.path_nodes, [{}]) as path_nodes", cte_name, self.id_column),
+            format!(
+                "arrayConcat({}.path_edges, [{}]) as path_edges",
+                cte_name, self.fk_column
+            ),
+            format!(
+                "arrayConcat({}.path_nodes, [{}]) as path_nodes",
+                cte_name, self.id_column
+            ),
         ];
 
         // Add properties (start node properties come from CTE, end node from joined table)
@@ -380,7 +430,10 @@ impl FkEdgeCteStrategy {
                 select_items.push(format!("{}.start_{}", cte_name, prop.alias));
             } else if prop.cypher_alias == self.pattern_ctx.right_node_alias {
                 // End node property from joined table
-                select_items.push(format!("{}.{} as end_{}", self.pattern_ctx.right_node_alias, prop.column_name, prop.alias));
+                select_items.push(format!(
+                    "{}.{} as end_{}",
+                    self.pattern_ctx.right_node_alias, prop.column_name, prop.alias
+                ));
             }
         }
 
@@ -390,9 +443,12 @@ impl FkEdgeCteStrategy {
         let from_clause = format!(
             "    FROM {}\n    JOIN {} {} ON {}.{} = {}.{}",
             cte_name,
-            self.node_table, self.pattern_ctx.right_node_alias,
-            self.pattern_ctx.right_node_alias, self.id_column,
-            cte_name, "end_id"  // Connect to the end of the current path
+            self.node_table,
+            self.pattern_ctx.right_node_alias,
+            self.pattern_ctx.right_node_alias,
+            self.id_column,
+            cte_name,
+            "end_id" // Connect to the end of the current path
         );
 
         // Build WHERE clause from filters
@@ -400,21 +456,27 @@ impl FkEdgeCteStrategy {
 
         Ok(format!(
             "    SELECT\n        {}\n{}{}",
-            select_clause,
-            from_clause,
-            where_clause
+            select_clause, from_clause, where_clause
         ))
     }
 
     /// Add property selections to the SELECT clause
-    fn add_property_selections(&self, select_items: &mut Vec<String>, properties: &[NodeProperty]) -> Result<(), CteError> {
+    fn add_property_selections(
+        &self,
+        select_items: &mut Vec<String>,
+        properties: &[NodeProperty],
+    ) -> Result<(), CteError> {
         for prop in properties {
             if prop.cypher_alias == self.pattern_ctx.left_node_alias {
-                select_items.push(format!("{}.{} as start_{}",
-                    self.pattern_ctx.left_node_alias, prop.column_name, prop.alias));
+                select_items.push(format!(
+                    "{}.{} as start_{}",
+                    self.pattern_ctx.left_node_alias, prop.column_name, prop.alias
+                ));
             } else if prop.cypher_alias == self.pattern_ctx.right_node_alias {
-                select_items.push(format!("{}.{} as end_{}",
-                    self.pattern_ctx.right_node_alias, prop.column_name, prop.alias));
+                select_items.push(format!(
+                    "{}.{} as end_{}",
+                    self.pattern_ctx.right_node_alias, prop.column_name, prop.alias
+                ));
             }
         }
         Ok(())
@@ -433,9 +495,15 @@ impl TraditionalCteStrategy {
             pattern_ctx: pattern_ctx.clone(),
         })
     }
-    pub fn generate_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<CteGenerationResult, CteError> {
+    pub fn generate_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<CteGenerationResult, CteError> {
         // Generate CTE name
-        let cte_name = format!("vlp_{}_{}_{}",
+        let cte_name = format!(
+            "vlp_{}_{}_{}",
             self.pattern_ctx.left_node_alias,
             self.pattern_ctx.right_node_alias,
             context.spec.effective_min_hops()
@@ -453,7 +521,12 @@ impl TraditionalCteStrategy {
     }
 
     /// Generate the complete recursive CTE SQL for traditional separate node/edge tables
-    fn generate_recursive_cte_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<String, CteError> {
+    fn generate_recursive_cte_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
         let min_hops = context.spec.effective_min_hops();
         let max_hops = context.spec.max_hops;
 
@@ -463,43 +536,62 @@ impl TraditionalCteStrategy {
         // Generate recursive case if needed
         let needs_recursion = max_hops.map_or(true, |max| max > min_hops);
         let recursive_case = if needs_recursion {
-            format!("\n    UNION ALL\n{}", self.generate_recursive_case_sql(context, properties, filters)?)
+            format!(
+                "\n    UNION ALL\n{}",
+                self.generate_recursive_case_sql(context, properties, filters)?
+            )
         } else {
             String::new()
         };
 
         // Build complete CTE
-        let cte_name = format!("vlp_{}_{}_{}",
-            self.pattern_ctx.left_node_alias,
-            self.pattern_ctx.right_node_alias,
-            min_hops
+        let cte_name = format!(
+            "vlp_{}_{}_{}",
+            self.pattern_ctx.left_node_alias, self.pattern_ctx.right_node_alias, min_hops
         );
 
         Ok(format!(
             "WITH RECURSIVE {} AS (\n{}{}\n) SELECT * FROM {}",
-            cte_name,
-            base_case,
-            recursive_case,
-            cte_name
+            cte_name, base_case, recursive_case, cte_name
         ))
     }
 
     /// Generate the base case SQL (1-hop traversal)
-    fn generate_base_case_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<String, CteError> {
+    fn generate_base_case_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
         // Extract table and column information from pattern context
-        let (start_table, start_id_col) = self.get_node_table_info(&self.pattern_ctx.left_node_alias)?;
-        let (end_table, end_id_col) = self.get_node_table_info(&self.pattern_ctx.right_node_alias)?;
+        let (start_table, start_id_col) =
+            self.get_node_table_info(&self.pattern_ctx.left_node_alias)?;
+        let (end_table, end_id_col) =
+            self.get_node_table_info(&self.pattern_ctx.right_node_alias)?;
         let (rel_table, rel_from_col, rel_to_col) = self.get_relationship_table_info()?;
 
         // Build SELECT clause
         let mut select_items = vec![
-            format!("{}.{} as start_id", self.pattern_ctx.left_node_alias, start_id_col),
-            format!("{}.{} as end_id", self.pattern_ctx.right_node_alias, end_id_col),
+            format!(
+                "{}.{} as start_id",
+                self.pattern_ctx.left_node_alias, start_id_col
+            ),
+            format!(
+                "{}.{} as end_id",
+                self.pattern_ctx.right_node_alias, end_id_col
+            ),
             "1 as hop_count".to_string(),
-            format!("[{}.{}] as path_edges", self.pattern_ctx.rel_alias, rel_from_col), // Simplified edge tracking
-            format!("[{}.{}, {}.{}] as path_nodes",
-                self.pattern_ctx.left_node_alias, start_id_col,
-                self.pattern_ctx.right_node_alias, end_id_col),
+            format!(
+                "[{}.{}] as path_edges",
+                self.pattern_ctx.rel_alias, rel_from_col
+            ), // Simplified edge tracking
+            format!(
+                "[{}.{}, {}.{}] as path_nodes",
+                self.pattern_ctx.left_node_alias,
+                start_id_col,
+                self.pattern_ctx.right_node_alias,
+                end_id_col
+            ),
         ];
 
         // Add node properties
@@ -524,20 +616,26 @@ impl TraditionalCteStrategy {
 
         Ok(format!(
             "    SELECT\n        {}\n{}{}",
-            select_clause,
-            from_clause,
-            where_clause
+            select_clause, from_clause, where_clause
         ))
     }
 
     /// Generate the recursive case SQL (extending paths by 1 hop)
-    fn generate_recursive_case_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<String, CteError> {
+    fn generate_recursive_case_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
         // Extract table and column information
-        let (_start_table, _start_id_col) = self.get_node_table_info(&self.pattern_ctx.left_node_alias)?;
-        let (end_table, end_id_col) = self.get_node_table_info(&self.pattern_ctx.right_node_alias)?;
+        let (_start_table, _start_id_col) =
+            self.get_node_table_info(&self.pattern_ctx.left_node_alias)?;
+        let (end_table, end_id_col) =
+            self.get_node_table_info(&self.pattern_ctx.right_node_alias)?;
         let (rel_table, rel_from_col, rel_to_col) = self.get_relationship_table_info()?;
 
-        let cte_name = format!("vlp_{}_{}_{}",
+        let cte_name = format!(
+            "vlp_{}_{}_{}",
             self.pattern_ctx.left_node_alias,
             self.pattern_ctx.right_node_alias,
             context.spec.effective_min_hops()
@@ -546,10 +644,19 @@ impl TraditionalCteStrategy {
         // Build SELECT clause for recursive case
         let mut select_items = vec![
             format!("{}.start_id", cte_name),
-            format!("{}.{} as end_id", self.pattern_ctx.right_node_alias, end_id_col),
+            format!(
+                "{}.{} as end_id",
+                self.pattern_ctx.right_node_alias, end_id_col
+            ),
             format!("{}.hop_count + 1 as hop_count", cte_name),
-            format!("arrayConcat({}.path_edges, [{}]) as path_edges", cte_name, rel_from_col),
-            format!("arrayConcat({}.path_nodes, [{}]) as path_nodes", cte_name, end_id_col),
+            format!(
+                "arrayConcat({}.path_edges, [{}]) as path_edges",
+                cte_name, rel_from_col
+            ),
+            format!(
+                "arrayConcat({}.path_nodes, [{}]) as path_nodes",
+                cte_name, end_id_col
+            ),
         ];
 
         // Add properties (start node properties come from CTE, end node from joined table)
@@ -559,7 +666,10 @@ impl TraditionalCteStrategy {
                 select_items.push(format!("{}.start_{}", cte_name, prop.alias));
             } else if prop.cypher_alias == self.pattern_ctx.right_node_alias {
                 // End node property from joined table
-                select_items.push(format!("{}.{} as end_{}", self.pattern_ctx.right_node_alias, prop.column_name, prop.alias));
+                select_items.push(format!(
+                    "{}.{} as end_{}",
+                    self.pattern_ctx.right_node_alias, prop.column_name, prop.alias
+                ));
             }
         }
 
@@ -568,24 +678,31 @@ impl TraditionalCteStrategy {
         // Build FROM clause
         let from_clause = format!(
             "    FROM {} AS {}\n    JOIN {} AS {} ON {}.end_id = {}.{}",
-            cte_name, cte_name,
-            rel_table, self.pattern_ctx.rel_alias,
             cte_name,
-            self.pattern_ctx.rel_alias, rel_from_col
+            cte_name,
+            rel_table,
+            self.pattern_ctx.rel_alias,
+            cte_name,
+            self.pattern_ctx.rel_alias,
+            rel_from_col
         );
 
         // Join with end node table
         let join_clause = format!(
             "\n    JOIN {} AS {} ON {}.{} = {}.{}",
-            end_table, self.pattern_ctx.right_node_alias,
-            self.pattern_ctx.rel_alias, rel_to_col,
-            self.pattern_ctx.right_node_alias, end_id_col
+            end_table,
+            self.pattern_ctx.right_node_alias,
+            self.pattern_ctx.rel_alias,
+            rel_to_col,
+            self.pattern_ctx.right_node_alias,
+            end_id_col
         );
 
         // Build WHERE clause (prevent cycles, apply filters)
-        let mut where_conditions = vec![
-            format!("{}.{} NOT IN ({}.path_nodes)", self.pattern_ctx.right_node_alias, end_id_col, cte_name)
-        ];
+        let mut where_conditions = vec![format!(
+            "{}.{} NOT IN ({}.path_nodes)",
+            self.pattern_ctx.right_node_alias, end_id_col, cte_name
+        )];
 
         // Add hop count limit if specified
         if let Some(max_hops) = context.spec.max_hops {
@@ -602,10 +719,7 @@ impl TraditionalCteStrategy {
 
         Ok(format!(
             "    SELECT\n        {}\n{}{}{}",
-            select_clause,
-            from_clause,
-            join_clause,
-            where_clause
+            select_clause, from_clause, join_clause, where_clause
         ))
     }
 
@@ -616,7 +730,10 @@ impl TraditionalCteStrategy {
         match node_alias {
             "u1" | "start" => Ok(("users_bench".to_string(), "user_id".to_string())),
             "u2" | "end" => Ok(("users_bench".to_string(), "user_id".to_string())),
-            _ => Err(CteError::SchemaValidationError(format!("Unknown node alias: {}", node_alias))),
+            _ => Err(CteError::SchemaValidationError(format!(
+                "Unknown node alias: {}",
+                node_alias
+            ))),
         }
     }
 
@@ -624,18 +741,30 @@ impl TraditionalCteStrategy {
     fn get_relationship_table_info(&self) -> Result<(String, String, String), CteError> {
         // For traditional strategy, relationship info comes from pattern context
         // This is a simplified implementation
-        Ok(("user_follows_bench".to_string(), "follower_id".to_string(), "followed_id".to_string()))
+        Ok((
+            "user_follows_bench".to_string(),
+            "follower_id".to_string(),
+            "followed_id".to_string(),
+        ))
     }
 
     /// Add property selections to the SELECT clause
-    fn add_property_selections(&self, select_items: &mut Vec<String>, properties: &[NodeProperty]) -> Result<(), CteError> {
+    fn add_property_selections(
+        &self,
+        select_items: &mut Vec<String>,
+        properties: &[NodeProperty],
+    ) -> Result<(), CteError> {
         for prop in properties {
             if prop.cypher_alias == self.pattern_ctx.left_node_alias {
-                select_items.push(format!("{}.{} as start_{}",
-                    self.pattern_ctx.left_node_alias, prop.column_name, prop.alias));
+                select_items.push(format!(
+                    "{}.{} as start_{}",
+                    self.pattern_ctx.left_node_alias, prop.column_name, prop.alias
+                ));
             } else if prop.cypher_alias == self.pattern_ctx.right_node_alias {
-                select_items.push(format!("{}.{} as end_{}",
-                    self.pattern_ctx.right_node_alias, prop.column_name, prop.alias));
+                select_items.push(format!(
+                    "{}.{} as end_{}",
+                    self.pattern_ctx.right_node_alias, prop.column_name, prop.alias
+                ));
             }
         }
         Ok(())
@@ -656,16 +785,14 @@ impl DenormalizedCteStrategy {
     pub fn new(pattern_ctx: &PatternSchemaContext) -> Result<Self, CteError> {
         // Validate that this is a denormalized schema
         match &pattern_ctx.join_strategy {
-            JoinStrategy::SingleTableScan { table } => {
-                Ok(Self {
-                    pattern_ctx: pattern_ctx.clone(),
-                    table: table.clone(),
-                    from_col: Self::get_from_column(pattern_ctx)?,
-                    to_col: Self::get_to_column(pattern_ctx)?,
-                })
-            }
+            JoinStrategy::SingleTableScan { table } => Ok(Self {
+                pattern_ctx: pattern_ctx.clone(),
+                table: table.clone(),
+                from_col: Self::get_from_column(pattern_ctx)?,
+                to_col: Self::get_to_column(pattern_ctx)?,
+            }),
             _ => Err(CteError::InvalidStrategy(
-                "DenormalizedCteStrategy requires JoinStrategy::SingleTableScan".into()
+                "DenormalizedCteStrategy requires JoinStrategy::SingleTableScan".into(),
             )),
         }
     }
@@ -674,7 +801,7 @@ impl DenormalizedCteStrategy {
         match &pattern_ctx.edge {
             EdgeAccessStrategy::SeparateTable { from_id, .. } => Ok(from_id.clone()),
             _ => Err(CteError::InvalidStrategy(
-                "DenormalizedCteStrategy requires EdgeAccessStrategy::SeparateTable".into()
+                "DenormalizedCteStrategy requires EdgeAccessStrategy::SeparateTable".into(),
             )),
         }
     }
@@ -683,14 +810,20 @@ impl DenormalizedCteStrategy {
         match &pattern_ctx.edge {
             EdgeAccessStrategy::SeparateTable { to_id, .. } => Ok(to_id.clone()),
             _ => Err(CteError::InvalidStrategy(
-                "DenormalizedCteStrategy requires EdgeAccessStrategy::SeparateTable".into()
+                "DenormalizedCteStrategy requires EdgeAccessStrategy::SeparateTable".into(),
             )),
         }
     }
 
-    pub fn generate_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<CteGenerationResult, CteError> {
+    pub fn generate_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<CteGenerationResult, CteError> {
         // Generate CTE name
-        let cte_name = format!("vlp_{}_{}_{}",
+        let cte_name = format!(
+            "vlp_{}_{}_{}",
             self.pattern_ctx.left_node_alias,
             self.pattern_ctx.right_node_alias,
             context.spec.effective_min_hops()
@@ -710,15 +843,23 @@ impl DenormalizedCteStrategy {
     pub fn validate(&self, pattern_ctx: &PatternSchemaContext) -> Result<(), CteError> {
         // Validate that node properties are embedded in the edge table
         match (&pattern_ctx.left_node, &pattern_ctx.right_node) {
-            (NodeAccessStrategy::EmbeddedInEdge { .. }, NodeAccessStrategy::EmbeddedInEdge { .. }) => Ok(()),
+            (
+                NodeAccessStrategy::EmbeddedInEdge { .. },
+                NodeAccessStrategy::EmbeddedInEdge { .. },
+            ) => Ok(()),
             _ => Err(CteError::SchemaValidationError(
-                "DenormalizedCteStrategy requires both nodes to be EmbeddedInEdge".into()
+                "DenormalizedCteStrategy requires both nodes to be EmbeddedInEdge".into(),
             )),
         }
     }
 
     /// Generate the complete recursive CTE SQL for denormalized single table
-    fn generate_recursive_cte_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<String, CteError> {
+    fn generate_recursive_cte_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
         let min_hops = context.spec.effective_min_hops();
         let max_hops = context.spec.max_hops;
 
@@ -728,38 +869,49 @@ impl DenormalizedCteStrategy {
         // Generate recursive case if needed
         let needs_recursion = max_hops.map_or(true, |max| max > min_hops);
         let recursive_case = if needs_recursion {
-            format!("\n    UNION ALL\n{}", self.generate_recursive_case_sql(context, properties, filters)?)
+            format!(
+                "\n    UNION ALL\n{}",
+                self.generate_recursive_case_sql(context, properties, filters)?
+            )
         } else {
             String::new()
         };
 
         // Build complete CTE
-        let cte_name = format!("vlp_{}_{}_{}",
-            self.pattern_ctx.left_node_alias,
-            self.pattern_ctx.right_node_alias,
-            min_hops
+        let cte_name = format!(
+            "vlp_{}_{}_{}",
+            self.pattern_ctx.left_node_alias, self.pattern_ctx.right_node_alias, min_hops
         );
 
         Ok(format!(
             "WITH RECURSIVE {} AS (\n{}{}\n) SELECT * FROM {}",
-            cte_name,
-            base_case,
-            recursive_case,
-            cte_name
+            cte_name, base_case, recursive_case, cte_name
         ))
     }
 
     /// Generate the base case SQL (1-hop traversal) for denormalized schema
-    fn generate_base_case_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<String, CteError> {
+    fn generate_base_case_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
         // Build SELECT clause - all properties come from the single table
         let mut select_items = vec![
-            format!("{}.{} as start_id", self.pattern_ctx.rel_alias, self.from_col),
+            format!(
+                "{}.{} as start_id",
+                self.pattern_ctx.rel_alias, self.from_col
+            ),
             format!("{}.{} as end_id", self.pattern_ctx.rel_alias, self.to_col),
             "1 as hop_count".to_string(),
-            format!("[{}.{}] as path_edges", self.pattern_ctx.rel_alias, self.from_col), // Simplified edge tracking
-            format!("[{}.{}, {}.{}] as path_nodes",
-                self.pattern_ctx.rel_alias, self.from_col,
-                self.pattern_ctx.rel_alias, self.to_col),
+            format!(
+                "[{}.{}] as path_edges",
+                self.pattern_ctx.rel_alias, self.from_col
+            ), // Simplified edge tracking
+            format!(
+                "[{}.{}, {}.{}] as path_nodes",
+                self.pattern_ctx.rel_alias, self.from_col, self.pattern_ctx.rel_alias, self.to_col
+            ),
         ];
 
         // Add properties from the single table
@@ -773,26 +925,30 @@ impl DenormalizedCteStrategy {
         // Build WHERE clause from filters
         let where_clause = self.build_where_clause(context, filters)?;
 
-        Ok(format!(
-            "    SELECT\n        {}\n{}",
-            select_clause,
-            from_clause
-        ) + &if where_clause.is_empty() {
-            String::new()
-        } else {
-            format!("\n    WHERE {}", where_clause)
-        })
+        Ok(
+            format!("    SELECT\n        {}\n{}", select_clause, from_clause)
+                + &if where_clause.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n    WHERE {}", where_clause)
+                },
+        )
     }
 
     /// Generate the recursive case SQL for denormalized schema
-    fn generate_recursive_case_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<String, CteError> {
+    fn generate_recursive_case_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
         // Build SELECT clause for recursive case
         let mut select_items = vec![
             format!("next.{} as start_id", self.from_col),
             format!("next.{} as end_id", self.to_col),
             "prev.hop_count + 1".to_string(),
             "prev.path_edges || next.start_id".to_string(), // Extend edge path
-            "prev.path_nodes || next.end_id".to_string(), // Extend node path
+            "prev.path_nodes || next.end_id".to_string(),   // Extend node path
         ];
 
         // Add properties from the next table occurrence
@@ -819,24 +975,34 @@ impl DenormalizedCteStrategy {
 
         let where_clause = where_conditions.join(" AND ");
 
-        Ok(format!(
-            "    SELECT\n        {}\n{}",
-            select_clause,
-            from_clause
-        ) + &format!("\n    WHERE {}", where_clause))
+        Ok(
+            format!("    SELECT\n        {}\n{}", select_clause, from_clause)
+                + &format!("\n    WHERE {}", where_clause),
+        )
     }
 
     /// Add property selections for denormalized schema
-    fn add_property_selections(&self, select_items: &mut Vec<String>, properties: &[NodeProperty]) -> Result<(), CteError> {
+    fn add_property_selections(
+        &self,
+        select_items: &mut Vec<String>,
+        properties: &[NodeProperty],
+    ) -> Result<(), CteError> {
         for prop in properties {
             // All properties come from the single table
-            select_items.push(format!("{}.{} as {}", self.pattern_ctx.rel_alias, prop.column_name, prop.alias));
+            select_items.push(format!(
+                "{}.{} as {}",
+                self.pattern_ctx.rel_alias, prop.column_name, prop.alias
+            ));
         }
         Ok(())
     }
 
     /// Add property selections for recursive case
-    fn add_recursive_property_selections(&self, select_items: &mut Vec<String>, properties: &[NodeProperty]) -> Result<(), CteError> {
+    fn add_recursive_property_selections(
+        &self,
+        select_items: &mut Vec<String>,
+        properties: &[NodeProperty],
+    ) -> Result<(), CteError> {
         for prop in properties {
             // All properties come from the next occurrence of the single table
             select_items.push(format!("next.{} as {}", prop.column_name, prop.alias));
@@ -845,7 +1011,11 @@ impl DenormalizedCteStrategy {
     }
 
     /// Build WHERE clause from filters
-    fn build_where_clause(&self, context: &CteGenerationContext, filters: &CategorizedFilters) -> Result<String, CteError> {
+    fn build_where_clause(
+        &self,
+        context: &CteGenerationContext,
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
         let mut conditions = Vec::new();
 
         // Add start node filters
@@ -876,27 +1046,33 @@ impl DenormalizedCteStrategy {
     }
 }
 
-
 impl MixedAccessCteStrategy {
     pub fn new(pattern_ctx: &PatternSchemaContext) -> Result<Self, CteError> {
         // Validate that this is a mixed access schema
         match &pattern_ctx.join_strategy {
-            JoinStrategy::MixedAccess { joined_node, join_col } => {
-                Ok(Self {
-                    pattern_ctx: pattern_ctx.clone(),
-                    joined_node: joined_node.clone(),
-                    join_col: join_col.clone(),
-                })
-            }
+            JoinStrategy::MixedAccess {
+                joined_node,
+                join_col,
+            } => Ok(Self {
+                pattern_ctx: pattern_ctx.clone(),
+                joined_node: joined_node.clone(),
+                join_col: join_col.clone(),
+            }),
             _ => Err(CteError::InvalidStrategy(
-                "MixedAccessCteStrategy requires JoinStrategy::MixedAccess".into()
+                "MixedAccessCteStrategy requires JoinStrategy::MixedAccess".into(),
             )),
         }
     }
 
-    pub fn generate_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<CteGenerationResult, CteError> {
+    pub fn generate_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<CteGenerationResult, CteError> {
         // Generate CTE name
-        let cte_name = format!("vlp_{}_{}_{}",
+        let cte_name = format!(
+            "vlp_{}_{}_{}",
             self.pattern_ctx.left_node_alias,
             self.pattern_ctx.right_node_alias,
             context.spec.effective_min_hops()
@@ -918,13 +1094,18 @@ impl MixedAccessCteStrategy {
         match &pattern_ctx.join_strategy {
             JoinStrategy::MixedAccess { .. } => Ok(()),
             _ => Err(CteError::SchemaValidationError(
-                "MixedAccessCteStrategy requires JoinStrategy::MixedAccess".into()
+                "MixedAccessCteStrategy requires JoinStrategy::MixedAccess".into(),
             )),
         }
     }
 
     /// Generate the complete recursive CTE SQL for mixed access pattern
-    fn generate_recursive_cte_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<String, CteError> {
+    fn generate_recursive_cte_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
         let min_hops = context.spec.effective_min_hops();
         let max_hops = context.spec.max_hops;
 
@@ -934,42 +1115,58 @@ impl MixedAccessCteStrategy {
         // Generate recursive case if needed
         let needs_recursion = max_hops.map_or(true, |max| max > min_hops);
         let recursive_case = if needs_recursion {
-            format!("\n    UNION ALL\n{}", self.generate_recursive_case_sql(context, properties, filters)?)
+            format!(
+                "\n    UNION ALL\n{}",
+                self.generate_recursive_case_sql(context, properties, filters)?
+            )
         } else {
             String::new()
         };
 
         // Build complete CTE
-        let cte_name = format!("vlp_{}_{}_{}",
-            self.pattern_ctx.left_node_alias,
-            self.pattern_ctx.right_node_alias,
-            min_hops
+        let cte_name = format!(
+            "vlp_{}_{}_{}",
+            self.pattern_ctx.left_node_alias, self.pattern_ctx.right_node_alias, min_hops
         );
 
         Ok(format!(
             "WITH RECURSIVE {} AS (\n{}{}\n) SELECT * FROM {}",
-            cte_name,
-            base_case,
-            recursive_case,
-            cte_name
+            cte_name, base_case, recursive_case, cte_name
         ))
     }
 
     /// Generate the base case SQL (1-hop traversal) for mixed access
-    fn generate_base_case_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<String, CteError> {
+    fn generate_base_case_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
         // For mixed access, one node is embedded in the edge table, the other requires JOIN
         // Determine which node is embedded vs which needs JOIN
         let (embedded_node_alias, joined_node_alias) = match self.joined_node {
-            NodePosition::Left => (self.pattern_ctx.right_node_alias.as_str(), self.pattern_ctx.left_node_alias.as_str()),
-            NodePosition::Right => (self.pattern_ctx.left_node_alias.as_str(), self.pattern_ctx.right_node_alias.as_str()),
+            NodePosition::Left => (
+                self.pattern_ctx.right_node_alias.as_str(),
+                self.pattern_ctx.left_node_alias.as_str(),
+            ),
+            NodePosition::Right => (
+                self.pattern_ctx.left_node_alias.as_str(),
+                self.pattern_ctx.right_node_alias.as_str(),
+            ),
         };
 
         let mut select_items = vec![
             format!("{}.start_id", joined_node_alias),
             format!("{}.end_id", embedded_node_alias),
             "1 as hop_count".to_string(),
-            format!("[{}.{}] as path_edges", self.pattern_ctx.rel_alias, self.join_col), // Edge represented by join column
-            format!("[{}.start_id, {}.end_id] as path_nodes", joined_node_alias, embedded_node_alias),
+            format!(
+                "[{}.{}] as path_edges",
+                self.pattern_ctx.rel_alias, self.join_col
+            ), // Edge represented by join column
+            format!(
+                "[{}.start_id, {}.end_id] as path_nodes",
+                joined_node_alias, embedded_node_alias
+            ),
         ];
 
         // Add properties from both nodes
@@ -981,20 +1178,28 @@ impl MixedAccessCteStrategy {
                 // Left node needs JOIN, right node is embedded
                 format!(
                     "    FROM {} {}\n    JOIN {} {} ON {}.{} = {}.{}",
-                    self.get_edge_table_name()?, self.pattern_ctx.rel_alias,
-                    self.get_joined_node_table()?, joined_node_alias,
-                    joined_node_alias, self.get_joined_node_id_column()?,
-                    self.pattern_ctx.rel_alias, self.join_col
+                    self.get_edge_table_name()?,
+                    self.pattern_ctx.rel_alias,
+                    self.get_joined_node_table()?,
+                    joined_node_alias,
+                    joined_node_alias,
+                    self.get_joined_node_id_column()?,
+                    self.pattern_ctx.rel_alias,
+                    self.join_col
                 )
             }
             NodePosition::Right => {
                 // Right node needs JOIN, left node is embedded
                 format!(
                     "    FROM {} {}\n    JOIN {} {} ON {}.{} = {}.{}",
-                    self.get_edge_table_name()?, self.pattern_ctx.rel_alias,
-                    self.get_joined_node_table()?, joined_node_alias,
-                    self.pattern_ctx.rel_alias, self.join_col,
-                    joined_node_alias, self.get_joined_node_id_column()?
+                    self.get_edge_table_name()?,
+                    self.pattern_ctx.rel_alias,
+                    self.get_joined_node_table()?,
+                    joined_node_alias,
+                    self.pattern_ctx.rel_alias,
+                    self.join_col,
+                    joined_node_alias,
+                    self.get_joined_node_id_column()?
                 )
             }
         };
@@ -1011,8 +1216,14 @@ impl MixedAccessCteStrategy {
     }
 
     /// Generate the recursive case SQL (extending paths by 1 hop) for mixed access
-    fn generate_recursive_case_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<String, CteError> {
-        let cte_name = format!("vlp_{}_{}_{}",
+    fn generate_recursive_case_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
+        let cte_name = format!(
+            "vlp_{}_{}_{}",
             self.pattern_ctx.left_node_alias,
             self.pattern_ctx.right_node_alias,
             context.spec.effective_min_hops()
@@ -1020,8 +1231,14 @@ impl MixedAccessCteStrategy {
 
         // Determine which node is embedded vs joined
         let (embedded_node_alias, joined_node_alias) = match self.joined_node {
-            NodePosition::Left => (self.pattern_ctx.right_node_alias.as_str(), self.pattern_ctx.left_node_alias.as_str()),
-            NodePosition::Right => (self.pattern_ctx.left_node_alias.as_str(), self.pattern_ctx.right_node_alias.as_str()),
+            NodePosition::Left => (
+                self.pattern_ctx.right_node_alias.as_str(),
+                self.pattern_ctx.left_node_alias.as_str(),
+            ),
+            NodePosition::Right => (
+                self.pattern_ctx.left_node_alias.as_str(),
+                self.pattern_ctx.right_node_alias.as_str(),
+            ),
         };
 
         // Build SELECT clause for recursive case
@@ -1029,8 +1246,14 @@ impl MixedAccessCteStrategy {
             format!("{}.start_id", cte_name),
             format!("{}.end_id", embedded_node_alias),
             format!("{}.hop_count + 1 as hop_count", cte_name),
-            format!("arrayConcat({}.path_edges, [{}]) as path_edges", cte_name, self.join_col),
-            format!("arrayConcat({}.path_nodes, [{}]) as path_nodes", cte_name, "end_id"),
+            format!(
+                "arrayConcat({}.path_edges, [{}]) as path_edges",
+                cte_name, self.join_col
+            ),
+            format!(
+                "arrayConcat({}.path_nodes, [{}]) as path_nodes",
+                cte_name, "end_id"
+            ),
         ];
 
         // Add properties (start node properties come from CTE, end node from joined table)
@@ -1040,7 +1263,10 @@ impl MixedAccessCteStrategy {
                 select_items.push(format!("{}.start_{}", cte_name, prop.alias));
             } else if prop.cypher_alias == self.pattern_ctx.right_node_alias {
                 // End node property from joined table
-                select_items.push(format!("{}.{} as end_{}", embedded_node_alias, prop.column_name, prop.alias));
+                select_items.push(format!(
+                    "{}.{} as end_{}",
+                    embedded_node_alias, prop.column_name, prop.alias
+                ));
             }
         }
 
@@ -1053,8 +1279,11 @@ impl MixedAccessCteStrategy {
                 format!(
                     "    FROM {}\n    JOIN {} {} ON {}.end_id = {}.{}",
                     cte_name,
-                    self.get_edge_table_name()?, self.pattern_ctx.rel_alias,
-                    cte_name, self.pattern_ctx.rel_alias, self.get_embedded_node_id_column()?
+                    self.get_edge_table_name()?,
+                    self.pattern_ctx.rel_alias,
+                    cte_name,
+                    self.pattern_ctx.rel_alias,
+                    self.get_embedded_node_id_column()?
                 )
             }
             NodePosition::Right => {
@@ -1062,8 +1291,11 @@ impl MixedAccessCteStrategy {
                 format!(
                     "    FROM {}\n    JOIN {} {} ON {}.end_id = {}.{}",
                     cte_name,
-                    self.get_edge_table_name()?, self.pattern_ctx.rel_alias,
-                    cte_name, self.pattern_ctx.rel_alias, self.get_embedded_node_id_column()?
+                    self.get_edge_table_name()?,
+                    self.pattern_ctx.rel_alias,
+                    cte_name,
+                    self.pattern_ctx.rel_alias,
+                    self.get_embedded_node_id_column()?
                 )
             }
         };
@@ -1073,9 +1305,7 @@ impl MixedAccessCteStrategy {
 
         Ok(format!(
             "    SELECT\n        {}\n{}{}",
-            select_clause,
-            from_clause,
-            where_clause
+            select_clause, from_clause, where_clause
         ))
     }
 
@@ -1083,7 +1313,9 @@ impl MixedAccessCteStrategy {
     fn get_edge_table_name(&self) -> Result<&str, CteError> {
         match &self.pattern_ctx.edge {
             EdgeAccessStrategy::SeparateTable { table, .. } => Ok(table),
-            _ => Err(CteError::SchemaValidationError("Mixed access requires separate edge table".into())),
+            _ => Err(CteError::SchemaValidationError(
+                "Mixed access requires separate edge table".into(),
+            )),
         }
     }
 
@@ -1096,7 +1328,9 @@ impl MixedAccessCteStrategy {
 
         match node_access {
             NodeAccessStrategy::OwnTable { table, .. } => Ok(table),
-            _ => Err(CteError::SchemaValidationError("Joined node must have own table".into())),
+            _ => Err(CteError::SchemaValidationError(
+                "Joined node must have own table".into(),
+            )),
         }
     }
 
@@ -1109,7 +1343,9 @@ impl MixedAccessCteStrategy {
 
         match node_access {
             NodeAccessStrategy::OwnTable { id_column, .. } => Ok(id_column),
-            _ => Err(CteError::SchemaValidationError("Joined node must have own table".into())),
+            _ => Err(CteError::SchemaValidationError(
+                "Joined node must have own table".into(),
+            )),
         }
     }
 
@@ -1122,28 +1358,40 @@ impl MixedAccessCteStrategy {
                 // Right node is embedded, so its ID comes from the edge table
                 match &self.pattern_ctx.edge {
                     EdgeAccessStrategy::SeparateTable { to_id, .. } => Ok(to_id),
-                    _ => Err(CteError::SchemaValidationError("Edge must be separate table".into())),
+                    _ => Err(CteError::SchemaValidationError(
+                        "Edge must be separate table".into(),
+                    )),
                 }
             }
             NodePosition::Right => {
                 // Left node is embedded, so its ID comes from the edge table
                 match &self.pattern_ctx.edge {
                     EdgeAccessStrategy::SeparateTable { from_id, .. } => Ok(from_id),
-                    _ => Err(CteError::SchemaValidationError("Edge must be separate table".into())),
+                    _ => Err(CteError::SchemaValidationError(
+                        "Edge must be separate table".into(),
+                    )),
                 }
             }
         }
     }
 
     /// Add property selections to the SELECT clause
-    fn add_property_selections(&self, select_items: &mut Vec<String>, properties: &[NodeProperty]) -> Result<(), CteError> {
+    fn add_property_selections(
+        &self,
+        select_items: &mut Vec<String>,
+        properties: &[NodeProperty],
+    ) -> Result<(), CteError> {
         for prop in properties {
             if prop.cypher_alias == self.pattern_ctx.left_node_alias {
-                select_items.push(format!("{}.{} as start_{}",
-                    self.pattern_ctx.left_node_alias, prop.column_name, prop.alias));
+                select_items.push(format!(
+                    "{}.{} as start_{}",
+                    self.pattern_ctx.left_node_alias, prop.column_name, prop.alias
+                ));
             } else if prop.cypher_alias == self.pattern_ctx.right_node_alias {
-                select_items.push(format!("{}.{} as end_{}",
-                    self.pattern_ctx.right_node_alias, prop.column_name, prop.alias));
+                select_items.push(format!(
+                    "{}.{} as end_{}",
+                    self.pattern_ctx.right_node_alias, prop.column_name, prop.alias
+                ));
             }
         }
         Ok(())
@@ -1161,15 +1409,24 @@ impl EdgeToEdgeCteStrategy {
     pub fn new(pattern_ctx: &PatternSchemaContext) -> Result<Self, CteError> {
         // Validate that this is an edge-to-edge schema
         match &pattern_ctx.join_strategy {
-            JoinStrategy::EdgeToEdge { prev_edge_alias, prev_edge_col, curr_edge_col } => {
+            JoinStrategy::EdgeToEdge {
+                prev_edge_alias,
+                prev_edge_col,
+                curr_edge_col,
+            } => {
                 // For edge-to-edge, both nodes should be embedded in the edge table
                 let (table, from_col, to_col) = match &pattern_ctx.edge {
-                    EdgeAccessStrategy::SeparateTable { table, from_id, to_id, .. } => {
-                        (table.clone(), from_id.clone(), to_id.clone())
+                    EdgeAccessStrategy::SeparateTable {
+                        table,
+                        from_id,
+                        to_id,
+                        ..
+                    } => (table.clone(), from_id.clone(), to_id.clone()),
+                    _ => {
+                        return Err(CteError::InvalidStrategy(
+                            "EdgeToEdgeCteStrategy requires SeparateTable edge access".into(),
+                        ))
                     }
-                    _ => return Err(CteError::InvalidStrategy(
-                        "EdgeToEdgeCteStrategy requires SeparateTable edge access".into()
-                    )),
                 };
 
                 Ok(Self {
@@ -1183,13 +1440,19 @@ impl EdgeToEdgeCteStrategy {
                 })
             }
             _ => Err(CteError::InvalidStrategy(
-                "EdgeToEdgeCteStrategy requires EdgeToEdge join strategy".into()
+                "EdgeToEdgeCteStrategy requires EdgeToEdge join strategy".into(),
             )),
         }
     }
-    pub fn generate_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<CteGenerationResult, CteError> {
+    pub fn generate_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<CteGenerationResult, CteError> {
         // Generate CTE name
-        let cte_name = format!("vlp_{}_{}_{}",
+        let cte_name = format!(
+            "vlp_{}_{}_{}",
             self.pattern_ctx.left_node_alias,
             self.pattern_ctx.right_node_alias,
             context.spec.effective_min_hops()
@@ -1211,13 +1474,18 @@ impl EdgeToEdgeCteStrategy {
         match &pattern_ctx.join_strategy {
             JoinStrategy::EdgeToEdge { .. } => Ok(()),
             _ => Err(CteError::SchemaValidationError(
-                "EdgeToEdgeCteStrategy requires JoinStrategy::EdgeToEdge".into()
+                "EdgeToEdgeCteStrategy requires JoinStrategy::EdgeToEdge".into(),
             )),
         }
     }
 
     /// Generate the complete recursive CTE SQL for edge-to-edge pattern
-    fn generate_recursive_cte_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<String, CteError> {
+    fn generate_recursive_cte_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
         let min_hops = context.spec.effective_min_hops();
         let max_hops = context.spec.max_hops;
 
@@ -1227,38 +1495,49 @@ impl EdgeToEdgeCteStrategy {
         // Generate recursive case if needed
         let needs_recursion = max_hops.map_or(true, |max| max > min_hops);
         let recursive_case = if needs_recursion {
-            format!("\n    UNION ALL\n{}", self.generate_recursive_case_sql(context, properties, filters)?)
+            format!(
+                "\n    UNION ALL\n{}",
+                self.generate_recursive_case_sql(context, properties, filters)?
+            )
         } else {
             String::new()
         };
 
         // Build complete CTE
-        let cte_name = format!("vlp_{}_{}_{}",
-            self.pattern_ctx.left_node_alias,
-            self.pattern_ctx.right_node_alias,
-            min_hops
+        let cte_name = format!(
+            "vlp_{}_{}_{}",
+            self.pattern_ctx.left_node_alias, self.pattern_ctx.right_node_alias, min_hops
         );
 
         Ok(format!(
             "WITH RECURSIVE {} AS (\n{}{}\n) SELECT * FROM {}",
-            cte_name,
-            base_case,
-            recursive_case,
-            cte_name
+            cte_name, base_case, recursive_case, cte_name
         ))
     }
 
     /// Generate the base case SQL (1-hop traversal) for edge-to-edge schema
-    fn generate_base_case_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<String, CteError> {
+    fn generate_base_case_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
         // Build SELECT clause - all properties come from the single table
         let mut select_items = vec![
-            format!("{}.{} as start_id", self.pattern_ctx.rel_alias, self.from_col),
+            format!(
+                "{}.{} as start_id",
+                self.pattern_ctx.rel_alias, self.from_col
+            ),
             format!("{}.{} as end_id", self.pattern_ctx.rel_alias, self.to_col),
             "1 as hop_count".to_string(),
-            format!("[{}.{}] as path_edges", self.pattern_ctx.rel_alias, self.from_col), // Simplified edge tracking
-            format!("[{}.{}, {}.{}] as path_nodes",
-                self.pattern_ctx.rel_alias, self.from_col,
-                self.pattern_ctx.rel_alias, self.to_col),
+            format!(
+                "[{}.{}] as path_edges",
+                self.pattern_ctx.rel_alias, self.from_col
+            ), // Simplified edge tracking
+            format!(
+                "[{}.{}, {}.{}] as path_nodes",
+                self.pattern_ctx.rel_alias, self.from_col, self.pattern_ctx.rel_alias, self.to_col
+            ),
         ];
 
         // Add properties from the single table
@@ -1272,26 +1551,30 @@ impl EdgeToEdgeCteStrategy {
         // Build WHERE clause from filters
         let where_clause = self.build_where_clause(context, filters)?;
 
-        Ok(format!(
-            "    SELECT\n        {}\n{}",
-            select_clause,
-            from_clause
-        ) + &if where_clause.is_empty() {
-            String::new()
-        } else {
-            format!("\n    WHERE {}", where_clause)
-        })
+        Ok(
+            format!("    SELECT\n        {}\n{}", select_clause, from_clause)
+                + &if where_clause.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n    WHERE {}", where_clause)
+                },
+        )
     }
 
     /// Generate the recursive case SQL for edge-to-edge schema
-    fn generate_recursive_case_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<String, CteError> {
+    fn generate_recursive_case_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
         // Build SELECT clause for recursive case
         let mut select_items = vec![
             format!("next.{} as start_id", self.from_col),
             format!("next.{} as end_id", self.to_col),
             "prev.hop_count + 1".to_string(),
             "prev.path_edges || next.start_id".to_string(), // Extend edge path
-            "prev.path_nodes || next.end_id".to_string(), // Extend node path
+            "prev.path_nodes || next.end_id".to_string(),   // Extend node path
         ];
 
         // Add properties from the next table occurrence
@@ -1321,23 +1604,32 @@ impl EdgeToEdgeCteStrategy {
 
         Ok(format!(
             "    SELECT\n        {}\n{}{}",
-            select_clause,
-            from_clause,
-            where_clause
+            select_clause, from_clause, where_clause
         ))
     }
 
     /// Add property selections for base case
-    fn add_property_selections(&self, select_items: &mut Vec<String>, properties: &[NodeProperty]) -> Result<(), CteError> {
+    fn add_property_selections(
+        &self,
+        select_items: &mut Vec<String>,
+        properties: &[NodeProperty],
+    ) -> Result<(), CteError> {
         for prop in properties {
             // All properties come from the single table
-            select_items.push(format!("{}.{} as {}", self.pattern_ctx.rel_alias, prop.column_name, prop.alias));
+            select_items.push(format!(
+                "{}.{} as {}",
+                self.pattern_ctx.rel_alias, prop.column_name, prop.alias
+            ));
         }
         Ok(())
     }
 
     /// Add property selections for recursive case
-    fn add_recursive_property_selections(&self, select_items: &mut Vec<String>, properties: &[NodeProperty]) -> Result<(), CteError> {
+    fn add_recursive_property_selections(
+        &self,
+        select_items: &mut Vec<String>,
+        properties: &[NodeProperty],
+    ) -> Result<(), CteError> {
         for prop in properties {
             // All properties come from the next occurrence of the single table
             select_items.push(format!("next.{} as {}", prop.column_name, prop.alias));
@@ -1346,7 +1638,11 @@ impl EdgeToEdgeCteStrategy {
     }
 
     /// Build WHERE clause from filters
-    fn build_where_clause(&self, context: &CteGenerationContext, filters: &CategorizedFilters) -> Result<String, CteError> {
+    fn build_where_clause(
+        &self,
+        context: &CteGenerationContext,
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
         let mut conditions: Vec<String> = Vec::new();
 
         // TODO: Implement filter conversion when RenderExpr to SQL is available
@@ -1362,12 +1658,17 @@ impl CoupledCteStrategy {
             JoinStrategy::CoupledSameRow { unified_alias } => {
                 // For coupled same-row, both edges are in the same table
                 let (table, from_col, to_col) = match &pattern_ctx.edge {
-                    EdgeAccessStrategy::SeparateTable { table, from_id, to_id, .. } => {
-                        (table.clone(), from_id.clone(), to_id.clone())
+                    EdgeAccessStrategy::SeparateTable {
+                        table,
+                        from_id,
+                        to_id,
+                        ..
+                    } => (table.clone(), from_id.clone(), to_id.clone()),
+                    _ => {
+                        return Err(CteError::InvalidStrategy(
+                            "CoupledCteStrategy requires SeparateTable edge access".into(),
+                        ))
                     }
-                    _ => return Err(CteError::InvalidStrategy(
-                        "CoupledCteStrategy requires SeparateTable edge access".into()
-                    )),
                 };
 
                 Ok(Self {
@@ -1379,13 +1680,19 @@ impl CoupledCteStrategy {
                 })
             }
             _ => Err(CteError::InvalidStrategy(
-                "CoupledCteStrategy requires CoupledSameRow join strategy".into()
+                "CoupledCteStrategy requires CoupledSameRow join strategy".into(),
             )),
         }
     }
-    pub fn generate_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<CteGenerationResult, CteError> {
+    pub fn generate_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<CteGenerationResult, CteError> {
         // Generate CTE name
-        let cte_name = format!("vlp_{}_{}_{}",
+        let cte_name = format!(
+            "vlp_{}_{}_{}",
             self.pattern_ctx.left_node_alias,
             self.pattern_ctx.right_node_alias,
             context.spec.effective_min_hops()
@@ -1408,27 +1715,36 @@ impl CoupledCteStrategy {
         match &pattern_ctx.join_strategy {
             JoinStrategy::CoupledSameRow { .. } => Ok(()),
             _ => Err(CteError::SchemaValidationError(
-                "CoupledCteStrategy requires JoinStrategy::CoupledSameRow".into()
+                "CoupledCteStrategy requires JoinStrategy::CoupledSameRow".into(),
             )),
         }
     }
 
     /// Generate simple SELECT SQL for coupled same-row pattern
-    fn generate_simple_select_sql(&self, context: &CteGenerationContext, properties: &[NodeProperty], filters: &CategorizedFilters) -> Result<String, CteError> {
+    fn generate_simple_select_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
         // Build SELECT clause - all data comes from the single table row
         let mut select_items = vec![
             format!("{}.{} as start_id", self.unified_alias, self.from_col),
             format!("{}.{} as end_id", self.unified_alias, self.to_col),
             "1 as hop_count".to_string(), // For coupled edges, each row represents 1 "logical" hop
             format!("[{}.{}] as path_edges", self.unified_alias, self.from_col),
-            format!("[{}.{}, {}.{}] as path_nodes",
-                self.unified_alias, self.from_col,
-                self.unified_alias, self.to_col),
+            format!(
+                "[{}.{}, {}.{}] as path_nodes",
+                self.unified_alias, self.from_col, self.unified_alias, self.to_col
+            ),
         ];
 
         // Add properties from the single table
         for prop in properties {
-            select_items.push(format!("{}.{} as {}", self.unified_alias, prop.column_name, prop.alias));
+            select_items.push(format!(
+                "{}.{} as {}",
+                self.unified_alias, prop.column_name, prop.alias
+            ));
         }
 
         let select_clause = select_items.join(",\n        ");
@@ -1439,19 +1755,20 @@ impl CoupledCteStrategy {
         // Build WHERE clause from filters
         let where_clause = self.build_where_clause(context, filters)?;
 
-        Ok(format!(
-            "SELECT\n    {}\n{}",
-            select_clause,
-            from_clause
-        ) + &if where_clause.is_empty() {
-            String::new()
-        } else {
-            format!("\nWHERE {}", where_clause)
-        })
+        Ok(format!("SELECT\n    {}\n{}", select_clause, from_clause)
+            + &if where_clause.is_empty() {
+                String::new()
+            } else {
+                format!("\nWHERE {}", where_clause)
+            })
     }
 
     /// Build WHERE clause from filters
-    fn build_where_clause(&self, context: &CteGenerationContext, filters: &CategorizedFilters) -> Result<String, CteError> {
+    fn build_where_clause(
+        &self,
+        context: &CteGenerationContext,
+        filters: &CategorizedFilters,
+    ) -> Result<String, CteError> {
         let mut conditions: Vec<String> = Vec::new();
 
         // TODO: Implement filter conversion when RenderExpr to SQL is available
@@ -1475,7 +1792,7 @@ mod tests {
                 left_join_col: "follower_id".to_string(),
                 right_join_col: "followed_id".to_string(),
             },
-        // Fill in other required fields with defaults
+            // Fill in other required fields with defaults
             left_node: NodeAccessStrategy::OwnTable {
                 table: "users_bench".to_string(),
                 id_column: "user_id".to_string(),
@@ -1758,7 +2075,9 @@ mod tests {
             path_function_filters: None,
         };
 
-        let result = strategy.generate_sql(&context, &properties, &filters).unwrap();
+        let result = strategy
+            .generate_sql(&context, &properties, &filters)
+            .unwrap();
 
         // Verify CTE name
         assert_eq!(result.cte_name, "vlp_u_p_1");
@@ -1920,6 +2239,8 @@ mod tests {
         assert!(generation_result.cte_name.starts_with("vlp_n1_n2_"));
         assert!(!generation_result.sql.is_empty());
         assert!(generation_result.sql.contains("SELECT"));
-        assert!(generation_result.sql.contains("FROM coupled_edges AS coupled"));
+        assert!(generation_result
+            .sql
+            .contains("FROM coupled_edges AS coupled"));
     }
 }

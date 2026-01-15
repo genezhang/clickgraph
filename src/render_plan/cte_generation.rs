@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use crate::clickhouse_query_generator::NodeProperty;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_expr::LogicalExpr;
-use crate::query_planner::logical_plan::VariableLengthSpec;
 use crate::query_planner::logical_plan::LogicalPlan;
+use crate::query_planner::logical_plan::VariableLengthSpec;
 use crate::render_plan::render_expr::RenderExpr;
 
 /// Context for CTE generation - holds property requirements and other metadata
