@@ -154,13 +154,13 @@ CALL pagerank(
 
 ### Test Coverage ✅
 
-**Integration Tests**: 3,538 tests collected (pytest framework)
-- Core Cypher features: 549 tests
-- Variable-length paths: 24 tests
-- Pattern comprehensions: 5 tests
-- Property expressions: 28 tests
-- Security graphs: 94 tests
-- Matrix testing variations: 2,000+ parameterized test cases
+**Integration Tests**: 3,538 tests collected (pytest framework with matrix parameterization)
+- Core Cypher features: 549 base tests
+- Variable-length paths: 24 base tests
+- Pattern comprehensions: 5 base tests
+- Property expressions: 28 base tests
+- Security graphs: 94 base tests
+- Matrix-expanded tests: ~2,000 additional test variations (same tests run against multiple schema patterns)
 
 **LDBC SNB Benchmark**:
 - Interactive Short (IS): 4/5 passing (IS-1, IS-2, IS-3, IS-5)
