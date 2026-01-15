@@ -132,7 +132,8 @@ CALL pagerank(
 - **MixedAccessCteStrategy**: Hybrid embedded/JOIN access patterns
 - **EdgeToEdgeCteStrategy**: Multi-hop denormalized edge-to-edge patterns
 - **CoupledCteStrategy**: Coupled edges in same physical row
-- Comprehensive test coverage (6/6 strategies implemented and tested)
+- **Progress**: 14/14 TODOs completed (ID column resolution + 6 RenderExpr conversions + 7 parameter extractions)
+- **Status**: Production-ready CTE unification using existing infrastructure
 
 ### Schema Support ✅
 

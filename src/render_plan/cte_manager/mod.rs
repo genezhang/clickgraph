@@ -9,9 +9,14 @@ use std::sync::Arc;
 use crate::clickhouse_query_generator::variable_length_cte::NodeProperty;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::graph_catalog::{
+    config::Identifier,
+    graph_schema::{NodeIdSchema, NodeSchema},
     EdgeAccessStrategy, JoinStrategy, NodeAccessStrategy, NodePosition, PatternSchemaContext,
 };
 use crate::query_planner::logical_plan::VariableLengthSpec;
+use crate::render_plan::cte_extraction::{
+    collect_parameters_from_filters, render_expr_to_sql_string,
+};
 use crate::render_plan::cte_generation::CteGenerationContext;
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::filter_pipeline::CategorizedFilters;
@@ -74,6 +79,68 @@ impl CteManager {
         Self { schema, context }
     }
 
+    /// Get the ID column for FK-edge relationships
+    /// For FK-edge, the FK column points to the ID of the target node
+    fn get_fk_edge_node_id_column(
+        schema: &GraphSchema,
+        pattern_ctx: &PatternSchemaContext,
+    ) -> Result<String, CteError> {
+        match &pattern_ctx.edge {
+            EdgeAccessStrategy::FkEdge { node_table, .. } => {
+                // The FK is in node_table, so it points to the ID of the other node
+                // Determine which node is NOT the node_table
+                let target_table =
+                    if pattern_ctx.left_node.property_source_alias() == Some(node_table) {
+                        // Left node has the FK, so FK points to right node's ID
+                        pattern_ctx.right_node.property_source_alias()
+                    } else {
+                        // Right node has the FK, so FK points to left node's ID
+                        pattern_ctx.left_node.property_source_alias()
+                    };
+
+                let target_table = target_table.ok_or_else(|| {
+                    CteError::SchemaValidationError("FK-edge target node has no table".into())
+                })?;
+
+                // Get the node schema by table name
+                // We need to find which node label corresponds to this table
+                let target_node_label = schema
+                    .get_nodes_schemas()
+                    .iter()
+                    .find(|(_, node_schema)| node_schema.table_name == *target_table)
+                    .map(|(label, _)| label)
+                    .ok_or_else(|| {
+                        CteError::SchemaValidationError(format!(
+                            "No node found for table {}",
+                            target_table
+                        ))
+                    })?;
+
+                // Get the target node's schema
+                let target_node_schema =
+                    schema.get_node_schema(target_node_label).map_err(|e| {
+                        CteError::SchemaValidationError(format!(
+                            "Failed to get node schema for {}: {}",
+                            target_node_label, e
+                        ))
+                    })?;
+
+                // Get the ID column from the node schema
+                match &target_node_schema.node_id.id {
+                    Identifier::Single(column) => Ok(column.clone()),
+                    Identifier::Composite(columns) => {
+                        // For composite IDs, use the first column for now
+                        // TODO: Handle composite IDs properly in FK relationships
+                        Ok(columns[0].clone())
+                    }
+                }
+            }
+            _ => Err(CteError::InvalidStrategy(
+                "get_fk_edge_node_id_column requires EdgeAccessStrategy::FkEdge".into(),
+            )),
+        }
+    }
+
     /// Analyze a variable-length pattern and determine the appropriate CTE strategy
     pub fn analyze_pattern(
         &self,
@@ -100,7 +167,12 @@ impl CteManager {
                 DenormalizedCteStrategy::new(pattern_ctx)?,
             )),
             JoinStrategy::FkEdgeJoin { .. } => {
-                Ok(CteStrategy::FkEdge(FkEdgeCteStrategy::new(pattern_ctx)?))
+                // For FK-edge, we need to determine the ID column from the node schema
+                let id_column = Self::get_fk_edge_node_id_column(&self.schema, pattern_ctx)?;
+                Ok(CteStrategy::FkEdge(FkEdgeCteStrategy::new(
+                    pattern_ctx,
+                    &id_column,
+                )?))
             }
             JoinStrategy::MixedAccess { joined_node, .. } => Ok(CteStrategy::MixedAccess(
                 MixedAccessCteStrategy::new(pattern_ctx)?,
@@ -236,24 +308,18 @@ pub struct TraditionalCteStrategy {
 }
 
 impl FkEdgeCteStrategy {
-    pub fn new(pattern_ctx: &PatternSchemaContext) -> Result<Self, CteError> {
+    pub fn new(pattern_ctx: &PatternSchemaContext, id_column: &str) -> Result<Self, CteError> {
         // Validate that this is an FK-edge schema
         match &pattern_ctx.edge {
             EdgeAccessStrategy::FkEdge {
                 node_table,
                 fk_column,
-            } => {
-                // For FK-edge, we need to determine the ID column
-                // This typically comes from the node schema, but for now we'll assume "id"
-                let id_column = "id".to_string(); // TODO: Get from node schema
-
-                Ok(Self {
-                    pattern_ctx: pattern_ctx.clone(),
-                    node_table: node_table.clone(),
-                    fk_column: fk_column.clone(),
-                    id_column,
-                })
-            }
+            } => Ok(Self {
+                pattern_ctx: pattern_ctx.clone(),
+                node_table: node_table.clone(),
+                fk_column: fk_column.clone(),
+                id_column: id_column.to_string(),
+            }),
             _ => Err(CteError::InvalidStrategy(
                 "FkEdgeCteStrategy requires EdgeAccessStrategy::FkEdge".into(),
             )),
@@ -279,7 +345,7 @@ impl FkEdgeCteStrategy {
 
         Ok(CteGenerationResult {
             sql,
-            parameters: vec![], // TODO: Add parameter support
+            parameters: collect_parameters_from_filters(filters),
             cte_name,
             recursive: true,
         })
@@ -483,10 +549,44 @@ impl FkEdgeCteStrategy {
     }
 
     /// Build WHERE clause from categorized filters
-    fn build_where_clause(&self, _filters: &CategorizedFilters) -> Result<String, CteError> {
-        // TODO: Implement proper RenderExpr to SQL conversion
-        // For now, return empty WHERE clause
-        Ok(String::new())
+    fn build_where_clause(&self, filters: &CategorizedFilters) -> Result<String, CteError> {
+        let mut conditions = Vec::new();
+
+        // Create alias mapping: Cypher aliases map to themselves in CTE context
+        let alias_mapping = &[
+            (
+                self.pattern_ctx.left_node_alias.clone(),
+                self.pattern_ctx.left_node_alias.clone(),
+            ),
+            (
+                self.pattern_ctx.right_node_alias.clone(),
+                self.pattern_ctx.right_node_alias.clone(),
+            ),
+        ];
+
+        // Add start node filters
+        if let Some(start_filters) = &filters.start_node_filters {
+            let sql = render_expr_to_sql_string(start_filters, alias_mapping);
+            conditions.push(sql);
+        }
+
+        // Add end node filters
+        if let Some(end_filters) = &filters.end_node_filters {
+            let sql = render_expr_to_sql_string(end_filters, alias_mapping);
+            conditions.push(sql);
+        }
+
+        // Add relationship filters
+        if let Some(rel_filters) = &filters.relationship_filters {
+            let sql = render_expr_to_sql_string(rel_filters, alias_mapping);
+            conditions.push(sql);
+        }
+
+        if conditions.is_empty() {
+            Ok(String::new())
+        } else {
+            Ok(format!("    WHERE {}", conditions.join(" AND ")))
+        }
     }
 }
 impl TraditionalCteStrategy {
@@ -514,7 +614,7 @@ impl TraditionalCteStrategy {
 
         Ok(CteGenerationResult {
             sql,
-            parameters: vec![], // TODO: Add parameter support
+            parameters: collect_parameters_from_filters(filters),
             cte_name,
             recursive: true,
         })
@@ -771,10 +871,44 @@ impl TraditionalCteStrategy {
     }
 
     /// Build WHERE clause from categorized filters
-    fn build_where_clause(&self, _filters: &CategorizedFilters) -> Result<String, CteError> {
-        // TODO: Implement proper RenderExpr to SQL conversion
-        // For now, return empty WHERE clause
-        Ok(String::new())
+    fn build_where_clause(&self, filters: &CategorizedFilters) -> Result<String, CteError> {
+        let mut conditions = Vec::new();
+
+        // Create alias mapping: Cypher aliases map to themselves in CTE context
+        let alias_mapping = &[
+            (
+                self.pattern_ctx.left_node_alias.clone(),
+                self.pattern_ctx.left_node_alias.clone(),
+            ),
+            (
+                self.pattern_ctx.right_node_alias.clone(),
+                self.pattern_ctx.right_node_alias.clone(),
+            ),
+        ];
+
+        // Add start node filters
+        if let Some(start_filters) = &filters.start_node_filters {
+            let sql = render_expr_to_sql_string(start_filters, alias_mapping);
+            conditions.push(sql);
+        }
+
+        // Add end node filters
+        if let Some(end_filters) = &filters.end_node_filters {
+            let sql = render_expr_to_sql_string(end_filters, alias_mapping);
+            conditions.push(sql);
+        }
+
+        // Add relationship filters
+        if let Some(rel_filters) = &filters.relationship_filters {
+            let sql = render_expr_to_sql_string(rel_filters, alias_mapping);
+            conditions.push(sql);
+        }
+
+        if conditions.is_empty() {
+            Ok(String::new())
+        } else {
+            Ok(format!("    WHERE {}", conditions.join(" AND ")))
+        }
     }
     pub fn validate(&self, _pattern_ctx: &PatternSchemaContext) -> Result<(), CteError> {
         Ok(())
@@ -834,7 +968,7 @@ impl DenormalizedCteStrategy {
 
         Ok(CteGenerationResult {
             sql,
-            parameters: vec![], // TODO: Add parameter support
+            parameters: collect_parameters_from_filters(filters),
             cte_name,
             recursive: true,
         })
@@ -1083,7 +1217,7 @@ impl MixedAccessCteStrategy {
 
         Ok(CteGenerationResult {
             sql,
-            parameters: vec![], // TODO: Add parameter support
+            parameters: collect_parameters_from_filters(filters),
             cte_name,
             recursive: true,
         })
@@ -1398,10 +1532,44 @@ impl MixedAccessCteStrategy {
     }
 
     /// Build WHERE clause from categorized filters
-    fn build_where_clause(&self, _filters: &CategorizedFilters) -> Result<String, CteError> {
-        // TODO: Implement proper RenderExpr to SQL conversion
-        // For now, return empty WHERE clause
-        Ok(String::new())
+    fn build_where_clause(&self, filters: &CategorizedFilters) -> Result<String, CteError> {
+        let mut conditions = Vec::new();
+
+        // Create alias mapping: Cypher aliases map to themselves in CTE context
+        let alias_mapping = &[
+            (
+                self.pattern_ctx.left_node_alias.clone(),
+                self.pattern_ctx.left_node_alias.clone(),
+            ),
+            (
+                self.pattern_ctx.right_node_alias.clone(),
+                self.pattern_ctx.right_node_alias.clone(),
+            ),
+        ];
+
+        // Add start node filters
+        if let Some(start_filters) = &filters.start_node_filters {
+            let sql = render_expr_to_sql_string(start_filters, alias_mapping);
+            conditions.push(sql);
+        }
+
+        // Add end node filters
+        if let Some(end_filters) = &filters.end_node_filters {
+            let sql = render_expr_to_sql_string(end_filters, alias_mapping);
+            conditions.push(sql);
+        }
+
+        // Add relationship filters
+        if let Some(rel_filters) = &filters.relationship_filters {
+            let sql = render_expr_to_sql_string(rel_filters, alias_mapping);
+            conditions.push(sql);
+        }
+
+        if conditions.is_empty() {
+            Ok(String::new())
+        } else {
+            Ok(format!("    WHERE {}", conditions.join(" AND ")))
+        }
     }
 }
 
@@ -1463,7 +1631,7 @@ impl EdgeToEdgeCteStrategy {
 
         Ok(CteGenerationResult {
             sql,
-            parameters: vec![], // TODO: Add parameter support
+            parameters: collect_parameters_from_filters(filters),
             cte_name,
             recursive: true,
         })
@@ -1704,7 +1872,7 @@ impl CoupledCteStrategy {
 
         Ok(CteGenerationResult {
             sql,
-            parameters: vec![], // TODO: Add parameter support
+            parameters: collect_parameters_from_filters(filters),
             cte_name: cte_name.clone(),
             recursive: false, // Coupled edges in same row don't need recursion
         })
@@ -1935,6 +2103,36 @@ mod tests {
 
     #[test]
     fn test_fk_edge_cte_strategy_basic() {
+        // Create a minimal schema for testing
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            "File".to_string(),
+            NodeSchema {
+                database: "test".to_string(),
+                table_name: "files".to_string(),
+                column_names: vec![
+                    "id".to_string(),
+                    "name".to_string(),
+                    "parent_id".to_string(),
+                ],
+                primary_keys: "id".to_string(),
+                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
+                label_column: None,
+                label_value: None,
+            },
+        );
+
+        let schema = GraphSchema::build(1, "test".to_string(), nodes, HashMap::new());
+
         // Create a FK-edge pattern context (hierarchical relationship via FK column)
         let pattern_ctx = PatternSchemaContext {
             left_node_alias: "parent".to_string(),
@@ -1967,10 +2165,16 @@ mod tests {
             constraints: None,
         };
 
-        // Create strategy
-        let strategy = FkEdgeCteStrategy::new(&pattern_ctx);
-        assert!(strategy.is_ok());
-        let strategy = strategy.unwrap();
+        // Create CTE manager and analyze pattern
+        let manager = CteManager::new(Arc::new(schema));
+        let vlp_spec = VariableLengthSpec {
+            min_hops: Some(1),
+            max_hops: Some(3),
+        };
+
+        let strategy_result = manager.analyze_pattern(&pattern_ctx, &vlp_spec);
+        assert!(strategy_result.is_ok());
+        let strategy = strategy_result.unwrap();
 
         // Create context
         let context = CteGenerationContext::new()

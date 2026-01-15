@@ -9,6 +9,7 @@
   - MixedAccessCteStrategy: Hybrid embedded/JOIN access patterns
   - EdgeToEdgeCteStrategy: Multi-hop denormalized edge-to-edge patterns
   - CoupledCteStrategy: Coupled edges in same physical row
+- **Parameter Extraction Complete**: All CTE strategies now properly extract parameters from WHERE clause filters for SQL parameterization
 
 ## [0.6.1] - 2026-01-13
 
