@@ -87,7 +87,9 @@ fn recreate_pattern_schema_context(
         rel_types,
         None, // prev_edge_info - not needed for CTE generation
     )
-    .map_err(|e| RenderBuildError::MissingTableInfo(format!("PatternSchemaContext analysis failed: {}", e)))
+    .map_err(|e| {
+        RenderBuildError::MissingTableInfo(format!("PatternSchemaContext analysis failed: {}", e))
+    })
 }
 
 /// Check if an expression contains a string literal (recursively for nested + operations)
@@ -2136,11 +2138,11 @@ pub fn extract_ctes_with_context(
                             };
                             let both_denormalized = start_is_denormalized && end_is_denormalized;
                             let is_mixed = start_is_denormalized != end_is_denormalized;
-                            
+
                             // Continue with old logic...
                             log::debug!("CTE: Using fallback - start_denormalized={}, end_denormalized={}, both={}, mixed={}", 
                                 start_is_denormalized, end_is_denormalized, both_denormalized, is_mixed);
-                            
+
                             // Create a minimal pattern for continuation
                             return Err(RenderBuildError::UnsupportedFeature(format!(
                                 "Failed to recreate PatternSchemaContext: {}. Consider updating schema configuration.", e
@@ -2153,17 +2155,13 @@ pub fn extract_ctes_with_context(
                         pattern_ctx.join_strategy,
                         JoinStrategy::SingleTableScan { .. }
                     );
-                    
-                    let is_mixed = matches!(
-                        pattern_ctx.join_strategy,
-                        JoinStrategy::MixedAccess { .. }
-                    );
+
+                    let is_mixed =
+                        matches!(pattern_ctx.join_strategy, JoinStrategy::MixedAccess { .. });
 
                     // Determine FK-edge pattern from JoinStrategy
-                    let is_fk_edge = matches!(
-                        pattern_ctx.join_strategy,
-                        JoinStrategy::FkEdgeJoin { .. }
-                    );
+                    let is_fk_edge =
+                        matches!(pattern_ctx.join_strategy, JoinStrategy::FkEdgeJoin { .. });
 
                     // Extract individual denormalized flags for old generators that still need them
                     // TODO: Phase 2 continuation - refactor generators to use PatternSchemaContext directly
@@ -2172,8 +2170,11 @@ pub fn extract_ctes_with_context(
 
                     log::debug!("CTE: Using PatternSchemaContext - both_denormalized={}, is_mixed={}, is_fk_edge={}, strategy={:?}", 
                         both_denormalized, is_mixed, is_fk_edge, pattern_ctx.join_strategy);
-                    log::debug!("CTE: Individual flags - start_is_denormalized={}, end_is_denormalized={}", 
-                        start_is_denormalized, end_is_denormalized);
+                    log::debug!(
+                        "CTE: Individual flags - start_is_denormalized={}, end_is_denormalized={}",
+                        start_is_denormalized,
+                        end_is_denormalized
+                    );
 
                     // Get edge properties from PatternSchemaContext
                     // Note: edge_id is not in PatternSchemaContext yet, so get it from schema directly
