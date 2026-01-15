@@ -1,6 +1,7 @@
 pub mod alias_resolver;
 pub mod cte_extraction;
 pub mod cte_generation;
+pub mod cte_manager;
 mod expression_utils;
 mod filter_pipeline;
 mod from_table;
@@ -12,6 +13,7 @@ use errors::RenderBuildError;
 use render_expr::{ColumnAlias, OperatorApplication, RenderExpr};
 
 pub use cte_generation::CteGenerationContext;
+pub use cte_manager::{CteManager, CteStrategy, CteError, CteGenerationResult};
 pub use filter_pipeline::CategorizedFilters;
 pub use from_table::FromTable;
 pub use view_table_ref::ViewTableRef;

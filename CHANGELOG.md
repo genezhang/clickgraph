@@ -1,3 +1,15 @@
+## [Unreleased]
+
+### 🚀 Features
+
+- **CTE Unification Phase 3 Complete**: Unified recursive CTE generation across all schema patterns with comprehensive test coverage
+  - TraditionalCteStrategy: Standard node/edge table patterns
+  - DenormalizedCteStrategy: Single-table denormalized schemas
+  - FkEdgeCteStrategy: Hierarchical FK relationships  
+  - MixedAccessCteStrategy: Hybrid embedded/JOIN access patterns
+  - EdgeToEdgeCteStrategy: Multi-hop denormalized edge-to-edge patterns
+  - CoupledCteStrategy: Coupled edges in same physical row
+
 ## [0.6.1] - 2026-01-13
 
 ### 🚀 Features

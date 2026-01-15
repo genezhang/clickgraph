@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: January 13, 2026*
+*Updated: January 14, 2026*
 
 ## Current Version
 
@@ -122,6 +122,18 @@ CALL pagerank(
 ) RETURN node_id, rank
 ```
 
+### Internal Architecture ✅
+
+**CTE Unification (Phase 3 Complete)**
+- Unified recursive CTE generation across all schema patterns
+- **TraditionalCteStrategy**: Standard node/edge table patterns
+- **DenormalizedCteStrategy**: Single-table denormalized schemas  
+- **FkEdgeCteStrategy**: Hierarchical FK relationships
+- **MixedAccessCteStrategy**: Hybrid embedded/JOIN access patterns
+- **EdgeToEdgeCteStrategy**: Multi-hop denormalized edge-to-edge patterns
+- **CoupledCteStrategy**: Coupled edges in same physical row
+- Comprehensive test coverage (6/6 strategies implemented and tested)
+
 ### Schema Support ✅
 
 **All schema patterns supported**:
@@ -141,7 +153,7 @@ CALL pagerank(
 
 ### Test Coverage ✅
 
-**Integration Tests**: 549 passing, 54 xfailed (100% pass rate)
+**Integration Tests**: 3538 collected, 2000+ pytest unified tests (matrix testing framework)
 - Core Cypher features: 549 tests
 - Variable-length paths: 24 tests
 - Pattern comprehensions: 5 tests
