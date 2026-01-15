@@ -85,16 +85,19 @@ impl ProjectedColumnsResolver {
 
     /// Compute projected columns for denormalized nodes using PatternSchemaContext
     ///
-    /// Uses explicit role information from PatternSchemaContext instead of checking both property sets
+    /// Uses explicit role information from PatternSchemaContext instead of checking both property sets.
+    ///
+    /// Note: `_position` parameter is currently unused because `get_node_strategy` resolves
+    /// the role from `rel_alias`, but it is kept for API consistency and potential future use.
     fn compute_denormalized_properties(
         alias: &str,
         scan: &ViewScan,
         plan_ctx: &PlanCtx,
         rel_alias: Option<&str>,
-        position: Option<NodePosition>,
+        _position: Option<NodePosition>,
     ) -> Option<Vec<(String, String)>> {
         // Use PatternSchemaContext for explicit role-based resolution
-        if let (Some(rel), Some(pos)) = (rel_alias, position) {
+        if let (Some(rel), Some(_pos)) = (rel_alias, _position) {
             if let Some(strategy) = plan_ctx.get_node_strategy(alias, Some(rel)) {
                 // Use the strategy to get properties for this node's role
                 let properties = strategy.get_all_properties();

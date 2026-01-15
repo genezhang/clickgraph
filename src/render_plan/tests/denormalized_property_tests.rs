@@ -51,7 +51,7 @@ fn setup_denormalized_schema() -> GraphSchema {
             engine: None,
             use_final: None,
             filter: None,
-            is_denormalized: true, // Has denormalized properties
+            is_denormalized: true, // Partially denormalized (city/state in edges, code in node table)
             from_properties: Some(airport_from_props),
             to_properties: Some(airport_to_props),
             denormalized_source_table: Some("flights".to_string()),

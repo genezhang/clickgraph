@@ -1740,13 +1740,13 @@ impl FilterTagging {
                 if rel.alias == owning_edge {
                     // PRIMARY: Try PatternSchemaContext first - has explicit role information
                     if let Some(pattern_ctx) = plan_ctx.get_pattern_context(&rel.alias) {
-                        println!(
+                        log::debug!(
                             "find_property_in_viewscan_with_edge: Using PatternSchemaContext for alias='{}', edge='{}', property='{}'",
                             alias, rel.alias, property
                         );
 
                         if let Some(column) = pattern_ctx.get_node_property(alias, property) {
-                            println!(
+                            log::debug!(
                                 "find_property_in_viewscan_with_edge: Found property '{}' -> '{}' via PatternSchemaContext",
                                 property, column
                             );
