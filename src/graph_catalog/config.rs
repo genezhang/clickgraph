@@ -640,8 +640,9 @@ fn build_node_property_mappings(
     }
 
     // DEBUG: Log all mappings
-    log::info!("🔍 Final property_mappings for node (node_id={:?}): {:?}", 
-        node_id, 
+    log::info!(
+        "🔍 Final property_mappings for node (node_id={:?}): {:?}",
+        node_id,
         mappings.keys().collect::<Vec<_>>()
     );
 
