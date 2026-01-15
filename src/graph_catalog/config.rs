@@ -679,6 +679,14 @@ fn build_node_schema(
 
     let property_mappings = parse_property_mappings(raw_mappings)?;
 
+    // DEBUG: Log what properties we actually have
+    log::info!(
+        "📋 build_node_schema for '{}': property_mappings has {} entries: {:?}",
+        node_def.label,
+        property_mappings.len(),
+        property_mappings.keys().collect::<Vec<_>>()
+    );
+
     // Determine use_final
     let use_final = determine_use_final(node_def.use_final, &discovery.engine);
 
