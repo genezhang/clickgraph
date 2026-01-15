@@ -9,6 +9,7 @@ use crate::clickhouse_query_generator::NodeProperty;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::LogicalPlan;
+use crate::query_planner::logical_plan::VariableLengthSpec;
 use crate::render_plan::render_expr::RenderExpr;
 
 /// Context for CTE generation - holds property requirements and other metadata
@@ -26,6 +27,8 @@ pub struct CteGenerationContext {
     /// Fixed-length path inline JOINs (from_table, from_alias, joins)
     /// Key: "start_alias-end_alias" for the GraphRel pattern
     fixed_length_joins: HashMap<String, (String, String, Vec<super::Join>)>,
+    /// Variable length specification for the path pattern
+    pub spec: VariableLengthSpec,
 }
 
 impl Default for CteGenerationContext {
@@ -37,6 +40,7 @@ impl Default for CteGenerationContext {
             end_cypher_alias: None,
             schema: None,
             fixed_length_joins: HashMap::new(),
+            spec: VariableLengthSpec::default(),
         }
     }
 }
@@ -54,7 +58,13 @@ impl CteGenerationContext {
             end_cypher_alias: None,
             schema: Some(schema),
             fixed_length_joins: HashMap::new(),
+            spec: VariableLengthSpec::default(),
         }
+    }
+
+    pub(crate) fn with_spec(mut self, spec: VariableLengthSpec) -> Self {
+        self.spec = spec;
+        self
     }
 
     pub(crate) fn schema(&self) -> Option<&GraphSchema> {

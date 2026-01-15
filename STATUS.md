@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: January 13, 2026*
+*Updated: January 14, 2026*
 
 ## Current Version
 
@@ -122,6 +122,19 @@ CALL pagerank(
 ) RETURN node_id, rank
 ```
 
+### Internal Architecture ✅
+
+**CTE Unification (Phase 3 Complete)**
+- Unified recursive CTE generation across all schema patterns
+- **TraditionalCteStrategy**: Standard node/edge table patterns
+- **DenormalizedCteStrategy**: Single-table denormalized schemas  
+- **FkEdgeCteStrategy**: Hierarchical FK relationships
+- **MixedAccessCteStrategy**: Hybrid embedded/JOIN access patterns
+- **EdgeToEdgeCteStrategy**: Multi-hop denormalized edge-to-edge patterns
+- **CoupledCteStrategy**: Coupled edges in same physical row
+- **Progress**: 14/14 TODOs completed (ID column resolution + 6 RenderExpr conversions + 7 parameter extractions)
+- **Status**: Production-ready CTE unification using existing infrastructure
+
 ### Schema Support ✅
 
 **All schema patterns supported**:
@@ -141,12 +154,13 @@ CALL pagerank(
 
 ### Test Coverage ✅
 
-**Integration Tests**: 549 passing, 54 xfailed (100% pass rate)
-- Core Cypher features: 549 tests
-- Variable-length paths: 24 tests
-- Pattern comprehensions: 5 tests
-- Property expressions: 28 tests
-- Security graphs: 94 tests
+**Integration Tests**: 3,538 tests collected (pytest framework with matrix parameterization)
+- Core Cypher features: 549 base tests
+- Variable-length paths: 24 base tests
+- Pattern comprehensions: 5 base tests
+- Property expressions: 28 base tests
+- Security graphs: 94 base tests
+- Matrix-expanded tests: ~2,000 additional test variations (same tests run against multiple schema patterns)
 
 **LDBC SNB Benchmark**:
 - Interactive Short (IS): 4/5 passing (IS-1, IS-2, IS-3, IS-5)

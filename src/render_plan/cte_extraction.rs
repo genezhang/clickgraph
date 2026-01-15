@@ -120,6 +120,120 @@ fn flatten_addition_operands(expr: &RenderExpr, alias_mapping: &[(String, String
     }
 }
 
+/// Collect all parameter names from a RenderExpr tree
+/// Recursively traverses the expression tree to find all Parameter variants
+fn collect_parameters_from_expr(expr: &RenderExpr) -> Vec<String> {
+    let mut params = Vec::new();
+    collect_parameters_recursive(expr, &mut params);
+    params
+}
+
+/// Collect all parameter names from CategorizedFilters
+pub fn collect_parameters_from_filters(filters: &CategorizedFilters) -> Vec<String> {
+    let mut params = Vec::new();
+
+    if let Some(ref expr) = filters.start_node_filters {
+        params.extend(collect_parameters_from_expr(expr));
+    }
+    if let Some(ref expr) = filters.end_node_filters {
+        params.extend(collect_parameters_from_expr(expr));
+    }
+    if let Some(ref expr) = filters.relationship_filters {
+        params.extend(collect_parameters_from_expr(expr));
+    }
+    if let Some(ref expr) = filters.path_function_filters {
+        params.extend(collect_parameters_from_expr(expr));
+    }
+
+    // Remove duplicates while preserving order
+    let mut unique_params = Vec::new();
+    for param in params {
+        if !unique_params.contains(&param) {
+            unique_params.push(param);
+        }
+    }
+    unique_params
+}
+
+/// Recursive helper to collect parameters from RenderExpr
+fn collect_parameters_recursive(expr: &RenderExpr, params: &mut Vec<String>) {
+    match expr {
+        RenderExpr::Parameter(param_name) => {
+            if !params.contains(param_name) {
+                params.push(param_name.clone());
+            }
+        }
+        RenderExpr::List(exprs) => {
+            for expr in exprs {
+                collect_parameters_recursive(expr, params);
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &op.operands {
+                collect_parameters_recursive(operand, params);
+            }
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            for arg in &func.args {
+                collect_parameters_recursive(arg, params);
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &agg.args {
+                collect_parameters_recursive(arg, params);
+            }
+        }
+        RenderExpr::PropertyAccessExp(_) => {}
+        RenderExpr::Case(case) => {
+            if let Some(ref expr) = case.expr {
+                collect_parameters_recursive(expr, params);
+            }
+            for (when_expr, then_expr) in &case.when_then {
+                collect_parameters_recursive(when_expr, params);
+                collect_parameters_recursive(then_expr, params);
+            }
+            if let Some(ref else_expr) = case.else_expr {
+                collect_parameters_recursive(else_expr, params);
+            }
+        }
+        RenderExpr::InSubquery(subq) => {
+            collect_parameters_recursive(&subq.expr, params);
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            collect_parameters_recursive(array, params);
+            collect_parameters_recursive(index, params);
+        }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            collect_parameters_recursive(array, params);
+            if let Some(ref from_expr) = from {
+                collect_parameters_recursive(from_expr, params);
+            }
+            if let Some(ref to_expr) = to {
+                collect_parameters_recursive(to_expr, params);
+            }
+        }
+        RenderExpr::ReduceExpr(reduce) => {
+            collect_parameters_recursive(&reduce.initial_value, params);
+            collect_parameters_recursive(&reduce.list, params);
+            collect_parameters_recursive(&reduce.expression, params);
+        }
+        RenderExpr::MapLiteral(entries) => {
+            for (_, value_expr) in entries {
+                collect_parameters_recursive(value_expr, params);
+            }
+        }
+        // These variants don't contain expressions
+        RenderExpr::Literal(_)
+        | RenderExpr::Raw(_)
+        | RenderExpr::Star
+        | RenderExpr::TableAlias(_)
+        | RenderExpr::ColumnAlias(_)
+        | RenderExpr::Column(_)
+        | RenderExpr::ExistsSubquery(_)
+        | RenderExpr::PatternCount(_) => {}
+    }
+}
+
 /// Helper function to extract the node alias from a GraphNode
 fn extract_node_alias(plan: &LogicalPlan) -> Option<String> {
     match plan {
@@ -575,7 +689,7 @@ fn extract_view_parameter_values(
 }
 
 /// Convert a RenderExpr to a SQL string for use in CTE WHERE clauses
-fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> String {
+pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> String {
     match expr {
         RenderExpr::Column(col) => col.raw().to_string(),
         RenderExpr::TableAlias(alias) => alias.0.clone(),
