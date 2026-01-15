@@ -303,27 +303,26 @@ impl ProjectionTagging {
                 // Check if this is a denormalized node
                 if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
                     if node_schema.is_denormalized {
-                        // Try to resolve from to_node_properties first (common for denormalized end nodes)
-                        // then from_node_properties
-                        let mapped_column = if let Some(ref to_props) = node_schema.to_properties {
-                            if let Some(mapped) = to_props.get(property_access.column.raw()) {
-                                Some(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()))
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }.or_else(|| {
-                            if let Some(ref from_props) = node_schema.from_properties {
-                                if let Some(mapped) = from_props.get(property_access.column.raw()) {
-                                    Some(crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone()))
-                                } else {
-                                    None
+                        // PRIMARY: Try PatternSchemaContext first - has explicit role information
+                        let mut mapped_column = None;
+                        if let Some((owning_edge, _is_from, _, _)) =
+                            plan_ctx.get_denormalized_alias_info(&property_access.table_alias.0)
+                        {
+                            if let Some(pattern_ctx) = plan_ctx.get_pattern_context(&owning_edge) {
+                                mapped_column = pattern_ctx.get_node_property(
+                                    &property_access.table_alias.0,
+                                    property_access.column.raw(),
+                                ).map(|col| crate::graph_catalog::expression_parser::PropertyValue::Column(col));
+                                if mapped_column.is_some() {
+                                    log::debug!(
+                                        "UNWIND property mapping (PatternSchemaContext): {}.{} -> {:?}",
+                                        property_access.table_alias.0,
+                                        property_access.column.raw(),
+                                        mapped_column
+                                    );
                                 }
-                            } else {
-                                None
                             }
-                        });
+                        }
 
                         if let Some(mapped) = mapped_column {
                             log::debug!(
@@ -439,6 +438,15 @@ impl ProjectionTagging {
                     property_access.column.raw()
                 );
 
+                // Get denormalized alias info and pattern context BEFORE mutable borrow
+                // (to avoid borrow checker issues)
+                // Clone pattern context so we don't hold immutable reference
+                let denorm_info =
+                    plan_ctx.get_denormalized_alias_info(&property_access.table_alias.0);
+                let pattern_ctx_opt = denorm_info.as_ref().and_then(|(owning_edge, _, _, _)| {
+                    plan_ctx.get_pattern_context(owning_edge).cloned()
+                });
+
                 let table_ctx = plan_ctx
                     .get_mut_table_ctx(&property_access.table_alias.0)
                     .map_err(|e| AnalyzerError::PlanCtx {
@@ -529,46 +537,29 @@ impl ProjectionTagging {
                                 to_node,
                             )?
                         } else {
-                            // Check if this node is denormalized by looking up the schema
+                            // Check if this node is denormalized
                             if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
                                 if node_schema.is_denormalized {
-                                    // For denormalized nodes, prefer from_node_properties
-                                    // (TO position would need UNION ALL which we handle separately)
-                                    if let Some(ref from_props) = node_schema.from_properties {
-                                        if let Some(mapped) =
-                                            from_props.get(property_access.column.raw())
-                                        {
-                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                mapped.clone(),
-                                            )
-                                        } else {
-                                            // Property not in from_props, try to_props
-                                            if let Some(ref to_props) = node_schema.to_properties {
-                                                if let Some(mapped) =
-                                                    to_props.get(property_access.column.raw())
-                                                {
-                                                    crate::graph_catalog::expression_parser::PropertyValue::Column(mapped.clone())
-                                                } else {
-                                                    // Fallback to identity
-                                                    crate::graph_catalog::expression_parser::PropertyValue::Column(property_access.column.raw().to_string())
-                                                }
-                                            } else {
-                                                crate::graph_catalog::expression_parser::PropertyValue::Column(property_access.column.raw().to_string())
-                                            }
+                                    // PRIMARY: Try PatternSchemaContext first - has explicit role information
+                                    let mut column_from_pattern_ctx = None;
+                                    if let Some(pattern_ctx) = pattern_ctx_opt {
+                                        column_from_pattern_ctx = pattern_ctx.get_node_property(
+                                            &property_access.table_alias.0,
+                                            property_access.column.raw(),
+                                        );
+                                        if column_from_pattern_ctx.is_some() {
+                                            log::debug!(
+                                                "ProjectionTagging: Using PatternSchemaContext for denormalized node '{}' property '{}'",
+                                                property_access.table_alias.0,
+                                                property_access.column.raw()
+                                            );
                                         }
-                                    } else if let Some(ref to_props) = node_schema.to_properties {
-                                        if let Some(mapped) =
-                                            to_props.get(property_access.column.raw())
-                                        {
-                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                mapped.clone(),
-                                            )
-                                        } else {
-                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                property_access.column.raw().to_string(),
-                                            )
-                                        }
+                                    }
+
+                                    if let Some(column) = column_from_pattern_ctx {
+                                        crate::graph_catalog::expression_parser::PropertyValue::Column(column)
                                     } else {
+                                        // No pattern context for denormalized node = bug in GraphJoinInference
                                         crate::graph_catalog::expression_parser::PropertyValue::Column(
                                             property_access.column.raw().to_string(),
                                         )

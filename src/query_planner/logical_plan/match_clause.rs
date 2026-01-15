@@ -832,6 +832,7 @@ pub fn try_generate_view_scan(
         );
         actual_column
     } else {
+        // For non-denormalized nodes, node_id IS the actual column name
         node_schema
             .node_id
             .columns()
@@ -839,7 +840,10 @@ pub fn try_generate_view_scan(
             .map(|s| s.to_string())
             .unwrap_or_else(|| {
                 log::error!("Node schema for '{}' has no ID columns defined", label);
-                "id".to_string()
+                // Don't hardcode "id" - this causes bugs with auto_discover_columns
+                // where the actual column might be user_id, object_id, etc.
+                // This should never happen in valid schemas.
+                panic!("Node schema for '{}' has no ID columns defined", label)
             })
     };
 

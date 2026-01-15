@@ -119,18 +119,20 @@ fn populate_cte_property_mappings(plan: &RenderPlan) {
 
                 // Build property mapping from SELECT items
                 // Format: "property_name" → "cte_column_name"
+                //
+                // IMPORTANT: We use the FULL column name as the property name (e.g., "user_id" → "user_id")
+                // because the column names in CTEs already come from ViewScan.property_mapping.
+                //
+                // Previous behavior: Used underscore/dot parsing to extract suffix (e.g., "user_id" → "id")
+                // This broke auto-discovery schemas where property names include underscores.
+                // Example bug: node_id=user_id with auto_discover_columns should expose property "user_id",
+                // not "id" (which doesn't exist in the database).
                 for select_item in &cte_plan.select.items {
                     if let Some(ref col_alias) = select_item.col_alias {
                         let cte_col = col_alias.0.as_str();
 
-                        // Handle patterns like "friend_id" or "friend.id" → property "id"
-                        if let Some(underscore_pos) = cte_col.rfind('_') {
-                            let property = &cte_col[underscore_pos + 1..];
-                            property_map.insert(property.to_string(), cte_col.to_string());
-                        } else if let Some(dot_pos) = cte_col.rfind('.') {
-                            let property = &cte_col[dot_pos + 1..];
-                            property_map.insert(property.to_string(), cte_col.to_string());
-                        }
+                        // Identity mapping: property name = column name
+                        property_map.insert(cte_col.to_string(), cte_col.to_string());
                     }
                 }
 

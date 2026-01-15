@@ -113,9 +113,24 @@ pub fn initial_analyzing(
         plan
     };
 
-    // Step 4: Projected Columns Resolver - pre-compute projected columns for GraphNodes
-    // This runs after SchemaInference to ensure we have property mappings available
-    // Populates GraphNode.projected_columns, eliminating need for renderer to traverse plan
+    // Step 4: Graph Join Inference - analyze graph patterns and create PatternSchemaContext
+    // MOVED UP from Step 15 to make PatternSchemaContext available for downstream passes
+    // This is a pure analysis pass that only needs: GraphSchema, node/edge schemas, pattern structure
+    // Enables property resolution passes to use explicit role information (from/to)
+    log::info!("🔍 ANALYZER: Running GraphJoinInference (Phase 0: moved to Step 4)");
+    let graph_join_inference = GraphJoinInference::new();
+    let plan = if let Ok(transformed_plan) =
+        graph_join_inference.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)
+    {
+        transformed_plan.get_plan()
+    } else {
+        log::warn!("⚠️  GraphJoinInference failed, continuing with original plan");
+        plan
+    };
+
+    // Step 5: Projected Columns Resolver - pre-compute projected columns for GraphNodes
+    // Now can use PatternSchemaContext from PlanCtx for explicit role information
+    // Populates GraphNode.projected_columns with correct from/to property resolution
     let projected_columns_resolver = ProjectedColumnsResolver::new();
     let plan = if let Ok(transformed_plan) = projected_columns_resolver.analyze_with_graph_schema(
         plan.clone(),
@@ -127,14 +142,14 @@ pub fn initial_analyzing(
         plan
     };
 
-    // Step 5: Query Validation - VALIDATE EARLY before any transformations
+    // Step 6: Query Validation - VALIDATE EARLY before any transformations
     // This prevents invalid queries from being processed further
     let query_validation = QueryValidation::new();
     let transformed_plan =
         query_validation.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)?;
     let plan = transformed_plan.get_plan();
 
-    // Step 6: Property Mapping - map Cypher properties to database columns (ONCE)
+    // Step 7: Property Mapping - map Cypher properties to database columns (ONCE)
     // NOTE: FilterTagging now PRESERVES cross-table filters (those referencing WITH aliases
     // and having CartesianProduct descendants) instead of extracting them. This allows
     // CartesianJoinExtraction (step 3.5) to pick up the property-mapped predicate.
@@ -243,17 +258,8 @@ pub fn intermediate_analyzing(
         count_cte_refs_here(&plan)
     );
 
-    let graph_join_inference = GraphJoinInference::new();
-    let transformed_plan = graph_join_inference.analyze_with_graph_schema(
-        plan.clone(),
-        plan_ctx,
-        current_graph_schema,
-    )?;
-    let plan = transformed_plan.get_plan();
-    eprintln!(
-        "🔬 ANALYZER: After GraphJoinInference: {} cte_references",
-        count_cte_refs_here(&plan)
-    );
+    // NOTE: GraphJoinInference now runs earlier in initial_analyzing() (Step 4)
+    // PatternSchemaContext is already available in plan_ctx at this point
 
     // CRITICAL: Resolve CTE column names AFTER join inference
     // GraphJoinInference populates CTE column mappings in plan_ctx

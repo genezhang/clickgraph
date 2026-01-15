@@ -2822,6 +2822,8 @@ impl GraphJoinInference {
 
         // 4. Compute PatternSchemaContext
         let ctx = PatternSchemaContext::analyze(
+            left_alias,
+            right_alias,
             left_node_schema,
             right_node_schema,
             rel_schema,
@@ -4191,6 +4193,10 @@ impl GraphJoinInference {
                     left_alias, rel_alias, right_alias
                 ))
             })?;
+
+        // Register the PatternSchemaContext in PlanCtx for property resolution
+        // (Phase 1A-2: Enable property_resolver.rs to access schema strategies)
+        plan_ctx.register_pattern_context(rel_alias.to_string(), ctx.clone());
 
         // Check if node properties are actually used in the query
         // If neither node is referenced (no properties accessed downstream), we can optimize

@@ -735,6 +735,7 @@ impl FilterTagging {
                                 property_access.column.raw(),
                                 &owning_edge,
                                 is_from_node,
+                                plan_ctx,
                             ) {
                                 println!(
                                     "FilterTagging: Found property '{}' in owning edge '{}' ViewScan -> '{}'",
@@ -945,6 +946,7 @@ impl FilterTagging {
                                                     &id_property,
                                                     &owning_edge,
                                                     is_from_node,
+                                                    plan_ctx,
                                                 )
                                             } else {
                                                 None
@@ -1730,39 +1732,28 @@ impl FilterTagging {
         property: &str,
         owning_edge: &str,
         is_from_node: bool,
+        plan_ctx: &PlanCtx,
     ) -> Option<String> {
         match plan {
             LogicalPlan::GraphRel(rel) => {
                 // Only process if this is the owning edge
                 if rel.alias == owning_edge {
-                    if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
-                        // Use is_from_node to determine which properties to look at
-                        if is_from_node {
-                            if let Some(from_props) = &scan.from_node_properties {
-                                if let Some(prop_value) = from_props.get(property) {
-                                    if let crate::graph_catalog::expression_parser::PropertyValue::Column(col) = prop_value {
-                                        println!(
-                                            "FilterTagging: find_property_in_viewscan_with_edge - edge '{}', found '{}' in from_node_properties -> '{}'",
-                                            owning_edge, property, col
-                                        );
-                                        return Some(col.clone());
-                                    }
-                                }
-                            }
-                        } else {
-                            if let Some(to_props) = &scan.to_node_properties {
-                                if let Some(prop_value) = to_props.get(property) {
-                                    if let crate::graph_catalog::expression_parser::PropertyValue::Column(col) = prop_value {
-                                        println!(
-                                            "FilterTagging: find_property_in_viewscan_with_edge - edge '{}', found '{}' in to_node_properties -> '{}'",
-                                            owning_edge, property, col
-                                        );
-                                        return Some(col.clone());
-                                    }
-                                }
-                            }
+                    // PRIMARY: Try PatternSchemaContext first - has explicit role information
+                    if let Some(pattern_ctx) = plan_ctx.get_pattern_context(&rel.alias) {
+                        log::debug!(
+                            "find_property_in_viewscan_with_edge: Using PatternSchemaContext for alias='{}', edge='{}', property='{}'",
+                            alias, rel.alias, property
+                        );
+
+                        if let Some(column) = pattern_ctx.get_node_property(alias, property) {
+                            log::debug!(
+                                "find_property_in_viewscan_with_edge: Found property '{}' -> '{}' via PatternSchemaContext",
+                                property, column
+                            );
+                            return Some(column);
                         }
                     }
+                    // No pattern context = bug in GraphJoinInference, don't hide it with fallback
                 }
 
                 // Recurse to find the owning edge
@@ -1772,6 +1763,7 @@ impl FilterTagging {
                     property,
                     owning_edge,
                     is_from_node,
+                    plan_ctx,
                 ) {
                     return Some(col);
                 }
@@ -1781,6 +1773,7 @@ impl FilterTagging {
                     property,
                     owning_edge,
                     is_from_node,
+                    plan_ctx,
                 )
             }
             LogicalPlan::GraphNode(node) => Self::find_property_in_viewscan_with_edge(
@@ -1789,6 +1782,7 @@ impl FilterTagging {
                 property,
                 owning_edge,
                 is_from_node,
+                plan_ctx,
             ),
             LogicalPlan::Projection(proj) => Self::find_property_in_viewscan_with_edge(
                 &proj.input,
@@ -1796,6 +1790,7 @@ impl FilterTagging {
                 property,
                 owning_edge,
                 is_from_node,
+                plan_ctx,
             ),
             LogicalPlan::Filter(filter) => Self::find_property_in_viewscan_with_edge(
                 &filter.input,
@@ -1803,6 +1798,7 @@ impl FilterTagging {
                 property,
                 owning_edge,
                 is_from_node,
+                plan_ctx,
             ),
             LogicalPlan::GraphJoins(joins) => Self::find_property_in_viewscan_with_edge(
                 &joins.input,
@@ -1810,6 +1806,7 @@ impl FilterTagging {
                 property,
                 owning_edge,
                 is_from_node,
+                plan_ctx,
             ),
             LogicalPlan::OrderBy(ob) => Self::find_property_in_viewscan_with_edge(
                 &ob.input,
@@ -1817,6 +1814,7 @@ impl FilterTagging {
                 property,
                 owning_edge,
                 is_from_node,
+                plan_ctx,
             ),
             LogicalPlan::Skip(skip) => Self::find_property_in_viewscan_with_edge(
                 &skip.input,
@@ -1824,6 +1822,7 @@ impl FilterTagging {
                 property,
                 owning_edge,
                 is_from_node,
+                plan_ctx,
             ),
             LogicalPlan::Limit(limit) => Self::find_property_in_viewscan_with_edge(
                 &limit.input,
@@ -1831,6 +1830,7 @@ impl FilterTagging {
                 property,
                 owning_edge,
                 is_from_node,
+                plan_ctx,
             ),
             LogicalPlan::GroupBy(gb) => Self::find_property_in_viewscan_with_edge(
                 &gb.input,
@@ -1838,6 +1838,7 @@ impl FilterTagging {
                 property,
                 owning_edge,
                 is_from_node,
+                plan_ctx,
             ),
             LogicalPlan::Unwind(u) => Self::find_property_in_viewscan_with_edge(
                 &u.input,
@@ -1845,6 +1846,7 @@ impl FilterTagging {
                 property,
                 owning_edge,
                 is_from_node,
+                plan_ctx,
             ),
             LogicalPlan::Cte(cte) => Self::find_property_in_viewscan_with_edge(
                 &cte.input,
@@ -1852,6 +1854,7 @@ impl FilterTagging {
                 property,
                 owning_edge,
                 is_from_node,
+                plan_ctx,
             ),
             LogicalPlan::CartesianProduct(cp) => {
                 // Search both branches of the CartesianProduct for the owning edge
@@ -1861,6 +1864,7 @@ impl FilterTagging {
                     property,
                     owning_edge,
                     is_from_node,
+                    plan_ctx,
                 ) {
                     return Some(col);
                 }
@@ -1870,6 +1874,7 @@ impl FilterTagging {
                     property,
                     owning_edge,
                     is_from_node,
+                    plan_ctx,
                 )
             }
             _ => None,
