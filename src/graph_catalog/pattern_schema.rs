@@ -348,6 +348,42 @@ impl EdgeAccessStrategy {
             }
         }
     }
+
+    /// Get edge_id column if available (for VLP and path queries)
+    pub fn edge_id(&self) -> Option<&str> {
+        // Note: edge_id is not currently stored in EdgeAccessStrategy
+        // It would need to be added to support this properly
+        // For now, return None - caller should handle this
+        None
+    }
+
+    /// Get type discriminator column for polymorphic edges
+    pub fn type_column(&self) -> Option<String> {
+        match self {
+            EdgeAccessStrategy::Polymorphic { type_column, .. } => type_column.clone(),
+            _ => None,
+        }
+    }
+
+    /// Get from_node label column for polymorphic edges with $any nodes
+    pub fn from_label_column(&self) -> Option<String> {
+        match self {
+            EdgeAccessStrategy::Polymorphic {
+                from_label_column, ..
+            } => from_label_column.clone(),
+            _ => None,
+        }
+    }
+
+    /// Get to_node label column for polymorphic edges with $any nodes
+    pub fn to_label_column(&self) -> Option<String> {
+        match self {
+            EdgeAccessStrategy::Polymorphic {
+                to_label_column, ..
+            } => to_label_column.clone(),
+            _ => None,
+        }
+    }
 }
 // ============================================================================
 

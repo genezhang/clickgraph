@@ -8,6 +8,7 @@ use crate::clickhouse_query_generator::variable_length_cte::{
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
+use crate::graph_catalog::pattern_schema::{JoinStrategy, PatternSchemaContext};
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::utils::cte_naming::generate_cte_base_name;
 
@@ -19,6 +20,77 @@ use super::render_expr::{Literal, Operator, PropertyAccess, RenderExpr};
 use super::{Cte, CteContent, Join, JoinType};
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
+
+// ============================================================================
+// Pattern Schema Context Recreation for CTE Generation
+// ============================================================================
+
+/// Recreate PatternSchemaContext from a GraphRel during CTE extraction.
+///
+/// During the analyzer phase, PatternSchemaContext is created and stored in PlanCtx.
+/// However, the render phase (where CTE extraction happens) doesn't have access to PlanCtx.
+/// This helper recreates the context from the GraphRel's information + GraphSchema.
+///
+/// This is part of Phase 2 of schema consolidation (replacing scattered is_denormalized/is_fk_edge checks).
+fn recreate_pattern_schema_context(
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+    schema: &GraphSchema,
+) -> Result<PatternSchemaContext, RenderBuildError> {
+    // Extract node labels from left and right plans
+    let left_label = extract_node_labels(&graph_rel.left)
+        .and_then(|labels| labels.first().cloned())
+        .ok_or_else(|| {
+            RenderBuildError::MissingTableInfo(format!(
+                "Could not extract left node label for relationship pattern"
+            ))
+        })?;
+
+    let right_label = extract_node_labels(&graph_rel.right)
+        .and_then(|labels| labels.first().cloned())
+        .ok_or_else(|| {
+            RenderBuildError::MissingTableInfo(format!(
+                "Could not extract right node label for relationship pattern"
+            ))
+        })?;
+
+    // Get relationship types
+    let rel_types = graph_rel
+        .labels
+        .clone()
+        .unwrap_or_else(|| vec!["UNKNOWN".to_string()]);
+
+    // Get node schemas
+    let left_node_schema = schema.get_node_schema(&left_label).map_err(|e| {
+        RenderBuildError::MissingTableInfo(format!("Could not get left node schema: {}", e))
+    })?;
+
+    let right_node_schema = schema.get_node_schema(&right_label).map_err(|e| {
+        RenderBuildError::MissingTableInfo(format!("Could not get right node schema: {}", e))
+    })?;
+
+    // Get relationship schema (use first rel type)
+    let rel_schema = schema
+        .get_rel_schema(rel_types.first().unwrap())
+        .map_err(|e| {
+            RenderBuildError::MissingTableInfo(format!("Could not get relationship schema: {}", e))
+        })?;
+
+    // Recreate PatternSchemaContext using the same analysis logic
+    PatternSchemaContext::analyze(
+        &graph_rel.left_connection,  // left_node_alias
+        &graph_rel.right_connection, // right_node_alias
+        left_node_schema,
+        right_node_schema,
+        rel_schema,
+        schema,
+        &graph_rel.alias, // rel_alias
+        rel_types,
+        None, // prev_edge_info - not needed for CTE generation
+    )
+    .map_err(|e| {
+        RenderBuildError::MissingTableInfo(format!("PatternSchemaContext analysis failed: {}", e))
+    })
+}
 
 /// Check if an expression contains a string literal (recursively for nested + operations)
 fn contains_string_literal(expr: &RenderExpr) -> bool {
@@ -2049,17 +2121,74 @@ pub fn extract_ctes_with_context(
                     // Single-type VLP: Use traditional recursive CTE
                     println!("CTE BRANCH: Single-type VLP - using recursive CTE");
 
-                    // Check if nodes are denormalized (properties embedded in edge table)
-                    let start_is_denormalized = match graph_rel.left.as_ref() {
-                        LogicalPlan::GraphNode(node) => node.is_denormalized,
-                        _ => false,
+                    // ✨ PHASE 2 REFACTORING: Use PatternSchemaContext instead of scattered is_denormalized checks
+                    // Recreate the pattern schema context to determine JOIN strategy and node access patterns
+                    let pattern_ctx = match recreate_pattern_schema_context(&graph_rel, schema) {
+                        Ok(ctx) => ctx,
+                        Err(e) => {
+                            log::warn!("⚠️ Failed to recreate PatternSchemaContext, falling back to denormalized flag checks: {}", e);
+                            // Fallback: use old logic if context recreation fails
+                            let start_is_denormalized = match graph_rel.left.as_ref() {
+                                LogicalPlan::GraphNode(node) => node.is_denormalized,
+                                _ => false,
+                            };
+                            let end_is_denormalized = match graph_rel.right.as_ref() {
+                                LogicalPlan::GraphNode(node) => node.is_denormalized,
+                                _ => false,
+                            };
+                            let both_denormalized = start_is_denormalized && end_is_denormalized;
+                            let is_mixed = start_is_denormalized != end_is_denormalized;
+
+                            // Continue with old logic...
+                            log::debug!("CTE: Using fallback - start_denormalized={}, end_denormalized={}, both={}, mixed={}", 
+                                start_is_denormalized, end_is_denormalized, both_denormalized, is_mixed);
+
+                            // Create a minimal pattern for continuation
+                            return Err(RenderBuildError::UnsupportedFeature(format!(
+                                "Failed to recreate PatternSchemaContext: {}. Consider updating schema configuration.", e
+                            )));
+                        }
                     };
-                    let end_is_denormalized = match graph_rel.right.as_ref() {
-                        LogicalPlan::GraphNode(node) => node.is_denormalized,
-                        _ => false,
+
+                    // Determine node access strategies from PatternSchemaContext
+                    let both_denormalized = matches!(
+                        pattern_ctx.join_strategy,
+                        JoinStrategy::SingleTableScan { .. }
+                    );
+
+                    let is_mixed =
+                        matches!(pattern_ctx.join_strategy, JoinStrategy::MixedAccess { .. });
+
+                    // Determine FK-edge pattern from JoinStrategy
+                    let is_fk_edge =
+                        matches!(pattern_ctx.join_strategy, JoinStrategy::FkEdgeJoin { .. });
+
+                    // Extract individual denormalized flags for old generators that still need them
+                    // TODO: Phase 2 continuation - refactor generators to use PatternSchemaContext directly
+                    let start_is_denormalized = pattern_ctx.left_node.is_embedded();
+                    let end_is_denormalized = pattern_ctx.right_node.is_embedded();
+
+                    log::debug!("CTE: Using PatternSchemaContext - both_denormalized={}, is_mixed={}, is_fk_edge={}, strategy={:?}", 
+                        both_denormalized, is_mixed, is_fk_edge, pattern_ctx.join_strategy);
+                    log::debug!(
+                        "CTE: Individual flags - start_is_denormalized={}, end_is_denormalized={}",
+                        start_is_denormalized,
+                        end_is_denormalized
+                    );
+
+                    // Get edge properties from PatternSchemaContext
+                    // Note: edge_id is not in PatternSchemaContext yet, so get it from schema directly
+                    let edge_id = if let Some(labels) = &graph_rel.labels {
+                        labels
+                            .first()
+                            .and_then(|label| schema.get_rel_schema(label).ok())
+                            .and_then(|rel_schema| rel_schema.edge_id.clone())
+                    } else {
+                        None
                     };
-                    let both_denormalized = start_is_denormalized && end_is_denormalized;
-                    let is_mixed = start_is_denormalized != end_is_denormalized;
+                    let type_column = pattern_ctx.edge.type_column();
+                    let from_label_column = pattern_ctx.edge.from_label_column();
+                    let to_label_column = pattern_ctx.edge.to_label_column();
 
                     // 🎯 Extract schema filters from start and end nodes
                     // Schema filters are defined in YAML and should be applied to CTE base/recursive cases
@@ -2089,34 +2218,6 @@ pub fn extract_ctes_with_context(
                             start_schema_filter,
                             end_schema_filter
                         );
-                    }
-
-                    // Get edge_id from relationship schema if available
-                    // Use the first relationship label to look up the schema
-                    let (edge_id, type_column, from_label_column, to_label_column, is_fk_edge) =
-                        if let Some(labels) = &graph_rel.labels {
-                            if let Some(first_label) = labels.first() {
-                                // Try to get relationship schema by label (not table name)
-                                if let Ok(rel_schema) = schema.get_rel_schema(first_label) {
-                                    (
-                                        rel_schema.edge_id.clone(),
-                                        rel_schema.type_column.clone(),
-                                        rel_schema.from_label_column.clone(),
-                                        rel_schema.to_label_column.clone(),
-                                        rel_schema.is_fk_edge,
-                                    )
-                                } else {
-                                    (None, None, None, None, false)
-                                }
-                            } else {
-                                (None, None, None, None, false)
-                            }
-                        } else {
-                            (None, None, None, None, false)
-                        };
-
-                    if is_fk_edge {
-                        log::debug!("CTE: Detected FK-edge pattern for relationship type");
                     }
 
                     // Choose generator based on denormalized status
