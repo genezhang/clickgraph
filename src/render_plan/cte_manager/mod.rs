@@ -7,10 +7,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::clickhouse_query_generator::variable_length_cte::NodeProperty;
-use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::graph_catalog::{
     config::Identifier,
-    graph_schema::{NodeIdSchema, NodeSchema},
+    graph_schema::{GraphSchema, NodeIdSchema, NodeSchema},
     EdgeAccessStrategy, JoinStrategy, NodeAccessStrategy, NodePosition, PatternSchemaContext,
 };
 use crate::query_planner::logical_plan::VariableLengthSpec;
@@ -20,7 +19,6 @@ use crate::render_plan::cte_extraction::{
 use crate::render_plan::cte_generation::CteGenerationContext;
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::filter_pipeline::CategorizedFilters;
-use crate::render_plan::render_expr::RenderExpr;
 
 /// Unified error type for CTE operations
 #[derive(Debug, thiserror::Error)]
@@ -174,7 +172,7 @@ impl CteManager {
                     &id_column,
                 )?))
             }
-            JoinStrategy::MixedAccess { joined_node, .. } => Ok(CteStrategy::MixedAccess(
+            JoinStrategy::MixedAccess { joined_node: _, .. } => Ok(CteStrategy::MixedAccess(
                 MixedAccessCteStrategy::new(pattern_ctx)?,
             )),
             JoinStrategy::EdgeToEdge { .. } => Ok(CteStrategy::EdgeToEdge(
@@ -375,7 +373,7 @@ impl FkEdgeCteStrategy {
         let base_case = self.generate_base_case_sql(context, properties, filters)?;
 
         // Generate recursive case if needed
-        let needs_recursion = max_hops.map_or(true, |max| max > min_hops);
+        let needs_recursion = max_hops.is_some_and(|max| max > min_hops);
         let recursive_case = if needs_recursion {
             format!(
                 "\n    UNION ALL\n{}",
@@ -400,7 +398,7 @@ impl FkEdgeCteStrategy {
     /// Generate the base case SQL (1-hop traversal) for FK-edge
     fn generate_base_case_sql(
         &self,
-        context: &CteGenerationContext,
+        _context: &CteGenerationContext,
         properties: &[NodeProperty],
         filters: &CategorizedFilters,
     ) -> Result<String, CteError> {
@@ -659,7 +657,7 @@ impl TraditionalCteStrategy {
     /// Generate the base case SQL (1-hop traversal)
     fn generate_base_case_sql(
         &self,
-        context: &CteGenerationContext,
+        _context: &CteGenerationContext,
         properties: &[NodeProperty],
         filters: &CategorizedFilters,
     ) -> Result<String, CteError> {
@@ -725,7 +723,7 @@ impl TraditionalCteStrategy {
         &self,
         context: &CteGenerationContext,
         properties: &[NodeProperty],
-        filters: &CategorizedFilters,
+        _filters: &CategorizedFilters,
     ) -> Result<String, CteError> {
         // Extract table and column information
         let (_start_table, _start_id_col) =
@@ -1757,7 +1755,7 @@ impl EdgeToEdgeCteStrategy {
         );
 
         // Build WHERE clause for recursion
-        let mut where_conditions = vec![
+        let where_conditions = [
             format!("prev.hop_count < {}", context.spec.max_hops.unwrap_or(10)),
             format!("next.{} NOT IN prev.path_nodes", self.to_col), // Cycle prevention
         ];
