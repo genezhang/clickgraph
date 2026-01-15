@@ -153,12 +153,13 @@ CALL pagerank(
 
 ### Test Coverage ✅
 
-**Integration Tests**: 3538 collected, 2000+ pytest unified tests (matrix testing framework)
+**Integration Tests**: 3,538 tests collected (pytest framework)
 - Core Cypher features: 549 tests
 - Variable-length paths: 24 tests
 - Pattern comprehensions: 5 tests
 - Property expressions: 28 tests
 - Security graphs: 94 tests
+- Matrix testing variations: 2,000+ parameterized test cases
 
 **LDBC SNB Benchmark**:
 - Interactive Short (IS): 4/5 passing (IS-1, IS-2, IS-3, IS-5)

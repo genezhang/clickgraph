@@ -414,12 +414,12 @@ impl FkEdgeCteStrategy {
             ),
             format!("{}.hop_count + 1 as hop_count", cte_name),
             format!(
-                "arrayConcat({}.path_edges, [{}]) as path_edges",
-                cte_name, self.fk_column
+                "arrayConcat({}.path_edges, [{}.{}]) as path_edges",
+                cte_name, self.pattern_ctx.left_node_alias, self.fk_column
             ),
             format!(
-                "arrayConcat({}.path_nodes, [{}]) as path_nodes",
-                cte_name, self.id_column
+                "arrayConcat({}.path_nodes, [{}.{}]) as path_nodes",
+                cte_name, self.pattern_ctx.right_node_alias, self.id_column
             ),
         ];
 
