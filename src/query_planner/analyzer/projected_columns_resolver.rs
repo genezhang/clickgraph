@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use crate::{
-    graph_catalog::{graph_schema::GraphSchema, pattern_schema::NodePosition},
+    graph_catalog::{graph_schema::GraphSchema, pattern_schema::{NodeAccessStrategy, NodePosition}},
     query_planner::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
@@ -48,30 +48,49 @@ impl ProjectedColumnsResolver {
         // The input should be a ViewScan (or through Filters, etc.)
         let view_scan = Self::find_view_scan(&node.input)?;
 
-        // Handle denormalized nodes using PatternSchemaContext
-        if view_scan.is_denormalized {
-            return Self::compute_denormalized_properties(
-                &node.alias,
-                view_scan,
-                plan_ctx,
-                rel_alias,
-                position,
-            );
+        // Use PatternSchemaContext to determine node access strategy
+        match plan_ctx.get_node_strategy(&node.alias, rel_alias) {
+            Some(NodeAccessStrategy::EmbeddedInEdge { .. }) => {
+                // Denormalized node: properties come from edge table
+                Self::compute_denormalized_properties(
+                    &node.alias,
+                    view_scan,
+                    plan_ctx,
+                    rel_alias,
+                    position,
+                )
+            }
+            Some(NodeAccessStrategy::OwnTable { properties, .. }) => {
+                // Standard node: use property mappings from ViewScan
+                let mut result: Vec<(String, String)> = properties
+                    .iter()
+                    .map(|(prop_name, prop_value)| {
+                        let qualified = format!("{}.{}", node.alias, prop_value);
+                        (prop_name.clone(), qualified)
+                    })
+                    .collect();
+                result.sort_by(|a, b| a.0.cmp(&b.0));
+                Some(result)
+            }
+            Some(NodeAccessStrategy::Virtual { .. }) => {
+                // Virtual node: no properties to project
+                Some(vec![])
+            }
+            None => {
+                // No strategy found: fall back to ViewScan properties (legacy behavior)
+                // This maintains compatibility during transition
+                let mut properties: Vec<(String, String)> = view_scan
+                    .property_mapping
+                    .iter()
+                    .map(|(prop_name, prop_value)| {
+                        let qualified = format!("{}.{}", node.alias, prop_value.raw());
+                        (prop_name.clone(), qualified)
+                    })
+                    .collect();
+                properties.sort_by(|a, b| a.0.cmp(&b.0));
+                Some(properties)
+            }
         }
-
-        // Standard node: property_mapping contains property_name -> db_column
-        // We want to return (property_name, qualified_column)
-        let mut properties: Vec<(String, String)> = view_scan
-            .property_mapping
-            .iter()
-            .map(|(prop_name, prop_value)| {
-                let qualified = format!("{}.{}", node.alias, prop_value.raw());
-                (prop_name.clone(), qualified)
-            })
-            .collect();
-
-        properties.sort_by(|a, b| a.0.cmp(&b.0));
-        Some(properties)
     }
 
     /// Find ViewScan in the plan (might be wrapped in Filters, etc.)

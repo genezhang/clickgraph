@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: January 14, 2026*
+*Updated: January 15, 2026*
 
 ## Current Version
 
@@ -211,6 +211,67 @@ CALL pagerank(
 - ❌ Data mutations
 
 ClickGraph is a **read-only analytical query engine**. Use ClickHouse directly for data loading and updates.
+
+## Schema Consolidation Progress
+
+**Status**: 65% Complete (Phase 1B in progress)
+
+### ✅ Completed Phases
+
+**Phase 0**: Analyzer Pass Reordering
+- Moved `GraphJoinInference` from Step 15 → Step 4
+- `PatternSchemaContext` now available for downstream passes
+- Commit: `eced0a0` (Jan 14, 2026)
+
+**Phase 1A-2**: Infrastructure
+- `PatternSchemaContext` unified abstraction for all schema variations
+- `JoinStrategy` and `NodeAccessStrategy` enums
+- Schema-agnostic property resolution framework
+
+**Phase 3**: CTE Unification (Partial)
+- New `cte_manager` module with 6 strategy implementations
+- `TraditionalCteStrategy`, `DenormalizedCteStrategy`, `FkEdgeCteStrategy`
+- `MixedAccessCteStrategy`, `EdgeToEdgeCteStrategy`, `CoupledCteStrategy`
+- Production-ready with comprehensive testing
+
+### 🔄 Phase 1B: Property Resolution Refactoring (In Progress)
+
+**Goal**: Eliminate scattered conditional logic in 20+ files
+
+**✅ Completed Refactors** (2/20+ files):
+- `src/query_planner/analyzer/projected_columns_resolver.rs` - Replaced `if view_scan.is_denormalized` with `NodeAccessStrategy` matching
+- `src/query_planner/analyzer/filter_tagging.rs` - Refactored `is_node_denormalized()` to use `plan_ctx.get_node_strategy()`
+
+**Files needing refactoring** (18+ remaining):
+- `src/query_planner/analyzer/view_resolver.rs` - Schema-specific view resolution
+- `src/render_plan/property_expansion.rs` - Table alias logic for denormalized nodes
+- `src/query_planner/logical_plan/view_scan.rs` - `is_denormalized` field usage
+- `src/query_planner/logical_plan/mod.rs` - Denormalized flag propagation
+- `src/query_planner/translator/property_resolver.rs` - Property mapping conditionals
+- `src/query_planner/analyzer/filter_tagging.rs` - Additional denormalized logic (apply_property_mapping)
+- `src/graph_catalog/config.rs` - `is_denormalized` calculations
+- `src/graph_catalog/pattern_schema.rs` - Denormalized detection logic
+- `src/render_plan/cte_manager/mod.rs` - CTE strategy conditionals
+
+**Migration Pattern**:
+```rust
+// OLD: Scattered conditionals
+if view_scan.is_denormalized {
+    // denormalized logic
+} else {
+    // standard logic
+}
+
+// NEW: Unified PatternSchemaContext
+match pattern_ctx.node_access_strategy(node_alias) {
+    NodeAccessStrategy::Direct => { /* standard logic */ }
+    NodeAccessStrategy::Embedded(from_rel, role) => { /* denormalized logic */ }
+}
+```
+
+**Remaining Work**:
+- Phase 2: Consolidate `cte_extraction.rs` scattered logic
+- Phase 3-4: JOIN ordering optimization and comprehensive testing
 
 ## Next Priorities
 

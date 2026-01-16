@@ -6,7 +6,7 @@
 use std::{collections::HashSet, sync::Arc};
 
 use crate::{
-    graph_catalog::graph_schema::GraphSchema,
+    graph_catalog::{graph_schema::GraphSchema, pattern_schema::NodeAccessStrategy},
     query_planner::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
@@ -669,31 +669,31 @@ impl FilterTagging {
                     }
                 })?;
 
-                // Check if this is a denormalized node that needs role-specific mapping
-                // Three sources of truth:
-                // 1. GraphNode.is_denormalized - set from node schema (for truly denormalized nodes)
-                // 2. plan_ctx.get_denormalized_alias_info - registered by graph_join_inference
-                //    for nodes that appear in relationships with from_node_properties/to_node_properties
-                // 3. find_owning_edge_for_node - traverse plan to find edge with from_node_properties/to_node_properties
-                //    (this works BEFORE graph_join_inference registers the info in plan_ctx)
-                let (is_denormalized, owning_edge_info) = if let Some(plan) = plan {
-                    let denorm_from_plan =
-                        Self::is_node_denormalized(plan, &property_access.table_alias.0);
-                    let denorm_from_ctx = plan_ctx
-                        .get_denormalized_alias_info(&property_access.table_alias.0)
-                        .is_some();
-
+                // Check if this node uses EmbeddedInEdge strategy (denormalized access)
+                let (is_embedded_in_edge, owning_edge_info) = if let Some(plan) = plan {
                     // Also check by traversing the plan to find which edge owns this node
-                    let edge_info =
-                        Self::find_owning_edge_for_node(plan, &property_access.table_alias.0);
-                    let denorm_from_edge = edge_info.is_some();
+                    let edge_info = Self::find_owning_edge_for_node(plan, &property_access.table_alias.0);
 
-                    let denorm = denorm_from_plan || denorm_from_ctx || denorm_from_edge;
-                    println!(
-                        "FilterTagging: Checking is_denormalized for alias='{}' - from_plan={}, from_ctx={}, from_edge={:?}, result={}",
-                        property_access.table_alias.0, denorm_from_plan, denorm_from_ctx, edge_info, denorm
+                    // Use NodeAccessStrategy to determine if this is an embedded node
+                    let edge_alias = edge_info.as_ref().map(|(alias, _)| alias.as_str());
+                    let strategy_embedded = matches!(
+                        plan_ctx.get_node_strategy(&property_access.table_alias.0, edge_alias),
+                        Some(crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { .. })
                     );
-                    (denorm, edge_info)
+                    
+                    // Fallback to schema-level check if strategy lookup fails
+                    let schema_embedded = table_ctx.get_label_opt()
+                        .and_then(|label| plan_ctx.schema().get_node_schema_opt(&label))
+                        .map(|node_schema| node_schema.is_denormalized)
+                        .unwrap_or(false);
+                    
+                    let is_embedded = strategy_embedded || schema_embedded;
+
+                    println!(
+                        "FilterTagging: Checking EmbeddedInEdge for alias='{}' - from_strategy={}, from_edge={:?}",
+                        property_access.table_alias.0, is_embedded, edge_info
+                    );
+                    (is_embedded, edge_info)
                 } else {
                     println!(
                         "FilterTagging: No plan context provided for alias='{}'",
@@ -703,43 +703,35 @@ impl FilterTagging {
                 };
 
                 println!(
-                    "FilterTagging: is_denormalized={} for alias='{}', property='{}'",
-                    is_denormalized,
+                    "FilterTagging: is_embedded_in_edge={} for alias='{}', property='{}'",
+                    is_embedded_in_edge,
                     property_access.table_alias.0,
                     property_access.column.raw()
                 );
 
-                let mapped_column = if is_denormalized {
-                    // For denormalized nodes, look directly at the ViewScan's properties
+                let mapped_column = if is_embedded_in_edge {
+                    // For embedded nodes, look directly at the ViewScan's properties
                     if let Some(plan) = plan {
                         // First, check if plan_ctx knows which edge this node belongs to
                         // This is critical for multi-hop patterns where a node appears in multiple edges
-                        let denorm_info = plan_ctx
-                            .get_denormalized_alias_info(&property_access.table_alias.0)
-                            .or_else(|| {
-                                // Fallback: use the edge info we found during is_denormalized check
-                                owning_edge_info.map(|(edge, is_from)| {
-                                    (edge, is_from, String::new(), String::new())
-                                })
-                            });
-
-                        if let Some((owning_edge, is_from_node, _, _)) = denorm_info {
+                        if let Some(crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { edge_alias, is_from_node, .. }) =
+                            plan_ctx.get_node_strategy(&property_access.table_alias.0, None) {
                             println!(
-                                "FilterTagging: Node '{}' is denormalized on edge '{}', is_from={}",
-                                property_access.table_alias.0, owning_edge, is_from_node
+                                "FilterTagging: Node '{}' is embedded in edge '{}', is_from={}",
+                                property_access.table_alias.0, edge_alias, is_from_node
                             );
                             // Use the owning edge info to find the correct property
                             if let Some(column) = Self::find_property_in_viewscan_with_edge(
                                 plan,
                                 &property_access.table_alias.0,
                                 property_access.column.raw(),
-                                &owning_edge,
-                                is_from_node,
+                                &edge_alias,
+                                *is_from_node,
                                 plan_ctx,
                             ) {
                                 println!(
                                     "FilterTagging: Found property '{}' in owning edge '{}' ViewScan -> '{}'",
-                                    property_access.column.raw(), owning_edge, column
+                                    property_access.column.raw(), edge_alias, column
                                 );
                                 crate::graph_catalog::expression_parser::PropertyValue::Column(
                                     column,
@@ -760,7 +752,7 @@ impl FilterTagging {
                                     )
                                 } else {
                                     // Final fallback to role-aware mapping
-                                    let role = if is_from_node {
+                                    let role = if *is_from_node {
                                         Some(crate::render_plan::cte_generation::NodeRole::From)
                                     } else {
                                         Some(crate::render_plan::cte_generation::NodeRole::To)
@@ -773,46 +765,21 @@ impl FilterTagging {
                                     )?
                                 }
                             }
-                        } else if let Some(column) = Self::find_property_in_viewscan(
-                            plan,
-                            &property_access.table_alias.0,
-                            property_access.column.raw(),
-                        ) {
-                            println!(
-                                "FilterTagging: Found property '{}' directly in ViewScan -> '{}'",
-                                property_access.column.raw(),
-                                column
-                            );
-                            crate::graph_catalog::expression_parser::PropertyValue::Column(column)
                         } else {
-                            // Fallback to role-aware mapping
-                            println!(
-                                "FilterTagging: Property '{}' not found in ViewScan, falling back to view_resolver with role",
-                                property_access.column.raw()
-                            );
-                            // Get the node's role (From or To) from the plan context
-                            let role = Self::find_denormalized_context(
-                                plan,
-                                &property_access.table_alias.0,
-                                &label,
-                            )
-                            .map(|(_, node_role, _)| node_role);
-                            println!(
-                                "FilterTagging: Node role for alias '{}': {:?}",
-                                property_access.table_alias.0, role
-                            );
+                            // Node is marked as embedded but no edge info found, fallback to standard resolution
                             let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
-                            view_resolver.resolve_node_property_with_role(
+                            view_resolver.resolve_node_property(
                                 &label,
-                                &property_access.column.raw(),
-                                role,
+                                property_access.column.raw(),
                             )?
                         }
                     } else {
-                        // No plan context, use standard mapping (role unknown)
+                        // No plan available, fallback to schema-based resolution
                         let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
-                        view_resolver
-                            .resolve_node_property(&label, &property_access.column.raw())?
+                        view_resolver.resolve_node_property(
+                            &label,
+                            property_access.column.raw(),
+                        )?
                     }
                 } else {
                     // Use view resolver to map the property (standard path)
@@ -905,17 +872,14 @@ impl FilterTagging {
                                         None
                                     }
                                 } else {
-                                    // For nodes, check if it's denormalized and get the proper ID column
-                                    // First check if this node is denormalized (has properties in edge table)
-                                    let is_denormalized = if let Some(plan) = plan {
-                                        Self::is_node_denormalized(plan, alias_str)
-                                            || Self::find_owning_edge_for_node(plan, alias_str)
-                                                .is_some()
-                                    } else {
-                                        false
-                                    };
+                                    // For nodes, check if it's embedded in edge and get the proper ID column
+                                    // Use NodeAccessStrategy to determine access pattern
+                                    let is_embedded_in_edge = matches!(
+                                        plan_ctx.get_node_strategy(alias_str, None),
+                                        Some(crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { .. })
+                                    );
 
-                                    if is_denormalized {
+                                    if is_embedded_in_edge {
                                         // For denormalized nodes, find the owning edge and get the ID from from_node/to_node properties
                                         if let Some(plan) = plan {
                                             if let Some((owning_edge, is_from_node)) =
@@ -1699,29 +1663,13 @@ impl FilterTagging {
         }
     }
 
-    /// Check if a node is denormalized by walking the plan tree
-    fn is_node_denormalized(plan: &LogicalPlan, alias: &str) -> bool {
-        match plan {
-            LogicalPlan::GraphNode(node) if node.alias == alias => node.is_denormalized,
-            LogicalPlan::GraphNode(node) => Self::is_node_denormalized(&node.input, alias),
-            LogicalPlan::GraphRel(rel) => {
-                Self::is_node_denormalized(&rel.left, alias)
-                    || Self::is_node_denormalized(&rel.right, alias)
-            }
-            LogicalPlan::CartesianProduct(cp) => {
-                // Search both branches of the CartesianProduct
-                Self::is_node_denormalized(&cp.left, alias)
-                    || Self::is_node_denormalized(&cp.right, alias)
-            }
-            LogicalPlan::Filter(filter) => Self::is_node_denormalized(&filter.input, alias),
-            LogicalPlan::Projection(proj) => Self::is_node_denormalized(&proj.input, alias),
-            LogicalPlan::GroupBy(gb) => Self::is_node_denormalized(&gb.input, alias),
-            LogicalPlan::OrderBy(ob) => Self::is_node_denormalized(&ob.input, alias),
-            LogicalPlan::Skip(skip) => Self::is_node_denormalized(&skip.input, alias),
-            LogicalPlan::Limit(limit) => Self::is_node_denormalized(&limit.input, alias),
-            LogicalPlan::Cte(cte) => Self::is_node_denormalized(&cte.input, alias),
-            _ => false,
-        }
+    /// Check if a node is denormalized by using PatternSchemaContext
+    fn is_node_denormalized(plan_ctx: &PlanCtx, alias: &str) -> bool {
+        // Use PatternSchemaContext to determine if node is embedded in an edge
+        matches!(
+            plan_ctx.get_node_strategy(alias, None),
+            Some(crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { .. })
+        )
     }
 
     /// Find a property mapping from a specific edge's ViewScan

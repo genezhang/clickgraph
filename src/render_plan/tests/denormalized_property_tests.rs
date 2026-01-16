@@ -42,7 +42,7 @@ fn setup_denormalized_schema() -> GraphSchema {
         "Airport".to_string(),
         NodeSchema {
             database: "test_db".to_string(),
-            table_name: "airports".to_string(),
+            table_name: "flights".to_string(), // Denormalized nodes use the edge table
             column_names: vec!["airport_id".to_string(), "airport_code".to_string()],
             primary_keys: "airport_id".to_string(),
             node_id: NodeIdSchema::single("airport_id".to_string(), "UInt64".to_string()),
@@ -54,7 +54,7 @@ fn setup_denormalized_schema() -> GraphSchema {
             is_denormalized: true, // Partially denormalized (city/state in edges, code in node table)
             from_properties: Some(airport_from_props),
             to_properties: Some(airport_to_props),
-            denormalized_source_table: Some("flights".to_string()),
+            denormalized_source_table: Some("test_db.flights".to_string()),
             label_column: None,
             label_value: None,
         },
