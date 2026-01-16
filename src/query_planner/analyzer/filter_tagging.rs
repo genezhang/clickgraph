@@ -776,21 +776,18 @@ impl FilterTagging {
                                 }
                             }
                         } else {
-                            // Node is marked as embedded but no edge info found, fallback to standard resolution
-                            log::warn!(
-                                "FilterTagging: Embedded node '{}' has no edge info; falling back to standard resolution without role. May produce incorrect mappings.",
+                            // Node is marked as embedded but no edge info found - ERROR instead of fallback
+                            return Err(AnalyzerError::InvalidPlan(format!(
+                                "Embedded node '{}' has no edge info. GraphJoinInference must provide edge context for all embedded nodes.",
                                 property_access.table_alias.0
-                            );
-                            let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
-                            view_resolver.resolve_node_property(
-                                &label,
-                                property_access.column.raw(),
-                            )?
+                            )));
                         }
                     } else {
-                        // No plan available, fallback to schema-based resolution
-                        let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
-                        view_resolver.resolve_node_property(&label, property_access.column.raw())?
+                        // No plan available for embedded node - this should not happen
+                        return Err(AnalyzerError::InvalidPlan(format!(
+                            "Embedded node '{}' has no plan context. This indicates a bug in query planning.",
+                            property_access.table_alias.0
+                        )));
                     }
                 } else {
                     // Use view resolver to map the property (standard path)

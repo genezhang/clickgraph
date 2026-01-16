@@ -564,21 +564,23 @@ impl ProjectionTagging {
                                                 );
                                                 crate::graph_catalog::expression_parser::PropertyValue::Column(column)
                                             } else {
-                                                // No pattern context for denormalized node = bug in GraphJoinInference
-                                                log::error!(
-                                                    "ProjectionTagging: Missing PatternSchemaContext entry for denormalized node '{}' property '{}'; falling back to raw column name. This indicates a bug in GraphJoinInference.",
-                                                    property_access.table_alias.0,
-                                                    property_access.column.raw()
+                                                // Property not in PatternSchemaContext - might already be mapped by FilterTagging
+                                                // This is expected: FilterTagging runs first and maps ALL properties (filters + projections)
+                                                // ProjectionTagging runs after and should preserve already-mapped column names
+                                                log::debug!(
+                                                    "ProjectionTagging: Property '{}' for node '{}' not found in PatternSchemaContext, assuming already mapped by FilterTagging",
+                                                    property_access.column.raw(),
+                                                    property_access.table_alias.0
                                                 );
-                                                crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                    property_access.column.raw().to_string(),
-                                                )
+                                                property_access.column.clone()
                                             }
                                         } else {
-                                            // No pattern context available
-                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                property_access.column.raw().to_string(),
-                                            )
+                                            // No pattern context available - might be already mapped or needs schema fallback
+                                            log::debug!(
+                                                "ProjectionTagging: No PatternSchemaContext for denormalized node '{}', assuming property already mapped",
+                                                property_access.table_alias.0
+                                            );
+                                            property_access.column.clone()
                                         }
                                     }
                                     crate::graph_catalog::pattern_schema::NodeAccessStrategy::OwnTable { .. } => {
