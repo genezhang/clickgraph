@@ -644,6 +644,7 @@ pub fn map_property_to_column_with_relationship_context(
     })?;
 
     // 🆕 DENORMALIZED NODE: Check node-level denormalized properties FIRST
+    // ✅ PHASE 2 APPROVED: Queries schema configuration, not plan flags
     if node_schema.is_denormalized {
         if let Some(rel_type) = relationship_type {
             if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {

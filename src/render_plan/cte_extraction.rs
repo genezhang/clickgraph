@@ -3170,6 +3170,9 @@ impl VariableLengthDenormInfo {
 }
 
 /// Get detailed denormalization info for a variable-length pattern
+/// 
+/// ✅ PHASE 2: Uses GraphNode.is_denormalized as fallback (VLP nodes don't always have PatternSchemaContext)
+/// For VLP, the denormalized flag is set during analyzer passes and is reliable.
 pub fn get_variable_length_denorm_info(plan: &LogicalPlan) -> Option<VariableLengthDenormInfo> {
     fn check_node_denormalized(plan: &LogicalPlan) -> bool {
         match plan {

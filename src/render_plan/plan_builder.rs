@@ -672,6 +672,7 @@ fn extract_vlp_alias_mappings(ctes: &CteItems) -> HashMap<String, String> {
             (&cte.vlp_cypher_start_alias, &cte.vlp_start_alias)
         {
             // Check if this is a denormalized VLP (both nodes in same table)
+            // ✅ PHASE 2 APPROVED: Derives denormalization from schema structure, not flag
             let is_denormalized =
                 cte.vlp_start_table == cte.vlp_end_table && cte.vlp_start_table.is_some();
 
@@ -696,6 +697,7 @@ fn extract_vlp_alias_mappings(ctes: &CteItems) -> HashMap<String, String> {
 
         if let (Some(cypher_end), Some(vlp_end)) = (&cte.vlp_cypher_end_alias, &cte.vlp_end_alias) {
             // Check if this is a denormalized VLP (both nodes in same table)
+            // ✅ PHASE 2 APPROVED: Same structural check as above
             let is_denormalized =
                 cte.vlp_start_table == cte.vlp_end_table && cte.vlp_start_table.is_some();
 
