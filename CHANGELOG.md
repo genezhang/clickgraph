@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+### ⚙️ Refactoring
+
+- **Schema Consolidation Phase 1**: Eliminated scattered `is_denormalized` conditionals from analyzer passes
+  - Migrated property resolution logic to use `NodeAccessStrategy` enum pattern
+  - Refactored `projection_tagging.rs` to use strategy matching with schema fallback
+  - Updated `filter_tagging.rs` with hybrid strategy + schema approach
+  - Maintained `projected_columns_resolver.rs` NodeAccessStrategy usage
+  - All 766 library tests + integration tests passing
+
 ### 🚀 Features
 
 - **CTE Unification Phase 3 Complete**: Unified recursive CTE generation across all schema patterns with comprehensive test coverage

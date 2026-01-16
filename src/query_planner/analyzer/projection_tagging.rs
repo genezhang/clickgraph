@@ -300,41 +300,37 @@ impl ProjectionTagging {
 
                 let label = table_ctx.get_label_opt().unwrap_or_default();
 
-                // Check if this is a denormalized node
-                if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
-                    if node_schema.is_denormalized {
-                        // PRIMARY: Try PatternSchemaContext first - has explicit role information
-                        let mut mapped_column = None;
-                        if let Some((owning_edge, _is_from, _, _)) =
-                            plan_ctx.get_denormalized_alias_info(&property_access.table_alias.0)
-                        {
-                            if let Some(pattern_ctx) = plan_ctx.get_pattern_context(&owning_edge) {
-                                mapped_column = pattern_ctx.get_node_property(
+                // Check if this is a denormalized node using NodeAccessStrategy
+                if let Some(node_strategy) =
+                    plan_ctx.get_node_strategy(&property_access.table_alias.0, None)
+                {
+                    match node_strategy {
+                        crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => {
+                            // PRIMARY: Try PatternSchemaContext - has explicit role information
+                            if let Some(pattern_ctx) = plan_ctx.get_pattern_context(&edge_alias) {
+                                if let Some(mapped_column) = pattern_ctx.get_node_property(
                                     &property_access.table_alias.0,
                                     property_access.column.raw(),
-                                ).map(|col| crate::graph_catalog::expression_parser::PropertyValue::Column(col));
-                                if mapped_column.is_some() {
+                                ) {
+                                    let mapped = crate::graph_catalog::expression_parser::PropertyValue::Column(mapped_column);
                                     log::debug!(
                                         "UNWIND property mapping (PatternSchemaContext): {}.{} -> {:?}",
                                         property_access.table_alias.0,
                                         property_access.column.raw(),
-                                        mapped_column
+                                        mapped
                                     );
+                                    return Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: property_access.table_alias.clone(),
+                                        column: mapped,
+                                    }));
                                 }
                             }
                         }
-
-                        if let Some(mapped) = mapped_column {
-                            log::debug!(
-                                "UNWIND property mapping: {}.{} -> {:?}",
-                                property_access.table_alias.0,
-                                property_access.column.raw(),
-                                mapped
-                            );
-                            return Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: property_access.table_alias.clone(),
-                                column: mapped,
-                            }));
+                        crate::graph_catalog::pattern_schema::NodeAccessStrategy::OwnTable { .. } => {
+                            // Standard node access - no mapping needed
+                        }
+                        crate::graph_catalog::pattern_schema::NodeAccessStrategy::Virtual { .. } => {
+                            // Virtual node - no mapping needed
                         }
                     }
                 }
@@ -447,6 +443,20 @@ impl ProjectionTagging {
                     plan_ctx.get_pattern_context(owning_edge).cloned()
                 });
 
+                // Get node strategy and pattern context BEFORE creating mutable borrow
+                let node_strategy_opt = plan_ctx
+                    .get_node_strategy(&property_access.table_alias.0, None)
+                    .cloned();
+                let pattern_ctx_for_strategy = if let Some(ref strategy) = node_strategy_opt {
+                    if let crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } = strategy {
+                        plan_ctx.get_pattern_context(edge_alias).cloned()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
                 let table_ctx = plan_ctx
                     .get_mut_table_ctx(&property_access.table_alias.0)
                     .map_err(|e| AnalyzerError::PlanCtx {
@@ -537,45 +547,77 @@ impl ProjectionTagging {
                                 to_node,
                             )?
                         } else {
-                            // Check if this node is denormalized
-                            if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
-                                if node_schema.is_denormalized {
-                                    // PRIMARY: Try PatternSchemaContext first - has explicit role information
-                                    let mut column_from_pattern_ctx = None;
-                                    if let Some(pattern_ctx) = pattern_ctx_opt {
-                                        column_from_pattern_ctx = pattern_ctx.get_node_property(
-                                            &property_access.table_alias.0,
-                                            property_access.column.raw(),
-                                        );
-                                        if column_from_pattern_ctx.is_some() {
+                            // Check if this node is denormalized using NodeAccessStrategy
+                            if let Some(node_strategy) = node_strategy_opt {
+                                match node_strategy {
+                                    crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => {
+                                        // PRIMARY: Try PatternSchemaContext - has explicit role information
+                                        if let Some(pattern_ctx) = &pattern_ctx_for_strategy {
+                                            if let Some(column) = pattern_ctx.get_node_property(
+                                                &property_access.table_alias.0,
+                                                property_access.column.raw(),
+                                            ) {
+                                                log::debug!(
+                                                    "ProjectionTagging: Using PatternSchemaContext for denormalized node '{}' property '{}'",
+                                                    property_access.table_alias.0,
+                                                    property_access.column.raw()
+                                                );
+                                                crate::graph_catalog::expression_parser::PropertyValue::Column(column)
+                                            } else {
+                                                // Property not in PatternSchemaContext - might already be mapped by FilterTagging
+                                                // This is expected: FilterTagging runs first and maps ALL properties (filters + projections)
+                                                // ProjectionTagging runs after and should preserve already-mapped column names
+                                                log::debug!(
+                                                    "ProjectionTagging: Property '{}' for node '{}' not found in PatternSchemaContext, assuming already mapped by FilterTagging",
+                                                    property_access.column.raw(),
+                                                    property_access.table_alias.0
+                                                );
+                                                property_access.column.clone()
+                                            }
+                                        } else {
+                                            // No pattern context available - might be already mapped or needs schema fallback
                                             log::debug!(
-                                                "ProjectionTagging: Using PatternSchemaContext for denormalized node '{}' property '{}'",
-                                                property_access.table_alias.0,
-                                                property_access.column.raw()
+                                                "ProjectionTagging: No PatternSchemaContext for denormalized node '{}', assuming property already mapped",
+                                                property_access.table_alias.0
                                             );
+                                            property_access.column.clone()
                                         }
                                     }
-
-                                    if let Some(column) = column_from_pattern_ctx {
-                                        crate::graph_catalog::expression_parser::PropertyValue::Column(column)
-                                    } else {
-                                        // No pattern context for denormalized node = bug in GraphJoinInference
+                                    crate::graph_catalog::pattern_schema::NodeAccessStrategy::OwnTable { .. } => {
+                                        // Standard node - use ViewResolver
+                                        view_resolver.resolve_node_property(
+                                            &label,
+                                            property_access.column.raw(),
+                                        )?
+                                    }
+                                    crate::graph_catalog::pattern_schema::NodeAccessStrategy::Virtual { .. } => {
+                                        // Virtual node - use property as column name
                                         crate::graph_catalog::expression_parser::PropertyValue::Column(
                                             property_access.column.raw().to_string(),
                                         )
                                     }
-                                } else {
-                                    // Standard node - use ViewResolver
-                                    view_resolver.resolve_node_property(
-                                        &label,
-                                        property_access.column.raw(),
-                                    )?
                                 }
                             } else {
-                                // Label not found in schema - use property as column name (identity mapping)
-                                crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                    property_access.column.raw().to_string(),
-                                )
+                                // No strategy found - fallback to schema-based resolution
+                                if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
+                                    if node_schema.is_denormalized {
+                                        // Fallback for cases where strategy lookup fails
+                                        crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                            property_access.column.raw().to_string(),
+                                        )
+                                    } else {
+                                        // Standard node - use ViewResolver
+                                        view_resolver.resolve_node_property(
+                                            &label,
+                                            property_access.column.raw(),
+                                        )?
+                                    }
+                                } else {
+                                    // Label not found in schema - use property as column name (identity mapping)
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        property_access.column.raw().to_string(),
+                                    )
+                                }
                             }
                         }
                     } // End of Column(_) match arm

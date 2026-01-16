@@ -287,9 +287,9 @@ pub struct MixedAccessCteStrategy {
 pub struct EdgeToEdgeCteStrategy {
     pattern_ctx: PatternSchemaContext,
     table: String,
-    prev_edge_alias: String,
-    prev_edge_col: String,
-    curr_edge_col: String,
+    _prev_edge_alias: String,
+    _prev_edge_col: String,
+    _curr_edge_col: String,
     from_col: String,
     to_col: String,
 }
@@ -1270,7 +1270,7 @@ impl MixedAccessCteStrategy {
     /// Generate the base case SQL (1-hop traversal) for mixed access
     fn generate_base_case_sql(
         &self,
-        context: &CteGenerationContext,
+        _context: &CteGenerationContext,
         properties: &[NodeProperty],
         filters: &CategorizedFilters,
     ) -> Result<String, CteError> {
@@ -1598,9 +1598,9 @@ impl EdgeToEdgeCteStrategy {
                 Ok(Self {
                     pattern_ctx: pattern_ctx.clone(),
                     table,
-                    prev_edge_alias: prev_edge_alias.clone(),
-                    prev_edge_col: prev_edge_col.clone(),
-                    curr_edge_col: curr_edge_col.clone(),
+                    _prev_edge_alias: prev_edge_alias.clone(),
+                    _prev_edge_col: prev_edge_col.clone(),
+                    _curr_edge_col: curr_edge_col.clone(),
                     from_col,
                     to_col,
                 })
@@ -1806,11 +1806,9 @@ impl EdgeToEdgeCteStrategy {
     /// Build WHERE clause from filters
     fn build_where_clause(
         &self,
-        context: &CteGenerationContext,
-        filters: &CategorizedFilters,
+        _context: &CteGenerationContext,
+        _filters: &CategorizedFilters,
     ) -> Result<String, CteError> {
-        let mut conditions: Vec<String> = Vec::new();
-
         // TODO: Implement filter conversion when RenderExpr to SQL is available
         // For now, return empty WHERE clause
         Ok(String::new())
@@ -1932,11 +1930,9 @@ impl CoupledCteStrategy {
     /// Build WHERE clause from filters
     fn build_where_clause(
         &self,
-        context: &CteGenerationContext,
-        filters: &CategorizedFilters,
+        _context: &CteGenerationContext,
+        _filters: &CategorizedFilters,
     ) -> Result<String, CteError> {
-        let mut conditions: Vec<String> = Vec::new();
-
         // TODO: Implement filter conversion when RenderExpr to SQL is available
         // For now, return empty WHERE clause
         Ok(String::new())

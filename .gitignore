@@ -124,3 +124,6 @@ schemas/examples/security_graph_load.sql
 # Private tests (proprietary schemas and queries)
 tests/private/*.bak
 *.pid
+
+# PR description drafts
+PR_*.md
