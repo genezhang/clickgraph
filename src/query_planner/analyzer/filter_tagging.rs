@@ -689,6 +689,14 @@ impl FilterTagging {
                         .map(|node_schema| node_schema.is_denormalized)
                         .unwrap_or(false);
 
+                    // Log if strategy and schema disagree (potential bug)
+                    if strategy_embedded != schema_embedded {
+                        log::debug!(
+                            "FilterTagging: Strategy vs schema mismatch for alias='{}': strategy={}, schema={}",
+                            property_access.table_alias.0, strategy_embedded, schema_embedded
+                        );
+                    }
+
                     let is_embedded = strategy_embedded || schema_embedded;
 
                     println!(
@@ -769,6 +777,10 @@ impl FilterTagging {
                             }
                         } else {
                             // Node is marked as embedded but no edge info found, fallback to standard resolution
+                            log::warn!(
+                                "FilterTagging: Embedded node '{}' has no edge info; falling back to standard resolution without role. May produce incorrect mappings.",
+                                property_access.table_alias.0
+                            );
                             let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
                             view_resolver.resolve_node_property(
                                 &label,

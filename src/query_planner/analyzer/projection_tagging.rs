@@ -565,6 +565,11 @@ impl ProjectionTagging {
                                                 crate::graph_catalog::expression_parser::PropertyValue::Column(column)
                                             } else {
                                                 // No pattern context for denormalized node = bug in GraphJoinInference
+                                                log::error!(
+                                                    "ProjectionTagging: Missing PatternSchemaContext entry for denormalized node '{}' property '{}'; falling back to raw column name. This indicates a bug in GraphJoinInference.",
+                                                    property_access.table_alias.0,
+                                                    property_access.column.raw()
+                                                );
                                                 crate::graph_catalog::expression_parser::PropertyValue::Column(
                                                     property_access.column.raw().to_string(),
                                                 )

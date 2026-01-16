@@ -238,11 +238,12 @@ ClickGraph is a **read-only analytical query engine**. Use ClickHouse directly f
 
 **Goal**: Eliminate scattered conditional logic in 20+ files
 
-**✅ Completed Refactors** (2/20+ files):
+**✅ Completed Refactors** (3/20+ files):
 - `src/query_planner/analyzer/projected_columns_resolver.rs` - Replaced `if view_scan.is_denormalized` with `NodeAccessStrategy` matching
 - `src/query_planner/analyzer/filter_tagging.rs` - Refactored `is_node_denormalized()` to use `plan_ctx.get_node_strategy()`
+- `src/query_planner/analyzer/projection_tagging.rs` - Unified projection tagging logic with `NodeAccessStrategy`-based property resolution
 
-**Files needing refactoring** (18+ remaining):
+**Files needing refactoring** (17+ remaining):
 - `src/query_planner/analyzer/view_resolver.rs` - Schema-specific view resolution
 - `src/render_plan/property_expansion.rs` - Table alias logic for denormalized nodes
 - `src/query_planner/logical_plan/view_scan.rs` - `is_denormalized` field usage
