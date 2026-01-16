@@ -13,7 +13,10 @@
 use std::sync::Arc;
 
 use crate::{
-    graph_catalog::{graph_schema::GraphSchema, pattern_schema::{NodeAccessStrategy, NodePosition}},
+    graph_catalog::{
+        graph_schema::GraphSchema,
+        pattern_schema::{NodeAccessStrategy, NodePosition},
+    },
     query_planner::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},

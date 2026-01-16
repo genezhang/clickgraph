@@ -672,7 +672,8 @@ impl FilterTagging {
                 // Check if this node uses EmbeddedInEdge strategy (denormalized access)
                 let (is_embedded_in_edge, owning_edge_info) = if let Some(plan) = plan {
                     // Also check by traversing the plan to find which edge owns this node
-                    let edge_info = Self::find_owning_edge_for_node(plan, &property_access.table_alias.0);
+                    let edge_info =
+                        Self::find_owning_edge_for_node(plan, &property_access.table_alias.0);
 
                     // Use NodeAccessStrategy to determine if this is an embedded node
                     let edge_alias = edge_info.as_ref().map(|(alias, _)| alias.as_str());
@@ -680,13 +681,14 @@ impl FilterTagging {
                         plan_ctx.get_node_strategy(&property_access.table_alias.0, edge_alias),
                         Some(crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { .. })
                     );
-                    
+
                     // Fallback to schema-level check if strategy lookup fails
-                    let schema_embedded = table_ctx.get_label_opt()
+                    let schema_embedded = table_ctx
+                        .get_label_opt()
                         .and_then(|label| plan_ctx.schema().get_node_schema_opt(&label))
                         .map(|node_schema| node_schema.is_denormalized)
                         .unwrap_or(false);
-                    
+
                     let is_embedded = strategy_embedded || schema_embedded;
 
                     println!(
@@ -776,10 +778,7 @@ impl FilterTagging {
                     } else {
                         // No plan available, fallback to schema-based resolution
                         let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
-                        view_resolver.resolve_node_property(
-                            &label,
-                            property_access.column.raw(),
-                        )?
+                        view_resolver.resolve_node_property(&label, property_access.column.raw())?
                     }
                 } else {
                     // Use view resolver to map the property (standard path)

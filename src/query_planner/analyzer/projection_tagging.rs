@@ -301,7 +301,9 @@ impl ProjectionTagging {
                 let label = table_ctx.get_label_opt().unwrap_or_default();
 
                 // Check if this is a denormalized node using NodeAccessStrategy
-                if let Some(node_strategy) = plan_ctx.get_node_strategy(&property_access.table_alias.0, None) {
+                if let Some(node_strategy) =
+                    plan_ctx.get_node_strategy(&property_access.table_alias.0, None)
+                {
                     match node_strategy {
                         crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => {
                             // PRIMARY: Try PatternSchemaContext - has explicit role information
@@ -442,7 +444,9 @@ impl ProjectionTagging {
                 });
 
                 // Get node strategy and pattern context BEFORE creating mutable borrow
-                let node_strategy_opt = plan_ctx.get_node_strategy(&property_access.table_alias.0, None).cloned();
+                let node_strategy_opt = plan_ctx
+                    .get_node_strategy(&property_access.table_alias.0, None)
+                    .cloned();
                 let pattern_ctx_for_strategy = if let Some(ref strategy) = node_strategy_opt {
                     if let crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } = strategy {
                         plan_ctx.get_pattern_context(edge_alias).cloned()
@@ -543,8 +547,8 @@ impl ProjectionTagging {
                                 to_node,
                             )?
                         } else {
-                        // Check if this node is denormalized using NodeAccessStrategy
-                        if let Some(node_strategy) = node_strategy_opt {
+                            // Check if this node is denormalized using NodeAccessStrategy
+                            if let Some(node_strategy) = node_strategy_opt {
                                 match node_strategy {
                                     crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => {
                                         // PRIMARY: Try PatternSchemaContext - has explicit role information
