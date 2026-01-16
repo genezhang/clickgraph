@@ -46,70 +46,9 @@ use crate::render_plan::cte_extraction::{
 #[allow(unused_imports)]
 use super::plan_builder_helpers::*;
 use super::CteGenerationContext;
+use super::plan_builder_utils::build_property_mapping_from_columns;
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
-
-/// Build explicit property mapping from CTE column names.
-/// Maps (alias, property) → column_name for all columns in SELECT items.
-///
-/// Handles patterns:
-/// - "friend.id" → (friend, id) → "friend.id"
-/// - "friend_firstName" → (friend, firstName) → "friend_firstName"
-/// - "friends" (aggregate column) → ("", friends) → "friends"
-///
-/// This explicit mapping avoids fragile pattern-matching later.
-fn build_property_mapping_from_columns(
-    select_items: &[SelectItem],
-) -> HashMap<(String, String), String> {
-    let mut property_mapping = HashMap::new();
-
-    for item in select_items {
-        if let Some(col_alias) = &item.col_alias {
-            let col_name = &col_alias.0;
-
-            // Pattern 1: "alias.property" (dotted, used in VLP CTEs)
-            if let Some(dot_pos) = col_name.find('.') {
-                let alias = col_name[..dot_pos].to_string();
-                let property = col_name[dot_pos + 1..].to_string();
-                property_mapping.insert((alias.clone(), property.clone()), col_name.clone());
-                log::debug!(
-                    "  Property mapping: ({}, {}) → {}",
-                    alias,
-                    property,
-                    col_name
-                );
-            }
-            // Pattern 2: "alias_property" (underscore, used in WITH CTEs)
-            else if let Some(underscore_pos) = col_name.find('_') {
-                let alias = col_name[..underscore_pos].to_string();
-                let property = col_name[underscore_pos + 1..].to_string();
-                property_mapping.insert((alias.clone(), property.clone()), col_name.clone());
-                log::debug!(
-                    "  Property mapping: ({}, {}) → {}",
-                    alias,
-                    property,
-                    col_name
-                );
-            }
-            // Pattern 3: No separator - aggregate column like "friends" from collect()
-            // Store with empty alias so ARRAY JOIN can find it: ("", column_name) → column_name
-            else {
-                property_mapping.insert(("".to_string(), col_name.clone()), col_name.clone());
-                log::debug!(
-                    "  Property mapping (aggregate): (\"\", {}) → {}",
-                    col_name,
-                    col_name
-                );
-            }
-        }
-    }
-
-    log::info!(
-        "Built property mapping with {} entries",
-        property_mapping.len()
-    );
-    property_mapping
-}
 
 /// Strip database prefix from table name for use in CTE names.
 /// Converts "ldbc.Comment" -> "Comment", "Message" -> "Message"

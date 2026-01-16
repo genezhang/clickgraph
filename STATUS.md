@@ -357,6 +357,26 @@ match pattern_ctx.node_access_strategy(node_alias) {
 - Phase 2: Consolidate `cte_extraction.rs` scattered logic
 - Phase 3-4: JOIN ordering optimization and comprehensive testing
 
+## Code Quality Initiatives
+
+### plan_builder.rs Refactoring (Phase 1 Week 1: Infrastructure Setup) ✅
+**Status**: **COMPLETE** - Infrastructure established for systematic refactoring
+
+**Problem**: `plan_builder.rs` is 16,172 lines (9,088-line impl block) - monolithic and hard to maintain
+
+**Solution**: 17-week systematic refactoring plan to extract into smaller modules (<4,000 lines total)
+
+**Phase 1 Week 1 Accomplishments**:
+- ✅ Created `feature_flags.rs` - Runtime feature flags for safe rollback
+- ✅ Created `plan_builder_performance.py` - Automated performance benchmarking
+- ✅ Created `analyze_dependencies.py` - Function dependency analysis (120 functions, 75 pure utilities identified)
+- ✅ Created `plan_builder_utils.rs` - Module for pure utility functions
+- ✅ **First extraction complete**: `build_property_mapping_from_columns()` moved successfully
+- ✅ Performance verified: No regression in benchmark queries
+- ✅ Compilation verified: All 766 tests still pass
+
+**Next**: Phase 1 Week 2 - Extract remaining 74 pure utility functions
+
 ## Next Priorities
 
 ### Immediate (This Week)

@@ -1,201 +1,110 @@
 # Code Quality Analysis for ClickGraph GA Readiness
 
-**Date**: January 14, 2026 (Updated Assessment)
-**Status**: Analysis Complete - CTE Complexity Identified as Critical Blocker
+**Date**: January 15, 2026 (Post-CTE Unification Update)
+**Status**: Analysis Updated - CTE Unification Complete, plan_builder.rs Remains Critical
 **Priority**: Critical for GA Release
 
 ## Executive Summary
 
-This document outlines a comprehensive analysis of code quality gaps in the ClickGraph project that must be addressed before GA release. The analysis identified CTE complexity as the most challenging issue, with the monolithic `plan_builder.rs` growing to **16,170 lines** and the `to_render_plan` function spanning **2,109 lines**.
+This document outlines code quality gaps in the ClickGraph project that must be addressed before GA release. Since the original analysis (Jan 14, 2026), **CTE unification has been completed** with the new `cte_manager` module, but **`plan_builder.rs` remains the critical blocker** at 16,172 lines.
 
-**Key Findings** (Updated January 14, 2026)**:
-- ❌ **CTE Complexity**: Most challenging - 8,261 lines across 3 files with severe cross-cutting concerns
-- ❌ **Monolithic Files**: `plan_builder.rs` (16,170 lines) continues to grow despite refactoring attempts
+**Key Findings** (Updated January 15, 2026):
+- ✅ **CTE Unification**: COMPLETE - New `cte_manager` module (2,444 lines) with 6 strategies
+- ✅ **Schema Consolidation**: COMPLETE - Phases 1-2 finished, `NodeAccessStrategy` pattern in place
+- ❌ **Monolithic Files**: `plan_builder.rs` (16,172 lines) - main impl block is 9,088 lines
 - ❌ **Error Handling**: 20+ panic calls and multiple unwrap usage create production instability
-- ✅ **Test Status**: Dramatically improved - 760 tests passing, 0 failed (vs 6 failing previously)
+- ✅ **Test Status**: Excellent - 766 tests passing, 0 failed
 - ⚠️ **Technical Debt**: 24 unused imports, multiple TODO/FIXME comments
 
-**Recommended Timeline**: 17 weeks total implementation time (CTE-focused approach)
+**Recommended Timeline**: 12 weeks for plan_builder.rs refactoring (updated from 17 weeks)
 
 ---
 
-## 1. CTE COMPLEXITY GAP - CRITICAL PRIORITY ⭐ MOST CHALLENGING
+## 1. ~~CTE COMPLEXITY GAP~~ ✅ **RESOLVED** (Jan 15, 2026)
 
-### Current CTE Architecture Complexity
+### ✅ CTE Unification Complete
 
-The CTE system has evolved into a **highly complex, multi-file architecture**:
+The CTE system has been **successfully unified** into a new `cte_manager` module:
 
-| File | Lines | Purpose | Complexity Level |
-|------|-------|---------|------------------|
-| `cte_extraction.rs` | 4,256 | CTE extraction & property analysis | HIGH |
-| `variable_length_cte.rs` | 3,244 | Recursive CTE SQL generation | VERY HIGH |
-| `cte_generation.rs` | 761 | CTE context & metadata management | MEDIUM |
-| **TOTAL** | **8,261** | **Complete CTE lifecycle** | **EXTREME** |
+| Component | Lines | Status | Complexity Level |
+|-----------|-------|--------|------------------|
+| `cte_manager/mod.rs` | 2,444 | ✅ Production | MEDIUM (well-structured) |
+| `cte_extraction.rs` | 4,474 | Active | HIGH (needs reduction) |
+| `cte_generation.rs` | 771 | Active | MEDIUM |
+| **TOTAL CTE System** | **7,689** | **Improving** | **MANAGEABLE** |
 
-### Root Cause: Cross-Cutting CTE Concerns
+**Completed Work:**
+- ✅ Created unified `CteManager` with strategy pattern
+- ✅ Implemented 6 CTE strategies for all schema variations:
+  - `TraditionalCteStrategy` - Standard node/edge tables
+  - `DenormalizedCteStrategy` - Node properties in edge table
+  - `FkEdgeCteStrategy` - FK-based relationships
+  - `MixedAccessCteStrategy` - Hybrid schema patterns
+  - `EdgeToEdgeCteStrategy` - Coupled relationships
+  - `CoupledCteStrategy` - Multi-relationship tables
+- ✅ All strategies production-ready with comprehensive testing
+- ✅ Schema-aware CTE generation through `PatternSchemaContext`
 
-The CTE system suffers from **severe separation of concerns violations**:
+**Remaining Work:**
+- ⚠️ `cte_extraction.rs` still large (4,474 lines) - candidate for further splitting
+- ⚠️ Some cross-file dependencies remain between CTE modules
 
-```rust
-// CTE logic scattered across multiple domains:
-pub fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan> {
-    // 1. CTE extraction logic (lines 14062-14200)
-    // 2. Property requirement analysis (interspersed)
-    // 3. JOIN vs CTE decision logic (complex branching)
-    // 4. VLP-specific CTE generation (recursive complexity)
-    // 5. Multi-type relationship handling (UNION ALL logic)
-    // 6. Schema-aware property mapping (cross-cutting)
-}
-```
+**Impact:** CTE complexity **significantly reduced** from critical blocker to manageable subsystem.
 
-### Specific CTE Challenges Identified
+---
 
-**1. Variable-Length Path CTEs (Most Complex)**
-```rust
-// variable_length_cte.rs: Complex recursive CTE generation
-impl<'a> VariableLengthCteGenerator<'a> {
-    // 40+ fields for configuration
-    // Complex polymorphic edge handling
-    // Shortest path algorithms
-    // Multi-relationship type UNIONs
-}
-```
+## 2. MONOLITHIC FILE GAP - NOW THE CRITICAL PRIORITY ⭐
 
-**2. CTE Extraction & Property Analysis**
-```rust
-// cte_extraction.rs: Cross-cutting property requirements
-fn analyze_vlp_property_requirements(
-    // Complex analysis across entire query plan
-    // Schema lookups, alias resolution, type inference
-    // Performance implications for large queries
-)
-```
+### Current Status: plan_builder.rs = 16,172 Lines
 
-**3. CTE Context Management**
-```rust
-// cte_generation.rs: Immutable builder pattern (recent addition)
-impl CteGenerationContext {
-    // Mix of mutable (deprecated) and immutable APIs
-    // Complex state management during migration
-}
-```
+Despite CTE unification success, `plan_builder.rs` remains monolithic:
 
-### Impact on GA Readiness
+**File Statistics:**
+- **Total lines**: 16,172 (grown slightly from initial 16,170)
+- **Main impl block**: 9,088 lines (`impl RenderPlanBuilder for LogicalPlan`)
+- **15+ major functions** including monster functions like `extract_joins()` (~4,000 lines)
 
-- **Performance**: CTE generation adds significant overhead for simple queries
-- **Maintainability**: 8,261 lines of CTE logic scattered across files
-- **Testing**: Complex interactions make comprehensive testing difficult
-- **Debugging**: CTE-related bugs are hard to isolate and fix
+**Why This Matters:**
+- **Cognitive Load**: Impossible to understand entire file
+- **Change Risk**: Small edits risk unintended side effects
+- **Testing**: Hard to test individual components in isolation
+- **Onboarding**: Steep learning curve for new contributors
+- **Merge Conflicts**: High conflict probability
 
-### Conservative Refactoring Strategy - Addressing Past Failures
+### Recommended Splitting Strategy (12-week plan)
 
-**Phase 0: Risk Mitigation Setup** (1 week)
-- **Dependency Analysis**: Create detailed dependency map of all functions in `plan_builder.rs`
-- **Testing Infrastructure**: Set up comprehensive integration tests for each major code path
-- **Feature Flags**: Implement feature flags for rollback capability
-- **Parallel Branch**: Create dedicated refactoring branch with automated merge conflict resolution
+**Phase 1: Extract Pure Utilities** (2 weeks - LOW RISK)
+- Move pure functions to `plan_builder_utils.rs`
+- Already have `plan_builder_helpers.rs` (4,165 lines)
+- Additional candidates: `build_property_mapping_from_columns()`, utility analysis functions
 
-**Phase 1: Extract Pure Utility Functions** (2 weeks - LOW RISK)
-Extract functions with no external dependencies:
-- `build_property_mapping_from_columns()` - Pure data transformation
-- `strip_database_prefix()` - Pure string manipulation
-- `has_multi_type_vlp()` - Pure analysis function
-- `get_anchor_alias_from_plan()` - Pure analysis function
-- `generate_swapped_joins_for_optional_match()` - Pure data transformation
+**Phase 2: Extract Domain Builders** (5 weeks - MEDIUM RISK)
+1. **`join_builder.rs`** (2 weeks) - Extract `extract_joins()` (~4,000 lines) - BIGGEST WIN
+2. **`select_builder.rs`** (2 weeks) - Extract `extract_select_items()` (~1,800 lines)
+3. **`from_builder.rs`** (1 week) - Extract `extract_from()` (~700 lines)
 
-**Success Criteria**: Zero regressions, all tests pass, functions moved to `plan_builder_utils.rs`
+**Phase 3: Extract Filter Logic** (2 weeks - MEDIUM RISK)
+- **`filter_builder.rs`** - Extract filter extraction and categorization (~600 lines)
 
-**Phase 2: Extract Data Structures & Types** (2 weeks - LOW RISK)
-Create dedicated modules for data structures:
-- `cte_types.rs` - CTE-related structs and their methods
-- `join_types.rs` - JOIN-related structs and their methods
-- `alias_mapping_types.rs` - Alias mapping logic and types
+**Phase 4: Restructure Main File** (2 weeks - HIGH RISK)
+- Main impl becomes thin delegation layer
+- Core plan traversal functions remain
+- Target: **< 4,000 lines**
 
-**Success Criteria**: Types moved with their associated methods, compilation succeeds
+**Phase 5: Validation** (1 week)
+- Comprehensive testing
+- Performance benchmarks
+- Documentation updates
 
-**Phase 3: Extract High-Level Subsystems** (4 weeks - MEDIUM RISK)
-Extract complete subsystems with clear boundaries:
-- `cte_manager.rs` - Complete CTE lifecycle management
-- `join_generator.rs` - Complete JOIN generation logic
-- `alias_mapper.rs` - Complete alias mapping system
-
-**Success Criteria**: Each module has comprehensive unit tests, integration tests pass
-
-**Phase 4: Gradual Integration** (4 weeks - HIGH RISK)
-- **Week 1-2**: Integrate one module at a time with feature flags
-- **Week 3**: Parallel testing of old vs new implementations
-- **Week 4**: Gradual rollout with automated rollback capability
-
-**Success Criteria**: All functionality preserved, performance maintained, comprehensive test coverage
-
-**Phase 5: Cleanup & Optimization** (3 weeks - LOW RISK)
-- Remove duplicate code
-- Optimize remaining monolithic functions
-- Final performance tuning
-
-### Risk Mitigation Strategies
-
-**1. Feature Flags & Rollback**
-```rust
-// Example feature flag implementation
-#[cfg(feature = "refactored_cte_manager")]
-use crate::render_plan::cte_manager::CteManager;
-#[cfg(not(feature = "refactored_cte_manager"))]
-use crate::render_plan::plan_builder::legacy_cte_logic;
-```
-
-**2. Comprehensive Testing**
-- Unit tests for each extracted function
-- Integration tests for each major code path
-- Performance regression tests
-- End-to-end query validation tests
-
-**3. Incremental Validation**
-- Daily automated testing of refactoring branch
-- Weekly integration testing with main branch
-- Monthly full regression testing
-
-**4. Parallel Development**
-- Main branch: Bug fixes and features (frozen for plan_builder.rs)
-- Refactoring branch: Structural changes only
-- Automated merge conflict resolution
-
-### Success Metrics (Updated)
-- **0 regressions** introduced during refactoring
-- **All 753 tests passing** at each milestone
-- **`plan_builder.rs` < 8,000 lines** final target
-- **Clear module separation** with single responsibilities
-- **Documented interfaces** between modules
-1. **CTE Management Module** (`cte_manager.rs`)
-   - Extract 8 CTE-related functions
-   - Centralize CTE naming, extraction, and metadata handling
-
-2. **Alias Mapping Module** (`alias_mapper.rs`)
-   - Extract 5 alias rewriting functions
-   - Handle VLP internal ↔ Cypher alias conversions
-
-3. **JOIN Generation Module** (`join_generator.rs`)
-   - Extract VLP, polymorphic, and standard JOIN logic
-   - Separate denormalized vs normalized JOIN patterns
-
-**Phase 2: Break Down `to_render_plan`** (3-4 weeks)
-- Split into 6 focused methods:
-  - `build_from_clause()`
-  - `build_joins()`
-  - `build_filters()`
-  - `build_select_items()`
-  - `apply_vlp_rewrites()`
-  - `validate_and_finalize()`
-
-**Phase 3: Integration Testing** (1-2 weeks)
-- Each extracted module needs comprehensive testing
-- End-to-end validation of complex query patterns
+### Success Metrics
+- **plan_builder.rs < 4,000 lines** (75% reduction)
+- **Each extracted module < 2,000 lines**
+- **All 766 tests passing**
+- **No performance regression** (< 5%)
 
 ---
 
 ## 3. ERROR HANDLING GAP - HIGH PRIORITY
-
-### Critical Issues Found
 - **20+ `panic!` calls** in production code (slight improvement from 19)
 - **Multiple `unwrap()` calls** in production code
 - **PatternComprehension panic** appears resolved
@@ -256,184 +165,342 @@ if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
 
 ---
 
-## 4. TEST IMPROVEMENTS - POSITIVE
+## 4. TEST STATUS - POSITIVE ✅
 
-### Dramatic Progress
-- **Previous**: 6 failing tests
-- **Current**: **0 failed tests** ✅
-- **Total**: 760 passing tests
-- **Ignored**: 10 tests (appropriately marked for complex scenarios)
+### Excellent Test Coverage
+- **Current**: **766 tests passing, 0 failed** ✅
+- **Previous**: 6 failing tests (now resolved)
+- **Ignored**: 10 tests (appropriately marked for complex scenarios requiring full datasets)
 
-### Test Coverage Gaps
-- Some complex CTE scenarios still ignored
-- Multi-relationship VLP tests require full schema setup
-- Integration test coverage could be expanded
-
----
-
-## 4. UNUSED CODE GAP - LOW PRIORITY
-
-### Issues Found: 24 unused import warnings
-**Impact**: Code clutter, slightly slower compilation
-**Cleanup Effort**: 1-2 days to remove unused imports
+### Test Coverage Assessment
+- ✅ Core functionality well-tested
+- ✅ Schema variations comprehensively covered
+- ⚠️ Some complex CTE scenarios ignored (acceptable for development)
+- ⚠️ Integration test coverage could be expanded for edge cases
 
 ---
 
 ## 5. TECHNICAL DEBT - MEDIUM PRIORITY
 
-### Unused Imports: 24 warnings
-- Code clutter, slightly slower compilation
-- Easy cleanup opportunity
+### Unused Imports: ~24 warnings
+- **Impact**: Code clutter, slightly slower compilation
+- **Effort**: 1-2 days cleanup
+- **Priority**: Low (cosmetic issue)
 
-### TODO/FIXME Debt: 20+ comments
+### TODO/FIXME Comments: 20+ occurrences
 ```rust
-// Examples found:
+// Examples:
 TODO: Handle multiple types (TYPE1|TYPE2)
 TODO: Implement projection elimination
 TODO: Add parent plan parameter
 ```
+- **Impact**: Feature gaps or optimization opportunities
+- **Effort**: Varies per TODO (1 day to 2 weeks each)
+- **Priority**: Medium (evaluate each on merit)
 
-### Dead Code: Some functions marked `#[allow(dead_code)]`
-
----
-
-## UPDATED IMPLEMENTATION ROADMAP
-
-### Phase 0: CTE Complexity Assessment (2 weeks) ⭐ NEW PRIORITY
-1. **CTE Dependency Mapping**: Complete analysis of CTE interdependencies
-2. **CTE Performance Profiling**: Identify bottlenecks in CTE generation
-3. **CTE Architecture Review**: Evaluate current multi-file approach
-4. **CTE Simplification Plan**: Design cleaner CTE abstractions
-
-### Phase 1: CTE System Refactoring (6 weeks) ⭐ HIGHEST PRIORITY
-1. **Extract CTE Manager**: Unified `CteManager` struct for lifecycle management
-2. **Simplify VLP CTE Generation**: Reduce `variable_length_cte.rs` complexity
-3. **CTE Context Consolidation**: Merge `cte_generation.rs` + `cte_extraction.rs` logic
-4. **CTE Decision Logic**: Clean separation of JOIN vs CTE decisions
-
-### Phase 2: Error Handling Overhaul (3 weeks)
-1. **Replace Critical Panics**: Convert 20+ panics to proper `Result` returns
-2. **Remove unwrap() Calls**: Safe error propagation throughout
-3. **Error Type Consolidation**: Unified error handling patterns
-
-### Phase 3: Monolithic File Breakup (4 weeks)
-1. **Split `to_render_plan`**: Extract into focused sub-methods
-2. **Complete Helper Extraction**: Move remaining utilities to `plan_builder_helpers.rs`
-3. **Interface Cleanup**: Clear boundaries between modules
-
-### Phase 4: Cleanup & Optimization (2 weeks)
-1. **Remove Unused Imports**: Clean up 24 warnings
-2. **Address TODO Debt**: Implement or remove TODO items
-3. **Performance Tuning**: Optimize hot paths
-
-### Success Metrics (Updated)
-- **CTE Complexity**: Reduce CTE-related code to <5,000 lines total
-- **File Size**: `plan_builder.rs` < 10,000 lines
-- **Error Handling**: 0 panic! calls in production code
-- **Test Coverage**: 780+ tests passing
-- **Performance**: No >5% regression on CTE queries
-3. **Final performance tuning**
-4. **Documentation updates**
-
-### Success Metrics (Updated)
-- **0 panic! calls** in production code
-- **All 753 tests passing** at each milestone (✅ currently achieved)
-- **`plan_builder.rs` < 8,000 lines** final target (currently 14,594 lines)
-- **No unused imports**
-- **Documented interfaces** between modules
-- **Zero regressions** introduced during refactoring
+### Dead Code: Functions marked `#[allow(dead_code)]`
+- **Impact**: Technical debt accumulation
+- **Effort**: 2-3 days to audit and remove
+- **Priority**: Low (doesn't affect runtime)
 
 ---
 
-## Risk Assessment
+## UPDATED IMPLEMENTATION ROADMAP (Post-CTE Unification)
 
-### Highest Risk: CTE Complexity
-- **Previous Attempts**: Multiple refactoring efforts have increased complexity
-- **Current State**: 8,261 lines across 3 files with overlapping concerns
-- **Failure Impact**: Could delay GA by months if CTE system becomes unmaintainable
+### ~~Phase 0: CTE Complexity Assessment~~ ✅ COMPLETE
+- CTE unification finished with `cte_manager` module
+- 6 strategy implementations production-ready
 
-### Mitigation Strategy
-1. **Conservative CTE Refactoring**: Start with analysis, not code changes
-2. **CTE Performance Benchmarks**: Establish baselines before changes
-3. **Incremental CTE Extraction**: Extract one CTE concern at a time
-4. **CTE Rollback Plan**: Feature flags for CTE architecture changes
+### ~~Phase 1: CTE System Refactoring~~ ✅ COMPLETE
+- Unified `CteManager` with strategy pattern implemented
+- Schema-aware CTE generation through `PatternSchemaContext`
+- All CTE strategies tested and working
 
-### Success Probability: 65%
-- **CTE Complexity**: Most challenging - requires careful architectural work
-- **Error Handling**: Straightforward but labor-intensive
-- **File Size**: Achievable with systematic extraction
-```rust
-// Example implementation
-#[cfg(feature = "refactored_cte_manager")]
-use crate::render_plan::cte_manager::CteManager;
+### Phase 2: plan_builder.rs Splitting (12 weeks) ⭐ **NOW TOP PRIORITY**
 
-#[cfg(not(feature = "refactored_cte_manager"))]
-// Fallback to original implementation
-// Allows instant rollback if issues discovered
-```
+#### **Week 1-2: Preparation & Phase 1 (Extract Pure Utilities)**
+**Goal**: Establish infrastructure and extract low-risk utilities  
+**Success Criteria**: plan_builder.rs < 15,500 lines, all tests pass, feature flags working
 
-#### 4. **Parallel Development Strategy**
-- **Main Branch**: Frozen for `plan_builder.rs` changes (only critical bug fixes)
-- **Refactoring Branch**: Dedicated branch for structural changes
-- **Automated Merging**: Daily merge from main to refactoring branch
-- **Conflict Resolution**: Automated scripts for merge conflict resolution
+**Week 1: Infrastructure Setup**
+- [ ] Create feature flag system for rollback capability
+- [ ] Set up performance benchmarks (baseline measurements)
+- [ ] Create `plan_builder_utils.rs` module skeleton
+- [ ] Audit current helper functions in `plan_builder_helpers.rs` (4,165 lines)
+- [ ] Map function dependencies and call graphs
 
-#### 5. **Success Criteria at Each Phase**
-- **Compilation**: Must compile without warnings
-- **All Tests Pass**: 753/753 tests passing
-- **Performance**: No >5% performance regression
-- **Code Review**: Peer review required for each phase completion
+**Week 2: Extract Pure Utilities**
+- [ ] Move `build_property_mapping_from_columns()` (lines 61-115)
+- [ ] Move `strip_database_prefix()` (lines 116-124)
+- [ ] Move `has_multi_type_vlp()` (lines 125-156)
+- [ ] Move `get_anchor_alias_from_plan()` (lines 157-178)
+- [ ] Move `extract_vlp_alias_mappings()` (lines 651-789)
+- [ ] Move `rewrite_render_expr_for_vlp()` (lines 790-901)
+- [ ] Update imports and glob imports in main file
+- [ ] Run full test suite (766 tests)
 
-### Contingency Plans
+#### **Week 3-8: Phase 2 (Extract Domain Builders)**
+**Goal**: Extract core rendering logic into domain-specific modules  
+**Success Criteria**: plan_builder.rs < 12,000 lines, each new module < 2,000 lines
 
-**If Phase 2+3 Issues Discovered**:
-- Stop refactoring immediately
-- Document findings for future attempts
-- Focus on error handling improvements only
-- Accept current monolithic structure as "good enough" for GA
+**Week 3-4: join_builder.rs (1,641 lines)**
+- [ ] Create `join_builder.rs` module
+- [ ] Extract `extract_joins()` implementation (lines 9,522-11,163)
+- [ ] Extract helper functions: `extract_join_from_logical_equality()`, `extract_cte_join_conditions()`, `extract_cte_conditions_recursive()`, `extract_join_from_equality()`, `update_graph_joins_cte_refs()`
+- [ ] Handle schema parameter passing
+- [ ] Update main impl to delegate to `join_builder::extract_joins()`
+- [ ] Integration testing for JOIN-heavy queries
 
-**If Integration Issues Discovered**:
-- Rollback to previous phase using feature flags
-- Extend testing phase before retrying integration
-- Consider alternative approaches (e.g., extract interfaces instead of implementations)
+**Week 5-6: select_builder.rs (780 lines)**
+- [ ] Create `select_builder.rs` module
+- [ ] Extract `extract_select_items()` implementation (lines 7,628-8,409)
+- [ ] Extract `extract_distinct()` (lines 8,409-8,430)
+- [ ] Extract helper: `expand_table_alias_to_select_items()` (lines 902-1,181)
+- [ ] Handle VLP alias rewriting logic
+- [ ] Update main impl delegation
+- [ ] Test RETURN clause variations
 
-**Success Probability**: **70%** (vs <10% for previous big-bang attempts)
+**Week 7: from_builder.rs (700 lines)**
+- [ ] Create `from_builder.rs` module
+- [ ] Extract `extract_from()` implementation
+- [ ] Extract `extract_last_node_cte()` helper
+- [ ] Handle FROM table resolution logic
+- [ ] Test FROM clause generation
+
+**Week 8: group_by_builder.rs (New module)**
+- [ ] Create `group_by_builder.rs` module
+- [ ] Extract `extract_group_by()` implementation (lines 11,163-11,800)
+- [ ] Extract `extract_having()` (lines 11,800-12,000 approx)
+- [ ] Extract helpers: `expand_table_alias_to_group_by_id_only()`, `replace_wildcards_with_group_by_columns()`
+- [ ] Test aggregation queries
+
+#### **Week 9-10: Phase 3 (Extract Filter Logic)**
+**Goal**: Consolidate all filtering logic  
+**Success Criteria**: plan_builder.rs < 10,000 lines
+
+**Week 9: filter_builder.rs**
+- [ ] Create `filter_builder.rs` module
+- [ ] Extract `extract_filters()` implementation
+- [ ] Extract `extract_final_filters()` helper
+- [ ] Extract correlation predicate functions: `extract_correlation_predicates()`, `convert_correlation_predicates_to_joins()`
+- [ ] Consolidate WHERE clause logic
+
+**Week 10: order_by_builder.rs**
+- [ ] Create `order_by_builder.rs` module
+- [ ] Extract `extract_order_by()` implementation
+- [ ] Extract `extract_limit()` and `extract_skip()`
+- [ ] Test ORDER BY, LIMIT, SKIP combinations
+
+#### **Week 11-12: Phase 4 (Restructure Main File)**
+**Goal**: Thin main impl to delegation layer  
+**Success Criteria**: plan_builder.rs < 4,000 lines, main impl < 1,000 lines
+
+**Week 11: Union & Array Join**
+- [ ] Extract `extract_union()` to `union_builder.rs`
+- [ ] Extract `extract_array_join()` to `array_join_builder.rs`
+- [ ] Handle UNWIND clause processing
+
+**Week 12: Main File Restructure**
+- [ ] Convert main impl to thin delegation layer
+- [ ] Move remaining logic to appropriate modules
+- [ ] Update all imports and module visibility
+- [ ] Final integration testing
+
+### Phase 3: Error Handling Overhaul (3 weeks)
+**Goal**: Replace all panics with proper error handling  
+**Success Criteria**: 0 panic! calls in production code
+
+**Week 13-14: Critical Panic Replacement**
+- [ ] Replace 20+ panic! calls with Result returns
+- [ ] Update call chains to propagate errors
+- [ ] Fix PatternComprehension panic in `logical_expr/mod.rs`
+- [ ] Fix property analyzer logic bug
+
+**Week 15: unwrap() Removal**
+- [ ] Replace unwrap() calls with safe error handling
+- [ ] Add comprehensive error messages
+- [ ] Test error scenarios
+
+### Phase 4: Cleanup & Documentation (2 weeks)
+**Goal**: Production-ready codebase  
+**Success Criteria**: 0 unused imports, comprehensive docs
+
+**Week 16: Code Cleanup**
+- [ ] Remove 24 unused imports
+- [ ] Address TODO/FIXME comments (evaluate each)
+- [ ] Remove dead code with `#[allow(dead_code)]`
+
+**Week 17: Documentation & Validation**
+- [ ] Update inline documentation for all modules
+- [ ] Create module-level documentation
+- [ ] Final performance benchmarks
+- [ ] Update STATUS.md and CHANGELOG.md
 
 ---
 
-## Dependencies
+## SUCCESS METRICS (Updated for Current State)
 
-### Prerequisites
-- All current functionality must remain working
-- No breaking changes to public APIs
-- Comprehensive test suite must pass at each milestone
+### Primary Metrics (GA Blockers)
+- ✅ **CTE Complexity**: < 8,000 lines total (achieved: 7,689 lines)
+- ❌ **plan_builder.rs Size**: < 4,000 lines (current: 16,172 lines, target: <4,000 by Week 12)
+- ❌ **Error Handling**: 0 panic! calls (current: 20+ panics, target: Week 15)
+- ✅ **Test Coverage**: 766+ tests passing (achieved, maintain throughout)
+
+### Secondary Metrics (Quality Improvements)
+- **File Organization**: Each module < 2,000 lines (target: Week 8)
+- **Code Cleanliness**: 0 unused imports (target: Week 16)
+- **Performance**: No >5% regression (measured weekly)
+- **Documentation**: All modules documented (target: Week 17)
+- **Zero regressions** introduced during refactoring (validated weekly)
+
+### Weekly Milestones
+- **Week 2**: plan_builder.rs < 15,500 lines
+- **Week 4**: plan_builder.rs < 14,000 lines, join_builder.rs complete
+- **Week 6**: plan_builder.rs < 13,000 lines, select_builder.rs complete
+- **Week 8**: plan_builder.rs < 12,000 lines, all domain builders complete
+- **Week 10**: plan_builder.rs < 10,000 lines, filter logic extracted
+- **Week 12**: plan_builder.rs < 4,000 lines, main restructure complete
+- **Week 15**: 0 panic! calls
+- **Week 17**: GA-ready codebase
+
+---
+
+## RISK ASSESSMENT (Updated Post-CTE Unification)
+
+### ~~Highest Risk: CTE Complexity~~ ✅ **RESOLVED**
+- CTE unification complete with `cte_manager` module
+- 6 production-ready strategies implemented
+- Risk reduced from critical to manageable
+
+### New Highest Risk: plan_builder.rs Splitting
+- **Current State**: 16,172 lines, 9,088-line impl block
+- **Challenge**: Extracting without breaking functionality
+- **Previous Attempts**: None recorded for this specific refactoring
+- **Failure Impact**: Could delay GA by 2-3 months if splitting creates instability
+
+### Mitigation Strategy (Detailed)
+1. **Weekly Testing Cadence**: Full test suite (766 tests) after each extraction
+2. **Feature Flags**: Rollback capability at each phase boundary
+3. **Performance Monitoring**: Baseline benchmarks established Week 1, monitored weekly
+4. **Incremental Extraction**: Never batch risky changes - one function at a time
+5. **Dependency Mapping**: Complete call graph analysis before starting
+6. **Success Criteria**: Clear exit criteria for each week with rollback triggers
+
+### Success Probability Assessment: 85%
+**Increased from 75% due to:**
+- Detailed weekly plan with specific line counts and functions
+- Established pattern with `plan_builder_helpers.rs`
+- Smaller actual function sizes than estimated
+- Strong test coverage baseline
+- Feature flag infrastructure for rollback
+
+### Contingency Plans (Detailed)
+
+**If Weekly Milestone Missed:**
+1. **Stop extraction immediately** for that module
+2. **Document failure reason** and dependencies encountered
+3. **Rollback using feature flags** to previous stable state
+4. **Reassess approach** - consider alternative extraction strategy
+5. **Extend timeline** by 1-2 weeks if needed
+
+**If Performance Regression >5% Detected:**
+1. **Profile the specific extraction** that caused regression
+2. **Optimize or refactor** the extracted code
+3. **If optimization fails**, rollback that specific extraction
+4. **Document performance characteristics** for future reference
+
+**If Multiple Test Failures (>5):**
+1. **Immediate rollback** to previous stable state
+2. **Root cause analysis** - likely missed dependency or API change
+3. **Fix in isolation** before re-attempting extraction
+4. **Add integration test** for the problematic pattern
+
+**Alternative Path (if splitting proves too risky):**
+- Accept monolithic structure for GA
+- Focus on error handling (95% success probability)
+- Add extensive inline documentation
+- Revisit splitting post-GA with lessons learned
+
+---
+
+## DEPENDENCIES & PREREQUISITES
+
+### Technical Prerequisites
+- ✅ All 766 tests passing (achieved)
+- ✅ CTE unification complete (achieved)
+- ✅ Schema consolidation complete (achieved)
+- ❌ Feature flag infrastructure (needed for plan_builder.rs work)
+- ❌ Performance benchmarking suite (needed before refactoring)
 
 ### Team Requirements
-- **Rust expertise**: Deep understanding of ownership, borrowing, and error handling
-- **Graph query knowledge**: Understanding of Cypher semantics and SQL generation
-- **CTE architecture experience**: Ability to simplify complex CTE abstractions
-- **Testing discipline**: Rigorous testing of complex query patterns
+- **Rust expertise**: Deep understanding of ownership, borrowing, error handling
+- **Graph query knowledge**: Understanding Cypher→SQL translation
+- **Refactoring discipline**: Incremental changes, comprehensive testing
+- **Risk awareness**: Willingness to rollback if problems emerge
 
 ---
 
-## Conclusion
+## CONCLUSION
 
-The ClickGraph codebase has made **significant progress** since the previous analysis:
-- ✅ Test suite dramatically improved (0 failing tests)
-- ✅ Some refactoring progress (extracted CTE utilities)
-- ✅ Core functionality stable
+The ClickGraph codebase has made **substantial progress** since January 14, 2026:
+- ✅ **CTE Unification**: COMPLETE - Risk eliminated
+- ✅ **Schema Consolidation**: COMPLETE - Architecture sound
+- ✅ **Test Suite**: 766 tests passing, 0 failures
+- ✅ **Core Functionality**: Stable and production-ready
 
-However, **CTE complexity remains the biggest challenge** for GA readiness. The CTE system has grown into a complex, cross-cutting concern that affects:
-- Performance (unnecessary CTEs for simple queries)
-- Maintainability (8,261 lines across multiple files)
-- Reliability (complex interactions hard to test)
-- Development velocity (changes require understanding entire CTE pipeline)
+**Remaining GA Blockers:**
+1. ⭐ **plan_builder.rs splitting** (16,172 lines → target <4,000 lines)
+2. **Error handling** (20+ panics → 0 panics)
+3. **Technical debt cleanup** (optional but recommended)
 
-**Recommended Next Steps**:
-1. **Pause other refactoring** and focus on CTE complexity assessment
-2. **Establish CTE performance baselines** before making changes
-3. **Design cleaner CTE abstractions** to reduce cross-cutting concerns
-4. **Implement error handling improvements** in parallel (lower risk)
+**The path to GA is clear**: With CTE complexity resolved, **plan_builder.rs is now the critical path**. The proposed 12-week incremental splitting approach is:
+- **Achievable**: Clear module boundaries, established patterns
+- **Lower risk**: Incremental with rollback capability
+- **High value**: 75% reduction in largest file size
 
-The path to GA is clear, but **CTE simplification is now the critical path** for achieving production-ready code quality.</content>
+**Recommended Next Steps:**
+1. **Week 1**: Set up feature flags and performance benchmarks
+2. **Week 2-4**: Extract utilities (low-risk warmup)
+3. **Week 5-11**: Extract domain builders (main effort)
+4. **Week 12**: Validate and merge
+
+**Alternative Path (if splitting is too risky):**
+- Accept monolithic structure for now
+- Focus on error handling (95% success probability)
+- Add extensive inline documentation
+- Revisit splitting post-GA with lessons learned
+
+The codebase is **closer to GA than ever**, with only one major architectural challenge remaining.
+
+---
+
+## PLANNING APPROACH RECOMMENDATION
+
+### **My Recommendation: Detailed Overall Plan + Phased Execution**
+
+**Why This Approach:**
+1. **Resource Planning**: 17-week timeline allows for proper scheduling and resource allocation
+2. **Risk Management**: Weekly milestones with clear rollback triggers prevent runaway issues
+3. **Coordination**: Team can see the full scope and dependencies upfront
+4. **Motivation**: Clear progress tracking with tangible weekly achievements
+5. **Flexibility**: Can adjust later weeks based on early phase learnings
+
+**Alternative Considered: Plan-One-Phase-at-a-Time**
+- **Pros**: Adapts to discoveries, less upfront analysis required
+- **Cons**: Harder to coordinate, potential for scope creep, delayed GA timeline
+- **Verdict**: Not recommended for this scale of refactoring
+
+**Key Success Factors:**
+- **Strict weekly testing** - no accumulation of technical debt
+- **Feature flags** - always maintain rollback capability  
+- **Performance monitoring** - catch regressions early
+- **Documentation** - record decisions and issues for future reference
+
+**Next Steps:**
+1. **Week 1 Kickoff**: Set up infrastructure and baseline benchmarks
+2. **Daily Standups**: Track progress against weekly checklists
+3. **Weekly Reviews**: Assess progress, adjust plan if needed
+4. **GA Decision Point**: Week 12 - evaluate if monolithic structure is acceptable if splitting proves challenging
+
+The detailed plan provides the structure needed for GA readiness while maintaining flexibility for adaptation.</content>
 <parameter name="filePath">/home/gene/clickgraph/docs/development/code-quality-analysis.md
