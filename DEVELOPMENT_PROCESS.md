@@ -1041,6 +1041,7 @@ LogicalPlan::Unwind(u) => {
 
 **Code Quality**:
 - [ ] All tests passing: `cargo test` (unit) and `pytest` (integration)
+- [ ] **Code formatting applied: `cargo fmt --all`** ⚠️ MANDATORY
 - [ ] No compilation warnings
 - [ ] Code follows Rust style guidelines
 - [ ] No debug/temporary code left in (println!, commented blocks)
@@ -1065,9 +1066,15 @@ LogicalPlan::Unwind(u) => {
 #### 6.2 Push Feature Branch
 
 ```bash
+# MANDATORY: Format code before pushing
+cargo fmt --all
+
+# Verify formatting didn't break anything
+cargo test --lib
+
 # Final commit with all changes
 git status
-git add <any remaining files>
+git add -A  # Include formatting changes
 git commit -m "<type>: complete <feature> implementation"
 
 # Push to remote
