@@ -2,6 +2,14 @@
 
 ### ⚙️ Refactoring
 
+- **plan_builder.rs Refactoring Progress (Phase 1 Week 2)**: Systematic extraction of pure utility functions
+  - **7/75 pure utilities extracted** (9% complete, 68 remaining)
+  - Successfully extracted `build_simple_relationship_render_plan()` - largest function (2000+ lines)
+  - Additional functions: `strip_database_prefix()`, `collect_aliases_from_plan()`, `has_multi_type_vlp()`, `extract_alias_from_expr()`, `collapse_passthrough_with()`
+  - Helper functions extracted: `extract_cte_references()`, `extract_correlation_predicates()`, `convert_correlation_predicates_to_joins()`, `extract_cte_join_conditions()`
+  - File size reduced: 16,172 → ~16,105 lines (-67 lines)
+  - All 770 tests passing, compilation clean, no functional regressions
+
 - **plan_builder.rs Refactoring Infrastructure (Phase 1 Week 1)**: Established foundation for systematic code quality improvement
   - Created runtime feature flags system for safe rollback during refactoring
   - Implemented automated performance benchmarking to prevent regressions

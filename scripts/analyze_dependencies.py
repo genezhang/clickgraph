@@ -126,7 +126,7 @@ def main():
     print("\n=== EXTRACTION ORDER SUGGESTION ===")
     print("Suggested order (dependencies first):")
     for i, func in enumerate(order, 1):
-        print("2d")
+        print(f"{i:2d}. {func}")
 
 if __name__ == "__main__":
     main()

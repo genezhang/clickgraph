@@ -8,16 +8,16 @@
 //! - Independent of LogicalPlan structure
 //! - Reusable across different builder modules
 
-use crate::render_plan::plan_builder::{RenderPlanBuilder, rewrite_expression_simple};
+use crate::render_plan::plan_builder::RenderPlanBuilder;
 use crate::query_planner::logical_plan::{LogicalPlan, GraphRel};
 use crate::query_planner::logical_expr::{LogicalExpr, Direction};
 use crate::graph_catalog::expression_parser::PropertyValue;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use crate::render_plan::SelectItem;
-use crate::render_plan::render_expr::{RenderExpr, Operator, OperatorApplication, PropertyAccess, TableAlias, AggregateFnCall, ScalarFnCall};
+use crate::render_plan::render_expr::{RenderExpr, Operator, OperatorApplication, PropertyAccess, TableAlias};
 use crate::render_plan::errors::RenderBuildError;
-use crate::render_plan::{ArrayJoin, RenderPlan, Cte};
+use crate::render_plan::ArrayJoin;
 use crate::render_plan::cte_extraction::{extract_relationship_columns, table_to_id_column, RelationshipColumns};
 use crate::render_plan::OrderByItem;
 use crate::render_plan::filter_pipeline::categorize_filters;
@@ -488,6 +488,176 @@ pub fn extract_vlp_alias_mappings(ctes: &crate::render_plan::CteItems) -> HashMa
 
 /// Try to extract a CTE join condition from an equality comparison.
 /// Returns: Some((cte_name, cte_column, main_table_alias, main_column)) if found
+pub fn extract_join_from_equality(
+    left: &RenderExpr,
+    right: &RenderExpr,
+    cte_references: &std::collections::HashMap<String, String>,
+) -> Option<(String, String, String, String)> {
+    use crate::render_plan::render_expr::*;
+
+    // Pattern 1: left is CTE column, right is table column
+    // Example: source_ip = conn.orig_h
+    if let RenderExpr::ColumnAlias(col_alias) = left {
+        // Check if this column alias references a CTE
+        if let Some(cte_name) = cte_references.get(&col_alias.0) {
+            // Right side should be a property access (table.column)
+            if let RenderExpr::PropertyAccessExp(prop) = right {
+                return Some((
+                    cte_name.clone(),
+                    col_alias.0.clone(),
+                    prop.table_alias.0.clone(),
+                    match &prop.column {
+                        PropertyValue::Column(col) => col.clone(),
+                        _ => return None,
+                    },
+                ));
+            }
+        }
+    }
+
+    // Pattern 2: left is table column, right is CTE column
+    // Example: conn.orig_h = source_ip
+    if let RenderExpr::PropertyAccessExp(prop) = left {
+        if let RenderExpr::ColumnAlias(col_alias) = right {
+            if let Some(cte_name) = cte_references.get(&col_alias.0) {
+                return Some((
+                    cte_name.clone(),
+                    col_alias.0.clone(),
+                    prop.table_alias.0.clone(),
+                    match &prop.column {
+                        PropertyValue::Column(col) => col.clone(),
+                        _ => return None,
+                    },
+                ));
+            }
+        }
+    }
+
+    None
+}
+
+/// Extract CTE join conditions from filter expressions.
+/// Searches recursively through filter expressions to find equality comparisons
+/// between CTE columns and table columns, returning join conditions.
+///
+/// Returns: Vec<(cte_name, cte_column, main_table_alias, main_column)>
+pub fn extract_cte_join_conditions(
+    filters: &Option<RenderExpr>,
+    cte_references: &std::collections::HashMap<String, String>,
+) -> Vec<(String, String, String, String)> {
+    use crate::render_plan::render_expr::*;
+
+    let mut conditions = vec![];
+
+    if let Some(filter_expr) = filters {
+        extract_cte_conditions_recursive(filter_expr, cte_references, &mut conditions);
+    }
+
+    log::info!(
+        "🔧 extract_cte_join_conditions: Found {} CTE join conditions: {:?}",
+        conditions.len(),
+        conditions
+    );
+    conditions
+}
+
+/// Recursively search filter expressions for CTE equality comparisons.
+/// Helper function for extract_cte_join_conditions that traverses AND/OR expressions.
+pub fn extract_cte_conditions_recursive(
+    expr: &RenderExpr,
+    cte_references: &std::collections::HashMap<String, String>,
+    conditions: &mut Vec<(String, String, String, String)>,
+) {
+    use crate::render_plan::render_expr::*;
+
+    match expr {
+        RenderExpr::OperatorApplicationExp(op_app) => {
+            // Look for Equal operator
+            if matches!(op_app.operator, Operator::Equal) && op_app.operands.len() == 2 {
+                let left = &op_app.operands[0];
+                let right = &op_app.operands[1];
+
+                // Check if one side is a CTE column and the other is a table column
+                if let Some(cond) = extract_join_from_equality(left, right, cte_references) {
+                    log::info!(
+                        "🔧 Found CTE join condition: CTE {}. {} = {}.{}",
+                        cond.0,
+                        cond.1,
+                        cond.2,
+                        cond.3
+                    );
+                    conditions.push(cond);
+                } else if let Some(cond) = extract_join_from_equality(right, left, cte_references) {
+                    // Try reversed order
+                    conditions.push(cond);
+                }
+            }
+
+            // Check for AND/OR - recurse into operands
+            if matches!(op_app.operator, Operator::And | Operator::Or) {
+                for operand in &op_app.operands {
+                    extract_cte_conditions_recursive(operand, cte_references, conditions);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Helper to collect table aliases from RenderExpr (for aggregate expressions)
+/// Used to find aliases referenced in COUNT(DISTINCT node) patterns
+pub fn collect_aliases_from_render_expr(exprs: &[crate::render_plan::render_expr::RenderExpr], aliases: &mut Vec<String>) {
+    for expr in exprs {
+        match expr {
+            crate::render_plan::render_expr::RenderExpr::PropertyAccessExp(prop) => {
+                if !aliases.contains(&prop.table_alias.0) {
+                    aliases.push(prop.table_alias.0.clone());
+                }
+            }
+            crate::render_plan::render_expr::RenderExpr::TableAlias(alias) => {
+                if !aliases.contains(&alias.0) {
+                    aliases.push(alias.0.clone());
+                }
+            }
+            crate::render_plan::render_expr::RenderExpr::OperatorApplicationExp(op) => {
+                collect_aliases_from_render_expr(&op.operands, aliases);
+            }
+            crate::render_plan::render_expr::RenderExpr::ScalarFnCall(func) => {
+                collect_aliases_from_render_expr(&func.args, aliases);
+            }
+            crate::render_plan::render_expr::RenderExpr::AggregateFnCall(agg) => {
+                collect_aliases_from_render_expr(&agg.args, aliases);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Collect aliases from GraphRel structures in a LogicalPlan
+/// Recursively traverses GraphRel, GraphNode, Projection, and Filter nodes
+/// to collect relationship aliases, node connection aliases, and child plan aliases
+pub fn collect_from_graph_rel(plan: &crate::query_planner::logical_plan::LogicalPlan, aliases: &mut std::collections::HashSet<String>) {
+    match plan {
+        crate::query_planner::logical_plan::LogicalPlan::GraphRel(gr) => {
+            aliases.insert(gr.alias.clone()); // relationship alias
+            aliases.insert(gr.left_connection.clone()); // left node alias
+            aliases.insert(gr.right_connection.clone()); // right node alias
+            collect_from_graph_rel(&gr.left, aliases);
+            collect_from_graph_rel(&gr.right, aliases);
+        }
+        crate::query_planner::logical_plan::LogicalPlan::GraphNode(gn) => {
+            aliases.insert(gn.alias.clone());
+            collect_from_graph_rel(&gn.input, aliases);
+        }
+        crate::query_planner::logical_plan::LogicalPlan::Projection(p) => collect_from_graph_rel(&p.input, aliases),
+        crate::query_planner::logical_plan::LogicalPlan::Filter(f) => collect_from_graph_rel(&f.input, aliases),
+        _ => {}
+    }
+}
+
+/// Extract alias from a LogicalExpr for WITH clause processing.
+/// Handles various expression types to find the variable name being aliased.
+///
 /// Returns the alias name if found, None otherwise.
 pub fn extract_alias_from_expr(expr: &LogicalExpr) -> Option<String> {
     match expr {
@@ -2536,159 +2706,6 @@ pub fn operator_references_alias(
 }
 
 // ============================================================================
-
-// ============================================================================
-// Utility Functions - CTE Management
-// ============================================================================
-
-/// Hoist nested CTEs from a RenderPlan to a parent CTE list.
-/// This is used to flatten CTE hierarchies.
-pub fn hoist_nested_ctes(from: &mut RenderPlan, to: &mut Vec<Cte>) {
-    let nested_ctes = std::mem::take(&mut from.ctes.0);
-    if !nested_ctes.is_empty() {
-        log::info!(
-            "🔧 hoist_nested_ctes: Hoisting {} nested CTEs",
-            nested_ctes.len()
-        );
-        to.extend(nested_ctes);
-    }
-}
-
-/// Find the alias of a GraphNode whose ViewScan references the given CTE.
-///
-/// This is used to find the anchor alias for a CTE reference. For example, if we have:
-///   GraphNode { alias: "a_b", input: ViewScan { source_table: "with_a_b_cte2", ... } }
-/// And cte_name is "with_a_b_cte2", this returns Some("a_b").
-pub fn find_cte_reference_alias(plan: &LogicalPlan, cte_name: &str) -> Option<String> {
-    use crate::query_planner::logical_plan::*;
-
-    match plan {
-        LogicalPlan::GraphNode(node) => {
-            // Check if this GraphNode's ViewScan references the CTE
-            if let LogicalPlan::ViewScan(vs) = node.input.as_ref() {
-                if vs.source_table == cte_name {
-                    return Some(node.alias.clone());
-                }
-            }
-            // Recurse into input
-            find_cte_reference_alias(&node.input, cte_name)
-        }
-        LogicalPlan::GraphRel(rel) => {
-            // Search in all branches
-            find_cte_reference_alias(&rel.left, cte_name)
-                .or_else(|| find_cte_reference_alias(&rel.right, cte_name))
-        }
-        LogicalPlan::Projection(proj) => find_cte_reference_alias(&proj.input, cte_name),
-        LogicalPlan::Limit(limit) => find_cte_reference_alias(&limit.input, cte_name),
-        LogicalPlan::OrderBy(order) => find_cte_reference_alias(&order.input, cte_name),
-        LogicalPlan::GraphJoins(gj) => find_cte_reference_alias(&gj.input, cte_name),
-        LogicalPlan::Filter(filter) => find_cte_reference_alias(&filter.input, cte_name),
-        LogicalPlan::GroupBy(gb) => find_cte_reference_alias(&gb.input, cte_name),
-        _ => None,
-    }
-}
-
-/// Collect all aliases from a logical plan (GraphNode, GraphRel, GraphJoins).
-pub fn collect_aliases_from_plan(plan: &LogicalPlan) -> std::collections::HashSet<String> {
-    use std::collections::HashSet;
-
-    fn collect_recursive(plan: &LogicalPlan, aliases: &mut HashSet<String>) {
-        match plan {
-            LogicalPlan::GraphNode(node) => {
-                aliases.insert(node.alias.clone());
-                collect_recursive(&node.input, aliases);
-            }
-            LogicalPlan::GraphRel(rel) => {
-                // GraphRel alias is the relationship alias (e.g., "t1")
-                if !rel.alias.is_empty() {
-                    aliases.insert(rel.alias.clone());
-                }
-                collect_recursive(&rel.left, aliases);
-                collect_recursive(&rel.center, aliases);
-                collect_recursive(&rel.right, aliases);
-            }
-            LogicalPlan::Projection(proj) => {
-                collect_recursive(&proj.input, aliases);
-            }
-            LogicalPlan::Filter(filter) => {
-                collect_recursive(&filter.input, aliases);
-            }
-            LogicalPlan::GroupBy(gb) => {
-                collect_recursive(&gb.input, aliases);
-            }
-            LogicalPlan::GraphJoins(gj) => {
-                collect_recursive(&gj.input, aliases);
-                for join in &gj.joins {
-                    aliases.insert(join.table_alias.clone());
-                }
-            }
-            LogicalPlan::Limit(limit) => collect_recursive(&limit.input, aliases),
-            LogicalPlan::OrderBy(order) => collect_recursive(&order.input, aliases),
-            LogicalPlan::Skip(skip) => collect_recursive(&skip.input, aliases),
-            LogicalPlan::Union(union) => {
-                for input in &union.inputs {
-                    collect_recursive(input, aliases);
-                }
-            }
-            LogicalPlan::ViewScan(_) => {}
-            LogicalPlan::Unwind(_) => {}
-            LogicalPlan::Cte(_) => {}
-            _ => {} // Handle other variants (Empty, Scan, PageRank, CartesianProduct, etc.)
-        }
-    }
-
-    let mut aliases = HashSet::new();
-    collect_recursive(plan, &mut aliases);
-    aliases
-}
-
-/// Rewrite operator application expressions with reverse alias mapping.
-pub fn rewrite_operator_application(
-    op: OperatorApplication,
-    reverse_mapping: &HashMap<(String, String), String>,
-) -> OperatorApplication {
-    let new_operands: Vec<RenderExpr> = op
-        .operands
-        .into_iter()
-        .map(|operand| rewrite_expression_simple(&operand, reverse_mapping))
-        .collect();
-    OperatorApplication {
-        operator: op.operator,
-        operands: new_operands,
-    }
-}
-
-/// Check if a join is for the inner scope (part of the pre-WITH pattern).
-/// This is determined by checking if the join references aliases that are
-/// part of the first MATCH (before WITH).
-pub fn is_join_for_inner_scope(
-    _plan: &LogicalPlan,
-    join: &crate::query_planner::logical_plan::Join,
-    _with_alias: &str,
-) -> bool {
-    // For WITH+aggregation patterns, joins with aliases p, t1 are for the inner scope
-    // Joins with aliases t2, post are for the outer scope
-    // We detect inner scope joins by checking if they reference aliases that are:
-    // 1. Part of the first MATCH (before WITH)
-    // 2. Not the with_alias itself
-
-    // Simple heuristic: inner joins typically have aliases like p, t1
-    // Outer joins have aliases like t2, post
-    // A more robust approach would track which aliases are defined in which scope
-
-    // For now, use a simple heuristic based on join table alias pattern
-    // Inner scope joins are the first N joins where N is determined by examining the plan
-    // This is a simplification - in production, we should track scope properly
-
-    // Actually, let's check if the join references a table that exists in the inner scope
-    // For the pattern: p -> f (inner), f -> post (outer)
-    // Joins for t1 (KNOWS) and f should be inner
-    // Joins for t2 (HAS_CREATOR) and post should be outer
-
-    // For now, return false (no filtering) - this is a placeholder
-    // In production, we'd need proper scope tracking
-    false
-}
 // CTE Join Condition Extraction Functions
 // ============================================================================
 
@@ -2852,117 +2869,6 @@ pub fn rewrite_cte_column_references(expr: &mut crate::render_plan::render_expr:
         }
         _ => {
             // Other expression types don't need rewriting
-        }
-    }
-}
-
-/// Find a GroupBy subplan with is_materialization_boundary=true
-pub fn find_group_by_subplan(plan: &LogicalPlan) -> Option<(&LogicalPlan, String)> {
-    match plan {
-        LogicalPlan::Limit(limit) => find_group_by_subplan(&limit.input),
-        LogicalPlan::OrderBy(order_by) => find_group_by_subplan(&order_by.input),
-        LogicalPlan::Skip(skip) => find_group_by_subplan(&skip.input),
-        LogicalPlan::GraphJoins(gj) => find_group_by_subplan(&gj.input),
-        LogicalPlan::Projection(proj) => find_group_by_subplan(&proj.input),
-        LogicalPlan::Filter(f) => find_group_by_subplan(&f.input),
-        LogicalPlan::GroupBy(gb) => {
-            // Found a GroupBy! Extract the exposed_alias if it's a materialization boundary
-            if gb.is_materialization_boundary {
-                let alias = gb
-                    .exposed_alias
-                    .clone()
-                    .unwrap_or_else(|| "cte".to_string());
-                log::info!("🔍 find_group_by_subplan: Found GroupBy with is_materialization_boundary=true, alias='{}'", alias);
-                return Some((plan, alias));
-            }
-            // Also recurse into the GroupBy's input in case there's a nested boundary
-            find_group_by_subplan(&gb.input)
-        }
-        LogicalPlan::GraphRel(graph_rel) => {
-            // Check both branches for GroupBy
-            // After boundary separation, GroupBy is typically in .left
-            if let LogicalPlan::GroupBy(gb) = graph_rel.left.as_ref() {
-                if gb.is_materialization_boundary {
-                    let alias = gb
-                        .exposed_alias
-                        .clone()
-                        .unwrap_or_else(|| graph_rel.left_connection.clone());
-                    log::info!("🔍 find_group_by_subplan: Found GroupBy(boundary) in GraphRel.left, alias='{}'", alias);
-                    return Some((graph_rel.left.as_ref(), alias));
-                }
-            }
-            if let LogicalPlan::GroupBy(gb) = graph_rel.right.as_ref() {
-                if gb.is_materialization_boundary {
-                    let alias = gb
-                        .exposed_alias
-                        .clone()
-                        .unwrap_or_else(|| graph_rel.right_connection.clone());
-                    log::info!("🔍 find_group_by_subplan: Found GroupBy(boundary) in GraphRel.right, alias='{}'", alias);
-                    return Some((graph_rel.right.as_ref(), alias));
-                }
-            }
-            // Recurse into branches
-            if let Some(found) = find_group_by_subplan(&graph_rel.left) {
-                return Some(found);
-            }
-            if let Some(found) = find_group_by_subplan(&graph_rel.right) {
-                return Some(found);
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-/// Check if plan contains a WithClause node
-pub fn plan_contains_with_clause(plan: &LogicalPlan) -> bool {
-    match plan {
-        // NEW: Handle WithClause type
-        LogicalPlan::WithClause(_) => true,
-        LogicalPlan::Projection(proj) => plan_contains_with_clause(&proj.input),
-        LogicalPlan::Filter(filter) => plan_contains_with_clause(&filter.input),
-        LogicalPlan::GroupBy(group_by) => plan_contains_with_clause(&group_by.input),
-        LogicalPlan::GraphJoins(graph_joins) => plan_contains_with_clause(&graph_joins.input),
-        LogicalPlan::Limit(limit) => plan_contains_with_clause(&limit.input),
-        LogicalPlan::OrderBy(order_by) => plan_contains_with_clause(&order_by.input),
-        LogicalPlan::Skip(skip) => plan_contains_with_clause(&skip.input),
-        LogicalPlan::GraphRel(graph_rel) => {
-            plan_contains_with_clause(&graph_rel.left)
-                || plan_contains_with_clause(&graph_rel.right)
-        }
-        LogicalPlan::Union(union) => union
-            .inputs
-            .iter()
-            .any(|input| plan_contains_with_clause(input)),
-        LogicalPlan::GraphNode(node) => plan_contains_with_clause(&node.input),
-        _ => false,
-    }
-}
-
-/// Collect all table aliases referenced in render expressions
-pub fn collect_aliases_from_render_expr(exprs: &[RenderExpr], aliases: &mut Vec<String>) {
-    for expr in exprs {
-        match expr {
-            RenderExpr::PropertyAccessExp(prop) => {
-                if !aliases.contains(&prop.table_alias.0) {
-                    aliases.push(prop.table_alias.0.clone());
-                }
-            }
-            RenderExpr::TableAlias(alias) => {
-                if !aliases.contains(&alias.0) {
-                    aliases.push(alias.0.clone());
-                }
-            }
-            RenderExpr::OperatorApplicationExp(op) => {
-                collect_aliases_from_render_expr(&op.operands, aliases);
-            }
-            RenderExpr::ScalarFnCall(func) => {
-                collect_aliases_from_render_expr(&func.args, aliases);
-            }
-            RenderExpr::AggregateFnCall(agg) => {
-                collect_aliases_from_render_expr(&agg.args, aliases);
-            }
-            _ => {}
         }
     }
 }

@@ -45,18 +45,66 @@ use crate::render_plan::cte_extraction::{
 // The compiler will use the module functions when available
 #[allow(unused_imports)]
 use super::plan_builder_helpers::*;
-use super::plan_builder_utils::{
-    strip_database_prefix, has_multi_type_vlp, get_anchor_alias_from_plan, find_label_for_alias,
-    find_group_by_subplan, plan_contains_with_clause, collect_aliases_from_render_expr
-};
 use super::CteGenerationContext;
-use super::plan_builder_utils::build_property_mapping_from_columns;
+use super::plan_builder_utils::{build_property_mapping_from_columns, extract_from};
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
 
 /// Strip database prefix from table name for use in CTE names.
 /// Converts "ldbc.Comment" -> "Comment", "Message" -> "Message"
+fn strip_database_prefix(table_name: &str) -> String {
+    table_name
+        .rsplit_once('.')
+        .map(|(_, table)| table.to_string())
+        .unwrap_or_else(|| table_name.to_string())
+}
+
+/// Check if the plan contains a multi-type variable-length path that requires CTE generation.
+/// Multi-type VLP cannot use simple JOIN-based plans.
+fn has_multi_type_vlp(
+    plan: &LogicalPlan,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+) -> bool {
+    use crate::query_planner::logical_plan::LogicalPlan;
+
+    match plan {
+        LogicalPlan::GraphRel(graph_rel) => {
+            // Check if it's a VLP pattern
+            if graph_rel.variable_length.is_some() {
+                let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
+                // Use the same logic as CTE extraction
+                crate::render_plan::cte_extraction::should_use_join_expansion_public(
+                    graph_rel, &rel_types, schema,
+                )
+            } else {
+                false
+            }
+        }
+        LogicalPlan::Projection(proj) => has_multi_type_vlp(&proj.input, schema),
+        LogicalPlan::Filter(filter) => has_multi_type_vlp(&filter.input, schema),
+        LogicalPlan::GroupBy(gb) => has_multi_type_vlp(&gb.input, schema),
+        LogicalPlan::OrderBy(order) => has_multi_type_vlp(&order.input, schema),
+        LogicalPlan::Limit(limit) => has_multi_type_vlp(&limit.input, schema),
+        LogicalPlan::Skip(skip) => has_multi_type_vlp(&skip.input, schema),
+        LogicalPlan::GraphJoins(joins) => has_multi_type_vlp(&joins.input, schema),
+        _ => false,
+    }
+}
+
 /// Get the anchor alias from a logical plan (for OPTIONAL MATCH join ordering).
+/// The anchor is the node that's in the FROM clause of the outer query.
+fn get_anchor_alias_from_plan(plan: &Arc<LogicalPlan>) -> Option<String> {
+    match plan.as_ref() {
+        LogicalPlan::GraphNode(node) => Some(node.alias.clone()),
+        LogicalPlan::GraphRel(rel) => Some(rel.left_connection.clone()),
+        LogicalPlan::Projection(proj) => get_anchor_alias_from_plan(&proj.input),
+        LogicalPlan::Filter(filter) => get_anchor_alias_from_plan(&filter.input),
+        LogicalPlan::GroupBy(gb) => get_anchor_alias_from_plan(&gb.input),
+        LogicalPlan::CartesianProduct(cp) => get_anchor_alias_from_plan(&cp.left),
+        _ => None,
+    }
+}
+
 /// Generate joins for OPTIONAL MATCH where the anchor is on the right side.
 ///
 /// For patterns like `MATCH (post:Post) OPTIONAL MATCH (liker:Person)-[:LIKES]->(post)`:
@@ -1229,6 +1277,28 @@ fn expand_table_alias_to_group_by_id_only(
 //   Renderer → Use as-is (no rewriting needed)
 
 /// Helper function to find the label for a given alias in the logical plan.
+fn find_label_for_alias(plan: &LogicalPlan, target_alias: &str) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphNode(node) => {
+            if node.alias == target_alias {
+                // label is Option<String>, unwrap it
+                node.label.clone()
+            } else {
+                None
+            }
+        }
+        LogicalPlan::GraphRel(rel) => {
+            // Check left and right connections
+            // Note: GraphRel doesn't have nested plans, just connection strings
+            None
+        }
+        LogicalPlan::Filter(filter) => find_label_for_alias(&filter.input, target_alias),
+        LogicalPlan::WithClause(wc) => find_label_for_alias(&wc.input, target_alias),
+        LogicalPlan::Projection(proj) => find_label_for_alias(&proj.input, target_alias),
+        _ => None,
+    }
+}
+
 /// Helper: Replace wildcard columns with explicit GROUP BY columns in SELECT items.
 ///
 /// Used in build_with_aggregation_match_cte_plan to fix `f.*` wildcards that would
@@ -4330,7 +4400,7 @@ fn rewrite_cte_column_references(expr: &mut RenderExpr) {
 }
 
 /// Simple expression rewriter that uses only reverse_mapping (no CTE name or from_alias needed)
-pub(crate) fn rewrite_expression_simple(
+fn rewrite_expression_simple(
     expr: &RenderExpr,
     reverse_mapping: &HashMap<(String, String), String>,
 ) -> RenderExpr {
@@ -4837,6 +4907,63 @@ fn operator_references_alias(
 
 /// Find a GroupBy subplan (WITH+aggregation) in the plan structure.
 /// Returns (group_by_plan, alias_name) if found.
+fn find_group_by_subplan(plan: &LogicalPlan) -> Option<(&LogicalPlan, String)> {
+    match plan {
+        LogicalPlan::Limit(limit) => find_group_by_subplan(&limit.input),
+        LogicalPlan::OrderBy(order_by) => find_group_by_subplan(&order_by.input),
+        LogicalPlan::Skip(skip) => find_group_by_subplan(&skip.input),
+        LogicalPlan::GraphJoins(gj) => find_group_by_subplan(&gj.input),
+        LogicalPlan::Projection(proj) => find_group_by_subplan(&proj.input),
+        LogicalPlan::Filter(f) => find_group_by_subplan(&f.input),
+        LogicalPlan::GroupBy(gb) => {
+            // Found a GroupBy! Extract the exposed_alias if it's a materialization boundary
+            if gb.is_materialization_boundary {
+                let alias = gb
+                    .exposed_alias
+                    .clone()
+                    .unwrap_or_else(|| "cte".to_string());
+                log::info!("🔍 find_group_by_subplan: Found GroupBy with is_materialization_boundary=true, alias='{}'", alias);
+                return Some((plan, alias));
+            }
+            // Also recurse into the GroupBy's input in case there's a nested boundary
+            find_group_by_subplan(&gb.input)
+        }
+        LogicalPlan::GraphRel(graph_rel) => {
+            // Check both branches for GroupBy
+            // After boundary separation, GroupBy is typically in .left
+            if let LogicalPlan::GroupBy(gb) = graph_rel.left.as_ref() {
+                if gb.is_materialization_boundary {
+                    let alias = gb
+                        .exposed_alias
+                        .clone()
+                        .unwrap_or_else(|| graph_rel.left_connection.clone());
+                    log::info!("🔍 find_group_by_subplan: Found GroupBy(boundary) in GraphRel.left, alias='{}'", alias);
+                    return Some((graph_rel.left.as_ref(), alias));
+                }
+            }
+            if let LogicalPlan::GroupBy(gb) = graph_rel.right.as_ref() {
+                if gb.is_materialization_boundary {
+                    let alias = gb
+                        .exposed_alias
+                        .clone()
+                        .unwrap_or_else(|| graph_rel.right_connection.clone());
+                    log::info!("🔍 find_group_by_subplan: Found GroupBy(boundary) in GraphRel.right, alias='{}'", alias);
+                    return Some((graph_rel.right.as_ref(), alias));
+                }
+            }
+            // Recurse into branches
+            if let Some(found) = find_group_by_subplan(&graph_rel.left) {
+                return Some(found);
+            }
+            if let Some(found) = find_group_by_subplan(&graph_rel.right) {
+                return Some(found);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Replace a GroupBy subplan with a CTE reference (ViewScan pointing to CTE).
 fn replace_group_by_with_cte_reference(
     plan: &LogicalPlan,
@@ -5884,6 +6011,30 @@ fn prune_joins_covered_by_cte(
 /// Returns a reference to the WithClause node if found.
 
 /// Check if a plan contains any WithClause anywhere in its tree
+fn plan_contains_with_clause(plan: &LogicalPlan) -> bool {
+    match plan {
+        // NEW: Handle WithClause type
+        LogicalPlan::WithClause(_) => true,
+        LogicalPlan::Projection(proj) => plan_contains_with_clause(&proj.input),
+        LogicalPlan::Filter(filter) => plan_contains_with_clause(&filter.input),
+        LogicalPlan::GroupBy(group_by) => plan_contains_with_clause(&group_by.input),
+        LogicalPlan::GraphJoins(graph_joins) => plan_contains_with_clause(&graph_joins.input),
+        LogicalPlan::Limit(limit) => plan_contains_with_clause(&limit.input),
+        LogicalPlan::OrderBy(order_by) => plan_contains_with_clause(&order_by.input),
+        LogicalPlan::Skip(skip) => plan_contains_with_clause(&skip.input),
+        LogicalPlan::GraphRel(graph_rel) => {
+            plan_contains_with_clause(&graph_rel.left)
+                || plan_contains_with_clause(&graph_rel.right)
+        }
+        LogicalPlan::Union(union) => union
+            .inputs
+            .iter()
+            .any(|input| plan_contains_with_clause(input)),
+        LogicalPlan::GraphNode(node) => plan_contains_with_clause(&node.input),
+        _ => false,
+    }
+}
+
 /// Replace the WITH clause subplan with a CTE reference (ViewScan pointing to CTE).
 /// This transforms the plan so the WITH clause output comes from the CTE instead of
 /// recomputing it.
@@ -6840,6 +6991,33 @@ fn extract_sorted_properties(
 
 /// Helper to collect table aliases from RenderExpr (for aggregate expressions)
 /// Used to find aliases referenced in COUNT(DISTINCT node) patterns
+fn collect_aliases_from_render_expr(exprs: &[RenderExpr], aliases: &mut Vec<String>) {
+    for expr in exprs {
+        match expr {
+            RenderExpr::PropertyAccessExp(prop) => {
+                if !aliases.contains(&prop.table_alias.0) {
+                    aliases.push(prop.table_alias.0.clone());
+                }
+            }
+            RenderExpr::TableAlias(alias) => {
+                if !aliases.contains(&alias.0) {
+                    aliases.push(alias.0.clone());
+                }
+            }
+            RenderExpr::OperatorApplicationExp(op) => {
+                collect_aliases_from_render_expr(&op.operands, aliases);
+            }
+            RenderExpr::ScalarFnCall(func) => {
+                collect_aliases_from_render_expr(&func.args, aliases);
+            }
+            RenderExpr::AggregateFnCall(agg) => {
+                collect_aliases_from_render_expr(&agg.args, aliases);
+            }
+            _ => {}
+        }
+    }
+}
+
 impl RenderPlanBuilder for LogicalPlan {
     fn find_id_column_for_alias(&self, alias: &str) -> RenderPlanBuilderResult<String> {
         // Traverse the plan tree to find a GraphNode or ViewScan with matching alias

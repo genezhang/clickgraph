@@ -1,0 +1,41 @@
+pub fn build_property_mapping_from_columns(
+pub fn strip_database_prefix(table_name: &str) -> String {
+pub fn rewrite_render_expr_for_vlp(expr: &mut RenderExpr, mappings: &HashMap<String, String>) {
+pub fn extract_cte_references(plan: &LogicalPlan) -> HashMap<String, String> {
+pub fn extract_correlation_predicates(
+pub fn convert_correlation_predicates_to_joins(
+pub fn extract_join_from_logical_equality(
+pub fn extract_vlp_alias_mappings(ctes: &crate::render_plan::CteItems) -> HashMap<String, String> {
+pub fn extract_alias_from_expr(expr: &LogicalExpr) -> Option<String> {
+pub fn collect_aliases_from_single_render_expr(
+pub fn extract_cte_references_from_plan(
+pub fn extract_distinct(plan: &LogicalPlan) -> bool {
+pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<RenderExpr>> {
+pub fn extract_final_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<RenderExpr>> {
+pub fn extract_from(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<FromTable>> {
+pub fn extract_group_by(plan: &LogicalPlan) -> RenderPlanBuilderResult<Vec<RenderExpr>> {
+pub fn extract_having(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<RenderExpr>> {
+pub fn extract_order_by(plan: &LogicalPlan) -> RenderPlanBuilderResult<Vec<OrderByItem>> {
+pub fn extract_limit(plan: &LogicalPlan) -> Option<i64> {
+pub fn extract_skip(plan: &LogicalPlan) -> Option<i64> {
+pub fn find_label_for_alias(plan: &LogicalPlan, target_alias: &str) -> Option<String> {
+pub fn get_anchor_alias_from_plan(plan: &Arc<LogicalPlan>) -> Option<String> {
+pub fn get_end_table_name_or_cte(
+pub fn get_start_table_name_or_cte(
+pub fn extract_sorted_properties(
+pub fn remap_cte_names_in_expr(
+pub fn remap_cte_names_in_render_plan(
+pub fn rewrite_cte_expression(
+pub fn has_multi_type_vlp(
+pub fn collect_inner_scope_aliases(
+pub fn cond_references_alias(
+pub fn operator_references_alias(
+pub fn hoist_nested_ctes(from: &mut RenderPlan, to: &mut Vec<Cte>) {
+pub fn find_cte_reference_alias(plan: &LogicalPlan, cte_name: &str) -> Option<String> {
+pub fn collect_aliases_from_plan(plan: &LogicalPlan) -> std::collections::HashSet<String> {
+pub fn rewrite_operator_application(
+pub fn is_join_for_inner_scope(
+pub fn extract_cte_join_conditions(
+pub fn extract_cte_conditions_recursive(
+pub fn extract_join_from_equality(
+pub fn rewrite_cte_column_references(expr: &mut crate::render_plan::render_expr::RenderExpr) {
