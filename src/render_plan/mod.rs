@@ -3,10 +3,13 @@ pub mod cte_extraction;
 pub mod cte_generation;
 pub mod cte_manager;
 mod expression_utils;
+mod feature_flags;
 mod filter_pipeline;
 mod from_table;
 mod plan_builder_helpers;
+mod plan_builder_utils;
 pub mod property_expansion;
+pub mod utils;
 mod view_table_ref;
 
 use errors::RenderBuildError;

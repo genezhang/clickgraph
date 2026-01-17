@@ -62,6 +62,8 @@ SESSION_SUMMARY_*.md
 
 # Temporary files created during development
 *.tmp
+*.backup
+*.backup_before_final_cleanup
 MIGRATION_TO_BIGGER_MACHINE.md
 WORK_IN_PROGRESS_*.md
 TEST_FAILURES_*.md

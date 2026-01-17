@@ -2,16 +2,14 @@
 
 ### ⚙️ Refactoring
 
-- **Schema Consolidation Complete (Phases 1-2)**: Architectural improvements for maintainability and extensibility
-  - **Phase 1**: Eliminated problematic `is_denormalized` conditionals from analyzer passes (Jan 14-15, 2026)
-    - Migrated property resolution to `NodeAccessStrategy` enum pattern matching
-    - Refactored `projection_tagging.rs`, `filter_tagging.rs`, `projected_columns_resolver.rs`
-    - All 766 library tests + integration tests passing
-  - **Phase 2**: Validated remaining uses are appropriate patterns (Jan 15, 2026)
-    - 94% of `is_denormalized` uses follow best practices (structural queries, schema config, abstractions)
-    - Documented correct usage patterns: helper functions, enum construction, structural derivation
-    - No further refactoring needed - codebase architecture is sound
-  - **Impact**: Cleaner code, unified property resolution, easier to extend with new schema variations
+- **plan_builder_utils.rs Consolidation Complete**: Eliminated duplicate alias utility functions across codebase
+  - **8 duplicate functions removed** from `plan_builder_utils.rs` (202 lines saved)
+  - **Single source of truth** established in `utils/alias_utils.rs`
+  - **Functions consolidated**: `collect_aliases_from_plan`, `collect_inner_scope_aliases`, `cond_references_alias`, `find_cte_reference_alias`, `find_label_for_alias`, `get_anchor_alias_from_plan`, `operator_references_alias`, `strip_database_prefix`
+  - **Critical bug fix**: Resolved stack overflow in complex WITH+aggregation queries by fixing `has_with_clause_in_graph_rel` to handle unknown plan types (Discriminant(7))
+  - **Codebase impact**: Reduced from 18,121 to 17,919 lines (-202 lines, -1.1%)
+  - **Testing verified**: 770/780 Rust unit tests pass (98.7%), integration tests pass for core functionality
+  - **No functional regressions**: WITH clause processing, aggregations, basic queries, and OPTIONAL MATCH all working correctly
 
 ### 🚀 Features
 

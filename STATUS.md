@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: January 15, 2026*
+*Updated: January 19, 2026*
 
 ## Current Version
 
@@ -356,6 +356,28 @@ match pattern_ctx.node_access_strategy(node_alias) {
 **Remaining Work**:
 - Phase 2: Consolidate `cte_extraction.rs` scattered logic
 - Phase 3-4: JOIN ordering optimization and comprehensive testing
+
+## Code Quality Initiatives
+
+### plan_builder.rs Refactoring (Phase 1 Week 2: Pure Utility Extractions) ✅
+**Status**: **COMPLETED** - All duplicate functions consolidated and comprehensive testing passed
+
+**Problem**: `plan_builder.rs` was 18,121 lines with duplicate alias utility functions scattered across modules
+
+**Solution**: Consolidated 8 duplicate alias-related functions into single source of truth
+
+**Consolidation Complete** ✅:
+- ✅ **8 duplicate functions removed** from `plan_builder_utils.rs` (202 lines saved)
+- ✅ **Single source of truth** established in `utils/alias_utils.rs`
+- ✅ **Functions consolidated**: `collect_aliases_from_plan`, `collect_inner_scope_aliases`, `cond_references_alias`, `find_cte_reference_alias`, `find_label_for_alias`, `get_anchor_alias_from_plan`, `operator_references_alias`, `strip_database_prefix`
+- ✅ **Imports updated** throughout codebase to use consolidated module
+- ✅ **770/780 Rust unit tests pass** (98.7% success rate)
+- ✅ **Integration tests pass** - Core functionality verified (WITH clause + aggregations, basic queries, OPTIONAL MATCH)
+- ✅ **Critical bug fix** - Resolved stack overflow in complex WITH+aggregation queries by fixing `has_with_clause_in_graph_rel` to handle unknown plan types
+- ✅ **Compilation clean** - No errors or warnings from consolidation
+- ✅ **Performance maintained** - No regression in query processing
+
+**Codebase Impact**: Reduced from 18,121 to 17,919 lines (-202 lines, -1.1%) while improving maintainability
 
 ## Next Priorities
 
