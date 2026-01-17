@@ -121,26 +121,41 @@ pub fn collect_inner_scope_aliases(
 pub fn cond_references_alias(expr: &RenderExpr, alias: &str) -> bool {
     match expr {
         RenderExpr::PropertyAccessExp(prop) => prop.table_alias.0 == alias,
-        RenderExpr::OperatorApplicationExp(op) => {
-            op.operands.iter().any(|operand| cond_references_alias(operand, alias))
-        }
+        RenderExpr::OperatorApplicationExp(op) => op
+            .operands
+            .iter()
+            .any(|operand| cond_references_alias(operand, alias)),
         RenderExpr::AggregateFnCall(agg) => {
             agg.args.iter().any(|arg| cond_references_alias(arg, alias))
         }
-        RenderExpr::ScalarFnCall(scalar) => {
-            scalar.args.iter().any(|arg| cond_references_alias(arg, alias))
-        }
+        RenderExpr::ScalarFnCall(scalar) => scalar
+            .args
+            .iter()
+            .any(|arg| cond_references_alias(arg, alias)),
         RenderExpr::Case(case_expr) => {
             case_expr.when_then.iter().any(|(when, then)| {
                 cond_references_alias(when, alias) || cond_references_alias(then, alias)
-            }) || case_expr.else_expr.as_ref().map_or(false, |else_expr| cond_references_alias(else_expr, alias))
+            }) || case_expr
+                .else_expr
+                .as_ref()
+                .map_or(false, |else_expr| cond_references_alias(else_expr, alias))
         }
         // Other expression types don't reference aliases
-        RenderExpr::ColumnAlias(_) | RenderExpr::Literal(_) | RenderExpr::Parameter(_) | 
-        RenderExpr::Raw(_) | RenderExpr::Star | RenderExpr::TableAlias(_) | 
-        RenderExpr::Column(_) | RenderExpr::List(_) | RenderExpr::ExistsSubquery(_) |
-        RenderExpr::ReduceExpr(_) | RenderExpr::MapLiteral(_) | RenderExpr::PatternCount(_) |
-        RenderExpr::ArraySubscript { .. } | RenderExpr::ArraySlicing { .. } | RenderExpr::InSubquery(_) => false,
+        RenderExpr::ColumnAlias(_)
+        | RenderExpr::Literal(_)
+        | RenderExpr::Parameter(_)
+        | RenderExpr::Raw(_)
+        | RenderExpr::Star
+        | RenderExpr::TableAlias(_)
+        | RenderExpr::Column(_)
+        | RenderExpr::List(_)
+        | RenderExpr::ExistsSubquery(_)
+        | RenderExpr::ReduceExpr(_)
+        | RenderExpr::MapLiteral(_)
+        | RenderExpr::PatternCount(_)
+        | RenderExpr::ArraySubscript { .. }
+        | RenderExpr::ArraySlicing { .. }
+        | RenderExpr::InSubquery(_) => false,
     }
 }
 
@@ -150,7 +165,9 @@ pub fn operator_references_alias(
     op: &crate::render_plan::render_expr::OperatorApplication,
     alias: &str,
 ) -> bool {
-    op.operands.iter().any(|operand| cond_references_alias(operand, alias))
+    op.operands
+        .iter()
+        .any(|operand| cond_references_alias(operand, alias))
 }
 
 /// Find the alias that references a specific CTE.
@@ -175,21 +192,11 @@ pub fn find_cte_reference_alias(plan: &LogicalPlan, cte_name: &str) -> Option<St
             // Check the input of the join
             find_cte_reference_alias(&join_plan.input, cte_name)
         }
-        LogicalPlan::Filter(filter_plan) => {
-            find_cte_reference_alias(&filter_plan.input, cte_name)
-        }
-        LogicalPlan::Projection(proj_plan) => {
-            find_cte_reference_alias(&proj_plan.input, cte_name)
-        }
-        LogicalPlan::GroupBy(gb_plan) => {
-            find_cte_reference_alias(&gb_plan.input, cte_name)
-        }
-        LogicalPlan::OrderBy(sort_plan) => {
-            find_cte_reference_alias(&sort_plan.input, cte_name)
-        }
-        LogicalPlan::Limit(limit_plan) => {
-            find_cte_reference_alias(&limit_plan.input, cte_name)
-        }
+        LogicalPlan::Filter(filter_plan) => find_cte_reference_alias(&filter_plan.input, cte_name),
+        LogicalPlan::Projection(proj_plan) => find_cte_reference_alias(&proj_plan.input, cte_name),
+        LogicalPlan::GroupBy(gb_plan) => find_cte_reference_alias(&gb_plan.input, cte_name),
+        LogicalPlan::OrderBy(sort_plan) => find_cte_reference_alias(&sort_plan.input, cte_name),
+        LogicalPlan::Limit(limit_plan) => find_cte_reference_alias(&limit_plan.input, cte_name),
         LogicalPlan::Union(union_plan) => {
             for input in &union_plan.inputs {
                 if let Some(alias) = find_cte_reference_alias(input, cte_name) {

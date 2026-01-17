@@ -130,7 +130,9 @@ mod tests {
 
     #[test]
     fn test_parse_env_string() {
-        let flags = PlanBuilderFeatureFlags::parse_env_string("extract_utilities:true,extract_join_builder:false");
+        let flags = PlanBuilderFeatureFlags::parse_env_string(
+            "extract_utilities:true,extract_join_builder:false",
+        );
         assert!(flags.extract_utilities);
         assert!(!flags.extract_join_builder);
     }

@@ -337,7 +337,7 @@ fn flatten_addition_operands(expr: &RenderExpr, alias_mapping: &[(String, String
 }
 
 /// Helper function to check if a LogicalPlan node represents a denormalized node
-/// 
+///
 /// ✅ PHASE 2 APPROVED: This is a structural query helper, not property resolution logic.
 /// It reads flags set by analyzer passes to determine JOIN requirements.
 /// For denormalized nodes, the node data lives on the edge table, not a separate node table
@@ -873,7 +873,7 @@ pub(super) fn get_all_relationship_connections(
 }
 
 /// Helper function to collect all denormalized node aliases from a plan tree
-/// 
+///
 /// ✅ PHASE 2 APPROVED: Structural query helper for plan tree traversal.
 /// Queries ViewScan's is_denormalized flag (set from schema during ViewScan creation)
 /// Returns a set of aliases where the node is stored on the relationship table

@@ -45,26 +45,53 @@ use crate::render_plan::cte_extraction::{
 // The compiler will use the module functions when available
 #[allow(unused_imports)]
 use super::plan_builder_helpers::*;
-use super::utils::alias_utils::*;
 use super::plan_builder_utils::{
-    has_multi_type_vlp,
-    find_group_by_subplan, plan_contains_with_clause, collect_aliases_from_render_expr,
+    build_chained_with_match_cte_plan,
+    build_with_aggregation_match_cte_plan,
+    collapse_passthrough_with,
+    collect_aliases_from_render_expr,
     // Import all extracted utility functions to avoid duplicates
-    convert_correlation_predicates_to_joins, extract_correlation_predicates,
-    extract_cte_conditions_recursive, extract_cte_join_conditions, extract_cte_references,
-    extract_join_from_equality, extract_join_from_logical_equality, extract_sorted_properties,
-    extract_vlp_alias_mappings, expand_table_alias_to_group_by_id_only, expand_table_alias_to_select_items, generate_swapped_joins_for_optional_match, hoist_nested_ctes, is_join_for_inner_scope,
-    remap_cte_names_in_expr, remap_cte_names_in_render_plan,
-    replace_wildcards_with_group_by_columns, rewrite_cte_column_references, rewrite_cte_expression, rewrite_operator_application,
-    rewrite_render_expr_for_vlp, rewrite_render_plan_expressions, rewrite_expression_with_cte_alias, rewrite_operator_application_with_cte_alias, rewrite_vlp_union_branch_aliases, update_graph_joins_cte_refs, build_chained_with_match_cte_plan, build_with_aggregation_match_cte_plan, replace_group_by_with_cte_reference, find_all_with_clauses_grouped, collapse_passthrough_with, prune_joins_covered_by_cte, replace_with_clause_with_cte_reference_v2,
+    convert_correlation_predicates_to_joins,
     // New extracted functions
-    count_with_cte_refs, has_with_clause_in_tree
+    count_with_cte_refs,
+    expand_table_alias_to_group_by_id_only,
+    expand_table_alias_to_select_items,
+    extract_correlation_predicates,
+    extract_cte_conditions_recursive,
+    extract_cte_join_conditions,
+    extract_cte_references,
+    extract_join_from_equality,
+    extract_join_from_logical_equality,
+    extract_sorted_properties,
+    extract_vlp_alias_mappings,
+    find_all_with_clauses_grouped,
+    find_group_by_subplan,
+    generate_swapped_joins_for_optional_match,
+    has_multi_type_vlp,
+    has_with_clause_in_tree,
+    hoist_nested_ctes,
+    is_join_for_inner_scope,
+    plan_contains_with_clause,
+    prune_joins_covered_by_cte,
+    remap_cte_names_in_expr,
+    remap_cte_names_in_render_plan,
+    replace_group_by_with_cte_reference,
+    replace_wildcards_with_group_by_columns,
+    replace_with_clause_with_cte_reference_v2,
+    rewrite_cte_column_references,
+    rewrite_cte_expression,
+    rewrite_expression_with_cte_alias,
+    rewrite_operator_application,
+    rewrite_operator_application_with_cte_alias,
+    rewrite_render_expr_for_vlp,
+    rewrite_render_plan_expressions,
+    rewrite_vlp_union_branch_aliases,
+    update_graph_joins_cte_refs,
 };
+use super::utils::alias_utils::*;
 use super::CteGenerationContext;
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
-
-
 
 pub(crate) trait RenderPlanBuilder {
     fn extract_last_node_cte(
@@ -165,7 +192,6 @@ pub(crate) trait RenderPlanBuilder {
 /// 1. Find VLP CTEs it references (look for vlp_cte joins)
 /// 2. Get VLP metadata (cypher_start_alias → start_node mapping)
 /// 3. Rewrite SELECT items: a.property → start_node.property
-
 
 /// Extract VLP alias mappings from CTEs: Cypher alias → VLP table alias
 /// Also extracts relationship aliases for denormalized patterns
@@ -7508,8 +7534,11 @@ impl RenderPlanBuilder for LogicalPlan {
             // No CTE wrapper, but check for variable-length paths which generate CTEs directly
             // Extract CTEs with a dummy alias and context (variable-length doesn't use the alias)
             println!("DEBUG: About to call extract_ctes_with_context in else branch");
-            extracted_ctes.extend(
-                transformed_plan.extract_ctes_with_context("_", &mut context, schema)?);
+            extracted_ctes.extend(transformed_plan.extract_ctes_with_context(
+                "_",
+                &mut context,
+                schema,
+            )?);
             println!("DEBUG: else branch extracted {} CTEs", extracted_ctes.len());
 
             // Check if we have a variable-length CTE (recursive or chained join)
@@ -7941,7 +7970,11 @@ impl RenderPlanBuilder for LogicalPlan {
                     if agg.name == "count" {
                         // Replace count(n) with sum(cnt)
                         agg.name = "sum".to_string();
-                        agg.args = vec![RenderExpr::Column(Column(crate::graph_catalog::expression_parser::PropertyValue::Column("cnt".to_string())))];
+                        agg.args = vec![RenderExpr::Column(Column(
+                            crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                "cnt".to_string(),
+                            ),
+                        ))];
                     }
                 }
             }
@@ -9159,23 +9192,42 @@ impl RenderPlanBuilder for LogicalPlan {
             // Check if we have aggregation functions in SELECT
             let has_aggregations = final_select_items.iter().any(|item| {
                 let result = contains_aggregation_function(&item.expression);
-                println!("DEBUG: Checking item expression, has_aggregation: {}", result);
+                println!(
+                    "DEBUG: Checking item expression, has_aggregation: {}",
+                    result
+                );
                 result
             });
 
             println!("DEBUG: has_aggregations: {}", has_aggregations);
             if has_aggregations {
                 println!("DEBUG: Detected aggregation query without FROM, attempting to extract FROM from plan");
-                println!("DEBUG: transformed_plan type: {:?}", std::any::type_name::<LogicalPlan>());
-                println!("DEBUG: original plan type: {:?}", std::any::type_name::<LogicalPlan>());
-                
+                println!(
+                    "DEBUG: transformed_plan type: {:?}",
+                    std::any::type_name::<LogicalPlan>()
+                );
+                println!(
+                    "DEBUG: original plan type: {:?}",
+                    std::any::type_name::<LogicalPlan>()
+                );
+
                 // Try to extract FROM from the transformed plan first, then original plan
                 if let Some(from_table) = transformed_plan.extract_from().ok().flatten() {
                     final_from = Some(from_table);
-                    println!("✅ Set FROM for aggregation query from transformed plan: {:?}", final_from.as_ref().and_then(|f| f.table.as_ref().map(|v| &v.name)));
+                    println!(
+                        "✅ Set FROM for aggregation query from transformed plan: {:?}",
+                        final_from
+                            .as_ref()
+                            .and_then(|f| f.table.as_ref().map(|v| &v.name))
+                    );
                 } else if let Some(from_table) = self.extract_from().ok().flatten() {
                     final_from = Some(from_table);
-                    println!("✅ Set FROM for aggregation query from original plan: {:?}", final_from.as_ref().and_then(|f| f.table.as_ref().map(|v| &v.name)));
+                    println!(
+                        "✅ Set FROM for aggregation query from original plan: {:?}",
+                        final_from
+                            .as_ref()
+                            .and_then(|f| f.table.as_ref().map(|v| &v.name))
+                    );
                 } else {
                     // Check if we have an unlabeled GraphNode (like MATCH (n) RETURN count(n))
                     // In this case, we need to create a UNION ALL of all node tables
@@ -9185,7 +9237,8 @@ impl RenderPlanBuilder for LogicalPlan {
                             LogicalPlan::Projection(p) => has_unlabeled_graph_node(&p.input),
                             LogicalPlan::Filter(f) => has_unlabeled_graph_node(&f.input),
                             LogicalPlan::GraphRel(gr) => {
-                                has_unlabeled_graph_node(&gr.left) || has_unlabeled_graph_node(&gr.right)
+                                has_unlabeled_graph_node(&gr.left)
+                                    || has_unlabeled_graph_node(&gr.right)
                             }
                             LogicalPlan::GraphJoins(gj) => has_unlabeled_graph_node(&gj.input),
                             _ => false,
@@ -9194,19 +9247,25 @@ impl RenderPlanBuilder for LogicalPlan {
 
                     if has_unlabeled_graph_node(&transformed_plan) {
                         println!("DEBUG: Found unlabeled GraphNode in aggregation query, creating count union of all node tables");
-                        
+
                         // Get all node tables from schema and create count queries
-                        let count_queries: Vec<String> = schema.get_nodes_schemas()
+                        let count_queries: Vec<String> = schema
+                            .get_nodes_schemas()
                             .values()
-                            .map(|node_schema| format!("SELECT count(*) as cnt FROM {}.{}", node_schema.database, node_schema.table_name))
+                            .map(|node_schema| {
+                                format!(
+                                    "SELECT count(*) as cnt FROM {}.{}",
+                                    node_schema.database, node_schema.table_name
+                                )
+                            })
                             .collect();
-                        
+
                         if !count_queries.is_empty() {
                             // Create UNION ALL SQL for counting all node tables
                             let union_sql = count_queries.join(" UNION ALL ");
-                            
+
                             let cte_name = "node_counts".to_string();
-                            
+
                             // Create CTE with the count union
                             let count_cte = Cte {
                                 cte_name: cte_name.clone(),
@@ -9221,17 +9280,18 @@ impl RenderPlanBuilder for LogicalPlan {
                                 vlp_start_id_col: None,
                                 vlp_end_id_col: None,
                             };
-                            
+
                             // Add CTE to the render plan
                             extracted_ctes.push(count_cte);
-                            
+
                             // Set FROM to reference the CTE
-                            final_from = Some(FromTable::new(Some(ViewTableRef::new_view_with_alias(
-                                std::sync::Arc::new(LogicalPlan::Empty),
-                                cte_name.clone(),
-                                "node_counts".to_string(),
-                            ))));
-                            
+                            final_from =
+                                Some(FromTable::new(Some(ViewTableRef::new_view_with_alias(
+                                    std::sync::Arc::new(LogicalPlan::Empty),
+                                    cte_name.clone(),
+                                    "node_counts".to_string(),
+                                ))));
+
                             // Mark that we need to transform count() to sum() for aggregation queries
                             // We'll do this after final_select_items is assigned
                             let mut needs_aggregation_transform = true;
@@ -9239,10 +9299,16 @@ impl RenderPlanBuilder for LogicalPlan {
                     } else {
                         // Last resort: try to find any ViewScan in the plan and use it as FROM
                         fn find_any_viewscan_table(plan: &LogicalPlan) -> Option<FromTable> {
-                            println!("DEBUG: Searching for ViewScan in plan type: {:?}", std::mem::discriminant(plan));
+                            println!(
+                                "DEBUG: Searching for ViewScan in plan type: {:?}",
+                                std::mem::discriminant(plan)
+                            );
                             match plan {
                                 LogicalPlan::ViewScan(scan) => {
-                                    println!("DEBUG: Found ViewScan with table: {}", scan.source_table);
+                                    println!(
+                                        "DEBUG: Found ViewScan with table: {}",
+                                        scan.source_table
+                                    );
                                     Some(FromTable::new(Some(ViewTableRef::new_table(
                                         scan.as_ref().clone(),
                                         scan.source_table.clone(),
@@ -9250,9 +9316,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                 }
                                 LogicalPlan::Projection(p) => find_any_viewscan_table(&p.input),
                                 LogicalPlan::Filter(f) => find_any_viewscan_table(&f.input),
-                                LogicalPlan::GraphRel(gr) => {
-                                    find_any_viewscan_table(&gr.left).or_else(|| find_any_viewscan_table(&gr.right))
-                                }
+                                LogicalPlan::GraphRel(gr) => find_any_viewscan_table(&gr.left)
+                                    .or_else(|| find_any_viewscan_table(&gr.right)),
                                 LogicalPlan::GraphNode(gn) => find_any_viewscan_table(&gn.input),
                                 _ => None,
                             }
@@ -9260,7 +9325,12 @@ impl RenderPlanBuilder for LogicalPlan {
 
                         if let Some(from_table) = find_any_viewscan_table(&transformed_plan) {
                             final_from = Some(from_table);
-                            println!("✅ Set FROM for aggregation query from ViewScan search: {:?}", final_from.as_ref().and_then(|f| f.table.as_ref().map(|v| &v.name)));
+                            println!(
+                                "✅ Set FROM for aggregation query from ViewScan search: {:?}",
+                                final_from
+                                    .as_ref()
+                                    .and_then(|f| f.table.as_ref().map(|v| &v.name))
+                            );
                         } else {
                             println!("DEBUG: No ViewScan found in transformed plan, trying original plan");
                             if let Some(from_table) = find_any_viewscan_table(&self) {
@@ -9420,13 +9490,14 @@ fn contains_aggregation_function(expr: &RenderExpr) -> bool {
         RenderExpr::OperatorApplicationExp(op) => {
             op.operands.iter().any(contains_aggregation_function)
         }
-        RenderExpr::ScalarFnCall(fn_call) => {
-            fn_call.args.iter().any(contains_aggregation_function)
-        }
+        RenderExpr::ScalarFnCall(fn_call) => fn_call.args.iter().any(contains_aggregation_function),
         RenderExpr::Case(case) => {
             case.when_then.iter().any(|(cond, val)| {
                 contains_aggregation_function(cond) || contains_aggregation_function(val)
-            }) || case.else_expr.as_ref().map_or(false, |e| contains_aggregation_function(e))
+            }) || case
+                .else_expr
+                .as_ref()
+                .map_or(false, |e| contains_aggregation_function(e))
         }
         _ => false,
     }

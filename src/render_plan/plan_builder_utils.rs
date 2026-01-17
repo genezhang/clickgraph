@@ -8,25 +8,35 @@
 //! - Independent of LogicalPlan structure
 //! - Reusable across different builder modules
 
-use crate::render_plan::plan_builder::RenderPlanBuilder;
-use crate::query_planner::logical_plan::{LogicalPlan, GraphRel, GraphNode};
-use crate::query_planner::logical_expr::{LogicalExpr, Direction};
-use crate::query_planner::plan_ctx::PlanCtx;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::GraphSchema;
+use crate::query_planner::logical_expr::{Direction, LogicalExpr};
+use crate::query_planner::logical_plan::{GraphNode, GraphRel, LogicalPlan};
+use crate::query_planner::plan_ctx::PlanCtx;
+use crate::render_plan::plan_builder::RenderPlanBuilder;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::render_plan::SelectItem;
-use crate::render_plan::render_expr::{RenderExpr, Operator, OperatorApplication, PropertyAccess, TableAlias, AggregateFnCall, ScalarFnCall, ColumnAlias, RenderCase, InSubquery};
+use crate::render_plan::cte_extraction::{
+    extract_relationship_columns, get_path_variable, rel_type_to_table_name, table_to_id_column,
+    RelationshipColumns,
+};
 use crate::render_plan::errors::RenderBuildError;
-use crate::render_plan::{ArrayJoin, RenderPlan, Cte, Join, CteContent, CteItems, FilterItems, FromTableItem, GroupByExpressions, LimitItem, OrderByItems, SkipItem, Union, UnionItems, SelectItems, JoinItems, ArrayJoinItem, OrderByOrder};
-use crate::render_plan::cte_extraction::{extract_relationship_columns, table_to_id_column, RelationshipColumns, rel_type_to_table_name, get_path_variable};
-use crate::render_plan::OrderByItem;
 use crate::render_plan::filter_pipeline::categorize_filters;
-use crate::render_plan::{FromTable, ViewTableRef};
+use crate::render_plan::render_expr::{
+    AggregateFnCall, ColumnAlias, InSubquery, Operator, OperatorApplication, PropertyAccess,
+    RenderCase, RenderExpr, ScalarFnCall, TableAlias,
+};
 use crate::render_plan::view_table_ref::{from_table_to_view_ref, view_ref_to_from_table};
 use crate::render_plan::JoinType;
+use crate::render_plan::OrderByItem;
+use crate::render_plan::SelectItem;
+use crate::render_plan::{
+    ArrayJoin, ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem,
+    GroupByExpressions, Join, JoinItems, LimitItem, OrderByItems, OrderByOrder, RenderPlan,
+    SelectItems, SkipItem, Union, UnionItems,
+};
+use crate::render_plan::{FromTable, ViewTableRef};
 use crate::utils::cte_naming::generate_cte_name;
 use log::{self, debug};
 
@@ -482,7 +492,6 @@ pub fn extract_vlp_alias_mappings(ctes: &crate::render_plan::CteItems) -> HashMa
     mappings
 }
 
-
 /// Try to extract a CTE join condition from an equality comparison.
 /// Returns: Some((cte_name, cte_column, main_table_alias, main_column)) if found
 /// Returns the alias name if found, None otherwise.
@@ -520,7 +529,10 @@ pub fn extract_alias_from_expr(expr: &LogicalExpr) -> Option<String> {
         LogicalExpr::OperatorApplicationExp(op_app) => {
             // Handle operators like DISTINCT that wrap other expressions
             // Try to extract alias from the first operand
-            log::warn!("🔍 extract_with_alias: OperatorApplicationExp with {:?}, checking operands", op_app.operator);
+            log::warn!(
+                "🔍 extract_with_alias: OperatorApplicationExp with {:?}, checking operands",
+                op_app.operator
+            );
             for operand in &op_app.operands {
                 if let Some(alias) = extract_alias_from_expr(operand) {
                     return Some(alias);
@@ -627,7 +639,7 @@ pub fn extract_distinct(plan: &LogicalPlan) -> bool {
 }
 
 /// Extract filters from a LogicalPlan node.
-/// 
+///
 /// This function recursively traverses the plan tree to collect all filter predicates
 /// that should be applied to the query, including view filters, schema filters,
 /// WHERE predicates, and cycle prevention filters for variable-length paths.
@@ -781,7 +793,10 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
                 if let Some(exact_hops) = spec.exact_hop_count() {
                     // Skip cycle prevention for *1 - single hop can't cycle
                     if exact_hops >= 2 && graph_rel.shortest_path_mode.is_none() {
-                        crate::debug_println!("DEBUG: extract_filters - Adding cycle prevention for fixed-length *{}", exact_hops);
+                        crate::debug_println!(
+                            "DEBUG: extract_filters - Adding cycle prevention for fixed-length *{}",
+                            exact_hops
+                        );
 
                         // Check if this is a denormalized pattern
                         let is_denormalized = is_node_denormalized(&graph_rel.left)
@@ -789,24 +804,23 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
 
                         // Extract table/column info for cycle prevention
                         // Use extract_table_name directly to avoid wrong fallbacks
-                        let start_table =
-                            extract_table_name(&graph_rel.left).ok_or_else(|| {
-                                RenderBuildError::MissingTableInfo(
-                                    "start node in cycle prevention".to_string(),
-                                )
-                            })?;
-                        let end_table =
-                            extract_table_name(&graph_rel.right).ok_or_else(|| {
-                                RenderBuildError::MissingTableInfo(
-                                    "end node in cycle prevention".to_string(),
-                                )
-                            })?;
+                        let start_table = extract_table_name(&graph_rel.left).ok_or_else(|| {
+                            RenderBuildError::MissingTableInfo(
+                                "start node in cycle prevention".to_string(),
+                            )
+                        })?;
+                        let end_table = extract_table_name(&graph_rel.right).ok_or_else(|| {
+                            RenderBuildError::MissingTableInfo(
+                                "end node in cycle prevention".to_string(),
+                            )
+                        })?;
 
-                        let rel_cols = extract_relationship_columns(&graph_rel.center)
-                            .unwrap_or(RelationshipColumns {
+                        let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
+                            RelationshipColumns {
                                 from_id: "from_node_id".to_string(),
                                 to_id: "to_node_id".to_string(),
-                            });
+                            },
+                        );
 
                         // For denormalized, use relationship columns directly
                         // For normal, use node ID columns
@@ -821,16 +835,20 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
                         };
 
                         // Generate cycle prevention filters
-                        if let Some(cycle_filter) = crate::render_plan::cte_extraction::generate_cycle_prevention_filters(
-                            exact_hops,
-                            &start_id_col,
-                            &rel_cols.to_id,
-                            &rel_cols.from_id,
-                            &end_id_col,
-                            &graph_rel.left_connection,
-                            &graph_rel.right_connection,
-                        ) {
-                            crate::debug_println!("DEBUG: extract_filters - Generated cycle prevention filter");
+                        if let Some(cycle_filter) =
+                            crate::render_plan::cte_extraction::generate_cycle_prevention_filters(
+                                exact_hops,
+                                &start_id_col,
+                                &rel_cols.to_id,
+                                &rel_cols.from_id,
+                                &end_id_col,
+                                &graph_rel.left_connection,
+                                &graph_rel.right_connection,
+                            )
+                        {
+                            crate::debug_println!(
+                                "DEBUG: extract_filters - Generated cycle prevention filter"
+                            );
                             all_predicates.push(cycle_filter);
                         }
                     }
@@ -875,14 +893,18 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
 
             // Also check for schema filters from the input (e.g., GraphNode → ViewScan)
             if let Some(input_filter) = extract_filters(&filter.input)? {
-                crate::debug_println!("DEBUG: extract_filters - Combining Filter predicate with input schema filter");
+                crate::debug_println!(
+                    "DEBUG: extract_filters - Combining Filter predicate with input schema filter"
+                );
                 // Combine the Filter predicate with input's schema filter using AND
                 Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
                     operator: Operator::And,
                     operands: vec![input_filter, expr],
                 }))
             } else {
-                crate::debug_println!("DEBUG: extract_filters - Returning Filter predicate only (no input filter)");
+                crate::debug_println!(
+                    "DEBUG: extract_filters - Returning Filter predicate only (no input filter)"
+                );
                 Some(expr)
             }
         }
@@ -1133,7 +1155,9 @@ pub fn extract_from(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<FromTa
             );
 
             if left_is_denormalized && right_is_denormalized {
-                log::debug!("✓ DENORMALIZED pattern: both nodes on edge table, using edge table as FROM");
+                log::debug!(
+                    "✓ DENORMALIZED pattern: both nodes on edge table, using edge table as FROM"
+                );
 
                 // For multi-hop denormalized, find the first (leftmost) relationship
                 fn find_first_graph_rel(
@@ -1234,10 +1258,7 @@ pub fn extract_from(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<FromTa
                             "DEBUG: nested_graph_rel.left = {:?}",
                             nested_graph_rel.left
                         );
-                        crate::debug_println!(
-                            "DEBUG: nested_left_from = {:?}",
-                            nested_left_from
-                        );
+                        crate::debug_println!("DEBUG: nested_left_from = {:?}", nested_left_from);
 
                         if let Ok(Some(nested_from_table)) = nested_left_from {
                             from_table_to_view_ref(Some(nested_from_table))
@@ -1246,9 +1267,9 @@ pub fn extract_from(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<FromTa
                             let table_name = extract_table_name(&nested_graph_rel.left)
                                 .ok_or_else(|| {
                                     super::errors::RenderBuildError::TableNameNotFound(format!(
-                                    "Could not resolve table name for alias '{}', plan: {:?}",
-                                    nested_graph_rel.left_connection, nested_graph_rel.left
-                                ))
+                                        "Could not resolve table name for alias '{}', plan: {:?}",
+                                        nested_graph_rel.left_connection, nested_graph_rel.left
+                                    ))
                                 })?;
 
                             Some(super::ViewTableRef {
@@ -1295,9 +1316,9 @@ pub fn extract_from(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<FromTa
                             let table_name =
                                 extract_table_name(&graph_rel.left).ok_or_else(|| {
                                     super::errors::RenderBuildError::TableNameNotFound(format!(
-                                    "Could not resolve table name for alias '{}', plan: {:?}",
-                                    graph_rel.left_connection, graph_rel.left
-                                ))
+                                        "Could not resolve table name for alias '{}', plan: {:?}",
+                                        graph_rel.left_connection, graph_rel.left
+                                    ))
                                 })?;
 
                             Some(super::ViewTableRef {
@@ -1508,7 +1529,9 @@ pub fn extract_from(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<FromTa
                 }
 
                 // No valid FROM found for empty joins - this is unexpected
-                log::warn!("⚠️ GraphJoins has empty joins and no recognizable pattern - returning None");
+                log::warn!(
+                    "⚠️ GraphJoins has empty joins and no recognizable pattern - returning None"
+                );
                 return Ok(None);
             }
 
@@ -1632,8 +1655,7 @@ pub fn extract_from(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<FromTa
                 );
                 if let Some(first_join) = graph_joins.joins.first() {
                     // Check if this join has a CTE reference
-                    if let Some(cte_name) =
-                        graph_joins.cte_references.get(&first_join.table_alias)
+                    if let Some(cte_name) = graph_joins.cte_references.get(&first_join.table_alias)
                     {
                         log::info!(
                             "✅ Using first join '{}' → CTE '{}' as FROM",
@@ -1678,12 +1700,8 @@ pub fn extract_from(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<FromTa
             // Return None to surface the bug
             None
         }
-        LogicalPlan::GroupBy(group_by) => {
-            from_table_to_view_ref(extract_from(&group_by.input)?)
-        }
-        LogicalPlan::OrderBy(order_by) => {
-            from_table_to_view_ref(extract_from(&order_by.input)?)
-        }
+        LogicalPlan::GroupBy(group_by) => from_table_to_view_ref(extract_from(&group_by.input)?),
+        LogicalPlan::OrderBy(order_by) => from_table_to_view_ref(extract_from(&order_by.input)?),
         LogicalPlan::Skip(skip) => from_table_to_view_ref(extract_from(&skip.input)?),
         LogicalPlan::Limit(limit) => from_table_to_view_ref(extract_from(&limit.input)?),
         LogicalPlan::Cte(cte) => from_table_to_view_ref(extract_from(&cte.input)?),
@@ -1719,9 +1737,12 @@ mod tests {
         // Basic tests to ensure module compiles
         assert_eq!(strip_database_prefix("test"), "test");
         assert_eq!(strip_database_prefix("db.table"), "table");
-        
+
         // Note: has_multi_type_vlp requires a schema, tested elsewhere
-        assert_eq!(get_anchor_alias_from_plan(&Arc::new(LogicalPlan::Empty)), None);
+        assert_eq!(
+            get_anchor_alias_from_plan(&Arc::new(LogicalPlan::Empty)),
+            None
+        );
     }
 }
 pub fn extract_group_by(plan: &LogicalPlan) -> RenderPlanBuilderResult<Vec<RenderExpr>> {
@@ -1772,8 +1793,7 @@ pub fn extract_group_by(plan: &LogicalPlan) -> RenderPlanBuilderResult<Vec<Rende
                 if let Some(result) = find_node_properties_for_rel_alias(&rel.left, rel_alias) {
                     return Some(result);
                 }
-                if let Some(result) = find_node_properties_for_rel_alias(&rel.center, rel_alias)
-                {
+                if let Some(result) = find_node_properties_for_rel_alias(&rel.center, rel_alias) {
                     return Some(result);
                 }
                 find_node_properties_for_rel_alias(&rel.right, rel_alias)
@@ -1784,18 +1804,14 @@ pub fn extract_group_by(plan: &LogicalPlan) -> RenderPlanBuilderResult<Vec<Rende
             LogicalPlan::Filter(filter) => {
                 find_node_properties_for_rel_alias(&filter.input, rel_alias)
             }
-            LogicalPlan::GroupBy(gb) => {
-                find_node_properties_for_rel_alias(&gb.input, rel_alias)
-            }
+            LogicalPlan::GroupBy(gb) => find_node_properties_for_rel_alias(&gb.input, rel_alias),
             LogicalPlan::GraphJoins(joins) => {
                 find_node_properties_for_rel_alias(&joins.input, rel_alias)
             }
             LogicalPlan::OrderBy(order) => {
                 find_node_properties_for_rel_alias(&order.input, rel_alias)
             }
-            LogicalPlan::Skip(skip) => {
-                find_node_properties_for_rel_alias(&skip.input, rel_alias)
-            }
+            LogicalPlan::Skip(skip) => find_node_properties_for_rel_alias(&skip.input, rel_alias),
             LogicalPlan::Limit(limit) => {
                 find_node_properties_for_rel_alias(&limit.input, rel_alias)
             }
@@ -1831,8 +1847,7 @@ pub fn extract_group_by(plan: &LogicalPlan) -> RenderPlanBuilderResult<Vec<Rende
 
             for expr in &group_by.expressions {
                 // Check if this is a TableAlias that needs expansion
-                if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) = expr
-                {
+                if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) = expr {
                     // OPTIMIZATION: For node aliases in GROUP BY, we only need the ID column.
                     // All other columns are functionally dependent on the ID.
                     // This reduces GROUP BY from 8+ columns to just 1, improving performance.
@@ -1853,9 +1868,14 @@ pub fn extract_group_by(plan: &LogicalPlan) -> RenderPlanBuilderResult<Vec<Rende
 
                         // Get the ID column from the schema (via ViewScan.id_column)
                         // This is the proper way - use schema definition, not pattern matching
-                        let id_col = group_by.input.find_id_column_for_alias(&alias.0)
+                        let id_col = group_by
+                            .input
+                            .find_id_column_for_alias(&alias.0)
                             .unwrap_or_else(|_| {
-                                log::warn!("⚠️ Could not find ID column for alias '{}', using fallback", alias.0);
+                                log::warn!(
+                                    "⚠️ Could not find ID column for alias '{}', using fallback",
+                                    alias.0
+                                );
                                 "id".to_string()
                             });
 
@@ -1879,13 +1899,18 @@ pub fn extract_group_by(plan: &LogicalPlan) -> RenderPlanBuilderResult<Vec<Rende
                     if prop_access.column.raw() == "*" {
                         // OPTIMIZATION: For node alias wildcards in GROUP BY, we only need the ID column.
                         // All other columns are functionally dependent on the ID.
-                        let (properties, actual_table_alias): (Vec<(String, String)>, Option<String>) =
-                            match group_by.input.get_properties_with_table_alias(&prop_access.table_alias.0) {
-                                Ok(result) => result,
-                                Err(_) => continue,
-                            };
-                        let table_alias_to_use = actual_table_alias
-                            .unwrap_or_else(|| prop_access.table_alias.0.clone());
+                        let (properties, actual_table_alias): (
+                            Vec<(String, String)>,
+                            Option<String>,
+                        ) = match group_by
+                            .input
+                            .get_properties_with_table_alias(&prop_access.table_alias.0)
+                        {
+                            Ok(result) => result,
+                            Err(_) => continue,
+                        };
+                        let table_alias_to_use =
+                            actual_table_alias.unwrap_or_else(|| prop_access.table_alias.0.clone());
 
                         // Skip if we've already added this alias (avoid duplicates)
                         if seen_group_by_aliases.contains(&table_alias_to_use) {
@@ -1894,17 +1919,20 @@ pub fn extract_group_by(plan: &LogicalPlan) -> RenderPlanBuilderResult<Vec<Rende
                         seen_group_by_aliases.insert(table_alias_to_use.clone());
 
                         // Better approach: try to find node properties for this rel alias
-                        if let Some((node_props, table_alias)) =
-                            find_node_properties_for_rel_alias(
-                                &group_by.input,
-                                &prop_access.table_alias.0,
-                            )
-                        {
+                        if let Some((node_props, table_alias)) = find_node_properties_for_rel_alias(
+                            &group_by.input,
+                            &prop_access.table_alias.0,
+                        ) {
                             // Found denormalized node properties - get ID from schema (MUST succeed)
-                            let id_col = group_by.input.find_id_column_for_alias(&prop_access.table_alias.0)
-                                .map_err(|e| RenderBuildError::InvalidRenderPlan(
-                                    format!("Cannot find ID column for denormalized alias '{}': {}", prop_access.table_alias.0, e)
-                                ))?;
+                            let id_col = group_by
+                                .input
+                                .find_id_column_for_alias(&prop_access.table_alias.0)
+                                .map_err(|e| {
+                                    RenderBuildError::InvalidRenderPlan(format!(
+                                        "Cannot find ID column for denormalized alias '{}': {}",
+                                        prop_access.table_alias.0, e
+                                    ))
+                                })?;
 
                             log::debug!("🔧 GROUP BY optimization: Using ID column '{}' from schema for denormalized alias '{}'",
                                 id_col, table_alias);
@@ -2012,7 +2040,9 @@ pub fn get_end_table_name_or_cte(
     plan: &LogicalPlan,
 ) -> Result<String, crate::render_plan::errors::RenderBuildError> {
     // First, try to get source_table directly from ViewScan (handles CTE references)
-    if let Some(table_name) = crate::render_plan::plan_builder_helpers::extract_end_node_table_name(plan) {
+    if let Some(table_name) =
+        crate::render_plan::plan_builder_helpers::extract_end_node_table_name(plan)
+    {
         // Check if this looks like a CTE (starts with "with_")
         if table_name.starts_with("with_") {
             return Ok(table_name);
@@ -2541,27 +2571,45 @@ pub fn has_with_aggregation_pattern(plan: &LogicalPlan) -> bool {
 
 /// Check if plan has WITH clause in GraphRel.right (WITH+MATCH pattern)
 pub fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
-    log::warn!("🔍 has_with_clause_in_graph_rel: Called with plan type: {:?}", std::mem::discriminant(plan));
+    log::warn!(
+        "🔍 has_with_clause_in_graph_rel: Called with plan type: {:?}",
+        std::mem::discriminant(plan)
+    );
     fn check_graph_rel_right(plan: &LogicalPlan) -> bool {
-        log::warn!("🔍 check_graph_rel_right: Checking plan type: {:?}", std::mem::discriminant(plan));
+        log::warn!(
+            "🔍 check_graph_rel_right: Checking plan type: {:?}",
+            std::mem::discriminant(plan)
+        );
         match plan {
             LogicalPlan::GraphRel(gr) => {
-                log::warn!("🔍 check_graph_rel_right: Found GraphRel, checking right side: {:?}", std::mem::discriminant(&*gr.right));
+                log::warn!(
+                    "🔍 check_graph_rel_right: Found GraphRel, checking right side: {:?}",
+                    std::mem::discriminant(&*gr.right)
+                );
                 let has_in_right = has_with_clause_in_tree(&gr.right);
                 let recursive_result = check_graph_rel_right(&gr.right);
                 log::warn!("🔍 check_graph_rel_right: GraphRel right side - has_in_right: {}, recursive: {}", has_in_right, recursive_result);
                 has_in_right || recursive_result
             }
             LogicalPlan::GraphJoins(gj) => {
-                log::warn!("🔍 check_graph_rel_right: Found GraphJoins, checking input: {:?}", std::mem::discriminant(&*gj.input));
+                log::warn!(
+                    "🔍 check_graph_rel_right: Found GraphJoins, checking input: {:?}",
+                    std::mem::discriminant(&*gj.input)
+                );
                 check_graph_rel_right(&gj.input)
             }
             LogicalPlan::Projection(p) => {
-                log::warn!("🔍 check_graph_rel_right: Found Projection, checking input: {:?}", std::mem::discriminant(&*p.input));
+                log::warn!(
+                    "🔍 check_graph_rel_right: Found Projection, checking input: {:?}",
+                    std::mem::discriminant(&*p.input)
+                );
                 check_graph_rel_right(&p.input)
             }
             LogicalPlan::Filter(f) => {
-                log::warn!("🔍 check_graph_rel_right: Found Filter, checking input: {:?}", std::mem::discriminant(&*f.input));
+                log::warn!(
+                    "🔍 check_graph_rel_right: Found Filter, checking input: {:?}",
+                    std::mem::discriminant(&*f.input)
+                );
                 check_graph_rel_right(&f.input)
             }
             // Handle the unknown Discriminant(7) case - assume it might contain WITH clauses
@@ -2610,11 +2658,9 @@ pub fn find_table_for_alias(plan: &LogicalPlan, target_alias: &str) -> Option<St
                 find_table_for_alias(&gn.input, target_alias)
             }
         }
-        LogicalPlan::GraphRel(gr) => {
-            find_table_for_alias(&gr.left, target_alias)
-                .or_else(|| find_table_for_alias(&gr.center, target_alias))
-                .or_else(|| find_table_for_alias(&gr.right, target_alias))
-        }
+        LogicalPlan::GraphRel(gr) => find_table_for_alias(&gr.left, target_alias)
+            .or_else(|| find_table_for_alias(&gr.center, target_alias))
+            .or_else(|| find_table_for_alias(&gr.right, target_alias)),
         LogicalPlan::Filter(f) => find_table_for_alias(&f.input, target_alias),
         LogicalPlan::Projection(p) => find_table_for_alias(&p.input, target_alias),
         LogicalPlan::GraphJoins(gj) => find_table_for_alias(&gj.input, target_alias),
@@ -2623,11 +2669,12 @@ pub fn find_table_for_alias(plan: &LogicalPlan, target_alias: &str) -> Option<St
         LogicalPlan::Skip(s) => find_table_for_alias(&s.input, target_alias),
         LogicalPlan::GroupBy(g) => find_table_for_alias(&g.input, target_alias),
         LogicalPlan::Unwind(u) => find_table_for_alias(&u.input, target_alias),
-        LogicalPlan::Union(u) => u.inputs.iter().find_map(|p| find_table_for_alias(p, target_alias)),
-        LogicalPlan::CartesianProduct(cp) => {
-            find_table_for_alias(&cp.left, target_alias)
-                .or_else(|| find_table_for_alias(&cp.right, target_alias))
-        }
+        LogicalPlan::Union(u) => u
+            .inputs
+            .iter()
+            .find_map(|p| find_table_for_alias(p, target_alias)),
+        LogicalPlan::CartesianProduct(cp) => find_table_for_alias(&cp.left, target_alias)
+            .or_else(|| find_table_for_alias(&cp.right, target_alias)),
         _ => None,
     }
 }
@@ -2686,9 +2733,7 @@ pub fn extract_start_filter_for_outer_query(plan: &LogicalPlan) -> Option<Render
                 None
             }
         }
-        LogicalPlan::Projection(p) => {
-            extract_start_filter_for_outer_query(&p.input)
-        }
+        LogicalPlan::Projection(p) => extract_start_filter_for_outer_query(&p.input),
         LogicalPlan::Filter(f) => {
             // Also check Filter for where clause
             if let Ok(expr) = RenderExpr::try_from(f.predicate.clone()) {
@@ -2697,27 +2742,16 @@ pub fn extract_start_filter_for_outer_query(plan: &LogicalPlan) -> Option<Render
                 extract_start_filter_for_outer_query(&f.input)
             }
         }
-        LogicalPlan::GraphJoins(gj) => {
-            extract_start_filter_for_outer_query(&gj.input)
-        }
-        LogicalPlan::GroupBy(gb) => {
-            extract_start_filter_for_outer_query(&gb.input)
-        }
-        LogicalPlan::Limit(l) => {
-            extract_start_filter_for_outer_query(&l.input)
-        }
-        LogicalPlan::OrderBy(o) => {
-            extract_start_filter_for_outer_query(&o.input)
-        }
+        LogicalPlan::GraphJoins(gj) => extract_start_filter_for_outer_query(&gj.input),
+        LogicalPlan::GroupBy(gb) => extract_start_filter_for_outer_query(&gb.input),
+        LogicalPlan::Limit(l) => extract_start_filter_for_outer_query(&l.input),
+        LogicalPlan::OrderBy(o) => extract_start_filter_for_outer_query(&o.input),
         _ => None,
     }
 }
 
 /// Collect schema filter from ViewScan for a given alias
-pub fn collect_schema_filter_for_alias(
-    plan: &LogicalPlan,
-    target_alias: &str,
-) -> Option<String> {
+pub fn collect_schema_filter_for_alias(plan: &LogicalPlan, target_alias: &str) -> Option<String> {
     match plan {
         LogicalPlan::GraphRel(gr) => {
             // Check right side for end node
@@ -2741,25 +2775,14 @@ pub fn collect_schema_filter_for_alias(
                 }
             }
             // Recurse into children
-            collect_schema_filter_for_alias(&gr.left, target_alias).or_else(
-                || collect_schema_filter_for_alias(&gr.right, target_alias),
-            )
+            collect_schema_filter_for_alias(&gr.left, target_alias)
+                .or_else(|| collect_schema_filter_for_alias(&gr.right, target_alias))
         }
-        LogicalPlan::GraphNode(gn) => {
-            collect_schema_filter_for_alias(&gn.input, target_alias)
-        }
-        LogicalPlan::Filter(f) => {
-            collect_schema_filter_for_alias(&f.input, target_alias)
-        }
-        LogicalPlan::Projection(p) => {
-            collect_schema_filter_for_alias(&p.input, target_alias)
-        }
-        LogicalPlan::GraphJoins(gj) => {
-            collect_schema_filter_for_alias(&gj.input, target_alias)
-        }
-        LogicalPlan::Limit(l) => {
-            collect_schema_filter_for_alias(&l.input, target_alias)
-        }
+        LogicalPlan::GraphNode(gn) => collect_schema_filter_for_alias(&gn.input, target_alias),
+        LogicalPlan::Filter(f) => collect_schema_filter_for_alias(&f.input, target_alias),
+        LogicalPlan::Projection(p) => collect_schema_filter_for_alias(&p.input, target_alias),
+        LogicalPlan::GraphJoins(gj) => collect_schema_filter_for_alias(&gj.input, target_alias),
+        LogicalPlan::Limit(l) => collect_schema_filter_for_alias(&l.input, target_alias),
         _ => None,
     }
 }
@@ -2771,10 +2794,7 @@ pub fn references_only_vlp_aliases(
     end_alias: &str,
     rel_alias: Option<&str>,
 ) -> bool {
-    fn collect_aliases(
-        expr: &RenderExpr,
-        aliases: &mut HashSet<String>,
-    ) {
+    fn collect_aliases(expr: &RenderExpr, aliases: &mut HashSet<String>) {
         match expr {
             RenderExpr::PropertyAccessExp(prop) => {
                 aliases.insert(prop.table_alias.0.clone());
@@ -2797,18 +2817,14 @@ pub fn references_only_vlp_aliases(
     // Returns true if ALL referenced aliases are VLP-related (start, end, or relationship)
     !aliases.is_empty()
         && aliases.iter().all(|a| {
-            a == start_alias
-                || a == end_alias
-                || rel_alias.map(|r| a == r).unwrap_or(false)
+            a == start_alias || a == end_alias || rel_alias.map(|r| a == r).unwrap_or(false)
         })
 }
 
 /// Split AND-connected filters into individual filters
 pub fn split_and_filters(expr: RenderExpr) -> Vec<RenderExpr> {
     match expr {
-        RenderExpr::OperatorApplicationExp(op)
-            if matches!(op.operator, Operator::And) =>
-        {
+        RenderExpr::OperatorApplicationExp(op) if matches!(op.operator, Operator::And) => {
             let mut result = Vec::new();
             for operand in op.operands {
                 result.extend(split_and_filters(operand));
@@ -2843,12 +2859,9 @@ pub fn rewrite_expression_simple(
                 expr.clone()
             }
         }
-        RenderExpr::OperatorApplicationExp(op_app) => {
-            RenderExpr::OperatorApplicationExp(rewrite_operator_application(
-                op_app.clone(),
-                reverse_mapping,
-            ))
-        }
+        RenderExpr::OperatorApplicationExp(op_app) => RenderExpr::OperatorApplicationExp(
+            rewrite_operator_application(op_app.clone(), reverse_mapping),
+        ),
         RenderExpr::ScalarFnCall(func) => {
             let new_args: Vec<RenderExpr> = func
                 .args
@@ -2899,12 +2912,10 @@ pub fn rewrite_expression_simple(
                 .collect();
             RenderExpr::List(new_exprs)
         }
-        RenderExpr::InSubquery(subquery) => {
-            RenderExpr::InSubquery(InSubquery {
-                expr: Box::new(rewrite_expression_simple(&subquery.expr, reverse_mapping)),
-                subplan: subquery.subplan.clone(),
-            })
-        }
+        RenderExpr::InSubquery(subquery) => RenderExpr::InSubquery(InSubquery {
+            expr: Box::new(rewrite_expression_simple(&subquery.expr, reverse_mapping)),
+            subplan: subquery.subplan.clone(),
+        }),
         // Simple expressions that don't need rewriting
         RenderExpr::Literal(_)
         | RenderExpr::Raw(_)
@@ -2922,8 +2933,6 @@ pub fn rewrite_expression_simple(
     }
 }
 
-
-
 /// Rewrite expression for mixed denormalized CTE
 pub fn rewrite_expr_for_mixed_denormalized_cte(
     expr: &RenderExpr,
@@ -2938,7 +2947,16 @@ pub fn rewrite_expr_for_mixed_denormalized_cte(
 ) -> RenderExpr {
     // This function would need to be implemented based on the existing logic
     // For now, it's a placeholder that just clones the expression
-    let _ = (start_alias, end_alias, start_is_denorm, end_is_denorm, rel_alias, from_col, to_col, path_var);
+    let _ = (
+        start_alias,
+        end_alias,
+        start_is_denorm,
+        end_is_denorm,
+        rel_alias,
+        from_col,
+        to_col,
+        path_var,
+    );
     expr.clone()
 }
 
@@ -3263,7 +3281,6 @@ pub fn collect_aliases_from_render_expr(exprs: &[RenderExpr], aliases: &mut Vec<
     }
 }
 
-
 pub(crate) fn generate_swapped_joins_for_optional_match(
     graph_rel: &GraphRel,
 ) -> RenderPlanBuilderResult<Vec<Join>> {
@@ -3401,8 +3418,9 @@ pub(crate) fn generate_swapped_joins_for_optional_match(
     Ok(joins)
 }
 
-
-pub(crate) fn rewrite_vlp_union_branch_aliases(plan: &mut RenderPlan) -> RenderPlanBuilderResult<()> {
+pub(crate) fn rewrite_vlp_union_branch_aliases(
+    plan: &mut RenderPlan,
+) -> RenderPlanBuilderResult<()> {
     log::info!(
         "🔍 VLP Union Branch: Checking for VLP CTEs... (found {} CTEs total)",
         plan.ctes.0.len()
@@ -4521,7 +4539,6 @@ pub(crate) fn update_graph_joins_cte_refs(
     }
 }
 
-
 /// Rewrite CTE column references from "alias.property" to "alias.alias_property"
 /// This is needed for VLP UNION queries where CTEs export columns like "friend_id"
 /// but logical expressions reference "friend.id"
@@ -4603,7 +4620,9 @@ pub(crate) fn build_chained_with_match_cte_plan(
         // Find ALL WITH clauses grouped by alias
         // This handles Union branches that each have their own WITH clause with the same alias
         // Note: We collect the data without holding references across the mutation
-        log::warn!("🔧 build_chained_with_match_cte_plan: About to call find_all_with_clauses_grouped");
+        log::warn!(
+            "🔧 build_chained_with_match_cte_plan: About to call find_all_with_clauses_grouped"
+        );
         let grouped_withs = find_all_with_clauses_grouped(&current_plan);
 
         log::warn!("🔧 build_chained_with_match_cte_plan: Found {} alias groups from find_all_with_clauses_grouped", grouped_withs.len());
@@ -5030,201 +5049,216 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     log::warn!("🔧 build_chained_with_match_cte_plan: Plan has no nested WITH clauses, rendering directly");
                     plan_to_render.to_render_plan(schema)?
                 };
-                        // CRITICAL: Extract CTE schemas from nested rendering
-                        // When rendering nested WITHs, the recursive call builds CTEs that we need
-                        // to reference. Extract their schemas and add to our cte_schemas map.
-                        if !rendered.ctes.0.is_empty() {
-                            for cte in &rendered.ctes.0 {
-                                let select_items = match &cte.content {
-                                    super::CteContent::Structured(plan) => match &plan.union {
-                                        UnionItems(Some(union)) if !union.input.is_empty() => {
-                                            union.input[0].select.items.clone()
-                                        }
-                                        _ => plan.select.items.clone(),
-                                    },
-                                    super::CteContent::RawSql(_) => {
-                                        // VLP CTEs are RawSql - can't extract schema directly
-                                        // But we can infer from the UNION that uses them
-                                        // Skip for now, will be handled when we see the UNION
-                                        log::warn!("🔧 Skipping RawSql CTE '{}' (VLP CTE - schema will be inferred from UNION)", cte.cte_name);
-                                        continue;
-                                    }
-                                };
-                                let property_names: Vec<String> = select_items
-                                    .iter()
-                                    .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
-                                    .collect();
-
-                                // Extract ID column information: map alias -> ID column name
-                                // For VLP CTEs, columns are like "friend.id", "friend.firstName", "p.id", etc.
-                                // We need to track that alias "friend" has ID column "id"
-                                let mut alias_to_id_column: HashMap<String, String> =
-                                    HashMap::new();
-                                for item in &select_items {
-                                    if let Some(col_alias) = &item.col_alias {
-                                        let alias_str = col_alias.0.as_str();
-                                        // Match pattern: "{alias}.id" or "{alias}_id"
-                                        if let Some(dot_pos) = alias_str.rfind('.') {
-                                            let (prefix, suffix) = alias_str.split_at(dot_pos);
-                                            if suffix == ".id" {
-                                                // Found ID column: "friend.id" means alias "friend" has ID "id"
-                                                alias_to_id_column
-                                                    .insert(prefix.to_string(), "id".to_string());
-                                                log::warn!("📊 CTE '{}': Found ID column for alias '{}' -> 'id'", cte.cte_name, prefix);
-                                            }
-                                        } else if alias_str.ends_with("_id") {
-                                            // Pattern like "friend_id"
-                                            let prefix = &alias_str[..alias_str.len() - 3];
-                                            alias_to_id_column
-                                                .insert(prefix.to_string(), "id".to_string());
-                                            log::warn!("📊 CTE '{}': Found ID column for alias '{}' -> 'id'", cte.cte_name, prefix);
-                                        }
-                                    }
+                // CRITICAL: Extract CTE schemas from nested rendering
+                // When rendering nested WITHs, the recursive call builds CTEs that we need
+                // to reference. Extract their schemas and add to our cte_schemas map.
+                if !rendered.ctes.0.is_empty() {
+                    for cte in &rendered.ctes.0 {
+                        let select_items = match &cte.content {
+                            super::CteContent::Structured(plan) => match &plan.union {
+                                UnionItems(Some(union)) if !union.input.is_empty() => {
+                                    union.input[0].select.items.clone()
                                 }
-
-                                // Build explicit property mapping
-                                let property_mapping =
-                                    build_property_mapping_from_columns(&select_items);
-
-                                log::info!(
-                                    "🔧 build_chained_with_match_cte_plan: Extracted nested CTE schema '{}': {} columns, {} aliases with ID, {} property mappings",
-                                    cte.cte_name, property_names.len(), alias_to_id_column.len(), property_mapping.len()
-                                );
-
-                                cte_schemas.insert(
-                                    cte.cte_name.clone(),
-                                    (
-                                        select_items,
-                                        property_names,
-                                        alias_to_id_column,
-                                        property_mapping,
-                                    ),
-                                );
+                                _ => plan.select.items.clone(),
+                            },
+                            super::CteContent::RawSql(_) => {
+                                // VLP CTEs are RawSql - can't extract schema directly
+                                // But we can infer from the UNION that uses them
+                                // Skip for now, will be handled when we see the UNION
+                                log::warn!("🔧 Skipping RawSql CTE '{}' (VLP CTE - schema will be inferred from UNION)", cte.cte_name);
+                                continue;
                             }
-                        }
+                        };
+                        let property_names: Vec<String> = select_items
+                            .iter()
+                            .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+                            .collect();
 
-                        log::info!(
-                            "🔧 build_chained_with_match_cte_plan: Rendered SQL FROM: {:?}",
-                            rendered.from
-                        );
-                        log::info!(
-                            "🔧 build_chained_with_match_cte_plan: Rendered SQL JOINs: {} join(s)",
-                            rendered.joins.0.len()
-                        );
-                        for (i, join) in rendered.joins.0.iter().enumerate() {
-                            log::info!(
-                                "🔧 build_chained_with_match_cte_plan: JOIN {}: {:?}",
-                                i,
-                                join
-                            );
-                        }
-
-                        // CRITICAL: Extract schema from UNION (for VLP CTEs)
-                        // VLP CTEs are RawSql so we can't extract schema from them directly
-                        // But the UNION that uses them has SELECT items with aliases like "friend.id", "p.firstName"
-                        if let UnionItems(Some(union)) = &rendered.union {
-                            if !union.input.is_empty() {
-                                let union_select_items = &union.input[0].select.items;
-                                let union_property_names: Vec<String> = union_select_items
-                                    .iter()
-                                    .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
-                                    .collect();
-
-                                // Extract ID column mappings from UNION columns
-                                let mut union_alias_to_id: HashMap<String, String> = HashMap::new();
-                                for item in union_select_items {
-                                    if let Some(col_alias) = &item.col_alias {
-                                        let alias_str = col_alias.0.as_str();
-                                        if let Some(dot_pos) = alias_str.rfind('.') {
-                                            let (prefix, suffix) = alias_str.split_at(dot_pos);
-                                            if suffix == ".id" {
-                                                union_alias_to_id
-                                                    .insert(prefix.to_string(), "id".to_string());
-                                                log::warn!("📊 UNION: Found ID column for alias '{}' -> 'id'", prefix);
-                                            }
-                                        }
+                        // Extract ID column information: map alias -> ID column name
+                        // For VLP CTEs, columns are like "friend.id", "friend.firstName", "p.id", etc.
+                        // We need to track that alias "friend" has ID column "id"
+                        let mut alias_to_id_column: HashMap<String, String> = HashMap::new();
+                        for item in &select_items {
+                            if let Some(col_alias) = &item.col_alias {
+                                let alias_str = col_alias.0.as_str();
+                                // Match pattern: "{alias}.id" or "{alias}_id"
+                                if let Some(dot_pos) = alias_str.rfind('.') {
+                                    let (prefix, suffix) = alias_str.split_at(dot_pos);
+                                    if suffix == ".id" {
+                                        // Found ID column: "friend.id" means alias "friend" has ID "id"
+                                        alias_to_id_column
+                                            .insert(prefix.to_string(), "id".to_string());
+                                        log::warn!(
+                                            "📊 CTE '{}': Found ID column for alias '{}' -> 'id'",
+                                            cte.cte_name,
+                                            prefix
+                                        );
                                     }
-                                }
-
-                                // Build explicit property mapping for UNION (VLP results)
-                                let union_property_mapping =
-                                    build_property_mapping_from_columns(&union_select_items);
-
-                                // Register the UNION schema as a pseudo-CTE for alias lookups
-                                // This allows WITH clauses to reference VLP results
-                                let union_cte_name = "__union_vlp";
-                                log::info!(
-                                    "🔧 Extracted UNION schema (VLP results): {} columns, {} aliases with ID: {:?}, {} property mappings",
-                                    union_property_names.len(), union_alias_to_id.len(), union_alias_to_id.keys(), union_property_mapping.len()
-                                );
-                                cte_schemas.insert(
-                                    union_cte_name.to_string(),
-                                    (
-                                        union_select_items.clone(),
-                                        union_property_names,
-                                        union_alias_to_id.clone(),
-                                        union_property_mapping,
-                                    ),
-                                );
-
-                                // Also register for each alias that appears in the UNION
-                                // This allows direct alias lookups
-                                for (alias, _id_col) in &union_alias_to_id {
-                                    cte_references_for_rendering
-                                        .insert(alias.clone(), union_cte_name.to_string());
-                                    log::info!(
-                                        "🔧 Registered alias '{}' -> CTE '{}'",
-                                        alias,
-                                        union_cte_name
+                                } else if alias_str.ends_with("_id") {
+                                    // Pattern like "friend_id"
+                                    let prefix = &alias_str[..alias_str.len() - 3];
+                                    alias_to_id_column.insert(prefix.to_string(), "id".to_string());
+                                    log::warn!(
+                                        "📊 CTE '{}': Found ID column for alias '{}' -> 'id'",
+                                        cte.cte_name,
+                                        prefix
                                     );
                                 }
                             }
                         }
 
-                        // Apply WITH items projection if present
-                        // This handles cases like `WITH friend.firstName AS name` or `WITH count(friend) AS cnt`
-                        // CRITICAL: Also apply for TableAlias items (WITH a) to standardize CTE column names
-                        if let Some(ref items) = with_items {
-                            log::warn!("🐛 DEBUG: with_items is Some, has {} items", items.len());
-                            for (i, item) in items.iter().enumerate() {
-                                log::warn!("🐛 DEBUG: with_item[{}]: {:?}", i, item);
+                        // Build explicit property mapping
+                        let property_mapping = build_property_mapping_from_columns(&select_items);
+
+                        log::info!(
+                                    "🔧 build_chained_with_match_cte_plan: Extracted nested CTE schema '{}': {} columns, {} aliases with ID, {} property mappings",
+                                    cte.cte_name, property_names.len(), alias_to_id_column.len(), property_mapping.len()
+                                );
+
+                        cte_schemas.insert(
+                            cte.cte_name.clone(),
+                            (
+                                select_items,
+                                property_names,
+                                alias_to_id_column,
+                                property_mapping,
+                            ),
+                        );
+                    }
+                }
+
+                log::info!(
+                    "🔧 build_chained_with_match_cte_plan: Rendered SQL FROM: {:?}",
+                    rendered.from
+                );
+                log::info!(
+                    "🔧 build_chained_with_match_cte_plan: Rendered SQL JOINs: {} join(s)",
+                    rendered.joins.0.len()
+                );
+                for (i, join) in rendered.joins.0.iter().enumerate() {
+                    log::info!(
+                        "🔧 build_chained_with_match_cte_plan: JOIN {}: {:?}",
+                        i,
+                        join
+                    );
+                }
+
+                // CRITICAL: Extract schema from UNION (for VLP CTEs)
+                // VLP CTEs are RawSql so we can't extract schema from them directly
+                // But the UNION that uses them has SELECT items with aliases like "friend.id", "p.firstName"
+                if let UnionItems(Some(union)) = &rendered.union {
+                    if !union.input.is_empty() {
+                        let union_select_items = &union.input[0].select.items;
+                        let union_property_names: Vec<String> = union_select_items
+                            .iter()
+                            .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+                            .collect();
+
+                        // Extract ID column mappings from UNION columns
+                        let mut union_alias_to_id: HashMap<String, String> = HashMap::new();
+                        for item in union_select_items {
+                            if let Some(col_alias) = &item.col_alias {
+                                let alias_str = col_alias.0.as_str();
+                                if let Some(dot_pos) = alias_str.rfind('.') {
+                                    let (prefix, suffix) = alias_str.split_at(dot_pos);
+                                    if suffix == ".id" {
+                                        union_alias_to_id
+                                            .insert(prefix.to_string(), "id".to_string());
+                                        log::warn!(
+                                            "📊 UNION: Found ID column for alias '{}' -> 'id'",
+                                            prefix
+                                        );
+                                    }
+                                }
                             }
+                        }
 
-                            let needs_projection = items.iter().any(|item| {
-                                !matches!(
-                                    &item.expression,
-                                    crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
-                                )
-                            });
+                        // Build explicit property mapping for UNION (VLP results)
+                        let union_property_mapping =
+                            build_property_mapping_from_columns(&union_select_items);
 
-                            let has_aggregation = items.iter().any(|item| {
-                                matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_))
-                            });
+                        // Register the UNION schema as a pseudo-CTE for alias lookups
+                        // This allows WITH clauses to reference VLP results
+                        let union_cte_name = "__union_vlp";
+                        log::info!(
+                                    "🔧 Extracted UNION schema (VLP results): {} columns, {} aliases with ID: {:?}, {} property mappings",
+                                    union_property_names.len(), union_alias_to_id.len(), union_alias_to_id.keys(), union_property_mapping.len()
+                                );
+                        cte_schemas.insert(
+                            union_cte_name.to_string(),
+                            (
+                                union_select_items.clone(),
+                                union_property_names,
+                                union_alias_to_id.clone(),
+                                union_property_mapping,
+                            ),
+                        );
 
-                            let has_table_alias = items.iter().any(|item| {
-                                matches!(
-                                    &item.expression,
-                                    crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
-                                )
-                            });
+                        // Also register for each alias that appears in the UNION
+                        // This allows direct alias lookups
+                        for (alias, _id_col) in &union_alias_to_id {
+                            cte_references_for_rendering
+                                .insert(alias.clone(), union_cte_name.to_string());
+                            log::info!(
+                                "🔧 Registered alias '{}' -> CTE '{}'",
+                                alias,
+                                union_cte_name
+                            );
+                        }
+                    }
+                }
 
-                            log::warn!("🐛 DEBUG: needs_projection={}, has_aggregation={}, has_table_alias={}",
-                                      needs_projection, has_aggregation, has_table_alias);
+                // Apply WITH items projection if present
+                // This handles cases like `WITH friend.firstName AS name` or `WITH count(friend) AS cnt`
+                // CRITICAL: Also apply for TableAlias items (WITH a) to standardize CTE column names
+                if let Some(ref items) = with_items {
+                    log::warn!("🐛 DEBUG: with_items is Some, has {} items", items.len());
+                    for (i, item) in items.iter().enumerate() {
+                        log::warn!("🐛 DEBUG: with_item[{}]: {:?}", i, item);
+                    }
 
-                            // Apply projection if we have non-TableAlias items, aggregations, OR TableAlias items
-                            // TableAlias items need projection to generate CTE columns with simple names
-                            if needs_projection || has_aggregation || has_table_alias {
-                                log::warn!("🔧 build_chained_with_match_cte_plan: Applying WITH items projection (needs_projection={}, has_aggregation={}, has_table_alias={})",
+                    let needs_projection = items.iter().any(|item| {
+                        !matches!(
+                            &item.expression,
+                            crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
+                        )
+                    });
+
+                    let has_aggregation = items.iter().any(|item| {
+                        matches!(
+                            &item.expression,
+                            crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)
+                        )
+                    });
+
+                    let has_table_alias = items.iter().any(|item| {
+                        matches!(
+                            &item.expression,
+                            crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
+                        )
+                    });
+
+                    log::warn!(
+                        "🐛 DEBUG: needs_projection={}, has_aggregation={}, has_table_alias={}",
+                        needs_projection,
+                        has_aggregation,
+                        has_table_alias
+                    );
+
+                    // Apply projection if we have non-TableAlias items, aggregations, OR TableAlias items
+                    // TableAlias items need projection to generate CTE columns with simple names
+                    if needs_projection || has_aggregation || has_table_alias {
+                        log::warn!("🔧 build_chained_with_match_cte_plan: Applying WITH items projection (needs_projection={}, has_aggregation={}, has_table_alias={})",
                                            needs_projection, has_aggregation, has_table_alias);
 
-                                // Convert LogicalExpr items to RenderExpr SelectItems
-                                // CRITICAL: Expand TableAlias to ALL columns (not just ID)
-                                // When WITH friend appears, it means "all properties of friend"
-                                //
-                                // Performance optimization: Wrap non-ID columns with ANY() when aggregating
-                                // This allows GROUP BY to only include ID column (more efficient)
+                        // Convert LogicalExpr items to RenderExpr SelectItems
+                        // CRITICAL: Expand TableAlias to ALL columns (not just ID)
+                        // When WITH friend appears, it means "all properties of friend"
+                        //
+                        // Performance optimization: Wrap non-ID columns with ANY() when aggregating
+                        // This allows GROUP BY to only include ID column (more efficient)
 
-                                let mut select_items: Vec<SelectItem> = items.iter()
+                        let mut select_items: Vec<SelectItem> = items.iter()
                                     .flat_map(|item| {
                                         // Check if this is a TableAlias that needs expansion to ALL columns
                                         match &item.expression {
@@ -5305,30 +5339,30 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                     })
                                     .collect();
 
-                                log::warn!("🔧 build_chained_with_match_cte_plan: Total select_items after expansion: {}", select_items.len());
+                        log::warn!("🔧 build_chained_with_match_cte_plan: Total select_items after expansion: {}", select_items.len());
 
-                                if !select_items.is_empty() {
-                                    // For UNION plans, we need to apply projection over the union
-                                    // We do this by keeping the UNION structure but replacing SELECT items
-                                    // The union branches already have all columns, so we wrap with our projection
-                                    // This creates: SELECT <with_items> FROM (SELECT * FROM table1 UNION ALL SELECT * FROM table2) AS __union
+                        if !select_items.is_empty() {
+                            // For UNION plans, we need to apply projection over the union
+                            // We do this by keeping the UNION structure but replacing SELECT items
+                            // The union branches already have all columns, so we wrap with our projection
+                            // This creates: SELECT <with_items> FROM (SELECT * FROM table1 UNION ALL SELECT * FROM table2) AS __union
 
-                                    // For both UNION and non-UNION: apply projection to SELECT
-                                    rendered.select = SelectItems {
-                                        items: select_items,
-                                        distinct: with_distinct,
-                                    };
+                            // For both UNION and non-UNION: apply projection to SELECT
+                            rendered.select = SelectItems {
+                                items: select_items,
+                                distinct: with_distinct,
+                            };
 
-                                    // If there's aggregation, add GROUP BY for non-aggregate expressions
-                                    // PERFORMANCE: Only GROUP BY the ID column(s) for TableAlias items
-                                    // (non-ID columns are wrapped with ANY() above, so they don't need to be grouped)
-                                    //
-                                    // This is efficient because:
-                                    // 1. node_id is the primary key (unique identifier)
-                                    // 2. ANY() picks the single value in each group (safe for PK)
-                                    // 3. GROUP BY 1 column is much faster than GROUP BY 7 columns
-                                    if has_aggregation {
-                                        let group_by_exprs: Vec<RenderExpr> = items.iter()
+                            // If there's aggregation, add GROUP BY for non-aggregate expressions
+                            // PERFORMANCE: Only GROUP BY the ID column(s) for TableAlias items
+                            // (non-ID columns are wrapped with ANY() above, so they don't need to be grouped)
+                            //
+                            // This is efficient because:
+                            // 1. node_id is the primary key (unique identifier)
+                            // 2. ANY() picks the single value in each group (safe for PK)
+                            // 3. GROUP BY 1 column is much faster than GROUP BY 7 columns
+                            if has_aggregation {
+                                let group_by_exprs: Vec<RenderExpr> = items.iter()
                                             .filter(|item| !matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)))
                                             .flat_map(|item| {
                                                 // For TableAlias, only GROUP BY the ID column
@@ -5352,76 +5386,90 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                 }
                                             })
                                             .collect();
-                                        rendered.group_by = GroupByExpressions(group_by_exprs);
-                                    }
-                                }
+                                rendered.group_by = GroupByExpressions(group_by_exprs);
                             }
                         }
-
-                        // Apply WithClause's ORDER BY, SKIP, LIMIT to the rendered plan
-                        if let Some(order_by_items) = with_order_by {
-                            log::warn!("🔧 build_chained_with_match_cte_plan: Applying ORDER BY from WithClause");
-                            let render_order_by: Vec<OrderByItem> = order_by_items
-                                .iter()
-                                .filter_map(|item| {
-                                    let expr_result: Result<RenderExpr, _> = item.expression.clone().try_into();
-                                    expr_result.ok().map(|expr| OrderByItem {
-                                        expression: expr,
-                                        order: match item.order {
-                                            crate::query_planner::logical_plan::OrderByOrder::Asc => OrderByOrder::Asc,
-                                            crate::query_planner::logical_plan::OrderByOrder::Desc => OrderByOrder::Desc,
-                                        },
-                                    })
-                                })
-                                .collect();
-                            rendered.order_by = OrderByItems(render_order_by);
-                        }
-                        if let Some(skip_count) = with_skip {
-                            log::warn!("🔧 build_chained_with_match_cte_plan: Applying SKIP {} from WithClause", skip_count);
-                            rendered.skip = SkipItem(Some(skip_count as i64));
-                        }
-                        if let Some(limit_count) = with_limit {
-                            log::warn!("🔧 build_chained_with_match_cte_plan: Applying LIMIT {} from WithClause", limit_count);
-                            rendered.limit = LimitItem(Some(limit_count as i64));
-                        }
-
-                        // Apply WHERE clause from WITH - becomes HAVING if we have GROUP BY
-                        if let Some(where_predicate) = with_where_clause {
-                            log::warn!("🔧 build_chained_with_match_cte_plan: Applying WHERE clause from WITH");
-
-                            // Convert LogicalExpr to RenderExpr
-                            let where_render_expr: RenderExpr = where_predicate.try_into()?;
-
-                            if !rendered.group_by.0.is_empty() {
-                                // We have GROUP BY - WHERE becomes HAVING
-                                log::warn!("🔧 build_chained_with_match_cte_plan: Converting WHERE to HAVING (GROUP BY present)");
-                                rendered.having_clause = Some(where_render_expr);
-                            } else {
-                                // No GROUP BY - apply as regular WHERE filter
-                                log::warn!("🔧 build_chained_with_match_cte_plan: Applying WHERE as filter predicate");
-
-                                // Combine with existing filters
-                                let new_filter =
-                                    if let Some(existing_filter) = rendered.filters.0.take() {
-                                        // AND the new filter with existing
-                                        RenderExpr::OperatorApplicationExp(OperatorApplication {
-                                            operator: Operator::And,
-                                            operands: vec![existing_filter, where_render_expr],
-                                        })
-                                    } else {
-                                        where_render_expr
-                                    };
-                                rendered.filters = FilterItems(Some(new_filter));
-                            }
-                        }
-
-                        // REMOVED: JOIN condition rewriting (Phase 3D)
-                        // Previously, this code rewrote JOIN conditions to use CTE column names.
-                        // Now obsolete: the analyzer (GraphJoinInference) resolves column names
-                        // during join creation, so JOIN conditions already have correct names.
-
-                        rendered_plans.push(rendered);
+                    }
                 }
+
+                // Apply WithClause's ORDER BY, SKIP, LIMIT to the rendered plan
+                if let Some(order_by_items) = with_order_by {
+                    log::warn!(
+                        "🔧 build_chained_with_match_cte_plan: Applying ORDER BY from WithClause"
+                    );
+                    let render_order_by: Vec<OrderByItem> = order_by_items
+                        .iter()
+                        .filter_map(|item| {
+                            let expr_result: Result<RenderExpr, _> =
+                                item.expression.clone().try_into();
+                            expr_result.ok().map(|expr| OrderByItem {
+                                expression: expr,
+                                order: match item.order {
+                                    crate::query_planner::logical_plan::OrderByOrder::Asc => {
+                                        OrderByOrder::Asc
+                                    }
+                                    crate::query_planner::logical_plan::OrderByOrder::Desc => {
+                                        OrderByOrder::Desc
+                                    }
+                                },
+                            })
+                        })
+                        .collect();
+                    rendered.order_by = OrderByItems(render_order_by);
+                }
+                if let Some(skip_count) = with_skip {
+                    log::warn!(
+                        "🔧 build_chained_with_match_cte_plan: Applying SKIP {} from WithClause",
+                        skip_count
+                    );
+                    rendered.skip = SkipItem(Some(skip_count as i64));
+                }
+                if let Some(limit_count) = with_limit {
+                    log::warn!(
+                        "🔧 build_chained_with_match_cte_plan: Applying LIMIT {} from WithClause",
+                        limit_count
+                    );
+                    rendered.limit = LimitItem(Some(limit_count as i64));
+                }
+
+                // Apply WHERE clause from WITH - becomes HAVING if we have GROUP BY
+                if let Some(where_predicate) = with_where_clause {
+                    log::warn!(
+                        "🔧 build_chained_with_match_cte_plan: Applying WHERE clause from WITH"
+                    );
+
+                    // Convert LogicalExpr to RenderExpr
+                    let where_render_expr: RenderExpr = where_predicate.try_into()?;
+
+                    if !rendered.group_by.0.is_empty() {
+                        // We have GROUP BY - WHERE becomes HAVING
+                        log::warn!("🔧 build_chained_with_match_cte_plan: Converting WHERE to HAVING (GROUP BY present)");
+                        rendered.having_clause = Some(where_render_expr);
+                    } else {
+                        // No GROUP BY - apply as regular WHERE filter
+                        log::warn!("🔧 build_chained_with_match_cte_plan: Applying WHERE as filter predicate");
+
+                        // Combine with existing filters
+                        let new_filter = if let Some(existing_filter) = rendered.filters.0.take() {
+                            // AND the new filter with existing
+                            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                operator: Operator::And,
+                                operands: vec![existing_filter, where_render_expr],
+                            })
+                        } else {
+                            where_render_expr
+                        };
+                        rendered.filters = FilterItems(Some(new_filter));
+                    }
+                }
+
+                // REMOVED: JOIN condition rewriting (Phase 3D)
+                // Previously, this code rewrote JOIN conditions to use CTE column names.
+                // Now obsolete: the analyzer (GraphJoinInference) resolves column names
+                // during join creation, so JOIN conditions already have correct names.
+
+                rendered_plans.push(rendered);
+            }
 
             if rendered_plans.is_empty() {
                 return Err(RenderBuildError::InvalidRenderPlan(format!(
@@ -6469,11 +6517,12 @@ pub(crate) fn build_with_aggregation_match_cte_plan(
     );
 
     // Step 1: Find the GroupBy (WITH+aggregation) subplan
-    let (group_by_plan, with_alias): (&LogicalPlan, String) = find_group_by_subplan(plan).ok_or_else(|| {
-        RenderBuildError::InvalidRenderPlan(
-            "WITH+aggregation+MATCH: Could not find GroupBy subplan".to_string(),
-        )
-    })?;
+    let (group_by_plan, with_alias): (&LogicalPlan, String) = find_group_by_subplan(plan)
+        .ok_or_else(|| {
+            RenderBuildError::InvalidRenderPlan(
+                "WITH+aggregation+MATCH: Could not find GroupBy subplan".to_string(),
+            )
+        })?;
 
     log::info!(
         "🔧 build_with_aggregation_match_cte_plan: Found GroupBy for alias '{}'",
@@ -6482,7 +6531,8 @@ pub(crate) fn build_with_aggregation_match_cte_plan(
 
     // Step 2: Collect aliases that are part of the inner scope (the first MATCH before WITH)
     // These are the aliases that should be in the CTE
-    let inner_aliases = collect_inner_scope_aliases(group_by_plan, &std::collections::HashSet::new());
+    let inner_aliases =
+        collect_inner_scope_aliases(group_by_plan, &std::collections::HashSet::new());
     log::info!(
         "🔧 build_with_aggregation_match_cte_plan: Inner scope aliases = {:?}",
         inner_aliases
@@ -6605,10 +6655,11 @@ pub(crate) fn build_with_aggregation_match_cte_plan(
         render_plan.joins.0.retain(|join| {
             // If this join references an alias from the inner scope in its ON condition,
             // and that alias isn't the WITH alias (which now comes from CTE), remove it
-            let references_inner = join
-                .joining_on
-                .iter()
-                .any(|cond| inner_join_aliases.iter().any(|alias| operator_references_alias(cond, alias)));
+            let references_inner = join.joining_on.iter().any(|cond| {
+                inner_join_aliases
+                    .iter()
+                    .any(|alias| operator_references_alias(cond, alias))
+            });
             if references_inner && join.table_alias == with_alias {
                 log::info!(
                     "🔧 Removing duplicate JOIN for WITH alias '{}' (already from CTE)",
@@ -6910,7 +6961,10 @@ pub(crate) fn replace_group_by_with_cte_reference(
 pub(crate) fn find_all_with_clauses_grouped(
     plan: &LogicalPlan,
 ) -> std::collections::HashMap<String, Vec<LogicalPlan>> {
-    log::warn!("🔍 find_all_with_clauses_grouped: Called with plan type: {:?}", std::mem::discriminant(plan));
+    log::warn!(
+        "🔍 find_all_with_clauses_grouped: Called with plan type: {:?}",
+        std::mem::discriminant(plan)
+    );
     use crate::query_planner::logical_expr::LogicalExpr;
     use crate::query_planner::logical_plan::ProjectionItem;
     use std::collections::HashMap;
@@ -7065,8 +7119,11 @@ pub(crate) fn find_all_with_clauses_grouped(
                 find_all_with_clauses_impl(&wc.input, results);
             }
             LogicalPlan::GraphRel(graph_rel) => {
-                log::warn!("🔍 find_all_with_clauses_impl: GraphRel - right type: {:?}, left type: {:?}",
-                           std::mem::discriminant(graph_rel.right.as_ref()), std::mem::discriminant(graph_rel.left.as_ref()));
+                log::warn!(
+                    "🔍 find_all_with_clauses_impl: GraphRel - right type: {:?}, left type: {:?}",
+                    std::mem::discriminant(graph_rel.right.as_ref()),
+                    std::mem::discriminant(graph_rel.left.as_ref())
+                );
                 // NEW: Check for WithClause in right
                 if let LogicalPlan::WithClause(wc) = graph_rel.right.as_ref() {
                     let key = generate_with_key_from_with_clause(wc);
@@ -8520,5 +8577,3 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
         other => Ok(other.clone()),
     }
 }
-
-

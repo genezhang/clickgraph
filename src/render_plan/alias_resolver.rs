@@ -93,7 +93,7 @@ impl AliasResolverContext {
     }
 
     /// Check if an alias refers to a denormalized node
-    /// 
+    ///
     /// ✅ PHASE 2 APPROVED: Uses enum pattern matching (AliasResolution::DenormalizedNode)
     /// This is the CORRECT pattern - abstraction through enum, not boolean conditionals
     pub fn is_denormalized(&self, cypher_alias: &str) -> bool {
@@ -537,7 +537,7 @@ impl AliasResolverContext {
     }
 
     /// Analyze a LogicalPlan tree and build resolutions
-    /// 
+    ///
     /// ✅ PHASE 2 APPROVED: Reads GraphNode.is_denormalized flags (set by analyzer)
     /// to construct higher-level AliasResolution enum abstraction.
     /// This converts boolean flags → enum variants, which is the correct direction.
