@@ -67,7 +67,7 @@ pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>
 /// We need to generate:
 /// 1. Relationship JOIN connecting to anchor: `r.to_id = post.id`
 /// 2. New node JOIN connecting to relationship: `liker.id = r.from_id`
-fn generate_swapped_joins_for_optional_match(
+pub(crate) fn generate_swapped_joins_for_optional_match(
     graph_rel: &GraphRel,
 ) -> RenderPlanBuilderResult<Vec<Join>> {
     let mut joins = Vec::new();
@@ -303,7 +303,7 @@ pub(crate) trait RenderPlanBuilder {
 /// 1. Find VLP CTEs it references (look for vlp_cte joins)
 /// 2. Get VLP metadata (cypher_start_alias → start_node mapping)
 /// 3. Rewrite SELECT items: a.property → start_node.property
-fn rewrite_vlp_union_branch_aliases(plan: &mut RenderPlan) -> RenderPlanBuilderResult<()> {
+pub(crate) fn rewrite_vlp_union_branch_aliases(plan: &mut RenderPlan) -> RenderPlanBuilderResult<()> {
     log::info!(
         "🔍 VLP Union Branch: Checking for VLP CTEs... (found {} CTEs total)",
         plan.ctes.0.len()
@@ -790,7 +790,7 @@ fn rewrite_render_expr_for_vlp(expr: &mut RenderExpr, mappings: &HashMap<String,
 /// # Arguments
 /// * `has_aggregation` - If true, wraps non-ID columns with anyLast() for efficient aggregation
 /// * `plan_ctx` - Optional PlanCtx for accessing PropertyRequirements (property pruning optimization)
-fn expand_table_alias_to_select_items(
+pub(crate) fn expand_table_alias_to_select_items(
     alias: &str,
     plan: &LogicalPlan,
     cte_schemas: &HashMap<
@@ -1070,7 +1070,7 @@ fn expand_table_alias_to_select_items(
 /// only needs the unique identifier.
 ///
 /// Example: TableAlias("friend") → [friend.id] (not friend.id, friend.name, ...)
-fn expand_table_alias_to_group_by_id_only(
+pub(crate) fn expand_table_alias_to_group_by_id_only(
     alias: &str,
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -1233,7 +1233,7 @@ fn expand_table_alias_to_group_by_id_only(
 ///
 /// Used in build_with_aggregation_match_cte_plan to fix `f.*` wildcards that would
 /// expand to ALL columns (many not in GROUP BY). Replaces them with explicit GROUP BY columns.
-fn replace_wildcards_with_group_by_columns(
+pub(crate) fn replace_wildcards_with_group_by_columns(
     select_items: Vec<SelectItem>,
     group_by_columns: &[RenderExpr],
     with_alias: &str,
@@ -1615,7 +1615,7 @@ fn extract_join_from_equality(
 /// Update all GraphJoins.cte_references in the plan tree with the latest mapping.
 /// This is needed after CTE processing updates the cte_references map, so SQL rendering
 /// uses the correct CTE names (e.g., 'with_a_cte_0_0' instead of 'with_a_cte').
-fn update_graph_joins_cte_refs(
+pub(crate) fn update_graph_joins_cte_refs(
     plan: &LogicalPlan,
     cte_references: &std::collections::HashMap<String, String>,
 ) -> RenderPlanBuilderResult<LogicalPlan> {
@@ -1795,7 +1795,7 @@ fn update_graph_joins_cte_refs(
 ///
 /// This prevents the infinite recursion that occurs when build_with_match_cte_plan
 /// calls to_render_plan on a plan that still contains WITH clauses.
-fn build_chained_with_match_cte_plan(
+pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
     plan_ctx: Option<&PlanCtx>,
@@ -4042,7 +4042,7 @@ fn rewrite_cte_expression(
 
 /// Rewrite all expressions in a RenderPlan to reference CTE columns correctly
 /// This is called for each intermediate CTE after it's rendered but before it's added to all_ctes
-fn rewrite_render_plan_expressions(
+pub(crate) fn rewrite_render_plan_expressions(
     plan: &mut RenderPlan,
     reverse_mapping: &HashMap<(String, String), String>,
     alias_to_cte: &HashMap<String, String>, // NEW: map Cypher alias to CTE name
@@ -4153,7 +4153,7 @@ fn rewrite_render_plan_expressions(
 
 /// Rewrite expression with both column mapping AND alias-to-CTE mapping
 /// This changes both the table alias and column name to reference the CTE correctly
-fn rewrite_expression_with_cte_alias(
+pub(crate) fn rewrite_expression_with_cte_alias(
     expr: &RenderExpr,
     reverse_mapping: &HashMap<(String, String), String>,
     alias_to_cte: &HashMap<String, String>,
@@ -4263,7 +4263,7 @@ fn rewrite_expression_with_cte_alias(
 }
 
 /// Rewrite OperatorApplication with both column mapping AND alias-to-CTE mapping
-fn rewrite_operator_application_with_cte_alias(
+pub(crate) fn rewrite_operator_application_with_cte_alias(
     op: OperatorApplication,
     reverse_mapping: &HashMap<(String, String), String>,
     alias_to_cte: &HashMap<String, String>,
@@ -4497,7 +4497,7 @@ fn rewrite_operator_application(
 ///
 /// CRITICAL: If the plan contains nested WITH clauses (e.g., three-level nesting),
 /// we recursively process them first by calling build_chained_with_match_cte_plan.
-fn render_without_with_detection(
+pub(crate) fn render_without_with_detection(
     plan: &LogicalPlan,
     schema: &GraphSchema,
 ) -> RenderPlanBuilderResult<RenderPlan> {
@@ -4592,7 +4592,7 @@ fn render_without_with_detection(
 /// JOIN Post AS post ON ...
 /// LIMIT 5
 /// ```
-fn build_with_aggregation_match_cte_plan(
+pub(crate) fn build_with_aggregation_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
 ) -> RenderPlanBuilderResult<RenderPlan> {
@@ -4838,7 +4838,7 @@ fn operator_references_alias(
 /// Find a GroupBy subplan (WITH+aggregation) in the plan structure.
 /// Returns (group_by_plan, alias_name) if found.
 /// Replace a GroupBy subplan with a CTE reference (ViewScan pointing to CTE).
-fn replace_group_by_with_cte_reference(
+pub(crate) fn replace_group_by_with_cte_reference(
     plan: &LogicalPlan,
     with_alias: &str,
     cte_name: &str,
@@ -5199,7 +5199,7 @@ fn is_join_for_inner_scope(
 /// Returns HashMap where each alias maps to all WITH clause plans with that alias.
 /// This handles the case where Union branches each have their own WITH clause with the same alias.
 /// Returns owned (cloned) LogicalPlans to avoid lifetime issues with mutations.
-fn find_all_with_clauses_grouped(
+pub(crate) fn find_all_with_clauses_grouped(
     plan: &LogicalPlan,
 ) -> std::collections::HashMap<String, Vec<LogicalPlan>> {
     use crate::query_planner::logical_expr::LogicalExpr;
@@ -5585,7 +5585,7 @@ fn find_cte_reference_alias(plan: &LogicalPlan, cte_name: &str) -> Option<String
 ///
 /// This function finds the passthrough WITH for the given alias and replaces it with its input.
 /// Uses the analyzer's CTE name to distinguish between multiple consecutive WITHs with same alias.
-fn collapse_passthrough_with(
+pub(crate) fn collapse_passthrough_with(
     plan: &LogicalPlan,
     target_alias: &str,
     target_cte_name: &str, // Analyzer's CTE name (e.g., "with_lnm_cte_4")
@@ -5715,7 +5715,7 @@ fn collapse_passthrough_with(
 /// 1. Traverses the plan to find GraphJoins nodes
 /// 2. Removes joins where BOTH endpoints are in the exported_aliases set
 /// 3. Keeps joins where at least one endpoint is NOT in the CTE
-fn prune_joins_covered_by_cte(
+pub(crate) fn prune_joins_covered_by_cte(
     plan: &LogicalPlan,
     cte_name: &str,
     exported_aliases: &std::collections::HashSet<&str>,
@@ -5900,7 +5900,7 @@ fn prune_joins_covered_by_cte(
 ///
 /// `pre_with_aliases` contains the table aliases that were defined INSIDE the WITH clause
 /// (before the boundary). These should be filtered out from outer GraphJoins.
-fn replace_with_clause_with_cte_reference_v2(
+pub(crate) fn replace_with_clause_with_cte_reference_v2(
     plan: &LogicalPlan,
     with_alias: &str,
     cte_name: &str,
