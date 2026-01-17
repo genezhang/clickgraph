@@ -96,6 +96,15 @@ schemas:
           to_node: TestUser
           property_mappings:
             since: since
+        - type: TEST_FOLLOWS
+          database: brahmand
+          table: follows
+          from_id: follower_id
+          to_id: followed_id
+          from_node: TestUser
+          to_node: TestUser
+          property_mappings:
+            since: since
         - type: MEMBER_OF
           database: brahmand
           table: memberships
