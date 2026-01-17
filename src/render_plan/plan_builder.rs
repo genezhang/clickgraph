@@ -45,6 +45,7 @@ use crate::render_plan::cte_extraction::{
 // The compiler will use the module functions when available
 #[allow(unused_imports)]
 use super::plan_builder_helpers::*;
+use super::feature_flags::PlanBuilderFeatureFlags;
 use super::plan_builder_utils::{
     build_chained_with_match_cte_plan,
     build_with_aggregation_match_cte_plan,
@@ -7239,6 +7240,9 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan> {
+        // Load feature flags for controlling extraction behavior
+        let feature_flags = PlanBuilderFeatureFlags::from_env();
+
         // Log what plan we receive
         let cte_refs = count_with_cte_refs(self);
         eprintln!(

@@ -1,7 +1,7 @@
 # Schema configuration for integration test database
 # This maps the test_integration database to a graph structure
 
-name: test_graph_schema
+name: default
 version: "1.0"
 description: "Integration test schema for ClickGraph test suite"
 
@@ -10,7 +10,7 @@ graph_schema:
     - label: User
       database: test_integration
       table: users
-      node_id: user_id
+      id_column: user_id
       property_mappings:
         user_id: user_id
         name: name
@@ -19,14 +19,14 @@ graph_schema:
     - label: Product
       database: test_integration
       table: products
-      node_id: product_id
+      id_column: product_id
       property_mappings:
         product_id: product_id
         name: name
         price: price
         category: category
 
-  edges:
+  relationships:
     - type: FOLLOWS
       database: test_integration
       table: follows
