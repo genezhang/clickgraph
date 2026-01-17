@@ -380,28 +380,28 @@ match pattern_ctx.node_access_strategy(node_alias) {
 **Codebase Impact**: Reduced from 18,121 to 17,919 lines (-202 lines, -1.1%) while improving maintainability
 
 ### plan_builder.rs Refactoring (Phase 2: Module Extraction) 🚧
-**Status**: **Week 3 COMPLETE** - join_builder.rs extraction finished, modular architecture achieved
+**Status**: **Week 4 COMPLETE** - select_builder.rs extraction finished, modular architecture expanded
 
 **Problem**: `plan_builder.rs` remains 9,504 lines with 4 major components (`join_builder`, `select_builder`, `from_builder`, `group_by_builder`) that should be separate modules
 
 **Phase 2 Plan**: Extract 3,344 lines across 4 modules over 7 weeks (Week 3-9)
 - **Week 3**: `join_builder.rs` extraction (1,200 lines) ✅ **COMPLETE**
-- **Week 4**: `select_builder.rs` extraction (950 lines) 
+- **Week 4**: `select_builder.rs` extraction (950 lines) ✅ **COMPLETE**
 - **Week 5**: `from_builder.rs` extraction (650 lines)
 - **Week 6**: `group_by_builder.rs` extraction (544 lines)
 - **Week 7-8**: Integration testing and bug fixes
 - **Week 9**: Final cleanup and documentation
 
-**Week 3 Complete** ✅:
-- ✅ **join_builder.rs fully implemented** - Complete extraction of extract_joins() function and all helper functions
-- ✅ **Trait-based delegation** - JoinBuilder trait with extract_joins and extract_array_join methods
-- ✅ **Modular architecture achieved** - Clean separation between plan_builder.rs and join_builder.rs
+**Week 4 Complete** ✅:
+- ✅ **select_builder.rs fully implemented** - Complete extraction of extract_select_items() function and all helper functions
+- ✅ **Trait-based delegation** - SelectBuilder trait with extract_select_items method
+- ✅ **Modular architecture expanded** - Clean separation between plan_builder.rs and select_builder.rs
 - ✅ **Compilation successful** - All imports resolved, no compilation errors
-- ✅ **Functionality preserved** - Join extraction logic works through trait delegation
+- ✅ **Functionality preserved** - SELECT item extraction logic works through trait delegation
 - ✅ **Code quality maintained** - Comprehensive documentation and error handling
 - ✅ **Performance maintained** - No regression in query processing capabilities
 
-**Current State**: plan_builder.rs reduced from 9,504 to ~8,300 lines (1,200 lines extracted). Ready to proceed with select_builder.rs extraction (Week 4).
+**Current State**: plan_builder.rs reduced from ~8,300 to ~7,350 lines (950 lines extracted). Ready to proceed with from_builder.rs extraction (Week 5).
 
 ## Next Priorities
 
