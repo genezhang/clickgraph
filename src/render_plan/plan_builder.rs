@@ -2980,10 +2980,84 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan> {
-        // TODO: Implement full render plan conversion
-        Err(RenderBuildError::InvalidRenderPlan(
-            "Full render plan conversion not implemented".to_string(),
-        ))
+        match self {
+            &LogicalPlan::GraphJoins(ref gj) => {
+                // Extract components from GraphJoins
+                let select_items = SelectItems {
+                    items: self.extract_select_items()?,
+                    distinct: self.extract_distinct(),
+                };
+                let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
+                let joins = JoinItems(RenderPlanBuilder::extract_joins(self, schema)?);
+                let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
+                let filters = FilterItems(self.extract_filters()?);
+                let group_by = GroupByExpressions(self.extract_group_by()?);
+                let having_clause = self.extract_having()?;
+                let order_by = OrderByItems(self.extract_order_by()?);
+                let skip = SkipItem(self.extract_skip());
+                let limit = LimitItem(self.extract_limit());
+                let union = UnionItems(self.extract_union(schema)?);
+                let ctes = CteItems(vec![]); // TODO: Extract CTEs if needed
+
+                Ok(RenderPlan {
+                    ctes,
+                    select: select_items,
+                    from,
+                    joins,
+                    array_join,
+                    filters,
+                    group_by,
+                    having_clause,
+                    order_by,
+                    skip,
+                    limit,
+                    union,
+                })
+            }
+            &LogicalPlan::GraphRel(ref gr) => {
+                // For GraphRel, use the same extraction logic as GraphJoins
+                let select_items = SelectItems {
+                    items: self.extract_select_items()?,
+                    distinct: self.extract_distinct(),
+                };
+                let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
+                let joins = JoinItems(RenderPlanBuilder::extract_joins(self, schema)?);
+                let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
+                let filters = FilterItems(self.extract_filters()?);
+                let group_by = GroupByExpressions(self.extract_group_by()?);
+                let having_clause = self.extract_having()?;
+                let order_by = OrderByItems(self.extract_order_by()?);
+                let skip = SkipItem(self.extract_skip());
+                let limit = LimitItem(self.extract_limit());
+                let union = UnionItems(self.extract_union(schema)?);
+                let ctes = CteItems(vec![]); // TODO: Extract CTEs if needed
+
+                Ok(RenderPlan {
+                    ctes,
+                    select: select_items,
+                    from,
+                    joins,
+                    array_join,
+                    filters,
+                    group_by,
+                    having_clause,
+                    order_by,
+                    skip,
+                    limit,
+                    union,
+                })
+            }
+            &LogicalPlan::Projection(ref p) => {
+                // For Projection, convert the input plan and override the select items
+                let mut render_plan = p.input.to_render_plan(schema)?;
+                render_plan.select = SelectItems {
+                    items: self.extract_select_items()?,
+                    distinct: p.distinct,
+                };
+                Ok(render_plan)
+            }
+            _ => todo!("Render plan conversion not implemented for this LogicalPlan variant"),
+        }
     }
 }
 
