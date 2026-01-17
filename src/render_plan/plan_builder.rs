@@ -45,6 +45,7 @@ use crate::render_plan::cte_extraction::{
 // The compiler will use the module functions when available
 #[allow(unused_imports)]
 use super::plan_builder_helpers::*;
+use super::plan_builder_utils::{strip_database_prefix, has_multi_type_vlp, get_anchor_alias_from_plan, find_label_for_alias};
 use super::CteGenerationContext;
 use super::plan_builder_utils::build_property_mapping_from_columns;
 
@@ -52,59 +53,7 @@ pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>
 
 /// Strip database prefix from table name for use in CTE names.
 /// Converts "ldbc.Comment" -> "Comment", "Message" -> "Message"
-fn strip_database_prefix(table_name: &str) -> String {
-    table_name
-        .rsplit_once('.')
-        .map(|(_, table)| table.to_string())
-        .unwrap_or_else(|| table_name.to_string())
-}
-
-/// Check if the plan contains a multi-type variable-length path that requires CTE generation.
-/// Multi-type VLP cannot use simple JOIN-based plans.
-fn has_multi_type_vlp(
-    plan: &LogicalPlan,
-    schema: &crate::graph_catalog::graph_schema::GraphSchema,
-) -> bool {
-    use crate::query_planner::logical_plan::LogicalPlan;
-
-    match plan {
-        LogicalPlan::GraphRel(graph_rel) => {
-            // Check if it's a VLP pattern
-            if graph_rel.variable_length.is_some() {
-                let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
-                // Use the same logic as CTE extraction
-                crate::render_plan::cte_extraction::should_use_join_expansion_public(
-                    graph_rel, &rel_types, schema,
-                )
-            } else {
-                false
-            }
-        }
-        LogicalPlan::Projection(proj) => has_multi_type_vlp(&proj.input, schema),
-        LogicalPlan::Filter(filter) => has_multi_type_vlp(&filter.input, schema),
-        LogicalPlan::GroupBy(gb) => has_multi_type_vlp(&gb.input, schema),
-        LogicalPlan::OrderBy(order) => has_multi_type_vlp(&order.input, schema),
-        LogicalPlan::Limit(limit) => has_multi_type_vlp(&limit.input, schema),
-        LogicalPlan::Skip(skip) => has_multi_type_vlp(&skip.input, schema),
-        LogicalPlan::GraphJoins(joins) => has_multi_type_vlp(&joins.input, schema),
-        _ => false,
-    }
-}
-
 /// Get the anchor alias from a logical plan (for OPTIONAL MATCH join ordering).
-/// The anchor is the node that's in the FROM clause of the outer query.
-fn get_anchor_alias_from_plan(plan: &Arc<LogicalPlan>) -> Option<String> {
-    match plan.as_ref() {
-        LogicalPlan::GraphNode(node) => Some(node.alias.clone()),
-        LogicalPlan::GraphRel(rel) => Some(rel.left_connection.clone()),
-        LogicalPlan::Projection(proj) => get_anchor_alias_from_plan(&proj.input),
-        LogicalPlan::Filter(filter) => get_anchor_alias_from_plan(&filter.input),
-        LogicalPlan::GroupBy(gb) => get_anchor_alias_from_plan(&gb.input),
-        LogicalPlan::CartesianProduct(cp) => get_anchor_alias_from_plan(&cp.left),
-        _ => None,
-    }
-}
-
 /// Generate joins for OPTIONAL MATCH where the anchor is on the right side.
 ///
 /// For patterns like `MATCH (post:Post) OPTIONAL MATCH (liker:Person)-[:LIKES]->(post)`:
@@ -1277,28 +1226,6 @@ fn expand_table_alias_to_group_by_id_only(
 //   Renderer → Use as-is (no rewriting needed)
 
 /// Helper function to find the label for a given alias in the logical plan.
-fn find_label_for_alias(plan: &LogicalPlan, target_alias: &str) -> Option<String> {
-    match plan {
-        LogicalPlan::GraphNode(node) => {
-            if node.alias == target_alias {
-                // label is Option<String>, unwrap it
-                node.label.clone()
-            } else {
-                None
-            }
-        }
-        LogicalPlan::GraphRel(rel) => {
-            // Check left and right connections
-            // Note: GraphRel doesn't have nested plans, just connection strings
-            None
-        }
-        LogicalPlan::Filter(filter) => find_label_for_alias(&filter.input, target_alias),
-        LogicalPlan::WithClause(wc) => find_label_for_alias(&wc.input, target_alias),
-        LogicalPlan::Projection(proj) => find_label_for_alias(&proj.input, target_alias),
-        _ => None,
-    }
-}
-
 /// Helper: Replace wildcard columns with explicit GROUP BY columns in SELECT items.
 ///
 /// Used in build_with_aggregation_match_cte_plan to fix `f.*` wildcards that would
@@ -4400,7 +4327,7 @@ fn rewrite_cte_column_references(expr: &mut RenderExpr) {
 }
 
 /// Simple expression rewriter that uses only reverse_mapping (no CTE name or from_alias needed)
-fn rewrite_expression_simple(
+pub(crate) fn rewrite_expression_simple(
     expr: &RenderExpr,
     reverse_mapping: &HashMap<(String, String), String>,
 ) -> RenderExpr {
