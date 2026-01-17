@@ -6,6 +6,7 @@ mod expression_utils;
 mod feature_flags;
 mod filter_pipeline;
 mod from_table;
+mod join_builder;
 mod plan_builder_helpers;
 mod plan_builder_utils;
 pub mod property_expansion;
