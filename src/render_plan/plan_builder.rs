@@ -2408,6 +2408,49 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 Ok(render_plan)
             }
+            LogicalPlan::GraphNode(gn) => {
+                // GraphNode is a wrapper around a ViewScan
+                // Recursively convert the input (which should be a ViewScan)
+                gn.input.to_render_plan(schema)
+            }
+            LogicalPlan::ViewScan(vs) => {
+                // ViewScan is a simple table scan - convert to basic RenderPlan
+                // This is used for standalone node queries without relationships
+                let select_items = SelectItems {
+                    items: <LogicalPlan as SelectBuilder>::extract_select_items(self)?,
+                    distinct: false,
+                };
+                
+                let from = FromTableItem(Some(ViewTableRef {
+                    source: Arc::new(LogicalPlan::Empty),
+                    name: vs.source_table.clone(),
+                    alias: None, // ViewScan doesn't have an alias at this level
+                    use_final: vs.use_final,
+                }));
+                
+                Ok(RenderPlan {
+                    ctes: CteItems(vec![]),
+                    select: select_items,
+                    from,
+                    joins: JoinItems(vec![]),
+                    array_join: ArrayJoinItem(vec![]),
+                    filters: FilterItems(None),
+                    group_by: GroupByExpressions(vec![]),
+                    having_clause: None,
+                    order_by: OrderByItems(vec![]),
+                    skip: SkipItem(None),
+                    limit: LimitItem(None),
+                    union: UnionItems(None),
+                })
+            }
+            LogicalPlan::WithClause(_) => {
+                // WithClause requires complex CTE generation and scope handling
+                // This is handled by specialized builders in plan_builder_helpers.rs
+                // For now, delegate to the input plan conversion as a fallback
+                Err(RenderBuildError::InvalidRenderPlan(
+                    "WithClause conversion requires specialized CTE builder - use plan_builder_helpers::build_chained_with_match_cte_plan or build_with_aggregation_match_cte_plan instead".to_string()
+                ))
+            }
             _ => todo!(
                 "Render plan conversion not implemented for LogicalPlan variant: {:?}",
                 std::mem::discriminant(self)
