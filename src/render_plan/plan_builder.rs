@@ -171,12 +171,6 @@ pub(crate) trait RenderPlanBuilder {
         schema: &GraphSchema,
     ) -> RenderPlanBuilderResult<RenderPlan>;
 
-    fn build_simple_relationship_render_plan(
-        &self,
-        distinct_override: Option<bool>,
-        schema: &GraphSchema,
-    ) -> RenderPlanBuilderResult<RenderPlan>;
-
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan>;
 }
 
@@ -1248,27 +1242,32 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn extract_having(&self) -> RenderPlanBuilderResult<Option<RenderExpr>> {
-        // TODO: Implement HAVING clause extraction
+        // Note: HAVING clauses are handled by LogicalPlan::GroupBy nodes in to_render_plan().
+        // This method returns None for GraphJoins/GraphRel which don't directly have HAVING.
         Ok(None)
     }
 
     fn extract_order_by(&self) -> RenderPlanBuilderResult<Vec<OrderByItem>> {
-        // TODO: Implement ORDER BY extraction
+        // Note: ORDER BY is handled by LogicalPlan::OrderBy nodes in to_render_plan().
+        // This method returns empty for GraphJoins/GraphRel which don't directly have ORDER BY.
         Ok(vec![])
     }
 
     fn extract_limit(&self) -> Option<i64> {
-        // TODO: Implement LIMIT extraction
+        // Note: LIMIT is handled by LogicalPlan::Limit nodes in to_render_plan().
+        // This method returns None for GraphJoins/GraphRel which don't directly have LIMIT.
         None
     }
 
     fn extract_skip(&self) -> Option<i64> {
-        // TODO: Implement SKIP extraction
+        // Note: SKIP is handled by LogicalPlan::Skip nodes in to_render_plan().
+        // This method returns None for GraphJoins/GraphRel which don't directly have SKIP.
         None
     }
 
     fn extract_union(&self, _schema: &GraphSchema) -> RenderPlanBuilderResult<Option<Union>> {
-        // TODO: Implement UNION extraction
+        // Note: UNION is handled by LogicalPlan::Union nodes in to_render_plan().
+        // This method returns None for GraphJoins/GraphRel which don't directly have UNION.
         Ok(None)
     }
 
@@ -1278,17 +1277,6 @@ impl RenderPlanBuilder for LogicalPlan {
     ) -> RenderPlanBuilderResult<RenderPlan> {
         // Delegate to JoinBuilder
         <LogicalPlan as JoinBuilder>::try_build_join_based_plan(self, schema)
-    }
-
-    fn build_simple_relationship_render_plan(
-        &self,
-        _distinct_override: Option<bool>,
-        _schema: &GraphSchema,
-    ) -> RenderPlanBuilderResult<RenderPlan> {
-        // TODO: Implement simple relationship render plan building
-        Err(RenderBuildError::InvalidRenderPlan(
-            "Simple relationship render plan not implemented".to_string(),
-        ))
     }
 
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan> {
