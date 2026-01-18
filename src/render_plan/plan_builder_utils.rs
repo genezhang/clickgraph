@@ -1142,6 +1142,45 @@ pub fn extract_from(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<FromTa
             }
         }
         LogicalPlan::GraphRel(graph_rel) => {
+            // VARIABLE-LENGTH PATH CHECK
+            // For variable-length paths, use the CTE as FROM instead of the start node
+            if graph_rel.variable_length.is_some() {
+                log::debug!(
+                    "🔍 extract_from GraphRel: Variable-length path detected, using CTE as FROM"
+                );
+
+                // Generate CTE name consistent with CTE generation logic
+                let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
+                let is_multi_type = rel_types.len() > 1;
+
+                let cte_name = if is_multi_type {
+                    format!(
+                        "vlp_multi_type_{}_{}",
+                        graph_rel.left_connection, graph_rel.right_connection
+                    )
+                } else {
+                    // For single-type VLP, use the same naming pattern as the generator
+                    format!(
+                        "vlp_{}_{}",
+                        graph_rel.left_connection, graph_rel.right_connection
+                    )
+                };
+
+                log::debug!("🔍 extract_from GraphRel: Using CTE name '{}'", cte_name);
+
+                return Ok(Some(FromTable::new(Some(ViewTableRef {
+                    source: Arc::new(LogicalPlan::GraphRel(graph_rel.clone())),
+                    name: cte_name,
+                    alias: Some(
+                        graph_rel
+                            .path_variable
+                            .clone()
+                            .unwrap_or_else(|| graph_rel.alias.clone()),
+                    ),
+                    use_final: false, // CTEs don't need FINAL
+                }))));
+            }
+
             // DENORMALIZED EDGE TABLE CHECK
             // For denormalized patterns, both nodes are virtual - use relationship table as FROM
             let left_is_denormalized = is_node_denormalized(&graph_rel.left);

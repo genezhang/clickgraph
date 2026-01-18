@@ -146,7 +146,6 @@ use std::path::Path;
 /// 3. Validate using the mock client
 ///
 /// See `tests::config_tests` for examples.
-
 /// Configuration for graph schemas loaded from YAML/JSON
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphSchemaConfig {
