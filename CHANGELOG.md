@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+### 🐛 Bug Fixes
+
+- **Shortest path FROM clause fix**: Variable-length paths now correctly use CTE in FROM clause instead of start node table
+  - **Issue**: GraphJoins.extract_from() for empty joins checked variable-length paths AFTER denormalized/polymorphic checks
+  - **Fix**: Moved variable-length check to top priority (A.1) before other pattern checks
+  - **Impact**: All 5 shortest path filter tests now pass with correct SQL: `FROM vlp_a_b AS p` instead of `FROM test_db.users AS a`
+  - **Files**: `src/render_plan/plan_builder.rs` (extract_from method, lines 1283-1299)
+
 ### ⚙️ Refactoring
 
 - **plan_builder.rs Phase 2 Week 4 Complete**: select_builder.rs extraction finished, modular architecture expanded

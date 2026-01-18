@@ -9,8 +9,8 @@ mod from_table;
 mod join_builder;
 mod plan_builder_helpers;
 mod plan_builder_utils;
-mod select_builder;
 pub mod property_expansion;
+mod select_builder;
 pub mod utils;
 mod view_table_ref;
 

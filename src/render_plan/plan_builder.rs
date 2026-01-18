@@ -20,12 +20,12 @@ use super::filter_pipeline::{
     rewrite_vlp_internal_to_cypher_alias,
 };
 use super::join_builder::JoinBuilder;
-use super::select_builder::SelectBuilder;
 use super::render_expr::RenderCase;
 use super::render_expr::{
     AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess,
     RenderExpr, ScalarFnCall, TableAlias,
 };
+use super::select_builder::SelectBuilder;
 use super::{
     view_table_ref::{from_table_to_view_ref, view_ref_to_from_table},
     ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTable, FromTableItem,
@@ -803,8 +803,6 @@ impl RenderPlanBuilder for LogicalPlan {
         extract_ctes_with_context(self, last_node_alias, context, schema)
     }
 
-
-
     fn extract_select_items(&self) -> RenderPlanBuilderResult<Vec<SelectItem>> {
         // Delegate to the SelectBuilder trait implementation
         <LogicalPlan as SelectBuilder>::extract_select_items(self)
@@ -963,6 +961,29 @@ impl RenderPlanBuilder for LogicalPlan {
                     left_is_denormalized,
                     right_is_denormalized
                 );
+
+                // VARIABLE-LENGTH PATH CHECK
+                // For variable-length paths, use the CTE name as FROM
+                if graph_rel.variable_length.is_some() {
+                    log::debug!("✓ VARIABLE-LENGTH pattern: using CTE as FROM");
+
+                    // Generate the CTE name using the same logic as in cte_extraction.rs
+                    let start_alias = &graph_rel.left_connection;
+                    let end_alias = &graph_rel.right_connection;
+                    let cte_name = format!("vlp_{}_{}", start_alias, end_alias);
+
+                    log::debug!(
+                        "✓ Using CTE '{}' as FROM for variable-length path",
+                        cte_name
+                    );
+
+                    return Ok(Some(FromTable::new(Some(super::ViewTableRef {
+                        source: std::sync::Arc::new(LogicalPlan::Empty),
+                        name: cte_name,
+                        alias: graph_rel.path_variable.clone(),
+                        use_final: false,
+                    }))));
+                }
 
                 if left_is_denormalized && right_is_denormalized {
                     log::debug!("✓ DENORMALIZED pattern: both nodes on edge table, using edge table as FROM");
@@ -1261,8 +1282,28 @@ impl RenderPlanBuilder for LogicalPlan {
                 if graph_joins.joins.is_empty() {
                     log::debug!("📋 No joins - checking for special patterns");
 
-                    // A.1: Denormalized edge pattern - use edge table directly
+                    // A.1: Check for variable-length path FIRST (before other checks)
                     if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
+                        if graph_rel.variable_length.is_some() {
+                            log::info!(
+                                "🎯 VARIABLE-LENGTH: Using CTE as FROM for path '{}'",
+                                graph_rel.alias
+                            );
+
+                            // Generate the CTE name using the same logic as in GraphRel extract_from
+                            let start_alias = &graph_rel.left_connection;
+                            let end_alias = &graph_rel.right_connection;
+                            let cte_name = format!("vlp_{}_{}", start_alias, end_alias);
+
+                            return Ok(Some(FromTable::new(Some(super::ViewTableRef {
+                                source: std::sync::Arc::new(LogicalPlan::Empty),
+                                name: cte_name,
+                                alias: graph_rel.path_variable.clone(),
+                                use_final: false,
+                            }))));
+                        }
+
+                        // A.2: Denormalized edge pattern - use edge table directly
                         if let LogicalPlan::ViewScan(rel_scan) = graph_rel.center.as_ref() {
                             if rel_scan.from_node_properties.is_some()
                                 || rel_scan.to_node_properties.is_some()
@@ -2223,7 +2264,15 @@ impl RenderPlanBuilder for LogicalPlan {
                 let skip = SkipItem(self.extract_skip());
                 let limit = LimitItem(self.extract_limit());
                 let union = UnionItems(self.extract_union(schema)?);
-                let ctes = CteItems(vec![]); // TODO: Extract CTEs if needed
+
+                // Extract CTEs from the input plan
+                let mut context = super::cte_generation::CteGenerationContext::new();
+                let ctes = CteItems(extract_ctes_with_context(
+                    &gj.input,
+                    &"".to_string(),
+                    &mut context,
+                    schema,
+                )?);
 
                 Ok(RenderPlan {
                     ctes,
@@ -2253,10 +2302,19 @@ impl RenderPlanBuilder for LogicalPlan {
                 let group_by = GroupByExpressions(self.extract_group_by()?);
                 let having_clause = self.extract_having()?;
                 let order_by = OrderByItems(self.extract_order_by()?);
+
+                // Extract CTEs for variable-length paths
+                let mut context = super::cte_generation::CteGenerationContext::new();
+                let ctes = CteItems(extract_ctes_with_context(
+                    self,
+                    &gr.right_connection,
+                    &mut context,
+                    schema,
+                )?);
+
                 let skip = SkipItem(self.extract_skip());
                 let limit = LimitItem(self.extract_limit());
                 let union = UnionItems(self.extract_union(schema)?);
-                let ctes = CteItems(vec![]); // TODO: Extract CTEs if needed
 
                 Ok(RenderPlan {
                     ctes,
@@ -2282,7 +2340,78 @@ impl RenderPlanBuilder for LogicalPlan {
                 };
                 Ok(render_plan)
             }
-            _ => todo!("Render plan conversion not implemented for this LogicalPlan variant"),
+            LogicalPlan::Filter(f) => {
+                // For Filter, convert the input plan and combine filters
+                let mut render_plan = f.input.to_render_plan(schema)?;
+
+                // Convert the filter predicate to RenderExpr
+                let mut filter_expr: RenderExpr = f.predicate.clone().try_into()?;
+                apply_property_mapping_to_expr(&mut filter_expr, &f.input);
+
+                // Combine with existing filters if any
+                render_plan.filters = match render_plan.filters.0 {
+                    Some(existing) => FilterItems(Some(RenderExpr::OperatorApplicationExp(
+                        crate::render_plan::render_expr::OperatorApplication {
+                            operator: crate::render_plan::render_expr::Operator::And,
+                            operands: vec![existing, filter_expr],
+                        },
+                    ))),
+                    None => FilterItems(Some(filter_expr)),
+                };
+
+                Ok(render_plan)
+            }
+            &LogicalPlan::OrderBy(ref ob) => {
+                // For OrderBy, convert the input plan and set order_by
+                let mut render_plan = ob.input.to_render_plan(schema)?;
+
+                // Convert logical OrderByItems to render OrderByItems
+                let order_by_items: Result<Vec<OrderByItem>, _> = ob
+                    .items
+                    .iter()
+                    .map(|item| item.clone().try_into())
+                    .collect();
+                render_plan.order_by = OrderByItems(order_by_items?);
+
+                Ok(render_plan)
+            }
+            LogicalPlan::Skip(s) => {
+                // For Skip, convert the input plan and set skip
+                let mut render_plan = s.input.to_render_plan(schema)?;
+                render_plan.skip = SkipItem(Some(s.count));
+                Ok(render_plan)
+            }
+            LogicalPlan::Limit(l) => {
+                // For Limit, convert the input plan and set limit
+                let mut render_plan = l.input.to_render_plan(schema)?;
+                render_plan.limit = LimitItem(Some(l.count));
+                Ok(render_plan)
+            }
+            LogicalPlan::GroupBy(gb) => {
+                // For GroupBy, convert the input plan and set group_by and having_clause
+                let mut render_plan = gb.input.to_render_plan(schema)?;
+
+                // Convert group by expressions
+                let group_by_exprs: Result<Vec<RenderExpr>, _> = gb
+                    .expressions
+                    .iter()
+                    .map(|expr| expr.clone().try_into())
+                    .collect();
+                render_plan.group_by = GroupByExpressions(group_by_exprs?);
+
+                // Convert having clause if present
+                if let Some(ref having) = gb.having_clause {
+                    let mut having_expr: RenderExpr = having.clone().try_into()?;
+                    apply_property_mapping_to_expr(&mut having_expr, &gb.input);
+                    render_plan.having_clause = Some(having_expr);
+                }
+
+                Ok(render_plan)
+            }
+            _ => todo!(
+                "Render plan conversion not implemented for LogicalPlan variant: {:?}",
+                std::mem::discriminant(self)
+            ),
         }
     }
 }
@@ -2301,7 +2430,7 @@ fn contains_aggregation_function(expr: &RenderExpr) -> bool {
             }) || case
                 .else_expr
                 .as_ref()
-                .map_or(false, |e| contains_aggregation_function(e))
+                .is_some_and(|e| contains_aggregation_function(e))
         }
         _ => false,
     }

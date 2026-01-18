@@ -23,7 +23,7 @@ use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::render_expr::{
     AggregateFnCall, Column, ColumnAlias, PropertyAccess, RenderExpr, ScalarFnCall,
 };
-use crate::render_plan::{SelectItem};
+use crate::render_plan::SelectItem;
 
 /// SelectBuilder trait for extracting SELECT items from logical plans
 pub trait SelectBuilder {
@@ -95,7 +95,11 @@ impl SelectBuilder for LogicalPlan {
                     .map(|item| {
                         Ok(SelectItem {
                             expression: item.expression.clone().try_into()?,
-                            col_alias: item.col_alias.as_ref().map(|ca| ca.clone().try_into()).transpose()?,
+                            col_alias: item
+                                .col_alias
+                                .as_ref()
+                                .map(|ca| ca.clone().try_into())
+                                .transpose()?,
                         })
                     })
                     .collect::<Result<Vec<_>, _>>()?

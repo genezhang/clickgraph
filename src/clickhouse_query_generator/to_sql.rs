@@ -1,7 +1,6 @@
 use super::errors::ClickhouseQueryGeneratorError;
 use super::function_registry::get_function_mapping;
 use super::function_translator::translate_scalar_function;
-use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::logical_expr::{Literal, LogicalExpr, Operator};
 use crate::query_planner::logical_plan::LogicalPlan;
 use std::sync::Arc;

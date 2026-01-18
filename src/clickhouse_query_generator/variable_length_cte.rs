@@ -220,10 +220,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         Self {
             schema,
             spec,
-            cte_name: format!(
-                "vlp_{}",
-                crate::query_planner::logical_plan::generate_cte_id()
-            ),
+            cte_name: format!("vlp_{}_{}", start_alias, end_alias),
             start_node_table: start_table.to_string(),
             start_node_id_column: start_id_col.to_string(),
             start_node_alias: "start_node".to_string(),
@@ -301,10 +298,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         Self {
             schema,
             spec,
-            cte_name: format!(
-                "vlp_{}",
-                crate::query_planner::logical_plan::generate_cte_id()
-            ),
+            cte_name: format!("vlp_{}_{}", start_alias, end_alias),
             // For denormalized: node tables are NOT used, only relationship table
             start_node_table: relationship_table.to_string(), // Will be ignored
             start_node_id_column: rel_from_col.to_string(),   // Use from_col as start ID
@@ -376,10 +370,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         Self {
             schema,
             spec,
-            cte_name: format!(
-                "vlp_{}",
-                crate::query_planner::logical_plan::generate_cte_id()
-            ),
+            cte_name: format!("vlp_{}_{}", start_alias, end_alias),
             start_node_table: start_table.to_string(),
             start_node_id_column: start_id_col.to_string(),
             start_node_alias: "start_node".to_string(),

@@ -19,9 +19,9 @@ use std::collections::HashMap;
 use super::function_registry::get_function_mapping;
 use super::function_translator::{get_ch_function_name, CH_PASSTHROUGH_PREFIX};
 
-/// Thread-local mapping of relationship alias → (from_id_column, to_id_column)
-/// Populated during JOIN rendering, used for IS NULL checks on relationship aliases
 thread_local! {
+    /// Thread-local mapping of relationship alias → (from_id_column, to_id_column)
+    /// Populated during JOIN rendering, used for IS NULL checks on relationship aliases
     static RELATIONSHIP_COLUMNS: RefCell<HashMap<String, (String, String)>> = RefCell::new(HashMap::new());
 
     /// Thread-local mapping of CTE alias → property mapping (Cypher property → CTE column name)
