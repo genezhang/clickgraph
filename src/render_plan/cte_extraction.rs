@@ -10,13 +10,14 @@ use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::graph_catalog::pattern_schema::{JoinStrategy, PatternSchemaContext};
 use crate::query_planner::logical_plan::LogicalPlan;
+use crate::query_planner::logical_expr::ColumnAlias as LogicalColumnAlias;
 use crate::utils::cte_naming::generate_cte_base_name;
 
 use super::cte_generation::map_property_to_column_with_schema;
 use super::errors::RenderBuildError;
 use super::filter_pipeline::{categorize_filters, CategorizedFilters};
 use super::plan_builder::RenderPlanBuilder;
-use super::render_expr::{Literal, Operator, PropertyAccess, RenderExpr};
+use super::render_expr::{ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr};
 use super::{Cte, CteContent, Join, JoinType};
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
@@ -2840,8 +2841,8 @@ pub fn extract_ctes_with_context(
                 .iter()
                 .any(|item| matches!(&item.expression, LogicalExpr::AggregateFnCall(_)));
 
-            let expanded_items: Vec<_> = wc.items.iter().map(|item| {
-                let expanded_expr = if let LogicalExpr::AggregateFnCall(ref agg) = item.expression {
+            let expanded_items: Vec<_> = wc.items.iter().flat_map(|item| {
+                if let LogicalExpr::AggregateFnCall(ref agg) = item.expression {
                     if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
                         if let LogicalExpr::TableAlias(ref alias) = agg.args[0] {
                             log::info!("🔧 CTE Extraction: Expanding collect({}) to groupArray(tuple(...))", alias.0);
@@ -2851,29 +2852,74 @@ pub fn extract_ctes_with_context(
                             // For now, log and keep as-is (will be handled by plan_builder path)
                             // TODO: Refactor to access schema properties directly
                             log::warn!("⚠️  CTE Extraction path for collect() - need schema access to expand");
-                            item.expression.clone()
+                            vec![crate::query_planner::logical_plan::ProjectionItem {
+                                expression: item.expression.clone(),
+                                col_alias: item.col_alias.clone(),
+                            }]
                         } else {
-                            item.expression.clone()
+                            vec![crate::query_planner::logical_plan::ProjectionItem {
+                                expression: item.expression.clone(),
+                                col_alias: item.col_alias.clone(),
+                            }]
                         }
                     } else {
-                        item.expression.clone()
+                        vec![crate::query_planner::logical_plan::ProjectionItem {
+                            expression: item.expression.clone(),
+                            col_alias: item.col_alias.clone(),
+                        }]
+                    }
+                } else if let LogicalExpr::TableAlias(ref alias) = item.expression {
+                    // 🔧 FIX: Expand TableAlias to individual properties with underscore aliases
+                    // This matches the behavior expected by the underscore convention test
+                    log::info!("🔧 CTE Extraction: Expanding TableAlias '{}' to individual properties", alias.0);
+                    
+                    // Get properties for this alias from the input plan
+                    match wc.input.get_properties_with_table_alias(&alias.0) {
+                        Ok((properties, _actual_table_alias)) => {
+                            if !properties.is_empty() {
+                                log::info!("🔧 CTE Extraction: Found {} properties for alias '{}'", properties.len(), alias.0);
+                                
+                                // Convert properties to ProjectionItems with underscore aliases
+                                properties.into_iter().map(|(cypher_prop, db_col)| {
+                                    let underscore_alias = format!("{}_{}", alias.0, cypher_prop);
+                                    crate::query_planner::logical_plan::ProjectionItem {
+                                        expression: LogicalExpr::PropertyAccessExp(
+                                            crate::query_planner::logical_expr::PropertyAccess {
+                                                table_alias: alias.clone(),
+                                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(db_col),
+                                            }
+                                        ),
+                                        col_alias: Some(LogicalColumnAlias(underscore_alias)),
+                                    }
+                                }).collect()
+                            } else {
+                                log::warn!("⚠️ CTE Extraction: No properties found for alias '{}', keeping as TableAlias", alias.0);
+                                vec![crate::query_planner::logical_plan::ProjectionItem {
+                                    expression: item.expression.clone(),
+                                    col_alias: item.col_alias.clone(),
+                                }]
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("⚠️ CTE Extraction: Error getting properties for alias '{}': {:?}, keeping as TableAlias", alias.0, e);
+                            vec![crate::query_planner::logical_plan::ProjectionItem {
+                                expression: item.expression.clone(),
+                                col_alias: item.col_alias.clone(),
+                            }]
+                        }
                     }
                 } else if has_aggregation_in_items {
                     // If we have aggregations in the items, wrap non-aggregate TableAlias with anyLast()
                     // for all non-ID columns (ID columns will be in GROUP BY)
-                    if let LogicalExpr::TableAlias(ref alias) = item.expression {
-                        // We'll wrap this later after we know which columns are IDs
-                        item.expression.clone()
-                    } else {
-                        item.expression.clone()
-                    }
+                    vec![crate::query_planner::logical_plan::ProjectionItem {
+                        expression: item.expression.clone(),
+                        col_alias: item.col_alias.clone(),
+                    }]
                 } else {
-                    item.expression.clone()
-                };
-
-                crate::query_planner::logical_plan::ProjectionItem {
-                    expression: expanded_expr,
-                    col_alias: item.col_alias.clone(),
+                    vec![crate::query_planner::logical_plan::ProjectionItem {
+                        expression: item.expression.clone(),
+                        col_alias: item.col_alias.clone(),
+                    }]
                 }
             }).collect();
 
@@ -2991,7 +3037,33 @@ pub fn extract_ctes_with_context(
                 LogicalPlan::Projection(projection_with_with_items)
             };
 
-            let cte_render_plan = plan_to_render.to_render_plan(schema)?;
+            let mut cte_render_plan = plan_to_render.to_render_plan(schema)?;
+
+            // Add WHERE clause from WITH to the CTE render plan
+            if let Some(where_clause) = &wc.where_clause {
+                let render_where = where_clause.clone().try_into().map_err(|_| RenderBuildError::InvalidRenderPlan("Failed to convert where clause".to_string()))?;
+                if cte_render_plan.group_by.0.is_empty() {
+                    // Non-aggregation, add to filters
+                    if let Some(existing) = cte_render_plan.filters.0 {
+                        cte_render_plan.filters.0 = Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::And,
+                            operands: vec![existing, render_where],
+                        }));
+                    } else {
+                        cte_render_plan.filters.0 = Some(render_where);
+                    }
+                } else {
+                    // Aggregation, add to having
+                    if let Some(existing) = cte_render_plan.having_clause {
+                        cte_render_plan.having_clause = Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::And,
+                            operands: vec![existing, render_where],
+                        }));
+                    } else {
+                        cte_render_plan.having_clause = Some(render_where);
+                    }
+                }
+            }
 
             // Create the CTE
             let with_cte = Cte::new(

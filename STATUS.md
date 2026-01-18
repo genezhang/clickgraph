@@ -188,8 +188,7 @@ CALL pagerank(
 
 **Critical Issues**:
 1. **Scalar aggregates in WITH + GROUP BY** - TableAlias architecture limitation
-2. **CTE column naming inconsistency** - WITH DISTINCT uses underscores, WHERE uses dots
-3. **OPTIONAL MATCH + inline property** - Generates invalid SQL (affects LDBC IS-7)
+2. **OPTIONAL MATCH + inline property** - Generates invalid SQL (affects LDBC IS-7)
 
 **Parser Limitations**:
 - No write operations (`CREATE`, `SET`, `DELETE`, `MERGE`)

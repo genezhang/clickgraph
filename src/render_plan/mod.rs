@@ -4,6 +4,7 @@ pub mod cte_generation;
 pub mod cte_manager;
 mod expression_utils;
 mod feature_flags;
+mod filter_builder;
 mod filter_pipeline;
 mod from_builder;
 mod from_table;

@@ -1,0 +1,420 @@
+//! Filter Builder Module
+//!
+//! This module handles extraction of filter expressions from logical plans.
+//! It processes WHERE clauses, HAVING clauses, and other filter conditions
+//! that need to be applied to the generated SQL queries.
+
+use crate::query_planner::logical_plan::LogicalPlan;
+use crate::render_plan::render_expr::{RenderExpr, Operator, OperatorApplication};
+use crate::render_plan::plan_builder_helpers::*;
+use crate::render_plan::plan_builder_utils::*;
+use crate::render_plan::cte_extraction::{extract_relationship_columns, table_to_id_column, RelationshipColumns};
+use crate::render_plan::filter_pipeline::{categorize_filters, CategorizedFilters};
+use crate::graph_catalog::graph_schema::GraphSchema;
+use crate::server::GLOBAL_SCHEMAS;
+use crate::render_plan::errors::RenderBuildError;
+
+/// Result type for filter builder operations
+pub type FilterBuilderResult<T> = Result<T, RenderBuildError>;
+
+/// Trait for extracting filter expressions from logical plans
+pub trait FilterBuilder {
+    /// Extract filters from WHERE clauses and other filter conditions
+    fn extract_filters(&self) -> FilterBuilderResult<Option<RenderExpr>>;
+
+    /// Extract final filters that should be applied at the end of query execution
+    fn extract_final_filters(&self) -> FilterBuilderResult<Option<RenderExpr>>;
+
+    /// Extract DISTINCT flag from projection nodes
+    fn extract_distinct(&self) -> bool;
+}
+
+impl FilterBuilder for LogicalPlan {
+    fn extract_filters(&self) -> FilterBuilderResult<Option<RenderExpr>> {
+        let filters = match &self {
+            LogicalPlan::Empty => None,
+            LogicalPlan::ViewScan(_) => None,
+            LogicalPlan::GraphNode(graph_node) => {
+                // For node-only queries, extract both view_filter and schema_filter from the input ViewScan
+                if let LogicalPlan::ViewScan(scan) = graph_node.input.as_ref() {
+                    log::info!(
+                        "🔍 GraphNode '{}' extract_filters: ViewScan table={}",
+                        graph_node.alias,
+                        scan.source_table
+                    );
+
+                    let mut filters = Vec::new();
+
+                    // Extract view_filter (user's WHERE clause, injected by optimizer)
+                    if let Some(ref view_filter) = scan.view_filter {
+                        log::debug!(
+                            "extract_filters: view_filter BEFORE conversion: {:?}",
+                            view_filter
+                        );
+                        let mut expr: RenderExpr = view_filter.clone().try_into()?;
+                        log::debug!("extract_filters: view_filter AFTER conversion: {:?}", expr);
+                        apply_property_mapping_to_expr(&mut expr, &graph_node.input);
+                        log::debug!(
+                            "extract_filters: view_filter AFTER property mapping: {:?}",
+                            expr
+                        );
+                        log::info!(
+                            "GraphNode '{}': Adding view_filter: {:?}",
+                            graph_node.alias,
+                            expr
+                        );
+                        filters.push(expr);
+                    }
+
+                    // Extract schema_filter (from YAML schema)
+                    // Wrap in parentheses to ensure correct operator precedence when combined with user filters
+                    if let Some(ref schema_filter) = scan.schema_filter {
+                        if let Ok(sql) = schema_filter.to_sql(&graph_node.alias) {
+                            log::info!(
+                                "GraphNode '{}': Adding schema filter: {}",
+                                graph_node.alias,
+                                sql
+                            );
+                            // Always wrap schema filter in parentheses for safe combination
+                            filters.push(RenderExpr::Raw(format!("({})", sql)));
+                        }
+                    }
+
+                    // Combine filters with AND if multiple
+                    // Use explicit AND combination - each operand will be wrapped appropriately
+                    if filters.is_empty() {
+                        return Ok(None);
+                    } else if filters.len() == 1 {
+                        return Ok(Some(filters.into_iter().next().unwrap()));
+                    } else {
+                        // When combining filters, wrap non-Raw expressions in parentheses
+                        // to handle AND/OR precedence correctly
+                        let combined = filters
+                            .into_iter()
+                            .reduce(|acc, pred| {
+                                // The OperatorApplicationExp will render as "(left) AND (right)"
+                                // due to the render_expr_to_sql_string logic
+                                RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::And,
+                                    operands: vec![acc, pred],
+                                })
+                            })
+                            .unwrap();
+                        return Ok(Some(combined));
+                    }
+                }
+                None
+            }
+            LogicalPlan::GraphRel(graph_rel) => {
+                log::trace!(
+                    "GraphRel node detected, collecting filters from ALL nested where_predicates"
+                );
+
+                // Collect all where_predicates from this GraphRel and nested GraphRel nodes
+                // Using helper functions from plan_builder_helpers module
+                let all_predicates =
+                    collect_graphrel_predicates(&LogicalPlan::GraphRel(graph_rel.clone()));
+
+                let mut all_predicates = all_predicates;
+
+                // 🔒 Add schema-level filters from ViewScans
+                let schema_filters =
+                    collect_schema_filters(&LogicalPlan::GraphRel(graph_rel.clone()), None);
+                if !schema_filters.is_empty() {
+                    log::info!(
+                        "Adding {} schema filter(s) to WHERE clause",
+                        schema_filters.len()
+                    );
+                    all_predicates.extend(schema_filters);
+                }
+
+                // TODO: Add relationship uniqueness filters for undirected multi-hop patterns
+                // This requires fixing Issue #1 (Undirected Multi-Hop Patterns Generate Broken SQL) first.
+                // See KNOWN_ISSUES.md for details.
+                // Currently, undirected multi-hop patterns generate broken SQL with wrong aliases,
+                // so adding uniqueness filters here would not work correctly.
+
+                // 🚀 ADD CYCLE PREVENTION for fixed-length paths (only for 2+ hops)
+                // Single hop (*1) can't have cycles - no need for cycle prevention
+                if let Some(spec) = &graph_rel.variable_length {
+                    if let Some(exact_hops) = spec.exact_hop_count() {
+                        // Skip cycle prevention for *1 - single hop can't cycle
+                        if exact_hops >= 2 && graph_rel.shortest_path_mode.is_none() {
+                            crate::debug_println!("DEBUG: extract_filters - Adding cycle prevention for fixed-length *{}", exact_hops);
+
+                            // Check if this is a denormalized pattern
+                            let is_denormalized = is_node_denormalized(&graph_rel.left)
+                                && is_node_denormalized(&graph_rel.right);
+
+                            // Extract table/column info for cycle prevention
+                            // Use extract_table_name directly to avoid wrong fallbacks
+                            let start_table =
+                                extract_table_name(&graph_rel.left).ok_or_else(|| {
+                                    RenderBuildError::MissingTableInfo(
+                                        "start node in cycle prevention".to_string(),
+                                    )
+                                })?;
+                            let end_table =
+                                extract_table_name(&graph_rel.right).ok_or_else(|| {
+                                    RenderBuildError::MissingTableInfo(
+                                        "end node in cycle prevention".to_string(),
+                                    )
+                                })?;
+
+                            let rel_cols = extract_relationship_columns(&graph_rel.center)
+                                .unwrap_or(RelationshipColumns {
+                                    from_id: "from_node_id".to_string(),
+                                    to_id: "to_node_id".to_string(),
+                                });
+
+                            // For denormalized, use relationship columns directly
+                            // For normal, use node ID columns
+                            let (start_id_col, end_id_col) = if is_denormalized {
+                                (rel_cols.from_id.clone(), rel_cols.to_id.clone())
+                            } else {
+                                let start = extract_id_column(&graph_rel.left)
+                                    .unwrap_or_else(|| table_to_id_column(&start_table));
+                                let end = extract_id_column(&graph_rel.right)
+                                    .unwrap_or_else(|| table_to_id_column(&end_table));
+                                (start, end)
+                            };
+
+                            // Generate cycle prevention filters
+                            if let Some(cycle_filter) = crate::render_plan::cte_extraction::generate_cycle_prevention_filters(
+                                exact_hops,
+                                &start_id_col,
+                                &rel_cols.to_id,
+                                &rel_cols.from_id,
+                                &end_id_col,
+                                &graph_rel.left_connection,
+                                &graph_rel.right_connection,
+                            ) {
+                                crate::debug_println!("DEBUG: extract_filters - Generated cycle prevention filter");
+                                all_predicates.push(cycle_filter);
+                            }
+                        }
+                    }
+                }
+
+                if all_predicates.is_empty() {
+                    None
+                } else if all_predicates.len() == 1 {
+                    log::trace!("Found 1 GraphRel predicate");
+                    Some(all_predicates.into_iter().next().unwrap())
+                } else {
+                    // Combine with AND
+                    log::trace!(
+                        "Found {} GraphRel predicates, combining with AND",
+                        all_predicates.len()
+                    );
+                    let combined = all_predicates
+                        .into_iter()
+                        .reduce(|acc, pred| {
+                            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                operator: Operator::And,
+                                operands: vec![acc, pred],
+                            })
+                        })
+                        .unwrap();
+                    Some(combined)
+                }
+            }
+            LogicalPlan::GraphJoins(graph_joins) => {
+                // For GraphJoins, extract filters from the input
+                graph_joins.input.extract_filters()?
+            }
+            LogicalPlan::Filter(filter) => {
+                println!(
+                    "DEBUG: extract_filters - Found Filter node with predicate: {:?}",
+                    filter.predicate
+                );
+                println!(
+                    "DEBUG: extract_filters - Filter input type: {:?}",
+                    std::mem::discriminant(&*filter.input)
+                );
+                let mut expr: RenderExpr = filter.predicate.clone().try_into()?;
+                // Apply property mapping to the filter expression
+                apply_property_mapping_to_expr(&mut expr, &filter.input);
+
+                // Also check for schema filters from the input (e.g., GraphNode → ViewScan)
+                if let Some(input_filter) = filter.input.extract_filters()? {
+                    crate::debug_println!("DEBUG: extract_filters - Combining Filter predicate with input schema filter");
+                    // Combine the Filter predicate with input's schema filter using AND
+                    Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::And,
+                        operands: vec![input_filter, expr],
+                    }))
+                } else {
+                    crate::debug_println!("DEBUG: extract_filters - Returning Filter predicate only (no input filter)");
+                    Some(expr)
+                }
+            }
+            LogicalPlan::Projection(projection) => {
+                crate::debug_println!(
+                    "DEBUG: extract_filters - Projection, recursing to input type: {:?}",
+                    std::mem::discriminant(&*projection.input)
+                );
+                projection.input.extract_filters()?
+            }
+            LogicalPlan::GroupBy(group_by) => group_by.input.extract_filters()?,
+            LogicalPlan::OrderBy(order_by) => order_by.input.extract_filters()?,
+            LogicalPlan::Skip(skip) => skip.input.extract_filters()?,
+            LogicalPlan::Limit(limit) => limit.input.extract_filters()?,
+            LogicalPlan::Cte(cte) => cte.input.extract_filters()?,
+            LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_filters()?,
+            LogicalPlan::Union(_) => None,
+            LogicalPlan::PageRank(_) => None,
+            LogicalPlan::Unwind(u) => u.input.extract_filters()?,
+            LogicalPlan::CartesianProduct(cp) => {
+                // Combine filters from both sides with AND
+                let left_filters = cp.left.extract_filters()?;
+                let right_filters = cp.right.extract_filters()?;
+
+                // DEBUG: Log what we're extracting
+                log::info!("🔍 CartesianProduct extract_filters:");
+                log::info!("  Left filters: {:?}", left_filters);
+                log::info!("  Right filters: {:?}", right_filters);
+
+                match (left_filters, right_filters) {
+                    (None, None) => None,
+                    (Some(l), None) => {
+                        log::info!("  ✅ Returning left filters only");
+                        Some(l)
+                    }
+                    (None, Some(r)) => {
+                        log::info!("  ✅ Returning right filters only");
+                        Some(r)
+                    }
+                    (Some(l), Some(r)) => {
+                        log::warn!("  ⚠️ BOTH sides have filters - combining with AND!");
+                        log::warn!("  ⚠️ This may cause duplicates if filters are the same!");
+                        Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::And,
+                            operands: vec![l, r],
+                        }))
+                    }
+                }
+            }
+            LogicalPlan::WithClause(wc) => wc.input.extract_filters()?,
+        };
+        Ok(filters)
+    }
+
+    fn extract_final_filters(&self) -> FilterBuilderResult<Option<RenderExpr>> {
+        let final_filters = match &self {
+            LogicalPlan::Limit(limit) => limit.input.extract_final_filters()?,
+            LogicalPlan::Skip(skip) => skip.input.extract_final_filters()?,
+            LogicalPlan::OrderBy(order_by) => order_by.input.extract_final_filters()?,
+            LogicalPlan::GroupBy(group_by) => group_by.input.extract_final_filters()?,
+            LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_final_filters()?,
+            LogicalPlan::Projection(projection) => projection.input.extract_final_filters()?,
+            LogicalPlan::Filter(filter) => {
+                let mut expr: RenderExpr = filter.predicate.clone().try_into()?;
+                // Apply property mapping to the filter expression
+                apply_property_mapping_to_expr(&mut expr, &filter.input);
+                Some(expr)
+            }
+            LogicalPlan::GraphRel(graph_rel) => {
+                // For GraphRel, extract path function filters that should be applied to the final query
+                if let Some(logical_expr) = &graph_rel.where_predicate {
+                    let mut filter_expr: RenderExpr = logical_expr.clone().try_into()?;
+                    // Apply property mapping to the where predicate
+                    apply_property_mapping_to_expr(
+                        &mut filter_expr,
+                        &LogicalPlan::GraphRel(graph_rel.clone()),
+                    );
+                    let start_alias = graph_rel.left_connection.clone();
+                    let end_alias = graph_rel.right_connection.clone();
+
+                    // For extract_final_filters, we only need to categorize path function filters
+                    // Schema-aware categorization is not needed here since this is just for
+                    // separating path functions from other filters. Use a dummy categorization.
+                    let rel_labels = graph_rel.labels.clone().unwrap_or_default();
+
+                    // Try to get schema for proper categorization
+                    use crate::server::GLOBAL_SCHEMAS;
+                    let schemas_lock = GLOBAL_SCHEMAS.get().expect("Schemas not initialized");
+                    let schemas = schemas_lock
+                        .try_read()
+                        .expect("Failed to acquire schema lock");
+
+                    // Try to find a schema that has this relationship type
+                    let schema_for_categorization = if !rel_labels.is_empty() {
+                        schemas.values().find(|s| {
+                            rel_labels
+                                .iter()
+                                .any(|label| s.get_rel_schema(label).is_ok())
+                        })
+                    } else {
+                        None
+                    };
+
+                    let schema_ref = schema_for_categorization.unwrap_or_else(|| {
+                        schemas
+                            .values()
+                            .next()
+                            .expect("At least one schema must be loaded")
+                    });
+
+                    let categorized = categorize_filters(
+                        Some(&filter_expr),
+                        &start_alias,
+                        &end_alias,
+                        &graph_rel.alias,
+                        schema_ref,
+                        &rel_labels,
+                    );
+
+                    categorized.path_function_filters
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        Ok(final_filters)
+    }
+
+    fn extract_distinct(&self) -> bool {
+        // Extract distinct flag from Projection nodes
+        let result = match &self {
+            LogicalPlan::Projection(projection) => {
+                crate::debug_println!(
+                    "DEBUG extract_distinct: Found Projection, distinct={}",
+                    projection.distinct
+                );
+                projection.distinct
+            }
+            LogicalPlan::OrderBy(order_by) => {
+                crate::debug_println!("DEBUG extract_distinct: OrderBy, recursing");
+                order_by.input.extract_distinct()
+            }
+            LogicalPlan::Skip(skip) => {
+                crate::debug_println!("DEBUG extract_distinct: Skip, recursing");
+                skip.input.extract_distinct()
+            }
+            LogicalPlan::Limit(limit) => {
+                crate::debug_println!("DEBUG extract_distinct: Limit, recursing");
+                limit.input.extract_distinct()
+            }
+            LogicalPlan::GroupBy(group_by) => {
+                crate::debug_println!("DEBUG extract_distinct: GroupBy, recursing");
+                group_by.input.extract_distinct()
+            }
+            LogicalPlan::GraphJoins(graph_joins) => {
+                crate::debug_println!("DEBUG extract_distinct: GraphJoins, recursing");
+                graph_joins.input.extract_distinct()
+            }
+            LogicalPlan::Filter(filter) => {
+                crate::debug_println!("DEBUG extract_distinct: Filter, recursing");
+                filter.input.extract_distinct()
+            }
+            _ => {
+                crate::debug_println!("DEBUG extract_distinct: Other variant, returning false");
+                false
+            }
+        };
+        crate::debug_println!("DEBUG extract_distinct: Returning {}", result);
+        result
+    }
+}

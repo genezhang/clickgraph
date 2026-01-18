@@ -10,7 +10,7 @@ use clickgraph::{
         graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema},
     },
     open_cypher_parser::parse_query,
-    query_planner::logical_plan::plan_builder::build_logical_plan,
+    query_planner::evaluate_read_query,
     render_plan::{logical_plan_to_render_plan, ToSql},
 };
 use std::collections::HashMap;
@@ -107,11 +107,11 @@ fn test_cte_column_aliasing_underscore_convention() {
     let ast = parse_query(cypher).expect("Failed to parse Cypher query");
 
     // Build logical plan
-    let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to build logical plan");
+    let logical_plan =
+        evaluate_read_query(ast, &schema, None, None).expect("Failed to build logical plan");
 
     // Render to SQL
-    let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
+    let render_plan = logical_plan_to_render_plan(logical_plan, &schema)
         .expect("Failed to render plan");
 
     let sql = render_plan.to_sql();
@@ -187,11 +187,11 @@ fn test_cte_wildcard_expansion_underscore_convention() {
     let ast = parse_query(cypher).expect("Failed to parse Cypher query");
 
     // Build logical plan
-    let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to build logical plan");
+    let logical_plan =
+        evaluate_read_query(ast, &schema, None, None).expect("Failed to build logical plan");
 
     // Render to SQL
-    let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
+    let render_plan = logical_plan_to_render_plan(logical_plan, &schema)
         .expect("Failed to render plan");
 
     let sql = render_plan.to_sql();

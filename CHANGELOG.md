@@ -2,6 +2,13 @@
 
 ### 🐛 Bug Fixes
 
+- **CTE column aliasing underscore convention fix**: WITH clauses now correctly use underscore aliases (a_name) in CTE columns instead of dot notation (a.name)
+  - **Issue**: TableAlias expansion in WITH clauses was using dot notation for column aliases, causing inconsistent naming between CTE and final SELECT
+  - **Fix**: Modified CTE extraction to expand TableAlias to individual PropertyAccessExp with underscore aliases using get_properties_with_table_alias()
+  - **Impact**: CTE columns now use underscore convention (a_name, a_user_id) while final SELECT uses AS for dot notation (a_name AS "a.name")
+  - **Files**: `src/render_plan/cte_extraction.rs` (TableAlias expansion logic, lines 2881-2896; LogicalColumnAlias import and usage)
+  - **Tests**: `cte_column_aliasing_underscore_convention` test now passes, all integration tests passing (17/17)
+
 - **Shortest path FROM clause fix (single-type VLP)**: Single-type variable-length paths now correctly use CTE in FROM clause instead of start node table
   - **Issue**: GraphJoins.extract_from() for empty joins checked variable-length paths AFTER denormalized/polymorphic checks
   - **Fix**: Moved single-type variable-length check to top priority (A.1) before other pattern checks
