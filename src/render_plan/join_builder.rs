@@ -16,6 +16,7 @@ use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::errors::RenderBuildError;
+use crate::render_plan::from_builder::FromBuilder;
 use crate::render_plan::plan_builder::RenderPlanBuilder;
 use crate::render_plan::plan_builder::RenderPlanBuilderResult;
 use crate::render_plan::render_expr::{
@@ -1718,7 +1719,7 @@ impl JoinBuilder for LogicalPlan {
                 } else {
                     // Non-GraphRel right side (e.g., simple node patterns)
                     // Get the right side's FROM table to create a JOIN
-                    if let Some(right_from) = cp.right.extract_from()? {
+                    if let Some(right_from) = cp.right.as_ref().extract_from()? {
                         let join_type = if cp.is_optional {
                             JoinType::Left
                         } else {
