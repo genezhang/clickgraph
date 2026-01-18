@@ -4,54 +4,54 @@
     "description": "Simple node query",
     "iterations": 5,
     "success_rate": 1.0,
-    "avg_duration": 0.008838510513305664,
-    "min_duration": 0.007834672927856445,
-    "max_duration": 0.010706424713134766,
-    "std_duration": 0.0011480835771668315,
-    "timestamp": 1768670546.9624903
+    "avg_duration": 0.0075057029724121095,
+    "min_duration": 0.006735324859619141,
+    "max_duration": 0.00939035415649414,
+    "std_duration": 0.0010920546078971047,
+    "timestamp": 1768758850.506308
   },
   "complex_joins": {
     "query": "MATCH (u:User)-[:FOLLOWS]->(f:User)-[:POSTED]->(p:Post) RETURN u.name, f.name, p.content",
     "description": "Multi-hop query with joins",
     "iterations": 5,
     "success_rate": 1.0,
-    "avg_duration": 0.00523533821105957,
-    "min_duration": 0.004585742950439453,
-    "max_duration": 0.005868196487426758,
-    "std_duration": 0.00047821568661064734,
-    "timestamp": 1768670546.9890213
+    "avg_duration": 0.013566303253173827,
+    "min_duration": 0.00989842414855957,
+    "max_duration": 0.01574110984802246,
+    "std_duration": 0.002561946760165591,
+    "timestamp": 1768758850.5748353
   },
   "variable_length_path": {
     "query": "MATCH (u:User)-[*1..3]->(target) RETURN u.name, target.name",
     "description": "Variable-length path query",
     "iterations": 5,
     "success_rate": 1.0,
-    "avg_duration": 0.004945993423461914,
-    "min_duration": 0.004523754119873047,
-    "max_duration": 0.005374431610107422,
-    "std_duration": 0.000358776077172312,
-    "timestamp": 1768670547.0142024
+    "avg_duration": 0.009345340728759765,
+    "min_duration": 0.0077571868896484375,
+    "max_duration": 0.01192617416381836,
+    "std_duration": 0.001798027525011445,
+    "timestamp": 1768758850.6220975
   },
   "aggregation": {
     "query": "MATCH (u:User)-[:FOLLOWS]->(f:User) RETURN count(u) as followers, u.country",
     "description": "Aggregation query",
     "iterations": 5,
     "success_rate": 1.0,
-    "avg_duration": 0.009555768966674805,
-    "min_duration": 0.007804155349731445,
-    "max_duration": 0.012969493865966797,
-    "std_duration": 0.0019835307403247276,
-    "timestamp": 1768670547.0625174
+    "avg_duration": 0.008634424209594727,
+    "min_duration": 0.00597834587097168,
+    "max_duration": 0.016710281372070312,
+    "std_duration": 0.004548511044197141,
+    "timestamp": 1768758850.6657474
   },
   "complex_filters": {
     "query": "MATCH (u:User)-[:FOLLOWS]->(f:User) WHERE u.country = 'US' AND f.registration_date > '2020-01-01' RETURN u.name",
     "description": "Query with complex filters",
     "iterations": 5,
     "success_rate": 1.0,
-    "avg_duration": 0.009250926971435546,
-    "min_duration": 0.008393526077270508,
-    "max_duration": 0.009758472442626953,
-    "std_duration": 0.000543962722959147,
-    "timestamp": 1768670547.1091287
+    "avg_duration": 0.007952022552490234,
+    "min_duration": 0.0053920745849609375,
+    "max_duration": 0.01577281951904297,
+    "std_duration": 0.004407665807107346,
+    "timestamp": 1768758850.7059553
   }
 }

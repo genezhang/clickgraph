@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Performance Benchmark for plan_builder.rs Refactoring
+Cypher-to-SQL Translation Performance Benchmark
 
-This script establishes baseline performance metrics for plan building operations
-and monitors for regressions during the refactoring process.
+This script measures the performance of ClickGraph's Cypher-to-SQL translation process
+(translation time only, excluding SQL execution).
 
 Usage:
     python benchmarks/plan_builder_performance.py --baseline
@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Any
 
-class PlanBuilderBenchmark:
+class CypherTranslationBenchmark:
     def __init__(self):
         self.results_file = Path("benchmarks/plan_builder_baseline.json")
         self.test_queries = self._get_test_queries()
@@ -59,24 +59,40 @@ class PlanBuilderBenchmark:
         # Start timing
         start_time = time.time()
 
-        # Run the query through ClickGraph
+        # Run the query through ClickGraph in sql_only mode (translation only)
         try:
             result = subprocess.run([
                 "curl", "-s", "-X", "POST",
                 "http://localhost:8080/query",
                 "-H", "Content-Type: application/json",
-                "-d", json.dumps({"query": query})
+                "-d", json.dumps({"query": query, "sql_only": True})
             ], capture_output=True, text=True, timeout=30)
 
             end_time = time.time()
             duration = end_time - start_time
 
             if result.returncode == 0:
-                return {
-                    "duration": duration,
-                    "success": True,
-                    "error": None
-                }
+                try:
+                    response_data = json.loads(result.stdout)
+                    if "generated_sql" in response_data:
+                        return {
+                            "duration": duration,
+                            "success": True,
+                            "error": None,
+                            "sql_length": len(response_data.get("generated_sql", ""))
+                        }
+                    else:
+                        return {
+                            "duration": duration,
+                            "success": False,
+                            "error": "No generated_sql in response"
+                        }
+                except json.JSONDecodeError:
+                    return {
+                        "duration": duration,
+                        "success": False,
+                        "error": "Invalid JSON response"
+                    }
             else:
                 return {
                     "duration": duration,
@@ -98,8 +114,8 @@ class PlanBuilderBenchmark:
             }
 
     def run_baseline(self, iterations: int = 5) -> Dict[str, Any]:
-        """Run baseline performance measurements"""
-        print("Running baseline performance measurements...")
+        """Run baseline Cypher-to-SQL translation performance measurements"""
+        print("Running baseline Cypher-to-SQL translation performance measurements...")
 
         results = {}
 
@@ -195,7 +211,7 @@ def main():
 
     args = parser.parse_args()
 
-    benchmark = PlanBuilderBenchmark()
+    benchmark = CypherTranslationBenchmark()
 
     if args.baseline:
         results = benchmark.run_baseline(args.iterations)
