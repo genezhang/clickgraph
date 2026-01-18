@@ -83,7 +83,7 @@ impl FromBuilder for LogicalPlan {
 
         let from_ref = match &self {
             LogicalPlan::Empty => None,
-            
+
             LogicalPlan::ViewScan(scan) => {
                 // Check if this is a relationship ViewScan (has from_id/to_id)
                 if scan.from_id.is_some() && scan.to_id.is_some() {
@@ -122,7 +122,7 @@ impl FromBuilder for LogicalPlan {
                     ))
                 }
             }
-            
+
             LogicalPlan::GraphNode(graph_node) => {
                 // For GraphNode, extract FROM from the input but use this GraphNode's alias
                 // CROSS JOINs for multiple standalone nodes are handled in extract_joins
@@ -175,11 +175,9 @@ impl FromBuilder for LogicalPlan {
                     }
                 }
             }
-            
-            LogicalPlan::GraphRel(graph_rel) => {
-                self.extract_from_graph_rel(graph_rel)?
-            }
-            
+
+            LogicalPlan::GraphRel(graph_rel) => self.extract_from_graph_rel(graph_rel)?,
+
             LogicalPlan::Filter(filter) => {
                 log::debug!(
                     "  → Filter, recursing to input type={:?}",
@@ -187,7 +185,7 @@ impl FromBuilder for LogicalPlan {
                 );
                 from_table_to_view_ref(filter.input.extract_from()?)
             }
-            
+
             LogicalPlan::Projection(projection) => {
                 log::debug!(
                     "  → Projection, recursing to input type={:?}",
@@ -195,31 +193,29 @@ impl FromBuilder for LogicalPlan {
                 );
                 from_table_to_view_ref(projection.input.extract_from()?)
             }
-            
-            LogicalPlan::GraphJoins(graph_joins) => {
-                self.extract_from_graph_joins(graph_joins)?
-            }
-            
+
+            LogicalPlan::GraphJoins(graph_joins) => self.extract_from_graph_joins(graph_joins)?,
+
             LogicalPlan::GroupBy(group_by) => {
                 from_table_to_view_ref(group_by.input.extract_from()?)
             }
-            
+
             LogicalPlan::OrderBy(order_by) => {
                 from_table_to_view_ref(order_by.input.extract_from()?)
             }
-            
+
             LogicalPlan::Skip(skip) => from_table_to_view_ref(skip.input.extract_from()?),
-            
+
             LogicalPlan::Limit(limit) => from_table_to_view_ref(limit.input.extract_from()?),
-            
+
             LogicalPlan::Cte(cte) => from_table_to_view_ref(cte.input.extract_from()?),
-            
+
             LogicalPlan::Union(_) => None,
-            
+
             LogicalPlan::PageRank(_) => None,
-            
+
             LogicalPlan::Unwind(u) => from_table_to_view_ref(u.input.extract_from()?),
-            
+
             LogicalPlan::CartesianProduct(cp) => {
                 // Try left side first (for most queries)
                 let left_from = cp.left.extract_from()?;
@@ -235,10 +231,10 @@ impl FromBuilder for LogicalPlan {
                     from_table_to_view_ref(cp.right.extract_from()?)
                 }
             }
-            
+
             LogicalPlan::WithClause(wc) => from_table_to_view_ref(wc.input.extract_from()?),
         };
-        
+
         Ok(view_ref_to_from_table(from_ref))
     }
 }
@@ -256,7 +252,7 @@ impl LogicalPlan {
         graph_rel: &crate::query_planner::logical_plan::GraphRel,
     ) -> RenderPlanBuilderResult<Option<ViewTableRef>> {
         use crate::query_planner::logical_plan::GraphRel;
-        
+
         // DENORMALIZED EDGE TABLE CHECK
         // For denormalized patterns, both nodes are virtual - use relationship table as FROM
         let left_is_denormalized = is_node_denormalized(&graph_rel.left);
@@ -297,7 +293,9 @@ impl LogicalPlan {
         }
 
         if left_is_denormalized && right_is_denormalized {
-            log::debug!("✓ DENORMALIZED pattern: both nodes on edge table, using edge table as FROM");
+            log::debug!(
+                "✓ DENORMALIZED pattern: both nodes on edge table, using edge table as FROM"
+            );
 
             // For multi-hop denormalized, find the first (leftmost) relationship
             fn find_first_graph_rel(graph_rel: &GraphRel) -> &GraphRel {
@@ -396,17 +394,14 @@ impl LogicalPlan {
                         "DEBUG: nested_graph_rel.left = {:?}",
                         nested_graph_rel.left
                     );
-                    crate::debug_println!(
-                        "DEBUG: nested_left_from = {:?}",
-                        nested_left_from
-                    );
+                    crate::debug_println!("DEBUG: nested_left_from = {:?}", nested_left_from);
 
                     if let Ok(Some(nested_from_table)) = nested_left_from {
                         Ok(from_table_to_view_ref(Some(nested_from_table)))
                     } else {
                         // If nested left also doesn't have FROM, create one from the nested left_connection alias
-                        let table_name = extract_table_name(&nested_graph_rel.left)
-                            .ok_or_else(|| {
+                        let table_name =
+                            extract_table_name(&nested_graph_rel.left).ok_or_else(|| {
                                 RenderBuildError::TableNameNotFound(format!(
                                     "Could not resolve table name for alias '{}', plan: {:?}",
                                     nested_graph_rel.left_connection, nested_graph_rel.left
@@ -427,11 +422,9 @@ impl LogicalPlan {
                     let optional_aliases = std::collections::HashSet::new();
                     let denormalized_aliases = std::collections::HashSet::new();
 
-                    if let Some(anchor_alias) = find_anchor_node(
-                        &all_connections,
-                        &optional_aliases,
-                        &denormalized_aliases,
-                    ) {
+                    if let Some(anchor_alias) =
+                        find_anchor_node(&all_connections, &optional_aliases, &denormalized_aliases)
+                    {
                         // Determine which node (left or right) the anchor corresponds to
                         let (table_plan, connection_alias) =
                             if anchor_alias == graph_rel.left_connection {
@@ -440,11 +433,12 @@ impl LogicalPlan {
                                 (&graph_rel.right, &graph_rel.right_connection)
                             };
 
-                        let table_name = extract_table_name(table_plan)
-                            .ok_or_else(|| RenderBuildError::TableNameNotFound(format!(
+                        let table_name = extract_table_name(table_plan).ok_or_else(|| {
+                            RenderBuildError::TableNameNotFound(format!(
                                 "Could not resolve table name for anchor alias '{}', plan: {:?}",
                                 connection_alias, table_plan
-                            )))?;
+                            ))
+                        })?;
 
                         Ok(Some(ViewTableRef {
                             source: Arc::new(LogicalPlan::Empty),
@@ -454,13 +448,12 @@ impl LogicalPlan {
                         }))
                     } else {
                         // Fallback: use left_connection as anchor (traditional behavior)
-                        let table_name =
-                            extract_table_name(&graph_rel.left).ok_or_else(|| {
-                                RenderBuildError::TableNameNotFound(format!(
-                                    "Could not resolve table name for alias '{}', plan: {:?}",
-                                    graph_rel.left_connection, graph_rel.left
-                                ))
-                            })?;
+                        let table_name = extract_table_name(&graph_rel.left).ok_or_else(|| {
+                            RenderBuildError::TableNameNotFound(format!(
+                                "Could not resolve table name for alias '{}', plan: {:?}",
+                                graph_rel.left_connection, graph_rel.left
+                            ))
+                        })?;
 
                         Ok(Some(ViewTableRef {
                             source: Arc::new(LogicalPlan::Empty),
@@ -487,8 +480,8 @@ impl LogicalPlan {
         &self,
         graph_joins: &crate::query_planner::logical_plan::GraphJoins,
     ) -> RenderPlanBuilderResult<Option<ViewTableRef>> {
-        use crate::query_planner::logical_plan::{GraphRel, GraphNode, CartesianProduct};
-        
+        use crate::query_planner::logical_plan::{CartesianProduct, GraphNode, GraphRel};
+
         // ============================================================================
         // CLEAN DESIGN: FROM table determination for GraphJoins
         // ============================================================================
@@ -639,9 +632,7 @@ impl LogicalPlan {
                             left_node.alias
                         );
                         return Ok(Some(ViewTableRef {
-                            source: Arc::new(LogicalPlan::GraphNode(
-                                left_node.clone(),
-                            )),
+                            source: Arc::new(LogicalPlan::GraphNode(left_node.clone())),
                             name: scan.source_table.clone(),
                             alias: Some(left_node.alias.clone()),
                             use_final: scan.use_final,
@@ -655,9 +646,7 @@ impl LogicalPlan {
                             right_node.alias
                         );
                         return Ok(Some(ViewTableRef {
-                            source: Arc::new(LogicalPlan::GraphNode(
-                                right_node.clone(),
-                            )),
+                            source: Arc::new(LogicalPlan::GraphNode(right_node.clone())),
                             name: scan.source_table.clone(),
                             alias: Some(right_node.alias.clone()),
                             use_final: scan.use_final,
@@ -691,7 +680,9 @@ impl LogicalPlan {
             }
 
             // No valid FROM found for empty joins - this is unexpected
-            log::warn!("⚠️ GraphJoins has empty joins and no recognizable pattern - returning None");
+            log::warn!(
+                "⚠️ GraphJoins has empty joins and no recognizable pattern - returning None"
+            );
             return Ok(None);
         }
 
@@ -740,9 +731,7 @@ impl LogicalPlan {
             }
 
             // Try find_table_name_for_alias as last resort
-            if let Some(table_name) =
-                find_table_name_for_alias(&graph_joins.input, anchor_alias)
-            {
+            if let Some(table_name) = find_table_name_for_alias(&graph_joins.input, anchor_alias) {
                 log::info!(
                     "✅ Found anchor '{}' via find_table_name_for_alias: '{}'",
                     anchor_alias,
@@ -785,8 +774,7 @@ impl LogicalPlan {
                         None => best_cte = Some((alias, cte_name, seq_num)),
                         Some((_, current_name, current_seq)) => {
                             if seq_num > *current_seq
-                                || (seq_num == *current_seq
-                                    && cte_name.len() > current_name.len())
+                                || (seq_num == *current_seq && cte_name.len() > current_name.len())
                             {
                                 best_cte = Some((alias, cte_name, seq_num));
                             }
@@ -810,14 +798,10 @@ impl LogicalPlan {
             }
 
             // SECONDARY FALLBACK: Pick first join as FROM table
-            log::warn!(
-                "🔍 anchor_table is None and no CTE references, using first join as FROM"
-            );
+            log::warn!("🔍 anchor_table is None and no CTE references, using first join as FROM");
             if let Some(first_join) = graph_joins.joins.first() {
                 // Check if this join has a CTE reference
-                if let Some(cte_name) =
-                    graph_joins.cte_references.get(&first_join.table_alias)
-                {
+                if let Some(cte_name) = graph_joins.cte_references.get(&first_join.table_alias) {
                     log::info!(
                         "✅ Using first join '{}' → CTE '{}' as FROM",
                         first_join.table_alias,

@@ -1687,14 +1687,14 @@ impl RenderPlanBuilder for LogicalPlan {
                     items: <LogicalPlan as SelectBuilder>::extract_select_items(self)?,
                     distinct: false,
                 };
-                
+
                 let from = FromTableItem(Some(ViewTableRef {
                     source: Arc::new(LogicalPlan::Empty),
                     name: vs.source_table.clone(),
                     alias: None, // ViewScan doesn't have an alias at this level
                     use_final: vs.use_final,
                 }));
-                
+
                 Ok(RenderPlan {
                     ctes: CteItems(vec![]),
                     select: select_items,
