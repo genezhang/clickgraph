@@ -20,6 +20,7 @@ use super::filter_pipeline::{
     rewrite_vlp_internal_to_cypher_alias,
 };
 use super::from_builder::FromBuilder;
+use super::group_by_builder::GroupByBuilder;
 use super::join_builder::JoinBuilder;
 use super::render_expr::RenderCase;
 use super::render_expr::{
@@ -1242,232 +1243,8 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn extract_group_by(&self) -> RenderPlanBuilderResult<Vec<RenderExpr>> {
-        use crate::graph_catalog::expression_parser::PropertyValue;
-
-        log::info!(
-            "🔧 GROUP BY: extract_group_by() called for plan type {:?}",
-            std::mem::discriminant(self)
-        );
-
-        /// Helper to find node properties when the alias is a relationship alias with "*" column.
-        /// For denormalized schemas, the node alias gets remapped to the relationship alias,
-        /// so we need to look up which node this represents and get its properties.
-        fn find_node_properties_for_rel_alias(
-            plan: &LogicalPlan,
-            rel_alias: &str,
-        ) -> Option<(Vec<(String, String)>, String)> {
-            match plan {
-                LogicalPlan::GraphRel(rel) if rel.alias == rel_alias => {
-                    // This relationship matches - get the left node's properties (most common case)
-                    // Left node is typically the one being grouped in WITH clause
-                    if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
-                        // Check direction to determine which properties to use
-                        let is_incoming = rel.direction == Direction::Incoming;
-                        let props = if is_incoming {
-                            &scan.to_node_properties
-                        } else {
-                            &scan.from_node_properties
-                        };
-
-                        if let Some(node_props) = props {
-                            let properties: Vec<(String, String)> = node_props
-                                .iter()
-                                .map(|(prop_name, prop_value)| {
-                                    (prop_name.clone(), prop_value.raw().to_string())
-                                })
-                                .collect();
-                            if !properties.is_empty() {
-                                // Return properties and the actual table alias to use
-                                return Some((properties, rel.alias.clone()));
-                            }
-                        }
-                    }
-                    None
-                }
-                LogicalPlan::GraphRel(rel) => {
-                    // Not this relationship - search children
-                    if let Some(result) = find_node_properties_for_rel_alias(&rel.left, rel_alias) {
-                        return Some(result);
-                    }
-                    if let Some(result) = find_node_properties_for_rel_alias(&rel.center, rel_alias)
-                    {
-                        return Some(result);
-                    }
-                    find_node_properties_for_rel_alias(&rel.right, rel_alias)
-                }
-                LogicalPlan::Projection(proj) => {
-                    find_node_properties_for_rel_alias(&proj.input, rel_alias)
-                }
-                LogicalPlan::Filter(filter) => {
-                    find_node_properties_for_rel_alias(&filter.input, rel_alias)
-                }
-                LogicalPlan::GroupBy(gb) => {
-                    find_node_properties_for_rel_alias(&gb.input, rel_alias)
-                }
-                LogicalPlan::GraphJoins(joins) => {
-                    find_node_properties_for_rel_alias(&joins.input, rel_alias)
-                }
-                LogicalPlan::OrderBy(order) => {
-                    find_node_properties_for_rel_alias(&order.input, rel_alias)
-                }
-                LogicalPlan::Skip(skip) => {
-                    find_node_properties_for_rel_alias(&skip.input, rel_alias)
-                }
-                LogicalPlan::Limit(limit) => {
-                    find_node_properties_for_rel_alias(&limit.input, rel_alias)
-                }
-                _ => None,
-            }
-        }
-
-        let group_by = match &self {
-            LogicalPlan::Limit(limit) => limit.input.extract_group_by()?,
-            LogicalPlan::Skip(skip) => skip.input.extract_group_by()?,
-            LogicalPlan::OrderBy(order_by) => order_by.input.extract_group_by()?,
-            LogicalPlan::Projection(projection) => projection.input.extract_group_by()?,
-            LogicalPlan::Filter(filter) => filter.input.extract_group_by()?,
-            LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_group_by()?,
-            LogicalPlan::GraphNode(node) => node.input.extract_group_by()?,
-            LogicalPlan::GraphRel(rel) => {
-                // For relationships, try left first, then center, then right
-                rel.left
-                    .extract_group_by()
-                    .or_else(|_| rel.center.extract_group_by())
-                    .or_else(|_| rel.right.extract_group_by())?
-            }
-            LogicalPlan::GroupBy(group_by) => {
-                log::info!(
-                    "🔧 GROUP BY: Found GroupBy plan, processing {} expressions",
-                    group_by.expressions.len()
-                );
-                let mut result: Vec<RenderExpr> = vec![];
-
-                // Track which aliases we've already added to GROUP BY
-                // This is used for the optimization: GROUP BY only the ID column
-                let mut seen_group_by_aliases: std::collections::HashSet<String> =
-                    std::collections::HashSet::new();
-
-                for expr in &group_by.expressions {
-                    // Check if this is a TableAlias that needs expansion
-                    if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) = expr
-                    {
-                        // OPTIMIZATION: For node aliases in GROUP BY, we only need the ID column.
-                        // All other columns are functionally dependent on the ID.
-                        // This reduces GROUP BY from 8+ columns to just 1, improving performance.
-                        if let Ok((properties, actual_table_alias)) =
-                            group_by.input.get_properties_with_table_alias(&alias.0)
-                        {
-                            if !properties.is_empty() {
-                                let table_alias_to_use =
-                                    actual_table_alias.unwrap_or_else(|| alias.0.clone());
-
-                                // Skip if we've already added this alias (avoid duplicates)
-                                if seen_group_by_aliases.contains(&table_alias_to_use) {
-                                    continue;
-                                }
-                                seen_group_by_aliases.insert(table_alias_to_use.clone());
-
-                                // Get the ID column from the schema (via ViewScan.id_column)
-                                // This is the proper way - use schema definition, not pattern matching
-                                let id_col = group_by.input.find_id_column_for_alias(&alias.0)
-                                    .unwrap_or_else(|_| {
-                                        log::warn!("⚠️ Could not find ID column for alias '{}', using fallback", alias.0);
-                                        "id".to_string()
-                                    });
-
-                                log::debug!("🔧 GROUP BY optimization: Using ID column '{}' from schema instead of {} properties for alias '{}'",
-                                    id_col, properties.len(), table_alias_to_use);
-
-                                result.push(RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(table_alias_to_use.clone()),
-                                    column: PropertyValue::Column(id_col),
-                                }));
-                                continue;
-                            }
-                        }
-                    }
-
-                    // Check if this is a PropertyAccessExp with wildcard column "*"
-                    // This happens when ProjectionTagging converts TableAlias to PropertyAccessExp(alias.*)
-                    if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
-                        prop_access,
-                    ) = expr
-                    {
-                        if prop_access.column.raw() == "*" {
-                            // OPTIMIZATION: For node alias wildcards in GROUP BY, we only need the ID column.
-                            // All other columns are functionally dependent on the ID.
-                            if let Ok((properties, actual_table_alias)) = group_by
-                                .input
-                                .get_properties_with_table_alias(&prop_access.table_alias.0)
-                            {
-                                let table_alias_to_use = actual_table_alias
-                                    .unwrap_or_else(|| prop_access.table_alias.0.clone());
-
-                                // Skip if we've already added this alias (avoid duplicates)
-                                if seen_group_by_aliases.contains(&table_alias_to_use) {
-                                    continue;
-                                }
-                                seen_group_by_aliases.insert(table_alias_to_use.clone());
-
-                                // Better approach: try to find node properties for this rel alias
-                                if let Some((node_props, table_alias)) =
-                                    find_node_properties_for_rel_alias(
-                                        &group_by.input,
-                                        &prop_access.table_alias.0,
-                                    )
-                                {
-                                    // Found denormalized node properties - get ID from schema (MUST succeed)
-                                    let id_col = group_by.input.find_id_column_for_alias(&prop_access.table_alias.0)
-                                        .map_err(|e| RenderBuildError::InvalidRenderPlan(
-                                            format!("Cannot find ID column for denormalized alias '{}': {}", prop_access.table_alias.0, e)
-                                        ))?;
-
-                                    log::debug!("🔧 GROUP BY optimization: Using ID column '{}' from schema for denormalized alias '{}'",
-                                        id_col, table_alias);
-
-                                    result.push(RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(table_alias.clone()),
-                                        column: PropertyValue::Column(id_col),
-                                    }));
-                                    continue;
-                                }
-
-                                // Fallback: use ID column from schema
-                                if !properties.is_empty() {
-                                    let id_col = group_by
-                                        .input
-                                        .find_id_column_for_alias(&prop_access.table_alias.0)
-                                        .map_err(|e| {
-                                            RenderBuildError::InvalidRenderPlan(format!(
-                                                "Cannot find ID column for alias '{}': {}",
-                                                prop_access.table_alias.0, e
-                                            ))
-                                        })?;
-
-                                    log::debug!("🔧 GROUP BY optimization: Using ID column '{}' instead of {} properties for alias '{}'",
-                                        id_col, properties.len(), table_alias_to_use);
-
-                                    result.push(RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(table_alias_to_use.clone()),
-                                        column: PropertyValue::Column(id_col),
-                                    }));
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-
-                    // Not a TableAlias/wildcard or couldn't expand - convert normally
-                    let mut render_expr: RenderExpr = expr.clone().try_into()?;
-                    apply_property_mapping_to_expr(&mut render_expr, &group_by.input);
-                    result.push(render_expr);
-                }
-
-                result
-            }
-            _ => vec![],
-        };
-        Ok(group_by)
+        // Delegate to the GroupByBuilder trait implementation
+        <LogicalPlan as GroupByBuilder>::extract_group_by(self)
     }
 
     fn extract_having(&self) -> RenderPlanBuilderResult<Option<RenderExpr>> {
@@ -1525,7 +1302,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 let joins = JoinItems(RenderPlanBuilder::extract_joins(self, schema)?);
                 let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
                 let filters = FilterItems(self.extract_filters()?);
-                let group_by = GroupByExpressions(self.extract_group_by()?);
+                let group_by =
+                    GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
                 let having_clause = self.extract_having()?;
                 let order_by = OrderByItems(self.extract_order_by()?);
                 let skip = SkipItem(self.extract_skip());
@@ -1566,7 +1344,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 let joins = JoinItems(RenderPlanBuilder::extract_joins(self, schema)?);
                 let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
                 let filters = FilterItems(self.extract_filters()?);
-                let group_by = GroupByExpressions(self.extract_group_by()?);
+                let group_by =
+                    GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
                 let having_clause = self.extract_having()?;
                 let order_by = OrderByItems(self.extract_order_by()?);
 

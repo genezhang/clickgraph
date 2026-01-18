@@ -11,6 +11,19 @@
 
 ### ⚙️ Refactoring
 
+- **plan_builder.rs Phase 2 Week 6 Complete**: group_by_builder.rs extraction finished, modular architecture progressing
+  - **group_by_builder.rs fully implemented**: Complete extraction of extract_group_by() function with GROUP BY optimization logic (375 lines)
+  - **Trait-based delegation**: GroupByBuilder trait with extract_group_by() method for clean separation
+  - **ID column optimization**: Groups by ID column only instead of all node properties (8+ → 1 column)
+  - **Denormalized edge support**: Handles node properties stored in edge tables correctly
+  - **Wildcard handling**: Processes `GROUP BY a.*` expressions with proper alias expansion
+  - **Modular architecture progressing**: Clean separation between plan_builder.rs and group_by_builder.rs with explicit trait syntax
+  - **Compilation successful**: All ambiguities resolved with explicit `<LogicalPlan as GroupByBuilder>` syntax
+  - **All tests passing**: 770/770 unit tests (100%), 12/17 integration tests (71%, same as before)
+  - **Code quality maintained**: Comprehensive documentation, helper functions for node property resolution
+  - **plan_builder.rs reduced**: From 1,749 to 1,526 lines (223 lines extracted, 13% reduction this week, 39% total)
+  - **Ready for Week 7**: Safe to proceed with order_by_builder.rs extraction
+
 - **plan_builder.rs Phase 2 Week 5 Complete**: from_builder.rs extraction finished, modular architecture expanded further
   - **from_builder.rs fully implemented**: Complete extraction of extract_from() function with all FROM resolution logic (864 lines)
   - **Trait-based delegation**: FromBuilder trait with extract_from() method for clean separation

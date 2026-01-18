@@ -7,6 +7,7 @@ mod feature_flags;
 mod filter_pipeline;
 mod from_builder;
 mod from_table;
+mod group_by_builder;
 mod join_builder;
 mod plan_builder_helpers;
 mod plan_builder_utils;
