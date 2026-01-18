@@ -13,7 +13,6 @@
 //! - Support path variable extraction (nodes(p), relationships(p))
 //! - Manage collect() function expansion
 
-use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_expr::{
     LogicalExpr, PropertyAccess as LogicalPropertyAccess, TableAlias,

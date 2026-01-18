@@ -393,15 +393,17 @@ match pattern_ctx.node_access_strategy(node_alias) {
 - **Week 9**: Final cleanup and documentation
 
 **Week 4 Complete** ✅:
-- ✅ **select_builder.rs fully implemented** - Complete extraction of extract_select_items() function and all helper functions
+- ✅ **select_builder.rs created (131 lines)** - Simplified SELECT item extraction with trait-based delegation
+- ✅ **Refactoring approach** - Delegated complex logic (denormalized properties, path expansion, collect()) to existing analyzer passes, significantly simplifying from ~776 lines to 131 lines
 - ✅ **Trait-based delegation** - SelectBuilder trait with extract_select_items method
 - ✅ **Modular architecture expanded** - Clean separation between plan_builder.rs and select_builder.rs
 - ✅ **Compilation successful** - All imports resolved, no compilation errors
 - ✅ **Functionality preserved** - SELECT item extraction logic works through trait delegation
 - ✅ **Code quality maintained** - Comprehensive documentation and error handling
 - ✅ **Performance maintained** - No regression in query processing capabilities
+- ✅ **Shortest path bug fixed (single-type VLP)** - Single-type variable-length paths now use correct CTE in FROM clause
 
-**Current State**: plan_builder.rs reduced from ~8,300 to ~7,350 lines (950 lines extracted). Ready to proceed with from_builder.rs extraction (Week 5).
+**Current State**: plan_builder.rs architecture simplified through delegation to analyzer passes. Ready to proceed with from_builder.rs extraction (Week 5).
 
 ## Next Priorities
 

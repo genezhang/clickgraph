@@ -2,11 +2,12 @@
 
 ### 🐛 Bug Fixes
 
-- **Shortest path FROM clause fix**: Variable-length paths now correctly use CTE in FROM clause instead of start node table
+- **Shortest path FROM clause fix (single-type VLP)**: Single-type variable-length paths now correctly use CTE in FROM clause instead of start node table
   - **Issue**: GraphJoins.extract_from() for empty joins checked variable-length paths AFTER denormalized/polymorphic checks
-  - **Fix**: Moved variable-length check to top priority (A.1) before other pattern checks
-  - **Impact**: All 5 shortest path filter tests now pass with correct SQL: `FROM vlp_a_b AS p` instead of `FROM test_db.users AS a`
-  - **Files**: `src/render_plan/plan_builder.rs` (extract_from method, lines 1283-1299)
+  - **Fix**: Moved single-type variable-length check to top priority (A.1) before other pattern checks
+  - **Impact**: All 5 shortest path filter tests for single-type variable-length paths now pass with correct SQL: `FROM vlp_a_b AS p` instead of `FROM test_db.users AS a`
+  - **Limitation**: Multi-type variable-length paths (e.g., `[:TYPE1|TYPE2*1..3]`) use CTE names like `vlp_multi_type_a_b` and are handled separately in plan_builder_utils.rs
+  - **Files**: `src/render_plan/plan_builder.rs` (extract_from method, lines 1283-1299; single-type VLP handling)
 
 ### ⚙️ Refactoring
 

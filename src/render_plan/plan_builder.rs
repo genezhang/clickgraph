@@ -967,7 +967,11 @@ impl RenderPlanBuilder for LogicalPlan {
                 if graph_rel.variable_length.is_some() {
                     log::debug!("✓ VARIABLE-LENGTH pattern: using CTE as FROM");
 
-                    // Generate the CTE name using the same logic as in cte_extraction.rs
+                    // TODO: Extract CTE naming logic to shared utility function
+                    // Current duplication: plan_builder.rs (here and lines 1285-1304),
+                    // plan_builder_utils.rs (lines 1152-1167 with multi-type support)
+                    // Note: This handles single-type VLP only. Multi-type VLP uses
+                    // vlp_multi_type_{start}_{end} format (see plan_builder_utils.rs)
                     let start_alias = &graph_rel.left_connection;
                     let end_alias = &graph_rel.right_connection;
                     let cte_name = format!("vlp_{}_{}", start_alias, end_alias);
@@ -1290,7 +1294,11 @@ impl RenderPlanBuilder for LogicalPlan {
                                 graph_rel.alias
                             );
 
-                            // Generate the CTE name using the same logic as in GraphRel extract_from
+                            // TODO: Extract CTE naming logic to shared utility function
+                            // Current duplication: plan_builder.rs (here and lines 965-986),
+                            // plan_builder_utils.rs (lines 1152-1167 with multi-type support)
+                            // Note: This handles single-type VLP only. Multi-type VLP uses
+                            // vlp_multi_type_{start}_{end} format (see plan_builder_utils.rs)
                             let start_alias = &graph_rel.left_connection;
                             let end_alias = &graph_rel.right_connection;
                             let cte_name = format!("vlp_{}_{}", start_alias, end_alias);
@@ -2444,11 +2452,13 @@ impl RenderPlanBuilder for LogicalPlan {
                 })
             }
             LogicalPlan::WithClause(_) => {
-                // WithClause requires complex CTE generation and scope handling
-                // This is handled by specialized builders in plan_builder_helpers.rs
-                // For now, delegate to the input plan conversion as a fallback
+                // WithClause requires complex CTE generation and scope handling.
+                // This is handled by specialized builders in plan_builder_helpers.rs.
+                // Direct conversion via to_render_plan is not supported - use the
+                // specialized builders: build_chained_with_match_cte_plan() or
+                // build_with_aggregation_match_cte_plan() instead.
                 Err(RenderBuildError::InvalidRenderPlan(
-                    "WithClause conversion requires specialized CTE builder - use plan_builder_helpers::build_chained_with_match_cte_plan or build_with_aggregation_match_cte_plan instead".to_string()
+                    "WithClause requires specialized CTE builder (build_chained_with_match_cte_plan or build_with_aggregation_match_cte_plan)".to_string()
                 ))
             }
             _ => todo!(
