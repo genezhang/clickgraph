@@ -2249,7 +2249,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan> {
         match self {
-            &LogicalPlan::GraphJoins(ref gj) => {
+            LogicalPlan::GraphJoins(gj) => {
                 let select_items = SelectItems {
                     items: <LogicalPlan as SelectBuilder>::extract_select_items(self)?,
                     distinct: self.extract_distinct(),
@@ -2289,7 +2289,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     union,
                 })
             }
-            &LogicalPlan::GraphRel(ref gr) => {
+            LogicalPlan::GraphRel(gr) => {
                 // For GraphRel, use the same extraction logic as GraphJoins
                 let select_items = SelectItems {
                     items: <LogicalPlan as SelectBuilder>::extract_select_items(self)?,
@@ -2331,7 +2331,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     union,
                 })
             }
-            &LogicalPlan::Projection(ref p) => {
+            LogicalPlan::Projection(p) => {
                 // For Projection, convert the input plan and override the select items
                 let mut render_plan = p.input.to_render_plan(schema)?;
                 render_plan.select = SelectItems {
@@ -2361,7 +2361,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 Ok(render_plan)
             }
-            &LogicalPlan::OrderBy(ref ob) => {
+            LogicalPlan::OrderBy(ob) => {
                 // For OrderBy, convert the input plan and set order_by
                 let mut render_plan = ob.input.to_render_plan(schema)?;
 
