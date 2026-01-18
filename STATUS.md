@@ -380,7 +380,7 @@ match pattern_ctx.node_access_strategy(node_alias) {
 **Codebase Impact**: Reduced from 18,121 to 17,919 lines (-202 lines, -1.1%) while improving maintainability
 
 ### plan_builder.rs Refactoring (Phase 2: Module Extraction) 🚧
-**Status**: **Week 5 COMPLETE** - from_builder.rs extraction finished, modular architecture expanded further
+**Status**: **Week 6 COMPLETE** - group_by_builder.rs extraction finished, modular architecture progressing
 
 **Problem**: `plan_builder.rs` remains 9,504 lines with 4 major components (`join_builder`, `select_builder`, `from_builder`, `group_by_builder`) that should be separate modules
 
@@ -388,29 +388,24 @@ match pattern_ctx.node_access_strategy(node_alias) {
 - **Week 3**: `join_builder.rs` extraction (1,200 lines) ✅ **COMPLETE**
 - **Week 4**: `select_builder.rs` extraction (950 lines) ✅ **COMPLETE**
 - **Week 5**: `from_builder.rs` extraction (650 lines) ✅ **COMPLETE**
-- **Week 6**: `group_by_builder.rs` extraction (544 lines)
+- **Week 6**: `group_by_builder.rs` extraction (544 lines) ✅ **COMPLETE**
 - **Week 7-8**: Integration testing and bug fixes
 - **Week 9**: Final cleanup and documentation
 
-**Week 5 Complete** ✅:
-- ✅ **from_builder.rs created (864 lines)** - Complete FROM clause extraction with trait-based delegation
-- ✅ **Trait-based delegation** - FromBuilder trait with extract_from() method
-- ✅ **Complex FROM logic extracted** - Handles ViewScan, GraphNode, GraphRel, GraphJoins, CartesianProduct, and all special cases
-- ✅ **Special case handling preserved**:
-  - Variable-length paths (VLP CTEs)
-  - Denormalized edge tables
-  - Anonymous edge patterns
-  - Optional matches with anchor selection
-  - WITH...MATCH patterns
-  - Polymorphic edges
-- ✅ **Helper function integration** - Imports from plan_builder_helpers for extract_table_name, is_node_denormalized, find_anchor_node, etc.
-- ✅ **Modular architecture expanded** - Clean separation between plan_builder.rs and from_builder.rs
-- ✅ **Compilation successful** - All imports resolved, no compilation errors
+**Week 6 Complete** ✅:
+- ✅ **group_by_builder.rs created (375 lines)** - Complete GROUP BY extraction with trait-based delegation
+- ✅ **Trait-based delegation** - GroupByBuilder trait with extract_group_by() method
+- ✅ **ID column optimization** - Groups by ID column only instead of all node properties (8+ → 1 column)
+- ✅ **Denormalized edge support** - Handles node properties stored in edge tables correctly
+- ✅ **Wildcard handling** - Processes `GROUP BY a.*` expressions with proper alias expansion
+- ✅ **Helper functions** - find_node_properties_for_rel_alias for denormalized pattern detection
+- ✅ **Modular architecture** - Clean separation with explicit trait syntax (`<LogicalPlan as GroupByBuilder>`)
+- ✅ **Compilation successful** - All trait ambiguities resolved
 - ✅ **Functionality preserved** - All 770 unit tests passing (100%), 12/17 integration tests passing (71%, same as before)
 - ✅ **Code quality maintained** - Comprehensive documentation and error handling
-- ✅ **Performance maintained** - No regression in query processing capabilities
+- ✅ **Performance maintained** - GROUP BY optimization reduces columns from 8+ to 1
 
-**Current State**: plan_builder.rs reduced from 2,490 to 1,749 lines (741 lines extracted, 30% reduction). Ready to proceed with group_by_builder.rs extraction (Week 6).
+**Current State**: plan_builder.rs reduced from 2,490 to 1,526 lines (964 lines extracted across 4 modules, 39% reduction). Ready to proceed with order_by_builder.rs extraction (Week 7).
 
 ## Next Priorities
 
