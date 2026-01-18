@@ -96,7 +96,7 @@ impl GroupByBuilder for LogicalPlan {
             }
 
             // GroupBy - main processing logic
-            LogicalPlan::GroupBy(group_by) => process_group_by_expressions(group_by, self)?,
+            LogicalPlan::GroupBy(group_by) => process_group_by_expressions(group_by)?,
 
             // All other plans have no GROUP BY
             _ => vec![],
@@ -116,7 +116,6 @@ impl GroupByBuilder for LogicalPlan {
 /// 5. Converts logical expressions to render expressions
 fn process_group_by_expressions(
     group_by: &GroupBy,
-    plan: &LogicalPlan,
 ) -> GroupByBuilderResult<Vec<RenderExpr>> {
     log::info!(
         "🔧 GROUP BY: Found GroupBy plan, processing {} expressions",
@@ -248,7 +247,7 @@ fn handle_wildcard_group_by(
     seen_aliases.insert(table_alias_to_use.clone());
 
     // Case A: Denormalized edge pattern - find node properties in relationship
-    if let Some((node_props, table_alias)) =
+    if let Some((_, table_alias)) =
         find_node_properties_for_rel_alias(input, &prop_access.table_alias.0)
     {
         // Found denormalized node properties - get ID from schema (MUST succeed)
