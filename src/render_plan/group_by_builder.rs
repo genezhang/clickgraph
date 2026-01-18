@@ -114,9 +114,7 @@ impl GroupByBuilder for LogicalPlan {
 /// 3. Handles wildcard columns (e.g., `a.*`)
 /// 4. Manages denormalized edge patterns
 /// 5. Converts logical expressions to render expressions
-fn process_group_by_expressions(
-    group_by: &GroupBy,
-) -> GroupByBuilderResult<Vec<RenderExpr>> {
+fn process_group_by_expressions(group_by: &GroupBy) -> GroupByBuilderResult<Vec<RenderExpr>> {
     log::info!(
         "🔧 GROUP BY: Found GroupBy plan, processing {} expressions",
         group_by.expressions.len()
