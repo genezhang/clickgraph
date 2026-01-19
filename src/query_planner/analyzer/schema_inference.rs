@@ -62,7 +62,7 @@ impl SchemaInference {
                                 );
 
                                 // Create ViewScan using the inferred label
-                                if let Some(view_scan) = crate::query_planner::logical_plan::match_clause::try_generate_view_scan(
+                                if let Ok(Some(view_scan)) = crate::query_planner::logical_plan::match_clause::try_generate_view_scan(
                                     &graph_node.alias,
                                     label,
                                     plan_ctx,

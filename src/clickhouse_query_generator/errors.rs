@@ -48,6 +48,8 @@ pub enum ClickhouseQueryGeneratorError {
         "Unknow 'To' table found in relationship defination. Make sure to create nodes first before creating relationship."
     )]
     UnknownToTableInRel,
+    #[error("Invalid ClickHouse function name: {0}")]
+    InvalidFunctionName(String),
     #[error("Schema error: {0}")]
     SchemaError(String),
 }

@@ -12,6 +12,7 @@ use crate::{
         },
     },
 };
+use super::errors::ClickhouseQueryGeneratorError;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -1071,7 +1072,8 @@ impl RenderExpr {
                 if agg.name.starts_with(CH_PASSTHROUGH_PREFIX) {
                     if let Some(ch_fn_name) = get_ch_function_name(&agg.name) {
                         if ch_fn_name.is_empty() {
-                            panic!("ch. prefix requires a function name (e.g., ch.uniq)");
+                            log::error!("ch. prefix requires a function name (e.g., ch.uniq)");
+                            return String::new(); // Return empty string for invalid function name
                         }
                         let args = agg
                             .args

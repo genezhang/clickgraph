@@ -26,6 +26,8 @@ pub enum LogicalPlanError {
     WithClauseValidation(String),
     #[error("Query planning error: {0}")]
     QueryPlanningError(String),
+    #[error("Invalid schema for node label '{label}': {reason}")]
+    InvalidSchema { label: String, reason: String },
 }
 
 impl From<crate::query_planner::logical_expr::errors::LogicalExprError> for LogicalPlanError {

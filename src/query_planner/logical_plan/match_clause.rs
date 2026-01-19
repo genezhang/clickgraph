@@ -339,12 +339,15 @@ fn generate_scan(
         }
 
         log::debug!("Trying to create ViewScan for label '{}'", label_str);
-        if let Some(view_scan) = try_generate_view_scan(&alias, &label_str, plan_ctx) {
-            log::info!("✓ Successfully created ViewScan for label '{}'", label_str);
-            Ok(view_scan)
-        } else {
-            // ViewScan creation failed - this is an error (schema not found)
-            Err(LogicalPlanError::NodeNotFound(label_str.to_string()))
+        match try_generate_view_scan(&alias, &label_str, plan_ctx)? {
+            Some(view_scan) => {
+                log::info!("✓ Successfully created ViewScan for label '{}'", label_str);
+                Ok(view_scan)
+            }
+            None => {
+                // ViewScan creation failed - this is an error (schema not found)
+                Err(LogicalPlanError::NodeNotFound(label_str.to_string()))
+            }
         }
     } else {
         log::debug!("No label provided - anonymous node, using Empty plan");
@@ -401,7 +404,7 @@ pub fn try_generate_view_scan(
     _alias: &str,
     label: &str,
     plan_ctx: &PlanCtx,
-) -> Option<Arc<LogicalPlan>> {
+) -> Result<Option<Arc<LogicalPlan>>, LogicalPlanError> {
     log::debug!("try_generate_view_scan: label='{}'", label);
 
     // Use plan_ctx.schema() instead of GLOBAL_SCHEMAS
@@ -412,7 +415,7 @@ pub fn try_generate_view_scan(
         Ok(s) => s,
         Err(e) => {
             log::warn!("Could not find node schema for label '{}': {:?}", label, e);
-            return None;
+            return Ok(None);
         }
     };
 
@@ -547,7 +550,7 @@ pub fn try_generate_view_scan(
 
                 if union_inputs.is_empty() {
                     log::error!("No ViewScans generated for denormalized node '{}'", label);
-                    return None;
+                    return Ok(None);
                 }
 
                 if union_inputs.len() == 1 {
@@ -555,7 +558,7 @@ pub fn try_generate_view_scan(
                         "✓ Single ViewScan for denormalized node '{}' (only one source)",
                         label
                     );
-                    return Some(union_inputs.pop().unwrap());
+                    return Ok(Some(union_inputs.pop().unwrap()));
                 }
 
                 use crate::query_planner::logical_plan::{Union, UnionType};
@@ -569,7 +572,7 @@ pub fn try_generate_view_scan(
                     union.inputs.len(),
                     label
                 );
-                return Some(Arc::new(LogicalPlan::Union(union)));
+                return Ok(Some(Arc::new(LogicalPlan::Union(union))));
             }
         }
 
@@ -585,7 +588,7 @@ pub fn try_generate_view_scan(
 
         if source_table.is_err() {
             log::error!("Cannot create ViewScan for denormalized node without source table");
-            return None;
+            return Ok(None);
         }
         let source_table = source_table.unwrap();
 
@@ -670,7 +673,7 @@ pub fn try_generate_view_scan(
             };
 
             log::info!("✓ Created UNION ALL for denormalized node '{}'", label);
-            return Some(Arc::new(LogicalPlan::Union(union)));
+            return Ok(Some(Arc::new(LogicalPlan::Union(union))));
         }
 
         // Case 1 or 2: Only one position - single ViewScan
@@ -713,7 +716,7 @@ pub fn try_generate_view_scan(
             label
         );
 
-        return Some(Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))));
+        return Ok(Some(Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan)))));
     }
 
     // Log successful resolution
@@ -838,13 +841,16 @@ pub fn try_generate_view_scan(
             .columns()
             .first()
             .map(|s| s.to_string())
-            .unwrap_or_else(|| {
+            .ok_or_else(|| {
                 log::error!("Node schema for '{}' has no ID columns defined", label);
                 // Don't hardcode "id" - this causes bugs with auto_discover_columns
                 // where the actual column might be user_id, object_id, etc.
                 // This should never happen in valid schemas.
-                panic!("Node schema for '{}' has no ID columns defined", label)
-            })
+                LogicalPlanError::InvalidSchema {
+                    label: label.to_string(),
+                    reason: "No ID columns defined in node schema".to_string(),
+                }
+            })?
     };
 
     let mut view_scan = ViewScan::new(
@@ -921,7 +927,7 @@ pub fn try_generate_view_scan(
         );
     }
 
-    Some(Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))))
+    Ok(Some(Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan)))))
 }
 
 /// Try to generate a ViewScan for a relationship by looking up the relationship type in the schema from plan_ctx
