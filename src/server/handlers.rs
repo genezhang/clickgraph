@@ -815,7 +815,14 @@ async fn execute_cte_queries(
                 format!("Clickhouse Error: {}", e),
             )
         })? {
-            let value: serde_json::Value = serde_json::de::from_str(&line).unwrap();
+            let value: serde_json::Value = serde_json::de::from_str(&line).map_err(|e| {
+                log::error!("Failed to parse JSON from ClickHouse response: {}", e);
+                log::error!("Invalid JSON line: {}", line);
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Invalid JSON from ClickHouse: {}", e),
+                )
+            })?;
             rows.push(value);
         }
 
@@ -925,7 +932,13 @@ pub async fn ddl_handler(
 
     // let (query_type,ch_sql_queries) = query_engine::evaluate_ddl_query(cypher_ast).map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let graph_schema_element: Vec<GraphSchemaElement> = graph_schema_element_opt.unwrap();
+    let graph_schema_element: Vec<GraphSchemaElement> = graph_schema_element_opt.ok_or_else(|| {
+        log::error!("Missing graph schema element in DDL query execution");
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal error: Missing schema element for DDL query".to_string(),
+        )
+    })?;
 
     graph_catalog::validate_schema(&graph_schema_element)
         .await
