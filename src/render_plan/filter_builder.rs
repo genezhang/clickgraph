@@ -88,7 +88,12 @@ impl FilterBuilder for LogicalPlan {
                         return Ok(None);
                     } else if filters.len() == 1 {
                         // Safety: len() == 1 guarantees next() returns Some
-                        return Ok(Some(filters.into_iter().next().expect("filters has exactly one element")));
+                        return Ok(Some(
+                            filters
+                                .into_iter()
+                                .next()
+                                .expect("filters has exactly one element"),
+                        ));
                     } else {
                         // When combining filters, wrap non-Raw expressions in parentheses
                         // to handle AND/OR precedence correctly
@@ -204,7 +209,12 @@ impl FilterBuilder for LogicalPlan {
                 } else if all_predicates.len() == 1 {
                     log::trace!("Found 1 GraphRel predicate");
                     // Safety: len() == 1 guarantees next() returns Some
-                    Some(all_predicates.into_iter().next().expect("all_predicates has exactly one element"))
+                    Some(
+                        all_predicates
+                            .into_iter()
+                            .next()
+                            .expect("all_predicates has exactly one element"),
+                    )
                 } else {
                     // Combine with AND
                     log::trace!(

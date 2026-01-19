@@ -1,3 +1,4 @@
+use super::errors::ClickhouseQueryGeneratorError;
 use crate::{
     query_planner::logical_plan::LogicalPlan,
     render_plan::{
@@ -12,7 +13,6 @@ use crate::{
         },
     },
 };
-use super::errors::ClickhouseQueryGeneratorError;
 use std::cell::RefCell;
 use std::collections::HashMap;
 

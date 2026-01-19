@@ -673,7 +673,12 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
                 None
             } else if filters.len() == 1 {
                 // Safety: len() == 1 guarantees next() returns Some
-                Some(filters.into_iter().next().expect("filters has exactly one element"))
+                Some(
+                    filters
+                        .into_iter()
+                        .next()
+                        .expect("filters has exactly one element"),
+                )
             } else {
                 // Combine with AND
                 let combined = filters
@@ -740,7 +745,12 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
                     return Ok(None);
                 } else if filters.len() == 1 {
                     // Safety: len() == 1 guarantees next() returns Some
-                    return Ok(Some(filters.into_iter().next().expect("filters has exactly one element")));
+                    return Ok(Some(
+                        filters
+                            .into_iter()
+                            .next()
+                            .expect("filters has exactly one element"),
+                    ));
                 } else {
                     // When combining filters, wrap non-Raw expressions in parentheses
                     // to handle AND/OR precedence correctly
@@ -862,7 +872,12 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
             } else if all_predicates.len() == 1 {
                 log::trace!("Found 1 GraphRel predicate");
                 // Safety: len() == 1 guarantees next() returns Some
-                Some(all_predicates.into_iter().next().expect("all_predicates has exactly one element"))
+                Some(
+                    all_predicates
+                        .into_iter()
+                        .next()
+                        .expect("all_predicates has exactly one element"),
+                )
             } else {
                 // Combine with AND
                 log::trace!(
@@ -5574,7 +5589,9 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
             let mut with_cte_render = if rendered_plans.len() == 1 {
                 // Safety: len() == 1 guarantees pop() returns Some
-                rendered_plans.pop().expect("rendered_plans has exactly one element")
+                rendered_plans
+                    .pop()
+                    .expect("rendered_plans has exactly one element")
             } else {
                 // Multiple WITH clauses with same alias - create UNION ALL CTE
                 log::warn!("🔧 build_chained_with_match_cte_plan: Combining {} WITH renders with UNION ALL for alias '{}'",

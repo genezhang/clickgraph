@@ -38,7 +38,11 @@ macro_rules! lock_cache {
         match $mutex.lock() {
             Ok(guard) => guard,
             Err(e) => {
-                log::error!("Query cache mutex poisoned during {}: {}. Cache disabled.", $operation, e);
+                log::error!(
+                    "Query cache mutex poisoned during {}: {}. Cache disabled.",
+                    $operation,
+                    e
+                );
                 return None; // Gracefully skip caching
             }
         }
@@ -48,7 +52,11 @@ macro_rules! lock_cache {
         match $mutex.lock() {
             Ok(guard) => guard,
             Err(e) => {
-                log::error!("Query cache mutex poisoned during {}: {}. Cache disabled.", $operation, e);
+                log::error!(
+                    "Query cache mutex poisoned during {}: {}. Cache disabled.",
+                    $operation,
+                    e
+                );
                 return; // Gracefully skip operation
             }
         }
@@ -359,7 +367,10 @@ impl QueryCache {
                 (s, sb)
             }
             Err(e) => {
-                log::error!("Query cache mutex poisoned during metrics: {}. Returning partial metrics.", e);
+                log::error!(
+                    "Query cache mutex poisoned during metrics: {}. Returning partial metrics.",
+                    e
+                );
                 (0, 0)
             }
         };
