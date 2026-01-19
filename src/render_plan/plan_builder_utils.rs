@@ -6163,10 +6163,46 @@ pub(crate) fn build_chained_with_match_cte_plan(
         remap_cte_names_in_render_plan(&mut render_plan, &cte_name_remapping);
     }
 
-    // CRITICAL FIX: If FROM is None but we have CTEs, set FROM to the last CTE
-    // This happens when WITH clauses are chained and all table references have been replaced with CTEs
-    if matches!(render_plan.from, FromTableItem(None)) && !all_ctes.is_empty() {
-        // Find the last WITH CTE (not VLP CTE)
+    // CRITICAL FIX: If FROM references an alias that's now in a CTE, replace it with the CTE
+    // This happens when WITH exports an alias that was originally from a table
+    if let FromTableItem(Some(from_ref)) = &render_plan.from {
+        // Check if the FROM alias is in cte_references
+        if let Some(alias) = &from_ref.alias {
+            if let Some(cte_name) = cte_references.get(alias) {
+                log::warn!(
+                    "🔧 build_chained_with_match_cte_plan: FROM alias '{}' is in CTE '{}', replacing FROM",
+                    alias,
+                    cte_name
+                );
+
+                // Extract aliases from CTE name for the FROM alias
+                let with_alias_part = if let Some(stripped) = cte_name.strip_prefix("with_") {
+                    if let Some(cte_pos) = stripped.rfind("_cte") {
+                        &stripped[..cte_pos]
+                    } else {
+                        stripped
+                    }
+                } else {
+                    ""
+                };
+
+                render_plan.from = FromTableItem(Some(ViewTableRef {
+                    source: std::sync::Arc::new(LogicalPlan::Empty),
+                    name: cte_name.clone(),
+                    alias: Some(with_alias_part.to_string()),
+                    use_final: false,
+                }));
+
+                log::info!(
+                    "🔧 build_chained_with_match_cte_plan: Replaced FROM with: {} AS '{}'",
+                    cte_name,
+                    with_alias_part
+                );
+            }
+        }
+    } else if matches!(render_plan.from, FromTableItem(None)) && !all_ctes.is_empty() {
+        // FALLBACK: If FROM is None but we have CTEs, set FROM to the last CTE
+        // This happens when WITH clauses are chained and all table references have been replaced with CTEs
         if let Some(last_with_cte) = all_ctes
             .iter()
             .rev()
@@ -6334,7 +6370,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     "🔍 Available CTE schemas: {:?}",
                     cte_schemas.keys().collect::<Vec<_>>()
                 );
-                if let Some((_select_items, _names, _alias_to_id, property_mapping)) =
+                if let Some((select_items, _names, _alias_to_id, property_mapping)) =
                     cte_schemas.get(&from_ref.name)
                 {
                     log::info!(
@@ -6344,6 +6380,47 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                     // Direct lookup instead of fragile pattern matching
                     reverse_mapping = property_mapping.clone();
+
+                    // CRITICAL FIX: Also add database column name mappings
+                    // The CTE columns use Cypher property names (e.g., "a_name")
+                    // but expressions may use database column names (e.g., "full_name")
+                    // We need to map BOTH to the same CTE column
+                    for item in select_items {
+                        if let Some(col_alias) = &item.col_alias {
+                            let cte_column = &col_alias.0;
+                            
+                            // Extract alias and Cypher property from CTE column (e.g., "a_name" → ("a", "name"))
+                            if let Some(underscore_pos) = cte_column.find('_') {
+                                let alias = &cte_column[..underscore_pos];
+                                let cypher_prop = &cte_column[underscore_pos + 1..];
+                                
+                                // Try to extract database column name from the expression
+                                if let RenderExpr::AggregateFnCall(agg) = &item.expression {
+                                    // For aggregated columns like anyLast(a.full_name), look inside
+                                    if let Some(RenderExpr::PropertyAccessExp(pa)) = agg.args.first() {
+                                        if let PropertyValue::Column(db_col) = &pa.column {
+                                            // Add mapping: (alias, db_column) → cte_column
+                                            // E.g., ("a", "full_name") → "a_name"
+                                            let key = (alias.to_string(), db_col.clone());
+                                            if !reverse_mapping.contains_key(&key) {
+                                                reverse_mapping.insert(key.clone(), cte_column.clone());
+                                                log::warn!("🔧 Added DB column mapping: {:?} → {}", key, cte_column);
+                                            }
+                                        }
+                                    }
+                                } else if let RenderExpr::PropertyAccessExp(pa) = &item.expression {
+                                    // For non-aggregated columns like a.user_id
+                                    if let PropertyValue::Column(db_col) = &pa.column {
+                                        let key = (alias.to_string(), db_col.clone());
+                                        if !reverse_mapping.contains_key(&key) {
+                                            reverse_mapping.insert(key.clone(), cte_column.clone());
+                                            log::warn!("🔧 Added DB column mapping: {:?} → {}", key, cte_column);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     log::warn!("🔧 build_chained_with_match_cte_plan: Built reverse mapping with {} entries from explicit property mapping", reverse_mapping.len());
                 } else {
