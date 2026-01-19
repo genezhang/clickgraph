@@ -5,8 +5,7 @@ use crate::{
     open_cypher_parser::ast,
     query_planner::{
         logical_expr::{
-            LogicalExpr, Operator, OperatorApplication, Property, PropertyAccess,
-            TableAlias,
+            LogicalExpr, Operator, OperatorApplication, Property, PropertyAccess, TableAlias,
         },
         logical_plan::{
             errors::LogicalPlanError,
