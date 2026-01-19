@@ -5,7 +5,7 @@ use crate::{
     open_cypher_parser::ast,
     query_planner::{
         logical_expr::{
-            Column, LogicalExpr, Operator, OperatorApplication, Property, PropertyAccess,
+            LogicalExpr, Operator, OperatorApplication, Property, PropertyAccess,
             TableAlias,
         },
         logical_plan::{

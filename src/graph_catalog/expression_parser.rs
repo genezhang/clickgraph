@@ -16,7 +16,7 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, take_until},
     character::complete::{alphanumeric1, char, digit1, multispace0, one_of},
-    combinator::{map, opt, recognize, value},
+    combinator::{map, opt, recognize},
     multi::{many0, separated_list0},
     sequence::{delimited, preceded},
     IResult, Parser,

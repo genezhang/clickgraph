@@ -20,7 +20,7 @@ use crate::{
     query_planner::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
-            errors::{AnalyzerError, Pass},
+
         },
         logical_plan::{GraphNode, GraphRel, LogicalPlan, ViewScan},
         plan_ctx::PlanCtx,

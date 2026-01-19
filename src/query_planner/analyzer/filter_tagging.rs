@@ -6,7 +6,7 @@
 use std::{collections::HashSet, sync::Arc};
 
 use crate::{
-    graph_catalog::{graph_schema::GraphSchema, pattern_schema::NodeAccessStrategy},
+    graph_catalog::graph_schema::GraphSchema,
     query_planner::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
