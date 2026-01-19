@@ -1999,7 +1999,51 @@ pub fn extract_ctes_with_context(
 
                     props
                 } else {
-                    vec![]
+                    // ✨ BUG #7 FIX: For regular VLP queries, include ALL node properties
+                    // This handles queries like MATCH (a)-[*]->(b) RETURN a, b
+                    // where both nodes need all their properties in the CTE for the final SELECT
+                    log::warn!("🔧 BUG #7: Extracting all properties for VLP query ({}-{})", start_label, end_label);
+                    let mut props = Vec::new();
+                    
+                    // Get all properties for start node
+                    if let Some(schema_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+                        if let Ok(schemas) = schema_lock.try_read() {
+                            // Get the appropriate schema (could be multi-schema)
+                            if let Some(schema_iter) = schemas.iter().next() {
+                                let schema_obj = schema_iter.1;
+                                log::warn!("🔧 BUG #7: Found schema, looking for {}", start_label);
+                                if let Some(node_schema) = schema_obj.get_nodes_schemas().get(&start_label) {
+                                    log::warn!("🔧 BUG #7: Found start node schema with {} properties", node_schema.property_mappings.len());
+                                    for (prop_name, prop_value) in &node_schema.property_mappings {
+                                        props.push(NodeProperty {
+                                            cypher_alias: start_alias.clone(),
+                                            column_name: prop_value.raw().to_string(),
+                                            alias: prop_name.clone(),
+                                        });
+                                    }
+                                } else {
+                                    log::warn!("🔧 BUG #7: No schema found for {}", start_label);
+                                }
+                                
+                                // Get all properties for end node
+                                if let Some(node_schema) = schema_obj.get_nodes_schemas().get(&end_label) {
+                                    log::warn!("🔧 BUG #7: Found end node schema with {} properties", node_schema.property_mappings.len());
+                                    for (prop_name, prop_value) in &node_schema.property_mappings {
+                                        props.push(NodeProperty {
+                                            cypher_alias: end_alias.clone(),
+                                            column_name: prop_value.raw().to_string(),
+                                            alias: prop_name.clone(),
+                                        });
+                                    }
+                                } else {
+                                    log::warn!("🔧 BUG #7: No schema found for {}", end_label);
+                                }
+                            }
+                        }
+                    }
+                    
+                    log::warn!("🔧 BUG #7: Total properties extracted: {}", props.len());
+                    props
                 };
 
                 // Generate CTE with filters

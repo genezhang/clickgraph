@@ -54,7 +54,8 @@ graph_schema:
       table: user_follows_bench
       from_id: follower_id
       to_id: followed_id
-      edge_id: follow_id
+      # edge_id removed - follow_id column doesn't exist in table
+      # VLP will use default (follower_id, followed_id) tuple for path tracking
       from_node: User
       to_node: User
       property_mappings:
