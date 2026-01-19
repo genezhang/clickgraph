@@ -557,7 +557,11 @@ pub fn try_generate_view_scan(
                         "✓ Single ViewScan for denormalized node '{}' (only one source)",
                         label
                     );
-                    return Ok(Some(union_inputs.pop().unwrap()));
+                    // Safe: we just checked that union_inputs.len() == 1, so pop() must return Some.
+                    let plan = union_inputs
+                        .pop()
+                        .expect("union_inputs.pop() must return Some when len() == 1");
+                    return Ok(Some(plan));
                 }
 
                 use crate::query_planner::logical_plan::{Union, UnionType};

@@ -303,6 +303,7 @@ pub async fn run_with_config(config: ServerConfig) {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
+
             let mut sigterm = match signal(SignalKind::terminate()) {
                 Ok(s) => s,
                 Err(e) => {
