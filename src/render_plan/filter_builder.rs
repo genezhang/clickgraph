@@ -87,7 +87,8 @@ impl FilterBuilder for LogicalPlan {
                     if filters.is_empty() {
                         return Ok(None);
                     } else if filters.len() == 1 {
-                        return Ok(Some(filters.into_iter().next().unwrap()));
+                        // Safety: len() == 1 guarantees next() returns Some
+                        return Ok(Some(filters.into_iter().next().expect("filters has exactly one element")));
                     } else {
                         // When combining filters, wrap non-Raw expressions in parentheses
                         // to handle AND/OR precedence correctly
@@ -101,7 +102,7 @@ impl FilterBuilder for LogicalPlan {
                                     operands: vec![acc, pred],
                                 })
                             })
-                            .unwrap();
+                            .expect("filters is non-empty, reduce succeeds");
                         return Ok(Some(combined));
                     }
                 }
@@ -202,7 +203,8 @@ impl FilterBuilder for LogicalPlan {
                     None
                 } else if all_predicates.len() == 1 {
                     log::trace!("Found 1 GraphRel predicate");
-                    Some(all_predicates.into_iter().next().unwrap())
+                    // Safety: len() == 1 guarantees next() returns Some
+                    Some(all_predicates.into_iter().next().expect("all_predicates has exactly one element"))
                 } else {
                     // Combine with AND
                     log::trace!(
@@ -217,7 +219,7 @@ impl FilterBuilder for LogicalPlan {
                                 operands: vec![acc, pred],
                             })
                         })
-                        .unwrap();
+                        .expect("all_predicates is non-empty, reduce succeeds");
                     Some(combined)
                 }
             }

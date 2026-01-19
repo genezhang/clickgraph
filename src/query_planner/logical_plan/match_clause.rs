@@ -584,13 +584,11 @@ pub fn try_generate_view_scan(
             .as_ref()
             .ok_or_else(|| {
                 log::error!("Denormalized node '{}' missing source table", label);
-            });
-
-        if source_table.is_err() {
-            log::error!("Cannot create ViewScan for denormalized node without source table");
-            return Ok(None);
-        }
-        let source_table = source_table.unwrap();
+                LogicalPlanError::InvalidSchema {
+                    label: label.to_string(),
+                    reason: "Denormalized node missing source table".to_string(),
+                }
+            })?;
 
         log::debug!(
             "Denormalized node '{}': has_from_props={}, has_to_props={}, source_table={}",
