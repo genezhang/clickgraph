@@ -4602,6 +4602,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
     let mut cte_sequence_numbers: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
 
+    // Track CTE names we've already emitted to prevent duplicates
+    let mut used_cte_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+
     // Track CTE references as we build them (alias → CTE name)
     // Start EMPTY and populate as each CTE is created
     // This ensures we only reference CTEs that have actually been built in previous iterations
@@ -5509,10 +5513,15 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 })
                 .unwrap_or_else(|| vec![with_alias.clone()]);
 
+            // Sorted aliases string used for sequence tracking and uniqueness
+            let mut sorted_exported_aliases = exported_aliases.clone();
+            sorted_exported_aliases.sort();
+            let aliases_key = sorted_exported_aliases.join("_");
+
             // CRITICAL FIX: Use CTE name from analyzer's cte_references if available
             // The VariableResolver already assigned CTE names and stored them in cte_references.
             // Using those names ensures consistency between expressions and CTE definitions.
-            let cte_name = with_plans
+            let mut cte_name = with_plans
                 .first()
                 .and_then(|plan| match plan {
                     LogicalPlan::WithClause(wc) => {
@@ -5526,18 +5535,54 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 .unwrap_or_else(|| {
                     // Fallback: Generate unique CTE name using centralized utility
                     // Format: with_<sorted_aliases>_cte_<seq>
-                    let mut sorted_aliases = exported_aliases.clone();
-                    sorted_aliases.sort(); // Ensure consistent ordering
-                    let aliases_str = sorted_aliases.join("_");
-
-                    let seq_num = cte_sequence_numbers.entry(aliases_str.clone()).or_insert(1);
+                    let seq_num = cte_sequence_numbers.entry(aliases_key.clone()).or_insert(1);
                     let current_seq = *seq_num;
-                    let name = generate_cte_name(&exported_aliases, current_seq);
+                    let name = generate_cte_name(&sorted_exported_aliases, current_seq);
                     *seq_num += 1; // Increment for next iteration
                     log::warn!("🔧 build_chained_with_match_cte_plan: Fallback - Generated unique CTE name '{}' from exported aliases {:?} (sequence {})",
                                name, exported_aliases, current_seq);
                     name
                 });
+
+            // Ensure used_cte_names contains any CTEs hoisted earlier in this pass
+            for existing in &all_ctes {
+                used_cte_names.insert(existing.cte_name.clone());
+            }
+
+            // If analyzer provided a duplicate name (or hoisted CTE collided), generate a fresh one
+            if used_cte_names.contains(&cte_name) {
+                log::warn!(
+                    "🔧 build_chained_with_match_cte_plan: Duplicate CTE name '{}' detected, generating a unique name",
+                    cte_name
+                );
+
+                let seq_entry = cte_sequence_numbers.entry(aliases_key.clone()).or_insert(1);
+                let mut next_seq = *seq_entry;
+                let mut candidate = generate_cte_name(&sorted_exported_aliases, next_seq);
+                while used_cte_names.contains(&candidate) {
+                    next_seq += 1;
+                    candidate = generate_cte_name(&sorted_exported_aliases, next_seq);
+                }
+
+                // Remap the analyzer's name to the generated unique name
+                cte_name_remapping.insert(cte_name.clone(), candidate.clone());
+
+                *seq_entry = next_seq + 1;
+                cte_name = candidate;
+            }
+
+            // Track this name as used and advance the sequence counter based on its suffix
+            used_cte_names.insert(cte_name.clone());
+            if let Some(suffix) = cte_name
+                .rsplit('_')
+                .next()
+                .and_then(|s| s.parse::<usize>().ok())
+            {
+                let entry = cte_sequence_numbers.entry(aliases_key.clone()).or_insert(suffix + 1);
+                if *entry <= suffix {
+                    *entry = suffix + 1;
+                }
+            }
 
             log::warn!("🔧 build_chained_with_match_cte_plan: Using CTE name '{}' for exported aliases {:?}",
                        cte_name, exported_aliases);

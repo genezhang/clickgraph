@@ -14,7 +14,7 @@ use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::expression_utils::{
     contains_string_literal, flatten_addition_operands, has_string_operand,
 };
-use crate::utils::cte_naming::generate_cte_base_name;
+use crate::utils::cte_naming::{generate_cte_base_name, generate_cte_name};
 
 use super::cte_generation::map_property_to_column_with_schema;
 use super::errors::RenderBuildError;
@@ -2834,11 +2834,23 @@ pub fn extract_ctes_with_context(
             // First, extract any CTEs from the input
             let mut ctes = extract_ctes_with_context(&wc.input, last_node_alias, context, schema)?;
 
-            // Generate CTE name using centralized utility (base name without counter)
-            let cte_name = generate_cte_base_name(&wc.exported_aliases);
+            // CRITICAL FIX: Use CTE name from analyzer's cte_references if available
+            // The VariableResolver already assigned CTE names and stored them in cte_references.
+            // Using those names ensures consistency with expressions that reference the CTE.
+            let cte_name = wc.exported_aliases
+                .first()
+                .and_then(|alias| wc.cte_references.get(alias))
+                .cloned()
+                .unwrap_or_else(|| {
+                    // Fallback: Generate unique CTE name with sequence number 1
+                    // Format: with_<sorted_aliases>_cte_<seq>
+                    let name = generate_cte_name(&wc.exported_aliases, 1);
+                    log::warn!("🔧 CTE Extraction: Fallback - Generated CTE name '{}' (no analyzer reference)", name);
+                    name
+                });
 
             log::info!(
-                "🔧 CTE Extraction: Generating CTE '{}' for WITH clause with {} exported aliases",
+                "🔧 CTE Extraction: Using CTE name '{}' for WITH clause with {} exported aliases",
                 cte_name,
                 wc.exported_aliases.len()
             );
