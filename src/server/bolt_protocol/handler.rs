@@ -20,6 +20,16 @@ use crate::query_planner;
 use crate::render_plan::plan_builder::RenderPlanBuilder;
 use crate::server::{graph_catalog, parameter_substitution};
 
+/// Helper macro for safe mutex locking with proper error handling
+macro_rules! lock_context {
+    ($mutex:expr) => {
+        $mutex.lock().map_err(|e| {
+            log::error!("Mutex poisoning detected in Bolt handler: {}", e);
+            BoltError::mutex_poisoned(format!("Connection state synchronization failed: {}", e))
+        })?
+    };
+}
+
 /// Bolt protocol message handler
 pub struct BoltHandler {
     /// Connection context
@@ -83,7 +93,7 @@ impl BoltHandler {
     async fn handle_hello(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         // Verify connection state
         let (current_state, negotiated_version) = {
-            let context = self.context.lock().unwrap();
+            let context = lock_context!(self.context);
             let version = match &context.state {
                 ConnectionState::Negotiated(v) => *v,
                 _ => 0,
@@ -117,7 +127,7 @@ impl BoltHandler {
 
             // Update context to AUTHENTICATION state
             {
-                let mut context = self.context.lock().unwrap();
+                let mut context = lock_context!(self.context);
                 context.set_state(ConnectionState::Authentication(negotiated_version));
             }
 
@@ -170,7 +180,7 @@ impl BoltHandler {
 
                     // Update context
                     {
-                        let mut context = self.context.lock().unwrap();
+                        let mut context = lock_context!(self.context);
                         context.set_user(user.username.clone());
                         context.schema_name = database.clone();
                         context.set_state(ConnectionState::Ready);
@@ -211,7 +221,7 @@ impl BoltHandler {
 
                     // Update context to failed state
                     {
-                        let mut context = self.context.lock().unwrap();
+                        let mut context = lock_context!(self.context);
                         context.set_state(ConnectionState::Failed);
                     }
 
@@ -228,7 +238,7 @@ impl BoltHandler {
     async fn handle_logon(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         // Verify connection state
         let current_state = {
-            let context = self.context.lock().unwrap();
+            let context = lock_context!(self.context);
             context.state.clone()
         };
 
@@ -306,7 +316,7 @@ impl BoltHandler {
 
                 // Update context
                 {
-                    let mut context = self.context.lock().unwrap();
+                    let mut context = lock_context!(self.context);
                     context.set_user(user.username.clone());
                     context.schema_name = database.clone();
                     context.set_state(ConnectionState::Ready);
@@ -329,7 +339,7 @@ impl BoltHandler {
 
                 // Update context to failed state
                 {
-                    let mut context = self.context.lock().unwrap();
+                    let mut context = lock_context!(self.context);
                     context.set_state(ConnectionState::Failed);
                 }
 
@@ -345,7 +355,7 @@ impl BoltHandler {
     async fn handle_logoff(&mut self, _message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         // Verify connection state - LOGOFF can only be called in READY state
         let current_state = {
-            let context = self.context.lock().unwrap();
+            let context = lock_context!(self.context);
             context.state.clone()
         };
 
@@ -374,7 +384,7 @@ impl BoltHandler {
 
         // Update context to AUTHENTICATION state
         {
-            let mut context = self.context.lock().unwrap();
+            let mut context = lock_context!(self.context);
             context.set_user(String::new());
             context.schema_name = None;
             context.set_state(ConnectionState::Authentication(negotiated_version));
@@ -394,7 +404,7 @@ impl BoltHandler {
 
         // Update context
         {
-            let mut context = self.context.lock().unwrap();
+            let mut context = lock_context!(self.context);
             context.set_state(ConnectionState::Failed);
         }
 
@@ -408,7 +418,7 @@ impl BoltHandler {
 
         // Reset connection state but keep authentication
         {
-            let mut context = self.context.lock().unwrap();
+            let mut context = lock_context!(self.context);
             context.set_state(ConnectionState::Ready);
             context.tx_id = None; // Clear any active transaction
         }
@@ -420,7 +430,7 @@ impl BoltHandler {
     async fn handle_run(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         // Verify connection state
         {
-            let context = self.context.lock().unwrap();
+            let context = lock_context!(self.context);
             if !context.is_ready() {
                 return Ok(vec![BoltMessage::failure(
                     "Neo.ClientError.Request.Invalid".to_string(),
@@ -438,7 +448,7 @@ impl BoltHandler {
 
         // Get selected schema from context, or from RUN message metadata
         let (schema_name, tenant_id, role, view_parameters) = {
-            let context = self.context.lock().unwrap();
+            let context = lock_context!(self.context);
 
             // Debug: log RUN message fields
             log::debug!("RUN message has {} fields", message.fields.len());
@@ -512,7 +522,7 @@ impl BoltHandler {
             Ok(result_metadata) => {
                 // Update context to streaming state
                 {
-                    let mut context = self.context.lock().unwrap();
+                    let mut context = lock_context!(self.context);
                     context.set_state(ConnectionState::Streaming);
                 }
 
@@ -533,7 +543,7 @@ impl BoltHandler {
     async fn handle_pull(&mut self, _message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         // Verify connection state
         {
-            let context = self.context.lock().unwrap();
+            let context = lock_context!(self.context);
             if !matches!(context.state, ConnectionState::Streaming) {
                 return Ok(vec![BoltMessage::failure(
                     "Neo.ClientError.Request.Invalid".to_string(),
@@ -564,7 +574,7 @@ impl BoltHandler {
 
         // Update context back to ready state
         {
-            let mut context = self.context.lock().unwrap();
+            let mut context = lock_context!(self.context);
             context.set_state(ConnectionState::Ready);
         }
 
@@ -575,7 +585,7 @@ impl BoltHandler {
     async fn handle_discard(&mut self, _message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         // Verify connection state
         {
-            let context = self.context.lock().unwrap();
+            let context = lock_context!(self.context);
             if !matches!(context.state, ConnectionState::Streaming) {
                 return Ok(vec![BoltMessage::failure(
                     "Neo.ClientError.Request.Invalid".to_string(),
@@ -588,7 +598,7 @@ impl BoltHandler {
 
         // Update context back to ready state
         {
-            let mut context = self.context.lock().unwrap();
+            let mut context = lock_context!(self.context);
             context.set_state(ConnectionState::Ready);
         }
 
@@ -602,7 +612,7 @@ impl BoltHandler {
     async fn handle_begin(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         // Verify connection state
         {
-            let context = self.context.lock().unwrap();
+            let context = lock_context!(self.context);
             if !context.is_ready() {
                 return Ok(vec![BoltMessage::failure(
                     "Neo.ClientError.Request.Invalid".to_string(),
@@ -613,7 +623,7 @@ impl BoltHandler {
 
         // Extract database from BEGIN message extra field (Bolt 4.0+)
         if let Some(db) = message.extract_begin_database() {
-            let mut context = self.context.lock().unwrap();
+            let mut context = lock_context!(self.context);
             if context.schema_name.as_deref() != Some(&db) {
                 log::debug!(
                     "BEGIN message overriding schema: {:?} -> {}",
@@ -629,7 +639,7 @@ impl BoltHandler {
 
         // Update context with transaction
         {
-            let mut context = self.context.lock().unwrap();
+            let mut context = lock_context!(self.context);
             context.tx_id = Some(tx_id.clone());
         }
 
@@ -642,7 +652,7 @@ impl BoltHandler {
     async fn handle_commit(&mut self, _message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         // Verify we're in a transaction
         let tx_id = {
-            let mut context = self.context.lock().unwrap();
+            let mut context = lock_context!(self.context);
             if let Some(tx_id) = context.tx_id.take() {
                 tx_id
             } else {
@@ -662,7 +672,7 @@ impl BoltHandler {
     async fn handle_rollback(&mut self, _message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         // Verify we're in a transaction
         let tx_id = {
-            let mut context = self.context.lock().unwrap();
+            let mut context = lock_context!(self.context);
             if let Some(tx_id) = context.tx_id.take() {
                 tx_id
             } else {
