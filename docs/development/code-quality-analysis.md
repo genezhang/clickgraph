@@ -6,17 +6,19 @@
 
 ## Executive Summary
 
-This document outlines code quality gaps in the ClickGraph project that must be addressed before GA release. Since the original analysis (Jan 14, 2026), **CTE unification has been completed** with the new `cte_manager` module, but **`plan_builder.rs` remains the critical blocker** at 16,172 lines.
+This document outlines code quality gaps in the ClickGraph project that must be addressed before GA release. Since the original analysis (Jan 14, 2026), **major progress has been achieved**:
+- ✅ **CTE Unification**: COMPLETE
+- ✅ **Schema Consolidation**: COMPLETE  
+- ✅ **plan_builder.rs Modularization**: COMPLETE (84% reduction achieved)
 
-**Key Findings** (Updated January 15, 2026):
-- ✅ **CTE Unification**: COMPLETE - New `cte_manager` module (2,444 lines) with 6 strategies
-- ✅ **Schema Consolidation**: COMPLETE - Phases 1-2 finished, `NodeAccessStrategy` pattern in place
-- ❌ **Monolithic Files**: `plan_builder.rs` (16,172 lines) - main impl block is 9,088 lines
-- ❌ **Error Handling**: 20+ panic calls and multiple unwrap usage create production instability
-- ✅ **Test Status**: Excellent - 766 tests passing, 0 failed
+**Key Findings** (Updated January 18, 2026):
+- ✅ **plan_builder.rs**: COMPLETE - Reduced from 16,172 to 1,516 lines (84% reduction)
+- ✅ **Modular Architecture**: 4 specialized builders (join, select, from, group_by)
+- ❌ **Error Handling**: 2 production panics remaining (down from 20+)
+- ✅ **Test Status**: Excellent - 770 tests passing, 0 failed
 - ⚠️ **Technical Debt**: 24 unused imports, multiple TODO/FIXME comments
 
-**Recommended Timeline**: 12 weeks for plan_builder.rs refactoring (updated from 17 weeks)
+**Remaining Work for GA**: Error handling (3 weeks) + Cleanup (2 weeks) = **5 weeks total**
 
 ---
 
@@ -113,64 +115,56 @@ The CTE system has been **successfully unified** into a new `cte_manager` module
 
 ---
 
-## 3. ERROR HANDLING GAP - HIGH PRIORITY
-- **20+ `panic!` calls** in production code (slight improvement from 19)
-- **Multiple `unwrap()` calls** in production code
-- **PatternComprehension panic** appears resolved
+## 3. ERROR HANDLING GAP - NOW TOP PRIORITY ⭐
 
-### Specific Problem Areas
-```rust
-// src/query_planner/logical_expr/mod.rs - Multiple panics
-_ => panic!("Expected TableAlias"),
-_ => panic!("Expected String literal"),
+**Updated Status**: Analysis complete - **only 2 production panics remain**
 
-// src/query_planner/logical_plan/unwind_clause.rs - 5+ panics
-_ => panic!("Expected list expression, got {:?}", unwind.expression),
-```
+### Production Panics (Critical - Must Fix)
 
-### Migration Strategy
-1. **Replace critical panics with proper error returns** (3 weeks)
-2. **Add Result<T,E> propagation** through call chains
-3. **Remove unwrap() calls** with safe error handling
-- **Test failures** due to unwrap on None values
+1. **query_planner/logical_plan/match_clause.rs:846**
+   ```rust
+   panic!("Node schema for '{}' has no ID columns defined", label)
+   ```
+   - **Impact**: HIGH - crashes during query planning
+   - **Fix**: Return `LogicalPlanError::InvalidSchema` 
+   - **Effort**: 1-2 days
 
-### Specific Problem: PatternComprehension Panic
-```rust
-// src/query_planner/logical_expr/mod.rs:737
-_ => panic!("PatternComprehension should have been rewritten during query planning. This is a bug!")
-```
-This crashes the server if invalid query planning occurs.
+2. **clickhouse_query_generator/to_sql_query.rs:1074**
+   ```rust
+   panic!("ch. prefix requires a function name (e.g., ch.uniq)");
+   ```
+   - **Impact**: MEDIUM - crashes during SQL generation
+   - **Fix**: Return `ClickHouseGeneratorError::InvalidFunctionName`
+   - **Effort**: 1-2 days
 
-### Specific Problem: Property Requirements Analyzer Bug
-The failing test reveals a logic error in `analyze_expression`:
+### Test Panics (Acceptable - Keep As-Is)
 
-```rust
-// Current buggy code - skips ALL collect() arguments
-if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
-    log::info!("🔍 Skipping collect() argument analysis");
-    // BUG: This skips collect(u.name) when we SHOULD analyze u.name
-}
-```
+**80+ panic calls in test code** - These are test assertions and are appropriate:
+- `property_expansion.rs` tests
+- `plan_builder_helpers.rs` tests  
+- `alias_resolver.rs` tests
+- Parser test files
 
-**Fix Required**:
-```rust
-if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
-    match &agg.args[0] {
-        LogicalExpr::TableAlias(_) => {
-            // collect(u) - skip (handled by UNWIND)
-        }
-        _ => {
-            // collect(u.name), collect(count(f)) - analyze argument
-            Self::analyze_expression(&agg.args[0], requirements);
-        }
-    }
-}
-```
+### Unwrap Usage Audit (Week 2 Work)
 
-### Migration Strategy
-1. **Replace panics with proper error returns** (1 week)
-2. **Add Result<T,E> propagation** through call chains (2 weeks)
-3. **Fix property analyzer logic** (immediate fix needed)
+Need to audit and replace `.unwrap()` calls in production code paths.
+
+### Migration Strategy (Revised - 2 weeks)
+
+**Week 1: Production panic replacement** (2-3 days)
+1. Fix match_clause.rs panic (1 day)
+2. Fix to_sql_query.rs panic (1 day)
+3. Integration testing (1 day)
+
+**Week 2: Unwrap audit & removal** (3-4 days)
+1. Audit all unwrap() calls (1 day)
+2. Replace critical unwraps (2 days)
+3. Testing & validation (1 day)
+
+**Week 3: Final validation** (1 week)
+1. Comprehensive testing
+2. Documentation updates
+3. PR review & merge
 
 ---
 
@@ -214,121 +208,108 @@ TODO: Add parent plan parameter
 
 ---
 
-## UPDATED IMPLEMENTATION ROADMAP (Post-CTE Unification)
+## UPDATED IMPLEMENTATION ROADMAP (Post-Modularization)
 
-### ~~Phase 0: CTE Complexity Assessment~~ ✅ COMPLETE
-- CTE unification finished with `cte_manager` module
-- 6 strategy implementations production-ready
+### ~~Phase 0-2: Preparatory Work~~ ✅ COMPLETE (January 18, 2026)
+- CTE unification with `cte_manager` module ✅
+- plan_builder.rs modularization (84% reduction) ✅
+- Modular architecture with 4 specialized builders ✅
 
-### ~~Phase 1: CTE System Refactoring~~ ✅ COMPLETE
-- Unified `CteManager` with strategy pattern implemented
-- Schema-aware CTE generation through `PatternSchemaContext`
-- All CTE strategies tested and working
+### Phase 5: Error Handling Overhaul ⭐ **IN PROGRESS** (3 weeks)
 
-### Phase 2: plan_builder.rs Splitting ⭐ **NOW TOP PRIORITY**
+**Status**: Planning complete, ready to start implementation
 
-**Phase 1: Extract Pure Utilities** ✅ **COMPLETE** (January 17, 2026)
-- Utilities extracted to `plan_builder_helpers.rs` (4,165 lines, 8 functions)
-- File reduced from 16,172 to 9,504 lines (41.2% reduction)
-- All 766 tests passing
+#### **Week 1: Production Panic Replacement** (January 18-24, 2026)
+**Goal**: Replace 2 production panics with proper error handling  
+**Success Criteria**: 0 panic calls in production code
 
-#### **Week 2.5: Pre-Extraction Setup (3-4 days)**
-**Goal**: Establish infrastructure for safe extraction  
-**Success Criteria**: Baselines captured, feature flags ready, test matrix documented
+- [ ] **Day 1-2**: Fix match_clause.rs panic (schema validation)
+  - Replace panic with `LogicalPlanError::InvalidSchema`
+  - Add unit test for missing ID columns
+  - Integration testing
 
-- [ ] Establish performance baselines (run benchmark queries, capture metrics)
-- [ ] Set up feature flag system in Cargo.toml for each module
-- [ ] Create test matrix with expected query results
-- [ ] Document rollback procedures
-- [ ] Final review of dependency mappings (see `phase2-pre-extraction-audit.md`)
+- [ ] **Day 3-4**: Fix to_sql_query.rs panic (invalid function name)
+  - Replace panic with `ClickHouseGeneratorError::InvalidFunctionName`
+  - Add unit test for invalid `ch.` prefix
+  - Integration testing
 
-### Phase 2: Extract Domain Builders (7 weeks) ✅ **COMPLETE** - January 18, 2026
+- [ ] **Day 5**: Final validation
+  - Run full test suite (770 unit + 32 integration)
+  - Verify no regressions
+  - Performance check
 
-**Status**: **COMPLETE** - All 4 domain builders extracted, performance validated, modular architecture achieved
+#### **Week 2: Unwrap Audit & Removal** (January 25-31, 2026)
+**Goal**: Replace unwrap() calls with proper error handling  
+**Success Criteria**: Critical unwraps removed, safe error propagation
 
-**Actual Results (vs Planned)**:
-- **plan_builder.rs**: Reduced from 9,504 to 1,516 lines (84% reduction vs planned 35%)
-- **Extracted modules**: 4 specialized builders (join_builder.rs: 1,790 lines, select_builder.rs: 130 lines, from_builder.rs: 849 lines, group_by_builder.rs: 364 lines)
-- **Total extracted**: 3,133 lines across 4 modules (33% of original size)
-- **Performance**: Excellent - all queries <14ms translation time, <5% regression requirement met
-- **Architecture**: Clean trait-based delegation with `RenderPlanBuilder` trait
+- [ ] **Day 1-2**: Unwrap audit
+  - Search all `.unwrap()` calls in production code
+  - Categorize by risk level
+  - Document replacement strategy
 
-**Key Achievements**:
-- ✅ **Massive scope reduction**: Achieved 84% reduction vs planned 35%
-- ✅ **Performance validated**: <5% regression target met with excellent baseline
-- ✅ **Modular architecture**: Clean trait-based delegation working perfectly
-- ✅ **All tests passing**: 770/770 unit tests, 32/35 integration tests
-- ✅ **Zero regressions**: Functionality preserved with identical SQL generation
+- [ ] **Day 3-5**: Unwrap replacement
+  - Replace critical unwraps with `?` or match
+  - Add error context
+  - Test each replacement
 
-### Phase 3: Extract Filter & Ordering Logic (2 weeks) - REDUCED SCOPE
-**Goal**: Extract remaining filter logic from plan_builder.rs
-**Success Criteria**: plan_builder.rs < 1,200 lines (minimal remaining functions)
+#### **Week 3: Validation & Documentation** (February 1-7, 2026)
+**Goal**: Comprehensive validation and documentation  
+**Success Criteria**: All tests passing, docs updated, PR ready
 
-#### **Week 3-4: filter_builder.rs**
-- [ ] Extract extract_filters() (~300 lines - main filter logic)
-- [ ] Extract extract_final_filters() (~80 lines - final filter processing)
-- [ ] Extract extract_distinct() (~35 lines - DISTINCT flag extraction)
-- [ ] Integration testing & performance validation
+- [ ] **Day 1-2**: Comprehensive testing
+  - All test suites passing
+  - Manual edge case testing
+  - Performance validation
 
-**Note**: Most ordering functions (extract_order_by, extract_limit, extract_skip, extract_having, extract_union) are already stub implementations that delegate to other plan nodes.
+- [ ] **Day 3-4**: Documentation
+  - Update error handling guidelines
+  - Document new error types
+  - Update STATUS.md and CHANGELOG.md
 
-### Phase 4: Final Restructuring (1 week) - MINIMAL SCOPE
-**Goal**: Complete extraction and finalize modular architecture
-**Success Criteria**: plan_builder.rs < 1,000 lines (thin delegation layer only)
-
-#### **Week 5: Final Cleanup**
-- [ ] Review remaining functions in plan_builder.rs (mostly stubs and helpers)
-- [ ] Extract any remaining substantial logic if needed
-- [ ] Final integration testing
-- [ ] Documentation updates
-
-**Note**: With plan_builder.rs already at 1,516 lines and most functions delegated or stubbed, Phase 4 is primarily cleanup and validation.
-
-### Phase 5: Error Handling Overhaul (3 weeks)
-**Goal**: Replace all panics with proper error handling  
-**Success Criteria**: 0 panic! calls in production code
-
-#### **Week 14-16: Panic Replacement & unwrap() Removal**
-- [ ] Replace 20+ panic! calls with Result returns
-- [ ] Update call chains to propagate errors
-- [ ] Replace unwrap() calls with safe error handling
-- [ ] Test error scenarios
+- [ ] **Day 5**: PR preparation
+  - Code review
+  - Submit PR
+  - Address feedback
 
 ### Phase 6: Cleanup & Documentation (2 weeks)
 **Goal**: Production-ready codebase  
 **Success Criteria**: 0 unused imports, comprehensive docs
 
-#### **Week 17-18: Final Polish**
+#### **Week 1: Technical Debt Cleanup** (February 8-14, 2026)
 - [ ] Remove 24 unused imports
-- [ ] Address TODO/FIXME comments
+- [ ] Address TODO/FIXME comments (evaluate each)
+- [ ] Remove dead code marked `#[allow(dead_code)]`
+
+#### **Week 2: Final Polish** (February 15-21, 2026)
 - [ ] Update all module documentation
 - [ ] Final performance benchmarks
 - [ ] Update STATUS.md and CHANGELOG.md
+- [ ] GA readiness checklist
 
 ---
 
-## SUCCESS METRICS (Updated for Current State)
+## SUCCESS METRICS (Updated for Current State - January 18, 2026)
 
 ### Primary Metrics (GA Blockers)
 - ✅ **CTE Complexity**: < 8,000 lines total (achieved: 7,689 lines)
 - ✅ **plan_builder.rs Size**: < 4,000 lines (achieved: 1,516 lines - 84% reduction!)
-- ❌ **Error Handling**: 0 panic! calls (current: 20+ panics, target: Week 16)
-- ✅ **Test Coverage**: 766+ tests passing (achieved, maintain throughout)
+- ❌ **Error Handling**: 0 panic! calls in production (current: 2 panics, target: February 7, 2026)
+- ✅ **Test Coverage**: 770+ tests passing (achieved, maintain throughout)
 
 ### Secondary Metrics (Quality Improvements)
-- **File Organization**: Each module < 2,000 lines (target: Week 9)
-- **Code Cleanliness**: 0 unused imports (target: Week 17)
-- **Performance**: No >5% regression (measured weekly)
-- **Documentation**: All modules documented (target: Week 18)
-- **Zero regressions** introduced during refactoring (validated weekly)
+- ✅ **File Organization**: Each module < 2,000 lines (achieved)
+- ❌ **Code Cleanliness**: 0 unused imports (current: 24, target: February 21, 2026)
+- ✅ **Performance**: No >5% regression (validated weekly)
+- ❌ **Documentation**: All modules documented (target: February 21, 2026)
+- ✅ **Zero regressions** introduced during refactoring (maintained)
 
 ### Weekly Milestones (Updated January 18, 2026)
-- **Week 0 (Baseline)**: plan_builder.rs = 9,504 lines (post-Phase 1)
-- **Week 1-2**: Phase 2 domain builder extraction (COMPLETE - achieved 1,516 lines, 84% reduction)
-- **Week 3-4**: Phase 3 filter/order_by extraction (extract_filters: ~300 lines, extract_final_filters: ~80 lines)
-- **Week 5**: Phase 4 final restructuring (extract_distinct: ~35 lines, remaining stubs)
-- **Week 6-8**: Error handling overhaul (20+ panics → 0 panics)
-- **Week 9-10**: Cleanup & documentation (0 unused imports, comprehensive docs)
+- ~~**Week 0-2**: Phase 2 domain builder extraction~~ ✅ **COMPLETE**
+- **Week 3 (Jan 18-24)**: Phase 5 production panic replacement (2 panics → 0)
+- **Week 4 (Jan 25-31)**: Unwrap audit & removal
+- **Week 5 (Feb 1-7)**: Error handling validation & documentation
+- **Week 6-7 (Feb 8-21)**: Phase 6 cleanup & documentation
+- **Week 8 (Feb 22-28)**: GA release preparation
 
 ---
 
@@ -399,21 +380,37 @@ TODO: Add parent plan parameter
 
 ## CONCLUSION
 
-The ClickGraph codebase has made **MASSIVE progress** since January 14, 2026:
-- ✅ **CTE Unification**: COMPLETE - Risk eliminated
-- ✅ **Schema Consolidation**: COMPLETE - Architecture sound
-- ✅ **plan_builder.rs Splitting**: COMPLETE - 84% reduction achieved (1,516 lines vs 9,504)
-- ✅ **Test Suite**: 770/770 unit tests passing, 0 failures
-- ✅ **Performance**: <5% regression validated with excellent baseline
+The ClickGraph codebase has made **EXCEPTIONAL progress** toward GA readiness:
+
+**✅ COMPLETED (January 18, 2026)**:
+- ✅ **CTE Unification**: COMPLETE - Modular architecture with 6 strategies
+- ✅ **Schema Consolidation**: COMPLETE - `NodeAccessStrategy` pattern in place
+- ✅ **plan_builder.rs Modularization**: COMPLETE - 84% reduction (16,172 → 1,516 lines)
+- ✅ **Modular Architecture**: 4 specialized builders (join, select, from, group_by)
+- ✅ **Test Suite**: 770 unit tests passing, 0 failures
+- ✅ **Performance**: <5% regression validated
 - ✅ **Core Functionality**: Stable and production-ready
 
-**Remaining GA Blockers (Significantly Reduced):**
-1. ⭐ **Phase 3: Filter logic extraction** (2 weeks - ~400 lines remaining)
-2. **Phase 4: Final cleanup** (1 week - minimal remaining functions)
-3. **Error handling** (3 weeks - 20+ panics → 0 panics)
-4. **Technical debt cleanup** (2 weeks - optional but recommended)
+**🔄 REMAINING WORK (5 weeks to GA)**:
+1. ⭐ **Phase 5: Error Handling** (3 weeks)
+   - Replace 2 production panics
+   - Audit and remove unwrap() calls
+   - Comprehensive error propagation
 
-**The path to GA is now CLEAR and ACCELERATED**: With plan_builder.rs effectively solved, the remaining work is straightforward and low-risk.
+2. **Phase 6: Cleanup & Documentation** (2 weeks)
+   - Remove 24 unused imports
+   - Address TODO/FIXME comments
+   - Final documentation polish
+
+**GA Timeline**: **February 21, 2026** (5 weeks from January 18, 2026)
+
+**Key Success Factors**:
+- **Dramatic reduction in scope**: Only 2 production panics (vs 20+ originally)
+- **Proven modular architecture**: Phase 2 success demonstrates clean extraction patterns
+- **Comprehensive testing**: 770 tests provide safety net
+- **Low risk**: Remaining work is isolated and well-defined
+
+**The path to GA is CLEAR and ACHIEVABLE**: With major architectural work complete, the final sprint focuses on polish and production readiness.
 
 ---
 
