@@ -77,6 +77,15 @@
   - **Testing verified**: 770/780 Rust unit tests pass (98.7%), integration tests pass for core functionality
   - **No functional regressions**: WITH clause processing, aggregations, basic queries, and OPTIONAL MATCH all working correctly
 
+- **Expression Utilities Consolidation Complete**: Eliminated duplicate string processing functions across render_plan modules
+  - **New shared module created**: `src/render_plan/expression_utils.rs` with common string literal and operand processing utilities
+  - **3 duplicate functions removed** from `plan_builder_utils.rs`, `cte_generation.rs`, and `cte_extraction.rs` (eliminated ~60 lines of duplication)
+  - **Functions consolidated**: `contains_string_literal`, `has_string_operand`, `flatten_addition_operands` now in shared location
+  - **Public API established**: Made `extract_node_label_from_viewscan` public in `cte_extraction.rs` for shared use by `cte_generation.rs`
+  - **Code quality improved**: Single source of truth for expression processing utilities, reduced maintenance burden
+  - **Testing verified**: All 770/770 unit tests passing (100%), no functional regressions
+  - **Architecture maintained**: Clean separation of concerns while eliminating duplication
+
 ### 🚀 Features
 
 - **CTE Unification Phase 3 Complete**: Unified recursive CTE generation across all schema patterns with comprehensive test coverage

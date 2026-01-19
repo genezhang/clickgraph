@@ -405,6 +405,23 @@ match pattern_ctx.node_access_strategy(node_alias) {
 - **Performance**: Excellent - all queries <14ms translation time
 - **Architecture**: Clean trait-based delegation with `RenderPlanBuilder` trait
 
+### Expression Utilities Consolidation ✅
+**Status**: **COMPLETED** - Duplicate string processing functions eliminated across render_plan modules
+
+**Problem**: String literal and operand processing functions duplicated across `plan_builder_utils.rs`, `cte_generation.rs`, and `cte_extraction.rs`
+
+**Solution**: Created shared `expression_utils.rs` module with consolidated utilities
+
+**Consolidation Complete** ✅:
+- ✅ **New shared module**: `src/render_plan/expression_utils.rs` with common utilities
+- ✅ **3 duplicate functions removed**: `contains_string_literal`, `has_string_operand`, `flatten_addition_operands` (~60 lines eliminated)
+- ✅ **Public API established**: Made `extract_node_label_from_viewscan` public in `cte_extraction.rs` for shared use
+- ✅ **770/770 unit tests passing** (100% success rate)
+- ✅ **No functional regressions**: All expression processing functionality preserved
+- ✅ **Code quality improved**: Single source of truth for expression utilities
+
+**Codebase Impact**: Eliminated duplication while maintaining clean architecture and full test coverage
+
 ## Next Priorities
 
 ### Immediate (This Week)

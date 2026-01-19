@@ -2973,44 +2973,7 @@ pub fn rewrite_expression_simple(
 }
 
 /// Rewrite expression for mixed denormalized CTE
-pub fn rewrite_expr_for_mixed_denormalized_cte(
-    expr: &RenderExpr,
-    start_alias: &str,
-    end_alias: &str,
-    start_is_denorm: bool,
-    end_is_denorm: bool,
-    rel_alias: Option<&str>,
-    from_col: Option<&str>,
-    to_col: Option<&str>,
-    path_var: Option<&str>,
-) -> RenderExpr {
-    // This function would need to be implemented based on the existing logic
-    // For now, it's a placeholder that just clones the expression
-    let _ = (
-        start_alias,
-        end_alias,
-        start_is_denorm,
-        end_is_denorm,
-        rel_alias,
-        from_col,
-        to_col,
-        path_var,
-    );
-    expr.clone()
-}
-
 /// Rewrite VLP internal aliases to Cypher aliases
-pub fn rewrite_vlp_internal_to_cypher_alias(
-    expr: &RenderExpr,
-    start_alias: &str,
-    end_alias: &str,
-) -> RenderExpr {
-    // This function would need to be implemented based on the existing logic
-    // For now, it's a placeholder that just clones the expression
-    let _ = (start_alias, end_alias);
-    expr.clone()
-}
-
 /// Check if a join is for the inner scope (part of the pre-WITH pattern).
 /// This is determined by checking if the join references aliases that are
 /// part of the first MATCH (before WITH).

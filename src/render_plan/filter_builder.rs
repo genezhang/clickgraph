@@ -4,15 +4,17 @@
 //! It processes WHERE clauses, HAVING clauses, and other filter conditions
 //! that need to be applied to the generated SQL queries.
 
+use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_plan::LogicalPlan;
-use crate::render_plan::render_expr::{RenderExpr, Operator, OperatorApplication};
+use crate::render_plan::cte_extraction::{
+    extract_relationship_columns, table_to_id_column, RelationshipColumns,
+};
+use crate::render_plan::errors::RenderBuildError;
+use crate::render_plan::filter_pipeline::{categorize_filters, CategorizedFilters};
 use crate::render_plan::plan_builder_helpers::*;
 use crate::render_plan::plan_builder_utils::*;
-use crate::render_plan::cte_extraction::{extract_relationship_columns, table_to_id_column, RelationshipColumns};
-use crate::render_plan::filter_pipeline::{categorize_filters, CategorizedFilters};
-use crate::graph_catalog::graph_schema::GraphSchema;
+use crate::render_plan::render_expr::{Operator, OperatorApplication, RenderExpr};
 use crate::server::GLOBAL_SCHEMAS;
-use crate::render_plan::errors::RenderBuildError;
 
 /// Result type for filter builder operations
 pub type FilterBuilderResult<T> = Result<T, RenderBuildError>;

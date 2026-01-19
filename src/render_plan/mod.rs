@@ -12,6 +12,7 @@ mod group_by_builder;
 mod join_builder;
 mod plan_builder_helpers;
 mod plan_builder_utils;
+mod properties_builder;
 pub mod property_expansion;
 mod select_builder;
 pub mod utils;

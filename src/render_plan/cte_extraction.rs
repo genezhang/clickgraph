@@ -9,15 +9,20 @@ use crate::clickhouse_query_generator::variable_length_cte::{
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::graph_catalog::pattern_schema::{JoinStrategy, PatternSchemaContext};
-use crate::query_planner::logical_plan::LogicalPlan;
 use crate::query_planner::logical_expr::ColumnAlias as LogicalColumnAlias;
+use crate::query_planner::logical_plan::LogicalPlan;
+use crate::render_plan::expression_utils::{
+    contains_string_literal, flatten_addition_operands, has_string_operand,
+};
 use crate::utils::cte_naming::generate_cte_base_name;
 
 use super::cte_generation::map_property_to_column_with_schema;
 use super::errors::RenderBuildError;
 use super::filter_pipeline::{categorize_filters, CategorizedFilters};
 use super::plan_builder::RenderPlanBuilder;
-use super::render_expr::{ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr};
+use super::render_expr::{
+    ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr,
+};
 use super::{Cte, CteContent, Join, JoinType};
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
@@ -91,34 +96,6 @@ fn recreate_pattern_schema_context(
     .map_err(|e| {
         RenderBuildError::MissingTableInfo(format!("PatternSchemaContext analysis failed: {}", e))
     })
-}
-
-/// Check if an expression contains a string literal (recursively for nested + operations)
-fn contains_string_literal(expr: &RenderExpr) -> bool {
-    match expr {
-        RenderExpr::Literal(Literal::String(_)) => true,
-        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
-            op.operands.iter().any(|o| contains_string_literal(o))
-        }
-        _ => false,
-    }
-}
-
-/// Check if any operand is a string literal (for string concatenation detection)
-fn has_string_operand(operands: &[RenderExpr]) -> bool {
-    operands.iter().any(|op| contains_string_literal(op))
-}
-
-/// Flatten nested + operations into a list of operands for concat()
-fn flatten_addition_operands(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> Vec<String> {
-    match expr {
-        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => op
-            .operands
-            .iter()
-            .flat_map(|o| flatten_addition_operands(o, alias_mapping))
-            .collect(),
-        _ => vec![render_expr_to_sql_string(expr, alias_mapping)],
-    }
 }
 
 /// Collect all parameter names from a RenderExpr tree
@@ -2872,13 +2849,13 @@ pub fn extract_ctes_with_context(
                     // 🔧 FIX: Expand TableAlias to individual properties with underscore aliases
                     // This matches the behavior expected by the underscore convention test
                     log::info!("🔧 CTE Extraction: Expanding TableAlias '{}' to individual properties", alias.0);
-                    
+
                     // Get properties for this alias from the input plan
                     match wc.input.get_properties_with_table_alias(&alias.0) {
                         Ok((properties, _actual_table_alias)) => {
                             if !properties.is_empty() {
                                 log::info!("🔧 CTE Extraction: Found {} properties for alias '{}'", properties.len(), alias.0);
-                                
+
                                 // Convert properties to ProjectionItems with underscore aliases
                                 properties.into_iter().map(|(cypher_prop, db_col)| {
                                     let underscore_alias = format!("{}_{}", alias.0, cypher_prop);
@@ -3041,24 +3018,30 @@ pub fn extract_ctes_with_context(
 
             // Add WHERE clause from WITH to the CTE render plan
             if let Some(where_clause) = &wc.where_clause {
-                let render_where = where_clause.clone().try_into().map_err(|_| RenderBuildError::InvalidRenderPlan("Failed to convert where clause".to_string()))?;
+                let render_where = where_clause.clone().try_into().map_err(|_| {
+                    RenderBuildError::InvalidRenderPlan(
+                        "Failed to convert where clause".to_string(),
+                    )
+                })?;
                 if cte_render_plan.group_by.0.is_empty() {
                     // Non-aggregation, add to filters
                     if let Some(existing) = cte_render_plan.filters.0 {
-                        cte_render_plan.filters.0 = Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                            operator: Operator::And,
-                            operands: vec![existing, render_where],
-                        }));
+                        cte_render_plan.filters.0 =
+                            Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                operator: Operator::And,
+                                operands: vec![existing, render_where],
+                            }));
                     } else {
                         cte_render_plan.filters.0 = Some(render_where);
                     }
                 } else {
                     // Aggregation, add to having
                     if let Some(existing) = cte_render_plan.having_clause {
-                        cte_render_plan.having_clause = Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                            operator: Operator::And,
-                            operands: vec![existing, render_where],
-                        }));
+                        cte_render_plan.having_clause =
+                            Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                operator: Operator::And,
+                                operands: vec![existing, render_where],
+                            }));
                     } else {
                         cte_render_plan.having_clause = Some(render_where);
                     }
