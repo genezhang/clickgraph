@@ -2,12 +2,8 @@
 //!
 //! This module provides common utilities for working with RenderExpr trees.
 
-use super::render_expr::{RenderExpr, TableAlias};
-use crate::render_plan::render_expr::{Literal, Operator, PropertyAccess};
+use super::render_expr::{Literal, Operator, PropertyAccess, RenderExpr, TableAlias};
 
-/// Check if a RenderExpr references a specific table alias
-/// Used by tests for validation
-#[allow(dead_code)]
 /// Check if a RenderExpr references a specific table alias
 /// Used by tests for validation
 #[allow(dead_code)]
@@ -188,7 +184,6 @@ pub fn flatten_addition_operands(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render_plan::render_expr::{PropertyAccess, RenderExpr, TableAlias};
 
     #[test]
     fn test_references_alias() {

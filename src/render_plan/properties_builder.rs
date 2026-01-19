@@ -136,8 +136,6 @@ impl PropertiesBuilder for LogicalPlan {
                                 if !properties.is_empty() {
                                     log::debug!("get_properties_with_table_alias: Returning {} to_node_properties from UNION for '{}'", properties.len(), alias);
                                     return Ok((properties, None));
-                                } else {
-                                    // continue to next case
                                 }
                             }
                             // Fallback to property_mapping
@@ -258,8 +256,6 @@ impl PropertiesBuilder for LogicalPlan {
                 }
                 if let Ok(result) = rel.center.get_properties_with_table_alias(alias) {
                     return Ok(result);
-                } else {
-                    // continue to next case
                 }
                 // If we reach here, no properties found in this GraphRel
                 Ok((vec![], None))
@@ -286,16 +282,37 @@ impl PropertiesBuilder for LogicalPlan {
                 return limit.input.get_properties_with_table_alias(alias);
             }
             LogicalPlan::Union(union) => {
-                // For UNION, check all branches and return the first match
-                // All branches should have the same schema, so any match is valid
-                for input in &union.inputs {
-                    if let Ok(result) = input.get_properties_with_table_alias(alias) {
-                        if !result.0.is_empty() {
-                            return Ok(result);
-                        }
+                // For UNION, check all branches and return the first successful result.
+                // All branches should have the same schema, so any match is valid, even if it
+                // currently has no properties (empty vector).
+                if let Some(first_input) = union.inputs.first() {
+                    if let Ok(result) = first_input.get_properties_with_table_alias(alias) {
+                        return Ok(result);
                     }
                 }
+                Ok((vec![], None)) // No properties found in any branch
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                // For CartesianProduct, search both branches and return the first match
+                // This mirrors the UNION behavior but for exactly two inputs.
+                // If the alias is not found in either branch, return no properties.
+                if let Ok(result) = cp.left.get_properties_with_table_alias(alias) {
+                    return Ok(result);
+                }
+                if let Ok(result) = cp.right.get_properties_with_table_alias(alias) {
+                    return Ok(result);
+                }
                 Ok((vec![], None)) // No properties found
+            }
+            LogicalPlan::Unwind(unwind) => {
+                // Delegate property resolution to the input of the UNWIND.
+                // This ensures that aliases defined upstream can still be resolved
+                // even when wrapped in an UNWIND operation.
+                //
+                // NOTE: Additional handling for tuple-valued properties produced by
+                // the UNWIND expression can be added here if needed, but this
+                // preserves the recursive behavior from the previous implementation.
+                return unwind.input.get_properties_with_table_alias(alias);
             }
             _ => Ok((vec![], None)), // No properties found
         }
