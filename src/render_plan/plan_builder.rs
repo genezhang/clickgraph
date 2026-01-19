@@ -691,6 +691,13 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan> {
+        // CRITICAL: If the plan contains WITH clauses, use the specialized handler
+        // build_chained_with_match_cte_plan handles chained/nested WITH correctly
+        use super::plan_builder_utils::{has_with_clause_in_graph_rel, build_chained_with_match_cte_plan};
+        if has_with_clause_in_graph_rel(self) {
+            return build_chained_with_match_cte_plan(self, schema, None);
+        }
+
         match self {
             LogicalPlan::GraphJoins(gj) => {
                 let mut select_items = SelectItems {
