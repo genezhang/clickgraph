@@ -207,9 +207,18 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
         let start_alias = vlp_cte.vlp_cypher_start_alias.clone();
         let end_alias = vlp_cte.vlp_cypher_end_alias.clone();
         
+        log::info!("🔧 VLP SELECT rewriting: start_alias={:?}, end_alias={:?}", start_alias, end_alias);
+        log::info!("🔧 SELECT has {} items", plan.select.items.len());
+        
         // Rewrite each SELECT item's expressions
-        for item in &mut plan.select.items {
+        for (idx, item) in plan.select.items.iter_mut().enumerate() {
+            log::info!("🔧 Item {}: {:?}", idx, item.expression);
+            let before = format!("{:?}", item.expression);
             item.expression = rewrite_expr_for_vlp(&item.expression, &start_alias, &end_alias);
+            let after = format!("{:?}", item.expression);
+            if before != after {
+                log::info!("🔧   Rewritten from: {} → {}", before, after);
+            }
         }
     }
     
@@ -244,20 +253,15 @@ fn rewrite_expr_for_vlp(
         // The CTE columns are: start_email, start_name, etc. (using Cypher property names)
         // But PropertyAccess gives us database names like email_address, full_name
         // We need to match these by deriving the property name.
-        // 
-        // However, this gets complicated because we'd need the schema again.
-        // Better approach: Let the expression be as-is. The issue is actually in
-        // how the final SELECT items are being constructed - they should already
-        // use the CTE column names if they're selecting from a VLP.
         RenderExpr::PropertyAccessExp(prop) => {
             if let Some(start) = start_alias {
                 if &prop.table_alias.0 == start {
                     // This is accessing start node property
-                    // Extract property name from column (remove DB-specific prefix if any)
-                    // For email_address -> email, full_name -> full_name (no DB prefix typically)
+                    // Create Column with the full table.column format to prevent heuristic inference
+                    // The FROM clause has the CTE aliased as 't', so use t.start_xxx
                     let prop_name = derive_cypher_property_name(&prop.column.raw());
                     return RenderExpr::Column(Column(PropertyValue::Column(format!(
-                        "start_{}",
+                        "t.start_{}",
                         prop_name
                     ))));
                 }
@@ -268,7 +272,7 @@ fn rewrite_expr_for_vlp(
                     // This is accessing end node property
                     let prop_name = derive_cypher_property_name(&prop.column.raw());
                     return RenderExpr::Column(Column(PropertyValue::Column(format!(
-                        "end_{}",
+                        "t.end_{}",
                         prop_name
                     ))));
                 }
@@ -322,12 +326,14 @@ fn rewrite_expr_for_vlp(
 /// This uses common patterns from the schema:
 /// - full_name → name (in social_benchmark, "name" is the Cypher property, "full_name" is the DB column)
 /// - email_address → email (same pattern)
+/// - user_id → id (user_id is the DB column, but Cypher uses "id" for the property)
 /// - For now, we hardcode the common mapping. A better approach would be to pass the schema.
 fn derive_cypher_property_name(db_column: &str) -> String {
     // Common mappings based on social_benchmark schema
     match db_column {
         "full_name" => "name".to_string(),
         "email_address" => "email".to_string(),
+        "user_id" => "id".to_string(),
         _ => db_column.to_string(),
     }
 }
