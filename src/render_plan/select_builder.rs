@@ -116,13 +116,14 @@ impl SelectBuilder for LogicalPlan {
                                     let table_alias_to_use = actual_table_alias_opt.unwrap_or_else(|| table_alias.0.clone());
                                     
                                     // Expand to multiple SelectItems, one per property
+                                    // Use qualified aliases (table.property) to avoid conflicts when returning multiple nodes
                                     for (prop_name, col_name) in properties {
                                         select_items.push(SelectItem {
                                             expression: RenderExpr::PropertyAccessExp(PropertyAccess {
                                                 table_alias: RenderTableAlias(table_alias_to_use.clone()),
                                                 column: PropertyValue::Column(col_name),
                                             }),
-                                            col_alias: Some(ColumnAlias(prop_name)),
+                                            col_alias: Some(ColumnAlias(format!("{}.{}", table_alias.0, prop_name))),
                                         });
                                     }
                                     
@@ -154,13 +155,14 @@ impl SelectBuilder for LogicalPlan {
                                     let table_alias_to_use = actual_table_alias_opt.unwrap_or_else(|| prop.table_alias.0.clone());
                                     
                                     // Expand to multiple SelectItems, one per property
+                                    // Use qualified aliases (table.property) to avoid conflicts
                                     for (prop_name, col_name) in properties {
                                         select_items.push(SelectItem {
                                             expression: RenderExpr::PropertyAccessExp(PropertyAccess {
                                                 table_alias: RenderTableAlias(table_alias_to_use.clone()),
                                                 column: PropertyValue::Column(col_name),
                                             }),
-                                            col_alias: Some(ColumnAlias(prop_name)),
+                                            col_alias: Some(ColumnAlias(format!("{}.{}", prop.table_alias.0, prop_name))),
                                         });
                                     }
                                     
