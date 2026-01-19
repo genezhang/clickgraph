@@ -19,6 +19,9 @@ use super::render_expr::{
     ScalarFnCall, TableAlias,
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
+use crate::render_plan::expression_utils::{
+    contains_string_literal, flatten_addition_operands, has_string_operand,
+};
 // Note: Direction import commented out until Issue #1 (Undirected Multi-Hop SQL) is fixed
 // use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::LogicalPlan;
@@ -305,34 +308,6 @@ pub(super) fn rewrite_table_aliases_to_cte(
         }
         // Other expressions pass through unchanged
         other => other,
-    }
-}
-
-/// Check if an expression contains a string literal (recursively for nested + operations)
-fn contains_string_literal(expr: &RenderExpr) -> bool {
-    match expr {
-        RenderExpr::Literal(Literal::String(_)) => true,
-        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
-            op.operands.iter().any(|o| contains_string_literal(o))
-        }
-        _ => false,
-    }
-}
-
-/// Check if any operand is a string literal (for string concatenation detection)
-fn has_string_operand(operands: &[RenderExpr]) -> bool {
-    operands.iter().any(|op| contains_string_literal(op))
-}
-
-/// Flatten nested + operations into a list of operands for concat()
-fn flatten_addition_operands(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> Vec<String> {
-    match expr {
-        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => op
-            .operands
-            .iter()
-            .flat_map(|o| flatten_addition_operands(o, alias_mapping))
-            .collect(),
-        _ => vec![render_expr_to_sql_string(expr, alias_mapping)],
     }
 }
 

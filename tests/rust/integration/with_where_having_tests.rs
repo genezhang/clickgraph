@@ -64,8 +64,8 @@ fn test_with_aggregation_where_generates_having() {
         evaluate_read_query(ast, &schema, None, None).expect("Failed to build logical plan");
 
     // Render to SQL
-    let render_plan = logical_plan_to_render_plan(logical_plan, &schema)
-        .expect("Failed to render plan");
+    let render_plan =
+        logical_plan_to_render_plan(logical_plan, &schema).expect("Failed to render plan");
 
     let sql = render_plan.to_sql();
 
@@ -121,8 +121,8 @@ fn test_with_where_without_aggregation() {
         evaluate_read_query(ast, &schema, None, None).expect("Failed to build logical plan");
 
     // Render to SQL
-    let render_plan = logical_plan_to_render_plan(logical_plan, &schema)
-        .expect("Failed to render plan");
+    let render_plan =
+        logical_plan_to_render_plan(logical_plan, &schema).expect("Failed to render plan");
 
     let sql = render_plan.to_sql();
 
@@ -170,8 +170,8 @@ fn test_with_aggregation_multiple_conditions() {
         evaluate_read_query(ast, &schema, None, None).expect("Failed to build logical plan");
 
     // Render to SQL
-    let render_plan = logical_plan_to_render_plan(logical_plan, &schema)
-        .expect("Failed to render plan");
+    let render_plan =
+        logical_plan_to_render_plan(logical_plan, &schema).expect("Failed to render plan");
 
     let sql = render_plan.to_sql();
 

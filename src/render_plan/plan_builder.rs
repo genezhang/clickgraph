@@ -14,15 +14,16 @@ use std::sync::Arc;
 use super::cte_generation::{analyze_property_requirements, extract_var_len_properties};
 use super::errors::RenderBuildError;
 use super::expression_utils::{references_alias as expr_references_alias, rewrite_aliases};
+use super::filter_builder::FilterBuilder;
 use super::filter_pipeline::{
     categorize_filters, clean_last_node_filters, rewrite_expr_for_mixed_denormalized_cte,
     rewrite_expr_for_var_len_cte, rewrite_labels_subscript_for_multi_type_vlp,
     rewrite_vlp_internal_to_cypher_alias,
 };
-use super::filter_builder::FilterBuilder;
 use super::from_builder::FromBuilder;
 use super::group_by_builder::GroupByBuilder;
 use super::join_builder::JoinBuilder;
+use super::properties_builder::PropertiesBuilder;
 use super::render_expr::RenderCase;
 use super::render_expr::{
     AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess,
@@ -396,288 +397,8 @@ impl RenderPlanBuilder for LogicalPlan {
         &self,
         alias: &str,
     ) -> RenderPlanBuilderResult<(Vec<(String, String)>, Option<String>)> {
-        crate::debug_println!(
-            "DEBUG get_properties_with_table_alias: alias='{}', plan type={:?}",
-            alias,
-            std::mem::discriminant(self)
-        );
-        match self {
-            LogicalPlan::GraphNode(node) if node.alias == alias => {
-                // FAST PATH: Use pre-computed projected_columns if available
-                // (populated by ProjectedColumnsResolver analyzer pass)
-                if let Some(projected_cols) = &node.projected_columns {
-                    // projected_columns format: Vec<(property_name, qualified_column)>
-                    // e.g., [("firstName", "p.first_name"), ("age", "p.age")]
-                    // We need to return unqualified column names: ("firstName", "first_name")
-                    let properties: Vec<(String, String)> = projected_cols
-                        .iter()
-                        .map(|(prop_name, qualified_col)| {
-                            // Extract unqualified column: "p.first_name" -> "first_name"
-                            // 🔧 FIX: Handle column names with multiple dots like "n.id.orig_h" -> "id.orig_h"
-                            // Use splitn(2) to split only on the FIRST dot, keeping the rest intact
-                            let unqualified = qualified_col
-                                .splitn(2, '.')
-                                .nth(1)
-                                .unwrap_or(qualified_col)
-                                .to_string();
-                            (prop_name.clone(), unqualified)
-                        })
-                        .collect();
-                    return Ok((properties, None));
-                }
-
-                // FALLBACK: Compute from ViewScan (for nodes without projected_columns)
-                if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
-                    log::debug!("get_properties_with_table_alias: GraphNode '{}' has ViewScan, is_denormalized={}, from_node_properties={:?}, to_node_properties={:?}",
-                        alias, scan.is_denormalized,
-                        scan.from_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()),
-                        scan.to_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()));
-                    // For denormalized nodes with properties on the ViewScan (from standalone node query)
-                    if scan.is_denormalized {
-                        if let Some(from_props) = &scan.from_node_properties {
-                            let properties = extract_sorted_properties(from_props);
-                            if !properties.is_empty() {
-                                log::debug!("get_properties_with_table_alias: Returning {} from_node_properties for '{}'", properties.len(), alias);
-                                return Ok((properties, None)); // Use original alias
-                            }
-                        }
-                        if let Some(to_props) = &scan.to_node_properties {
-                            let properties = extract_sorted_properties(to_props);
-                            if !properties.is_empty() {
-                                log::debug!("get_properties_with_table_alias: Returning {} to_node_properties for '{}'", properties.len(), alias);
-                                return Ok((properties, None));
-                            }
-                        }
-                    }
-                    // Standard nodes - try property_mapping first
-                    let mut properties = extract_sorted_properties(&scan.property_mapping);
-
-                    // ZEEK FIX: If property_mapping is empty, try from_node_properties (for coupled edge schemas)
-                    if properties.is_empty() {
-                        if let Some(from_props) = &scan.from_node_properties {
-                            properties = extract_sorted_properties(from_props);
-                        }
-                        if properties.is_empty() {
-                            if let Some(to_props) = &scan.to_node_properties {
-                                properties = extract_sorted_properties(to_props);
-                            }
-                        }
-                    }
-                    return Ok((properties, None));
-                } else if let LogicalPlan::Union(union_plan) = node.input.as_ref() {
-                    // For denormalized polymorphic nodes, the input is a UNION of ViewScans
-                    // Each ViewScan has either from_node_properties or to_node_properties
-                    // Use the first available ViewScan to get the property list
-                    log::debug!(
-                        "get_properties_with_table_alias: GraphNode '{}' has Union with {} inputs",
-                        alias,
-                        union_plan.inputs.len()
-                    );
-                    if let Some(first_input) = union_plan.inputs.first() {
-                        if let LogicalPlan::ViewScan(scan) = first_input.as_ref() {
-                            log::debug!("get_properties_with_table_alias: First UNION input is ViewScan, is_denormalized={}, from_node_properties={:?}, to_node_properties={:?}",
-                                scan.is_denormalized,
-                                scan.from_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()),
-                                scan.to_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()));
-
-                            // Try from_node_properties first
-                            if let Some(from_props) = &scan.from_node_properties {
-                                let properties = extract_sorted_properties(from_props);
-                                if !properties.is_empty() {
-                                    log::debug!("get_properties_with_table_alias: Returning {} from_node_properties from UNION for '{}'", properties.len(), alias);
-                                    return Ok((properties, None));
-                                }
-                            }
-                            // Then try to_node_properties
-                            if let Some(to_props) = &scan.to_node_properties {
-                                let properties = extract_sorted_properties(to_props);
-                                if !properties.is_empty() {
-                                    log::debug!("get_properties_with_table_alias: Returning {} to_node_properties from UNION for '{}'", properties.len(), alias);
-                                    return Ok((properties, None));
-                                }
-                            }
-                            // Fallback to property_mapping
-                            let properties = extract_sorted_properties(&scan.property_mapping);
-                            if !properties.is_empty() {
-                                log::debug!("get_properties_with_table_alias: Returning {} property_mapping from UNION for '{}'", properties.len(), alias);
-                                return Ok((properties, None));
-                            }
-                        }
-                    }
-                }
-            }
-            LogicalPlan::GraphRel(rel) => {
-                // Check if this relationship's alias matches
-                if rel.alias == alias {
-                    if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
-                        let mut properties = extract_sorted_properties(&scan.property_mapping);
-
-                        // Add from_id and to_id columns for relationships
-                        // These are required for RETURN r to expand correctly
-                        if let Some(ref from_id) = scan.from_id {
-                            properties.insert(0, ("from_id".to_string(), from_id.clone()));
-                        }
-                        if let Some(ref to_id) = scan.to_id {
-                            properties.insert(1, ("to_id".to_string(), to_id.clone()));
-                        }
-
-                        return Ok((properties, None));
-                    }
-                }
-
-                // For denormalized nodes, properties are in the relationship center's ViewScan
-                // IMPORTANT: Direction affects which properties to use!
-                // - Outgoing: left_connection → from_node_properties, right_connection → to_node_properties
-                // - Incoming: left_connection → to_node_properties, right_connection → from_node_properties
-                if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
-                    let is_incoming = rel.direction == Direction::Incoming;
-
-                    crate::debug_println!("DEBUG GraphRel: alias='{}' checking left='{}', right='{}', rel_alias='{}', direction={:?}",
-                        alias, rel.left_connection, rel.right_connection, rel.alias, rel.direction);
-                    crate::debug_println!(
-                        "DEBUG GraphRel: from_node_properties={:?}, to_node_properties={:?}",
-                        scan.from_node_properties
-                            .as_ref()
-                            .map(|p| p.keys().collect::<Vec<_>>()),
-                        scan.to_node_properties
-                            .as_ref()
-                            .map(|p| p.keys().collect::<Vec<_>>())
-                    );
-
-                    // Check if BOTH nodes are denormalized on this edge
-                    // If so, right_connection should use left_connection's alias (the FROM table)
-                    // because the edge is fully denormalized - no separate JOIN for the edge
-                    let left_props_exist = if is_incoming {
-                        scan.to_node_properties.is_some()
-                    } else {
-                        scan.from_node_properties.is_some()
-                    };
-                    let right_props_exist = if is_incoming {
-                        scan.from_node_properties.is_some()
-                    } else {
-                        scan.to_node_properties.is_some()
-                    };
-                    let both_nodes_denormalized = left_props_exist && right_props_exist;
-
-                    // Check if alias matches left_connection
-                    if alias == rel.left_connection {
-                        // For Incoming direction, left node is on the TO side of the edge
-                        let props = if is_incoming {
-                            &scan.to_node_properties
-                        } else {
-                            &scan.from_node_properties
-                        };
-                        if let Some(node_props) = props {
-                            let properties = extract_sorted_properties(node_props);
-                            if !properties.is_empty() {
-                                // Left connection uses its own alias as the FROM table
-                                // Return None to use the original alias (which IS the FROM)
-                                return Ok((properties, None));
-                            }
-                        }
-                    }
-                    // Check if alias matches right_connection
-                    if alias == rel.right_connection {
-                        // For Incoming direction, right node is on the FROM side of the edge
-                        let props = if is_incoming {
-                            &scan.from_node_properties
-                        } else {
-                            &scan.to_node_properties
-                        };
-                        if let Some(node_props) = props {
-                            let properties = extract_sorted_properties(node_props);
-                            if !properties.is_empty() {
-                                // For fully denormalized edges (both nodes on edge), use left_connection
-                                // alias because it's the FROM table and right node shares the same row
-                                // For partially denormalized, use relationship alias as before
-                                if both_nodes_denormalized {
-                                    // Use left_connection alias (the FROM table)
-                                    return Ok((properties, Some(rel.left_connection.clone())));
-                                } else {
-                                    // Use relationship alias for denormalized nodes
-                                    return Ok((properties, Some(rel.alias.clone())));
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Check left and right branches
-                if let Ok(result) = rel.left.get_properties_with_table_alias(alias) {
-                    return Ok(result);
-                }
-                if let Ok(result) = rel.right.get_properties_with_table_alias(alias) {
-                    return Ok(result);
-                }
-                if let Ok(result) = rel.center.get_properties_with_table_alias(alias) {
-                    return Ok(result);
-                }
-            }
-            LogicalPlan::Projection(proj) => {
-                return proj.input.get_properties_with_table_alias(alias);
-            }
-            LogicalPlan::Filter(filter) => {
-                return filter.input.get_properties_with_table_alias(alias);
-            }
-            LogicalPlan::GroupBy(gb) => {
-                return gb.input.get_properties_with_table_alias(alias);
-            }
-            LogicalPlan::GraphJoins(joins) => {
-                return joins.input.get_properties_with_table_alias(alias);
-            }
-            LogicalPlan::OrderBy(order) => {
-                return order.input.get_properties_with_table_alias(alias);
-            }
-            LogicalPlan::Skip(skip) => {
-                return skip.input.get_properties_with_table_alias(alias);
-            }
-            LogicalPlan::Limit(limit) => {
-                return limit.input.get_properties_with_table_alias(alias);
-            }
-            LogicalPlan::Union(union) => {
-                if let Some(first_input) = union.inputs.first() {
-                    if let Ok(result) = first_input.get_properties_with_table_alias(alias) {
-                        return Ok(result);
-                    }
-                }
-            }
-            LogicalPlan::CartesianProduct(cp) => {
-                // Search both branches for the alias
-                if let Ok(result) = cp.left.get_properties_with_table_alias(alias) {
-                    return Ok(result);
-                }
-                if let Ok(result) = cp.right.get_properties_with_table_alias(alias) {
-                    return Ok(result);
-                }
-            }
-            LogicalPlan::Unwind(u) => {
-                // Check if the alias matches the unwound variable
-                if u.alias == alias {
-                    // If we have tuple_properties metadata, return it as property mappings
-                    // Convert tuple position to "1", "2", "3" for tuple index access
-                    if let Some(tuple_props) = &u.tuple_properties {
-                        let properties: Vec<(String, String)> = tuple_props
-                            .iter()
-                            .map(|(prop_name, idx)| (prop_name.clone(), idx.to_string()))
-                            .collect();
-                        return Ok((properties, None));
-                    }
-                    // Fallback: Try to get properties from the label (if set)
-                    if let Some(_label) = &u.label {
-                        // TODO: Could look up schema properties by label here
-                        // For now, return empty to avoid errors
-                        return Ok((vec![], None));
-                    }
-                }
-                // Not this unwind, recurse to input
-                return u.input.get_properties_with_table_alias(alias);
-            }
-            _ => {}
-        }
-        Err(RenderBuildError::InvalidRenderPlan(format!(
-            "Cannot find properties with table alias for '{}'",
-            alias
-        )))
+        // Delegate to the PropertiesBuilder trait implementation
+        <LogicalPlan as PropertiesBuilder>::get_properties_with_table_alias(self, alias)
     }
     // REMOVED: find_denormalized_properties function (Phase 3D)
     // This function was marked as dead_code and never called externally.
@@ -1071,41 +792,61 @@ impl RenderPlanBuilder for LogicalPlan {
             }
             LogicalPlan::WithClause(with) => {
                 // Handle WithClause by building a CTE from the input and creating a render plan with the CTE
-                let has_aggregation = with.items.iter().any(|item| matches!(item.expression, LogicalExpr::AggregateFnCall(_)));
+                let has_aggregation = with
+                    .items
+                    .iter()
+                    .any(|item| matches!(item.expression, LogicalExpr::AggregateFnCall(_)));
 
                 let mut cte_filters = FilterBuilder::extract_filters(with.input.as_ref())?;
                 let mut cte_having = with.input.extract_having()?;
 
                 if let Some(where_clause) = &with.where_clause {
-                    let render_where: RenderExpr = where_clause.clone().try_into().map_err(|_| RenderBuildError::InvalidRenderPlan("Failed to convert where clause".to_string()))?;
+                    let render_where: RenderExpr =
+                        where_clause.clone().try_into().map_err(|_| {
+                            RenderBuildError::InvalidRenderPlan(
+                                "Failed to convert where clause".to_string(),
+                            )
+                        })?;
                     if has_aggregation {
                         if cte_having.is_some() {
-                            return Err(RenderBuildError::InvalidRenderPlan("Multiple having clauses".to_string()));
+                            return Err(RenderBuildError::InvalidRenderPlan(
+                                "Multiple having clauses".to_string(),
+                            ));
                         }
                         cte_having = Some(render_where);
                     } else {
                         if let Some(existing) = cte_filters {
-                            cte_filters = Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                                operator: Operator::And,
-                                operands: vec![existing, render_where],
-                            }));
+                            cte_filters =
+                                Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::And,
+                                    operands: vec![existing, render_where],
+                                }));
                         } else {
                             cte_filters = Some(render_where);
                         }
                     }
                 }
 
-                let cte_select_items = <LogicalPlan as SelectBuilder>::extract_select_items(with.input.as_ref())?;
+                let cte_select_items =
+                    <LogicalPlan as SelectBuilder>::extract_select_items(with.input.as_ref())?;
                 let cte_from = FromTableItem(with.input.extract_from()?.and_then(|ft| ft.table));
-                let cte_joins = JoinItems(RenderPlanBuilder::extract_joins(with.input.as_ref(), schema)?);
-                let cte_group_by = GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(with.input.as_ref())?);
+                let cte_joins = JoinItems(RenderPlanBuilder::extract_joins(
+                    with.input.as_ref(),
+                    schema,
+                )?);
+                let cte_group_by = GroupByExpressions(
+                    <LogicalPlan as GroupByBuilder>::extract_group_by(with.input.as_ref())?,
+                );
                 let cte_order_by = OrderByItems(with.input.extract_order_by()?);
                 let cte_skip = SkipItem(with.input.extract_skip());
                 let cte_limit = LimitItem(with.input.extract_limit());
 
                 let cte_content = CteContent::Structured(RenderPlan {
                     ctes: CteItems(vec![]),
-                    select: SelectItems { items: cte_select_items, distinct: false },
+                    select: SelectItems {
+                        items: cte_select_items,
+                        distinct: false,
+                    },
                     from: cte_from,
                     joins: cte_joins,
                     array_join: ArrayJoinItem(vec![]),
@@ -1129,7 +870,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     use_final: false,
                 }));
 
-                let select = SelectItems { items: vec![], distinct: false };
+                let select = SelectItems {
+                    items: vec![],
+                    distinct: false,
+                };
                 let joins = JoinItems(vec![]);
                 let array_join = ArrayJoinItem(vec![]);
                 let filters = FilterItems(None);

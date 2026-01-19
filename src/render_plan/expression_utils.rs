@@ -2,7 +2,7 @@
 //!
 //! This module provides common utilities for working with RenderExpr trees.
 
-use super::render_expr::{RenderExpr, TableAlias};
+use super::render_expr::{Literal, Operator, PropertyAccess, RenderExpr, TableAlias};
 
 /// Check if a RenderExpr references a specific table alias
 /// Used by tests for validation
@@ -147,10 +147,43 @@ pub fn rewrite_aliases(
     }
 }
 
+/// Check if a render expression contains a string literal
+pub fn contains_string_literal(expr: &RenderExpr) -> bool {
+    match expr {
+        RenderExpr::Literal(Literal::String(_)) => true,
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
+            op.operands.iter().any(|o| contains_string_literal(o))
+        }
+        _ => false,
+    }
+}
+
+/// Check if any operand is a string literal (for string concatenation detection)
+pub fn has_string_operand(operands: &[RenderExpr]) -> bool {
+    operands.iter().any(|op| contains_string_literal(op))
+}
+
+/// Flatten nested + operations into a list of operands for concat()
+pub fn flatten_addition_operands(
+    expr: &RenderExpr,
+    alias_mapping: &[(String, String)],
+) -> Vec<String> {
+    match expr {
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => op
+            .operands
+            .iter()
+            .flat_map(|o| flatten_addition_operands(o, alias_mapping))
+            .collect(),
+        _ => vec![super::cte_extraction::render_expr_to_sql_string(
+            expr,
+            alias_mapping,
+        )],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render_plan::render_expr::{Column, PropertyAccess, TableAlias};
 
     #[test]
     fn test_references_alias() {

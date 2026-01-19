@@ -10,6 +10,7 @@ use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::query_planner::logical_plan::VariableLengthSpec;
+use crate::render_plan::cte_extraction::extract_node_label_from_viewscan;
 use crate::render_plan::render_expr::RenderExpr;
 
 /// Context for CTE generation - holds property requirements and other metadata
@@ -193,43 +194,6 @@ fn extract_node_label_from_plan(plan: &LogicalPlan) -> String {
             node.alias.clone()
         }
         _ => "User".to_string(), // fallback
-    }
-}
-
-/// Extract node label from a ViewScan plan
-///
-/// ⚠️  TODO(schema-threading): Hardcoded "default" lookup - should pass schema parameter
-/// This is called during CTE generation for property wildcard expansion (*)
-/// Currently only affects VLP queries with `RETURN n.*` patterns
-fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
-    match plan {
-        LogicalPlan::ViewScan(view_scan) => {
-            // Try to get the label from the schema using the table name
-            if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-                if let Ok(schemas) = schemas_lock.try_read() {
-                    // TODO: Pass schema_name as parameter instead of hardcoding "default"
-                    if let Some(schema) = schemas.get("default") {
-                        if let Some((label, _)) =
-                            get_node_schema_by_table(schema, &view_scan.source_table)
-                        {
-                            return Some(label.to_string());
-                        }
-                    }
-                }
-            }
-            None
-        }
-        LogicalPlan::GraphNode(node) => {
-            // First try to get label directly from the GraphNode (for denormalized nodes)
-            if let Some(label) = &node.label {
-                return Some(label.clone());
-            }
-            // Otherwise, recurse into input
-            extract_node_label_from_viewscan(&node.input)
-        }
-        LogicalPlan::Filter(filter) => extract_node_label_from_viewscan(&filter.input),
-        LogicalPlan::Projection(proj) => extract_node_label_from_viewscan(&proj.input),
-        _ => None,
     }
 }
 
