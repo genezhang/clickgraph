@@ -99,6 +99,104 @@ use super::CteGenerationContext;
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
 
+/// Post-process SELECT items to wrap non-ID, non-aggregated columns with anyLast()
+/// when there's a GROUP BY clause.
+///
+/// This fixes Bug #11: When `RETURN a` is expanded to all properties and there's an aggregation
+/// causing GROUP BY, the GROUP BY only includes ID columns, but SELECT includes all columns.
+/// ClickHouse requires non-aggregated, non-grouped columns to use aggregate functions.
+///
+/// # Arguments
+/// * `select_items` - The SELECT items to process
+/// * `group_by_exprs` - The GROUP BY expressions (if empty, no wrapping is done)
+/// * `plan` - The logical plan (used to find ID columns)
+///
+/// # Returns
+/// Modified SELECT items with anyLast() wrapping where needed
+fn apply_anylast_wrapping_for_group_by(
+    select_items: Vec<SelectItem>,
+    group_by_exprs: &[RenderExpr],
+    plan: &LogicalPlan,
+) -> RenderPlanBuilderResult<Vec<SelectItem>> {
+    // If no GROUP BY, return items as-is
+    if group_by_exprs.is_empty() {
+        return Ok(select_items);
+    }
+
+    log::info!("🔧 apply_anylast_wrapping: Processing {} SELECT items with {} GROUP BY expressions", 
+              select_items.len(), group_by_exprs.len());
+
+    let wrapped_items = select_items
+        .into_iter()
+        .map(|item| {
+            // Check if this item needs wrapping:
+            // 1. Skip if already an aggregate function
+            // 2. Skip if it's in the GROUP BY
+            // 3. Wrap if it's a PropertyAccess that's not an ID column
+
+            // Skip if already an aggregate
+            if matches!(&item.expression, RenderExpr::AggregateFnCall(_)) {
+                return Ok(item);
+            }
+
+            // Check if this expression is in GROUP BY
+            let in_group_by = group_by_exprs.iter().any(|group_expr| {
+                expressions_match(group_expr, &item.expression)
+            });
+
+            if in_group_by {
+                return Ok(item);
+            }
+
+            // Only wrap PropertyAccess expressions
+            if let RenderExpr::PropertyAccessExp(ref prop_access) = item.expression {
+                // Check if this is an ID column (ID columns are in GROUP BY, shouldn't be wrapped)
+                // ID columns typically end with "_id" or ".id" in the alias
+                let is_id_column = if let Some(ref col_alias) = item.col_alias {
+                    let alias_str = &col_alias.0;
+                    alias_str.ends_with("_id") || alias_str.ends_with(".id") || alias_str == "id"
+                } else {
+                    false
+                };
+
+                if is_id_column {
+                    log::debug!("🔧 apply_anylast_wrapping: Skipping ID column {:?}", item.col_alias);
+                    return Ok(item);
+                }
+
+                // Wrap with anyLast()
+                log::debug!("🔧 apply_anylast_wrapping: Wrapping {:?} with anyLast()", item.col_alias);
+                Ok(SelectItem {
+                    expression: RenderExpr::AggregateFnCall(AggregateFnCall {
+                        name: "anyLast".to_string(),
+                        args: vec![item.expression.clone()],
+                    }),
+                    col_alias: item.col_alias,
+                })
+            } else {
+                // Not a PropertyAccess, keep as-is
+                Ok(item)
+            }
+        })
+        .collect::<RenderPlanBuilderResult<Vec<SelectItem>>>()?;
+
+    log::info!("✅ apply_anylast_wrapping: Processed {} items", wrapped_items.len());
+    Ok(wrapped_items)
+}
+
+/// Helper to check if two RenderExpr are functionally equivalent
+/// Used to determine if a SELECT item is in the GROUP BY
+fn expressions_match(expr1: &RenderExpr, expr2: &RenderExpr) -> bool {
+    match (expr1, expr2) {
+        (RenderExpr::PropertyAccessExp(p1), RenderExpr::PropertyAccessExp(p2)) => {
+            p1.table_alias.0 == p2.table_alias.0 && p1.column == p2.column
+        }
+        (RenderExpr::Column(c1), RenderExpr::Column(c2)) => c1.0 == c2.0,
+        (RenderExpr::TableAlias(t1), RenderExpr::TableAlias(t2)) => t1.0 == t2.0,
+        _ => false,
+    }
+}
+
 pub(crate) trait RenderPlanBuilder {
     fn extract_last_node_cte(
         &self,
@@ -595,7 +693,7 @@ impl RenderPlanBuilder for LogicalPlan {
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan> {
         match self {
             LogicalPlan::GraphJoins(gj) => {
-                let select_items = SelectItems {
+                let mut select_items = SelectItems {
                     items: <LogicalPlan as SelectBuilder>::extract_select_items(self)?,
                     distinct: FilterBuilder::extract_distinct(self),
                 };
@@ -606,6 +704,16 @@ impl RenderPlanBuilder for LogicalPlan {
                 let group_by =
                     GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
                 let having_clause = self.extract_having()?;
+                
+                // 🔧 BUG #11 FIX: Wrap non-ID, non-aggregated columns with anyLast() when GROUP BY present
+                // This fixes queries like: RETURN a, count(b) where a expands to all properties
+                // but GROUP BY only has a.user_id
+                select_items.items = apply_anylast_wrapping_for_group_by(
+                    select_items.items,
+                    &group_by.0,
+                    self,
+                )?;
+                
                 let order_by = OrderByItems(self.extract_order_by()?);
                 let skip = SkipItem(self.extract_skip());
                 let limit = LimitItem(self.extract_limit());
@@ -637,7 +745,7 @@ impl RenderPlanBuilder for LogicalPlan {
             }
             LogicalPlan::GraphRel(gr) => {
                 // For GraphRel, use the same extraction logic as GraphJoins
-                let select_items = SelectItems {
+                let mut select_items = SelectItems {
                     items: <LogicalPlan as SelectBuilder>::extract_select_items(self)?,
                     distinct: FilterBuilder::extract_distinct(self),
                 };
@@ -648,6 +756,14 @@ impl RenderPlanBuilder for LogicalPlan {
                 let group_by =
                     GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
                 let having_clause = self.extract_having()?;
+                
+                // 🔧 BUG #11 FIX: Wrap non-ID, non-aggregated columns with anyLast() when GROUP BY present
+                select_items.items = apply_anylast_wrapping_for_group_by(
+                    select_items.items,
+                    &group_by.0,
+                    self,
+                )?;
+                
                 let order_by = OrderByItems(self.extract_order_by()?);
 
                 // Extract CTEs for variable-length paths
@@ -691,22 +807,43 @@ impl RenderPlanBuilder for LogicalPlan {
                 // For Filter, convert the input plan and combine filters
                 let mut render_plan = f.input.to_render_plan(schema)?;
 
-                // Convert the filter predicate to RenderExpr
-                let mut filter_expr: RenderExpr = f.predicate.clone().try_into()?;
-                apply_property_mapping_to_expr(&mut filter_expr, &f.input);
+                // 🔧 BUG #10 FIX: For VLP/shortest path queries, filters on start/end nodes
+                // are already pushed into the CTE during extraction. Don't duplicate them
+                // in the outer SELECT WHERE clause.
+                use super::plan_builder_helpers::has_variable_length_or_shortest_path;
+                let has_vlp_or_shortest_path = has_variable_length_or_shortest_path(&f.input);
+                
+                eprintln!("DEBUG Filter::to_render_plan: has_vlp={}", has_vlp_or_shortest_path);
+                eprintln!("DEBUG Filter::to_render_plan: predicate={:?}", f.predicate);
+                
+                if has_vlp_or_shortest_path {
+                    log::info!(
+                        "🔧 BUG #10: Skipping Filter for VLP/shortest path - already in CTE"
+                    );
+                    eprintln!("🔧 BUG #10: Skipping Filter for VLP/shortest path - already in CTE");
+                    // Don't add this filter - it's already in the CTE
+                    // Just return the render plan from the input
+                    Ok(render_plan)
+                } else {
+                    eprintln!("DEBUG Filter::to_render_plan: Normal filter handling");
+                    // Normal filter handling
+                    // Convert the filter predicate to RenderExpr
+                    let mut filter_expr: RenderExpr = f.predicate.clone().try_into()?;
+                    apply_property_mapping_to_expr(&mut filter_expr, &f.input);
 
-                // Combine with existing filters if any
-                render_plan.filters = match render_plan.filters.0 {
-                    Some(existing) => FilterItems(Some(RenderExpr::OperatorApplicationExp(
-                        crate::render_plan::render_expr::OperatorApplication {
-                            operator: crate::render_plan::render_expr::Operator::And,
-                            operands: vec![existing, filter_expr],
-                        },
-                    ))),
-                    None => FilterItems(Some(filter_expr)),
-                };
+                    // Combine with existing filters if any
+                    render_plan.filters = match render_plan.filters.0 {
+                        Some(existing) => FilterItems(Some(RenderExpr::OperatorApplicationExp(
+                            crate::render_plan::render_expr::OperatorApplication {
+                                operator: crate::render_plan::render_expr::Operator::And,
+                                operands: vec![existing, filter_expr],
+                            },
+                        ))),
+                        None => FilterItems(Some(filter_expr)),
+                    };
 
-                Ok(render_plan)
+                    Ok(render_plan)
+                }
             }
             LogicalPlan::OrderBy(ob) => {
                 // For OrderBy, convert the input plan and set order_by

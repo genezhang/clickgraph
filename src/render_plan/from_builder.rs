@@ -551,6 +551,7 @@ impl LogicalPlan {
                 LogicalPlan::GraphNode(gn) => Some(gn),
                 LogicalPlan::Projection(proj) => find_graph_node(&proj.input),
                 LogicalPlan::Filter(filter) => find_graph_node(&filter.input),
+                LogicalPlan::GroupBy(group_by) => find_graph_node(&group_by.input),
                 LogicalPlan::Unwind(u) => find_graph_node(&u.input),
                 LogicalPlan::GraphJoins(gj) => find_graph_node(&gj.input),
                 _ => None,

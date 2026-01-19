@@ -9,9 +9,9 @@ graph_schema:
     - label: User
       database: test_integration
       table: users
-      node_id: id
+      node_id: user_id
       property_mappings:
-        id: id
+        id: user_id
         name: name
         email: email
 

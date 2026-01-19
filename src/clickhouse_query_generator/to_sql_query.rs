@@ -329,11 +329,17 @@ fn rewrite_expr_for_vlp(
 /// - user_id → id (user_id is the DB column, but Cypher uses "id" for the property)
 /// - For now, we hardcode the common mapping. A better approach would be to pass the schema.
 fn derive_cypher_property_name(db_column: &str) -> String {
-    // Common mappings based on social_benchmark schema
+    // Common mappings for various schemas
+    // Social benchmark schema
     match db_column {
         "full_name" => "name".to_string(),
         "email_address" => "email".to_string(),
         "user_id" => "id".to_string(),
+        // Filesystem schema
+        "object_type" => "type".to_string(),
+        "size_bytes" => "size".to_string(),
+        "owner_id" => "owner".to_string(),
+        // Default: use the column name as-is
         _ => db_column.to_string(),
     }
 }
@@ -473,11 +479,42 @@ impl ToSql for SelectItems {
 
         for (i, item) in self.items.iter().enumerate() {
             sql.push_str("      ");
-            sql.push_str(&item.expression.to_sql());
+            
+            // 🔧 BUG #9 FIX: For path variables, when TableAlias matches col_alias,
+            // render as `alias.*` to avoid "Already registered p AS p" error
+            // This handles: SELECT p AS "p" FROM ... AS p (invalid)
+            // Should be: SELECT p.* FROM ... AS p (valid)
+            let rendered_expr = if let RenderExpr::TableAlias(TableAlias(alias_name)) = &item.expression {
+                if let Some(col_alias) = &item.col_alias {
+                    if alias_name == &col_alias.0 {
+                        // TableAlias matches its own col_alias - use SELECT *
+                        format!("{}.*", alias_name)
+                    } else {
+                        item.expression.to_sql()
+                    }
+                } else {
+                    item.expression.to_sql()
+                }
+            } else {
+                item.expression.to_sql()
+            };
+            
+            sql.push_str(&rendered_expr);
+            
+            // Only add AS clause if the alias differs from the expression
+            // (already handled above for matching TableAlias case)
             if let Some(alias) = &item.col_alias {
-                sql.push_str(" AS \"");
-                sql.push_str(&alias.0);
-                sql.push('"');
+                if let RenderExpr::TableAlias(TableAlias(expr_alias)) = &item.expression {
+                    if expr_alias != &alias.0 {
+                        sql.push_str(" AS \"");
+                        sql.push_str(&alias.0);
+                        sql.push('"');
+                    }
+                } else {
+                    sql.push_str(" AS \"");
+                    sql.push_str(&alias.0);
+                    sql.push('"');
+                }
             }
             if i + 1 < self.items.len() {
                 sql.push_str(", ");
