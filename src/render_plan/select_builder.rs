@@ -14,13 +14,16 @@
 //! - Manage collect() function expansion
 
 use crate::graph_catalog::graph_schema::GraphSchema;
+use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::logical_expr::{
     LogicalExpr, PropertyAccess as LogicalPropertyAccess, TableAlias,
 };
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::errors::RenderBuildError;
+use crate::render_plan::properties_builder::PropertiesBuilder;
 use crate::render_plan::render_expr::{
     AggregateFnCall, Column, ColumnAlias, PropertyAccess, RenderExpr, ScalarFnCall,
+    TableAlias as RenderTableAlias,
 };
 use crate::render_plan::SelectItem;
 
@@ -88,20 +91,102 @@ impl SelectBuilder for LogicalPlan {
             LogicalPlan::Filter(filter) => filter.input.extract_select_items()?,
             LogicalPlan::Projection(projection) => {
                 // Convert ProjectionItem expressions to SelectItems
-                projection
-                    .items
-                    .iter()
-                    .map(|item| {
-                        Ok(SelectItem {
-                            expression: item.expression.clone().try_into()?,
-                            col_alias: item
-                                .col_alias
-                                .as_ref()
-                                .map(|ca| ca.clone().try_into())
-                                .transpose()?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
+                // CRITICAL: Expand table aliases (RETURN n → all properties)
+                let mut select_items = vec![];
+                
+                for item in &projection.items {
+                    match &item.expression {
+                        // Case 1: TableAlias (e.g., RETURN n)
+                        LogicalExpr::TableAlias(table_alias) => {
+                            log::info!("🔍 Expanding TableAlias('{}') to properties", table_alias.0);
+                            
+                            // Get properties for this alias
+                            match self.get_properties_with_table_alias(&table_alias.0) {
+                                Ok((properties, actual_table_alias_opt)) => {
+                                    if properties.is_empty() {
+                                        log::warn!("⚠️ No properties found for alias '{}'", table_alias.0);
+                                        // Fall back to keeping it as-is (will likely fail)
+                                        select_items.push(SelectItem {
+                                            expression: RenderExpr::TableAlias(RenderTableAlias(table_alias.0.clone())),
+                                            col_alias: item.col_alias.as_ref().map(|ca| ColumnAlias(ca.0.clone())),
+                                        });
+                                        continue;
+                                    }
+                                    
+                                    let table_alias_to_use = actual_table_alias_opt.unwrap_or_else(|| table_alias.0.clone());
+                                    
+                                    // Expand to multiple SelectItems, one per property
+                                    for (prop_name, col_name) in properties {
+                                        select_items.push(SelectItem {
+                                            expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: RenderTableAlias(table_alias_to_use.clone()),
+                                                column: PropertyValue::Column(col_name),
+                                            }),
+                                            col_alias: Some(ColumnAlias(prop_name)),
+                                        });
+                                    }
+                                    
+                                    log::info!("✅ Expanded '{}' to {} properties", table_alias.0, select_items.len());
+                                }
+                                Err(e) => {
+                                    log::error!("❌ Failed to get properties for alias '{}': {:?}", table_alias.0, e);
+                                    // Fall back to keeping it as-is
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::TableAlias(RenderTableAlias(table_alias.0.clone())),
+                                        col_alias: item.col_alias.as_ref().map(|ca| ColumnAlias(ca.0.clone())),
+                                    });
+                                }
+                            }
+                        }
+                        
+                        // Case 2: PropertyAccessExp with wildcard (e.g., RETURN n.*)
+                        LogicalExpr::PropertyAccessExp(prop) if prop.column.raw() == "*" => {
+                            log::info!("🔍 Expanding PropertyAccessExp('{}.*') to properties", prop.table_alias.0);
+                            
+                            // Get properties for this alias
+                            match self.get_properties_with_table_alias(&prop.table_alias.0) {
+                                Ok((properties, actual_table_alias_opt)) => {
+                                    if properties.is_empty() {
+                                        log::warn!("⚠️ No properties found for alias '{}'", prop.table_alias.0);
+                                        continue;
+                                    }
+                                    
+                                    let table_alias_to_use = actual_table_alias_opt.unwrap_or_else(|| prop.table_alias.0.clone());
+                                    
+                                    // Expand to multiple SelectItems, one per property
+                                    for (prop_name, col_name) in properties {
+                                        select_items.push(SelectItem {
+                                            expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: RenderTableAlias(table_alias_to_use.clone()),
+                                                column: PropertyValue::Column(col_name),
+                                            }),
+                                            col_alias: Some(ColumnAlias(prop_name)),
+                                        });
+                                    }
+                                    
+                                    log::info!("✅ Expanded '{}.*' to {} properties", prop.table_alias.0, select_items.len());
+                                }
+                                Err(e) => {
+                                    log::error!("❌ Failed to get properties for alias '{}': {:?}", prop.table_alias.0, e);
+                                }
+                            }
+                        }
+                        
+                        // Case 3: Regular expression (property access, function call, etc.)
+                        _ => {
+                            select_items.push(SelectItem {
+                                expression: item.expression.clone().try_into()?,
+                                col_alias: item
+                                    .col_alias
+                                    .as_ref()
+                                    .map(|ca| ca.clone().try_into())
+                                    .transpose()?,
+                            });
+                        }
+                    }
+                }
+                
+                select_items
             }
             LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_select_items()?,
             LogicalPlan::GroupBy(group_by) => {

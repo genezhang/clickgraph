@@ -4,7 +4,7 @@
 
 # ClickGraph
 
-#### ClickGraph - A high-performance, stateless, read-only graph query translator for ClickHouse®, written in Rust, with Neo4j ecosystem compatibility - Cypher and Bolt Protocol 5.8 support.
+#### ClickGraph - A high-performance, stateless, read-only graph query service for ClickHouse®, written in Rust, with Neo4j ecosystem compatibility - Cypher and Bolt Protocol 5.8 support.
 
 > **Note: ClickGraph is development-ready for view-based graph analytics applications. Kindly raise an issue if you encounter any problem.**
 
