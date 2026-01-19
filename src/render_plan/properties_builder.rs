@@ -28,27 +28,12 @@ impl PropertiesBuilder for LogicalPlan {
         &self,
         alias: &str,
     ) -> PropertiesBuilderResult<(Vec<(String, String)>, Option<String>)> {
-        let plan_type = match self {
-            LogicalPlan::GraphNode(_) => "GraphNode",
-            LogicalPlan::GraphRel(_) => "GraphRel",
-            LogicalPlan::Projection(_) => "Projection",
-            LogicalPlan::GraphJoins(_) => "GraphJoins",
-            _ => "Other",
-        };
-        log::info!(
-            "🔎 get_properties_with_table_alias: alias='{}', plan={}",
-            alias,
-            plan_type
-        );
         match self {
             LogicalPlan::GraphNode(node) => {
-                log::info!("📍 GraphNode: node.alias='{}', looking_for='{}', match={}", 
-                    node.alias, alias, node.alias == alias);
+                // Check if this node's alias matches
                 if node.alias != alias {
-                    log::info!("   ❌ Alias mismatch, returning empty");
                     return Ok((vec![], None));
                 }
-                log::info!("   ✅ Alias match! has_projected_columns={}", node.projected_columns.is_some());
                 
                 // FAST PATH: Use pre-computed projected_columns if available
                 // (populated by ProjectedColumnsResolver analyzer pass)
@@ -263,31 +248,24 @@ impl PropertiesBuilder for LogicalPlan {
                 }
 
                 // Check left and right branches
-                log::info!("🔍 GraphRel: Checking branches for alias '{}'", alias);
-                
+                // IMPORTANT: Only accept non-empty results to ensure we check all branches
                 if let Ok(result) = rel.left.get_properties_with_table_alias(alias) {
                     if !result.0.is_empty() {
-                        log::info!("   ✅ Found in LEFT branch: {} properties", result.0.len());
                         return Ok(result);
                     }
                 }
-                log::info!("   ❌ Not found in left branch");
                 
                 if let Ok(result) = rel.right.get_properties_with_table_alias(alias) {
                     if !result.0.is_empty() {
-                        log::info!("   ✅ Found in RIGHT branch: {} properties", result.0.len());
                         return Ok(result);
                     }
                 }
-                log::info!("   ❌ Not found in right branch");
                 
                 if let Ok(result) = rel.center.get_properties_with_table_alias(alias) {
                     if !result.0.is_empty() {
-                        log::info!("   ✅ Found in CENTER branch: {} properties", result.0.len());
                         return Ok(result);
                     }
                 }
-                log::info!("   ❌ Not found in center branch");
                 
                 // If we reach here, no properties found in this GraphRel
                 log::info!("   ⚠️ GraphRel: No properties found for alias '{}' in any branch", alias);
