@@ -619,7 +619,6 @@ impl TypeInference {
     ///
     /// Returns: Some(vec![edge_type]) if inferred, None if couldn't infer
     /// Errors: TooManyInferredTypes if more than MAX_INFERRED_TYPES matches
-
     /// **UNIFIED CONSTRAINT-BASED TYPE INFERENCE**
     ///
     /// Uses ALL known facts together to find matching patterns in schema:
@@ -1212,10 +1211,6 @@ impl TypeInference {
         input_plan: &Arc<LogicalPlan>,
         plan_ctx: &PlanCtx,
     ) -> Option<String> {
-        use crate::query_planner::logical_expr::{
-            AggregateFnCall, ColumnAlias, TableAlias as TableAliasStruct,
-        };
-
         // Extract alias name from expression
         let alias_name = match expression {
             LogicalExpr::TableAlias(table_alias) => &table_alias.0,

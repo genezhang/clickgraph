@@ -303,8 +303,31 @@ pub async fn run_with_config(config: ServerConfig) {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
-            let mut sigterm = signal(SignalKind::terminate()).unwrap();
-            let mut sigint = signal(SignalKind::interrupt()).unwrap();
+
+            let mut sigterm = match signal(SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("Failed to register SIGTERM handler: {}. Server will run without graceful shutdown.", e);
+                    log::error!("This is not fatal, but Ctrl+C may not work properly.");
+                    // Continue without signal handling rather than crash
+                    if let Err(e) = http_server.await {
+                        log::error!("HTTP server error: {:?}", e);
+                    }
+                    return;
+                }
+            };
+            let mut sigint = match signal(SignalKind::interrupt()) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("Failed to register SIGINT handler: {}. Server will run without graceful shutdown.", e);
+                    log::error!("This is not fatal, but Ctrl+C may not work properly.");
+                    // Continue without signal handling rather than crash
+                    if let Err(e) = http_server.await {
+                        log::error!("HTTP server error: {:?}", e);
+                    }
+                    return;
+                }
+            };
 
             tokio::select! {
                 result = http_server => {
@@ -334,6 +357,9 @@ pub async fn run_with_config(config: ServerConfig) {
         println!("Server stopped");
     } else {
         // Run HTTP server (this will block until shutdown)
-        http_server.await.unwrap();
+        if let Err(e) = http_server.await {
+            log::error!("HTTP server fatal error: {:?}", e);
+            std::process::exit(1);
+        }
     }
 }

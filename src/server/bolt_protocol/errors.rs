@@ -67,6 +67,10 @@ pub enum BoltError {
     #[error("Internal server error: {message}")]
     Internal { message: String },
 
+    /// Mutex poisoning error (synchronization failure)
+    #[error("Mutex poisoning error: {message}")]
+    MutexPoisoned { message: String },
+
     /// Feature not implemented
     #[error("Feature not implemented: {feature}")]
     NotImplemented { feature: String },
@@ -104,6 +108,13 @@ impl BoltError {
         }
     }
 
+    /// Create a new mutex poisoned error
+    pub fn mutex_poisoned<S: Into<String>>(message: S) -> Self {
+        BoltError::MutexPoisoned {
+            message: message.into(),
+        }
+    }
+
     /// Get the error code for Neo4j compatibility
     pub fn error_code(&self) -> &'static str {
         match self {
@@ -120,6 +131,7 @@ impl BoltError {
             BoltError::ConnectionTimeout { .. } => "Neo.TransientError.General.DatabaseUnavailable",
             BoltError::ProtocolError { .. } => "Neo.ClientError.Request.Invalid",
             BoltError::Internal { .. } => "Neo.DatabaseError.General.UnknownError",
+            BoltError::MutexPoisoned { .. } => "Neo.TransientError.General.DatabaseUnavailable",
             BoltError::NotImplemented { .. } => "Neo.ClientError.Statement.FeatureNotSupported",
         }
     }
@@ -129,6 +141,7 @@ impl BoltError {
         match self {
             BoltError::ConnectionTimeout { .. } => true,
             BoltError::TransactionError { .. } => true,
+            BoltError::MutexPoisoned { .. } => true, // Transient error, client can retry
             BoltError::Internal { .. } => false,
             BoltError::Io(_) => false,
             _ => false,

@@ -21,10 +21,47 @@
 /// - `CLICKGRAPH_QUERY_CACHE_ENABLED` (default: true)
 /// - `CLICKGRAPH_QUERY_CACHE_MAX_ENTRIES` (default: 1000)
 /// - `CLICKGRAPH_QUERY_CACHE_MAX_SIZE_MB` (default: 100)
+///
+/// # Error Handling
+///
+/// Mutex poisoning is handled gracefully - the cache will be disabled if the
+/// mutex becomes poisoned, allowing queries to continue without caching.
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Helper macro for safe mutex locking with graceful degradation
+/// If the mutex is poisoned, log the error and return None/early to skip caching
+macro_rules! lock_cache {
+    ($mutex:expr, $operation:expr) => {
+        match $mutex.lock() {
+            Ok(guard) => guard,
+            Err(e) => {
+                log::error!(
+                    "Query cache mutex poisoned during {}: {}. Cache disabled.",
+                    $operation,
+                    e
+                );
+                return None; // Gracefully skip caching
+            }
+        }
+    };
+    // For void operations (insert, clear, etc.) - return unit type
+    ($mutex:expr, $operation:expr, void) => {
+        match $mutex.lock() {
+            Ok(guard) => guard,
+            Err(e) => {
+                log::error!(
+                    "Query cache mutex poisoned during {}: {}. Cache disabled.",
+                    $operation,
+                    e
+                );
+                return; // Gracefully skip operation
+            }
+        }
+    };
+}
 
 /// Cache control strategy from CYPHER replan option
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,7 +280,7 @@ impl QueryCache {
             return None;
         }
 
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = lock_cache!(self.cache, "get");
         if let Some(entry) = cache.get_mut(key) {
             entry.touch();
             self.hits.fetch_add(1, Ordering::Relaxed);
@@ -264,7 +301,7 @@ impl QueryCache {
 
         let entry = CacheEntry::new(sql_template);
 
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = lock_cache!(self.cache, "insert", void);
 
         // Check if we need to evict entries
         if cache.len() >= self.config.max_entries {
@@ -311,21 +348,32 @@ impl QueryCache {
     ///
     /// Called when a schema is reloaded to ensure cache consistency
     pub fn invalidate_schema(&self, schema_name: &str) {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = lock_cache!(self.cache, "invalidate_schema", void);
         cache.retain(|key, _| key.schema_name != schema_name);
     }
 
     /// Clear entire cache
     pub fn clear(&self) {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = lock_cache!(self.cache, "clear", void);
         cache.clear();
     }
 
     /// Get cache metrics
     pub fn metrics(&self) -> CacheMetrics {
-        let cache = self.cache.lock().unwrap();
-        let size = cache.len();
-        let size_bytes = cache.values().map(|e| e.size_bytes).sum();
+        let (size, size_bytes) = match self.cache.lock() {
+            Ok(cache) => {
+                let s = cache.len();
+                let sb = cache.values().map(|e| e.size_bytes).sum();
+                (s, sb)
+            }
+            Err(e) => {
+                log::error!(
+                    "Query cache mutex poisoned during metrics: {}. Returning partial metrics.",
+                    e
+                );
+                (0, 0)
+            }
+        };
 
         CacheMetrics {
             hits: self.hits.load(Ordering::Relaxed),

@@ -845,10 +845,10 @@ fn build_relationship_schema(
             .values()
             .flat_map(|pv| pv.get_columns())
             .collect(),
-        from_node,                        // 🟢 GRAPH: Store label from YAML
-        to_node,                          // 🟢 GRAPH: Store label from YAML
-        from_node_table: from_node_table, // 🔵 RELATIONAL: Resolved table name
-        to_node_table: to_node_table,     // 🔵 RELATIONAL: Resolved table name
+        from_node,       // 🟢 GRAPH: Store label from YAML
+        to_node,         // 🟢 GRAPH: Store label from YAML
+        from_node_table, // 🔵 RELATIONAL: Resolved table name
+        to_node_table,   // 🔵 RELATIONAL: Resolved table name
         from_id: rel_def.from_id.clone(),
         to_id: rel_def.to_id.clone(),
         from_node_id_dtype: "UInt64".to_string(),

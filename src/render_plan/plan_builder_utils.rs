@@ -672,7 +672,13 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
             if filters.is_empty() {
                 None
             } else if filters.len() == 1 {
-                Some(filters.into_iter().next().unwrap())
+                // Safety: len() == 1 guarantees next() returns Some
+                Some(
+                    filters
+                        .into_iter()
+                        .next()
+                        .expect("filters has exactly one element"),
+                )
             } else {
                 // Combine with AND
                 let combined = filters
@@ -683,7 +689,7 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
                             operands: vec![acc, pred],
                         })
                     })
-                    .unwrap();
+                    .expect("filters is non-empty, reduce succeeds");
                 Some(combined)
             }
         }
@@ -738,7 +744,13 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
                 if filters.is_empty() {
                     return Ok(None);
                 } else if filters.len() == 1 {
-                    return Ok(Some(filters.into_iter().next().unwrap()));
+                    // Safety: len() == 1 guarantees next() returns Some
+                    return Ok(Some(
+                        filters
+                            .into_iter()
+                            .next()
+                            .expect("filters has exactly one element"),
+                    ));
                 } else {
                     // When combining filters, wrap non-Raw expressions in parentheses
                     // to handle AND/OR precedence correctly
@@ -752,7 +764,7 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
                                 operands: vec![acc, pred],
                             })
                         })
-                        .unwrap();
+                        .expect("filters is non-empty, reduce succeeds");
                     return Ok(Some(combined));
                 }
             }
@@ -859,7 +871,13 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
                 None
             } else if all_predicates.len() == 1 {
                 log::trace!("Found 1 GraphRel predicate");
-                Some(all_predicates.into_iter().next().unwrap())
+                // Safety: len() == 1 guarantees next() returns Some
+                Some(
+                    all_predicates
+                        .into_iter()
+                        .next()
+                        .expect("all_predicates has exactly one element"),
+                )
             } else {
                 // Combine with AND
                 log::trace!(
@@ -874,7 +892,7 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
                             operands: vec![acc, pred],
                         })
                     })
-                    .unwrap();
+                    .expect("all_predicates is non-empty, reduce succeeds");
                 Some(combined)
             }
         }
@@ -5570,7 +5588,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
             let first_limit = rendered_plans.first().and_then(|p| p.limit.0);
 
             let mut with_cte_render = if rendered_plans.len() == 1 {
-                rendered_plans.pop().unwrap()
+                // Safety: len() == 1 guarantees pop() returns Some
+                rendered_plans
+                    .pop()
+                    .expect("rendered_plans has exactly one element")
             } else {
                 // Multiple WITH clauses with same alias - create UNION ALL CTE
                 log::warn!("🔧 build_chained_with_match_cte_plan: Combining {} WITH renders with UNION ALL for alias '{}'",
@@ -6025,7 +6046,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
     if !all_ctes.is_empty() {
         // Get the last CTE's exported aliases (from its name, e.g., "with_a_b_cte2" → ["a", "b"])
-        let last_cte = all_ctes.last().unwrap();
+        // Safety: !is_empty() guarantees last() returns Some
+        let last_cte = all_ctes.last().expect("all_ctes is non-empty");
         let last_cte_name = &last_cte.cte_name;
 
         // Extract aliases from CTE name: "with_a_b_cte2" → "a_b"

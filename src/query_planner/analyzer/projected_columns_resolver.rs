@@ -18,10 +18,7 @@ use crate::{
         pattern_schema::{NodeAccessStrategy, NodePosition},
     },
     query_planner::{
-        analyzer::{
-            analyzer_pass::{AnalyzerPass, AnalyzerResult},
-            errors::{AnalyzerError, Pass},
-        },
+        analyzer::analyzer_pass::{AnalyzerPass, AnalyzerResult},
         logical_plan::{GraphNode, GraphRel, LogicalPlan, ViewScan},
         plan_ctx::PlanCtx,
         transformed::Transformed,

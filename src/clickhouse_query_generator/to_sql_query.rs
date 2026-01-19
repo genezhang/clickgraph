@@ -1071,7 +1071,12 @@ impl RenderExpr {
                 if agg.name.starts_with(CH_PASSTHROUGH_PREFIX) {
                     if let Some(ch_fn_name) = get_ch_function_name(&agg.name) {
                         if ch_fn_name.is_empty() {
-                            panic!("ch. prefix requires a function name (e.g., ch.uniq)");
+                            log::error!("ch. prefix requires a function name (e.g., ch.uniq)");
+                            // TODO: Refactor to_sql() to return Result<String, Error> so this error
+                            // can be propagated instead of returning an empty string here.
+                            // Returning an empty string is acceptable as an intermediate step
+                            // but may lead to SQL syntax errors later in query execution.
+                            return String::new(); // Return empty string for invalid function name
                         }
                         let args = agg
                             .args
