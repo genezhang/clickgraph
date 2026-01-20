@@ -2807,7 +2807,7 @@ mod tests {
 
         // Should contain recursive case
         assert!(sql.contains("UNION ALL"));
-        assert!(sql.contains("hop_count < 10")); // Default max
+        assert!(sql.contains("hop_count < 5")); // Default max (reduced from 10 for memory safety)
     }
     #[test]
     fn test_fixed_length_spec() {
