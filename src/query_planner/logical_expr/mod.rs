@@ -14,6 +14,14 @@ mod serde_arc;
 
 pub mod errors;
 
+/// Type of graph entity (node or relationship).
+/// Used in CteEntityRef to indicate what kind of entity is being referenced.
+#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
+pub enum EntityType {
+    Node,
+    Relationship,
+}
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum LogicalExpr {
     /// A literal, such as a number, string, boolean, or null.
@@ -112,6 +120,17 @@ pub enum LogicalExpr {
         from: Option<Box<LogicalExpr>>,
         to: Option<Box<LogicalExpr>>,
     },
+
+    /// CTE Entity Reference: A node or relationship that was exported through a WITH clause.
+    /// Unlike TableAlias which refers to entities from MATCH, CteEntityRef knows:
+    /// - Which CTE contains the entity's data
+    /// - The original alias and entity type (Node/Relationship)
+    /// - What columns are available (prefixed in the CTE)
+    ///
+    /// Example: MATCH (a:User) WITH a RETURN a
+    /// In RETURN, 'a' becomes CteEntityRef pointing to the CTE that contains a's columns.
+    /// The renderer expands this to SELECT all a_* columns from the CTE.
+    CteEntityRef(CteEntityRef),
 }
 
 /// Pattern count for size() on patterns
@@ -218,6 +237,39 @@ pub enum Literal {
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct TableAlias(pub String);
+
+/// Reference to a node or relationship that was exported through a CTE (WITH clause).
+/// 
+/// When a node/relationship passes through WITH, its properties become prefixed columns
+/// in a CTE. CteEntityRef captures this information so the renderer can:
+/// 1. Expand bare alias references (e.g., `RETURN a`) to all entity columns
+/// 2. Resolve property access (e.g., `a.name`) to the correct CTE column
+///
+/// Example:
+/// ```cypher
+/// MATCH (a:User) WITH a RETURN a
+/// ```
+/// After WITH, 'a' becomes:
+/// ```
+/// CteEntityRef {
+///     cte_name: "with_a_cte_1",
+///     alias: "a",
+///     entity_type: Node,
+///     columns: ["a_user_id", "a_name", "a_email", ...]
+/// }
+/// ```
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct CteEntityRef {
+    /// Name of the CTE containing the entity's data (e.g., "with_a_cte_1")
+    pub cte_name: String,
+    /// Original alias of the entity (e.g., "a")  
+    pub alias: String,
+    /// Type of entity: Node or Relationship
+    pub entity_type: EntityType,
+    /// List of column names available in the CTE (prefixed with alias_)
+    /// e.g., ["a_user_id", "a_name", "a_email"]
+    pub columns: Vec<String>,
+}
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct ColumnAlias(pub String);

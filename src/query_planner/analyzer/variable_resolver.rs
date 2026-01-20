@@ -56,7 +56,7 @@ use crate::{
     graph_catalog::expression_parser::PropertyValue,
     query_planner::{
         analyzer::{analyzer_pass::AnalyzerPass, errors::AnalyzerError},
-        logical_expr::{ColumnAlias, LogicalExpr, PropertyAccess, TableAlias},
+        logical_expr::{ColumnAlias, CteEntityRef, EntityType, LogicalExpr, PropertyAccess, TableAlias},
         logical_plan::{LogicalPlan, ProjectionItem, WithClause},
         plan_ctx::PlanCtx,
         transformed::Transformed,
@@ -101,12 +101,6 @@ pub enum VarSource {
     /// Variable is a query parameter
     /// Example: `$userId`
     Parameter { name: String },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum EntityType {
-    Node,
-    Relationship,
 }
 
 /// Scope context for variable resolution
@@ -999,15 +993,20 @@ impl VariableResolver {
                         Ok(expr.clone())
                     }
 
-                    Some(VarSource::CteEntity { cte_name, alias: original_alias, .. }) => {
+                    Some(VarSource::CteEntity { cte_name, alias: original_alias, entity_type }) => {
                         // This is a node/relationship exported through a CTE
-                        // Keep as TableAlias - let renderer expand it to all columns
+                        // Create CteEntityRef so renderer knows to expand it to all columns
                         log::info!(
-                            "🔍 VariableResolver: '{}' is CteEntity from '{}', keeping as TableAlias for renderer to expand",
+                            "🔍 VariableResolver: '{}' is CteEntity from '{}', creating CteEntityRef",
                             original_alias,
                             cte_name
                         );
-                        Ok(expr.clone())
+                        Ok(LogicalExpr::CteEntityRef(CteEntityRef {
+                            cte_name: cte_name.clone(),
+                            alias: original_alias.clone(),
+                            entity_type: entity_type.clone(),
+                            columns: vec![], // Columns determined by renderer from schema
+                        }))
                     }
 
                     Some(VarSource::Parameter { .. }) => {
