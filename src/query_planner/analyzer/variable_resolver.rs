@@ -290,47 +290,54 @@ impl VariableResolver {
                     ScopeContext::with_parent(scope.clone(), Some(cte_name.clone()));
 
                 for alias in &wc.exported_aliases {
-                    // Check if this alias was a schema entity (node/rel) in the parent scope
-                    // If so, use CteEntity instead of CteColumn
-                    let var_source = match scope.lookup(alias) {
-                        Some(VarSource::SchemaEntity { entity_type, .. }) => {
-                            log::info!(
-                                "🔍 VariableResolver: Alias '{}' is a {:?} from MATCH, using CteEntity",
-                                alias, entity_type
-                            );
-                            VarSource::CteEntity {
-                                cte_name: cte_name.clone(),
-                                alias: alias.clone(),
-                                entity_type: entity_type.clone(),
-                            }
+                    // **REFACTORED (Jan 2026)**: TypedVariable is now PRIMARY source
+                    // Check plan_ctx.lookup_variable() FIRST, then fall back to ScopeContext
+                    //
+                    // Priority order:
+                    // 1. plan_ctx.lookup_variable() - authoritative TypedVariable registry
+                    // 2. scope.lookup() - legacy ScopeContext (for edge cases)
+                    // 3. Default to scalar (aggregate result, expression, etc.)
+                    
+                    let var_source = if let Some(entity_type) = 
+                        plan_ctx.and_then(|ctx| Self::lookup_entity_from_plan_ctx(ctx, alias)) 
+                    {
+                        // PRIMARY: Found in TypedVariable registry
+                        log::info!(
+                            "🔍 VariableResolver: [PRIMARY] Alias '{}' found in TypedVariable as {:?}, using CteEntity",
+                            alias, entity_type
+                        );
+                        VarSource::CteEntity {
+                            cte_name: cte_name.clone(),
+                            alias: alias.clone(),
+                            entity_type,
                         }
-                        Some(VarSource::CteEntity { entity_type, .. }) => {
-                            // Already a CTE entity from an earlier WITH - preserve it
-                            log::info!(
-                                "🔍 VariableResolver: Alias '{}' is already CteEntity, preserving",
-                                alias
-                            );
-                            VarSource::CteEntity {
-                                cte_name: cte_name.clone(),
-                                alias: alias.clone(),
-                                entity_type: entity_type.clone(),
-                            }
-                        }
-                        _ => {
-                            // **ENHANCED (Jan 2026)**: Fall back to plan_ctx's TypedVariable system
-                            // This catches cases where ScopeContext doesn't have entity info
-                            // but PlanCtx does (populated during MATCH clause processing)
-                            if let Some(entity_type) = plan_ctx.and_then(|ctx| Self::lookup_entity_from_plan_ctx(ctx, alias)) {
+                    } else {
+                        // FALLBACK: Check ScopeContext
+                        match scope.lookup(alias) {
+                            Some(VarSource::SchemaEntity { entity_type, .. }) => {
                                 log::info!(
-                                    "🔍 VariableResolver: Alias '{}' found in plan_ctx as {:?}, using CteEntity",
+                                    "🔍 VariableResolver: [FALLBACK] Alias '{}' is a {:?} from MATCH scope, using CteEntity",
                                     alias, entity_type
                                 );
                                 VarSource::CteEntity {
                                     cte_name: cte_name.clone(),
                                     alias: alias.clone(),
-                                    entity_type,
+                                    entity_type: entity_type.clone(),
                                 }
-                            } else {
+                            }
+                            Some(VarSource::CteEntity { entity_type, .. }) => {
+                                // Already a CTE entity from an earlier WITH - preserve it
+                                log::info!(
+                                    "🔍 VariableResolver: [FALLBACK] Alias '{}' is already CteEntity, preserving",
+                                    alias
+                                );
+                                VarSource::CteEntity {
+                                    cte_name: cte_name.clone(),
+                                    alias: alias.clone(),
+                                    entity_type: entity_type.clone(),
+                                }
+                            }
+                            _ => {
                                 // Truly a scalar value (aggregate result, expression, etc.)
                                 log::debug!(
                                     "🔍 VariableResolver: Alias '{}' is scalar, using CteColumn",
@@ -419,49 +426,51 @@ impl VariableResolver {
                     let mut with_scope = scope.clone();
                     for alias in &wc.exported_aliases {
                         if let Some(cte_name) = wc.cte_references.get(alias) {
-                            // Check if this alias was an entity (node/rel) before the WITH
-                            // First try the parent scope, then fall back to plan_ctx
-                            let var_source = match scope.lookup(alias) {
-                                Some(VarSource::SchemaEntity { entity_type, .. }) => {
-                                    log::info!(
-                                        "🔍 VariableResolver: Projection sees WITH alias '{}' as {:?} entity (from scope), using CteEntity",
-                                        alias, entity_type
-                                    );
-                                    VarSource::CteEntity {
-                                        cte_name: cte_name.clone(),
-                                        alias: alias.clone(),
-                                        entity_type: entity_type.clone(),
-                                    }
+                            // **REFACTORED (Jan 2026)**: TypedVariable is now PRIMARY source
+                            // Check plan_ctx.lookup_variable() FIRST, then fall back to ScopeContext
+                            let var_source = if let Some(entity_type) = 
+                                plan_ctx.and_then(|ctx| Self::lookup_entity_from_plan_ctx(ctx, alias)) 
+                            {
+                                // PRIMARY: Found in TypedVariable registry
+                                log::info!(
+                                    "🔍 VariableResolver: Projection [PRIMARY] alias '{}' found in TypedVariable as {:?}",
+                                    alias, entity_type
+                                );
+                                VarSource::CteEntity {
+                                    cte_name: cte_name.clone(),
+                                    alias: alias.clone(),
+                                    entity_type,
                                 }
-                                Some(VarSource::CteEntity { entity_type, .. }) => {
-                                    // Propagating from an earlier CTE
-                                    log::info!(
-                                        "🔍 VariableResolver: Projection sees WITH alias '{}' as CteEntity, propagating",
-                                        alias
-                                    );
-                                    VarSource::CteEntity {
-                                        cte_name: cte_name.clone(),
-                                        alias: alias.clone(),
-                                        entity_type: entity_type.clone(),
-                                    }
-                                }
-                                _ => {
-                                    // **CRITICAL FIX (Jan 2026)**: Scope doesn't have entity info
-                                    // Fall back to plan_ctx's TypedVariable system
-                                    if let Some(entity_type) = plan_ctx.and_then(|ctx| Self::lookup_entity_from_plan_ctx(ctx, alias)) {
+                            } else {
+                                // FALLBACK: Check ScopeContext
+                                match scope.lookup(alias) {
+                                    Some(VarSource::SchemaEntity { entity_type, .. }) => {
                                         log::info!(
-                                            "🔍 VariableResolver: Projection sees WITH alias '{}' as {:?} entity (from plan_ctx), using CteEntity",
+                                            "🔍 VariableResolver: Projection [FALLBACK] alias '{}' as {:?} entity (from scope)",
                                             alias, entity_type
                                         );
                                         VarSource::CteEntity {
                                             cte_name: cte_name.clone(),
                                             alias: alias.clone(),
-                                            entity_type,
+                                            entity_type: entity_type.clone(),
                                         }
-                                    } else {
+                                    }
+                                    Some(VarSource::CteEntity { entity_type, .. }) => {
+                                        // Propagating from an earlier CTE
+                                        log::info!(
+                                            "🔍 VariableResolver: Projection [FALLBACK] alias '{}' as CteEntity, propagating",
+                                            alias
+                                        );
+                                        VarSource::CteEntity {
+                                            cte_name: cte_name.clone(),
+                                            alias: alias.clone(),
+                                            entity_type: entity_type.clone(),
+                                        }
+                                    }
+                                    _ => {
                                         // Scalar value (aggregate, expression, etc.)
                                         log::info!(
-                                            "🔍 VariableResolver: Projection sees WITH alias '{}' as scalar, using CteColumn",
+                                            "🔍 VariableResolver: Projection alias '{}' is scalar, using CteColumn",
                                             alias
                                         );
                                         VarSource::CteColumn {
