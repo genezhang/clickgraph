@@ -2986,7 +2986,8 @@ pub fn rewrite_expression_simple(
         | RenderExpr::ReduceExpr(_)
         | RenderExpr::MapLiteral(_)
         | RenderExpr::ArraySubscript { .. }
-        | RenderExpr::ArraySlicing { .. } => expr.clone(),
+        | RenderExpr::ArraySlicing { .. }
+        | RenderExpr::CteEntityRef(_) => expr.clone(),
     }
 }
 

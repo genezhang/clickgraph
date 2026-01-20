@@ -809,6 +809,8 @@ pub(super) fn is_standalone_expression(expr: &RenderExpr) -> bool {
             entries.iter().all(|(_, v)| is_standalone_expression(v))
         }
         RenderExpr::Raw(_) => false, // Be conservative with raw SQL
+        // CteEntityRef references CTE columns, so not standalone
+        RenderExpr::CteEntityRef(_) => false,
     }
 }
 

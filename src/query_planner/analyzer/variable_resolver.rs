@@ -420,11 +420,11 @@ impl VariableResolver {
                     for alias in &wc.exported_aliases {
                         if let Some(cte_name) = wc.cte_references.get(alias) {
                             // Check if this alias was an entity (node/rel) before the WITH
-                            // by looking it up in the parent scope
+                            // First try the parent scope, then fall back to plan_ctx
                             let var_source = match scope.lookup(alias) {
                                 Some(VarSource::SchemaEntity { entity_type, .. }) => {
                                     log::info!(
-                                        "🔍 VariableResolver: Projection sees WITH alias '{}' as {:?} entity, using CteEntity",
+                                        "🔍 VariableResolver: Projection sees WITH alias '{}' as {:?} entity (from scope), using CteEntity",
                                         alias, entity_type
                                     );
                                     VarSource::CteEntity {
@@ -446,14 +446,28 @@ impl VariableResolver {
                                     }
                                 }
                                 _ => {
-                                    // Scalar value (aggregate, expression, etc.)
-                                    log::info!(
-                                        "🔍 VariableResolver: Projection sees WITH alias '{}' as scalar, using CteColumn",
-                                        alias
-                                    );
-                                    VarSource::CteColumn {
-                                        cte_name: cte_name.clone(),
-                                        column_name: alias.clone(),
+                                    // **CRITICAL FIX (Jan 2026)**: Scope doesn't have entity info
+                                    // Fall back to plan_ctx's TypedVariable system
+                                    if let Some(entity_type) = plan_ctx.and_then(|ctx| Self::lookup_entity_from_plan_ctx(ctx, alias)) {
+                                        log::info!(
+                                            "🔍 VariableResolver: Projection sees WITH alias '{}' as {:?} entity (from plan_ctx), using CteEntity",
+                                            alias, entity_type
+                                        );
+                                        VarSource::CteEntity {
+                                            cte_name: cte_name.clone(),
+                                            alias: alias.clone(),
+                                            entity_type,
+                                        }
+                                    } else {
+                                        // Scalar value (aggregate, expression, etc.)
+                                        log::info!(
+                                            "🔍 VariableResolver: Projection sees WITH alias '{}' as scalar, using CteColumn",
+                                            alias
+                                        );
+                                        VarSource::CteColumn {
+                                            cte_name: cte_name.clone(),
+                                            column_name: alias.clone(),
+                                        }
                                     }
                                 }
                             };

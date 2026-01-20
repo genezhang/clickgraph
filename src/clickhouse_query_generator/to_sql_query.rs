@@ -1674,6 +1674,18 @@ impl RenderExpr {
                     }
                 }
             }
+            RenderExpr::CteEntityRef(cte_ref) => {
+                // CteEntityRef should be expanded to all its columns in the SELECT list
+                // When we reach to_sql(), it means it wasn't expanded properly by select_builder
+                // For now, generate SQL that selects all prefixed columns from the CTE
+                log::warn!(
+                    "CteEntityRef '{}' from CTE '{}' reached to_sql() - should have been expanded",
+                    cte_ref.alias, cte_ref.cte_name
+                );
+                // Fall back to table alias reference (this won't work correctly,
+                // but prevents crashes while we complete the select_builder integration)
+                format!("{}.{}", cte_ref.alias, cte_ref.alias)
+            }
         }
     }
 

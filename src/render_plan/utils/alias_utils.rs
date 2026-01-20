@@ -155,7 +155,8 @@ pub fn cond_references_alias(expr: &RenderExpr, alias: &str) -> bool {
         | RenderExpr::PatternCount(_)
         | RenderExpr::ArraySubscript { .. }
         | RenderExpr::ArraySlicing { .. }
-        | RenderExpr::InSubquery(_) => false,
+        | RenderExpr::InSubquery(_)
+        | RenderExpr::CteEntityRef(_) => false,
     }
 }
 

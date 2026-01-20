@@ -8,10 +8,10 @@ use crate::query_planner::logical_expr::LogicalExpr;
 
 use crate::query_planner::logical_expr::{
     AggregateFnCall as LogicalAggregateFnCall, Column as LogicalColumn,
-    ColumnAlias as LogicalColumnAlias, ConnectedPattern, Direction,
-    ExistsSubquery as LogicalExistsSubquery, InSubquery as LogicalInSubquery,
-    Literal as LogicalLiteral, LogicalCase, Operator as LogicalOperator,
-    OperatorApplication as LogicalOperatorApplication, PathPattern,
+    ColumnAlias as LogicalColumnAlias, ConnectedPattern, CteEntityRef as LogicalCteEntityRef,
+    Direction, EntityType, ExistsSubquery as LogicalExistsSubquery,
+    InSubquery as LogicalInSubquery, Literal as LogicalLiteral, LogicalCase,
+    Operator as LogicalOperator, OperatorApplication as LogicalOperatorApplication, PathPattern,
     PropertyAccess as LogicalPropertyAccess, ScalarFnCall as LogicalScalarFnCall,
     TableAlias as LogicalTableAlias,
 };
@@ -776,6 +776,25 @@ pub enum RenderExpr {
         from: Option<Box<RenderExpr>>,
         to: Option<Box<RenderExpr>>,
     },
+
+    /// CTE Entity Reference: A node or relationship exported through a WITH clause
+    /// Contains information needed to expand the reference to all its properties
+    CteEntityRef(CteEntityRef),
+}
+
+/// CTE Entity Reference for render plan
+/// Represents a node or relationship that was exported through a WITH clause
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct CteEntityRef {
+    /// Name of the CTE containing the entity's data (e.g., "with_u_cte_1")
+    pub cte_name: String,
+    /// Original alias of the entity (e.g., "u")
+    pub alias: String,
+    /// Type of entity: Node or Relationship  
+    pub entity_type: EntityType,
+    /// List of column names available in the CTE (prefixed with alias_)
+    /// e.g., ["u_user_id", "u_name", "u_email"]
+    pub columns: Vec<String>,
 }
 
 /// Pattern count for size() on patterns
@@ -1008,6 +1027,23 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                 let body_sql = RenderExpr::try_from(*lambda.body)?.to_sql();
                 let lambda_sql = format!("{} -> {}", params_str, body_sql);
                 RenderExpr::Raw(lambda_sql)
+            }
+            LogicalExpr::CteEntityRef(cte_ref) => {
+                // CteEntityRef represents a node/relationship from a CTE
+                // For TryFrom conversion, we create a placeholder that select_builder will expand
+                // The alias references the CTE table with all its prefixed columns
+                log::info!(
+                    "CteEntityRef '{}' from CTE '{}' reached TryFrom - expanding in select_builder",
+                    cte_ref.alias, cte_ref.cte_name
+                );
+                // Return as TableAlias pointing to the CTE - actual column expansion
+                // happens in select_builder.rs where we have access to WITH clause metadata
+                RenderExpr::CteEntityRef(CteEntityRef {
+                    cte_name: cte_ref.cte_name,
+                    alias: cte_ref.alias,
+                    entity_type: cte_ref.entity_type,
+                    columns: cte_ref.columns,
+                })
             }
             // PathPattern is not present in RenderExpr
             _ => unimplemented!("Conversion for this LogicalExpr variant is not implemented"),

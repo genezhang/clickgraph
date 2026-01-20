@@ -208,7 +208,8 @@ fn collect_parameters_recursive(expr: &RenderExpr, params: &mut Vec<String>) {
         | RenderExpr::ColumnAlias(_)
         | RenderExpr::Column(_)
         | RenderExpr::ExistsSubquery(_)
-        | RenderExpr::PatternCount(_) => {}
+        | RenderExpr::PatternCount(_)
+        | RenderExpr::CteEntityRef(_) => {}
     }
 }
 
@@ -906,6 +907,15 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                 })
                 .collect();
             format!("{{{}}}", pairs.join(", "))
+        }
+        RenderExpr::CteEntityRef(cte_ref) => {
+            // CTE entity reference - expand to prefixed column references
+            // For now, return the alias as placeholder - full expansion happens in select_builder
+            log::warn!(
+                "render_expr_to_sql_string: CteEntityRef '{}' from CTE '{}' - should be expanded by select_builder",
+                cte_ref.alias, cte_ref.cte_name
+            );
+            cte_ref.alias.clone()
         }
     }
 }

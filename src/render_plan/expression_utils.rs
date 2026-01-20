@@ -59,6 +59,8 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
                 || from.as_ref().map_or(false, |f| references_alias(f, alias))
                 || to.as_ref().map_or(false, |t| references_alias(t, alias))
         }
+        // CteEntityRef doesn't reference aliases directly - it references CTE columns
+        RenderExpr::CteEntityRef(_) => false,
     }
 }
 
@@ -143,7 +145,8 @@ pub fn rewrite_aliases(
         | RenderExpr::Column(_)
         | RenderExpr::Parameter(_)
         | RenderExpr::ExistsSubquery(_)
-        | RenderExpr::PatternCount(_) => {}
+        | RenderExpr::PatternCount(_)
+        | RenderExpr::CteEntityRef(_) => {}
     }
 }
 

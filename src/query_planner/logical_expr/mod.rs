@@ -246,11 +246,11 @@ pub struct TableAlias(pub String);
 /// 2. Resolve property access (e.g., `a.name`) to the correct CTE column
 ///
 /// Example:
-/// ```cypher
+/// ```text
 /// MATCH (a:User) WITH a RETURN a
 /// ```
 /// After WITH, 'a' becomes:
-/// ```
+/// ```text
 /// CteEntityRef {
 ///     cte_name: "with_a_cte_1",
 ///     alias: "a",

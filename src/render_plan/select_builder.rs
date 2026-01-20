@@ -16,7 +16,8 @@
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::logical_expr::{
-    LogicalExpr, PropertyAccess as LogicalPropertyAccess, TableAlias,
+    CteEntityRef as LogicalCteEntityRef, LogicalExpr,
+    PropertyAccess as LogicalPropertyAccess, TableAlias,
 };
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::errors::RenderBuildError;
@@ -174,7 +175,51 @@ impl SelectBuilder for LogicalPlan {
                             }
                         }
                         
-                        // Case 3: Regular expression (property access, function call, etc.)
+                        // Case 3: CteEntityRef (e.g., RETURN u when u comes from WITH)
+                        // CteEntityRef contains the CTE name and the prefixed columns
+                        LogicalExpr::CteEntityRef(cte_ref) => {
+                            log::info!(
+                                "🔍 Expanding CteEntityRef('{}') from CTE '{}' with {} columns",
+                                cte_ref.alias, cte_ref.cte_name, cte_ref.columns.len()
+                            );
+                            
+                            if cte_ref.columns.is_empty() {
+                                log::warn!("⚠️ CteEntityRef '{}' has no columns - falling back to TableAlias", cte_ref.alias);
+                                select_items.push(SelectItem {
+                                    expression: RenderExpr::TableAlias(RenderTableAlias(cte_ref.alias.clone())),
+                                    col_alias: item.col_alias.as_ref().map(|ca| ColumnAlias(ca.0.clone())),
+                                });
+                                continue;
+                            }
+                            
+                            // The CTE was aliased as the original variable name (e.g., FROM cte AS u)
+                            // So we use the alias as the table reference
+                            let table_alias_to_use = cte_ref.alias.clone();
+                            
+                            // Expand to multiple SelectItems, one per CTE column
+                            // CTE columns are already prefixed (u_name, u_email, etc.)
+                            for col_name in &cte_ref.columns {
+                                // Extract property name from prefixed column (e.g., "u_name" -> "name")
+                                let prop_name = col_name
+                                    .strip_prefix(&format!("{}_", cte_ref.alias))
+                                    .unwrap_or(col_name);
+                                    
+                                select_items.push(SelectItem {
+                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: RenderTableAlias(table_alias_to_use.clone()),
+                                        column: PropertyValue::Column(col_name.clone()),
+                                    }),
+                                    col_alias: Some(ColumnAlias(format!("{}.{}", cte_ref.alias, prop_name))),
+                                });
+                            }
+                            
+                            log::info!(
+                                "✅ Expanded CteEntityRef '{}' to {} columns",
+                                cte_ref.alias, cte_ref.columns.len()
+                            );
+                        }
+                        
+                        // Case 4: Regular expression (property access, function call, etc.)
                         _ => {
                             select_items.push(SelectItem {
                                 expression: item.expression.clone().try_into()?,
