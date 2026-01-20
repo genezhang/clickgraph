@@ -848,7 +848,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             self.end_cypher_alias.clone(),     // Add Cypher alias
             self.start_node_id_column.clone(), // 🔧 FIX: Pass actual ID columns (from rel schema)
             self.end_node_id_column.clone(),
-            self.path_variable.clone(),        // Path variable for length(p), nodes(p) rewriting
+            self.path_variable.clone(), // Path variable for length(p), nodes(p) rewriting
         )
     }
 
@@ -966,7 +966,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     // Most social graphs have small-world property (6 degrees of separation)
                     5
                 } else if min_hops == 0 {
-                    3 // Lower limit for zero-hop base queries  
+                    3 // Lower limit for zero-hop base queries
                 } else {
                     // Standard default for regular variable-length paths
                     // Reduced from 10 to 5 to prevent row explosion in dense graphs

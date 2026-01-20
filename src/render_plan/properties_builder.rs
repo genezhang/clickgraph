@@ -34,7 +34,7 @@ impl PropertiesBuilder for LogicalPlan {
                 if node.alias != alias {
                     return Ok((vec![], None));
                 }
-                
+
                 // FAST PATH: Use pre-computed projected_columns if available
                 // (populated by ProjectedColumnsResolver analyzer pass)
                 if let Some(projected_cols) = &node.projected_columns {
@@ -254,21 +254,24 @@ impl PropertiesBuilder for LogicalPlan {
                         return Ok(result);
                     }
                 }
-                
+
                 if let Ok(result) = rel.right.get_properties_with_table_alias(alias) {
                     if !result.0.is_empty() {
                         return Ok(result);
                     }
                 }
-                
+
                 if let Ok(result) = rel.center.get_properties_with_table_alias(alias) {
                     if !result.0.is_empty() {
                         return Ok(result);
                     }
                 }
-                
+
                 // If we reach here, no properties found in this GraphRel
-                log::info!("   ⚠️ GraphRel: No properties found for alias '{}' in any branch", alias);
+                log::info!(
+                    "   ⚠️ GraphRel: No properties found for alias '{}' in any branch",
+                    alias
+                );
                 Ok((vec![], None))
             }
             LogicalPlan::Projection(proj) => {

@@ -257,14 +257,17 @@ impl FilterBuilder for LogicalPlan {
                     "DEBUG: extract_filters - Filter input type: {:?}",
                     std::mem::discriminant(&*filter.input)
                 );
-                
+
                 // 🔧 BUG #10 FIX: For VLP/shortest path queries, filters on start/end nodes
                 // are already pushed into the CTE during extraction. Don't duplicate them
                 // in the outer SELECT WHERE clause.
                 let has_vlp_or_shortest_path = has_variable_length_or_shortest_path(&filter.input);
-                
-                println!("DEBUG: has_vlp_or_shortest_path = {}", has_vlp_or_shortest_path);
-                
+
+                println!(
+                    "DEBUG: has_vlp_or_shortest_path = {}",
+                    has_vlp_or_shortest_path
+                );
+
                 if has_vlp_or_shortest_path {
                     log::info!(
                         "🔧 BUG #10: Skipping Filter extraction for VLP/shortest path - already in CTE"
@@ -357,10 +360,10 @@ impl FilterBuilder for LogicalPlan {
                 // 🔧 BUG #10 FIX: For VLP/shortest path queries, filters on start/end nodes
                 // are already pushed into the CTE during extraction. Don't duplicate them
                 // as final filters in the outer SELECT.
-                
+
                 // Check if the input contains a VLP or shortest path pattern
                 let has_vlp_or_shortest_path = has_variable_length_or_shortest_path(&filter.input);
-                
+
                 if has_vlp_or_shortest_path {
                     log::info!(
                         "🔧 BUG #10: Skipping Filter extraction for VLP/shortest path - already in CTE"

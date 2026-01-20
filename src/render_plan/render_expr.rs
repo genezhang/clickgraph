@@ -1034,7 +1034,8 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                 // The alias references the CTE table with all its prefixed columns
                 log::info!(
                     "CteEntityRef '{}' from CTE '{}' reached TryFrom - expanding in select_builder",
-                    cte_ref.alias, cte_ref.cte_name
+                    cte_ref.alias,
+                    cte_ref.cte_name
                 );
                 // Return as TableAlias pointing to the CTE - actual column expansion
                 // happens in select_builder.rs where we have access to WITH clause metadata

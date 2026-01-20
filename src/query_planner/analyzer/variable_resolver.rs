@@ -63,7 +63,9 @@ use crate::{
     graph_catalog::expression_parser::PropertyValue,
     query_planner::{
         analyzer::{analyzer_pass::AnalyzerPass, errors::AnalyzerError},
-        logical_expr::{ColumnAlias, CteEntityRef, EntityType, LogicalExpr, PropertyAccess, TableAlias},
+        logical_expr::{
+            ColumnAlias, CteEntityRef, EntityType, LogicalExpr, PropertyAccess, TableAlias,
+        },
         logical_plan::{LogicalPlan, ProjectionItem, WithClause},
         plan_ctx::PlanCtx,
         transformed::Transformed,
@@ -306,9 +308,9 @@ impl VariableResolver {
                     //
                     // TypedVariable is the SINGLE SOURCE OF TRUTH for type information.
                     // If not found in TypedVariable, default to Scalar (aggregate/expression result).
-                    
-                    let var_source = if let Some(entity_type) = 
-                        plan_ctx.and_then(|ctx| Self::lookup_entity_from_plan_ctx(ctx, alias)) 
+
+                    let var_source = if let Some(entity_type) =
+                        plan_ctx.and_then(|ctx| Self::lookup_entity_from_plan_ctx(ctx, alias))
                     {
                         // Found in TypedVariable - it's an entity (Node or Relationship)
                         log::info!(
@@ -411,8 +413,8 @@ impl VariableResolver {
                             // - TypedVariable provides TYPE info (Node, Relationship, Scalar)
                             // - ScopeContext provides CTE NAME mapping
                             // TypedVariable is the SINGLE SOURCE OF TRUTH for type information.
-                            let var_source = if let Some(entity_type) = 
-                                plan_ctx.and_then(|ctx| Self::lookup_entity_from_plan_ctx(ctx, alias)) 
+                            let var_source = if let Some(entity_type) = plan_ctx
+                                .and_then(|ctx| Self::lookup_entity_from_plan_ctx(ctx, alias))
                             {
                                 // Found in TypedVariable - it's an entity
                                 log::info!(
@@ -759,8 +761,10 @@ impl VariableResolver {
                     }
                 };
 
-                let center_resolved = self.resolve(rel.center.clone(), &center_right_scope, plan_ctx)?;
-                let right_resolved = self.resolve(rel.right.clone(), &center_right_scope, plan_ctx)?;
+                let center_resolved =
+                    self.resolve(rel.center.clone(), &center_right_scope, plan_ctx)?;
+                let right_resolved =
+                    self.resolve(rel.right.clone(), &center_right_scope, plan_ctx)?;
 
                 // Always create new GraphRel if we found CTE references, even if children didn't change
                 let has_cte_refs = !cte_refs.is_empty() && cte_refs != rel.cte_references;
@@ -971,7 +975,11 @@ impl VariableResolver {
                         Ok(expr.clone())
                     }
 
-                    Some(VarSource::CteEntity { cte_name, alias: original_alias, entity_type }) => {
+                    Some(VarSource::CteEntity {
+                        cte_name,
+                        alias: original_alias,
+                        entity_type,
+                    }) => {
                         // This is a node/relationship exported through a CTE
                         // Create CteEntityRef so renderer knows to expand it to all columns
                         log::info!(

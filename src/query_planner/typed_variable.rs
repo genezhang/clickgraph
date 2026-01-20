@@ -626,10 +626,9 @@ impl TypedVariable {
             )),
             TypedVariable::Scalar(_) => TypedVariable::Scalar(ScalarVariable::from_cte(cte_name)),
             TypedVariable::Path(_) => TypedVariable::Path(PathVariable::from_cte(cte_name)),
-            TypedVariable::Collection(c) => TypedVariable::Collection(CollectionVariable::from_cte(
-                cte_name,
-                c.element_type.clone(),
-            )),
+            TypedVariable::Collection(c) => TypedVariable::Collection(
+                CollectionVariable::from_cte(cte_name, c.element_type.clone()),
+            ),
         }
     }
 }
@@ -666,7 +665,12 @@ impl VariableRegistry {
     /// * `name` - Variable name (e.g., "a", "user")
     /// * `labels` - Node labels (e.g., ["User"])
     /// * `source` - Where the variable came from
-    pub fn define_node(&mut self, name: impl Into<String>, labels: Vec<String>, source: VariableSource) {
+    pub fn define_node(
+        &mut self,
+        name: impl Into<String>,
+        labels: Vec<String>,
+        source: VariableSource,
+    ) {
         let var = match source {
             VariableSource::Match => TypedVariable::node_from_match(labels),
             VariableSource::Cte { cte_name } => TypedVariable::node_from_cte(labels, cte_name),
@@ -763,9 +767,9 @@ impl VariableRegistry {
             VariableSource::Cte { cte_name } => {
                 TypedVariable::collection_from_cte(cte_name, element_type)
             }
-            VariableSource::Unwind { source_array } => {
-                TypedVariable::Collection(CollectionVariable::from_unwind(source_array, element_type))
-            }
+            VariableSource::Unwind { source_array } => TypedVariable::Collection(
+                CollectionVariable::from_unwind(source_array, element_type),
+            ),
             _ => TypedVariable::Collection(CollectionVariable {
                 source,
                 element_type,

@@ -14,7 +14,7 @@ use crate::{
         logical_expr::{LogicalExpr, Property},
         logical_plan::ProjectionItem,
         plan_ctx::errors::PlanCtxError,
-        typed_variable::{TypedVariable, VariableRegistry, VariableSource, CollectionElementType},
+        typed_variable::{CollectionElementType, TypedVariable, VariableRegistry, VariableSource},
     },
 };
 
@@ -327,10 +327,10 @@ impl PlanCtx {
             // from the caller or set via define_path() directly.
             self.variables.define_path(
                 alias.clone(),
-                None, // start_node - not available from TableCtx
-                None, // end_node - not available from TableCtx
-                None, // relationship - not available from TableCtx
-                None, // length_bounds - not available from TableCtx
+                None,  // start_node - not available from TableCtx
+                None,  // end_node - not available from TableCtx
+                None,  // relationship - not available from TableCtx
+                None,  // length_bounds - not available from TableCtx
                 false, // is_shortest_path - would need explicit flag
             );
         } else {
@@ -854,14 +854,8 @@ impl PlanCtx {
                     );
                 } else if table_ctx.is_path_variable() {
                     // Path variable exported through CTE
-                    self.variables.define_path(
-                        alias.clone(),
-                        None,
-                        None,
-                        None,
-                        None,
-                        false,
-                    );
+                    self.variables
+                        .define_path(alias.clone(), None, None, None, None, false);
                     // Note: Path info is limited when passing through CTE
                 } else {
                     self.variables.define_node(
@@ -1069,14 +1063,17 @@ impl PlanCtx {
     }
 
     /// Get the proper (table_alias, column) for a JOIN condition, accounting for VLP endpoints.
-    /// 
+    ///
     /// This is the key method for fixing VLP+chained patterns:
     /// - For regular nodes: returns (alias, column) unchanged
     /// - For VLP endpoints: returns ("t", "start_id"/"end_id")
     pub fn get_vlp_join_reference(&self, alias: &str, default_column: &str) -> (String, String) {
         use crate::query_planner::join_context::JoinContext;
         if let Some(vlp_info) = self.vlp_endpoints.get(alias) {
-            (JoinContext::VLP_CTE_DEFAULT_ALIAS.to_string(), vlp_info.cte_column().to_string())
+            (
+                JoinContext::VLP_CTE_DEFAULT_ALIAS.to_string(),
+                vlp_info.cte_column().to_string(),
+            )
         } else {
             (alias.to_string(), default_column.to_string())
         }
@@ -1129,7 +1126,8 @@ impl PlanCtx {
     /// MATCH (a:User) → plan_ctx.define_node("a", vec!["User"])
     /// ```
     pub fn define_node(&mut self, name: impl Into<String>, labels: Vec<String>) {
-        self.variables.define_node(name, labels, VariableSource::Match);
+        self.variables
+            .define_node(name, labels, VariableSource::Match);
     }
 
     /// Define a node variable from a CTE export

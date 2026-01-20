@@ -2012,13 +2012,20 @@ pub fn extract_ctes_with_context(
                     // ✨ BUG #7 FIX: For regular VLP queries, include ALL node properties
                     // This handles queries like MATCH (a)-[*]->(b) RETURN a, b
                     // where both nodes need all their properties in the CTE for the final SELECT
-                    log::warn!("🔧 BUG #7: Extracting all properties for VLP query ({}-{})", start_label, end_label);
+                    log::warn!(
+                        "🔧 BUG #7: Extracting all properties for VLP query ({}-{})",
+                        start_label,
+                        end_label
+                    );
                     let mut props = Vec::new();
-                    
+
                     // Get all properties for start node using the schema parameter (which is already in scope)
                     if !start_label.is_empty() {
                         if let Ok(start_node_schema) = schema.get_node_schema(&start_label) {
-                            log::warn!("🔧 BUG #7: Found start node schema with {} properties", start_node_schema.property_mappings.len());
+                            log::warn!(
+                                "🔧 BUG #7: Found start node schema with {} properties",
+                                start_node_schema.property_mappings.len()
+                            );
                             for (prop_name, prop_value) in &start_node_schema.property_mappings {
                                 props.push(NodeProperty {
                                     cypher_alias: start_alias.clone(),
@@ -2030,11 +2037,14 @@ pub fn extract_ctes_with_context(
                             log::warn!("🔧 BUG #7: No schema found for start node {}", start_label);
                         }
                     }
-                    
+
                     // Get all properties for end node
                     if !end_label.is_empty() {
                         if let Ok(end_node_schema) = schema.get_node_schema(&end_label) {
-                            log::warn!("🔧 BUG #7: Found end node schema with {} properties", end_node_schema.property_mappings.len());
+                            log::warn!(
+                                "🔧 BUG #7: Found end node schema with {} properties",
+                                end_node_schema.property_mappings.len()
+                            );
                             for (prop_name, prop_value) in &end_node_schema.property_mappings {
                                 props.push(NodeProperty {
                                     cypher_alias: end_alias.clone(),
@@ -2046,7 +2056,7 @@ pub fn extract_ctes_with_context(
                             log::warn!("🔧 BUG #7: No schema found for end node {}", end_label);
                         }
                     }
-                    
+
                     log::warn!("🔧 BUG #7: Total properties extracted: {}", props.len());
                     props
                 };

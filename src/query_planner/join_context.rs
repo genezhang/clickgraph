@@ -171,7 +171,12 @@ impl JoinContext {
     ) -> Option<(String, &'static str, &'static str, &VlpEndpointInfo)> {
         self.vlp_endpoints.get(alias).map(|info| {
             let cte_name = info.derive_cte_name(alias);
-            (cte_name, Self::VLP_CTE_DEFAULT_ALIAS, info.cte_column(), info)
+            (
+                cte_name,
+                Self::VLP_CTE_DEFAULT_ALIAS,
+                info.cte_column(),
+                info,
+            )
         })
     }
 

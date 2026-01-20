@@ -3121,7 +3121,9 @@ impl GraphJoinInference {
                 // Determine which node is already available (anchor) to connect the edge to
                 let left_available = join_ctx.contains(left_alias);
                 let right_available = join_ctx.contains(right_alias);
-                let is_first_relationship = !join_ctx.contains(left_alias) && !join_ctx.contains(right_alias) && join_ctx.vlp_endpoints().is_empty();
+                let is_first_relationship = !join_ctx.contains(left_alias)
+                    && !join_ctx.contains(right_alias)
+                    && join_ctx.vlp_endpoints().is_empty();
 
                 crate::debug_print!("       left_available={}, right_available={}, is_first={}, left_opt={}, right_opt={}",
                     left_available, right_available, is_first_relationship, left_is_optional, right_is_optional);
@@ -3576,7 +3578,8 @@ impl GraphJoinInference {
                     };
 
                 // Determine anchor
-                let is_first_relationship = !join_ctx.contains(join_node_alias) && join_ctx.vlp_endpoints().is_empty();
+                let is_first_relationship =
+                    !join_ctx.contains(join_node_alias) && join_ctx.vlp_endpoints().is_empty();
                 let node_is_anchor = is_first_relationship && !join_node_optional;
 
                 if node_is_anchor {
@@ -3839,7 +3842,9 @@ impl GraphJoinInference {
                 //   Left (o/orders) is anchor, JOIN right (c/customers)
                 //   JOIN condition: customers.id = orders.to_id  ->  c.id = o.customer_id
 
-                let is_first_relationship = !join_ctx.contains(left_alias) && !join_ctx.contains(right_alias) && join_ctx.vlp_endpoints().is_empty();
+                let is_first_relationship = !join_ctx.contains(left_alias)
+                    && !join_ctx.contains(right_alias)
+                    && join_ctx.vlp_endpoints().is_empty();
 
                 // Get node ID columns
                 let left_id_col = match &ctx.left_node {
@@ -3878,7 +3883,7 @@ impl GraphJoinInference {
                         // - We need: JOIN posts_bench AS p ON p.author_id = t.end_id
                         let left_already_joined = join_ctx.contains(left_alias);
                         let right_needs_join = !join_ctx.contains(right_alias);
-                        
+
                         log::debug!(
                             "🔑 FkEdgeJoin(Left): left='{}' already_joined={}, right='{}' needs_join={}",
                             left_alias, left_already_joined, right_alias, right_needs_join
@@ -3891,7 +3896,7 @@ impl GraphJoinInference {
                                 "🔧 VLP+FK-edge: Creating JOIN for right/edge '{}' (left '{}' already joined)",
                                 right_alias, left_alias
                             );
-                            
+
                             // Get the proper table name for the right/edge
                             let right_table_name = Self::get_table_name_with_prefix(
                                 right_cte_name,
@@ -3899,18 +3904,20 @@ impl GraphJoinInference {
                                 right_node_schema,
                                 plan_ctx,
                             );
-                            
+
                             // CRITICAL FIX: Use VLP-aware join reference for left alias
                             // If left_alias is a VLP endpoint, this returns ("t", "end_id")
                             // Otherwise, it returns (left_alias, left_id_col) unchanged
-                            let (join_table_alias, join_column) = 
+                            let (join_table_alias, join_column) =
                                 plan_ctx.get_vlp_join_reference(left_alias, &left_id_col);
-                            
+
                             log::debug!(
                                 "🔑 VLP JOIN reference for '{}': ({}, {})",
-                                left_alias, join_table_alias, join_column
+                                left_alias,
+                                join_table_alias,
+                                join_column
                             );
-                            
+
                             let right_join = Join {
                                 table_name: right_table_name,
                                 table_alias: right_alias.to_string(),
@@ -3987,7 +3994,7 @@ impl GraphJoinInference {
                         // CRITICAL FIX: For VLP + chained FK-edge patterns (symmetric to NodePosition::Left)
                         let right_already_joined = join_ctx.contains(right_alias);
                         let left_needs_join = !join_ctx.contains(left_alias);
-                        
+
                         log::debug!(
                             "🔑 FkEdgeJoin(Right): left='{}' needs_join={}, right='{}' already_joined={}",
                             left_alias, left_needs_join, right_alias, right_already_joined
@@ -3999,25 +4006,27 @@ impl GraphJoinInference {
                                 "🔧 VLP+FK-edge: Creating JOIN for left/edge '{}' (right '{}' already joined)",
                                 left_alias, right_alias
                             );
-                            
+
                             let left_table_name = Self::get_table_name_with_prefix(
                                 left_cte_name,
                                 left_alias,
                                 left_node_schema,
                                 plan_ctx,
                             );
-                            
+
                             // CRITICAL FIX: Use VLP-aware join reference for right alias
                             // If right_alias is a VLP endpoint, this returns ("t", "start_id" or "end_id")
                             // Otherwise, it returns (right_alias, right_id_col) unchanged
-                            let (join_table_alias, join_column) = 
+                            let (join_table_alias, join_column) =
                                 plan_ctx.get_vlp_join_reference(right_alias, &right_id_col);
-                            
+
                             log::debug!(
                                 "🔑 VLP JOIN reference for '{}': ({}, {})",
-                                right_alias, join_table_alias, join_column
+                                right_alias,
+                                join_table_alias,
+                                join_column
                             );
-                            
+
                             let left_join = Join {
                                 table_name: left_table_name,
                                 table_alias: left_alias.to_string(),
@@ -4149,9 +4158,12 @@ impl GraphJoinInference {
                 for (alias, info) in join_ctx.vlp_endpoints() {
                     plan_ctx.register_vlp_endpoint(alias.clone(), info.clone());
                 }
-                
-                log::info!("🔧 infer_graph_join: SKIP due to VLP for rel='{}', join_ctx: {}", 
-                    graph_rel.alias, join_ctx.debug_summary());
+
+                log::info!(
+                    "🔧 infer_graph_join: SKIP due to VLP for rel='{}', join_ctx: {}",
+                    graph_rel.alias,
+                    join_ctx.debug_summary()
+                );
                 crate::debug_print!("    +- infer_graph_join EXIT\n");
                 return Ok(());
             }
@@ -4162,7 +4174,10 @@ impl GraphJoinInference {
             .validate_node_contexts(graph_rel, plan_ctx, join_ctx)
             .is_err()
         {
-            log::warn!("🔧 infer_graph_join: SKIP due to missing node context for rel='{}'", graph_rel.alias);
+            log::warn!(
+                "🔧 infer_graph_join: SKIP due to missing node context for rel='{}'",
+                graph_rel.alias
+            );
             crate::debug_print!("    +- infer_graph_join EXIT\n");
             return Ok(());
         }
@@ -4357,7 +4372,9 @@ impl GraphJoinInference {
         // - Multi-hop patterns (intermediate nodes needed for chaining JOINs)
         let is_vlp = graph_rel.variable_length.is_some();
         let is_shortest_path = graph_rel.shortest_path_mode.is_some();
-        let is_first_relationship = !join_ctx.contains(&left_alias) && !join_ctx.contains(&right_alias) && join_ctx.vlp_endpoints().is_empty();
+        let is_first_relationship = !join_ctx.contains(&left_alias)
+            && !join_ctx.contains(&right_alias)
+            && join_ctx.vlp_endpoints().is_empty();
 
         // CRITICAL: Detect multi-hop patterns using PatternGraphMetadata
         // Multi-hop patterns like (a)-[t1]->(b)-[t2]->(c) have multiple edges in metadata.

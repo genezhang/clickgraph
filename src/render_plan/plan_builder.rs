@@ -123,8 +123,11 @@ fn apply_anylast_wrapping_for_group_by(
         return Ok(select_items);
     }
 
-    log::info!("🔧 apply_anylast_wrapping: Processing {} SELECT items with {} GROUP BY expressions", 
-              select_items.len(), group_by_exprs.len());
+    log::info!(
+        "🔧 apply_anylast_wrapping: Processing {} SELECT items with {} GROUP BY expressions",
+        select_items.len(),
+        group_by_exprs.len()
+    );
 
     let wrapped_items = select_items
         .into_iter()
@@ -140,9 +143,9 @@ fn apply_anylast_wrapping_for_group_by(
             }
 
             // Check if this expression is in GROUP BY
-            let in_group_by = group_by_exprs.iter().any(|group_expr| {
-                expressions_match(group_expr, &item.expression)
-            });
+            let in_group_by = group_by_exprs
+                .iter()
+                .any(|group_expr| expressions_match(group_expr, &item.expression));
 
             if in_group_by {
                 return Ok(item);
@@ -160,12 +163,18 @@ fn apply_anylast_wrapping_for_group_by(
                 };
 
                 if is_id_column {
-                    log::debug!("🔧 apply_anylast_wrapping: Skipping ID column {:?}", item.col_alias);
+                    log::debug!(
+                        "🔧 apply_anylast_wrapping: Skipping ID column {:?}",
+                        item.col_alias
+                    );
                     return Ok(item);
                 }
 
                 // Wrap with anyLast()
-                log::debug!("🔧 apply_anylast_wrapping: Wrapping {:?} with anyLast()", item.col_alias);
+                log::debug!(
+                    "🔧 apply_anylast_wrapping: Wrapping {:?} with anyLast()",
+                    item.col_alias
+                );
                 Ok(SelectItem {
                     expression: RenderExpr::AggregateFnCall(AggregateFnCall {
                         name: "anyLast".to_string(),
@@ -180,7 +189,10 @@ fn apply_anylast_wrapping_for_group_by(
         })
         .collect::<RenderPlanBuilderResult<Vec<SelectItem>>>()?;
 
-    log::info!("✅ apply_anylast_wrapping: Processed {} items", wrapped_items.len());
+    log::info!(
+        "✅ apply_anylast_wrapping: Processed {} items",
+        wrapped_items.len()
+    );
     Ok(wrapped_items)
 }
 
@@ -693,7 +705,9 @@ impl RenderPlanBuilder for LogicalPlan {
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan> {
         // CRITICAL: If the plan contains WITH clauses, use the specialized handler
         // build_chained_with_match_cte_plan handles chained/nested WITH correctly
-        use super::plan_builder_utils::{has_with_clause_in_graph_rel, build_chained_with_match_cte_plan};
+        use super::plan_builder_utils::{
+            build_chained_with_match_cte_plan, has_with_clause_in_graph_rel,
+        };
         if has_with_clause_in_graph_rel(self) {
             return build_chained_with_match_cte_plan(self, schema, None);
         }
@@ -711,16 +725,13 @@ impl RenderPlanBuilder for LogicalPlan {
                 let group_by =
                     GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
                 let having_clause = self.extract_having()?;
-                
+
                 // 🔧 BUG #11 FIX: Wrap non-ID, non-aggregated columns with anyLast() when GROUP BY present
                 // This fixes queries like: RETURN a, count(b) where a expands to all properties
                 // but GROUP BY only has a.user_id
-                select_items.items = apply_anylast_wrapping_for_group_by(
-                    select_items.items,
-                    &group_by.0,
-                    self,
-                )?;
-                
+                select_items.items =
+                    apply_anylast_wrapping_for_group_by(select_items.items, &group_by.0, self)?;
+
                 let order_by = OrderByItems(self.extract_order_by()?);
                 let skip = SkipItem(self.extract_skip());
                 let limit = LimitItem(self.extract_limit());
@@ -763,14 +774,11 @@ impl RenderPlanBuilder for LogicalPlan {
                 let group_by =
                     GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
                 let having_clause = self.extract_having()?;
-                
+
                 // 🔧 BUG #11 FIX: Wrap non-ID, non-aggregated columns with anyLast() when GROUP BY present
-                select_items.items = apply_anylast_wrapping_for_group_by(
-                    select_items.items,
-                    &group_by.0,
-                    self,
-                )?;
-                
+                select_items.items =
+                    apply_anylast_wrapping_for_group_by(select_items.items, &group_by.0, self)?;
+
                 let order_by = OrderByItems(self.extract_order_by()?);
 
                 // Extract CTEs for variable-length paths
@@ -819,10 +827,13 @@ impl RenderPlanBuilder for LogicalPlan {
                 // in the outer SELECT WHERE clause.
                 use super::plan_builder_helpers::has_variable_length_or_shortest_path;
                 let has_vlp_or_shortest_path = has_variable_length_or_shortest_path(&f.input);
-                
-                eprintln!("DEBUG Filter::to_render_plan: has_vlp={}", has_vlp_or_shortest_path);
+
+                eprintln!(
+                    "DEBUG Filter::to_render_plan: has_vlp={}",
+                    has_vlp_or_shortest_path
+                );
                 eprintln!("DEBUG Filter::to_render_plan: predicate={:?}", f.predicate);
-                
+
                 if has_vlp_or_shortest_path {
                     log::info!(
                         "🔧 BUG #10: Skipping Filter for VLP/shortest path - already in CTE"
@@ -903,7 +914,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // GraphNode is a wrapper around a ViewScan that provides the Cypher alias
                 // We need to preserve this alias in the FROM clause
                 let mut render_plan = gn.input.to_render_plan(schema)?;
-                
+
                 // Apply GraphNode's alias to the FROM clause
                 if let FromTableItem(Some(ref mut view_ref)) = render_plan.from {
                     view_ref.alias = Some(gn.alias.clone());
@@ -912,7 +923,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         gn.alias
                     );
                 }
-                
+
                 Ok(render_plan)
             }
             LogicalPlan::ViewScan(vs) => {
@@ -1059,23 +1070,23 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Strategy: Render left side as base, render right side and add as JOIN
                 // - Non-optional: CROSS JOIN (or comma-join)
                 // - Optional (is_optional=true): LEFT JOIN
-                
+
                 log::info!(
                     "🔧 CartesianProduct.to_render_plan: is_optional={}, has_join_condition={}",
                     cp.is_optional,
                     cp.join_condition.is_some()
                 );
-                
+
                 // Render left side (base)
                 let mut left_render = cp.left.to_render_plan(schema)?;
-                
+
                 // Render right side
                 let right_render = cp.right.to_render_plan(schema)?;
-                
+
                 // Merge CTEs from both sides
                 let mut all_ctes = left_render.ctes.0;
                 all_ctes.extend(right_render.ctes.0);
-                
+
                 // Get the right side's FROM as a JOIN target
                 if let FromTableItem(Some(right_from)) = &right_render.from {
                     // Determine join type based on is_optional
@@ -1083,48 +1094,54 @@ impl RenderPlanBuilder for LogicalPlan {
                     let join_type = if cp.is_optional {
                         super::JoinType::Left
                     } else {
-                        super::JoinType::Join  // CROSS JOIN
+                        super::JoinType::Join // CROSS JOIN
                     };
-                    
+
                     // Build join condition if present
-                    let joining_on: Vec<OperatorApplication> = if let Some(ref join_cond) = cp.join_condition {
-                        // Convert LogicalExpr join condition to OperatorApplication format
-                        extract_join_condition_ops(join_cond).unwrap_or_default()
-                    } else {
-                        vec![]
-                    };
-                    
+                    let joining_on: Vec<OperatorApplication> =
+                        if let Some(ref join_cond) = cp.join_condition {
+                            // Convert LogicalExpr join condition to OperatorApplication format
+                            extract_join_condition_ops(join_cond).unwrap_or_default()
+                        } else {
+                            vec![]
+                        };
+
                     // Create the JOIN from the right side's FROM clause
                     let join = super::Join {
                         join_type,
                         table_name: right_from.name.clone(),
-                        table_alias: right_from.alias.clone().unwrap_or_else(|| right_from.name.clone()),
+                        table_alias: right_from
+                            .alias
+                            .clone()
+                            .unwrap_or_else(|| right_from.name.clone()),
                         joining_on,
                         pre_filter: None,
                         from_id_column: None,
                         to_id_column: None,
                     };
-                    
+
                     // Add to existing joins
                     left_render.joins.0.push(join);
-                    
+
                     // Also add any joins from the right side (if the right side had relationships)
                     left_render.joins.0.extend(right_render.joins.0);
                 }
-                
+
                 // If left has no FROM but right does, use right's FROM as base
-                if matches!(left_render.from, FromTableItem(None)) && !matches!(right_render.from, FromTableItem(None)) {
+                if matches!(left_render.from, FromTableItem(None))
+                    && !matches!(right_render.from, FromTableItem(None))
+                {
                     left_render.from = right_render.from;
                 }
-                
+
                 // Merge select items if left has none
                 if left_render.select.items.is_empty() {
                     left_render.select = right_render.select;
                 }
-                
+
                 // Merge filters
-                if let (FilterItems(Some(left_filter)), FilterItems(Some(right_filter))) = 
-                    (&left_render.filters, &right_render.filters) 
+                if let (FilterItems(Some(left_filter)), FilterItems(Some(right_filter))) =
+                    (&left_render.filters, &right_render.filters)
                 {
                     left_render.filters = FilterItems(Some(RenderExpr::OperatorApplicationExp(
                         OperatorApplication {
@@ -1135,9 +1152,9 @@ impl RenderPlanBuilder for LogicalPlan {
                 } else if matches!(left_render.filters, FilterItems(None)) {
                     left_render.filters = right_render.filters;
                 }
-                
+
                 left_render.ctes = CteItems(all_ctes);
-                
+
                 Ok(left_render)
             }
             _ => todo!(
@@ -1172,7 +1189,7 @@ fn contains_aggregation_function(expr: &RenderExpr) -> bool {
 /// Converts LogicalExpr equality/and conditions to RenderExpr OperatorApplications
 fn extract_join_condition_ops(expr: &LogicalExpr) -> Option<Vec<OperatorApplication>> {
     use crate::query_planner::logical_expr::Operator as LogicalOp;
-    
+
     match expr {
         LogicalExpr::OperatorApplicationExp(op_app) => {
             match &op_app.operator {
@@ -1197,12 +1214,16 @@ fn extract_join_condition_ops(expr: &LogicalExpr) -> Option<Vec<OperatorApplicat
                             ops.extend(sub_ops);
                         }
                     }
-                    if ops.is_empty() { None } else { Some(ops) }
+                    if ops.is_empty() {
+                        None
+                    } else {
+                        Some(ops)
+                    }
                 }
-                _ => None
+                _ => None,
             }
         }
-        _ => None
+        _ => None,
     }
 }
 
@@ -1219,11 +1240,11 @@ fn logical_to_render_expr(expr: &LogicalExpr) -> Option<RenderExpr> {
         }
         LogicalExpr::Column(col) => {
             // Logical Column is String, Render Column is PropertyValue
-            Some(RenderExpr::Column(Column(PropertyValue::Column(col.0.clone()))))
+            Some(RenderExpr::Column(Column(PropertyValue::Column(
+                col.0.clone(),
+            ))))
         }
-        LogicalExpr::TableAlias(ta) => {
-            Some(RenderExpr::TableAlias(TableAlias(ta.0.clone())))
-        }
-        _ => None
+        LogicalExpr::TableAlias(ta) => Some(RenderExpr::TableAlias(TableAlias(ta.0.clone()))),
+        _ => None,
     }
 }

@@ -239,7 +239,7 @@ pub enum Literal {
 pub struct TableAlias(pub String);
 
 /// Reference to a node or relationship that was exported through a CTE (WITH clause).
-/// 
+///
 /// When a node/relationship passes through WITH, its properties become prefixed columns
 /// in a CTE. CteEntityRef captures this information so the renderer can:
 /// 1. Expand bare alias references (e.g., `RETURN a`) to all entity columns
