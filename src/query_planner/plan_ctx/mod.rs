@@ -10,6 +10,7 @@ use crate::{
     graph_catalog::{graph_schema::GraphSchema, pattern_schema::PatternSchemaContext},
     query_planner::{
         analyzer::property_requirements::PropertyRequirements,
+        join_context::VlpEndpointInfo,
         logical_expr::{LogicalExpr, Property},
         logical_plan::ProjectionItem,
         plan_ctx::errors::PlanCtxError,
@@ -286,6 +287,12 @@ pub struct PlanCtx {
     /// Enables property resolver to determine node access strategies (OwnTable vs EmbeddedInEdge)
     /// and make role (from/to) explicit via NodeAccessStrategy::is_from_node field
     pattern_contexts: HashMap<String, Arc<PatternSchemaContext>>,
+    /// **NEW (Jan 2026)**: VLP endpoint tracking for correct JOIN generation
+    /// Map: Cypher alias (e.g., "u2") → VlpEndpointInfo
+    /// When a node is a VLP endpoint, subsequent JOINs must reference the CTE
+    /// (e.g., `t.end_id` instead of `u2.user_id`)
+    /// Populated by graph_join_inference.rs when VLP patterns are detected
+    vlp_endpoints: HashMap<String, VlpEndpointInfo>,
     /// **NEW (Jan 2026)**: Typed variable registry for unified variable tracking
     /// This is the single source of truth for variable types across the query.
     /// Replaces fragmented type tracking in TableCtx and ScopeContext.
@@ -549,6 +556,7 @@ impl PlanCtx {
             property_requirements: None,
             max_inferred_types: 5,
             pattern_contexts: HashMap::new(),
+            vlp_endpoints: HashMap::new(),
             variables: VariableRegistry::new(),
         }
     }
@@ -572,6 +580,7 @@ impl PlanCtx {
             property_requirements: None,
             max_inferred_types: 5,
             pattern_contexts: HashMap::new(),
+            vlp_endpoints: HashMap::new(),
             variables: VariableRegistry::new(),
         }
     }
@@ -609,6 +618,7 @@ impl PlanCtx {
             property_requirements: None,
             max_inferred_types,
             pattern_contexts: HashMap::new(),
+            vlp_endpoints: HashMap::new(),
             variables: VariableRegistry::new(),
         }
     }
@@ -642,6 +652,7 @@ impl PlanCtx {
             property_requirements: None,
             max_inferred_types: parent.max_inferred_types,
             pattern_contexts: HashMap::new(), // New scope - patterns computed fresh
+            vlp_endpoints: parent.vlp_endpoints.clone(), // Inherit VLP endpoint info from parent
             variables: VariableRegistry::new(), // Fresh variable registry for new scope
         }
     }
@@ -668,6 +679,7 @@ impl PlanCtx {
             property_requirements: None,
             max_inferred_types: 4,
             pattern_contexts: HashMap::new(),
+            vlp_endpoints: HashMap::new(),
             variables: VariableRegistry::new(),
         }
     }
@@ -1014,6 +1026,60 @@ impl PlanCtx {
     /// Get all pattern contexts (for debugging)
     pub fn get_all_pattern_contexts(&self) -> &HashMap<String, Arc<PatternSchemaContext>> {
         &self.pattern_contexts
+    }
+
+    // ========================================================================
+    // VLP Endpoint Tracking (for VLP+chained pattern JOIN generation)
+    // ========================================================================
+
+    /// Register a VLP endpoint (node that's part of a variable-length path).
+    /// When generating JOINs for subsequent patterns, these endpoints should
+    /// reference the VLP CTE (t.start_id/t.end_id) instead of the original table.
+    pub fn register_vlp_endpoint(&mut self, alias: String, info: VlpEndpointInfo) {
+        log::debug!(
+            "🔧 PlanCtx::register_vlp_endpoint: alias='{}', position={:?}, other='{}', rel='{}'",
+            alias,
+            info.position,
+            info.other_endpoint_alias,
+            info.rel_alias
+        );
+        self.vlp_endpoints.insert(alias, info);
+    }
+
+    /// Register multiple VLP endpoints at once (convenience method).
+    pub fn register_vlp_endpoints(&mut self, endpoints: HashMap<String, VlpEndpointInfo>) {
+        for (alias, info) in endpoints {
+            self.register_vlp_endpoint(alias, info);
+        }
+    }
+
+    /// Check if an alias is a VLP endpoint (needs CTE reference translation).
+    pub fn is_vlp_endpoint(&self, alias: &str) -> bool {
+        self.vlp_endpoints.contains_key(alias)
+    }
+
+    /// Get VLP endpoint info for an alias.
+    pub fn get_vlp_endpoint(&self, alias: &str) -> Option<&VlpEndpointInfo> {
+        self.vlp_endpoints.get(alias)
+    }
+
+    /// Get all VLP endpoints (for debugging or bulk operations).
+    pub fn get_vlp_endpoints(&self) -> &HashMap<String, VlpEndpointInfo> {
+        &self.vlp_endpoints
+    }
+
+    /// Get the proper (table_alias, column) for a JOIN condition, accounting for VLP endpoints.
+    /// 
+    /// This is the key method for fixing VLP+chained patterns:
+    /// - For regular nodes: returns (alias, column) unchanged
+    /// - For VLP endpoints: returns ("t", "start_id"/"end_id")
+    pub fn get_vlp_join_reference(&self, alias: &str, default_column: &str) -> (String, String) {
+        use crate::query_planner::join_context::JoinContext;
+        if let Some(vlp_info) = self.vlp_endpoints.get(alias) {
+            (JoinContext::VLP_CTE_DEFAULT_ALIAS.to_string(), vlp_info.cte_column().to_string())
+        } else {
+            (alias.to_string(), default_column.to_string())
+        }
     }
 }
 

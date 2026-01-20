@@ -5285,6 +5285,30 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             ),
                         );
                     }
+                    
+                    // CRITICAL FIX (Jan 2026): Hoist CTEs from recursive call to prevent duplicates
+                    // The recursive call created CTEs - we need to:
+                    // 1. Add them to our all_ctes (so they appear in final SQL)
+                    // 2. Track their names in used_cte_names (so we don't create duplicates)
+                    // 3. Track their aliases in processed_cte_aliases (so we don't re-process them)
+                    for cte in &rendered.ctes.0 {
+                        log::warn!(
+                            "🔧 build_chained_with_match_cte_plan: Hoisting CTE '{}' from recursive call",
+                            cte.cte_name
+                        );
+                        used_cte_names.insert(cte.cte_name.clone());
+                        
+                        // Extract aliases from CTE name to mark as processed
+                        // CTE name format: "with_{aliases}_cte_{n}" e.g., "with_total_cte_1"
+                        if let Some(aliases) = crate::utils::cte_naming::extract_aliases_from_cte_name(&cte.cte_name) {
+                            for alias in aliases {
+                                processed_cte_aliases.insert(alias.clone());
+                                cte_references.insert(alias, cte.cte_name.clone());
+                            }
+                        }
+                    }
+                    // Now hoist the actual CTEs
+                    hoist_nested_ctes(&mut rendered, &mut all_ctes);
                 }
 
                 log::info!(
@@ -6152,6 +6176,17 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
             log::warn!("🔧 build_chained_with_match_cte_plan: Replaced WITH clauses for alias '{}' with CTE reference (processed_cte_aliases: {:?})",
                        with_alias, processed_cte_aliases);
+
+            // CRITICAL FIX (Jan 2026): Break after processing ONE alias to re-discover plan structure.
+            // Problem: When we process multiple aliases in one iteration, the `with_plans` for later
+            // aliases were captured BEFORE we replaced earlier aliases. This causes:
+            // 1. Nested WITH clauses to be processed twice (once by outer, once by recursive call)
+            // 2. Duplicate CTE names to be generated
+            //
+            // Solution: Process one alias, update current_plan, then let the while loop iterate
+            // again with fresh find_all_with_clauses_grouped() on the updated plan.
+            log::warn!("🔧 build_chained_with_match_cte_plan: Breaking after processing '{}' to re-discover plan structure", with_alias);
+            break 'alias_loop;
         }
 
         // If no aliases were processed this iteration, break to avoid infinite loop

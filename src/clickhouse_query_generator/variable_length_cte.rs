@@ -848,6 +848,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             self.end_cypher_alias.clone(),     // Add Cypher alias
             self.start_node_id_column.clone(), // 🔧 FIX: Pass actual ID columns (from rel schema)
             self.end_node_id_column.clone(),
+            self.path_variable.clone(),        // Path variable for length(p), nodes(p) rewriting
         )
     }
 
@@ -957,16 +958,19 @@ impl<'a> VariableLengthCteGenerator<'a> {
             query_body.push_str("\n    UNION ALL\n");
 
             let default_depth = if max_hops.is_none() {
-                // Unbounded case: use reasonable default based on query type
+                // Unbounded case: use conservative default to prevent memory exhaustion
+                // In dense graphs, each hop can multiply rows exponentially
+                // Users who need longer paths should specify explicit bounds
                 if self.shortest_path_mode.is_some() {
-                    // For shortestPath queries, use lower limit to prevent memory exhaustion
+                    // For shortestPath queries, use lower limit
                     // Most social graphs have small-world property (6 degrees of separation)
-                    // If users need longer paths, they should specify explicit bounds
                     5
                 } else if min_hops == 0 {
-                    3 // Lower limit for zero-hop base queries
+                    3 // Lower limit for zero-hop base queries  
                 } else {
-                    10 // Standard default for regular variable-length paths
+                    // Standard default for regular variable-length paths
+                    // Reduced from 10 to 5 to prevent row explosion in dense graphs
+                    5
                 }
             } else {
                 max_hops.unwrap()

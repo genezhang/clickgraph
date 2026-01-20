@@ -1054,6 +1054,92 @@ impl RenderPlanBuilder for LogicalPlan {
                     union,
                 })
             }
+            LogicalPlan::CartesianProduct(cp) => {
+                // CartesianProduct represents disconnected patterns (WITH...MATCH or OPTIONAL MATCH without overlap)
+                // Strategy: Render left side as base, render right side and add as JOIN
+                // - Non-optional: CROSS JOIN (or comma-join)
+                // - Optional (is_optional=true): LEFT JOIN
+                
+                log::info!(
+                    "🔧 CartesianProduct.to_render_plan: is_optional={}, has_join_condition={}",
+                    cp.is_optional,
+                    cp.join_condition.is_some()
+                );
+                
+                // Render left side (base)
+                let mut left_render = cp.left.to_render_plan(schema)?;
+                
+                // Render right side
+                let right_render = cp.right.to_render_plan(schema)?;
+                
+                // Merge CTEs from both sides
+                let mut all_ctes = left_render.ctes.0;
+                all_ctes.extend(right_render.ctes.0);
+                
+                // Get the right side's FROM as a JOIN target
+                if let FromTableItem(Some(right_from)) = &right_render.from {
+                    // Determine join type based on is_optional
+                    // Note: JoinType::Join is used for CROSS JOIN semantics
+                    let join_type = if cp.is_optional {
+                        super::JoinType::Left
+                    } else {
+                        super::JoinType::Join  // CROSS JOIN
+                    };
+                    
+                    // Build join condition if present
+                    let joining_on: Vec<OperatorApplication> = if let Some(ref join_cond) = cp.join_condition {
+                        // Convert LogicalExpr join condition to OperatorApplication format
+                        extract_join_condition_ops(join_cond).unwrap_or_default()
+                    } else {
+                        vec![]
+                    };
+                    
+                    // Create the JOIN from the right side's FROM clause
+                    let join = super::Join {
+                        join_type,
+                        table_name: right_from.name.clone(),
+                        table_alias: right_from.alias.clone().unwrap_or_else(|| right_from.name.clone()),
+                        joining_on,
+                        pre_filter: None,
+                        from_id_column: None,
+                        to_id_column: None,
+                    };
+                    
+                    // Add to existing joins
+                    left_render.joins.0.push(join);
+                    
+                    // Also add any joins from the right side (if the right side had relationships)
+                    left_render.joins.0.extend(right_render.joins.0);
+                }
+                
+                // If left has no FROM but right does, use right's FROM as base
+                if matches!(left_render.from, FromTableItem(None)) && !matches!(right_render.from, FromTableItem(None)) {
+                    left_render.from = right_render.from;
+                }
+                
+                // Merge select items if left has none
+                if left_render.select.items.is_empty() {
+                    left_render.select = right_render.select;
+                }
+                
+                // Merge filters
+                if let (FilterItems(Some(left_filter)), FilterItems(Some(right_filter))) = 
+                    (&left_render.filters, &right_render.filters) 
+                {
+                    left_render.filters = FilterItems(Some(RenderExpr::OperatorApplicationExp(
+                        OperatorApplication {
+                            operator: Operator::And,
+                            operands: vec![left_filter.clone(), right_filter.clone()],
+                        },
+                    )));
+                } else if matches!(left_render.filters, FilterItems(None)) {
+                    left_render.filters = right_render.filters;
+                }
+                
+                left_render.ctes = CteItems(all_ctes);
+                
+                Ok(left_render)
+            }
             _ => todo!(
                 "Render plan conversion not implemented for LogicalPlan variant: {:?}",
                 std::mem::discriminant(self)
@@ -1079,5 +1165,65 @@ fn contains_aggregation_function(expr: &RenderExpr) -> bool {
                 .is_some_and(|e| contains_aggregation_function(e))
         }
         _ => false,
+    }
+}
+
+/// Extract join condition as OperatorApplication format for JOIN ON clauses
+/// Converts LogicalExpr equality/and conditions to RenderExpr OperatorApplications
+fn extract_join_condition_ops(expr: &LogicalExpr) -> Option<Vec<OperatorApplication>> {
+    use crate::query_planner::logical_expr::Operator as LogicalOp;
+    
+    match expr {
+        LogicalExpr::OperatorApplicationExp(op_app) => {
+            match &op_app.operator {
+                LogicalOp::Equal => {
+                    // Handle simple equality: a.col = b.col
+                    if op_app.operands.len() == 2 {
+                        let left = logical_to_render_expr(&op_app.operands[0])?;
+                        let right = logical_to_render_expr(&op_app.operands[1])?;
+                        Some(vec![OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![left, right],
+                        }])
+                    } else {
+                        None
+                    }
+                }
+                LogicalOp::And => {
+                    // Handle AND of multiple conditions
+                    let mut ops = vec![];
+                    for operand in &op_app.operands {
+                        if let Some(sub_ops) = extract_join_condition_ops(operand) {
+                            ops.extend(sub_ops);
+                        }
+                    }
+                    if ops.is_empty() { None } else { Some(ops) }
+                }
+                _ => None
+            }
+        }
+        _ => None
+    }
+}
+
+/// Convert a LogicalExpr to RenderExpr for use in join conditions
+fn logical_to_render_expr(expr: &LogicalExpr) -> Option<RenderExpr> {
+    match expr {
+        LogicalExpr::PropertyAccessExp(pa) => {
+            // PropertyAccess has table_alias and column (PropertyValue)
+            // The PropertyValue types are the same between logical and render
+            Some(RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(pa.table_alias.0.clone()),
+                column: pa.column.clone(),
+            }))
+        }
+        LogicalExpr::Column(col) => {
+            // Logical Column is String, Render Column is PropertyValue
+            Some(RenderExpr::Column(Column(PropertyValue::Column(col.0.clone()))))
+        }
+        LogicalExpr::TableAlias(ta) => {
+            Some(RenderExpr::TableAlias(TableAlias(ta.0.clone())))
+        }
+        _ => None
     }
 }

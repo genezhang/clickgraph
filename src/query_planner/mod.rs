@@ -12,6 +12,7 @@ use crate::{
 
 pub mod analyzer;
 mod errors;
+pub mod join_context;
 pub mod logical_expr;
 pub mod logical_plan;
 pub mod optimizer;

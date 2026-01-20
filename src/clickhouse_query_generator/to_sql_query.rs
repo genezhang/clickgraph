@@ -194,7 +194,7 @@ fn populate_cte_property_mappings(plan: &RenderPlan) {
     });
 }
 
-/// Rewrite property access in SELECT items for VLP queries
+/// Rewrite property access in SELECT, GROUP BY items for VLP queries
 /// Maps Cypher aliases (a, b) to CTE column names (start_xxx, end_xxx)
 /// For VLP, the CTE includes properties named using the Cypher property name: start_email, start_name, etc.
 fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
@@ -206,18 +206,34 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
     if let Some(vlp_cte) = vlp_cte {
         let start_alias = vlp_cte.vlp_cypher_start_alias.clone();
         let end_alias = vlp_cte.vlp_cypher_end_alias.clone();
+        let path_variable = vlp_cte.vlp_path_variable.clone();
         
-        log::info!("🔧 VLP SELECT rewriting: start_alias={:?}, end_alias={:?}", start_alias, end_alias);
+        log::info!("🔧 VLP SELECT rewriting: start_alias={:?}, end_alias={:?}, path_variable={:?}", 
+                   start_alias, end_alias, path_variable);
         log::info!("🔧 SELECT has {} items", plan.select.items.len());
         
         // Rewrite each SELECT item's expressions
         for (idx, item) in plan.select.items.iter_mut().enumerate() {
             log::info!("🔧 Item {}: {:?}", idx, item.expression);
             let before = format!("{:?}", item.expression);
-            item.expression = rewrite_expr_for_vlp(&item.expression, &start_alias, &end_alias);
+            item.expression = rewrite_expr_for_vlp(&item.expression, &start_alias, &end_alias, &path_variable);
             let after = format!("{:?}", item.expression);
             if before != after {
                 log::info!("🔧   Rewritten from: {} → {}", before, after);
+            }
+        }
+        
+        // 🔧 BUG FIX: Also rewrite GROUP BY expressions for VLP queries
+        // The GROUP BY clause may contain Cypher aliases (e.g., a.full_name)
+        // that need to be rewritten to use VLP CTE columns (e.g., t.start_name)
+        log::info!("🔧 VLP GROUP BY rewriting: {} items", plan.group_by.0.len());
+        for (idx, group_expr) in plan.group_by.0.iter_mut().enumerate() {
+            log::info!("🔧 GROUP BY {}: {:?}", idx, group_expr);
+            let before = format!("{:?}", group_expr);
+            *group_expr = rewrite_expr_for_vlp(group_expr, &start_alias, &end_alias, &path_variable);
+            let after = format!("{:?}", group_expr);
+            if before != after {
+                log::info!("🔧   GROUP BY rewritten from: {} → {}", before, after);
             }
         }
     }
@@ -237,14 +253,59 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
 /// but instead rely on the fact that properties are expanded at the render level.
 /// The SELECT items should already have the Cypher property names as aliases,
 /// and we just need to use those CTE column names directly.
+///
+/// Also handles path function rewriting:
+/// - length(p) → t.hop_count
+/// - nodes(p) → t.path_nodes  
+/// - relationships(p) → t.path_relationships
 fn rewrite_expr_for_vlp(
     expr: &RenderExpr,
     start_alias: &Option<String>,
     end_alias: &Option<String>,
+    path_variable: &Option<String>,
 ) -> RenderExpr {
     use crate::graph_catalog::expression_parser::PropertyValue;
     
     match expr {
+        // Handle path functions: length(p), nodes(p), relationships(p)
+        // Convert to CTE column references: t.hop_count, t.path_nodes, t.path_relationships
+        RenderExpr::ScalarFnCall(func) => {
+            // Check if this is a path function with the path variable as argument
+            if let Some(path_var) = path_variable {
+                if func.args.len() == 1 {
+                    if let RenderExpr::TableAlias(alias) = &func.args[0] {
+                        if &alias.0 == path_var {
+                            // This is a path function call: length(p), nodes(p), relationships(p)
+                            let cte_column = match func.name.as_str() {
+                                "length" => Some("hop_count"),
+                                "nodes" => Some("path_nodes"),
+                                "relationships" => Some("path_relationships"),
+                                _ => None,
+                            };
+                            
+                            if let Some(col_name) = cte_column {
+                                log::info!("🔧 VLP path function: {}({}) → t.{}", func.name, path_var, col_name);
+                                return RenderExpr::Column(Column(PropertyValue::Column(format!(
+                                    "t.{}",
+                                    col_name
+                                ))));
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Not a path function - recursively rewrite arguments
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: func.name.clone(),
+                args: func
+                    .args
+                    .iter()
+                    .map(|a| rewrite_expr_for_vlp(a, start_alias, end_alias, path_variable))
+                    .collect(),
+            })
+        }
+        
         // Rewrite PropertyAccess for VLP aliases
         // PropertyAccess(a, email_address) should NOT be changed by us -
         // it's handled at expansion level. But if we encounter it here,
@@ -289,19 +350,7 @@ fn rewrite_expr_for_vlp(
                 operands: op
                     .operands
                     .iter()
-                    .map(|o| rewrite_expr_for_vlp(o, start_alias, end_alias))
-                    .collect(),
-            })
-        }
-        
-        // Recursively rewrite function arguments
-        RenderExpr::ScalarFnCall(func) => {
-            RenderExpr::ScalarFnCall(ScalarFnCall {
-                name: func.name.clone(),
-                args: func
-                    .args
-                    .iter()
-                    .map(|a| rewrite_expr_for_vlp(a, start_alias, end_alias))
+                    .map(|o| rewrite_expr_for_vlp(o, start_alias, end_alias, path_variable))
                     .collect(),
             })
         }
@@ -312,7 +361,7 @@ fn rewrite_expr_for_vlp(
                 args: agg
                     .args
                     .iter()
-                    .map(|a| rewrite_expr_for_vlp(a, start_alias, end_alias))
+                    .map(|a| rewrite_expr_for_vlp(a, start_alias, end_alias, path_variable))
                     .collect(),
             })
         }

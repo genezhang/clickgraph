@@ -994,11 +994,18 @@ class NegativeTestGenerator:
 # Test Runner Helpers
 # =============================================================================
 
-def execute_query(query: str, params: Dict = None, execution_mode: str = "sql_only", schema_name: str = None) -> Dict:
+def execute_query(query: str, params: Dict = None, execution_mode: str = "sql_only", schema_name: str = None, timeout: int = 30) -> Dict:
     """Execute a query against ClickGraph and return result.
     
     Uses USE clause convention - auto-prepends USE clause if schema_name provided
     and query doesn't already have it.
+    
+    Args:
+        query: The Cypher query to execute
+        params: Optional query parameters
+        execution_mode: "sql_only" or "execute" 
+        schema_name: Schema name to use (auto-prepends USE clause)
+        timeout: Request timeout in seconds (default 30)
     """
     # Auto-prepend USE clause if schema_name provided and not already in query
     if schema_name and not query.strip().upper().startswith("USE "):
@@ -1016,7 +1023,7 @@ def execute_query(query: str, params: Dict = None, execution_mode: str = "sql_on
         response = requests.post(
             f"{CLICKGRAPH_URL}/query",
             json=payload,
-            timeout=30
+            timeout=timeout
         )
         body = response.json() if response.headers.get("content-type", "").startswith("application/json") else response.text
         # Check for actual error by looking at response structure, not substring matching

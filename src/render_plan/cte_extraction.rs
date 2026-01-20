@@ -2236,6 +2236,7 @@ pub fn extract_ctes_with_context(
                                     vlp_cypher_end_alias: Some(end_alias.clone()),
                                     vlp_start_id_col: None,
                                     vlp_end_id_col: None,
+                                    vlp_path_variable: graph_rel.path_variable.clone(),
                                 };
 
                                 // Extract CTEs from child plans
