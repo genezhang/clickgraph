@@ -85,6 +85,18 @@ pub enum VarSource {
         entity_type: EntityType,
     },
 
+    /// Variable is a node/relationship exported through a CTE
+    /// Example: `WITH a, count(b) as cnt` → a maps to CteEntity (NOT a single column!)
+    /// This tells resolver to keep as TableAlias for renderer to expand
+    CteEntity {
+        /// Name of the CTE (e.g., "with_a_cnt_cte_1")
+        cte_name: String,
+        /// Original alias (e.g., "a")
+        alias: String,
+        /// Entity type (Node or Relationship)
+        entity_type: EntityType,
+    },
+
     /// Variable is a query parameter
     /// Example: `$userId`
     Parameter { name: String },
@@ -264,13 +276,45 @@ impl VariableResolver {
                     ScopeContext::with_parent(scope.clone(), Some(cte_name.clone()));
 
                 for alias in &wc.exported_aliases {
-                    new_scope.add_variable(
-                        alias.clone(),
-                        VarSource::CteColumn {
-                            cte_name: cte_name.clone(),
-                            column_name: alias.clone(),
-                        },
-                    );
+                    // Check if this alias was a schema entity (node/rel) in the parent scope
+                    // If so, use CteEntity instead of CteColumn
+                    let var_source = match scope.lookup(alias) {
+                        Some(VarSource::SchemaEntity { entity_type, .. }) => {
+                            log::info!(
+                                "🔍 VariableResolver: Alias '{}' is a {:?} from MATCH, using CteEntity",
+                                alias, entity_type
+                            );
+                            VarSource::CteEntity {
+                                cte_name: cte_name.clone(),
+                                alias: alias.clone(),
+                                entity_type: entity_type.clone(),
+                            }
+                        }
+                        Some(VarSource::CteEntity { entity_type, .. }) => {
+                            // Already a CTE entity from an earlier WITH - preserve it
+                            log::info!(
+                                "🔍 VariableResolver: Alias '{}' is already CteEntity, preserving",
+                                alias
+                            );
+                            VarSource::CteEntity {
+                                cte_name: cte_name.clone(),
+                                alias: alias.clone(),
+                                entity_type: entity_type.clone(),
+                            }
+                        }
+                        _ => {
+                            // Scalar value (aggregate result, expression, etc.) - use CteColumn
+                            log::debug!(
+                                "🔍 VariableResolver: Alias '{}' is scalar, using CteColumn",
+                                alias
+                            );
+                            VarSource::CteColumn {
+                                cte_name: cte_name.clone(),
+                                column_name: alias.clone(),
+                            }
+                        }
+                    };
+                    new_scope.add_variable(alias.clone(), var_source);
                 }
 
                 // Step 4: Resolve WITH items expressions (use parent scope, not new scope!)
@@ -346,18 +390,45 @@ impl VariableResolver {
                     let mut with_scope = scope.clone();
                     for alias in &wc.exported_aliases {
                         if let Some(cte_name) = wc.cte_references.get(alias) {
-                            log::info!(
-                                "🔍 VariableResolver: Adding WITH alias '{}' from CTE '{}'",
-                                alias,
-                                cte_name
-                            );
-                            with_scope.add_variable(
-                                alias.clone(),
-                                VarSource::CteColumn {
-                                    cte_name: cte_name.clone(),
-                                    column_name: alias.clone(),
-                                },
-                            );
+                            // Check if this alias was an entity (node/rel) before the WITH
+                            // by looking it up in the parent scope
+                            let var_source = match scope.lookup(alias) {
+                                Some(VarSource::SchemaEntity { entity_type, .. }) => {
+                                    log::info!(
+                                        "🔍 VariableResolver: Projection sees WITH alias '{}' as {:?} entity, using CteEntity",
+                                        alias, entity_type
+                                    );
+                                    VarSource::CteEntity {
+                                        cte_name: cte_name.clone(),
+                                        alias: alias.clone(),
+                                        entity_type: entity_type.clone(),
+                                    }
+                                }
+                                Some(VarSource::CteEntity { entity_type, .. }) => {
+                                    // Propagating from an earlier CTE
+                                    log::info!(
+                                        "🔍 VariableResolver: Projection sees WITH alias '{}' as CteEntity, propagating",
+                                        alias
+                                    );
+                                    VarSource::CteEntity {
+                                        cte_name: cte_name.clone(),
+                                        alias: alias.clone(),
+                                        entity_type: entity_type.clone(),
+                                    }
+                                }
+                                _ => {
+                                    // Scalar value (aggregate, expression, etc.)
+                                    log::info!(
+                                        "🔍 VariableResolver: Projection sees WITH alias '{}' as scalar, using CteColumn",
+                                        alias
+                                    );
+                                    VarSource::CteColumn {
+                                        cte_name: cte_name.clone(),
+                                        column_name: alias.clone(),
+                                    }
+                                }
+                            };
+                            with_scope.add_variable(alias.clone(), var_source);
                         }
                     }
                     with_scope
@@ -889,6 +960,17 @@ impl VariableResolver {
                         log::debug!(
                             "🔍 VariableResolver: '{}' is schema entity, keeping as TableAlias",
                             alias.0
+                        );
+                        Ok(expr.clone())
+                    }
+
+                    Some(VarSource::CteEntity { cte_name, alias: original_alias, .. }) => {
+                        // This is a node/relationship exported through a CTE
+                        // Keep as TableAlias - let renderer expand it to all columns
+                        log::info!(
+                            "🔍 VariableResolver: '{}' is CteEntity from '{}', keeping as TableAlias for renderer to expand",
+                            original_alias,
+                            cte_name
                         );
                         Ok(expr.clone())
                     }

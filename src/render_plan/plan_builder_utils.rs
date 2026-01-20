@@ -4559,6 +4559,141 @@ pub(crate) fn update_graph_joins_cte_refs(
     }
 }
 
+/// Expand TableAlias expressions in a LogicalPlan's Projection/Selection
+/// This is needed when the final SELECT has `RETURN a` where `a` is from a CTE
+/// The to_render_plan() method doesn't know about CTEs, so we expand here first.
+fn expand_table_aliases_in_plan(
+    plan: LogicalPlan,
+    cte_schemas: &HashMap<
+        String,
+        (
+            Vec<SelectItem>,
+            Vec<String>,
+            HashMap<String, String>,
+            HashMap<(String, String), String>,
+        ),
+    >,
+    cte_references: &HashMap<String, String>,
+    schema: &GraphSchema,
+) -> RenderPlanBuilderResult<LogicalPlan> {
+    use crate::query_planner::logical_plan::ProjectionItem;
+    use crate::query_planner::logical_expr::ColumnAlias;
+    
+    log::info!("🔍 expand_table_aliases_in_plan: Expanding TableAlias in plan");
+    
+    match plan {
+        LogicalPlan::Projection(mut proj) => {
+            let mut expanded_items = Vec::new();
+            
+            for proj_item in &proj.items {
+                match &proj_item.expression {
+                    LogicalExpr::TableAlias(ta) => {
+                        // Check if this alias comes from a CTE
+                        if cte_references.contains_key(&ta.0) {
+                            log::info!("✅ expand_table_aliases_in_plan: Found TableAlias '{}' from CTE, expanding", ta.0);
+                            
+                            // Use expand_table_alias_to_select_items to get all columns
+                            let expanded_select_items = expand_table_alias_to_select_items(
+                                &ta.0,
+                                &proj.input,
+                                cte_schemas,
+                                cte_references,
+                                false, // has_aggregation
+                                None,  // plan_ctx
+                            );
+                            
+                            if expanded_select_items.is_empty() {
+                                log::warn!("⚠️ expand_table_aliases_in_plan: No columns found for alias '{}', keeping original", ta.0);
+                                expanded_items.push(proj_item.clone());
+                            } else {
+                                log::info!("✅ expand_table_aliases_in_plan: Expanded alias '{}' to {} columns", ta.0, expanded_select_items.len());
+                                
+                                // Convert SelectItem to ProjectionItem
+                                for select_item in expanded_select_items {
+                                    // SelectItem has RenderExpr, ProjectionItem has LogicalExpr
+                                    // We need to convert the column reference to a PropertyAccess
+                                    let logical_expr = if let Some(col_alias) = &select_item.col_alias {
+                                        // Extract table alias and column name from col_alias
+                                        // Format: "a_user_id" → table=ta.0, column="user_id"
+                                        let col_name = &col_alias.0;
+                                        let alias_prefix = format!("{}_", ta.0);
+                                        
+                                        if let Some(stripped) = col_name.strip_prefix(&alias_prefix) {
+                                            // Create PropertyAccess: a.user_id
+                                            LogicalExpr::PropertyAccessExp(crate::query_planner::logical_expr::PropertyAccess {
+                                                table_alias: crate::query_planner::logical_expr::TableAlias(ta.0.clone()),
+                                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(stripped.to_string()),
+                                            })
+                                        } else if col_name == &ta.0 {
+                                            // Exact match - likely a scalar aggregate like "cnt"
+                                            LogicalExpr::Column(crate::query_planner::logical_expr::Column(col_name.clone()))
+                                        } else {
+                                            // Unknown format, keep as column reference
+                                            LogicalExpr::Column(crate::query_planner::logical_expr::Column(col_name.clone()))
+                                        }
+                                    } else {
+                                        // No alias, shouldn't happen but handle gracefully
+                                        log::warn!("⚠️ expand_table_aliases_in_plan: SelectItem has no col_alias");
+                                        continue;
+                                    };
+                                    
+                                    // Create ProjectionItem with the column alias from SelectItem
+                                    let projection_item = ProjectionItem {
+                                        expression: logical_expr,
+                                        col_alias: select_item.col_alias.clone().map(|a| ColumnAlias(a.0)),
+                                    };
+                                    
+                                    expanded_items.push(projection_item);
+                                }
+                            }
+                        } else {
+                            // Not a CTE alias, keep as is (will be handled by to_render_plan)
+                            expanded_items.push(proj_item.clone());
+                        }
+                    }
+                    _ => {
+                        // Non-TableAlias expression, keep as is
+                        expanded_items.push(proj_item.clone());
+                    }
+                }
+            }
+            
+            // Replace SELECT items with expanded version
+            proj.items = expanded_items;
+            
+            // Recursively process input plan
+            proj.input = std::sync::Arc::new(expand_table_aliases_in_plan(
+                (*proj.input).clone(),
+                cte_schemas,
+                cte_references,
+                schema,
+            )?);
+            
+            Ok(LogicalPlan::Projection(proj))
+        }
+        LogicalPlan::Limit(mut lim) => {
+            lim.input = std::sync::Arc::new(expand_table_aliases_in_plan(
+                (*lim.input).clone(),
+                cte_schemas,
+                cte_references,
+                schema,
+            )?);
+            Ok(LogicalPlan::Limit(lim))
+        }
+        LogicalPlan::OrderBy(mut ob) => {
+            ob.input = std::sync::Arc::new(expand_table_aliases_in_plan(
+                (*ob.input).clone(),
+                cte_schemas,
+                cte_references,
+                schema,
+            )?);
+            Ok(LogicalPlan::OrderBy(ob))
+        }
+        // For other plan types, just return as is
+        other => Ok(other),
+    }
+}
+
 /// Rewrite CTE column references from "alias.property" to "alias.alias_property"
 /// This is needed for VLP UNION queries where CTEs export columns like "friend_id"
 /// but logical expressions reference "friend.id"
@@ -6428,11 +6563,98 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 }
 
                 // Rewrite SELECT items
+                // CRITICAL: Handle TableAlias expansion BEFORE expression rewriting
+                // When RETURN a (full node), we need to expand to all properties from CTE
                 render_plan.select.items = render_plan
                     .select
                     .items
                     .into_iter()
-                    .map(|mut item| {
+                    .flat_map(|mut item| {
+                        // Debug: Log what expression type we have
+                        log::warn!("🔍 build_chained_with_match_cte_plan: Processing SELECT item with expression type: {:?}, col_alias: {:?}",
+                                   std::mem::discriminant(&item.expression), item.col_alias);
+                        
+                        // For PropertyAccessExp, log details
+                        if let RenderExpr::PropertyAccessExp(ref pa) = item.expression {
+                            log::warn!("🔍   PropertyAccessExp: table_alias='{}', column='{}'", pa.table_alias.0, pa.column.raw());
+                        }
+                        
+                        // Check if this is a TableAlias that needs expansion
+                        if let RenderExpr::TableAlias(ref table_alias) = item.expression {
+                            log::warn!("🔍 build_chained_with_match_cte_plan: Found TableAlias('{}')", table_alias.0);
+                            // Check if this alias is from a WITH clause (in with_aliases)
+                            if with_aliases.contains(&table_alias.0) {
+                                log::warn!("🔧 build_chained_with_match_cte_plan: Expanding TableAlias('{}') to CTE columns", table_alias.0);
+                                // Expand using the CTE schema
+                                // Note: We already have the CTE schema in cte_schemas
+                                if let Some((select_items, _, _, _)) = cte_schemas.get(&from_ref.name) {
+                                    let alias_prefix = format!("{}_", table_alias.0);
+                                    let expanded: Vec<SelectItem> = select_items.iter()
+                                        .filter(|si| {
+                                            si.col_alias.as_ref()
+                                                .map(|ca| ca.0.starts_with(&alias_prefix))
+                                                .unwrap_or(false)
+                                        })
+                                        .map(|si| {
+                                            // Create PropertyAccessExp using FROM alias and CTE column
+                                            let cte_column = si.col_alias.as_ref().unwrap().0.clone();
+                                            SelectItem {
+                                                expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                    table_alias: TableAlias(from_alias.to_string()),
+                                                    column: PropertyValue::Column(cte_column.clone()),
+                                                }),
+                                                col_alias: Some(ColumnAlias(cte_column)),
+                                            }
+                                        })
+                                        .collect();
+                                    
+                                    log::warn!("🔧 build_chained_with_match_cte_plan: Expanded '{}' to {} columns", table_alias.0, expanded.len());
+                                    return expanded;
+                                } else {
+                                    log::warn!("⚠️ build_chained_with_match_cte_plan: CTE '{}' not found in schemas", from_ref.name);
+                                }
+                            } else {
+                                log::warn!("⚠️ build_chained_with_match_cte_plan: TableAlias '{}' not in with_aliases: {:?}", table_alias.0, with_aliases);
+                            }
+                        }
+                        // ALSO check for PropertyAccessExp(a, "a") - this happens when TableAlias
+                        // was incorrectly converted to PropertyAccessExp by earlier phases
+                        else if let RenderExpr::PropertyAccessExp(ref pa) = item.expression {
+                            if let PropertyValue::Column(ref col) = pa.column {
+                                // Check if column name equals table alias (indicating full node reference)
+                                if col == &pa.table_alias.0 && with_aliases.contains(&pa.table_alias.0) {
+                                    log::warn!("🔧 build_chained_with_match_cte_plan: Found PropertyAccessExp({}, {}
+
+) - treating as full node", pa.table_alias.0, col);
+                                    // Expand this like TableAlias
+                                    if let Some((select_items, _, _, _)) = cte_schemas.get(&from_ref.name) {
+                                        let alias_prefix = format!("{}_", pa.table_alias.0);
+                                        let expanded: Vec<SelectItem> = select_items.iter()
+                                            .filter(|si| {
+                                                si.col_alias.as_ref()
+                                                    .map(|ca| ca.0.starts_with(&alias_prefix))
+                                                    .unwrap_or(false)
+                                            })
+                                            .map(|si| {
+                                                let cte_column = si.col_alias.as_ref().unwrap().0.clone();
+                                                SelectItem {
+                                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                        table_alias: TableAlias(from_alias.to_string()),
+                                                        column: PropertyValue::Column(cte_column.clone()),
+                                                    }),
+                                                    col_alias: Some(ColumnAlias(cte_column)),
+                                                }
+                                            })
+                                            .collect();
+                                        
+                                        log::warn!("🔧 build_chained_with_match_cte_plan: Expanded PropertyAccessExp('{}') to {} columns", pa.table_alias.0, expanded.len());
+                                        return expanded;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Not a TableAlias or not from WITH - rewrite expression normally
                         item.expression = rewrite_cte_expression(
                             item.expression,
                             &from_ref.name,
@@ -6440,7 +6662,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             &with_aliases,
                             &reverse_mapping,
                         );
-                        item
+                        vec![item]
                     })
                     .collect();
 
