@@ -18,14 +18,21 @@
 //! - Renderer just emits: `SELECT cnt_cte."cnt"`
 //! - Correct SQL!
 //!
-//! **Architecture**:
+//! **Architecture (Refactored Jan 2026)**:
+//! - **TypedVariable (PlanCtx)**: Single source of truth for TYPE information
+//!   - Tracks whether a variable is Node, Relationship, Scalar, Path, or Collection
+//!   - Populated during MATCH/WITH processing by analyzer
+//! - **ScopeContext**: Tracks CTE NAME mappings (which CTE contains which variable)
+//!   - Only used for resolving variable aliases to their CTE sources
+//!   - Does NOT track type information (that's TypedVariable's job)
+//!
+//! This separation of concerns allows:
+//! - Clear single source of truth for types (TypedVariable)
+//! - Lightweight CTE tracking (ScopeContext)
+//!
+//! **Execution Order**:
 //! - Runs AFTER `WithScopeSplitter` (which marks scope boundaries)
 //! - Runs BEFORE `GraphJoinInference` (which needs resolved variables)
-//! - Traverses plan tree, maintaining scope context stack
-//! - Resolves TableAlias references to:
-//!   - CTE column references (if from previous WITH)
-//!   - Schema entities (if from current scope MATCH)
-//!   - Parameters
 //!
 //! **Scope Rules**:
 //! 1. WITH creates a scope boundary
@@ -186,11 +193,14 @@ impl VariableResolver {
         name
     }
 
-    /// Look up entity type from PlanCtx's typed variable registry
+    /// Look up entity type from PlanCtx's TypedVariable registry
     ///
-    /// **NEW (Jan 2026)**: This provides a fallback when ScopeContext doesn't have
-    /// entity info. The TypedVariable system is populated during MATCH/WITH processing
-    /// and has authoritative type information.
+    /// **Architecture (Jan 2026)**: TypedVariable is the SINGLE SOURCE OF TRUTH
+    /// for variable type information. This method extracts entity type (Node/Relationship)
+    /// from the TypedVariable system for use in CTE variable classification.
+    ///
+    /// Returns `None` for scalars (aggregates, expressions) - they become CteColumn.
+    /// Returns `Some(EntityType)` for entities - they become CteEntity.
     fn lookup_entity_from_plan_ctx(plan_ctx: &PlanCtx, alias: &str) -> Option<EntityType> {
         plan_ctx.lookup_variable(alias).and_then(|typed_var| {
             match typed_var {
@@ -290,20 +300,19 @@ impl VariableResolver {
                     ScopeContext::with_parent(scope.clone(), Some(cte_name.clone()));
 
                 for alias in &wc.exported_aliases {
-                    // **REFACTORED (Jan 2026)**: TypedVariable is now PRIMARY source
-                    // Check plan_ctx.lookup_variable() FIRST, then fall back to ScopeContext
+                    // **Architecture (Jan 2026)**:
+                    // - TypedVariable (plan_ctx) provides TYPE info (Node, Relationship, Scalar, etc.)
+                    // - ScopeContext provides CTE NAME mapping (which CTE contains this variable)
                     //
-                    // Priority order:
-                    // 1. plan_ctx.lookup_variable() - authoritative TypedVariable registry
-                    // 2. scope.lookup() - legacy ScopeContext (for edge cases)
-                    // 3. Default to scalar (aggregate result, expression, etc.)
+                    // TypedVariable is the SINGLE SOURCE OF TRUTH for type information.
+                    // If not found in TypedVariable, default to Scalar (aggregate/expression result).
                     
                     let var_source = if let Some(entity_type) = 
                         plan_ctx.and_then(|ctx| Self::lookup_entity_from_plan_ctx(ctx, alias)) 
                     {
-                        // PRIMARY: Found in TypedVariable registry
+                        // Found in TypedVariable - it's an entity (Node or Relationship)
                         log::info!(
-                            "🔍 VariableResolver: [PRIMARY] Alias '{}' found in TypedVariable as {:?}, using CteEntity",
+                            "🔍 VariableResolver: Alias '{}' is {:?} (from TypedVariable), using CteEntity",
                             alias, entity_type
                         );
                         VarSource::CteEntity {
@@ -312,42 +321,14 @@ impl VariableResolver {
                             entity_type,
                         }
                     } else {
-                        // FALLBACK: Check ScopeContext
-                        match scope.lookup(alias) {
-                            Some(VarSource::SchemaEntity { entity_type, .. }) => {
-                                log::info!(
-                                    "🔍 VariableResolver: [FALLBACK] Alias '{}' is a {:?} from MATCH scope, using CteEntity",
-                                    alias, entity_type
-                                );
-                                VarSource::CteEntity {
-                                    cte_name: cte_name.clone(),
-                                    alias: alias.clone(),
-                                    entity_type: entity_type.clone(),
-                                }
-                            }
-                            Some(VarSource::CteEntity { entity_type, .. }) => {
-                                // Already a CTE entity from an earlier WITH - preserve it
-                                log::info!(
-                                    "🔍 VariableResolver: [FALLBACK] Alias '{}' is already CteEntity, preserving",
-                                    alias
-                                );
-                                VarSource::CteEntity {
-                                    cte_name: cte_name.clone(),
-                                    alias: alias.clone(),
-                                    entity_type: entity_type.clone(),
-                                }
-                            }
-                            _ => {
-                                // Truly a scalar value (aggregate result, expression, etc.)
-                                log::debug!(
-                                    "🔍 VariableResolver: Alias '{}' is scalar, using CteColumn",
-                                    alias
-                                );
-                                VarSource::CteColumn {
-                                    cte_name: cte_name.clone(),
-                                    column_name: alias.clone(),
-                                }
-                            }
+                        // Not in TypedVariable → it's a scalar (aggregate result, expression, literal)
+                        log::debug!(
+                            "🔍 VariableResolver: Alias '{}' not in TypedVariable, treating as scalar CteColumn",
+                            alias
+                        );
+                        VarSource::CteColumn {
+                            cte_name: cte_name.clone(),
+                            column_name: alias.clone(),
                         }
                     };
                     new_scope.add_variable(alias.clone(), var_source);
@@ -426,14 +407,16 @@ impl VariableResolver {
                     let mut with_scope = scope.clone();
                     for alias in &wc.exported_aliases {
                         if let Some(cte_name) = wc.cte_references.get(alias) {
-                            // **REFACTORED (Jan 2026)**: TypedVariable is now PRIMARY source
-                            // Check plan_ctx.lookup_variable() FIRST, then fall back to ScopeContext
+                            // **Architecture (Jan 2026)**:
+                            // - TypedVariable provides TYPE info (Node, Relationship, Scalar)
+                            // - ScopeContext provides CTE NAME mapping
+                            // TypedVariable is the SINGLE SOURCE OF TRUTH for type information.
                             let var_source = if let Some(entity_type) = 
                                 plan_ctx.and_then(|ctx| Self::lookup_entity_from_plan_ctx(ctx, alias)) 
                             {
-                                // PRIMARY: Found in TypedVariable registry
+                                // Found in TypedVariable - it's an entity
                                 log::info!(
-                                    "🔍 VariableResolver: Projection [PRIMARY] alias '{}' found in TypedVariable as {:?}",
+                                    "🔍 VariableResolver: Projection alias '{}' is {:?} (from TypedVariable)",
                                     alias, entity_type
                                 );
                                 VarSource::CteEntity {
@@ -442,42 +425,14 @@ impl VariableResolver {
                                     entity_type,
                                 }
                             } else {
-                                // FALLBACK: Check ScopeContext
-                                match scope.lookup(alias) {
-                                    Some(VarSource::SchemaEntity { entity_type, .. }) => {
-                                        log::info!(
-                                            "🔍 VariableResolver: Projection [FALLBACK] alias '{}' as {:?} entity (from scope)",
-                                            alias, entity_type
-                                        );
-                                        VarSource::CteEntity {
-                                            cte_name: cte_name.clone(),
-                                            alias: alias.clone(),
-                                            entity_type: entity_type.clone(),
-                                        }
-                                    }
-                                    Some(VarSource::CteEntity { entity_type, .. }) => {
-                                        // Propagating from an earlier CTE
-                                        log::info!(
-                                            "🔍 VariableResolver: Projection [FALLBACK] alias '{}' as CteEntity, propagating",
-                                            alias
-                                        );
-                                        VarSource::CteEntity {
-                                            cte_name: cte_name.clone(),
-                                            alias: alias.clone(),
-                                            entity_type: entity_type.clone(),
-                                        }
-                                    }
-                                    _ => {
-                                        // Scalar value (aggregate, expression, etc.)
-                                        log::info!(
-                                            "🔍 VariableResolver: Projection alias '{}' is scalar, using CteColumn",
-                                            alias
-                                        );
-                                        VarSource::CteColumn {
-                                            cte_name: cte_name.clone(),
-                                            column_name: alias.clone(),
-                                        }
-                                    }
+                                // Not in TypedVariable → it's a scalar
+                                log::info!(
+                                    "🔍 VariableResolver: Projection alias '{}' not in TypedVariable, treating as scalar",
+                                    alias
+                                );
+                                VarSource::CteColumn {
+                                    cte_name: cte_name.clone(),
+                                    column_name: alias.clone(),
                                 }
                             };
                             with_scope.add_variable(alias.clone(), var_source);
