@@ -383,7 +383,8 @@ impl AliasResolverContext {
             | LogicalExpr::Operator(_)
             | LogicalExpr::PathPattern(_)
             | LogicalExpr::MapLiteral(_)
-            | LogicalExpr::LabelExpression { .. } => expr,
+            | LogicalExpr::LabelExpression { .. }
+            | LogicalExpr::CteEntityRef(_) => expr,
         }
     }
 

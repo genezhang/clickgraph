@@ -118,6 +118,17 @@ impl FilterBuilder for LogicalPlan {
                     "GraphRel node detected, collecting filters from ALL nested where_predicates"
                 );
 
+                // 🔧 BUG #10 FIX: For VLP/shortest path queries, filters from where_predicate
+                // are already pushed into the CTE during extraction. Don't duplicate them
+                // in the outer SELECT WHERE clause.
+                if graph_rel.variable_length.is_some() || graph_rel.shortest_path_mode.is_some() {
+                    log::info!(
+                        "🔧 BUG #10: Skipping GraphRel filter extraction for VLP/shortest path - already in CTE"
+                    );
+                    // Don't extract filters - they're already in the CTE
+                    return Ok(None);
+                }
+
                 // Collect all where_predicates from this GraphRel and nested GraphRel nodes
                 // Using helper functions from plan_builder_helpers module
                 let all_predicates =
@@ -246,21 +257,44 @@ impl FilterBuilder for LogicalPlan {
                     "DEBUG: extract_filters - Filter input type: {:?}",
                     std::mem::discriminant(&*filter.input)
                 );
-                let mut expr: RenderExpr = filter.predicate.clone().try_into()?;
-                // Apply property mapping to the filter expression
-                apply_property_mapping_to_expr(&mut expr, &filter.input);
 
-                // Also check for schema filters from the input (e.g., GraphNode → ViewScan)
-                if let Some(input_filter) = filter.input.extract_filters()? {
-                    crate::debug_println!("DEBUG: extract_filters - Combining Filter predicate with input schema filter");
-                    // Combine the Filter predicate with input's schema filter using AND
-                    Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::And,
-                        operands: vec![input_filter, expr],
-                    }))
+                // 🔧 BUG #10 FIX: For VLP/shortest path queries, filters on start/end nodes
+                // are already pushed into the CTE during extraction. Don't duplicate them
+                // in the outer SELECT WHERE clause.
+                let has_vlp_or_shortest_path = has_variable_length_or_shortest_path(&filter.input);
+
+                println!(
+                    "DEBUG: has_vlp_or_shortest_path = {}",
+                    has_vlp_or_shortest_path
+                );
+
+                if has_vlp_or_shortest_path {
+                    log::info!(
+                        "🔧 BUG #10: Skipping Filter extraction for VLP/shortest path - already in CTE"
+                    );
+                    println!("DEBUG: 🔧 BUG #10: Skipping Filter extraction for VLP/shortest path - already in CTE");
+                    // Don't extract this filter - it's already in the CTE
+                    // Just extract filters from the input (schema filters, etc.)
+                    filter.input.extract_filters()?
                 } else {
-                    crate::debug_println!("DEBUG: extract_filters - Returning Filter predicate only (no input filter)");
-                    Some(expr)
+                    println!("DEBUG: Normal filter extraction");
+                    // Normal filter extraction
+                    let mut expr: RenderExpr = filter.predicate.clone().try_into()?;
+                    // Apply property mapping to the filter expression
+                    apply_property_mapping_to_expr(&mut expr, &filter.input);
+
+                    // Also check for schema filters from the input (e.g., GraphNode → ViewScan)
+                    if let Some(input_filter) = filter.input.extract_filters()? {
+                        crate::debug_println!("DEBUG: extract_filters - Combining Filter predicate with input schema filter");
+                        // Combine the Filter predicate with input's schema filter using AND
+                        Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::And,
+                            operands: vec![input_filter, expr],
+                        }))
+                    } else {
+                        crate::debug_println!("DEBUG: extract_filters - Returning Filter predicate only (no input filter)");
+                        Some(expr)
+                    }
                 }
             }
             LogicalPlan::Projection(projection) => {
@@ -323,10 +357,27 @@ impl FilterBuilder for LogicalPlan {
             LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_final_filters()?,
             LogicalPlan::Projection(projection) => projection.input.extract_final_filters()?,
             LogicalPlan::Filter(filter) => {
-                let mut expr: RenderExpr = filter.predicate.clone().try_into()?;
-                // Apply property mapping to the filter expression
-                apply_property_mapping_to_expr(&mut expr, &filter.input);
-                Some(expr)
+                // 🔧 BUG #10 FIX: For VLP/shortest path queries, filters on start/end nodes
+                // are already pushed into the CTE during extraction. Don't duplicate them
+                // as final filters in the outer SELECT.
+
+                // Check if the input contains a VLP or shortest path pattern
+                let has_vlp_or_shortest_path = has_variable_length_or_shortest_path(&filter.input);
+
+                if has_vlp_or_shortest_path {
+                    log::info!(
+                        "🔧 BUG #10: Skipping Filter extraction for VLP/shortest path - already in CTE"
+                    );
+                    // Don't extract this filter - it's already in the CTE
+                    // Recurse to check for other filters deeper in the plan
+                    filter.input.extract_final_filters()?
+                } else {
+                    // Normal filter extraction
+                    let mut expr: RenderExpr = filter.predicate.clone().try_into()?;
+                    // Apply property mapping to the filter expression
+                    apply_property_mapping_to_expr(&mut expr, &filter.input);
+                    Some(expr)
+                }
             }
             LogicalPlan::GraphRel(graph_rel) => {
                 // For GraphRel, extract path function filters that should be applied to the final query

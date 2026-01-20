@@ -18,14 +18,21 @@
 //! - Renderer just emits: `SELECT cnt_cte."cnt"`
 //! - Correct SQL!
 //!
-//! **Architecture**:
+//! **Architecture (Refactored Jan 2026)**:
+//! - **TypedVariable (PlanCtx)**: Single source of truth for TYPE information
+//!   - Tracks whether a variable is Node, Relationship, Scalar, Path, or Collection
+//!   - Populated during MATCH/WITH processing by analyzer
+//! - **ScopeContext**: Tracks CTE NAME mappings (which CTE contains which variable)
+//!   - Only used for resolving variable aliases to their CTE sources
+//!   - Does NOT track type information (that's TypedVariable's job)
+//!
+//! This separation of concerns allows:
+//! - Clear single source of truth for types (TypedVariable)
+//! - Lightweight CTE tracking (ScopeContext)
+//!
+//! **Execution Order**:
 //! - Runs AFTER `WithScopeSplitter` (which marks scope boundaries)
 //! - Runs BEFORE `GraphJoinInference` (which needs resolved variables)
-//! - Traverses plan tree, maintaining scope context stack
-//! - Resolves TableAlias references to:
-//!   - CTE column references (if from previous WITH)
-//!   - Schema entities (if from current scope MATCH)
-//!   - Parameters
 //!
 //! **Scope Rules**:
 //! 1. WITH creates a scope boundary
@@ -56,10 +63,13 @@ use crate::{
     graph_catalog::expression_parser::PropertyValue,
     query_planner::{
         analyzer::{analyzer_pass::AnalyzerPass, errors::AnalyzerError},
-        logical_expr::{ColumnAlias, LogicalExpr, PropertyAccess, TableAlias},
+        logical_expr::{
+            ColumnAlias, CteEntityRef, EntityType, LogicalExpr, PropertyAccess, TableAlias,
+        },
         logical_plan::{LogicalPlan, ProjectionItem, WithClause},
         plan_ctx::PlanCtx,
         transformed::Transformed,
+        typed_variable::TypedVariable,
     },
     utils::cte_naming::generate_cte_name,
 };
@@ -85,15 +95,21 @@ pub enum VarSource {
         entity_type: EntityType,
     },
 
+    /// Variable is a node/relationship exported through a CTE
+    /// Example: `WITH a, count(b) as cnt` → a maps to CteEntity (NOT a single column!)
+    /// This tells resolver to keep as TableAlias for renderer to expand
+    CteEntity {
+        /// Name of the CTE (e.g., "with_a_cnt_cte_1")
+        cte_name: String,
+        /// Original alias (e.g., "a")
+        alias: String,
+        /// Entity type (Node or Relationship)
+        entity_type: EntityType,
+    },
+
     /// Variable is a query parameter
     /// Example: `$userId`
     Parameter { name: String },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum EntityType {
-    Node,
-    Relationship,
 }
 
 /// Scope context for variable resolution
@@ -179,6 +195,24 @@ impl VariableResolver {
         name
     }
 
+    /// Look up entity type from PlanCtx's TypedVariable registry
+    ///
+    /// **Architecture (Jan 2026)**: TypedVariable is the SINGLE SOURCE OF TRUTH
+    /// for variable type information. This method extracts entity type (Node/Relationship)
+    /// from the TypedVariable system for use in CTE variable classification.
+    ///
+    /// Returns `None` for scalars (aggregates, expressions) - they become CteColumn.
+    /// Returns `Some(EntityType)` for entities - they become CteEntity.
+    fn lookup_entity_from_plan_ctx(plan_ctx: &PlanCtx, alias: &str) -> Option<EntityType> {
+        plan_ctx.lookup_variable(alias).and_then(|typed_var| {
+            match typed_var {
+                TypedVariable::Node(_) => Some(EntityType::Node),
+                TypedVariable::Relationship(_) => Some(EntityType::Relationship),
+                _ => None, // Scalar, Path, Collection are not entities for scope purposes
+            }
+        })
+    }
+
     /// Collect all GraphNode and GraphRel aliases from a plan tree
     /// This is used to populate scope with schema entities from MATCH patterns
     ///
@@ -231,10 +265,14 @@ impl VariableResolver {
     /// 1. Maintains scope context as we traverse
     /// 2. Resolves TableAlias to proper sources
     /// 3. Populates cte_references in WithClause
+    ///
+    /// **Enhanced (Jan 2026)**: Now accepts optional plan_ctx for TypedVariable fallback lookup.
+    /// When scope lookup fails, consults plan_ctx.lookup_variable() for entity type information.
     fn resolve(
         &self,
         plan: Arc<LogicalPlan>,
         scope: &ScopeContext,
+        plan_ctx: Option<&PlanCtx>,
     ) -> Result<Transformed<Arc<LogicalPlan>>, AnalyzerError> {
         match plan.as_ref() {
             LogicalPlan::WithClause(wc) => {
@@ -244,7 +282,7 @@ impl VariableResolver {
                 );
 
                 // Step 1: Resolve variables in INPUT using PARENT scope
-                let input_resolved = self.resolve(wc.input.clone(), scope)?;
+                let input_resolved = self.resolve(wc.input.clone(), scope, plan_ctx)?;
                 let new_input = input_resolved.get_plan();
 
                 // Step 2: Generate CTE name for this WITH
@@ -264,13 +302,38 @@ impl VariableResolver {
                     ScopeContext::with_parent(scope.clone(), Some(cte_name.clone()));
 
                 for alias in &wc.exported_aliases {
-                    new_scope.add_variable(
-                        alias.clone(),
+                    // **Architecture (Jan 2026)**:
+                    // - TypedVariable (plan_ctx) provides TYPE info (Node, Relationship, Scalar, etc.)
+                    // - ScopeContext provides CTE NAME mapping (which CTE contains this variable)
+                    //
+                    // TypedVariable is the SINGLE SOURCE OF TRUTH for type information.
+                    // If not found in TypedVariable, default to Scalar (aggregate/expression result).
+
+                    let var_source = if let Some(entity_type) =
+                        plan_ctx.and_then(|ctx| Self::lookup_entity_from_plan_ctx(ctx, alias))
+                    {
+                        // Found in TypedVariable - it's an entity (Node or Relationship)
+                        log::info!(
+                            "🔍 VariableResolver: Alias '{}' is {:?} (from TypedVariable), using CteEntity",
+                            alias, entity_type
+                        );
+                        VarSource::CteEntity {
+                            cte_name: cte_name.clone(),
+                            alias: alias.clone(),
+                            entity_type,
+                        }
+                    } else {
+                        // Not in TypedVariable → it's a scalar (aggregate result, expression, literal)
+                        log::debug!(
+                            "🔍 VariableResolver: Alias '{}' not in TypedVariable, treating as scalar CteColumn",
+                            alias
+                        );
                         VarSource::CteColumn {
                             cte_name: cte_name.clone(),
                             column_name: alias.clone(),
-                        },
-                    );
+                        }
+                    };
+                    new_scope.add_variable(alias.clone(), var_source);
                 }
 
                 // Step 4: Resolve WITH items expressions (use parent scope, not new scope!)
@@ -321,7 +384,7 @@ impl VariableResolver {
                 );
 
                 // First, resolve the input
-                let input_resolved = self.resolve(proj.input.clone(), scope)?;
+                let input_resolved = self.resolve(proj.input.clone(), scope, plan_ctx)?;
                 let input_changed = input_resolved.is_yes();
                 let new_input = input_resolved.get_plan();
 
@@ -346,18 +409,35 @@ impl VariableResolver {
                     let mut with_scope = scope.clone();
                     for alias in &wc.exported_aliases {
                         if let Some(cte_name) = wc.cte_references.get(alias) {
-                            log::info!(
-                                "🔍 VariableResolver: Adding WITH alias '{}' from CTE '{}'",
-                                alias,
-                                cte_name
-                            );
-                            with_scope.add_variable(
-                                alias.clone(),
+                            // **Architecture (Jan 2026)**:
+                            // - TypedVariable provides TYPE info (Node, Relationship, Scalar)
+                            // - ScopeContext provides CTE NAME mapping
+                            // TypedVariable is the SINGLE SOURCE OF TRUTH for type information.
+                            let var_source = if let Some(entity_type) = plan_ctx
+                                .and_then(|ctx| Self::lookup_entity_from_plan_ctx(ctx, alias))
+                            {
+                                // Found in TypedVariable - it's an entity
+                                log::info!(
+                                    "🔍 VariableResolver: Projection alias '{}' is {:?} (from TypedVariable)",
+                                    alias, entity_type
+                                );
+                                VarSource::CteEntity {
+                                    cte_name: cte_name.clone(),
+                                    alias: alias.clone(),
+                                    entity_type,
+                                }
+                            } else {
+                                // Not in TypedVariable → it's a scalar
+                                log::info!(
+                                    "🔍 VariableResolver: Projection alias '{}' not in TypedVariable, treating as scalar",
+                                    alias
+                                );
                                 VarSource::CteColumn {
                                     cte_name: cte_name.clone(),
                                     column_name: alias.clone(),
-                                },
-                            );
+                                }
+                            };
+                            with_scope.add_variable(alias.clone(), var_source);
                         }
                     }
                     with_scope
@@ -414,7 +494,7 @@ impl VariableResolver {
                 log::debug!("🔍 VariableResolver: Processing Filter");
 
                 // Resolve input first
-                let input_resolved = self.resolve(filter.input.clone(), scope)?;
+                let input_resolved = self.resolve(filter.input.clone(), scope, plan_ctx)?;
                 let input_changed = input_resolved.is_yes();
                 let new_input = input_resolved.get_plan();
 
@@ -440,7 +520,7 @@ impl VariableResolver {
             LogicalPlan::OrderBy(order) => {
                 log::debug!("🔍 VariableResolver: Processing OrderBy");
 
-                let input_resolved = self.resolve(order.input.clone(), scope)?;
+                let input_resolved = self.resolve(order.input.clone(), scope, plan_ctx)?;
                 let input_changed = input_resolved.is_yes();
                 let new_input = input_resolved.get_plan();
 
@@ -476,7 +556,7 @@ impl VariableResolver {
             LogicalPlan::GroupBy(gb) => {
                 log::debug!("🔍 VariableResolver: Processing GroupBy");
 
-                let input_resolved = self.resolve(gb.input.clone(), scope)?;
+                let input_resolved = self.resolve(gb.input.clone(), scope, plan_ctx)?;
                 let input_changed = input_resolved.is_yes();
                 let new_input = input_resolved.get_plan();
 
@@ -520,7 +600,7 @@ impl VariableResolver {
                 );
 
                 // Step 1: Resolve input using current scope
-                let input_resolved = self.resolve(unwind.input.clone(), scope)?;
+                let input_resolved = self.resolve(unwind.input.clone(), scope, plan_ctx)?;
                 let input_changed = input_resolved.is_yes();
                 let new_input = input_resolved.get_plan();
 
@@ -581,7 +661,7 @@ impl VariableResolver {
                 );
 
                 // Recurse into input with updated scope
-                let input_resolved = self.resolve(gn.input.clone(), &new_scope)?;
+                let input_resolved = self.resolve(gn.input.clone(), &new_scope, plan_ctx)?;
 
                 if input_resolved.is_yes() {
                     let new_gn = crate::query_planner::logical_plan::GraphNode {
@@ -652,7 +732,7 @@ impl VariableResolver {
                 }
 
                 // Recurse into left, center, right
-                let left_resolved = self.resolve(rel.left.clone(), &new_scope)?;
+                let left_resolved = self.resolve(rel.left.clone(), &new_scope, plan_ctx)?;
 
                 // CRITICAL FIX: If left is a WithClause, extract its exported scope for center/right
                 // This handles chained WITHs like: WITH a MATCH (a)-[:FOLLOWS]->(b) WITH a,b MATCH ...
@@ -681,8 +761,10 @@ impl VariableResolver {
                     }
                 };
 
-                let center_resolved = self.resolve(rel.center.clone(), &center_right_scope)?;
-                let right_resolved = self.resolve(rel.right.clone(), &center_right_scope)?;
+                let center_resolved =
+                    self.resolve(rel.center.clone(), &center_right_scope, plan_ctx)?;
+                let right_resolved =
+                    self.resolve(rel.right.clone(), &center_right_scope, plan_ctx)?;
 
                 // Always create new GraphRel if we found CTE references, even if children didn't change
                 let has_cte_refs = !cte_refs.is_empty() && cte_refs != rel.cte_references;
@@ -735,7 +817,7 @@ impl VariableResolver {
                 }
 
                 // Recurse into input with updated scope
-                let input_resolved = self.resolve(gj.input.clone(), &new_scope)?;
+                let input_resolved = self.resolve(gj.input.clone(), &new_scope, plan_ctx)?;
 
                 if input_resolved.is_yes() {
                     let new_gj = crate::query_planner::logical_plan::GraphJoins {
@@ -753,7 +835,7 @@ impl VariableResolver {
             }
 
             LogicalPlan::Skip(skip) => {
-                let input_resolved = self.resolve(skip.input.clone(), scope)?;
+                let input_resolved = self.resolve(skip.input.clone(), scope, plan_ctx)?;
                 if input_resolved.is_yes() {
                     let new_skip = crate::query_planner::logical_plan::Skip {
                         input: input_resolved.get_plan(),
@@ -766,7 +848,7 @@ impl VariableResolver {
             }
 
             LogicalPlan::Limit(limit) => {
-                let input_resolved = self.resolve(limit.input.clone(), scope)?;
+                let input_resolved = self.resolve(limit.input.clone(), scope, plan_ctx)?;
                 if input_resolved.is_yes() {
                     let new_limit = crate::query_planner::logical_plan::Limit {
                         input: input_resolved.get_plan(),
@@ -783,7 +865,7 @@ impl VariableResolver {
                 let mut new_inputs = Vec::new();
 
                 for input in &union.inputs {
-                    let transformed = self.resolve(input.clone(), scope)?;
+                    let transformed = self.resolve(input.clone(), scope, plan_ctx)?;
                     if transformed.is_yes() {
                         any_transformed = true;
                     }
@@ -802,8 +884,8 @@ impl VariableResolver {
             }
 
             LogicalPlan::CartesianProduct(cp) => {
-                let left = self.resolve(cp.left.clone(), scope)?;
-                let right = self.resolve(cp.right.clone(), scope)?;
+                let left = self.resolve(cp.left.clone(), scope, plan_ctx)?;
+                let right = self.resolve(cp.right.clone(), scope, plan_ctx)?;
 
                 if left.is_yes() || right.is_yes() {
                     let new_cp = crate::query_planner::logical_plan::CartesianProduct {
@@ -891,6 +973,26 @@ impl VariableResolver {
                             alias.0
                         );
                         Ok(expr.clone())
+                    }
+
+                    Some(VarSource::CteEntity {
+                        cte_name,
+                        alias: original_alias,
+                        entity_type,
+                    }) => {
+                        // This is a node/relationship exported through a CTE
+                        // Create CteEntityRef so renderer knows to expand it to all columns
+                        log::info!(
+                            "🔍 VariableResolver: '{}' is CteEntity from '{}', creating CteEntityRef",
+                            original_alias,
+                            cte_name
+                        );
+                        Ok(LogicalExpr::CteEntityRef(CteEntityRef {
+                            cte_name: cte_name.clone(),
+                            alias: original_alias.clone(),
+                            entity_type: entity_type.clone(),
+                            columns: vec![], // Columns determined by renderer from schema
+                        }))
                     }
 
                     Some(VarSource::Parameter { .. }) => {
@@ -1086,8 +1188,8 @@ impl AnalyzerPass for VariableResolver {
         // Start with root scope (no variables)
         let root_scope = ScopeContext::root();
 
-        // Resolve the entire plan tree
-        let result = self.resolve(logical_plan, &root_scope)?;
+        // Resolve the entire plan tree, passing plan_ctx for TypedVariable lookup
+        let result = self.resolve(logical_plan, &root_scope, Some(plan_ctx))?;
 
         // DEBUG: Check result cte_references
         fn count_cte_refs(plan: &LogicalPlan) -> usize {

@@ -97,16 +97,9 @@ def setup_group_membership_tables(client):
     """Create group_membership test tables and data."""
     print("\nSetting up group_membership tables...")
     
-    # Create users table (if not exists from other tests)
-    client.command(f"""
-        CREATE TABLE IF NOT EXISTS {TEST_DATABASE}.users (
-            id UInt32,
-            name String,
-            email String
-        ) ENGINE = MergeTree()
-        ORDER BY id
-    """)
-    print("  ✓ Created users table")
+    # Note: users table already exists from other tests with user_id, name, email, etc.
+    # We'll use the existing users table
+    print("  ✓ Using existing users table")
     
     # Create groups table
     client.command(f"""
@@ -131,20 +124,6 @@ def setup_group_membership_tables(client):
     """)
     print("  ✓ Created memberships table")
     
-    # Insert sample users (reuse some from other tests, add new ones)
-    client.command(f"""
-        INSERT INTO {TEST_DATABASE}.users VALUES
-            (1, 'Alice', 'alice@example.com'),
-            (2, 'Bob', 'bob@example.com'),
-            (3, 'Charlie', 'charlie@example.com'),
-            (4, 'Diana', 'diana@example.com'),
-            (5, 'Eve', 'eve@example.com'),
-            (6, 'Frank', 'frank@example.com'),
-            (7, 'Grace', 'grace@example.com'),
-            (8, 'Henry', 'henry@example.com')
-    """)
-    print("  ✓ Inserted 8 users")
-    
     # Insert sample groups
     client.command(f"""
         INSERT INTO {TEST_DATABASE}.groups VALUES
@@ -156,7 +135,7 @@ def setup_group_membership_tables(client):
     """)
     print("  ✓ Inserted 5 groups")
     
-    # Insert memberships
+    # Insert memberships - use existing user_ids from test_integration.users (1-100)
     client.command(f"""
         INSERT INTO {TEST_DATABASE}.memberships VALUES
             (1, 100, '2023-01-01', 'admin'),
@@ -170,12 +149,12 @@ def setup_group_membership_tables(client):
             (8, 100, '2023-06-01', 'member')
     """)
     print("  ✓ Inserted 9 memberships")
-    print("  Group structure:")
-    print("    Engineering (100): Alice (admin), Bob, Charlie, Henry")
-    print("    Design (101): Diana (admin), Eve")
-    print("    Product (102): Frank")
-    print("    Admin (103): Alice (admin)")
-    print("    External (104): Grace (viewer)")
+    print("  Group structure (using existing users 1-8):")
+    print("    Engineering (100): User 1 (admin), User 2, User 3, User 8")
+    print("    Design (101): User 4 (admin), User 5")
+    print("    Product (102): User 6")
+    print("    Admin (103): User 1 (admin)")
+    print("    External (104): User 7 (viewer)")
 
 
 def main():

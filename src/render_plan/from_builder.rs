@@ -539,8 +539,35 @@ impl LogicalPlan {
                 LogicalPlan::GraphRel(gr) => Some(gr),
                 LogicalPlan::Projection(proj) => find_graph_rel(&proj.input),
                 LogicalPlan::Filter(filter) => find_graph_rel(&filter.input),
+                LogicalPlan::GroupBy(group_by) => find_graph_rel(&group_by.input),
                 LogicalPlan::Unwind(u) => find_graph_rel(&u.input),
                 LogicalPlan::GraphJoins(gj) => find_graph_rel(&gj.input),
+                _ => None,
+            }
+        }
+
+        // Helper to find VLP GraphRel specifically (for chained patterns)
+        // This traverses the entire plan tree to find a GraphRel with variable_length
+        fn find_vlp_graph_rel(plan: &LogicalPlan) -> Option<&GraphRel> {
+            match plan {
+                LogicalPlan::GraphRel(gr) => {
+                    // Check this GraphRel first
+                    if gr.variable_length.is_some() {
+                        return Some(gr);
+                    }
+                    // Check left side (for chained patterns like (a)-[*]->(b)-[:REL]->(c))
+                    if let Some(vlp) = find_vlp_graph_rel(&gr.left) {
+                        return Some(vlp);
+                    }
+                    // Check right side
+                    find_vlp_graph_rel(&gr.right)
+                }
+                LogicalPlan::Projection(proj) => find_vlp_graph_rel(&proj.input),
+                LogicalPlan::Filter(filter) => find_vlp_graph_rel(&filter.input),
+                LogicalPlan::GroupBy(group_by) => find_vlp_graph_rel(&group_by.input),
+                LogicalPlan::Unwind(u) => find_vlp_graph_rel(&u.input),
+                LogicalPlan::GraphJoins(gj) => find_vlp_graph_rel(&gj.input),
+                LogicalPlan::GraphNode(gn) => find_vlp_graph_rel(&gn.input),
                 _ => None,
             }
         }
@@ -551,6 +578,7 @@ impl LogicalPlan {
                 LogicalPlan::GraphNode(gn) => Some(gn),
                 LogicalPlan::Projection(proj) => find_graph_node(&proj.input),
                 LogicalPlan::Filter(filter) => find_graph_node(&filter.input),
+                LogicalPlan::GroupBy(group_by) => find_graph_node(&group_by.input),
                 LogicalPlan::Unwind(u) => find_graph_node(&u.input),
                 LogicalPlan::GraphJoins(gj) => find_graph_node(&gj.input),
                 _ => None,
@@ -583,31 +611,32 @@ impl LogicalPlan {
             log::debug!("📋 No joins - checking for special patterns");
 
             // A.1: Check for variable-length path FIRST (before other checks)
+            // Use find_vlp_graph_rel to search entire plan tree (handles chained patterns)
+            if let Some(graph_rel) = find_vlp_graph_rel(&graph_joins.input) {
+                log::info!(
+                    "🎯 VARIABLE-LENGTH: Using CTE as FROM for path '{}'",
+                    graph_rel.alias
+                );
+
+                // TODO: Extract CTE naming logic to shared utility function
+                // Current duplication: plan_builder.rs (here and lines 965-986),
+                // plan_builder_utils.rs (lines 1152-1167 with multi-type support)
+                // Note: This handles single-type VLP only. Multi-type VLP uses
+                // vlp_multi_type_{start}_{end} format (see plan_builder_utils.rs)
+                let start_alias = &graph_rel.left_connection;
+                let end_alias = &graph_rel.right_connection;
+                let cte_name = format!("vlp_{}_{}", start_alias, end_alias);
+
+                return Ok(Some(ViewTableRef {
+                    source: Arc::new(LogicalPlan::Empty),
+                    name: cte_name,
+                    alias: Some("t".to_string()), // Standard VLP alias
+                    use_final: false,
+                }));
+            }
+
+            // A.2: Denormalized edge pattern - use edge table directly
             if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
-                if graph_rel.variable_length.is_some() {
-                    log::info!(
-                        "🎯 VARIABLE-LENGTH: Using CTE as FROM for path '{}'",
-                        graph_rel.alias
-                    );
-
-                    // TODO: Extract CTE naming logic to shared utility function
-                    // Current duplication: plan_builder.rs (here and lines 965-986),
-                    // plan_builder_utils.rs (lines 1152-1167 with multi-type support)
-                    // Note: This handles single-type VLP only. Multi-type VLP uses
-                    // vlp_multi_type_{start}_{end} format (see plan_builder_utils.rs)
-                    let start_alias = &graph_rel.left_connection;
-                    let end_alias = &graph_rel.right_connection;
-                    let cte_name = format!("vlp_{}_{}", start_alias, end_alias);
-
-                    return Ok(Some(ViewTableRef {
-                        source: Arc::new(LogicalPlan::Empty),
-                        name: cte_name,
-                        alias: graph_rel.path_variable.clone(),
-                        use_final: false,
-                    }));
-                }
-
-                // A.2: Denormalized edge pattern - use edge table directly
                 if let LogicalPlan::ViewScan(rel_scan) = graph_rel.center.as_ref() {
                     if rel_scan.from_node_properties.is_some()
                         || rel_scan.to_node_properties.is_some()
@@ -693,6 +722,33 @@ impl LogicalPlan {
         //
         // ALSO: After WITH scope barriers, anchor_table may be None if the original anchor
         // was not exported by the WITH. In this case, pick the first join as anchor.
+
+        // B.0: CRITICAL - Check for VLP in input FIRST
+        // When VLP is followed by additional relationships (chained pattern like
+        // (a)-[*]->(b)-[:REL]->(c)), the anchor might be set to 'b', but we need
+        // the VLP CTE as FROM, with 'b' being accessed via t.end_* columns.
+        // IMPORTANT: Use find_vlp_graph_rel to traverse nested GraphRels and find VLP
+        // inside chained patterns. find_graph_rel only finds the outermost GraphRel.
+        if let Some(graph_rel) = find_vlp_graph_rel(&graph_joins.input) {
+            // find_vlp_graph_rel already checks variable_length.is_some()
+            let start_alias = &graph_rel.left_connection;
+            let end_alias = &graph_rel.right_connection;
+            let cte_name = format!("vlp_{}_{}", start_alias, end_alias);
+
+            log::info!(
+                "🎯 VLP + CHAINED: Using CTE '{}' as FROM (anchor was '{:?}' but is part of VLP)",
+                cte_name,
+                graph_joins.anchor_table
+            );
+
+            return Ok(Some(ViewTableRef {
+                source: Arc::new(LogicalPlan::Empty),
+                name: cte_name,
+                alias: Some("t".to_string()), // Standard VLP alias
+                use_final: false,
+            }));
+        }
+
         if let Some(anchor_alias) = &graph_joins.anchor_table {
             log::info!(
                 "🔍 No FROM marker in joins, looking for anchor '{}' in input plan",

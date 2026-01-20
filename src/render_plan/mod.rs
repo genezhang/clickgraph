@@ -241,6 +241,9 @@ pub struct Cte {
     // NOT Domain.node_id = "name" (that's the logical name, not the column)
     pub vlp_start_id_col: Option<String>, // Actual ID column for start node JOIN (from rel.from_id)
     pub vlp_end_id_col: Option<String>,   // Actual ID column for end node JOIN (from rel.to_id)
+    // Path variable name from Cypher (e.g., "p" in MATCH p = (a)-[*]->(b))
+    // Used for rewriting path functions like length(p) → hop_count
+    pub vlp_path_variable: Option<String>,
 }
 
 impl Cte {
@@ -258,6 +261,7 @@ impl Cte {
             vlp_cypher_end_alias: None,
             vlp_start_id_col: None,
             vlp_end_id_col: None,
+            vlp_path_variable: None,
         }
     }
 
@@ -274,6 +278,7 @@ impl Cte {
         cypher_end_alias: String,
         start_id_col: String, // 🔧 FIX: Add ID columns from relationship schema
         end_id_col: String,
+        path_variable: Option<String>, // Path variable name from Cypher (e.g., "p")
     ) -> Self {
         Self {
             cte_name,
@@ -287,6 +292,7 @@ impl Cte {
             vlp_cypher_end_alias: Some(cypher_end_alias),
             vlp_start_id_col: Some(start_id_col),
             vlp_end_id_col: Some(end_id_col),
+            vlp_path_variable: path_variable,
         }
     }
 }

@@ -10,9 +10,11 @@ use crate::{
     graph_catalog::{graph_schema::GraphSchema, pattern_schema::PatternSchemaContext},
     query_planner::{
         analyzer::property_requirements::PropertyRequirements,
+        join_context::VlpEndpointInfo,
         logical_expr::{LogicalExpr, Property},
         logical_plan::ProjectionItem,
         plan_ctx::errors::PlanCtxError,
+        typed_variable::{CollectionElementType, TypedVariable, VariableRegistry, VariableSource},
     },
 };
 
@@ -285,6 +287,17 @@ pub struct PlanCtx {
     /// Enables property resolver to determine node access strategies (OwnTable vs EmbeddedInEdge)
     /// and make role (from/to) explicit via NodeAccessStrategy::is_from_node field
     pattern_contexts: HashMap<String, Arc<PatternSchemaContext>>,
+    /// **NEW (Jan 2026)**: VLP endpoint tracking for correct JOIN generation
+    /// Map: Cypher alias (e.g., "u2") → VlpEndpointInfo
+    /// When a node is a VLP endpoint, subsequent JOINs must reference the CTE
+    /// (e.g., `t.end_id` instead of `u2.user_id`)
+    /// Populated by graph_join_inference.rs when VLP patterns are detected
+    vlp_endpoints: HashMap<String, VlpEndpointInfo>,
+    /// **NEW (Jan 2026)**: Typed variable registry for unified variable tracking
+    /// This is the single source of truth for variable types across the query.
+    /// Replaces fragmented type tracking in TableCtx and ScopeContext.
+    /// See docs/development/variable-type-system-design.md for architecture.
+    variables: VariableRegistry,
 }
 
 impl PlanCtx {
@@ -294,6 +307,38 @@ impl PlanCtx {
             alias,
             self.in_optional_match_mode
         );
+
+        // NEW (Jan 2026): Also register in typed variable system
+        // This keeps both systems in sync during migration period
+        let labels = table_ctx.get_labels().cloned().unwrap_or_default();
+        if table_ctx.is_relation() {
+            // It's a relationship variable
+            self.variables.define_relationship(
+                alias.clone(),
+                labels,
+                table_ctx.get_from_node_label().cloned(),
+                table_ctx.get_to_node_label().cloned(),
+                VariableSource::Match,
+            );
+        } else if table_ctx.is_path_variable() {
+            // It's a path variable (no labels, not a relationship)
+            // Note: We don't have full path info here (start/end nodes, bounds),
+            // so we register a basic path. The full info would need to be passed
+            // from the caller or set via define_path() directly.
+            self.variables.define_path(
+                alias.clone(),
+                None,  // start_node - not available from TableCtx
+                None,  // end_node - not available from TableCtx
+                None,  // relationship - not available from TableCtx
+                None,  // length_bounds - not available from TableCtx
+                false, // is_shortest_path - would need explicit flag
+            );
+        } else {
+            // It's a node variable
+            self.variables
+                .define_node(alias.clone(), labels, VariableSource::Match);
+        }
+
         self.alias_table_ctx_map.insert(alias.clone(), table_ctx);
 
         // Auto-mark as optional if we're in OPTIONAL MATCH mode
@@ -511,6 +556,8 @@ impl PlanCtx {
             property_requirements: None,
             max_inferred_types: 5,
             pattern_contexts: HashMap::new(),
+            vlp_endpoints: HashMap::new(),
+            variables: VariableRegistry::new(),
         }
     }
 
@@ -533,6 +580,8 @@ impl PlanCtx {
             property_requirements: None,
             max_inferred_types: 5,
             pattern_contexts: HashMap::new(),
+            vlp_endpoints: HashMap::new(),
+            variables: VariableRegistry::new(),
         }
     }
 
@@ -569,6 +618,8 @@ impl PlanCtx {
             property_requirements: None,
             max_inferred_types,
             pattern_contexts: HashMap::new(),
+            vlp_endpoints: HashMap::new(),
+            variables: VariableRegistry::new(),
         }
     }
 
@@ -601,6 +652,8 @@ impl PlanCtx {
             property_requirements: None,
             max_inferred_types: parent.max_inferred_types,
             pattern_contexts: HashMap::new(), // New scope - patterns computed fresh
+            vlp_endpoints: parent.vlp_endpoints.clone(), // Inherit VLP endpoint info from parent
+            variables: VariableRegistry::new(), // Fresh variable registry for new scope
         }
     }
 
@@ -626,6 +679,8 @@ impl PlanCtx {
             property_requirements: None,
             max_inferred_types: 4,
             pattern_contexts: HashMap::new(),
+            vlp_endpoints: HashMap::new(),
+            variables: VariableRegistry::new(),
         }
     }
 
@@ -783,13 +838,50 @@ impl PlanCtx {
                     labels
                 );
 
-                entity_types.insert(alias.clone(), (is_rel, labels));
+                entity_types.insert(alias.clone(), (is_rel, labels.clone()));
+
+                // NEW (Jan 2026): Also update typed variable system with CTE source
+                // This keeps track of which CTE the variable came from
+                if is_rel {
+                    self.variables.define_relationship(
+                        alias.clone(),
+                        labels.unwrap_or_default(),
+                        table_ctx.get_from_node_label().cloned(),
+                        table_ctx.get_to_node_label().cloned(),
+                        VariableSource::Cte {
+                            cte_name: cte_name.to_string(),
+                        },
+                    );
+                } else if table_ctx.is_path_variable() {
+                    // Path variable exported through CTE
+                    self.variables
+                        .define_path(alias.clone(), None, None, None, None, false);
+                    // Note: Path info is limited when passing through CTE
+                } else {
+                    self.variables.define_node(
+                        alias.clone(),
+                        labels.unwrap_or_default(),
+                        VariableSource::Cte {
+                            cte_name: cte_name.to_string(),
+                        },
+                    );
+                }
             } else {
                 // Alias not found in current scope - might be from parent scope or error
+                // Could be a scalar/aggregation from the WITH clause
                 log::warn!(
-                    "⚠️  CTE '{}' exports alias '{}' but no TableCtx found in scope",
+                    "⚠️  CTE '{}' exports alias '{}' but no TableCtx found in scope (may be scalar)",
                     cte_name,
                     alias
+                );
+
+                // NEW (Jan 2026): Register as scalar since it's not in TableCtx
+                // This handles aggregation results like COUNT(x) AS cnt
+                self.variables.define_scalar(
+                    alias.clone(),
+                    VariableSource::Cte {
+                        cte_name: cte_name.to_string(),
+                    },
                 );
             }
         }
@@ -929,6 +1021,63 @@ impl PlanCtx {
     pub fn get_all_pattern_contexts(&self) -> &HashMap<String, Arc<PatternSchemaContext>> {
         &self.pattern_contexts
     }
+
+    // ========================================================================
+    // VLP Endpoint Tracking (for VLP+chained pattern JOIN generation)
+    // ========================================================================
+
+    /// Register a VLP endpoint (node that's part of a variable-length path).
+    /// When generating JOINs for subsequent patterns, these endpoints should
+    /// reference the VLP CTE (t.start_id/t.end_id) instead of the original table.
+    pub fn register_vlp_endpoint(&mut self, alias: String, info: VlpEndpointInfo) {
+        log::debug!(
+            "🔧 PlanCtx::register_vlp_endpoint: alias='{}', position={:?}, other='{}', rel='{}'",
+            alias,
+            info.position,
+            info.other_endpoint_alias,
+            info.rel_alias
+        );
+        self.vlp_endpoints.insert(alias, info);
+    }
+
+    /// Register multiple VLP endpoints at once (convenience method).
+    pub fn register_vlp_endpoints(&mut self, endpoints: HashMap<String, VlpEndpointInfo>) {
+        for (alias, info) in endpoints {
+            self.register_vlp_endpoint(alias, info);
+        }
+    }
+
+    /// Check if an alias is a VLP endpoint (needs CTE reference translation).
+    pub fn is_vlp_endpoint(&self, alias: &str) -> bool {
+        self.vlp_endpoints.contains_key(alias)
+    }
+
+    /// Get VLP endpoint info for an alias.
+    pub fn get_vlp_endpoint(&self, alias: &str) -> Option<&VlpEndpointInfo> {
+        self.vlp_endpoints.get(alias)
+    }
+
+    /// Get all VLP endpoints (for debugging or bulk operations).
+    pub fn get_vlp_endpoints(&self) -> &HashMap<String, VlpEndpointInfo> {
+        &self.vlp_endpoints
+    }
+
+    /// Get the proper (table_alias, column) for a JOIN condition, accounting for VLP endpoints.
+    ///
+    /// This is the key method for fixing VLP+chained patterns:
+    /// - For regular nodes: returns (alias, column) unchanged
+    /// - For VLP endpoints: returns ("t", "start_id"/"end_id")
+    pub fn get_vlp_join_reference(&self, alias: &str, default_column: &str) -> (String, String) {
+        use crate::query_planner::join_context::JoinContext;
+        if let Some(vlp_info) = self.vlp_endpoints.get(alias) {
+            (
+                JoinContext::VLP_CTE_DEFAULT_ALIAS.to_string(),
+                vlp_info.cte_column().to_string(),
+            )
+        } else {
+            (alias.to_string(), default_column.to_string())
+        }
+    }
 }
 
 impl TableCtx {
@@ -953,5 +1102,244 @@ impl TableCtx {
             pad, self.explicit_alias
         )?;
         Ok(())
+    }
+}
+
+// ============================================================================
+// Typed Variable API (NEW Jan 2026)
+// See docs/development/variable-type-system-design.md
+// ============================================================================
+
+impl PlanCtx {
+    // ========================================================================
+    // Variable Definition Methods (populate during MATCH/WITH processing)
+    // ========================================================================
+
+    /// Define a node variable in the current scope
+    ///
+    /// # Arguments
+    /// * `name` - Variable name (e.g., "a", "user")
+    /// * `labels` - Node labels (e.g., ["User"])
+    ///
+    /// # Example
+    /// ```text
+    /// MATCH (a:User) → plan_ctx.define_node("a", vec!["User"])
+    /// ```
+    pub fn define_node(&mut self, name: impl Into<String>, labels: Vec<String>) {
+        self.variables
+            .define_node(name, labels, VariableSource::Match);
+    }
+
+    /// Define a node variable from a CTE export
+    ///
+    /// # Arguments
+    /// * `name` - Variable name
+    /// * `labels` - Node labels (preserved from original)
+    /// * `cte_name` - The CTE name (e.g., "with_a_cte_1")
+    pub fn define_node_from_cte(
+        &mut self,
+        name: impl Into<String>,
+        labels: Vec<String>,
+        cte_name: String,
+    ) {
+        self.variables
+            .define_node(name, labels, VariableSource::Cte { cte_name });
+    }
+
+    /// Define a relationship variable in the current scope
+    ///
+    /// # Arguments
+    /// * `name` - Variable name (e.g., "r", "follows")
+    /// * `rel_types` - Relationship types (e.g., ["FOLLOWS"])
+    /// * `from_label` - Label of source node (for polymorphic resolution)
+    /// * `to_label` - Label of target node (for polymorphic resolution)
+    ///
+    /// # Example
+    /// ```text
+    /// MATCH (a)-[r:FOLLOWS]->(b) → plan_ctx.define_relationship("r", vec!["FOLLOWS"], Some("User"), Some("User"))
+    /// ```
+    pub fn define_relationship(
+        &mut self,
+        name: impl Into<String>,
+        rel_types: Vec<String>,
+        from_label: Option<String>,
+        to_label: Option<String>,
+    ) {
+        self.variables.define_relationship(
+            name,
+            rel_types,
+            from_label,
+            to_label,
+            VariableSource::Match,
+        );
+    }
+
+    /// Define a relationship variable from a CTE export
+    pub fn define_relationship_from_cte(
+        &mut self,
+        name: impl Into<String>,
+        rel_types: Vec<String>,
+        from_label: Option<String>,
+        to_label: Option<String>,
+        cte_name: String,
+    ) {
+        self.variables.define_relationship(
+            name,
+            rel_types,
+            from_label,
+            to_label,
+            VariableSource::Cte { cte_name },
+        );
+    }
+
+    /// Define a scalar variable (from aggregation, expression, etc.)
+    ///
+    /// # Arguments
+    /// * `name` - Variable name (e.g., "count", "total")
+    /// * `cte_name` - The CTE name where this scalar was computed
+    ///
+    /// # Example
+    /// ```text
+    /// WITH count(b) as follower_count → plan_ctx.define_scalar("follower_count", "with_cte_1")
+    /// ```
+    pub fn define_scalar(&mut self, name: impl Into<String>, cte_name: String) {
+        self.variables
+            .define_scalar(name, VariableSource::Cte { cte_name });
+    }
+
+    /// Define a scalar from UNWIND
+    pub fn define_scalar_from_unwind(&mut self, name: impl Into<String>, source_array: String) {
+        self.variables
+            .define_scalar(name, VariableSource::Unwind { source_array });
+    }
+
+    /// Define a path variable
+    ///
+    /// # Arguments
+    /// * `name` - Variable name (e.g., "p", "path")
+    /// * `start_node` - Alias of start node
+    /// * `end_node` - Alias of end node
+    /// * `relationship` - Alias of relationship pattern
+    /// * `length_bounds` - (min, max) hops for variable-length patterns
+    /// * `is_shortest_path` - Whether this is a shortest path pattern
+    ///
+    /// # Example
+    /// ```text
+    /// MATCH p = (a)-[*1..3]->(b) → plan_ctx.define_path("p", Some("a"), Some("b"), None, Some((Some(1), Some(3))), false)
+    /// ```
+    pub fn define_path(
+        &mut self,
+        name: impl Into<String>,
+        start_node: Option<String>,
+        end_node: Option<String>,
+        relationship: Option<String>,
+        length_bounds: Option<(Option<u32>, Option<u32>)>,
+        is_shortest_path: bool,
+    ) {
+        self.variables.define_path(
+            name,
+            start_node,
+            end_node,
+            relationship,
+            length_bounds,
+            is_shortest_path,
+        );
+    }
+
+    /// Define a collection variable
+    ///
+    /// # Arguments
+    /// * `name` - Variable name (e.g., "nodes", "items")
+    /// * `element_type` - What type of elements the collection contains
+    /// * `cte_name` - The CTE name where this collection was computed
+    ///
+    /// # Example
+    /// ```text
+    /// WITH nodes(p) as path_nodes → plan_ctx.define_collection("path_nodes", CollectionElementType::Nodes, "with_cte_1")
+    /// ```
+    pub fn define_collection(
+        &mut self,
+        name: impl Into<String>,
+        element_type: CollectionElementType,
+        cte_name: String,
+    ) {
+        self.variables
+            .define_collection(name, element_type, VariableSource::Cte { cte_name });
+    }
+
+    // ========================================================================
+    // Variable Lookup Methods
+    // ========================================================================
+
+    /// Look up a typed variable by name
+    ///
+    /// This is THE unified lookup method - single source of truth for variable types.
+    /// Replaces fragmented lookup across TableCtx, ScopeContext, etc.
+    ///
+    /// # Returns
+    /// - `Some(&TypedVariable)` if variable exists in current scope
+    /// - `None` if variable not found
+    ///
+    /// # Note
+    /// This method does NOT search parent scopes (yet). Parent scope search
+    /// will be added in Phase 2 when we integrate with existing scope chain.
+    pub fn lookup_variable(&self, name: &str) -> Option<&TypedVariable> {
+        self.variables.lookup(name)
+    }
+
+    /// Check if a typed variable exists
+    pub fn has_variable(&self, name: &str) -> bool {
+        self.variables.contains(name)
+    }
+
+    /// Get all typed variable names in current scope
+    pub fn variable_names(&self) -> impl Iterator<Item = &String> {
+        self.variables.names()
+    }
+
+    /// Get the variable registry (for advanced operations)
+    pub fn variables(&self) -> &VariableRegistry {
+        &self.variables
+    }
+
+    /// Get mutable access to variable registry
+    pub fn variables_mut(&mut self) -> &mut VariableRegistry {
+        &mut self.variables
+    }
+
+    // ========================================================================
+    // CTE Export Methods
+    // ========================================================================
+
+    /// Export variables through a WITH clause to a new CTE
+    ///
+    /// Creates CTE-sourced versions of the specified variables.
+    /// This is called during WITH clause processing.
+    ///
+    /// # Arguments
+    /// * `exported_names` - Names of variables being exported
+    /// * `cte_name` - The CTE name for the WITH clause
+    ///
+    /// # Returns
+    /// A new VariableRegistry containing only exported variables with CTE source
+    ///
+    /// # Example
+    /// ```text
+    /// MATCH (a:User)-[r]->(b) WITH a, count(b) as cnt
+    /// → plan_ctx.export_variables_to_cte(&["a"], "with_a_cnt_cte_1")
+    /// ```
+    pub fn export_variables_to_cte(
+        &self,
+        exported_names: &[&str],
+        cte_name: &str,
+    ) -> VariableRegistry {
+        self.variables.export_to_cte(exported_names, cte_name)
+    }
+
+    /// Import variables from a CTE export into the current scope
+    ///
+    /// Used after WITH clause processing to make exported variables available.
+    pub fn import_variables_from_cte(&mut self, exported: &VariableRegistry) {
+        self.variables.merge_overwrite(exported);
     }
 }

@@ -12,12 +12,14 @@ use crate::{
 
 pub mod analyzer;
 mod errors;
+pub mod join_context;
 pub mod logical_expr;
 pub mod logical_plan;
 pub mod optimizer;
 pub mod plan_ctx;
 pub mod transformed;
 pub mod translator;
+pub mod typed_variable;
 pub mod types;
 
 pub fn get_query_type(query_ast: &OpenCypherQueryAst) -> QueryType {

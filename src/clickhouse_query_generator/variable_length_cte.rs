@@ -848,6 +848,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             self.end_cypher_alias.clone(),     // Add Cypher alias
             self.start_node_id_column.clone(), // 🔧 FIX: Pass actual ID columns (from rel schema)
             self.end_node_id_column.clone(),
+            self.path_variable.clone(), // Path variable for length(p), nodes(p) rewriting
         )
     }
 
@@ -957,16 +958,19 @@ impl<'a> VariableLengthCteGenerator<'a> {
             query_body.push_str("\n    UNION ALL\n");
 
             let default_depth = if max_hops.is_none() {
-                // Unbounded case: use reasonable default based on query type
+                // Unbounded case: use conservative default to prevent memory exhaustion
+                // In dense graphs, each hop can multiply rows exponentially
+                // Users who need longer paths should specify explicit bounds
                 if self.shortest_path_mode.is_some() {
-                    // For shortestPath queries, use lower limit to prevent memory exhaustion
+                    // For shortestPath queries, use lower limit
                     // Most social graphs have small-world property (6 degrees of separation)
-                    // If users need longer paths, they should specify explicit bounds
                     5
                 } else if min_hops == 0 {
                     3 // Lower limit for zero-hop base queries
                 } else {
-                    10 // Standard default for regular variable-length paths
+                    // Standard default for regular variable-length paths
+                    // Reduced from 10 to 5 to prevent row explosion in dense graphs
+                    5
                 }
             } else {
                 max_hops.unwrap()
@@ -1339,10 +1343,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Add properties for start node (which is also the end node)
         for prop in &self.properties {
             if prop.cypher_alias == self.start_cypher_alias {
-                // Skip ID column - already added as start_id above (line 1039-1042)
-                if prop.column_name == self.start_node_id_column {
-                    continue;
-                }
+                // 🔧 BUG #8 FIX: Don't skip node_id if it's also a user-visible property
+                // Some schemas (like filesystem) have node_id as a queryable property
+                // Skip only avoids adding it again, but we still need it accessible by its Cypher name
+                // OLD: if prop.column_name == self.start_node_id_column { continue; }
+                // NEW: Always add the property, even if it duplicates start_id
                 select_items.push(format!(
                     "{}.{} as start_{}",
                     self.start_node_alias, prop.column_name, prop.alias
@@ -1350,10 +1355,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
             }
             // For zero-hop, end properties are same as start properties
             if prop.cypher_alias == self.end_cypher_alias {
-                // Skip ID column - already added as end_id above (line 1044-1048)
-                if prop.column_name == self.end_node_id_column {
-                    continue;
-                }
+                // 🔧 BUG #8 FIX: Don't skip node_id if it's also a user-visible property
+                // OLD: if prop.column_name == self.end_node_id_column { continue; }
+                // NEW: Always add the property, even if it duplicates end_id
                 select_items.push(format!(
                     "{}.{} as end_{}",
                     self.start_node_alias, prop.column_name, prop.alias
@@ -1453,10 +1457,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             for prop in &self.properties {
                 if prop.cypher_alias == self.start_cypher_alias {
                     // Property belongs to start node
-                    // Skip ID column - already added as start_id above (line 1141-1143)
-                    if prop.column_name == self.start_node_id_column {
-                        continue;
-                    }
+                    // 🔧 BUG #8 FIX: Don't skip node_id - allow it as a user-visible property
                     select_items.push(format!(
                         "{}.{} as start_{}",
                         self.start_node_alias, prop.column_name, prop.alias
@@ -1464,10 +1465,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 }
                 if prop.cypher_alias == self.end_cypher_alias {
                     // Property belongs to end node
-                    // Skip ID column - already added as end_id above (line 1145-1147)
-                    if prop.column_name == self.end_node_id_column {
-                        continue;
-                    }
+                    // 🔧 BUG #8 FIX: Don't skip node_id - allow it as a user-visible property
                     select_items.push(format!(
                         "{}.{} as end_{}",
                         self.end_node_alias, prop.column_name, prop.alias
@@ -1610,18 +1608,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
         for prop in &self.properties {
             if prop.cypher_alias == self.start_cypher_alias {
                 // Start node properties pass through from CTE
-                // Skip ID column - already passed through as vp.start_id above (line 1285)
-                if prop.column_name == self.start_node_id_column {
-                    continue;
-                }
+                // 🔧 BUG #8 FIX: Don't skip node_id - allow it as a user-visible property
                 select_items.push(format!("vp.start_{} as start_{}", prop.alias, prop.alias));
             }
             if prop.cypher_alias == self.end_cypher_alias {
                 // End node properties come from the newly joined node
-                // Skip ID column - already added as end_id above (line 1287-1289)
-                if prop.column_name == self.end_node_id_column {
-                    continue;
-                }
+                // 🔧 BUG #8 FIX: Don't skip node_id - allow it as a user-visible property
                 select_items.push(format!(
                     "{}.{} as end_{}",
                     self.end_node_alias, prop.column_name, prop.alias
@@ -2815,7 +2807,7 @@ mod tests {
 
         // Should contain recursive case
         assert!(sql.contains("UNION ALL"));
-        assert!(sql.contains("hop_count < 10")); // Default max
+        assert!(sql.contains("hop_count < 5")); // Default max (reduced from 10 for memory safety)
     }
     #[test]
     fn test_fixed_length_spec() {
