@@ -900,9 +900,20 @@ impl RenderPlanBuilder for LogicalPlan {
                 Ok(render_plan)
             }
             LogicalPlan::GraphNode(gn) => {
-                // GraphNode is a wrapper around a ViewScan
-                // Recursively convert the input (which should be a ViewScan)
-                gn.input.to_render_plan(schema)
+                // GraphNode is a wrapper around a ViewScan that provides the Cypher alias
+                // We need to preserve this alias in the FROM clause
+                let mut render_plan = gn.input.to_render_plan(schema)?;
+                
+                // Apply GraphNode's alias to the FROM clause
+                if let FromTableItem(Some(ref mut view_ref)) = render_plan.from {
+                    view_ref.alias = Some(gn.alias.clone());
+                    log::debug!(
+                        "GraphNode.to_render_plan: Applied alias '{}' to FROM clause",
+                        gn.alias
+                    );
+                }
+                
+                Ok(render_plan)
             }
             LogicalPlan::ViewScan(vs) => {
                 // ViewScan is a simple table scan - convert to basic RenderPlan
