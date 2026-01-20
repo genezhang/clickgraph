@@ -1,7 +1,7 @@
 # Known Issues
 
-**Active Issues**: 2 bugs, 3 feature limitations  
-**Last Updated**: January 12, 2026
+**Active Issues**: 2 bugs, 4 feature limitations  
+**Last Updated**: January 20, 2026
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -368,19 +368,29 @@ RETURN labels(x)[1] as node_type  // Returns node type
 
 The following Cypher features are **not implemented** (by design - read-only query engine):
 
-### 1. Procedure Calls (APOC/GDS)
+### 1. Variable Alias Renaming in WITH Clause
+**Status**: ⚠️ LIMITATION  
+**Example**: `MATCH (u:User) WITH u AS person RETURN person.name`  
+**Error**: `Property 'name' not found on node 'person'`  
+**Root Cause**: When a variable is renamed via `WITH u AS person`, the type information (Node/Relationship/Scalar) is not propagated to the new alias. The new alias `person` doesn't have the label information needed to resolve property mappings.  
+**Impact**: Blocks queries that use alias renaming patterns  
+**Workaround**: Keep the same alias name: `WITH u RETURN u.name`  
+**Files**: `query_planner/analyzer/filter_tagging.rs`, `typed_variable.rs`  
+**Added**: January 20, 2026
+
+### 2. Procedure Calls (APOC/GDS)
 **Status**: ⚠️ NOT IMPLEMENTED (out of scope)  
 **Example**: `CALL apoc.algo.pageRank(...)`  
 **Reason**: ClickGraph is a SQL query translator, not a procedure runtime  
 **Impact**: Blocks 4 LDBC BI queries (bi-10, bi-15, bi-19, bi-20)
 
-### 2. Bidirectional Relationship Patterns  
+### 3. Bidirectional Relationship Patterns  
 **Status**: ⚠️ NOT IMPLEMENTED (non-standard syntax)  
 **Example**: `(a)<-[:TYPE]->(b)` (both arrows on same relationship)  
 **Workaround**: Use undirected pattern `(a)-[:TYPE]-(b)` or two MATCH clauses  
 **Impact**: Blocks 1 LDBC BI query (bi-17)
 
-### 3. Write Operations
+### 4. Write Operations
 **Status**: ❌ OUT OF SCOPE (read-only by design)  
 **Not Supported**: `CREATE`, `SET`, `DELETE`, `MERGE`, `REMOVE`  
 **Reason**: ClickGraph is a read-only analytical query engine for ClickHouse  
