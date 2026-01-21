@@ -10,9 +10,11 @@
 
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::GraphSchema;
+use crate::query_planner::join_context::{
+    JoinContext, VlpPosition, VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
+};
 use crate::query_planner::logical_expr::{Direction, LogicalExpr};
 use crate::query_planner::logical_plan::{GraphNode, GraphRel, LogicalPlan};
-use crate::query_planner::join_context::{JoinContext, VlpPosition};
 use crate::query_planner::plan_ctx::PlanCtx;
 use crate::render_plan::plan_builder::RenderPlanBuilder;
 use std::collections::{HashMap, HashSet};
@@ -82,14 +84,15 @@ pub fn build_property_mapping_from_columns(
                     property,
                     col_name
                 );
-                
+
                 // ALSO add mapping from ClickHouse column name (from expression) to CTE column
                 // This is needed because SELECT items in outer query use resolved ClickHouse columns
                 if let RenderExpr::PropertyAccessExp(ref pa) = item.expression {
                     if let PropertyValue::Column(ref expr_col) = pa.column {
                         // Only add if different from the Cypher property name
                         if expr_col != &property {
-                            property_mapping.insert((alias.clone(), expr_col.clone()), col_name.clone());
+                            property_mapping
+                                .insert((alias.clone(), expr_col.clone()), col_name.clone());
                             log::debug!(
                                 "  Property mapping (clickhouse): ({}, {}) → {}",
                                 alias,
@@ -111,14 +114,15 @@ pub fn build_property_mapping_from_columns(
                     property,
                     col_name
                 );
-                
+
                 // ALSO add mapping from ClickHouse column name (from expression) to CTE column
                 // This is needed because SELECT items in outer query use resolved ClickHouse columns
                 if let RenderExpr::PropertyAccessExp(ref pa) = item.expression {
                     if let PropertyValue::Column(ref expr_col) = pa.column {
                         // Only add if different from the Cypher property name
                         if expr_col != &property {
-                            property_mapping.insert((alias.clone(), expr_col.clone()), col_name.clone());
+                            property_mapping
+                                .insert((alias.clone(), expr_col.clone()), col_name.clone());
                             log::debug!(
                                 "  Property mapping (clickhouse): ({}, {}) → {}",
                                 alias,
@@ -165,23 +169,25 @@ pub fn rewrite_render_expr_for_vlp(expr: &mut RenderExpr, mappings: &HashMap<Str
                 "path_nodes" | "hop_count" | "path_relationships" | "path_edges"
             ) {
                 log::info!(
-                    "🔄 VLP: Converting Column({}) to PropertyAccessExp(t.{})",
+                    "🔄 VLP: Converting Column({}) to PropertyAccessExp({}.{})",
                     col_name_str,
+                    VLP_CTE_FROM_ALIAS,
                     col_name_str
                 );
-                // Replace Column with PropertyAccessExp using "t" alias
+                // Replace Column with PropertyAccessExp using VLP FROM alias
                 let new_prop_access = PropertyAccess {
-                    table_alias: TableAlias("t".to_string()),
+                    table_alias: TableAlias(VLP_CTE_FROM_ALIAS.to_string()),
                     column: PropertyValue::Column(col_name_str.clone()),
                 };
 
                 // Rewrite the table alias if it's in the mappings
                 let rewritten_alias = mappings
-                    .get("t")
+                    .get(VLP_CTE_FROM_ALIAS)
                     .cloned()
-                    .unwrap_or_else(|| "t".to_string());
+                    .unwrap_or_else(|| VLP_CTE_FROM_ALIAS.to_string());
                 log::info!(
-                    "🔄 Rewriting t.{} → {}.{}",
+                    "🔄 Rewriting {}.{} → {}.{}",
+                    VLP_CTE_FROM_ALIAS,
                     col_name_str,
                     rewritten_alias,
                     col_name_str
@@ -470,9 +476,11 @@ fn rewrite_operator_application_for_cte_join(
     >,
 ) -> OperatorApplication {
     // Rewrite operands to use CTE column names
-    let rewritten_operands: Vec<RenderExpr> = op_app.operands.iter().map(|operand| {
-        rewrite_render_expr_for_cte(operand, cte_alias, cte_references, cte_schemas)
-    }).collect();
+    let rewritten_operands: Vec<RenderExpr> = op_app
+        .operands
+        .iter()
+        .map(|operand| rewrite_render_expr_for_cte(operand, cte_alias, cte_references, cte_schemas))
+        .collect();
 
     OperatorApplication {
         operator: op_app.operator.clone(),
@@ -504,7 +512,10 @@ fn rewrite_render_expr_for_cte(
                 let cte_column = format!("{}_{}", pa.table_alias.0, pa.column.raw());
                 log::warn!(
                     "🔧 Rewriting property access: {}.{} -> {}.{}",
-                    pa.table_alias.0, pa.column.raw(), cte_alias, cte_column
+                    pa.table_alias.0,
+                    pa.column.raw(),
+                    cte_alias,
+                    cte_column
                 );
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(cte_alias.to_string()),
@@ -517,7 +528,10 @@ fn rewrite_render_expr_for_cte(
         }
         RenderExpr::OperatorApplicationExp(inner_op) => {
             RenderExpr::OperatorApplicationExp(rewrite_operator_application_for_cte_join(
-                inner_op, cte_alias, cte_references, cte_schemas
+                inner_op,
+                cte_alias,
+                cte_references,
+                cte_schemas,
             ))
         }
         _ => expr.clone(),
@@ -564,7 +578,10 @@ fn extract_cte_join_condition_from_filter(
                     // If one side is CTE and other is not, this is a join condition
                     if (left_is_cte && !right_is_cte) || (!left_is_cte && right_is_cte) {
                         return Some(rewrite_operator_application_for_cte_join(
-                            op_app, cte_alias, cte_references, cte_schemas
+                            op_app,
+                            cte_alias,
+                            cte_references,
+                            cte_schemas,
                         ));
                     }
                     None
@@ -573,7 +590,11 @@ fn extract_cte_join_condition_from_filter(
                     // Try both operands
                     for operand in &op_app.operands {
                         if let Some(cond) = extract_cte_join_condition_from_filter(
-                            operand, cte_alias, cte_aliases, cte_references, cte_schemas
+                            operand,
+                            cte_alias,
+                            cte_aliases,
+                            cte_references,
+                            cte_schemas,
                         ) {
                             return Some(cond);
                         }
@@ -663,7 +684,7 @@ pub fn extract_vlp_alias_mappings(ctes: &crate::render_plan::CteItems) -> HashMa
             }
         }
 
-        // 🔧 FIX: Map "t" (generic path function alias) to the actual VLP CTE alias
+        // 🔧 FIX: Map VLP FROM alias to the actual VLP CTE alias
         // When rewrite_logical_path_functions converts length(path) → t.hop_count,
         // we need to rewrite "t" to the actual VLP alias (e.g., "vlp1", "vlp2")
         if cte.cte_name.starts_with("vlp_cte") || cte.cte_name.starts_with("chained_path_") {
@@ -672,8 +693,12 @@ pub fn extract_vlp_alias_mappings(ctes: &crate::render_plan::CteItems) -> HashMa
                 .cte_name
                 .replace("vlp_cte", "vlp")
                 .replace("chained_path_", "vlp");
-            log::warn!("🔄 VLP path function mapping: t → {}", vlp_alias);
-            mappings.insert("t".to_string(), vlp_alias.clone());
+            log::warn!(
+                "🔄 VLP path function mapping: {} → {}",
+                VLP_CTE_FROM_ALIAS,
+                vlp_alias
+            );
+            mappings.insert(VLP_CTE_FROM_ALIAS.to_string(), vlp_alias.clone());
 
             // ⚠️ TODO: REMOVE THIS FALLBACK - PROPER FIX REQUIRED
             // See notes/HOLISTIC_FIX_METHODOLOGY.md for details
@@ -864,9 +889,9 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
 
             // Add schema_filter if present (defined in YAML schema)
             if let Some(ref schema_filter) = scan.schema_filter {
-                // Use a default alias for standalone ViewScans
+                // Use the VLP default alias for standalone ViewScans
                 // In practice, these will be wrapped in GraphNode which provides the alias
-                if let Ok(sql) = schema_filter.to_sql("t") {
+                if let Ok(sql) = schema_filter.to_sql(VLP_CTE_FROM_ALIAS) {
                     log::debug!("ViewScan: Adding schema filter: {}", sql);
                     filters.push(RenderExpr::Raw(sql));
                 }
@@ -3681,12 +3706,12 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
     //   - If endpoint JOINs missing → Denormalized VLP → Include endpoint aliases
     let mut vlp_endpoint_aliases: HashSet<String> = HashSet::new();
     let mut endpoint_has_joins: HashMap<String, bool> = HashMap::new();
-    
+
     // 🔧 FIX: Detect aliases that are covered by WITH CTEs
     // If FROM references a `with_*_cte_*` CTE, the corresponding alias should NOT be rewritten
     // because the WITH CTE already provides the aliased columns, not the raw VLP CTE
     let mut aliases_covered_by_with_cte: HashSet<String> = HashSet::new();
-    
+
     // Check if FROM references a WITH CTE
     if let Some(from_ref) = &plan.from.0 {
         if from_ref.name.starts_with("with_") && from_ref.name.contains("_cte_") {
@@ -3694,10 +3719,22 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
             // CTE names are like "with_u2_cte_1" - extract "u2"
             if let Some(alias) = &from_ref.alias {
                 aliases_covered_by_with_cte.insert(alias.clone());
-                log::info!("🔧 VLP: FROM uses WITH CTE '{}' with alias '{}' - excluding from rewrite", from_ref.name, alias);
-            } else if let Some(captured) = from_ref.name.strip_prefix("with_").and_then(|s| s.split("_cte_").next()) {
+                log::info!(
+                    "🔧 VLP: FROM uses WITH CTE '{}' with alias '{}' - excluding from rewrite",
+                    from_ref.name,
+                    alias
+                );
+            } else if let Some(captured) = from_ref
+                .name
+                .strip_prefix("with_")
+                .and_then(|s| s.split("_cte_").next())
+            {
                 aliases_covered_by_with_cte.insert(captured.to_string());
-                log::info!("🔧 VLP: FROM uses WITH CTE '{}' covering alias '{}' - excluding from rewrite", from_ref.name, captured);
+                log::info!(
+                    "🔧 VLP: FROM uses WITH CTE '{}' covering alias '{}' - excluding from rewrite",
+                    from_ref.name,
+                    captured
+                );
             }
         }
     }
@@ -3732,7 +3769,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
                 log::warn!("🔧 VLP: Excluding alias '{}' from rewrite (covered by WITH CTE)", cypher_alias);
                 return false;
             }
-            
+
             let is_endpoint = vlp_endpoint_aliases.contains(cypher_alias);
             if is_endpoint {
                 // If endpoint has a JOIN, exclude from rewrite (properties come from JOIN)
@@ -3981,11 +4018,11 @@ pub(crate) fn replace_wildcards_with_group_by_columns(
 }
 
 /// Detect if an alias is a VLP (Variable-Length Path) endpoint by examining the plan structure.
-/// 
+///
 /// This is a fallback method when plan_ctx is not available during rendering.
 /// It traverses the plan to find GraphRel nodes with variable_length and determines
 /// if the alias is a start or end endpoint.
-/// 
+///
 /// Returns Some(VlpEndpointInfo) if the alias is a VLP endpoint, None otherwise.
 use crate::query_planner::join_context::VlpEndpointInfo;
 
@@ -4006,12 +4043,13 @@ fn detect_vlp_endpoint_from_plan(plan: &LogicalPlan, alias: &str) -> Option<VlpE
                     }
                     return None;
                 }
-                
+
                 // Check if alias matches left_connection (start endpoint)
                 if alias == rel.left_connection {
                     log::debug!(
                         "🔍 detect_vlp_endpoint_from_plan: '{}' is VLP START endpoint (rel='{}')",
-                        alias, rel.alias
+                        alias,
+                        rel.alias
                     );
                     return Some(VlpEndpointInfo {
                         position: VlpPosition::Start,
@@ -4019,12 +4057,13 @@ fn detect_vlp_endpoint_from_plan(plan: &LogicalPlan, alias: &str) -> Option<VlpE
                         rel_alias: rel.alias.clone(),
                     });
                 }
-                
+
                 // Check if alias matches right_connection (end endpoint)
                 if alias == rel.right_connection {
                     log::debug!(
                         "🔍 detect_vlp_endpoint_from_plan: '{}' is VLP END endpoint (rel='{}')",
-                        alias, rel.alias
+                        alias,
+                        rel.alias
                     );
                     return Some(VlpEndpointInfo {
                         position: VlpPosition::End,
@@ -4033,7 +4072,7 @@ fn detect_vlp_endpoint_from_plan(plan: &LogicalPlan, alias: &str) -> Option<VlpE
                     });
                 }
             }
-            
+
             // Not a VLP endpoint in this GraphRel, search children
             if let Some(info) = detect_vlp_endpoint_from_plan(&rel.left, alias) {
                 return Some(info);
@@ -4078,10 +4117,7 @@ fn detect_vlp_endpoint_from_plan(plan: &LogicalPlan, alias: &str) -> Option<VlpE
 /// - For regular nodes: `format!("{}_{}", alias, id_col)` where id_col is from ViewScan
 ///
 /// This is the single source of truth for alias→ID column mapping.
-pub(crate) fn compute_cte_id_column_for_alias(
-    alias: &str,
-    plan: &LogicalPlan,
-) -> Option<String> {
+pub(crate) fn compute_cte_id_column_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
     // Get the ID column from the schema via the plan
     if let Ok(id_col) = plan.find_id_column_for_alias(alias) {
         // Use the same formula as expand_table_alias_to_select_items
@@ -4315,7 +4351,8 @@ pub(crate) fn expand_table_alias_to_select_items(
                 };
 
                 // Get property requirements for pruning optimization
-                let property_requirements = plan_ctx.and_then(|ctx| ctx.get_property_requirements());
+                let property_requirements =
+                    plan_ctx.and_then(|ctx| ctx.get_property_requirements());
 
                 // Generate SELECT items with VLP column naming
                 // VLP CTE columns are named: start_id, end_id, start_city, end_city, etc.
@@ -4336,7 +4373,7 @@ pub(crate) fn expand_table_alias_to_select_items(
                     };
                     items.push(SelectItem {
                         expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias(JoinContext::VLP_CTE_DEFAULT_ALIAS.to_string()),
+                            table_alias: TableAlias(VLP_CTE_FROM_ALIAS.to_string()),
                             column: PropertyValue::Column(vlp_col_name),
                         }),
                         col_alias: Some(ColumnAlias(format!("{}_{}", alias, id_col))),
@@ -4367,7 +4404,7 @@ pub(crate) fn expand_table_alias_to_select_items(
                     // VLP CTE columns are named: end_city, end_name, etc.
                     let vlp_col_name = format!("{}_{}", col_prefix, prop_name);
                     let mut expr = RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: TableAlias(JoinContext::VLP_CTE_DEFAULT_ALIAS.to_string()),
+                        table_alias: TableAlias(VLP_CTE_FROM_ALIAS.to_string()),
                         column: PropertyValue::Column(vlp_col_name),
                     });
 
@@ -4487,6 +4524,8 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
         ),
     >,
     cte_references: &HashMap<String, String>,
+    // Optional VLP CTE metadata for deterministic lookups (Phase 3 CTE integration)
+    vlp_cte_metadata: Option<&HashMap<String, (String, Vec<super::CteColumnMetadata>)>>,
 ) -> Vec<RenderExpr> {
     log::info!(
         "🔧 expand_table_alias_to_group_by_id_only: Looking for ID column for alias '{}'",
@@ -4500,16 +4539,53 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
         if graph_rel.variable_length.is_some() {
             let is_start = alias == graph_rel.left_connection;
             let is_end = alias == graph_rel.right_connection;
-            
+
             if is_start || is_end {
-                // This is a VLP endpoint - use "t" (VLP_CTE_DEFAULT_ALIAS) as the table alias
-                // and the appropriate position-based column (start_id or end_id)
-                let vlp_alias = "t";
-                let id_column = if is_start { "start_id" } else { "end_id" };
-                
+                // PHASE 3: Use VLP CTE metadata for deterministic lookup if available
+                // Otherwise fall back to semantic defaults (start_id/end_id)
+                if let Some(vlp_metadata) = vlp_cte_metadata {
+                    // Find the VLP CTE for this pattern
+                    let vlp_cte_prefix = format!(
+                        "vlp_{}_{}",
+                        graph_rel.left_connection, graph_rel.right_connection
+                    );
+                    for (cte_name, (from_alias, columns)) in vlp_metadata {
+                        if cte_name.starts_with(&vlp_cte_prefix) || cte_name.starts_with("vlp_") {
+                            // Look up the ID column for this alias from the metadata
+                            if let Some(col_meta) = columns
+                                .iter()
+                                .find(|c| c.cypher_alias == alias && c.is_id_column)
+                            {
+                                log::info!(
+                                    "🔧 expand_table_alias_to_group_by_id_only: Using VLP CTE metadata: '{}.{}' for alias '{}'",
+                                    from_alias, col_meta.cte_column_name, alias
+                                );
+                                return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(from_alias.clone()),
+                                    column: PropertyValue::Column(col_meta.cte_column_name.clone()),
+                                })];
+                            }
+                        }
+                    }
+                }
+
+                // ⚠️ FALLBACK: CTE metadata lookup FAILED - using constants from join_context.rs
+                // This indicates a gap in CTE metadata propagation. The deterministic path
+                // via CteColumnMetadata should have found this alias.
+                let vlp_alias = VLP_CTE_FROM_ALIAS;
+                let id_column = if is_start {
+                    VLP_START_ID_COLUMN
+                } else {
+                    VLP_END_ID_COLUMN
+                };
+
                 log::warn!(
-                    "🔧 expand_table_alias_to_group_by_id_only: VLP endpoint '{}' -> using '{}.{}'",
-                    alias, vlp_alias, id_column
+                    "⚠️ expand_table_alias_to_group_by_id_only: METADATA MISSING for VLP endpoint '{}'. \
+                    Falling back to conventions: '{}.{}'. \
+                    This should not happen - investigate why CteColumnMetadata lookup failed. \
+                    Graph pattern: ({})--[{:?}]-->({})",
+                    alias, vlp_alias, id_column,
+                    graph_rel.left_connection, graph_rel.labels, graph_rel.right_connection
                 );
                 return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(vlp_alias.to_string()),
@@ -5220,6 +5296,14 @@ pub(crate) fn build_chained_with_match_cte_plan(
         ),
     > = std::collections::HashMap::new();
 
+    // Track VLP CTEs with column metadata for deterministic lookups
+    // Maps CTE name → (Cypher alias → column metadata)
+    // This replaces heuristic lookups in expand_table_alias_to_group_by_id_only
+    let mut vlp_cte_metadata: std::collections::HashMap<
+        String,
+        (String, Vec<super::CteColumnMetadata>), // (from_alias, columns)
+    > = std::collections::HashMap::new();
+
     // Track aliases that have been converted to CTEs across ALL iterations
     // This prevents re-processing the same alias in subsequent iterations
     // (important for chained WITH like `WITH DISTINCT fof WITH fof`)
@@ -5259,7 +5343,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
     for (i, pred) in original_correlation_predicates.iter().enumerate() {
         log::warn!(
             "🔧 build_chained_with_match_cte_plan: Original correlation predicate[{}]: {:?}",
-            i, pred
+            i,
+            pred
         );
     }
 
@@ -5792,12 +5877,25 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     // 1. Add them to our all_ctes (so they appear in final SQL)
                     // 2. Track their names in used_cte_names (so we don't create duplicates)
                     // 3. Track their aliases in processed_cte_aliases (so we don't re-process them)
+                    // 4. Capture VLP column metadata for deterministic lookups (Phase 3 CTE integration)
                     for cte in &rendered.ctes.0 {
                         log::warn!(
                             "🔧 build_chained_with_match_cte_plan: Hoisting CTE '{}' from recursive call",
                             cte.cte_name
                         );
                         used_cte_names.insert(cte.cte_name.clone());
+
+                        // Capture VLP CTE metadata for deterministic column lookups
+                        // This replaces heuristic lookups in expand_table_alias_to_group_by_id_only
+                        if !cte.columns.is_empty() && cte.from_alias.is_some() {
+                            let from_alias = cte.from_alias.clone().unwrap();
+                            log::info!(
+                                "🔧 Capturing VLP CTE metadata: '{}' with {} columns, from_alias='{}'",
+                                cte.cte_name, cte.columns.len(), from_alias
+                            );
+                            vlp_cte_metadata
+                                .insert(cte.cte_name.clone(), (from_alias, cte.columns.clone()));
+                        }
 
                         // Extract aliases from CTE name to mark as processed
                         // CTE name format: "with_{aliases}_cte_{n}" e.g., "with_total_cte_1"
@@ -6060,7 +6158,15 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                 match &item.expression {
                                                     crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
                                                         // Use ID-only helper for efficient GROUP BY
-                                                        expand_table_alias_to_group_by_id_only(&alias.0, plan_to_render, schema, &cte_schemas, &cte_references_for_rendering)
+                                                        // Pass VLP CTE metadata for deterministic lookups
+                                                        expand_table_alias_to_group_by_id_only(
+                                                            &alias.0,
+                                                            plan_to_render,
+                                                            schema,
+                                                            &cte_schemas,
+                                                            &cte_references_for_rendering,
+                                                            Some(&vlp_cte_metadata),
+                                                        )
                                                     }
                                                     crate::query_planner::logical_expr::LogicalExpr::ArraySubscript { array, .. } => {
                                                         // For array subscripts (e.g., labels(x)[1]), only GROUP BY the array part
@@ -6516,11 +6622,11 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // Uses compute_cte_id_column_for_alias which matches the naming convention
             // used when generating the SELECT items
             let mut alias_to_id_column: HashMap<String, String> = HashMap::new();
-            
+
             // Get exported aliases from the WITH clause - use the with_alias directly
             // The WITH clause exports the alias being processed
             let exported_aliases: Vec<String> = vec![with_alias.clone()];
-            
+
             // For each exported alias, compute the ID column name deterministically
             for alias in &exported_aliases {
                 if let Some(id_col_name) = compute_cte_id_column_for_alias(alias, &current_plan) {
@@ -7028,13 +7134,16 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                 log::info!(
                     "🔧 build_chained_with_match_cte_plan: Added CTE JOIN: {} AS {}",
-                    cte_name, cte_alias
+                    cte_name,
+                    cte_alias
                 );
             }
 
             // After adding CTE joins, we need to rewrite SELECT items that reference CTE aliases
             // to use the CTE composite alias (e.g., a.name -> a_b.a_name)
-            log::warn!("🔧 build_chained_with_match_cte_plan: Rewriting SELECT items for CTE references");
+            log::warn!(
+                "🔧 build_chained_with_match_cte_plan: Rewriting SELECT items for CTE references"
+            );
         }
     }
 
@@ -7449,7 +7558,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                 let reverse_mapping = property_mapping.clone();
                 let join_alias: &str = &join.table_alias;
-                
+
                 // Build with_aliases: all original Cypher aliases that map to this CTE
                 // E.g., for CTE 'with_a_b_cte_0', with_aliases = {"a", "b", "a_b"}
                 let with_aliases: std::collections::HashSet<String> = cte_references
@@ -7490,13 +7599,15 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         .0
                         .iter()
                         .cloned()
-                        .map(|expr| rewrite_cte_expression(
-                            expr,
-                            &join.table_name,
-                            join_alias,
-                            &with_aliases,
-                            &reverse_mapping,
-                        ))
+                        .map(|expr| {
+                            rewrite_cte_expression(
+                                expr,
+                                &join.table_name,
+                                join_alias,
+                                &with_aliases,
+                                &reverse_mapping,
+                            )
+                        })
                         .collect();
                 }
 

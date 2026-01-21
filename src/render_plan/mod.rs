@@ -22,11 +22,16 @@ use errors::RenderBuildError;
 use render_expr::{ColumnAlias, OperatorApplication, RenderExpr};
 
 pub use cte_generation::CteGenerationContext;
-pub use cte_manager::{CteError, CteGenerationResult, CteManager, CteStrategy, VlpEndpointInfo};
+pub use cte_manager::{
+    CteColumnMetadata, CteError, CteGenerationResult, CteManager, CteStrategy, VlpEndpointInfo,
+};
 pub use filter_pipeline::CategorizedFilters;
 pub use from_table::FromTable;
 pub use view_table_ref::ViewTableRef;
 
+use crate::query_planner::join_context::{
+    VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
+};
 use crate::query_planner::logical_plan::{
     Join as LogicalJoin, JoinType as LogicalJoinType, OrderByItem as LogicalOrderByItem,
     OrderByOrder as LogicalOrderByOrder, UnionType as LogicalUnionType,
@@ -244,6 +249,11 @@ pub struct Cte {
     // Path variable name from Cypher (e.g., "p" in MATCH p = (a)-[*]->(b))
     // Used for rewriting path functions like length(p) → hop_count
     pub vlp_path_variable: Option<String>,
+    /// Column metadata for deterministic column lookup (from CteGenerationResult)
+    /// This eliminates heuristic column guessing in plan_builder_utils.rs
+    pub columns: Vec<CteColumnMetadata>,
+    /// The table alias to use when referencing this CTE's columns (e.g., "t" for VLP CTEs)
+    pub from_alias: Option<String>,
 }
 
 impl Cte {
@@ -262,6 +272,8 @@ impl Cte {
             vlp_start_id_col: None,
             vlp_end_id_col: None,
             vlp_path_variable: None,
+            columns: Vec::new(),
+            from_alias: None,
         }
     }
 
@@ -288,12 +300,80 @@ impl Cte {
             vlp_end_alias: Some(end_alias),
             vlp_start_table: Some(start_table),
             vlp_end_table: Some(end_table),
+            vlp_cypher_start_alias: Some(cypher_start_alias.clone()),
+            vlp_cypher_end_alias: Some(cypher_end_alias.clone()),
+            vlp_start_id_col: Some(start_id_col.clone()),
+            vlp_end_id_col: Some(end_id_col.clone()),
+            vlp_path_variable: path_variable,
+            // Generate basic VLP column metadata from the endpoint info
+            columns: vec![
+                CteColumnMetadata {
+                    cte_column_name: VLP_START_ID_COLUMN.to_string(),
+                    cypher_alias: cypher_start_alias,
+                    property_name: start_id_col,
+                    is_id_column: true,
+                    vlp_position: Some(cte_manager::VlpColumnPosition::Start),
+                },
+                CteColumnMetadata {
+                    cte_column_name: VLP_END_ID_COLUMN.to_string(),
+                    cypher_alias: cypher_end_alias,
+                    property_name: end_id_col,
+                    is_id_column: true,
+                    vlp_position: Some(cte_manager::VlpColumnPosition::End),
+                },
+            ],
+            from_alias: Some(VLP_CTE_FROM_ALIAS.to_string()), // VLP CTEs use standard FROM alias
+        }
+    }
+
+    /// Create a new VLP CTE with full column metadata from CteGenerationResult
+    pub fn new_vlp_with_columns(
+        cte_name: String,
+        content: CteContent,
+        is_recursive: bool,
+        start_alias: String,
+        end_alias: String,
+        start_table: String,
+        end_table: String,
+        cypher_start_alias: String,
+        cypher_end_alias: String,
+        start_id_col: String,
+        end_id_col: String,
+        path_variable: Option<String>,
+        columns: Vec<CteColumnMetadata>,
+        from_alias: String,
+    ) -> Self {
+        Self {
+            cte_name,
+            content,
+            is_recursive,
+            vlp_start_alias: Some(start_alias),
+            vlp_end_alias: Some(end_alias),
+            vlp_start_table: Some(start_table),
+            vlp_end_table: Some(end_table),
             vlp_cypher_start_alias: Some(cypher_start_alias),
             vlp_cypher_end_alias: Some(cypher_end_alias),
             vlp_start_id_col: Some(start_id_col),
             vlp_end_id_col: Some(end_id_col),
             vlp_path_variable: path_variable,
+            columns,
+            from_alias: Some(from_alias),
         }
+    }
+
+    /// Get the ID column metadata for a given Cypher alias
+    pub fn get_id_column_for_alias(&self, alias: &str) -> Option<&CteColumnMetadata> {
+        self.columns
+            .iter()
+            .find(|c| c.cypher_alias == alias && c.is_id_column)
+    }
+
+    /// Get all columns for a given Cypher alias  
+    pub fn get_columns_for_alias(&self, alias: &str) -> Vec<&CteColumnMetadata> {
+        self.columns
+            .iter()
+            .filter(|c| c.cypher_alias == alias)
+            .collect()
     }
 }
 

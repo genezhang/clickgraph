@@ -1,5 +1,6 @@
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::GraphSchema;
+use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
 use crate::query_planner::logical_plan::VariableLengthSpec;
 use crate::render_plan::Cte;
 
@@ -855,10 +856,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// Rewrite end node filter for use in intermediate CTEs
     /// Transforms "end_node.property" references to "end_property" column names
     fn rewrite_end_filter_for_cte(&self, filter: &str) -> String {
-        // Replace end_node.{id_column} with end_id
+        // Replace end_node.{id_column} with end_id (uses VLP_END_ID_COLUMN constant)
         let mut rewritten = filter.replace(
             &format!("{}.{}", self.end_node_alias, self.end_node_id_column),
-            "end_id",
+            VLP_END_ID_COLUMN,
         );
 
         // Replace end_node.{property} with end_{property} for each property
@@ -888,11 +889,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
             return None;
         }
 
-        // Rewrite end_node references to end_id format
+        // Rewrite end_node references to end_id format (uses VLP_END_ID_COLUMN constant)
         // Replace end_node.{id_column} with end_id
         let rewritten = filter.replace(
             &format!("{}.{}", self.end_node_alias, self.end_node_id_column),
-            "end_id",
+            VLP_END_ID_COLUMN,
         );
 
         // Only return if it looks like a simple equality (contains '=')
@@ -959,7 +960,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             // Using UNION ALL means duplicate edges in the data can cause exponential
             // row explosion. The path_edges tracking with `NOT has()` prevents cycles
             // but not duplicate edges between the same nodes.
-            // 
+            //
             // Mitigation: Ensure edge tables have unique (from_id, to_id) pairs,
             // or the application should enforce this constraint before loading data.
             query_body.push_str("\n    UNION ALL\n");
@@ -1645,7 +1646,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         // Add edge constraints if defined in schema
         // NOTE: Edge constraints in recursive case are temporarily disabled because we removed
-        // the redundant current_node JOIN for performance. The constraint would need to 
+        // the redundant current_node JOIN for performance. The constraint would need to
         // reference vp.end_* columns instead of current_node.* columns.
         // TODO: Re-enable edge constraints by mapping from_alias to vp.end_* columns
         // if let Some(constraint_filter) =

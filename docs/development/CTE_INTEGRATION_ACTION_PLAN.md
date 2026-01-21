@@ -1,22 +1,43 @@
 # CTE Integration Action Plan
 
 **Created**: January 20, 2026  
-**Updated**: January 22, 2026  
-**Status**: � PARTIALLY COMPLETE - Immediate Bug Fixed, Long-term Integration Pending  
-**Priority**: P2 - Technical Debt (bug workaround in place)
+**Updated**: January 21, 2026  
+**Status**: ✅ PHASE 4 COMPLETE - VLP Constants Consolidated  
+**Priority**: P2 - Maintenance/Cleanup
 
-## ⚡ Current Status Summary (Jan 22, 2026)
+## ⚡ Current Status Summary (Jan 21, 2026)
 
 ### Immediate Bug: FIXED ✅
-The VLP + WITH aggregation GROUP BY alias bug has been fixed via a **workaround**:
-- Location: `src/render_plan/plan_builder_utils.rs` lines 4496-4530
-- Fix: `expand_table_alias_to_group_by_id_only()` now detects VLP endpoints using `get_graph_rel_from_plan()`
-- Returns `t.start_id` or `t.end_id` instead of incorrect `cypher_alias.end_id`
+The VLP + WITH aggregation GROUP BY alias bug has been fixed via **deterministic metadata lookup**:
+- Location: `src/render_plan/plan_builder_utils.rs` in `expand_table_alias_to_group_by_id_only()`
+- Fix: Uses VLP CTE metadata from `CteGenerationResult.columns` to find correct ID column
+- Log shows: `"Using VLP CTE metadata: 't.end_id' for alias 'u2'"`
 - All 784 unit tests + 17 integration tests passing
 
-### CTE Integration Plan: INFRASTRUCTURE ONLY
-The CteManager strategy pattern is set up but **not wired into production** yet.
-This is now a **technical debt item** rather than a blocking bug.
+### VLP Constants: CONSOLIDATED ✅ (Jan 21, 2026)
+All VLP CTE naming conventions now use module-level constants from `join_context.rs`:
+- `VLP_CTE_FROM_ALIAS = "t"` - the FROM alias for VLP CTEs
+- `VLP_START_ID_COLUMN = "start_id"` - column name for start node ID
+- `VLP_END_ID_COLUMN = "end_id"` - column name for end node ID
+
+Files updated to use constants:
+- `join_context.rs` - Definition + internal usage
+- `plan_builder_utils.rs` - Fallback code + mappings  
+- `plan_builder_helpers.rs` - Path function rewriting
+- `select_builder.rs` - Path column expansion
+- `plan_ctx/mod.rs` - VLP join reference
+- `from_builder.rs` - VLP FROM alias
+- `filter_pipeline.rs` - Filter rewriting
+- `cte_extraction.rs` - CTE metadata
+- `cte_manager/mod.rs` - CTE generation (6 locations)
+- `to_sql_query.rs` - SQL generation + fallbacks
+- `variable_length_cte.rs` - CTE generation
+- `multi_type_vlp_joins.rs` - Multi-type VLP
+- `mod.rs` (render_plan) - CTE constructors
+
+### CTE Integration Plan: PHASE 4 COMPLETE ✅
+Column metadata from `CteGenerationResult` is now threaded through and used for deterministic lookups!
+VLP naming conventions are consolidated into constants for consistency and maintainability.
 
 ## Phase Status
 
@@ -24,41 +45,82 @@ This is now a **technical debt item** rather than a blocking bug.
 - All CteManager strategies use PatternSchemaContext (no hardcoding)
 - Validated: `TraditionalCteStrategy.get_node_table_info()`, `get_relationship_table_info()`
 
-### Phase 2: INFRASTRUCTURE COMPLETE ✅, WIRING DEFERRED
+### Phase 2: COMPLETE ✅
 
-**Completed**:
+**Infrastructure Completed** ✅:
 - Extended `CategorizedFilters` with pre-rendered SQL strings (`start_sql`, `end_sql`, `relationship_sql`)
 - Created `build_where_clause_from_filters()` shared helper
 - Updated all 6 CTE strategy implementations to use shared helper
-- Extended `CteGenerationContext` with VLP-specific fields
+- Extended `CteGenerationContext` with VLP-specific fields (`start_node_label`, `end_node_label`)
+- Added `generate_vlp_cte()` method to CteManager
+- Created `VariableLengthCteStrategy` that wraps VariableLengthCteGenerator
+- Created `generate_vlp_cte_via_manager()` helper function in cte_extraction.rs
 
-**Key Discovery**:
-- CteManager strategies produce SIMPLIFIED SQL (~100 lines each)
-- VariableLengthCteGenerator produces COMPREHENSIVE SQL (3,236 lines) with:
-  - Shortest path modes (ROW_NUMBER partitioning)
-  - Heterogeneous polymorphic paths (two-CTE structure)
-  - Zero-hop base cases
-  - Complex filter rewriting
-  - Edge constraint compilation
-- **Gap**: CteManager strategies need significant enhancement before replacing VariableLengthCteGenerator
-- **Decision**: Keep current workaround, defer full CteManager integration to future cleanup sprint
+**Production Integration Completed** ✅:
+1. ~~Bridge CteManager strategy selection to VariableLengthCteGenerator~~ ✅ Done (VariableLengthCteStrategy)
+2. ~~Wire `generate_vlp_cte_via_manager()` into production~~ ✅ Done (replaced ~200 line if/else chain)
+3. ~~Remove `#[allow(dead_code)]` from helper~~ ✅ Done
+4. **Add unit tests for CteManager VLP path** ← NEXT (optional)
 
-**Deferred Tasks** (for future sprint):
-1. Bridge CteManager strategy selection to VariableLengthCteGenerator
-2. Gradually migrate SQL generation into CteManager strategies
-3. Use CteGenerationResult for column metadata resolution
+**Key Architecture Decision**:
+- CteManager strategies don't replace VariableLengthCteGenerator - they **wrap** it
+- `VariableLengthCteStrategy` dispatches to appropriate generator constructor based on PatternSchemaContext
+- This preserves all comprehensive SQL generation capabilities while providing unified interface
 
-### Phase 3-5: DEFERRED
-- Use column metadata in plan_builder_utils.rs (eliminates heuristics)
-- Cleanup dead code
-- Full migration (delete variable_length_cte.rs)
+### Phase 3: COMPLETE ✅
+
+**Metadata Threading Completed** ✅:
+- Added `columns: Vec<CteColumnMetadata>` and `from_alias: Option<String>` fields to `Cte` struct
+- Added Serialize/Deserialize derives to `CteColumnMetadata` and `VlpColumnPosition` for struct compatibility
+- Created `Cte::new_vlp_with_columns()` constructor for full metadata preservation
+- Added `get_id_column_for_alias()` and `get_columns_for_alias()` helper methods to `Cte`
+- Updated `generate_vlp_cte_via_manager()` to preserve column metadata in conversion
+- Added `vlp_cte_metadata` HashMap in `build_chained_with_match_cte_plan()` for VLP CTE tracking
+
+**Deterministic Lookup Completed** ✅:
+- Updated `expand_table_alias_to_group_by_id_only()` to accept optional `vlp_cte_metadata` parameter
+- Implemented deterministic metadata lookup: `columns.iter().find(|c| c.cypher_alias == alias && c.is_id_column)`
+- Log shows: `"Using VLP CTE metadata: 't.end_id' for alias 'u2'"` - confirms metadata in use!
+- Kept semantic fallback as safety net for edge cases
+
+### Phase 4: COMPLETE ✅
+
+**Cleanup & Constants Completed** ✅:
+- Created module-level constants in `join_context.rs`:
+  - `VLP_CTE_FROM_ALIAS: &str = "t"` - FROM alias for VLP CTEs
+  - `VLP_START_ID_COLUMN: &str = "start_id"` - Start node ID column
+  - `VLP_END_ID_COLUMN: &str = "end_id"` - End node ID column
+- Updated all files using hardcoded VLP naming conventions to use constants
+- Marked `JoinContext::VLP_CTE_DEFAULT_ALIAS` as deprecated with pointer to new constant
+- All 784 unit tests passing
+
+**Files Updated to Use Constants**:
+- `render_plan/plan_builder_utils.rs` - Fallback code, mappings
+- `render_plan/plan_builder_helpers.rs` - Path function rewriting  
+- `render_plan/select_builder.rs` - Path column expansion
+- `render_plan/from_builder.rs` - VLP FROM alias
+- `render_plan/filter_pipeline.rs` - Filter rewriting
+- `render_plan/cte_extraction.rs` - CTE metadata
+- `render_plan/cte_manager/mod.rs` - CTE generation (6 locations)
+- `render_plan/mod.rs` - CTE constructors
+- `query_planner/plan_ctx/mod.rs` - VLP join reference
+- `clickhouse_query_generator/to_sql_query.rs` - SQL generation
+- `clickhouse_query_generator/variable_length_cte.rs` - CTE generation
+- `clickhouse_query_generator/multi_type_vlp_joins.rs` - Multi-type VLP
+
+**Acceptable Remaining Hardcoded Strings**:
+- Unit tests using "t" as generic test alias (by design)
+- SQL template strings in format! macros (difficult to refactor, low risk)
+
+### Phase 5: DEFERRED (Optional Future Work)
+- Full migration (delete variable_length_cte.rs after all callers migrated)
+- This is optional cleanup - current system is working correctly
 
 ---
 
 ## Executive Summary - Architecture (Jan 21, 2026)
 
 **GOOD NEWS**: The action plan is **100% accurate** and ready to execute!
-
 ### Key Validations
 
 ✅ **CteManager exists but is completely unused**

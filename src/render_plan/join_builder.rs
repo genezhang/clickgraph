@@ -1717,7 +1717,7 @@ impl JoinBuilder for LogicalPlan {
                         joins.extend(swapped_joins);
                     } else {
                         // Normal case: anchor is on left, or non-optional
-                        
+
                         // CRITICAL FIX: For cross-table WITH patterns where the GraphRel's left_connection
                         // is NOT the anchor (i.e., it's a NEW node that needs to be joined), we must add
                         // a join for the left_connection node BEFORE adding the relationship and end node joins.
@@ -1727,17 +1727,19 @@ impl JoinBuilder for LogicalPlan {
                         // - graph_rel.left_connection is "c" (NOT the anchor)
                         // - We need: JOIN users_bench AS c, then JOIN posts_bench AS r2, then JOIN posts_bench AS d
                         // - But standard extract_joins only adds r2 and d joins, not c
-                        
+
                         let anchor_is_left = anchor_alias
                             .as_ref()
                             .map(|a| a == &graph_rel.left_connection)
                             .unwrap_or(false);
-                        
+
                         crate::debug_print!(
                             "  anchor_is_left={}, anchor_alias={:?}, left_connection={}",
-                            anchor_is_left, anchor_alias, graph_rel.left_connection
+                            anchor_is_left,
+                            anchor_alias,
+                            graph_rel.left_connection
                         );
-                        
+
                         if !anchor_is_left {
                             // The GraphRel's left_connection is a NEW node that needs its own JOIN
                             // Get the table info for this node
@@ -1745,34 +1747,39 @@ impl JoinBuilder for LogicalPlan {
                                 if let LogicalPlan::ViewScan(vs) = left_node.input.as_ref() {
                                     let left_table_name = vs.source_table.clone();
                                     let left_table_alias = graph_rel.left_connection.clone();
-                                    
+
                                     // Build the join condition from cp.join_condition
                                     // This is the correlation predicate (e.g., a.user_id = c.user_id)
-                                    let join_conditions = if let Some(ref join_cond) = cp.join_condition {
-                                        if let Ok(render_expr) = RenderExpr::try_from(join_cond.clone()) {
-                                            if let RenderExpr::OperatorApplicationExp(op) = render_expr {
-                                                vec![op]
+                                    let join_conditions =
+                                        if let Some(ref join_cond) = cp.join_condition {
+                                            if let Ok(render_expr) =
+                                                RenderExpr::try_from(join_cond.clone())
+                                            {
+                                                if let RenderExpr::OperatorApplicationExp(op) =
+                                                    render_expr
+                                                {
+                                                    vec![op]
+                                                } else {
+                                                    vec![]
+                                                }
                                             } else {
                                                 vec![]
                                             }
                                         } else {
                                             vec![]
-                                        }
-                                    } else {
-                                        vec![]
-                                    };
-                                    
+                                        };
+
                                     crate::debug_print!(
                                         "  Adding JOIN for left_connection '{}': {} with {} conditions",
                                         left_table_alias, left_table_name, join_conditions.len()
                                     );
-                                    
+
                                     let join_type = if cp.is_optional {
                                         JoinType::Left
                                     } else {
                                         JoinType::Inner
                                     };
-                                    
+
                                     joins.push(super::Join {
                                         table_name: left_table_name,
                                         table_alias: left_table_alias,
@@ -1785,7 +1792,7 @@ impl JoinBuilder for LogicalPlan {
                                 }
                             }
                         }
-                        
+
                         // Now add the standard joins from the GraphRel (relationship and end node)
                         joins.extend(<LogicalPlan as JoinBuilder>::extract_joins(
                             &cp.right, schema,

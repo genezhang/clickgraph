@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use crate::clickhouse_query_generator::NodeProperty;
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::GraphSchema;
-use crate::query_planner::logical_plan::ShortestPathMode;
 use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::LogicalPlan;
+use crate::query_planner::logical_plan::ShortestPathMode;
 use crate::query_planner::logical_plan::VariableLengthSpec;
 use crate::render_plan::cte_extraction::extract_node_label_from_viewscan;
 use crate::render_plan::render_expr::RenderExpr;
@@ -42,6 +42,10 @@ pub struct CteGenerationContext {
     pub edge_id: Option<Identifier>,
     /// Relationship Cypher alias (e.g., "r" in (a)-[r*]->(b))
     pub relationship_cypher_alias: Option<String>,
+    /// Start node label (for polymorphic heterogeneous paths)
+    pub start_node_label: Option<String>,
+    /// End node label (for polymorphic heterogeneous paths)
+    pub end_node_label: Option<String>,
 }
 
 impl Default for CteGenerationContext {
@@ -59,6 +63,8 @@ impl Default for CteGenerationContext {
             relationship_types: None,
             edge_id: None,
             relationship_cypher_alias: None,
+            start_node_label: None,
+            end_node_label: None,
         }
     }
 }
@@ -82,6 +88,8 @@ impl CteGenerationContext {
             relationship_types: None,
             edge_id: None,
             relationship_cypher_alias: None,
+            start_node_label: None,
+            end_node_label: None,
         }
     }
 
@@ -117,6 +125,23 @@ impl CteGenerationContext {
     /// Set relationship Cypher alias
     pub(crate) fn with_relationship_cypher_alias(mut self, alias: Option<String>) -> Self {
         self.relationship_cypher_alias = alias;
+        self
+    }
+
+    /// Set node labels for polymorphic heterogeneous paths
+    pub(crate) fn with_node_labels(
+        mut self,
+        start_label: Option<String>,
+        end_label: Option<String>,
+    ) -> Self {
+        self.start_node_label = start_label;
+        self.end_node_label = end_label;
+        self
+    }
+
+    /// Set the graph schema (builder pattern)
+    pub(crate) fn with_schema_owned(mut self, schema: GraphSchema) -> Self {
+        self.schema = Some(schema);
         self
     }
 

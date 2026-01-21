@@ -6,11 +6,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::clickhouse_query_generator::variable_length_cte::NodeProperty;
+use crate::clickhouse_query_generator::variable_length_cte::{
+    NodeProperty, ShortestPathMode, VariableLengthCteGenerator,
+};
 use crate::graph_catalog::{
     config::Identifier,
     graph_schema::{GraphSchema, NodeIdSchema, NodeSchema},
     EdgeAccessStrategy, JoinStrategy, NodeAccessStrategy, NodePosition, PatternSchemaContext,
+};
+use crate::query_planner::join_context::{
+    VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
 };
 use crate::query_planner::logical_plan::VariableLengthSpec;
 use crate::render_plan::cte_extraction::{
@@ -43,7 +48,7 @@ pub enum CteError {
 }
 
 /// Metadata for a column in a generated CTE
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CteColumnMetadata {
     /// The column name in the CTE (e.g., "end_id", "end_city")
     pub cte_column_name: String,
@@ -58,7 +63,7 @@ pub struct CteColumnMetadata {
 }
 
 /// Position indicator for VLP CTE columns
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum VlpColumnPosition {
     Start,
     End,
@@ -105,12 +110,17 @@ pub struct CteGenerationResult {
 impl CteGenerationResult {
     /// Get the ID column for a given Cypher alias
     pub fn get_id_column_for_alias(&self, alias: &str) -> Option<&CteColumnMetadata> {
-        self.columns.iter().find(|c| c.cypher_alias == alias && c.is_id_column)
+        self.columns
+            .iter()
+            .find(|c| c.cypher_alias == alias && c.is_id_column)
     }
 
     /// Get all columns for a given Cypher alias
     pub fn get_columns_for_alias(&self, alias: &str) -> Vec<&CteColumnMetadata> {
-        self.columns.iter().filter(|c| c.cypher_alias == alias).collect()
+        self.columns
+            .iter()
+            .filter(|c| c.cypher_alias == alias)
+            .collect()
     }
 
     /// Get the FROM alias to use when referencing this CTE's columns
@@ -119,7 +129,7 @@ impl CteGenerationResult {
     }
 
     /// Build column metadata for VLP CTE columns
-    /// 
+    ///
     /// VLP CTEs generate columns like: start_id, end_id, start_city, end_city, etc.
     /// This creates the metadata mapping those back to Cypher aliases.
     pub fn build_vlp_column_metadata(
@@ -129,32 +139,32 @@ impl CteGenerationResult {
         id_column: &str,
     ) -> Vec<CteColumnMetadata> {
         let mut columns = Vec::new();
-        
+
         // Add start node ID column
         columns.push(CteColumnMetadata {
-            cte_column_name: "start_id".to_string(),
+            cte_column_name: VLP_START_ID_COLUMN.to_string(),
             cypher_alias: left_alias.to_string(),
             property_name: id_column.to_string(),
             is_id_column: true,
             vlp_position: Some(VlpColumnPosition::Start),
         });
-        
+
         // Add end node ID column
         columns.push(CteColumnMetadata {
-            cte_column_name: "end_id".to_string(),
+            cte_column_name: VLP_END_ID_COLUMN.to_string(),
             cypher_alias: right_alias.to_string(),
             property_name: id_column.to_string(),
             is_id_column: true,
             vlp_position: Some(VlpColumnPosition::End),
         });
-        
+
         // Add property columns for both start and end nodes
         for prop in properties {
             // Skip ID column as it's already added
             if prop.alias == id_column {
                 continue;
             }
-            
+
             // Start node property (only for properties belonging to start node)
             if prop.cypher_alias == left_alias {
                 columns.push(CteColumnMetadata {
@@ -165,7 +175,7 @@ impl CteGenerationResult {
                     vlp_position: Some(VlpColumnPosition::Start),
                 });
             }
-            
+
             // End node property (only for properties belonging to end node)
             if prop.cypher_alias == right_alias {
                 columns.push(CteColumnMetadata {
@@ -177,14 +187,14 @@ impl CteGenerationResult {
                 });
             }
         }
-        
+
         columns
     }
 
     /// Convert CteGenerationResult to Cte struct for downstream use
     pub fn to_cte(&self) -> crate::render_plan::Cte {
         use crate::render_plan::{Cte, CteContent};
-        
+
         if let Some(ref endpoint) = self.vlp_endpoint {
             Cte::new_vlp(
                 self.cte_name.clone(),
@@ -385,6 +395,39 @@ impl CteManager {
         }
     }
 
+    /// Generate a Variable-Length Path CTE using the unified strategy
+    ///
+    /// This is the main entry point for generating VLP CTEs. It:
+    /// 1. Creates a VariableLengthCteStrategy from the PatternSchemaContext
+    /// 2. Sets up the CteGenerationContext with VLP-specific fields
+    /// 3. Generates the CTE SQL using the appropriate generator variant
+    ///
+    /// # Arguments
+    /// * `pattern_ctx` - The graph pattern schema context
+    /// * `properties` - Node properties to include in CTE projection
+    /// * `filters` - Pre-rendered SQL filters for start/end nodes and relationships
+    ///
+    /// # Returns
+    /// A CteGenerationResult containing the SQL and metadata, or an error
+    pub fn generate_vlp_cte(
+        &self,
+        pattern_ctx: &PatternSchemaContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<CteGenerationResult, CteError> {
+        log::debug!(
+            "CteManager::generate_vlp_cte for {} -[*]-> {}",
+            pattern_ctx.left_node_alias,
+            pattern_ctx.right_node_alias
+        );
+
+        // Create the VLP strategy from pattern context
+        let strategy = VariableLengthCteStrategy::new(pattern_ctx, &self.schema)?;
+
+        // Generate using the strategy
+        strategy.generate_sql(&self.context, properties, filters)
+    }
+
     /// Generate CTE SQL using the determined strategy
     pub fn generate_cte(
         &self,
@@ -434,6 +477,8 @@ pub enum CteStrategy {
     MixedAccess(MixedAccessCteStrategy),
     EdgeToEdge(EdgeToEdgeCteStrategy),
     Coupled(CoupledCteStrategy),
+    /// Variable-length path strategy - wraps the comprehensive VariableLengthCteGenerator
+    VariableLength(VariableLengthCteStrategy),
 }
 
 impl CteStrategy {
@@ -451,6 +496,7 @@ impl CteStrategy {
             CteStrategy::MixedAccess(s) => s.generate_sql(context, properties, filters),
             CteStrategy::EdgeToEdge(s) => s.generate_sql(context, properties, filters),
             CteStrategy::Coupled(s) => s.generate_sql(context, properties, filters),
+            CteStrategy::VariableLength(s) => s.generate_sql(context, properties, filters),
         }
     }
 
@@ -463,6 +509,7 @@ impl CteStrategy {
             CteStrategy::MixedAccess(s) => s.validate(pattern_ctx),
             CteStrategy::EdgeToEdge(s) => s.validate(pattern_ctx),
             CteStrategy::Coupled(s) => s.validate(pattern_ctx),
+            CteStrategy::VariableLength(s) => s.validate(pattern_ctx),
         }
     }
 }
@@ -568,7 +615,7 @@ impl FkEdgeCteStrategy {
             parameters: collect_parameters_from_filters(filters),
             cte_name,
             recursive: true,
-            from_alias: "t".to_string(),
+            from_alias: VLP_CTE_FROM_ALIAS.to_string(),
             columns,
             vlp_endpoint: Some(vlp_endpoint),
         })
@@ -737,7 +784,7 @@ impl FkEdgeCteStrategy {
             self.pattern_ctx.right_node_alias,
             self.id_column,
             cte_name,
-            "end_id" // Connect to the end of the current path
+            VLP_END_ID_COLUMN // Connect to the end of the current path
         );
 
         // Build WHERE clause from filters
@@ -812,11 +859,13 @@ impl TraditionalCteStrategy {
         let sql = self.generate_recursive_cte_sql(context, properties, filters)?;
 
         // Build column metadata - get ID column from pattern context
-        let (start_table, start_id_col) = self.get_node_table_info(&self.pattern_ctx.left_node_alias)
+        let (start_table, start_id_col) = self
+            .get_node_table_info(&self.pattern_ctx.left_node_alias)
             .unwrap_or_else(|_| ("unknown".to_string(), "id".to_string()));
-        let (end_table, end_id_col) = self.get_node_table_info(&self.pattern_ctx.right_node_alias)
+        let (end_table, end_id_col) = self
+            .get_node_table_info(&self.pattern_ctx.right_node_alias)
             .unwrap_or_else(|_| ("unknown".to_string(), "id".to_string()));
-            
+
         let columns = CteGenerationResult::build_vlp_column_metadata(
             &self.pattern_ctx.left_node_alias,
             &self.pattern_ctx.right_node_alias,
@@ -842,7 +891,7 @@ impl TraditionalCteStrategy {
             parameters: collect_parameters_from_filters(filters),
             cte_name,
             recursive: true,
-            from_alias: "t".to_string(),
+            from_alias: VLP_CTE_FROM_ALIAS.to_string(),
             columns,
             vlp_endpoint: Some(vlp_endpoint),
         })
@@ -1067,9 +1116,9 @@ impl TraditionalCteStrategy {
 
         // Extract table and ID column from NodeAccessStrategy
         match node_strategy {
-            NodeAccessStrategy::OwnTable { table, id_column, .. } => {
-                Ok((table.clone(), id_column.clone()))
-            }
+            NodeAccessStrategy::OwnTable {
+                table, id_column, ..
+            } => Ok((table.clone(), id_column.clone())),
             NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => {
                 // For embedded nodes in traditional strategy, this is unexpected
                 // but we can use the edge alias as the table reference
@@ -1078,12 +1127,10 @@ impl TraditionalCteStrategy {
                     node_alias, edge_alias
                 )))
             }
-            NodeAccessStrategy::Virtual { label } => {
-                Err(CteError::InvalidStrategy(format!(
-                    "TraditionalCteStrategy does not support Virtual nodes (label: {})",
-                    label
-                )))
-            }
+            NodeAccessStrategy::Virtual { label } => Err(CteError::InvalidStrategy(format!(
+                "TraditionalCteStrategy does not support Virtual nodes (label: {})",
+                label
+            ))),
         }
     }
 
@@ -1097,19 +1144,28 @@ impl TraditionalCteStrategy {
     fn get_relationship_table_info(&self) -> Result<(String, String, String), CteError> {
         // Extract from EdgeAccessStrategy in PatternSchemaContext
         match &self.pattern_ctx.edge {
-            EdgeAccessStrategy::SeparateTable { table, from_id, to_id, .. } => {
-                Ok((table.clone(), from_id.clone(), to_id.clone()))
-            }
-            EdgeAccessStrategy::Polymorphic { table, from_id, to_id, .. } => {
+            EdgeAccessStrategy::SeparateTable {
+                table,
+                from_id,
+                to_id,
+                ..
+            } => Ok((table.clone(), from_id.clone(), to_id.clone())),
+            EdgeAccessStrategy::Polymorphic {
+                table,
+                from_id,
+                to_id,
+                ..
+            } => {
                 // Polymorphic edges can also work with traditional strategy
                 Ok((table.clone(), from_id.clone(), to_id.clone()))
             }
-            EdgeAccessStrategy::FkEdge { node_table, fk_column } => {
-                Err(CteError::InvalidStrategy(format!(
-                    "TraditionalCteStrategy expects SeparateTable edge, got FkEdge (table: {}, fk: {})",
-                    node_table, fk_column
-                )))
-            }
+            EdgeAccessStrategy::FkEdge {
+                node_table,
+                fk_column,
+            } => Err(CteError::InvalidStrategy(format!(
+                "TraditionalCteStrategy expects SeparateTable edge, got FkEdge (table: {}, fk: {})",
+                node_table, fk_column
+            ))),
         }
     }
 
@@ -1233,7 +1289,7 @@ impl DenormalizedCteStrategy {
             parameters: collect_parameters_from_filters(filters),
             cte_name,
             recursive: true,
-            from_alias: "t".to_string(),
+            from_alias: VLP_CTE_FROM_ALIAS.to_string(),
             columns,
             vlp_endpoint: Some(vlp_endpoint),
         })
@@ -1512,7 +1568,7 @@ impl MixedAccessCteStrategy {
             parameters: collect_parameters_from_filters(filters),
             cte_name,
             recursive: true,
-            from_alias: "t".to_string(),
+            from_alias: VLP_CTE_FROM_ALIAS.to_string(),
             columns,
             vlp_endpoint: Some(vlp_endpoint),
         })
@@ -1672,8 +1728,8 @@ impl MixedAccessCteStrategy {
 
         // Build SELECT clause for recursive case
         let mut select_items = vec![
-            format!("{}.start_id", cte_name),
-            format!("{}.end_id", embedded_node_alias),
+            format!("{}.{}", cte_name, VLP_START_ID_COLUMN),
+            format!("{}.{}", embedded_node_alias, VLP_END_ID_COLUMN),
             format!("{}.hop_count + 1 as hop_count", cte_name),
             format!(
                 "arrayConcat({}.path_edges, [{}]) as path_edges",
@@ -1681,7 +1737,7 @@ impl MixedAccessCteStrategy {
             ),
             format!(
                 "arrayConcat({}.path_nodes, [{}]) as path_nodes",
-                cte_name, "end_id"
+                cte_name, VLP_END_ID_COLUMN
             ),
         ];
 
@@ -1926,7 +1982,7 @@ impl EdgeToEdgeCteStrategy {
             parameters: collect_parameters_from_filters(filters),
             cte_name,
             recursive: true,
-            from_alias: "t".to_string(),
+            from_alias: VLP_CTE_FROM_ALIAS.to_string(),
             columns,
             vlp_endpoint: Some(vlp_endpoint),
         })
@@ -2277,6 +2333,408 @@ impl CoupledCteStrategy {
         ];
 
         Ok(build_where_clause_from_filters(filters, &alias_mapping))
+    }
+}
+
+// ============================================================================
+// VariableLengthCteStrategy - Wraps the comprehensive VariableLengthCteGenerator
+// ============================================================================
+
+/// Strategy for variable-length path CTE generation.
+///
+/// This strategy wraps the existing `VariableLengthCteGenerator` to provide
+/// a unified interface within the CteManager strategy pattern while preserving
+/// all the comprehensive SQL generation capabilities including:
+/// - Shortest path modes (ROW_NUMBER partitioning)
+/// - Heterogeneous polymorphic paths (two-CTE structure)
+/// - Zero-hop base cases
+/// - Complex filter rewriting
+/// - Edge constraint compilation
+/// - Denormalized and mixed access patterns
+pub struct VariableLengthCteStrategy {
+    pattern_ctx: PatternSchemaContext,
+    /// Start node table name
+    start_table: String,
+    /// Start node ID column
+    start_id_col: String,
+    /// End node table name (may be same as start for self-joins)
+    end_table: String,
+    /// End node ID column
+    end_id_col: String,
+    /// Relationship/edge table name
+    rel_table: String,
+    /// Relationship from column
+    rel_from_col: String,
+    /// Relationship to column
+    rel_to_col: String,
+    /// Whether this is a denormalized pattern (both nodes embedded in edge)
+    is_denormalized: bool,
+    /// Whether start node is denormalized
+    start_is_denormalized: bool,
+    /// Whether end node is denormalized
+    end_is_denormalized: bool,
+    /// Whether this is an FK-edge pattern
+    is_fk_edge: bool,
+    /// Polymorphic edge type column
+    type_column: Option<String>,
+    /// Polymorphic from label column
+    from_label_column: Option<String>,
+    /// Polymorphic to label column
+    to_label_column: Option<String>,
+    /// Expected from node label (for polymorphic filtering)
+    from_node_label: Option<String>,
+    /// Expected to node label (for polymorphic filtering)
+    to_node_label: Option<String>,
+}
+
+impl VariableLengthCteStrategy {
+    /// Create a new VariableLengthCteStrategy from a PatternSchemaContext
+    pub fn new(pattern_ctx: &PatternSchemaContext, schema: &GraphSchema) -> Result<Self, CteError> {
+        // Extract table/column info based on join strategy and node access patterns
+        let (start_table, start_id_col, start_is_denorm) =
+            Self::extract_node_info(&pattern_ctx.left_node, &pattern_ctx.edge, true)?;
+        let (end_table, end_id_col, end_is_denorm) =
+            Self::extract_node_info(&pattern_ctx.right_node, &pattern_ctx.edge, false)?;
+        let (rel_table, rel_from_col, rel_to_col) =
+            Self::extract_edge_info(&pattern_ctx.edge, schema)?;
+
+        // Determine denormalized/FK-edge patterns
+        let is_denormalized = start_is_denorm && end_is_denorm;
+        let is_fk_edge = matches!(pattern_ctx.join_strategy, JoinStrategy::FkEdgeJoin { .. });
+
+        // Extract polymorphic edge columns
+        let (type_column, from_label_column, to_label_column) =
+            Self::extract_polymorphic_info(&pattern_ctx.edge);
+
+        Ok(Self {
+            pattern_ctx: pattern_ctx.clone(),
+            start_table,
+            start_id_col,
+            end_table,
+            end_id_col,
+            rel_table,
+            rel_from_col,
+            rel_to_col,
+            is_denormalized,
+            start_is_denormalized: start_is_denorm,
+            end_is_denormalized: end_is_denorm,
+            is_fk_edge,
+            type_column,
+            from_label_column,
+            to_label_column,
+            from_node_label: None, // Set during generate_sql based on context
+            to_node_label: None,
+        })
+    }
+
+    /// Extract node table and ID column info from NodeAccessStrategy
+    fn extract_node_info(
+        node: &NodeAccessStrategy,
+        edge: &EdgeAccessStrategy,
+        is_start: bool,
+    ) -> Result<(String, String, bool), CteError> {
+        match node {
+            NodeAccessStrategy::OwnTable {
+                table, id_column, ..
+            } => Ok((table.clone(), id_column.clone(), false)),
+            NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => {
+                // For embedded nodes, get the edge table and use from_id/to_id based on position
+                let (edge_table, from_col, to_col) = match edge {
+                    EdgeAccessStrategy::SeparateTable {
+                        table,
+                        from_id,
+                        to_id,
+                        ..
+                    } => (table.clone(), from_id.clone(), to_id.clone()),
+                    EdgeAccessStrategy::Polymorphic {
+                        table,
+                        from_id,
+                        to_id,
+                        ..
+                    } => (table.clone(), from_id.clone(), to_id.clone()),
+                    EdgeAccessStrategy::FkEdge {
+                        node_table,
+                        fk_column,
+                    } => (node_table.clone(), fk_column.clone(), "id".to_string()),
+                };
+                let id_col = if is_start { from_col } else { to_col };
+                Ok((edge_table, id_col, true))
+            }
+            NodeAccessStrategy::Virtual { label } => {
+                // Virtual nodes use the edge table
+                let (edge_table, from_col, to_col) = match edge {
+                    EdgeAccessStrategy::SeparateTable {
+                        table,
+                        from_id,
+                        to_id,
+                        ..
+                    } => (table.clone(), from_id.clone(), to_id.clone()),
+                    EdgeAccessStrategy::Polymorphic {
+                        table,
+                        from_id,
+                        to_id,
+                        ..
+                    } => (table.clone(), from_id.clone(), to_id.clone()),
+                    EdgeAccessStrategy::FkEdge { .. } => {
+                        return Err(CteError::InvalidStrategy(format!(
+                            "Virtual node '{}' not compatible with FK-edge",
+                            label
+                        )));
+                    }
+                };
+                let id_col = if is_start { from_col } else { to_col };
+                Ok((edge_table, id_col, true))
+            }
+        }
+    }
+
+    /// Extract edge table and column info from EdgeAccessStrategy
+    fn extract_edge_info(
+        edge: &EdgeAccessStrategy,
+        _schema: &GraphSchema,
+    ) -> Result<(String, String, String), CteError> {
+        match edge {
+            EdgeAccessStrategy::SeparateTable {
+                table,
+                from_id,
+                to_id,
+                ..
+            } => Ok((table.clone(), from_id.clone(), to_id.clone())),
+            EdgeAccessStrategy::Polymorphic {
+                table,
+                from_id,
+                to_id,
+                ..
+            } => Ok((table.clone(), from_id.clone(), to_id.clone())),
+            EdgeAccessStrategy::FkEdge {
+                node_table,
+                fk_column,
+            } => {
+                // FK-edge: the "relationship" is the FK column on the node table
+                // from_id is the FK column, to_id is the target node's ID
+                Ok((node_table.clone(), fk_column.clone(), "id".to_string()))
+            }
+        }
+    }
+
+    /// Extract polymorphic edge info (type discriminator columns)
+    fn extract_polymorphic_info(
+        edge: &EdgeAccessStrategy,
+    ) -> (Option<String>, Option<String>, Option<String>) {
+        match edge {
+            EdgeAccessStrategy::Polymorphic {
+                type_column,
+                from_label_column,
+                to_label_column,
+                ..
+            } => (
+                type_column.clone(),
+                from_label_column.clone(),
+                to_label_column.clone(),
+            ),
+            _ => (None, None, None),
+        }
+    }
+
+    /// Generate SQL using the wrapped VariableLengthCteGenerator
+    pub fn generate_sql(
+        &self,
+        context: &CteGenerationContext,
+        properties: &[NodeProperty],
+        filters: &CategorizedFilters,
+    ) -> Result<CteGenerationResult, CteError> {
+        // We need the schema to create the generator
+        let schema = context.schema().ok_or_else(|| {
+            CteError::SchemaValidationError("Schema required for VLP generation".into())
+        })?;
+
+        // Convert ShortestPathMode from logical plan type if present
+        let shortest_path_mode = context
+            .shortest_path_mode
+            .as_ref()
+            .map(|m| m.clone().into());
+
+        // Build the generator based on pattern type
+        let mut generator = if self.is_denormalized {
+            VariableLengthCteGenerator::new_denormalized(
+                schema,
+                context.spec.clone(),
+                &self.rel_table,
+                &self.rel_from_col,
+                &self.rel_to_col,
+                &self.pattern_ctx.left_node_alias,
+                &self.pattern_ctx.right_node_alias,
+                context.relationship_cypher_alias.as_deref().unwrap_or(""),
+                properties.to_vec(),
+                shortest_path_mode,
+                filters.start_sql.clone(),
+                filters.end_sql.clone(),
+                filters.relationship_sql.clone(),
+                context.path_variable.clone(),
+                context.relationship_types.clone(),
+                context.edge_id.clone(),
+            )
+        } else if self.start_is_denormalized != self.end_is_denormalized {
+            // Mixed access pattern
+            VariableLengthCteGenerator::new_mixed(
+                schema,
+                context.spec.clone(),
+                &self.start_table,
+                &self.start_id_col,
+                &self.rel_table,
+                &self.rel_from_col,
+                &self.rel_to_col,
+                &self.end_table,
+                &self.end_id_col,
+                &self.pattern_ctx.left_node_alias,
+                &self.pattern_ctx.right_node_alias,
+                context.relationship_cypher_alias.as_deref().unwrap_or(""),
+                properties.to_vec(),
+                shortest_path_mode,
+                filters.start_sql.clone(),
+                filters.end_sql.clone(),
+                filters.relationship_sql.clone(),
+                context.path_variable.clone(),
+                context.relationship_types.clone(),
+                context.edge_id.clone(),
+                self.start_is_denormalized,
+                self.end_is_denormalized,
+            )
+        } else {
+            // Traditional or FK-edge pattern
+            VariableLengthCteGenerator::new_with_fk_edge(
+                schema,
+                context.spec.clone(),
+                &self.start_table,
+                &self.start_id_col,
+                &self.rel_table,
+                &self.rel_from_col,
+                &self.rel_to_col,
+                &self.end_table,
+                &self.end_id_col,
+                &self.pattern_ctx.left_node_alias,
+                &self.pattern_ctx.right_node_alias,
+                context.relationship_cypher_alias.as_deref().unwrap_or(""),
+                properties.to_vec(),
+                shortest_path_mode,
+                filters.start_sql.clone(),
+                filters.end_sql.clone(),
+                filters.relationship_sql.clone(),
+                context.path_variable.clone(),
+                context.relationship_types.clone(),
+                context.edge_id.clone(),
+                self.type_column.clone(),
+                self.from_label_column.clone(),
+                self.to_label_column.clone(),
+                context
+                    .start_node_label
+                    .clone()
+                    .or_else(|| self.from_node_label.clone()),
+                context
+                    .end_node_label
+                    .clone()
+                    .or_else(|| self.to_node_label.clone()),
+                self.is_fk_edge,
+            )
+        };
+
+        // For heterogeneous polymorphic paths (different start/end labels with to_label_column),
+        // set intermediate node info to enable proper recursive traversal.
+        // The intermediate type is the same as start type (e.g., Group→Group recursion).
+        // Use context labels if available, otherwise fall back to strategy fields
+        let effective_start_label = context
+            .start_node_label
+            .as_ref()
+            .or(self.from_node_label.as_ref());
+        let effective_end_label = context
+            .end_node_label
+            .as_ref()
+            .or(self.to_node_label.as_ref());
+
+        if self.to_label_column.is_some() {
+            if let (Some(from_label), Some(to_label)) = (effective_start_label, effective_end_label)
+            {
+                if from_label != to_label {
+                    log::info!(
+                        "CteManager: Setting intermediate node for heterogeneous polymorphic path"
+                    );
+                    log::info!("  - start_label: {}, end_label: {}", from_label, to_label);
+                    log::info!(
+                        "  - intermediate: table={}, id_col={}, label={}",
+                        self.start_table,
+                        self.start_id_col,
+                        from_label
+                    );
+                    generator.set_intermediate_node(
+                        &self.start_table,
+                        &self.start_id_col,
+                        from_label,
+                    );
+                }
+            }
+        }
+
+        // Generate the CTE using the comprehensive generator
+        let cte = generator.generate_cte();
+
+        // Convert to CteGenerationResult
+        let cte_name = cte.cte_name.clone();
+        // Extract SQL from CteContent - VLP CTEs always use RawSql
+        let sql = match &cte.content {
+            crate::render_plan::CteContent::RawSql(s) => s.clone(),
+            crate::render_plan::CteContent::Structured(_) => {
+                return Err(CteError::InvalidStrategy(
+                    "VLP CTE should use RawSql, not Structured content".into(),
+                ));
+            }
+        };
+
+        // Build column metadata
+        let columns = CteGenerationResult::build_vlp_column_metadata(
+            &self.pattern_ctx.left_node_alias,
+            &self.pattern_ctx.right_node_alias,
+            properties,
+            &self.start_id_col,
+        );
+
+        // Build VLP endpoint info
+        let vlp_endpoint = VlpEndpointInfo {
+            start_alias: "start_node".to_string(),
+            end_alias: "end_node".to_string(),
+            start_table: self.start_table.clone(),
+            end_table: self.end_table.clone(),
+            cypher_start_alias: self.pattern_ctx.left_node_alias.clone(),
+            cypher_end_alias: self.pattern_ctx.right_node_alias.clone(),
+            start_id_col: self.start_id_col.clone(),
+            end_id_col: self.end_id_col.clone(),
+            path_variable: context.path_variable.clone(),
+        };
+
+        Ok(CteGenerationResult {
+            sql,
+            parameters: vec![],
+            cte_name,
+            recursive: true,
+            from_alias: VLP_CTE_FROM_ALIAS.to_string(),
+            columns,
+            vlp_endpoint: Some(vlp_endpoint),
+        })
+    }
+
+    /// Validate the strategy against pattern constraints
+    pub fn validate(&self, _pattern_ctx: &PatternSchemaContext) -> Result<(), CteError> {
+        // Basic validation - ensure we have necessary table info
+        if self.rel_table.is_empty() {
+            return Err(CteError::SchemaValidationError(
+                "Relationship table name is required".into(),
+            ));
+        }
+        if self.start_id_col.is_empty() || self.end_id_col.is_empty() {
+            return Err(CteError::SchemaValidationError(
+                "Node ID columns are required".into(),
+            ));
+        }
+        Ok(())
     }
 }
 

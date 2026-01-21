@@ -1,6 +1,7 @@
 use crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGenerator;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
+use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
 use crate::query_planner::logical_expr::{Direction, LogicalExpr};
 use crate::query_planner::logical_plan::{
     GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem, ViewScan,
@@ -284,7 +285,7 @@ pub(crate) trait RenderPlanBuilder {
     ) -> RenderPlanBuilderResult<RenderPlan>;
 
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan>;
-    
+
     /// Convert to render plan with access to analysis-phase context (PlanCtx).
     /// This method should be preferred over `to_render_plan` when `plan_ctx` is available,
     /// as it provides access to VLP endpoint information and other analysis metadata.
@@ -401,15 +402,20 @@ impl RenderPlanBuilder for LogicalPlan {
                     let end_alias = &rel.right_connection;
 
                     if alias == start_alias {
-                        log::info!("🎯 VLP: Alias '{}' is VLP start endpoint -> using 'start_id' as ID column", alias);
-                        return Ok("start_id".to_string());
+                        log::info!(
+                            "🎯 VLP: Alias '{}' is VLP start endpoint -> using '{}' as ID column",
+                            alias,
+                            VLP_START_ID_COLUMN
+                        );
+                        return Ok(VLP_START_ID_COLUMN.to_string());
                     }
                     if alias == end_alias {
                         log::info!(
-                            "🎯 VLP: Alias '{}' is VLP end endpoint -> using 'end_id' as ID column",
-                            alias
+                            "🎯 VLP: Alias '{}' is VLP end endpoint -> using '{}' as ID column",
+                            alias,
+                            VLP_END_ID_COLUMN
                         );
-                        return Ok("end_id".to_string());
+                        return Ok(VLP_END_ID_COLUMN.to_string());
                     }
                 }
 

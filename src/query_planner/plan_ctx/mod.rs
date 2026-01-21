@@ -1072,10 +1072,10 @@ impl PlanCtx {
     /// - For regular nodes: returns (alias, column) unchanged
     /// - For VLP endpoints: returns ("t", "start_id"/"end_id")
     pub fn get_vlp_join_reference(&self, alias: &str, default_column: &str) -> (String, String) {
-        use crate::query_planner::join_context::JoinContext;
+        use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
         if let Some(vlp_info) = self.vlp_endpoints.get(alias) {
             (
-                JoinContext::VLP_CTE_DEFAULT_ALIAS.to_string(),
+                VLP_CTE_FROM_ALIAS.to_string(),
                 vlp_info.cte_column().to_string(),
             )
         } else {

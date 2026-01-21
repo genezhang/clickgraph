@@ -93,7 +93,7 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
             // instead of searching all schemas. This fixes EXISTS with multi-schema support.
             let schemas_lock = GLOBAL_SCHEMAS.get();
             let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
-            
+
             // First try to get the schema by name from thread-local
             let current_schema_name = get_current_schema_name();
             let schema = schemas_guard.as_ref().and_then(|guard| {
@@ -199,7 +199,7 @@ fn generate_multi_hop_pattern_count_sql(
     // instead of searching all schemas. This fixes multi-hop EXISTS with multi-schema support.
     let schemas_lock = GLOBAL_SCHEMAS.get();
     let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
-    
+
     // First try to get the schema by name from thread-local
     let current_schema_name = get_current_schema_name();
     let schema = schemas_guard

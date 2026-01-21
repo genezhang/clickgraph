@@ -763,7 +763,8 @@ impl BoltHandler {
         // parsed_query is now dropped - no more Rc<RefCell<>> held!
 
         // Generate render plan - use _with_ctx to pass VLP endpoint information
-        let render_plan = match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx)) {
+        let render_plan = match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx))
+        {
             Ok(plan) => plan,
             Err(e) => {
                 return Err(BoltError::query_error(format!(

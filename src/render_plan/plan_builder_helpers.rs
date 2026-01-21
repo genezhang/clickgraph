@@ -19,6 +19,7 @@ use super::render_expr::{
     ScalarFnCall, TableAlias,
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
+use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
 use crate::render_plan::expression_utils::{
     contains_string_literal, flatten_addition_operands, has_string_operand,
 };
@@ -1305,9 +1306,9 @@ pub(super) fn rewrite_logical_path_functions(
 
                         if let Some(col_name) = column_name {
                             // Generate PropertyAccess for the CTE column
-                            // Use "t" as the table alias (VLP CTE alias)
+                            // Use VLP_CTE_FROM_ALIAS as the table alias (VLP CTE alias)
                             return LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias("t".to_string()),
+                                table_alias: TableAlias(VLP_CTE_FROM_ALIAS.to_string()),
                                 column: PropertyValue::Column(col_name.to_string()),
                             });
                         }
@@ -3544,7 +3545,7 @@ pub(super) fn collect_schema_filters(
     match plan {
         LogicalPlan::ViewScan(scan) => {
             if let Some(ref schema_filter) = scan.schema_filter {
-                let table_alias = alias_hint.unwrap_or("t");
+                let table_alias = alias_hint.unwrap_or(VLP_CTE_FROM_ALIAS);
                 if let Ok(sql) = schema_filter.to_sql(table_alias) {
                     log::debug!(
                         "Collected schema filter for table '{}' with alias '{}': {}",

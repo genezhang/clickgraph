@@ -1056,12 +1056,8 @@ impl FilterTagging {
             LogicalExpr::ArraySlicing { array, from, to } => {
                 // Recursively apply property mapping to array slicing components
                 // This is important for expressions like collect(n.name)[0..10]
-                let mapped_array = self.apply_property_mapping(
-                    *array,
-                    plan_ctx,
-                    graph_schema,
-                    plan,
-                )?;
+                let mapped_array =
+                    self.apply_property_mapping(*array, plan_ctx, graph_schema, plan)?;
                 let mapped_from = if let Some(f) = from {
                     Some(Box::new(self.apply_property_mapping(
                         *f,

@@ -30,6 +30,7 @@ use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::analyzer::multi_type_vlp_expansion::{
     enumerate_vlp_paths, PathEnumeration,
 };
+use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
 use crate::query_planner::logical_plan::VariableLengthSpec;
 use std::collections::HashMap;
 
@@ -407,13 +408,18 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                     .iter()
                     .map(|col| format!("{}.{}", node_alias, col))
                     .collect();
-                format!("toString(tuple({})) AS end_id", cols.join(", "))
+                format!(
+                    "toString(tuple({})) AS {}",
+                    cols.join(", "),
+                    VLP_END_ID_COLUMN
+                )
             } else {
                 // Single ID: cast to String
                 format!(
-                    "toString({}.{}) AS end_id",
+                    "toString({}.{}) AS {}",
                     node_alias,
-                    node_schema.node_id.column()
+                    node_schema.node_id.column(),
+                    VLP_END_ID_COLUMN
                 )
             };
             items.push(end_id_sql);
@@ -434,12 +440,17 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                         .iter()
                         .map(|col| format!("{}.{}", start_alias_sql, col))
                         .collect();
-                    format!("toString(tuple({})) AS start_id", cols.join(", "))
+                    format!(
+                        "toString(tuple({})) AS {}",
+                        cols.join(", "),
+                        VLP_START_ID_COLUMN
+                    )
                 } else {
                     format!(
-                        "toString({}.{}) AS start_id",
+                        "toString({}.{}) AS {}",
                         start_alias_sql,
-                        node_schema.node_id.column()
+                        node_schema.node_id.column(),
+                        VLP_START_ID_COLUMN
                     )
                 };
                 items.push(start_id_sql);

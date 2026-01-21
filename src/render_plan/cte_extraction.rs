@@ -9,8 +9,13 @@ use crate::clickhouse_query_generator::variable_length_cte::{
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::graph_catalog::pattern_schema::{JoinStrategy, PatternSchemaContext};
+use crate::query_planner::join_context::{
+    VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
+};
 use crate::query_planner::logical_expr::ColumnAlias as LogicalColumnAlias;
 use crate::query_planner::logical_plan::LogicalPlan;
+use crate::render_plan::cte_generation::CteGenerationContext;
+use crate::render_plan::cte_manager::CteManager;
 use crate::render_plan::expression_utils::{
     contains_string_literal, flatten_addition_operands, has_string_operand,
 };
@@ -96,6 +101,119 @@ fn recreate_pattern_schema_context(
     .map_err(|e| {
         RenderBuildError::MissingTableInfo(format!("PatternSchemaContext analysis failed: {}", e))
     })
+}
+
+// ============================================================================
+// CteManager-based VLP Generation (Phase 2 Integration)
+// ============================================================================
+
+/// Generate a variable-length path CTE using the unified CteManager approach.
+///
+/// This function provides a cleaner interface to VLP CTE generation by:
+/// 1. Using PatternSchemaContext to determine the appropriate strategy
+/// 2. Building CteGenerationContext with all VLP-specific fields
+/// 3. Delegating to CteManager.generate_vlp_cte()
+///
+/// # Arguments
+/// * `pattern_ctx` - The pattern schema context (from recreate_pattern_schema_context)
+/// * `schema` - The graph schema
+/// * `spec` - Variable-length specification (min/max hops)
+/// * `properties` - Node properties to include in CTE projection
+/// * `filters` - Pre-rendered SQL filters for nodes and relationships
+/// * `vlp_options` - Additional VLP options (path_variable, shortest_path_mode, etc.)
+///
+/// # Returns
+/// A Cte ready to be added to the CTE list, or an error
+pub fn generate_vlp_cte_via_manager(
+    pattern_ctx: &PatternSchemaContext,
+    schema: &GraphSchema,
+    spec: crate::query_planner::logical_plan::VariableLengthSpec,
+    properties: Vec<NodeProperty>,
+    start_filters_sql: Option<String>,
+    end_filters_sql: Option<String>,
+    rel_filters_sql: Option<String>,
+    path_variable: Option<String>,
+    shortest_path_mode: Option<crate::query_planner::logical_plan::ShortestPathMode>,
+    relationship_types: Option<Vec<String>>,
+    edge_id: Option<crate::graph_catalog::config::Identifier>,
+    relationship_cypher_alias: Option<String>,
+    start_label: Option<String>,
+    end_label: Option<String>,
+) -> Result<Cte, RenderBuildError> {
+    use std::sync::Arc;
+
+    log::debug!(
+        "generate_vlp_cte_via_manager: {} -[*]-> {}",
+        pattern_ctx.left_node_alias,
+        pattern_ctx.right_node_alias
+    );
+
+    // Build CteGenerationContext with all VLP-specific fields
+    // Clone the schema to own it for the context
+    let context = CteGenerationContext::new()
+        .with_spec(spec)
+        .with_schema_owned(schema.clone())
+        .with_path_variable(path_variable.clone())
+        .with_shortest_path_mode(shortest_path_mode)
+        .with_relationship_types(relationship_types.clone())
+        .with_edge_id(edge_id)
+        .with_relationship_cypher_alias(relationship_cypher_alias)
+        .with_node_labels(start_label.clone(), end_label.clone());
+
+    // Convert filters to CategorizedFilters format
+    let filters = super::filter_pipeline::CategorizedFilters {
+        start_node_filters: None,
+        end_node_filters: None,
+        relationship_filters: None,
+        path_function_filters: None,
+        start_sql: start_filters_sql,
+        end_sql: end_filters_sql,
+        relationship_sql: rel_filters_sql,
+    };
+
+    // Create CteManager and generate VLP CTE
+    // Note: We clone the schema to create an Arc since we have a reference
+    let schema_arc = Arc::new(schema.clone());
+    let manager = CteManager::with_context(schema_arc, context);
+    let result = manager.generate_vlp_cte(pattern_ctx, &properties, &filters)
+        .map_err(|e| RenderBuildError::UnsupportedFeature(format!(
+            "CteManager VLP generation failed: {}. Falling back to direct generator may be needed.", e
+        )))?;
+
+    // Convert CteGenerationResult to Cte, preserving column metadata for deterministic lookups
+    let cte = Cte {
+        cte_name: result.cte_name.clone(),
+        content: CteContent::RawSql(result.sql),
+        is_recursive: result.recursive,
+        vlp_start_alias: result.vlp_endpoint.as_ref().map(|e| e.start_alias.clone()),
+        vlp_end_alias: result.vlp_endpoint.as_ref().map(|e| e.end_alias.clone()),
+        vlp_start_table: result.vlp_endpoint.as_ref().map(|e| e.start_table.clone()),
+        vlp_end_table: result.vlp_endpoint.as_ref().map(|e| e.end_table.clone()),
+        vlp_cypher_start_alias: result
+            .vlp_endpoint
+            .as_ref()
+            .map(|e| e.cypher_start_alias.clone()),
+        vlp_cypher_end_alias: result
+            .vlp_endpoint
+            .as_ref()
+            .map(|e| e.cypher_end_alias.clone()),
+        vlp_start_id_col: result.vlp_endpoint.as_ref().map(|e| e.start_id_col.clone()),
+        vlp_end_id_col: result.vlp_endpoint.as_ref().map(|e| e.end_id_col.clone()),
+        vlp_path_variable: path_variable,
+        // Preserve column metadata from CteGenerationResult for deterministic column lookups
+        columns: result.columns.clone(),
+        from_alias: Some(result.from_alias.clone()),
+    };
+
+    log::info!(
+        "✅ Generated VLP CTE '{}' via CteManager (recursive={}, {} columns, from_alias='{}')",
+        cte.cte_name,
+        cte.is_recursive,
+        cte.columns.len(),
+        result.from_alias
+    );
+
+    Ok(cte)
 }
 
 /// Collect all parameter names from a RenderExpr tree
@@ -1935,7 +2053,12 @@ pub fn extract_ctes_with_context(
                     // Chained pattern filters (nodes outside VLP) are handled separately in
                     // plan_builder.rs via references_only_vlp_aliases check.
 
-                    (start_sql, end_sql, rel_sql_rendered, Some(mapped_categorized))
+                    (
+                        start_sql,
+                        end_sql,
+                        rel_sql_rendered,
+                        Some(mapped_categorized),
+                    )
                 } else {
                     (None, None, None, None)
                 };
@@ -2252,6 +2375,24 @@ pub fn extract_ctes_with_context(
                                     vlp_start_id_col: None,
                                     vlp_end_id_col: None,
                                     vlp_path_variable: graph_rel.path_variable.clone(),
+                                    // Multi-type VLP: basic column metadata (start_id and end_id for ID lookups)
+                                    columns: vec![
+                                        crate::render_plan::CteColumnMetadata {
+                                            cte_column_name: VLP_START_ID_COLUMN.to_string(),
+                                            cypher_alias: start_alias.clone(),
+                                            property_name: "id".to_string(),
+                                            is_id_column: true,
+                                            vlp_position: Some(crate::render_plan::cte_manager::VlpColumnPosition::Start),
+                                        },
+                                        crate::render_plan::CteColumnMetadata {
+                                            cte_column_name: VLP_END_ID_COLUMN.to_string(),
+                                            cypher_alias: end_alias.clone(),
+                                            property_name: "id".to_string(),
+                                            is_id_column: true,
+                                            vlp_position: Some(crate::render_plan::cte_manager::VlpColumnPosition::End),
+                                        },
+                                    ],
+                                    from_alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
                                 };
 
                                 // Extract CTEs from child plans
@@ -2377,8 +2518,12 @@ pub fn extract_ctes_with_context(
                         );
                     }
 
-                    // Choose generator based on denormalized status
-                    let mut generator = if both_denormalized {
+                    // ========================================================================
+                    // 🚀 CteManager Integration (Phase 2): Use unified API for VLP generation
+                    // ========================================================================
+
+                    // Determine properties based on pattern type
+                    let vlp_properties = if both_denormalized {
                         log::debug!("🔧 CTE: Using denormalized generator for variable-length path (both nodes virtual)");
                         log::debug!(
                             "🔧 CTE: rel_table={}, filter_properties count={}",
@@ -2450,123 +2595,34 @@ pub fn extract_ctes_with_context(
                             "🔧 CTE: Final all_denorm_properties count: {}",
                             all_denorm_properties.len()
                         );
-                        log::info!("🔍 VLP CTE: Passing filters to new_denormalized:");
-                        log::info!("  combined_start_filters: {:?}", combined_start_filters);
-                        log::info!("  combined_end_filters: {:?}", combined_end_filters);
-                        log::info!("  rel_filters_sql: {:?}", rel_filters_sql);
-
-                        VariableLengthCteGenerator::new_denormalized(
-                            schema,
-                            spec.clone(),
-                            &rel_table, // The only table - edge table
-                            &from_col,  // From column
-                            &to_col,    // To column
-                            &graph_rel.left_connection,
-                            &graph_rel.right_connection,
-                            &rel_alias, // ✅ HOLISTIC FIX: Pass relationship Cypher alias
-                            all_denorm_properties, // Pass all denormalized properties
-                            graph_rel.shortest_path_mode.clone().map(|m| m.into()),
-                            combined_start_filters.clone(),
-                            // 🔒 Always pass end filters - schema filters apply to base tables
-                            combined_end_filters.clone(),
-                            rel_filters_sql.clone(), // ✅ HOLISTIC FIX: Pass relationship filters
-                            graph_rel.path_variable.clone(),
-                            graph_rel.labels.clone(),
-                            edge_id,
-                        )
-                    } else if is_mixed {
-                        log::debug!("CTE: Using mixed generator for variable-length path (start_denorm={}, end_denorm={})",
-                                  start_is_denormalized, end_is_denormalized);
-
-                        // For single-type VLP, end_table must exist
-                        let end_table_str = end_table.as_ref().ok_or_else(|| {
-                            RenderBuildError::MissingTableInfo(
-                                "end node in single-type VLP".to_string(),
-                            )
-                        })?;
-
-                        VariableLengthCteGenerator::new_mixed(
-                            schema,
-                            spec.clone(),
-                            &start_table,
-                            &start_id_col,
-                            &rel_table,
-                            &from_col,
-                            &to_col,
-                            end_table_str,
-                            &end_id_col,
-                            &graph_rel.left_connection,
-                            &graph_rel.right_connection,
-                            &rel_alias, // ✅ HOLISTIC FIX: Pass relationship Cypher alias
-                            filter_properties.clone(),
-                            graph_rel.shortest_path_mode.clone().map(|m| m.into()),
-                            combined_start_filters.clone(),
-                            // 🔒 Always pass end filters - schema filters apply to base tables
-                            combined_end_filters.clone(),
-                            rel_filters_sql.clone(), // ✅ HOLISTIC FIX: Pass relationship filters
-                            graph_rel.path_variable.clone(),
-                            graph_rel.labels.clone(),
-                            edge_id,
-                            start_is_denormalized,
-                            end_is_denormalized,
-                        )
+                        all_denorm_properties
                     } else {
-                        // For single-type VLP, end_table must exist
-                        let end_table_str = end_table.as_ref().ok_or_else(|| {
-                            RenderBuildError::MissingTableInfo(
-                                "end node in single-type VLP".to_string(),
-                            )
-                        })?;
-
-                        VariableLengthCteGenerator::new_with_fk_edge(
-                            schema,
-                            spec.clone(),
-                            &start_table,
-                            &start_id_col,
-                            &rel_table,
-                            &from_col,
-                            &to_col,
-                            end_table_str,
-                            &end_id_col,
-                            &graph_rel.left_connection,
-                            &graph_rel.right_connection,
-                            &rel_alias, // ✅ HOLISTIC FIX: Pass relationship Cypher alias
-                            filter_properties, // Use filter properties
-                            graph_rel.shortest_path_mode.clone().map(|m| m.into()),
-                            combined_start_filters, // Start filters (user + schema)
-                            // 🔒 Always pass end filters - schema filters apply to base tables
-                            combined_end_filters,
-                            rel_filters_sql, // ✅ HOLISTIC FIX: Pass relationship filters
-                            graph_rel.path_variable.clone(),
-                            graph_rel.labels.clone(),
-                            edge_id,                   // Pass edge_id from schema
-                            type_column.clone(),       // Polymorphic edge type discriminator
-                            from_label_column,         // Polymorphic edge from label column
-                            to_label_column.clone(),   // Polymorphic edge to label column
-                            Some(start_label.clone()), // Expected from node label
-                            Some(end_label.clone()),   // Expected to node label
-                            is_fk_edge,                // FK-edge pattern flag
-                        )
+                        // Non-denormalized patterns use filter_properties directly
+                        filter_properties.clone()
                     };
 
-                    // For heterogeneous polymorphic paths (start_label != end_label with to_label_column),
-                    // set intermediate node info to enable proper recursive traversal.
-                    // The intermediate type is the same as start type (Group→Group recursion).
-                    if to_label_column.is_some() && start_label != end_label {
-                        log::info!(
-                            "CTE: Setting intermediate node for heterogeneous polymorphic path"
-                        );
-                        log::info!("  - start_label: {}, end_label: {}", start_label, end_label);
-                        log::info!(
-                            "  - intermediate: table={}, id_col={}, label={}",
-                            start_table,
-                            start_id_col,
-                            start_label
-                        );
-                        generator.set_intermediate_node(&start_table, &start_id_col, &start_label);
-                    }
+                    log::info!("🔍 VLP CTE: Using CteManager with filters:");
+                    log::info!("  combined_start_filters: {:?}", combined_start_filters);
+                    log::info!("  combined_end_filters: {:?}", combined_end_filters);
+                    log::info!("  rel_filters_sql: {:?}", rel_filters_sql);
 
-                    let var_len_cte = generator.generate_cte();
+                    // Generate VLP CTE via unified CteManager API
+                    let var_len_cte = generate_vlp_cte_via_manager(
+                        &pattern_ctx,
+                        schema,
+                        spec.clone(),
+                        vlp_properties,
+                        combined_start_filters,
+                        combined_end_filters,
+                        rel_filters_sql,
+                        graph_rel.path_variable.clone(),
+                        graph_rel.shortest_path_mode.clone(),
+                        graph_rel.labels.clone(),
+                        edge_id,
+                        Some(rel_alias.clone()),
+                        Some(start_label.clone()),
+                        Some(end_label.clone()),
+                    )?;
 
                     // Also extract CTEs from child plans
                     let mut child_ctes = extract_ctes_with_context(

@@ -308,7 +308,8 @@ pub async fn sql_generation_handler(
 
         // Phase 3: Render plan generation - use _with_ctx to pass VLP endpoint information
         let render_start = Instant::now();
-        let render_plan = match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx)) {
+        let render_plan = match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx))
+        {
             Ok(plan) => plan,
             Err(e) => {
                 return Err((

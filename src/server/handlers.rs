@@ -16,10 +16,7 @@ use crate::{
     graph_catalog::graph_schema::GraphSchemaElement,
     open_cypher_parser::{self},
     query_planner::{self, types::QueryType},
-    render_plan::{
-        plan_builder::RenderPlanBuilder,
-        render_expr::set_current_schema_name,
-    },
+    render_plan::{plan_builder::RenderPlanBuilder, render_expr::set_current_schema_name},
 };
 
 use super::{
@@ -520,37 +517,38 @@ pub async fn query_handler(
 
             // Phase 3: Render plan generation
             let render_start = Instant::now();
-            
+
             // Set the current schema name for EXISTS subquery resolution
             // This allows generate_exists_sql to look up the correct schema
             set_current_schema_name(Some(schema_name.to_string()));
-            
+
             // Use to_render_plan_with_ctx to pass analysis-phase metadata (VLP endpoints, etc.)
-            let render_plan = match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx)) {
-                Ok(plan) => {
-                    // Clear the schema name after successful render
-                    set_current_schema_name(None);
-                    plan
-                }
-                Err(e) => {
-                    // Clear the schema name on error
-                    set_current_schema_name(None);
-                    metrics.render_time = render_start.elapsed().as_secs_f64();
-                    if sql_only {
-                        let error_response = SqlOnlyResponse {
-                            cypher_query: payload.query.clone(),
-                            generated_sql: format!("RENDER_ERROR: {}", e),
-                            execution_mode: "sql_only_with_render_error".to_string(),
-                        };
-                        return Ok(Json(error_response).into_response());
-                    } else {
-                        return Err((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("ClickGraph Error: {}", e),
-                        ));
+            let render_plan =
+                match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx)) {
+                    Ok(plan) => {
+                        // Clear the schema name after successful render
+                        set_current_schema_name(None);
+                        plan
                     }
-                }
-            };
+                    Err(e) => {
+                        // Clear the schema name on error
+                        set_current_schema_name(None);
+                        metrics.render_time = render_start.elapsed().as_secs_f64();
+                        if sql_only {
+                            let error_response = SqlOnlyResponse {
+                                cypher_query: payload.query.clone(),
+                                generated_sql: format!("RENDER_ERROR: {}", e),
+                                execution_mode: "sql_only_with_render_error".to_string(),
+                            };
+                            return Ok(Json(error_response).into_response());
+                        } else {
+                            return Err((
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("ClickGraph Error: {}", e),
+                            ));
+                        }
+                    }
+                };
             metrics.render_time = render_start.elapsed().as_secs_f64();
 
             // Phase 4: SQL generation

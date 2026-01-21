@@ -4,6 +4,9 @@ use super::render_expr::{
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
+use crate::query_planner::join_context::{
+    VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
+};
 
 /// Represents categorized filters for different parts of a query
 ///
@@ -437,7 +440,7 @@ pub fn rewrite_expr_for_var_len_cte(
         RenderExpr::PropertyAccessExp(prop) => {
             let mut new_prop = prop.clone();
             if prop.table_alias.0 == start_cypher_alias {
-                new_prop.table_alias = TableAlias("t".to_string());
+                new_prop.table_alias = TableAlias(VLP_CTE_FROM_ALIAS.to_string());
                 if prop.column.raw() == "*" {
                     new_prop.column = prop.column.clone();
                 } else {
@@ -589,13 +592,13 @@ pub fn rewrite_expr_for_mixed_denormalized_cte(
             // Check if this is a relationship alias access (e.g., f.Origin, f.Dest)
             if let (Some(rel), Some(from), Some(to)) = (rel_alias, from_col, to_col) {
                 if prop.table_alias.0 == rel {
-                    new_prop.table_alias = TableAlias("t".to_string());
+                    new_prop.table_alias = TableAlias(VLP_CTE_FROM_ALIAS.to_string());
                     if raw_col == from {
                         // from_col (e.g., Origin) → start_id
-                        new_prop.column = PropertyValue::Column("start_id".to_string());
+                        new_prop.column = PropertyValue::Column(VLP_START_ID_COLUMN.to_string());
                     } else if raw_col == to {
                         // to_col (e.g., Dest) → end_id
-                        new_prop.column = PropertyValue::Column("end_id".to_string());
+                        new_prop.column = PropertyValue::Column(VLP_END_ID_COLUMN.to_string());
                     }
                     return RenderExpr::PropertyAccessExp(new_prop);
                 }
@@ -604,15 +607,15 @@ pub fn rewrite_expr_for_mixed_denormalized_cte(
             // Rewrite only for denormalized nodes
             if prop.table_alias.0 == start_cypher_alias && start_is_denormalized {
                 // Start node is denormalized → rewrite to t.start_id
-                new_prop.table_alias = TableAlias("t".to_string());
+                new_prop.table_alias = TableAlias(VLP_CTE_FROM_ALIAS.to_string());
                 if raw_col != "*" {
-                    new_prop.column = PropertyValue::Column("start_id".to_string());
+                    new_prop.column = PropertyValue::Column(VLP_START_ID_COLUMN.to_string());
                 }
             } else if prop.table_alias.0 == end_cypher_alias && end_is_denormalized {
                 // End node is denormalized → rewrite to t.end_id
-                new_prop.table_alias = TableAlias("t".to_string());
+                new_prop.table_alias = TableAlias(VLP_CTE_FROM_ALIAS.to_string());
                 if raw_col != "*" {
-                    new_prop.column = PropertyValue::Column("end_id".to_string());
+                    new_prop.column = PropertyValue::Column(VLP_END_ID_COLUMN.to_string());
                 }
             }
             // Standard nodes are left unchanged - they'll be resolved by JOINs

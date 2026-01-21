@@ -4,8 +4,51 @@
 //! It replaces the ambiguous `joined_entities: HashSet<String>` with clear semantics.
 //!
 //! See notes/join-context-architecture-design.md for full design rationale.
+//!
+//! ## ⚠️ VLP NAMING CONVENTIONS - SINGLE SOURCE OF TRUTH
+//!
+//! All VLP CTE naming conventions are defined as constants in this module:
+//! - [`VLP_CTE_FROM_ALIAS`] = "t" (the FROM alias for VLP CTEs)
+//! - [`VLP_START_ID_COLUMN`] = "start_id" (column for start node ID)
+//! - [`VLP_END_ID_COLUMN`] = "end_id" (column for end node ID)
+//!
+//! **USAGE**: Import these constants wherever VLP CTEs are generated or referenced:
+//! ```ignore
+//! use crate::query_planner::join_context::{VLP_CTE_FROM_ALIAS, VLP_START_ID_COLUMN, VLP_END_ID_COLUMN};
+//! ```
+//!
+//! **Files that MUST use these constants**:
+//! - `variable_length_cte.rs` - generates the actual CTE SQL
+//! - `multi_type_vlp_joins.rs` - generates multi-type VLP CTEs  
+//! - `plan_builder_utils.rs` - fallback code for GROUP BY expansion
+//! - `select_builder.rs` - SELECT clause generation
+//! - `plan_ctx/mod.rs` - planning context
 
 use std::collections::{HashMap, HashSet};
+
+// =============================================================================
+// VLP CTE NAMING CONVENTIONS - SINGLE SOURCE OF TRUTH
+// =============================================================================
+
+/// Default FROM alias used for VLP CTEs in outer query.
+/// Example: `FROM vlp_u1_u2 AS t` - the "t" is this constant.
+///
+/// All code generating or referencing VLP CTEs MUST use this constant.
+pub const VLP_CTE_FROM_ALIAS: &str = "t";
+
+/// Column name for the start node ID in VLP CTEs.
+/// Example: `SELECT ... start_node.id AS start_id ...` in recursive CTE.
+///
+/// All code generating or referencing VLP CTEs MUST use this constant.
+pub const VLP_START_ID_COLUMN: &str = "start_id";
+
+/// Column name for the end node ID in VLP CTEs.
+/// Example: `SELECT ... end_node.id AS end_id ...` in recursive CTE.
+///
+/// All code generating or referencing VLP CTEs MUST use this constant.
+pub const VLP_END_ID_COLUMN: &str = "end_id";
+
+// =============================================================================
 
 /// Position of a node in a Variable-Length Path (VLP).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,10 +61,11 @@ pub enum VlpPosition {
 
 impl VlpPosition {
     /// Get the standard CTE column name for this position.
+    /// Returns [`VLP_START_ID_COLUMN`] or [`VLP_END_ID_COLUMN`].
     pub fn cte_column(&self) -> &'static str {
         match self {
-            VlpPosition::Start => "start_id",
-            VlpPosition::End => "end_id",
+            VlpPosition::Start => VLP_START_ID_COLUMN,
+            VlpPosition::End => VLP_END_ID_COLUMN,
         }
     }
 }
@@ -132,8 +176,10 @@ impl JoinContext {
     // Reference Resolution (KEY METHOD for VLP+chained patterns)
     // ========================================================================
 
-    /// Default alias used for VLP CTEs in outer query (e.g., "FROM vlp_u1_u2 AS t")
-    pub const VLP_CTE_DEFAULT_ALIAS: &'static str = "t";
+    /// Backward compatibility alias for [`VLP_CTE_FROM_ALIAS`].
+    /// Prefer using the module-level constant directly.
+    #[deprecated(since = "0.6.2", note = "Use VLP_CTE_FROM_ALIAS constant instead")]
+    pub const VLP_CTE_DEFAULT_ALIAS: &'static str = VLP_CTE_FROM_ALIAS;
 
     /// Get the proper (table_alias, column) for a JOIN condition.
     ///
@@ -155,7 +201,7 @@ impl JoinContext {
         if let Some(vlp_info) = self.vlp_endpoints.get(alias) {
             // VLP endpoint: use CTE alias and position-based column
             (
-                Self::VLP_CTE_DEFAULT_ALIAS.to_string(),
+                VLP_CTE_FROM_ALIAS.to_string(),
                 vlp_info.cte_column().to_string(),
             )
         } else {
@@ -171,12 +217,7 @@ impl JoinContext {
     ) -> Option<(String, &'static str, &'static str, &VlpEndpointInfo)> {
         self.vlp_endpoints.get(alias).map(|info| {
             let cte_name = info.derive_cte_name(alias);
-            (
-                cte_name,
-                Self::VLP_CTE_DEFAULT_ALIAS,
-                info.cte_column(),
-                info,
-            )
+            (cte_name, VLP_CTE_FROM_ALIAS, info.cte_column(), info)
         })
     }
 

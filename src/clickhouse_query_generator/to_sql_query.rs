@@ -1,4 +1,5 @@
 use crate::{
+    query_planner::join_context::{VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN},
     query_planner::logical_plan::LogicalPlan,
     render_plan::{
         render_expr::{
@@ -665,9 +666,9 @@ impl ToSql for FromTableItem {
                 match view_ref.source.as_ref() {
                     LogicalPlan::ViewScan(_) => {
                         // ViewScan fallback - should not reach here if alias is properly set
-                        "t".to_string()
+                        VLP_CTE_FROM_ALIAS.to_string()
                     }
-                    _ => "t".to_string(), // Default fallback
+                    _ => VLP_CTE_FROM_ALIAS.to_string(), // Default fallback
                 }
             };
 
@@ -1453,8 +1454,9 @@ impl RenderExpr {
                     if aliases.contains_key(&table_alias.0) {
                         log::info!("🎯 Found '{}' in MULTI_TYPE_VLP_ALIASES!", table_alias.0);
                         // Properties like end_type, end_id, hop_count, path_relationships are direct CTE columns
-                        if matches!(col_name, "end_type" | "end_id" | "start_id" | "end_properties"
-                                             | "hop_count" | "path_relationships") {
+                        if col_name == VLP_START_ID_COLUMN || col_name == VLP_END_ID_COLUMN
+                            || matches!(col_name, "end_type" | "end_properties" | "hop_count" | "path_relationships")
+                        {
                             log::info!("🎯 Multi-type VLP CTE column: {}.{}", table_alias.0, col_name);
                             return Some(format!("{}.{}", table_alias.0, col_name));
                         }

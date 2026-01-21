@@ -33,6 +33,7 @@
 //! - **Week 5: from_builder.rs** ← Current
 //! - Week 6: group_by_builder.rs (planned)
 
+use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
 use crate::query_planner::logical_plan::LogicalPlan;
 use log::debug;
 use std::sync::Arc;
@@ -630,7 +631,7 @@ impl LogicalPlan {
                 return Ok(Some(ViewTableRef {
                     source: Arc::new(LogicalPlan::Empty),
                     name: cte_name,
-                    alias: Some("t".to_string()), // Standard VLP alias
+                    alias: Some(VLP_CTE_FROM_ALIAS.to_string()), // Standard VLP alias
                     use_final: false,
                 }));
             }
@@ -744,7 +745,7 @@ impl LogicalPlan {
             return Ok(Some(ViewTableRef {
                 source: Arc::new(LogicalPlan::Empty),
                 name: cte_name,
-                alias: Some("t".to_string()), // Standard VLP alias
+                alias: Some(VLP_CTE_FROM_ALIAS.to_string()), // Standard VLP alias
                 use_final: false,
             }));
         }
