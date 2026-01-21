@@ -200,6 +200,19 @@ fn populate_cte_property_mappings(plan: &RenderPlan) {
 fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
     use crate::graph_catalog::expression_parser::PropertyValue;
 
+    // 🔧 FIX: If FROM references a WITH CTE (not the raw VLP CTE), skip this rewriting
+    // The WITH CTE has already transformed the columns, and the SELECT items reference
+    // the WITH CTE columns, not the raw VLP CTE columns.
+    if let Some(from_ref) = &plan.from.0 {
+        if from_ref.name.starts_with("with_") && from_ref.name.contains("_cte_") {
+            log::info!(
+                "🔧 VLP: FROM uses WITH CTE '{}' - skipping VLP SELECT rewriting",
+                from_ref.name
+            );
+            return plan;
+        }
+    }
+
     // Check if any CTE is a VLP CTE
     let vlp_cte = plan
         .ctes
@@ -477,9 +490,27 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
         return sql;
     }
 
+    // Collect UNWIND (ARRAY JOIN) aliases to avoid `.*` expansion for scalar values
+    let unwind_aliases: std::collections::HashSet<String> = plan
+        .array_join
+        .0
+        .iter()
+        .map(|aj| aj.alias.clone())
+        .collect();
+
     sql.push_str(&plan.ctes.to_sql());
-    sql.push_str(&plan.select.to_sql());
-    sql.push_str(&plan.from.to_sql());
+    sql.push_str(&plan.select.to_sql_with_unwind_aliases(&unwind_aliases));
+
+    // Add FROM clause - use system.one for UNWIND-only queries (no actual table)
+    let from_sql = plan.from.to_sql();
+    if from_sql.is_empty() && !plan.array_join.0.is_empty() {
+        // ARRAY JOIN requires a FROM clause in ClickHouse
+        // system.one is a virtual table with one row, perfect for UNWIND-only queries
+        sql.push_str("FROM system.one\n");
+    } else {
+        sql.push_str(&from_sql);
+    }
+
     sql.push_str(&plan.joins.to_sql());
     sql.push_str(&plan.array_join.to_sql());
     sql.push_str(&plan.filters.to_sql());
@@ -527,6 +558,18 @@ impl ToSql for RenderPlan {
 
 impl ToSql for SelectItems {
     fn to_sql(&self) -> String {
+        // Default behavior: no UNWIND aliases to exclude from `.*` expansion
+        self.to_sql_with_unwind_aliases(&std::collections::HashSet::new())
+    }
+}
+
+impl SelectItems {
+    /// Generate SQL for SELECT items, excluding `.*` expansion for UNWIND aliases.
+    /// UNWIND aliases are scalars, not tables, so `x.*` is invalid for them.
+    pub fn to_sql_with_unwind_aliases(
+        &self,
+        unwind_aliases: &std::collections::HashSet<String>,
+    ) -> String {
         let mut sql: String = String::new();
 
         if self.items.is_empty() {
@@ -546,12 +589,20 @@ impl ToSql for SelectItems {
             // render as `alias.*` to avoid "Already registered p AS p" error
             // This handles: SELECT p AS "p" FROM ... AS p (invalid)
             // Should be: SELECT p.* FROM ... AS p (valid)
+            //
+            // 🔧 UNWIND FIX: Skip `.*` expansion for UNWIND aliases since they're scalars, not tables
             let rendered_expr =
                 if let RenderExpr::TableAlias(TableAlias(alias_name)) = &item.expression {
                     if let Some(col_alias) = &item.col_alias {
                         if alias_name == &col_alias.0 {
-                            // TableAlias matches its own col_alias - use SELECT *
-                            format!("{}.*", alias_name)
+                            // Check if this is an UNWIND alias - don't use `.*` for scalars
+                            if unwind_aliases.contains(alias_name) {
+                                // UNWIND alias: render as just the alias (scalar value)
+                                alias_name.clone()
+                            } else {
+                                // Path/table alias: use `.*` expansion
+                                format!("{}.*", alias_name)
+                            }
                         } else {
                             item.expression.to_sql()
                         }
@@ -569,6 +620,13 @@ impl ToSql for SelectItems {
             if let Some(alias) = &item.col_alias {
                 if let RenderExpr::TableAlias(TableAlias(expr_alias)) = &item.expression {
                     if expr_alias != &alias.0 {
+                        sql.push_str(" AS \"");
+                        sql.push_str(&alias.0);
+                        sql.push('"');
+                    }
+                    // For UNWIND aliases that match, we still need the AS clause
+                    // since we're rendering just the alias without `.*`
+                    else if unwind_aliases.contains(expr_alias) {
                         sql.push_str(" AS \"");
                         sql.push_str(&alias.0);
                         sql.push('"');

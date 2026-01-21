@@ -16,7 +16,10 @@ use crate::{
     graph_catalog::graph_schema::GraphSchemaElement,
     open_cypher_parser::{self},
     query_planner::{self, types::QueryType},
-    render_plan::plan_builder::RenderPlanBuilder,
+    render_plan::{
+        plan_builder::RenderPlanBuilder,
+        render_expr::set_current_schema_name,
+    },
 };
 
 use super::{
@@ -488,14 +491,14 @@ pub async fn query_handler(
                 view_parameter_values
             );
 
-            let logical_plan = match query_planner::evaluate_read_statement(
+            let (logical_plan, plan_ctx) = match query_planner::evaluate_read_statement(
                 cypher_statement,
                 &graph_schema,
                 payload.tenant_id.clone(),
                 view_parameter_values,
                 payload.max_inferred_types,
             ) {
-                Ok(plan) => plan,
+                Ok(result) => result,
                 Err(e) => {
                     metrics.planning_time = planning_start.elapsed().as_secs_f64();
                     if sql_only {
@@ -517,9 +520,21 @@ pub async fn query_handler(
 
             // Phase 3: Render plan generation
             let render_start = Instant::now();
-            let render_plan = match logical_plan.to_render_plan(&graph_schema) {
-                Ok(plan) => plan,
+            
+            // Set the current schema name for EXISTS subquery resolution
+            // This allows generate_exists_sql to look up the correct schema
+            set_current_schema_name(Some(schema_name.to_string()));
+            
+            // Use to_render_plan_with_ctx to pass analysis-phase metadata (VLP endpoints, etc.)
+            let render_plan = match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx)) {
+                Ok(plan) => {
+                    // Clear the schema name after successful render
+                    set_current_schema_name(None);
+                    plan
+                }
                 Err(e) => {
+                    // Clear the schema name on error
+                    set_current_schema_name(None);
                     metrics.render_time = render_start.elapsed().as_secs_f64();
                     if sql_only {
                         let error_response = SqlOnlyResponse {

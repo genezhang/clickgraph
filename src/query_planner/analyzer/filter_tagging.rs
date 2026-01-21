@@ -776,11 +776,35 @@ impl FilterTagging {
                                 }
                             }
                         } else {
-                            // Node is marked as embedded but no edge info found - ERROR instead of fallback
-                            return Err(AnalyzerError::InvalidPlan(format!(
-                                "Embedded node '{}' has no edge info. GraphJoinInference must provide edge context for all embedded nodes.",
+                            // Node is marked as embedded but no edge info found (standalone node query)
+                            // This happens when querying embedded nodes directly without a relationship:
+                            //   MATCH (n:IP) RETURN count(DISTINCT n.ip)
+                            // Fall back to searching the ViewScan's property mapping directly
+                            log::debug!(
+                                "FilterTagging: Embedded node '{}' has no edge context - falling back to ViewScan property lookup",
                                 property_access.table_alias.0
-                            )));
+                            );
+                            if let Some(column) = Self::find_property_in_viewscan(
+                                plan,
+                                &property_access.table_alias.0,
+                                property_access.column.raw(),
+                            ) {
+                                println!(
+                                    "FilterTagging: Found property '{}' in standalone ViewScan -> '{}'",
+                                    property_access.column.raw(), column
+                                );
+                                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                    column,
+                                )
+                            } else {
+                                // Still couldn't find it - fall back to view resolver
+                                let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
+                                view_resolver.resolve_node_property_with_role(
+                                    &label,
+                                    &property_access.column.raw(),
+                                    None, // No role for standalone nodes
+                                )?
+                            }
                         }
                     } else {
                         // No plan available for embedded node - this should not happen
@@ -1028,6 +1052,41 @@ impl FilterTagging {
                     )?);
                 }
                 Ok(LogicalExpr::List(mapped_elements))
+            }
+            LogicalExpr::ArraySlicing { array, from, to } => {
+                // Recursively apply property mapping to array slicing components
+                // This is important for expressions like collect(n.name)[0..10]
+                let mapped_array = self.apply_property_mapping(
+                    *array,
+                    plan_ctx,
+                    graph_schema,
+                    plan,
+                )?;
+                let mapped_from = if let Some(f) = from {
+                    Some(Box::new(self.apply_property_mapping(
+                        *f,
+                        plan_ctx,
+                        graph_schema,
+                        plan,
+                    )?))
+                } else {
+                    None
+                };
+                let mapped_to = if let Some(t) = to {
+                    Some(Box::new(self.apply_property_mapping(
+                        *t,
+                        plan_ctx,
+                        graph_schema,
+                        plan,
+                    )?))
+                } else {
+                    None
+                };
+                Ok(LogicalExpr::ArraySlicing {
+                    array: Box::new(mapped_array),
+                    from: mapped_from,
+                    to: mapped_to,
+                })
             }
             LogicalExpr::LabelExpression {
                 variable,

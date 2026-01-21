@@ -310,33 +310,37 @@ impl PlanCtx {
 
         // NEW (Jan 2026): Also register in typed variable system
         // This keeps both systems in sync during migration period
-        let labels = table_ctx.get_labels().cloned().unwrap_or_default();
-        if table_ctx.is_relation() {
-            // It's a relationship variable
-            self.variables.define_relationship(
-                alias.clone(),
-                labels,
-                table_ctx.get_from_node_label().cloned(),
-                table_ctx.get_to_node_label().cloned(),
-                VariableSource::Match,
-            );
-        } else if table_ctx.is_path_variable() {
-            // It's a path variable (no labels, not a relationship)
-            // Note: We don't have full path info here (start/end nodes, bounds),
-            // so we register a basic path. The full info would need to be passed
-            // from the caller or set via define_path() directly.
-            self.variables.define_path(
-                alias.clone(),
-                None,  // start_node - not available from TableCtx
-                None,  // end_node - not available from TableCtx
-                None,  // relationship - not available from TableCtx
-                None,  // length_bounds - not available from TableCtx
-                false, // is_shortest_path - would need explicit flag
-            );
-        } else {
-            // It's a node variable
-            self.variables
-                .define_node(alias.clone(), labels, VariableSource::Match);
+        // SKIP if variable is already defined (e.g., path variables may have been
+        // registered with full metadata via define_path() before this call)
+        if !self.variables.contains(&alias) {
+            let labels = table_ctx.get_labels().cloned().unwrap_or_default();
+            if table_ctx.is_relation() {
+                // It's a relationship variable
+                self.variables.define_relationship(
+                    alias.clone(),
+                    labels,
+                    table_ctx.get_from_node_label().cloned(),
+                    table_ctx.get_to_node_label().cloned(),
+                    VariableSource::Match,
+                );
+            } else if table_ctx.is_path_variable() {
+                // It's a path variable (no labels, not a relationship)
+                // Note: We don't have full path info here (start/end nodes, bounds),
+                // so we register a basic path. The full info would need to be passed
+                // from the caller or set via define_path() directly.
+                self.variables.define_path(
+                    alias.clone(),
+                    None,  // start_node - not available from TableCtx
+                    None,  // end_node - not available from TableCtx
+                    None,  // relationship - not available from TableCtx
+                    None,  // length_bounds - not available from TableCtx
+                    false, // is_shortest_path - would need explicit flag
+                );
+            } else {
+                // It's a node variable
+                self.variables
+                    .define_node(alias.clone(), labels, VariableSource::Match);
+            }
         }
 
         self.alias_table_ctx_map.insert(alias.clone(), table_ctx);

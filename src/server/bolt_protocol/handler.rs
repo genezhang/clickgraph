@@ -745,14 +745,14 @@ impl BoltHandler {
         let parsed_query_for_planning = open_cypher_parser::parse_query(query)
             .map_err(|e| BoltError::query_error(format!("Query re-parse failed: {}", e)))?;
 
-        // Generate logical plan
-        let logical_plan = match query_planner::evaluate_read_query(
+        // Generate logical plan (returns both plan and context with VLP metadata)
+        let (logical_plan, plan_ctx) = match query_planner::evaluate_read_query(
             parsed_query_for_planning,
             &graph_schema,
             tenant_id,
             view_parameters,
         ) {
-            Ok(plan) => plan,
+            Ok(result) => result,
             Err(e) => {
                 return Err(BoltError::query_error(format!(
                     "Query planning failed: {}",
@@ -762,8 +762,8 @@ impl BoltHandler {
         };
         // parsed_query is now dropped - no more Rc<RefCell<>> held!
 
-        // Generate render plan
-        let render_plan = match logical_plan.to_render_plan(&graph_schema) {
+        // Generate render plan - use _with_ctx to pass VLP endpoint information
+        let render_plan = match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx)) {
             Ok(plan) => plan,
             Err(e) => {
                 return Err(BoltError::query_error(format!(

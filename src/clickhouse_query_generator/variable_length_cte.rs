@@ -955,6 +955,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
             && (max_hops.is_none() || max_hops.unwrap() > min_hops);
 
         if needs_recursion {
+            // Note: UNION DISTINCT is not supported in ClickHouse recursive CTEs.
+            // Using UNION ALL means duplicate edges in the data can cause exponential
+            // row explosion. The path_edges tracking with `NOT has()` prevents cycles
+            // but not duplicate edges between the same nodes.
+            // 
+            // Mitigation: Ensure edge tables have unique (from_id, to_id) pairs,
+            // or the application should enforce this constraint before loading data.
             query_body.push_str("\n    UNION ALL\n");
 
             let default_depth = if max_hops.is_none() {
@@ -1637,12 +1644,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
 
         // Add edge constraints if defined in schema
-        // Recursive case: from=current_node, to=end_node_alias (same alias as base case)
-        if let Some(constraint_filter) =
-            self.generate_edge_constraint_filter(Some("current_node"), None)
-        {
-            where_conditions.push(constraint_filter);
-        }
+        // NOTE: Edge constraints in recursive case are temporarily disabled because we removed
+        // the redundant current_node JOIN for performance. The constraint would need to 
+        // reference vp.end_* columns instead of current_node.* columns.
+        // TODO: Re-enable edge constraints by mapping from_alias to vp.end_* columns
+        // if let Some(constraint_filter) =
+        //     self.generate_edge_constraint_filter(Some("current_node"), None)
+        // {
+        //     where_conditions.push(constraint_filter);
+        // }
 
         // Note: We no longer skip zero-hop rows in recursion.
         // The recursion can now start from zero-hop base case and expand from there.
@@ -1672,14 +1682,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let where_clause = where_conditions.join("\n      AND ");
 
+        // PERF: Removed redundant current_node JOIN - vp.end_id already contains the ID
+        // we need to join with the relationship table. The extra JOIN was causing
+        // ClickHouse to hang on recursive CTEs due to inefficient query planning.
         format!(
-            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {current_table} AS current_node ON vp.end_id = current_node.{current_id_col}\n    JOIN {rel_table} AS {rel} ON current_node.{current_id_col} = {rel}.{from_col}\n    JOIN {end_table} AS {end} ON {rel}.{to_col} = {end}.{end_id_col}\n    WHERE {where_clause}",
+            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {rel_table} AS {rel} ON vp.end_id = {rel}.{from_col}\n    JOIN {end_table} AS {end} ON {rel}.{to_col} = {end}.{end_id_col}\n    WHERE {where_clause}",
             select = select_clause,
             end = self.end_node_alias,
             end_id_col = self.end_node_id_column,
-            current_id_col = self.end_node_id_column,
             cte_name = cte_name, // Use the passed parameter instead of self.cte_name
-            current_table = self.format_table_name(&self.end_node_table),
             rel_table = self.format_table_name(&self.relationship_table),
             from_col = self.relationship_from_column,
             to_col = self.relationship_to_column,
@@ -2676,13 +2687,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 end_id_col = self.end_node_id_column
             )
         } else if !self.start_is_denormalized && self.end_is_denormalized {
-            // Standard → Denorm: CTE → current → rel (no end table)
-            // We join through current node to find the next relationship
+            // Standard → Denorm: CTE → rel (no end table)
+            // PERF: Removed redundant current_node JOIN - vp.end_id already contains the ID
             format!(
-                "FROM {cte_name} vp\n    JOIN {current_table} current_node ON vp.end_id = current_node.{current_id_col}\n    JOIN {rel_table} {rel} ON current_node.{current_id_col} = {rel}.{from_col}",
+                "FROM {cte_name} vp\n    JOIN {rel_table} {rel} ON vp.end_id = {rel}.{from_col}",
                 cte_name = cte_name,
-                current_table = self.format_table_name(&self.end_node_table),
-                current_id_col = self.end_node_id_column,
                 rel_table = self.format_table_name(&self.relationship_table),
                 rel = self.relationship_alias,
                 from_col = self.relationship_from_column

@@ -1,18 +1,29 @@
 # ClickGraph Status
 
-*Updated: January 19, 2026*
+*Updated: January 21, 2026*
 
 ## Current Version
 
 **v0.6.1** - Production-ready graph query engine for ClickHouse
+
+**Test Status**:
+- ✅ Unit tests: 784/784 passing (100%)
+- ✅ Integration matrix tests: 236/265 passing (89%)
+- ✅ All `test_collect` tests passing (10/10)
 
 **LDBC SNB Benchmark Status**: 15/41 queries passing (37%)
 - Interactive Short: 7/7 (100%) ✅
 - Interactive Complex: 4/14 (29%) - IC-1, IC-2, IC-4, IC-6 working
 - Business Intelligence: 4/20 (20%) - BI-5, BI-11, BI-12, BI-19 working
 
-**Known Issues**: 3 active bugs (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md))
-- 🔥 **High Priority**: VLP CTE column scoping (blocks 7+ queries)
+**Recent Fix (Jan 21, 2026)**: Fixed VLP + WITH aggregation GROUP BY alias bug
+- Query: `MATCH (a)-[:FOLLOWS*1..2]->(b) WITH b, COUNT(*) AS cnt RETURN b.user_id, cnt`
+- Was generating `GROUP BY b.end_id` (invalid - `b` doesn't exist as table alias)
+- Now correctly generates `GROUP BY t.end_id` (using VLP CTE alias `t`)
+
+**Known Issues**: 2 active bugs (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md))
+- OPTIONAL MATCH + VLP combination
+- MULTI_TABLE_LABEL standalone aggregations
 
 ## What Works Now
 
@@ -424,17 +435,24 @@ match pattern_ctx.node_access_strategy(node_alias) {
 
 ## Next Priorities
 
+### 🔴 CRITICAL: CTE System Refactoring
+**Status**: Investigation complete, action plan ready  
+**Issue**: CteManager (2,550 lines) was designed but never integrated - production uses scattered code in `cte_extraction.rs` causing fragile heuristics and recurring bugs  
+**Action Plan**: [docs/development/CTE_INTEGRATION_ACTION_PLAN.md](docs/development/CTE_INTEGRATION_ACTION_PLAN.md)  
+**Timeline**: 3-5 days dedicated session  
+**Benefits**: Fix VLP + WITH bugs, eliminate string-based heuristics, consolidate 11,000+ lines of CTE code
+
 ### Immediate (This Week)
-1. Fix IC-9 CTE column naming issue (WITH DISTINCT + WHERE)
-2. Fix scalar aggregate WITH + GROUP BY (TableAlias refactoring)
-3. Test remaining LDBC IC/BI queries
+1. **CTE Integration Phase 1-2** - Wire CteManager into production path
+2. Fix IC-9 CTE column naming issue (WITH DISTINCT + WHERE)
+3. Fix scalar aggregate WITH + GROUP BY (TableAlias refactoring)
 4. Address OPTIONAL MATCH + inline property bug
 
 ### Short Term (This Month)
-1. Complete LDBC benchmark suite testing
-2. Improve property resolution in WITH scopes
-3. Add CASE expression support
-4. FROM clause propagation improvements
+1. Complete CTE Integration Phase 3-5 (column metadata, cleanup)
+2. Complete LDBC benchmark suite testing
+3. Improve property resolution in WITH scopes
+4. Add CASE expression support
 
 ### Medium Term
 1. Additional graph algorithms (centrality, community detection)

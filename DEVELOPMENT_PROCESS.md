@@ -4,7 +4,7 @@
 
 **Note**: ClickGraph is in **late-stage development**. Most work is now bug fixes, performance improvements, and refinements rather than new features.
 
-**Last Updated**: January 12, 2026
+**Last Updated**: January 20, 2026
 
 ---
 
@@ -269,14 +269,10 @@ fn test_parse_optional_match() {
 - Update `PlanContext` for tracking state
 - Modify plan builders to construct new nodes
 
-**Example** (Path Variables):
-```rust
-// In plan_ctx/mod.rs - track path variables
-pub struct PlanContext {
-    // ... existing fields
-    pub path_variables: HashMap<String, PathVariableInfo>,  // ← NEW
-}
-```
+**Key Infrastructure**:
+- Use `TypedVariable` system for variable registration (`query_planner/typed_variable.rs`)
+- Use `define_*` methods in `PlanCtx` to register variables with full metadata
+- Use `lookup_variable()` for unified variable lookups
 
 #### 2.3 Implement SQL Generation
 **Location**: `src/clickhouse_query_generator/` or `src/render_plan/`
@@ -284,28 +280,8 @@ pub struct PlanContext {
 **Common Patterns**:
 - **Simple transformations**: Add cases to existing match statements
 - **Complex features**: Create dedicated module (e.g., `variable_length_cte.rs`)
-- **CTEs**: Use `WITH` clause generation helpers
-- **JOINs**: Modify join collection in `plan_builder.rs`
-
-**Example** (Variable-Length Paths):
-```rust
-// New file: variable_length_cte.rs
-pub fn generate_variable_length_cte(
-    rel: &GraphRel,
-    plan_ctx: &PlanContext,
-) -> Result<String> {
-    match &rel.min_hops {
-        Some(1) if rel.max_hops == Some(1) => {
-            // Single hop - no CTE needed
-            generate_simple_join(rel, plan_ctx)
-        }
-        _ => {
-            // Multi-hop - use recursive CTE
-            generate_recursive_cte(rel, plan_ctx)
-        }
-    }
-}
-```
+- **CTEs**: Use `CteManager` for schema-aware generation (`render_plan/cte_manager/`)
+- **JOINs**: Use `PatternSchemaContext` for strategy selection (`graph_catalog/pattern_schema.rs`)
 
 #### 2.4 Wire Everything Together
 **Common Integration Points**:
@@ -314,9 +290,9 @@ pub fn generate_variable_length_cte(
 - SQL generator calls in `render_plan/plan_builder.rs`
 
 **Build Frequently**:
-```powershell
+```bash
 # Quick feedback loop
-cargo build 2>&1 | Select-String "error|warning: unused|Compiling clickgraph|Finished"
+cargo build 2>&1 | grep -E "error|warning: unused|Compiling clickgraph|Finished"
 ```
 
 ### Exit Criteria
@@ -411,7 +387,7 @@ mod tests {
 ```
 
 **Run Unit Tests**:
-```powershell
+```bash
 cargo test --lib
 ```
 
@@ -445,7 +421,7 @@ def test_optional_match_returns_nulls(server_url):
 ```
 
 **Run Integration Tests**:
-```powershell
+```bash
 # Single test
 python -m pytest tests/integration/test_optional_match.py -v
 
@@ -463,9 +439,9 @@ python -m pytest tests/integration/ -v -s
 - Setup: `scripts/setup/setup_integration_test_data.sql`
 
 **Reload Test Data**:
-```powershell
-Get-Content scripts\setup\setup_integration_test_data.sql | `
-    docker exec -i clickhouse clickhouse-client `
+```bash
+cat scripts/setup/setup_integration_test_data.sql | \
+    docker exec -i clickhouse clickhouse-client \
     --user test_user --password test_pass --multiquery
 ```
 
@@ -545,12 +521,12 @@ print(response.json()['generated_sql'])
 3. Test unbounded: `*1..` (should use CTE with max depth)
 4. Test with filters: `WHERE end_node.age > 25`
 
-**PowerShell Testing Pattern**:
-```powershell
+**Testing Pattern**:
+```bash
 # Test 1: Basic
 python -c "import requests; print(requests.post('http://localhost:8080/query', json={'query':'MATCH (a)-[*2]->(b) RETURN a'}).json())"
 
-# Test 2: With filters
+# Test 2: With filters  
 python -c "import requests; print(requests.post('http://localhost:8080/query', json={'query':'MATCH (a)-[*1..3]->(b) WHERE b.age>25 RETURN a'}).json())"
 ```
 
@@ -579,12 +555,15 @@ LEFT JOIN test_integration.users AS b
 - Column mismatch: "Property 'user_id' not found"
 
 **Log Patterns**:
-```powershell
-# Start server and watch logs
-.\start_server_new_window.bat
+```bash
+# Start server in background
+nohup cargo run --bin clickgraph > server.log 2>&1 &
 
-# Or capture to file
-cargo run 2>&1 | Tee-Object -FilePath "server.log"
+# Watch logs
+tail -f server.log
+
+# Or run in foreground with logging
+RUST_LOG=debug cargo run --bin clickgraph 2>&1 | tee server.log
 ```
 
 #### 4.6 Common Bug Patterns
@@ -773,7 +752,7 @@ print(response.json())
    - Update STATUS.md when tests pass
 
 4. **Keep main Stable**: Use branches for risky changes
-   ```powershell
+   ```bash
    git checkout -b feature/variable-length-paths
    # ... implement and test
    git checkout main

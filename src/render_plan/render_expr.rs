@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 
 use super::plan_builder::RenderPlanBuilder;
 use crate::graph_catalog::expression_parser::PropertyValue;
@@ -18,6 +19,26 @@ use crate::query_planner::logical_expr::{
 use crate::query_planner::logical_plan::LogicalPlan;
 
 use super::errors::RenderBuildError;
+
+// Thread-local storage for the current schema name during render plan building.
+// This allows generate_exists_sql to look up the correct schema when converting
+// LogicalExpr::ExistsSubquery to RenderExpr::ExistsSubquery.
+thread_local! {
+    static CURRENT_SCHEMA_NAME: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Set the current schema name for EXISTS subquery resolution.
+/// This should be called before to_render_plan() and cleared after.
+pub fn set_current_schema_name(name: Option<String>) {
+    CURRENT_SCHEMA_NAME.with(|cell| {
+        *cell.borrow_mut() = name;
+    });
+}
+
+/// Get the current schema name for EXISTS subquery resolution.
+pub fn get_current_schema_name() -> Option<String> {
+    CURRENT_SCHEMA_NAME.with(|cell| cell.borrow().clone())
+}
 
 /// Generate SQL for an EXISTS subquery directly from the logical plan
 /// This is a simplified approach that generates basic EXISTS SQL
@@ -68,15 +89,24 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
 
             // Try to get schema for relationship lookup
             // GLOBAL_SCHEMAS is OnceCell<RwLock<HashMap<String, GraphSchema>>>
-            // CRITICAL FIX: Search all schemas for one that has this relationship type
-            // instead of hardcoding "default". This fixes EXISTS with multi-schema support.
+            // CRITICAL FIX: Use the current schema name from thread-local storage
+            // instead of searching all schemas. This fixes EXISTS with multi-schema support.
             let schemas_lock = GLOBAL_SCHEMAS.get();
             let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
+            
+            // First try to get the schema by name from thread-local
+            let current_schema_name = get_current_schema_name();
             let schema = schemas_guard.as_ref().and_then(|guard| {
-                // Try each schema until we find one with this relationship type
-                guard
-                    .values()
-                    .find(|s| s.get_relationships_schema_opt(&rel_type).is_some())
+                if let Some(ref name) = current_schema_name {
+                    // Use the specific schema if we have a name
+                    guard.get(name)
+                } else {
+                    // Fallback: search all schemas for one that has this relationship type
+                    // This is less reliable but maintains backward compatibility
+                    guard
+                        .values()
+                        .find(|s| s.get_relationships_schema_opt(&rel_type).is_some())
+                }
             });
 
             // Look up the relationship table and columns using public accessors
@@ -165,17 +195,25 @@ fn generate_multi_hop_pattern_count_sql(
             )
         })?;
 
-    // CRITICAL FIX: Search all schemas for one that has the first relationship type
-    // instead of hardcoding "default". This fixes multi-hop EXISTS with multi-schema support.
+    // CRITICAL FIX: Use the current schema name from thread-local storage
+    // instead of searching all schemas. This fixes multi-hop EXISTS with multi-schema support.
     let schemas_lock = GLOBAL_SCHEMAS.get();
     let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
+    
+    // First try to get the schema by name from thread-local
+    let current_schema_name = get_current_schema_name();
     let schema = schemas_guard
         .as_ref()
         .and_then(|guard| {
-            // Try each schema until we find one with this relationship type
-            guard
-                .values()
-                .find(|s| s.get_relationships_schema_opt(first_rel_type).is_some())
+            if let Some(ref name) = current_schema_name {
+                // Use the specific schema if we have a name
+                guard.get(name)
+            } else {
+                // Fallback: search all schemas for one that has this relationship type
+                guard
+                    .values()
+                    .find(|s| s.get_relationships_schema_opt(first_rel_type).is_some())
+            }
         })
         .ok_or_else(|| {
             RenderBuildError::InvalidRenderPlan(format!(

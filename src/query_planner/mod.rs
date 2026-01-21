@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use errors::QueryPlannerError;
+use plan_ctx::PlanCtx;
 use types::QueryType;
 
 use crate::{
@@ -39,12 +40,15 @@ pub fn get_statement_query_type(statement: &CypherStatement) -> QueryType {
     get_query_type(&statement.query)
 }
 
+/// Evaluate a read query AST and return both the logical plan and the plan context.
+/// The plan context contains analysis-phase metadata (VLP endpoints, property requirements, etc.)
+/// that is needed during the rendering phase.
 pub fn evaluate_read_query(
     query_ast: OpenCypherQueryAst,
     current_graph_schema: &GraphSchema,
     tenant_id: Option<String>,
     view_parameter_values: Option<HashMap<String, String>>,
-) -> Result<LogicalPlan, QueryPlannerError> {
+) -> Result<(LogicalPlan, PlanCtx), QueryPlannerError> {
     let (logical_plan, mut plan_ctx) = logical_plan::evaluate_query(
         query_ast,
         current_graph_schema,
@@ -72,17 +76,19 @@ pub fn evaluate_read_query(
 
     let logical_plan =
         Arc::into_inner(logical_plan).ok_or(QueryPlannerError::LogicalPlanExtractor)?;
-    Ok(logical_plan)
+    Ok((logical_plan, plan_ctx))
 }
 
 /// Evaluate a complete Cypher statement which may contain UNION clauses
+/// Returns both the LogicalPlan and the PlanCtx containing analysis-phase metadata
+/// (VLP endpoints, property requirements, etc.) that's needed during rendering.
 pub fn evaluate_read_statement(
     statement: CypherStatement,
     current_graph_schema: &GraphSchema,
     tenant_id: Option<String>,
     view_parameter_values: Option<HashMap<String, String>>,
     max_inferred_types: Option<usize>,
-) -> Result<LogicalPlan, QueryPlannerError> {
+) -> Result<(LogicalPlan, PlanCtx), QueryPlannerError> {
     let (logical_plan, mut plan_ctx) = logical_plan::evaluate_cypher_statement(
         statement,
         current_graph_schema,
@@ -129,7 +135,7 @@ pub fn evaluate_read_statement(
 
     let logical_plan =
         Arc::into_inner(logical_plan).ok_or(QueryPlannerError::LogicalPlanExtractor)?;
-    Ok(logical_plan)
+    Ok((logical_plan, plan_ctx))
 }
 
 pub fn evaluate_call_query(

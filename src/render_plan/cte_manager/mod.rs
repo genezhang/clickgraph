@@ -42,6 +42,28 @@ pub enum CteError {
     RenderBuildError(#[from] RenderBuildError),
 }
 
+/// Metadata for a column in a generated CTE
+#[derive(Debug, Clone)]
+pub struct CteColumnMetadata {
+    /// The column name in the CTE (e.g., "end_id", "end_city")
+    pub cte_column_name: String,
+    /// The Cypher alias this column belongs to (e.g., "u2")
+    pub cypher_alias: String,
+    /// The original property name (e.g., "user_id", "city")
+    pub property_name: String,
+    /// Whether this is an ID column (used for GROUP BY)
+    pub is_id_column: bool,
+    /// The VLP position (Start or End) for VLP CTEs
+    pub vlp_position: Option<VlpColumnPosition>,
+}
+
+/// Position indicator for VLP CTE columns
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VlpColumnPosition {
+    Start,
+    End,
+}
+
 /// Result of CTE SQL generation
 #[derive(Debug, Clone)]
 pub struct CteGenerationResult {
@@ -49,6 +71,90 @@ pub struct CteGenerationResult {
     pub parameters: Vec<String>,
     pub cte_name: String,
     pub recursive: bool,
+    /// The table alias used in FROM clause (e.g., "t" for VLP CTEs)
+    pub from_alias: String,
+    /// Metadata for all columns in the CTE
+    pub columns: Vec<CteColumnMetadata>,
+}
+
+impl CteGenerationResult {
+    /// Get the ID column for a given Cypher alias
+    pub fn get_id_column_for_alias(&self, alias: &str) -> Option<&CteColumnMetadata> {
+        self.columns.iter().find(|c| c.cypher_alias == alias && c.is_id_column)
+    }
+
+    /// Get all columns for a given Cypher alias
+    pub fn get_columns_for_alias(&self, alias: &str) -> Vec<&CteColumnMetadata> {
+        self.columns.iter().filter(|c| c.cypher_alias == alias).collect()
+    }
+
+    /// Get the FROM alias to use when referencing this CTE's columns
+    pub fn get_from_alias(&self) -> &str {
+        &self.from_alias
+    }
+
+    /// Build column metadata for VLP CTE columns
+    /// 
+    /// VLP CTEs generate columns like: start_id, end_id, start_city, end_city, etc.
+    /// This creates the metadata mapping those back to Cypher aliases.
+    pub fn build_vlp_column_metadata(
+        left_alias: &str,
+        right_alias: &str,
+        properties: &[NodeProperty],
+        id_column: &str,
+    ) -> Vec<CteColumnMetadata> {
+        let mut columns = Vec::new();
+        
+        // Add start node ID column
+        columns.push(CteColumnMetadata {
+            cte_column_name: "start_id".to_string(),
+            cypher_alias: left_alias.to_string(),
+            property_name: id_column.to_string(),
+            is_id_column: true,
+            vlp_position: Some(VlpColumnPosition::Start),
+        });
+        
+        // Add end node ID column
+        columns.push(CteColumnMetadata {
+            cte_column_name: "end_id".to_string(),
+            cypher_alias: right_alias.to_string(),
+            property_name: id_column.to_string(),
+            is_id_column: true,
+            vlp_position: Some(VlpColumnPosition::End),
+        });
+        
+        // Add property columns for both start and end nodes
+        for prop in properties {
+            // Skip ID column as it's already added
+            if prop.alias == id_column {
+                continue;
+            }
+            
+            // Start node property (only for properties belonging to start node)
+            if prop.cypher_alias == left_alias {
+                columns.push(CteColumnMetadata {
+                    cte_column_name: format!("start_{}", prop.alias),
+                    cypher_alias: left_alias.to_string(),
+                    property_name: prop.alias.clone(),
+                    is_id_column: false,
+                    vlp_position: Some(VlpColumnPosition::Start),
+                });
+            }
+            
+            // End node property (only for properties belonging to end node)
+            if prop.cypher_alias == right_alias {
+                columns.push(CteColumnMetadata {
+                    cte_column_name: format!("end_{}", prop.alias),
+                    cypher_alias: right_alias.to_string(),
+                    property_name: prop.alias.clone(),
+                    is_id_column: false,
+                    vlp_position: Some(VlpColumnPosition::End),
+                });
+            }
+        }
+        
+        columns
+    }
 }
 
 /// Main entry point for CTE generation across all schema variations
@@ -341,11 +447,21 @@ impl FkEdgeCteStrategy {
         // Build the recursive CTE SQL for FK-edge schema
         let sql = self.generate_recursive_cte_sql(context, properties, filters)?;
 
+        // Build column metadata for downstream code
+        let columns = CteGenerationResult::build_vlp_column_metadata(
+            &self.pattern_ctx.left_node_alias,
+            &self.pattern_ctx.right_node_alias,
+            properties,
+            &self.id_column,
+        );
+
         Ok(CteGenerationResult {
             sql,
             parameters: collect_parameters_from_filters(filters),
             cte_name,
             recursive: true,
+            from_alias: "t".to_string(),
+            columns,
         })
     }
 
@@ -610,11 +726,22 @@ impl TraditionalCteStrategy {
         // Build the recursive CTE SQL
         let sql = self.generate_recursive_cte_sql(context, properties, filters)?;
 
+        // Build column metadata - get ID column from pattern context
+        let id_column = self.get_start_id_column().unwrap_or_else(|_| "id".to_string());
+        let columns = CteGenerationResult::build_vlp_column_metadata(
+            &self.pattern_ctx.left_node_alias,
+            &self.pattern_ctx.right_node_alias,
+            properties,
+            &id_column,
+        );
+
         Ok(CteGenerationResult {
             sql,
             parameters: collect_parameters_from_filters(filters),
             cte_name,
             recursive: true,
+            from_alias: "t".to_string(),
+            columns,
         })
     }
 
@@ -823,27 +950,64 @@ impl TraditionalCteStrategy {
 
     /// Get table name and ID column for a node alias
     fn get_node_table_info(&self, node_alias: &str) -> Result<(String, String), CteError> {
-        // For traditional strategy, we need to look up table info from the pattern context
-        // This is a simplified implementation - in practice we'd need schema lookup
-        match node_alias {
-            "u1" | "start" => Ok(("users_bench".to_string(), "user_id".to_string())),
-            "u2" | "end" => Ok(("users_bench".to_string(), "user_id".to_string())),
-            _ => Err(CteError::SchemaValidationError(format!(
-                "Unknown node alias: {}",
-                node_alias
-            ))),
+        // Determine which node based on alias
+        let node_strategy = if node_alias == self.pattern_ctx.left_node_alias {
+            &self.pattern_ctx.left_node
+        } else if node_alias == self.pattern_ctx.right_node_alias {
+            &self.pattern_ctx.right_node
+        } else {
+            return Err(CteError::SchemaValidationError(format!(
+                "Unknown node alias '{}': expected '{}' or '{}'",
+                node_alias, self.pattern_ctx.left_node_alias, self.pattern_ctx.right_node_alias
+            )));
+        };
+
+        // Extract table and ID column from NodeAccessStrategy
+        match node_strategy {
+            NodeAccessStrategy::OwnTable { table, id_column, .. } => {
+                Ok((table.clone(), id_column.clone()))
+            }
+            NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => {
+                // For embedded nodes in traditional strategy, this is unexpected
+                // but we can use the edge alias as the table reference
+                Err(CteError::InvalidStrategy(format!(
+                    "TraditionalCteStrategy expects nodes with OwnTable, got EmbeddedInEdge for alias '{}' (edge: {})",
+                    node_alias, edge_alias
+                )))
+            }
+            NodeAccessStrategy::Virtual { label } => {
+                Err(CteError::InvalidStrategy(format!(
+                    "TraditionalCteStrategy does not support Virtual nodes (label: {})",
+                    label
+                )))
+            }
         }
+    }
+
+    /// Get the ID column for the start node
+    fn get_start_id_column(&self) -> Result<String, CteError> {
+        let (_table, id_col) = self.get_node_table_info(&self.pattern_ctx.left_node_alias)?;
+        Ok(id_col)
     }
 
     /// Get relationship table info (table, from_col, to_col)
     fn get_relationship_table_info(&self) -> Result<(String, String, String), CteError> {
-        // For traditional strategy, relationship info comes from pattern context
-        // This is a simplified implementation
-        Ok((
-            "user_follows_bench".to_string(),
-            "follower_id".to_string(),
-            "followed_id".to_string(),
-        ))
+        // Extract from EdgeAccessStrategy in PatternSchemaContext
+        match &self.pattern_ctx.edge {
+            EdgeAccessStrategy::SeparateTable { table, from_id, to_id, .. } => {
+                Ok((table.clone(), from_id.clone(), to_id.clone()))
+            }
+            EdgeAccessStrategy::Polymorphic { table, from_id, to_id, .. } => {
+                // Polymorphic edges can also work with traditional strategy
+                Ok((table.clone(), from_id.clone(), to_id.clone()))
+            }
+            EdgeAccessStrategy::FkEdge { node_table, fk_column } => {
+                Err(CteError::InvalidStrategy(format!(
+                    "TraditionalCteStrategy expects SeparateTable edge, got FkEdge (table: {}, fk: {})",
+                    node_table, fk_column
+                )))
+            }
+        }
     }
 
     /// Add property selections to the SELECT clause
@@ -964,11 +1128,21 @@ impl DenormalizedCteStrategy {
         // Build the recursive CTE SQL for denormalized schema
         let sql = self.generate_recursive_cte_sql(context, properties, filters)?;
 
+        // Build column metadata
+        let columns = CteGenerationResult::build_vlp_column_metadata(
+            &self.pattern_ctx.left_node_alias,
+            &self.pattern_ctx.right_node_alias,
+            properties,
+            "id", // Denormalized uses generic ID
+        );
+
         Ok(CteGenerationResult {
             sql,
             parameters: collect_parameters_from_filters(filters),
             cte_name,
             recursive: true,
+            from_alias: "t".to_string(),
+            columns,
         })
     }
 
@@ -1213,11 +1387,21 @@ impl MixedAccessCteStrategy {
         // Build the recursive CTE SQL for mixed access schema
         let sql = self.generate_recursive_cte_sql(context, properties, filters)?;
 
+        // Build column metadata
+        let columns = CteGenerationResult::build_vlp_column_metadata(
+            &self.pattern_ctx.left_node_alias,
+            &self.pattern_ctx.right_node_alias,
+            properties,
+            "id", // Mixed access uses generic ID
+        );
+
         Ok(CteGenerationResult {
             sql,
             parameters: collect_parameters_from_filters(filters),
             cte_name,
             recursive: true,
+            from_alias: "t".to_string(),
+            columns,
         })
     }
 
@@ -1627,11 +1811,21 @@ impl EdgeToEdgeCteStrategy {
         // Build the recursive CTE SQL for edge-to-edge schema
         let sql = self.generate_recursive_cte_sql(context, properties, filters)?;
 
+        // Build column metadata
+        let columns = CteGenerationResult::build_vlp_column_metadata(
+            &self.pattern_ctx.left_node_alias,
+            &self.pattern_ctx.right_node_alias,
+            properties,
+            "id", // Edge-to-edge uses generic ID
+        );
+
         Ok(CteGenerationResult {
             sql,
             parameters: collect_parameters_from_filters(filters),
             cte_name,
             recursive: true,
+            from_alias: "t".to_string(),
+            columns,
         })
     }
 
@@ -1866,11 +2060,21 @@ impl CoupledCteStrategy {
         // But for variable-length paths, we might need to handle multiple hops within the row
         let sql = self.generate_simple_select_sql(context, properties, filters)?;
 
+        // Build column metadata
+        let columns = CteGenerationResult::build_vlp_column_metadata(
+            &self.pattern_ctx.left_node_alias,
+            &self.pattern_ctx.right_node_alias,
+            properties,
+            "id", // Coupled uses generic ID
+        );
+
         Ok(CteGenerationResult {
             sql,
             parameters: collect_parameters_from_filters(filters),
             cte_name: cte_name.clone(),
             recursive: false, // Coupled edges in same row don't need recursion
+            from_alias: self.unified_alias.clone(),
+            columns,
         })
     }
 

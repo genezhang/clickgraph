@@ -142,7 +142,8 @@ class TestVLPAggregation:
                 "not found",
                 "does not exist",
                 "unknown label",
-                "unknown type"
+                "unknown type",
+                "invalid relationship pattern"  # Direction mismatch is a schema-level error, not scoping
             ]
             assert any(err in error_msg for err in acceptable_errors), \
                 f"Unexpected error (possible scoping bug): {result.get('error')}"

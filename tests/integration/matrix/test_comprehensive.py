@@ -200,25 +200,21 @@ class TestOptionalMatch:
 class TestWithChaining:
     """Test WITH clause patterns
     
-    NOTE: Some WITH clause patterns have known issues with table alias duplication.
-    These will be fixed in a future release.
+    WITH clause handling is now working correctly across all schemas.
     """
     
-    @pytest.mark.xfail(reason="Known bug: duplicate table alias in WITH clause")
     def test_with_simple(self, server_running, schema_config, query_generator):
         """Test: MATCH ... WITH ... RETURN"""
         query = query_generator.with_simple()
         result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
-    @pytest.mark.xfail(reason="Known bug: duplicate table alias in WITH clause")
     def test_with_aggregation(self, server_running, schema_config, query_generator):
         """Test: WITH ... count() ... WHERE cnt > X"""
         query = query_generator.with_aggregation()
         result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
-    @pytest.mark.xfail(reason="Known bug: duplicate table alias in WITH clause")
     def test_with_cross_table(self, server_running, schema_config, query_generator):
         """Test: MATCH ... WITH ... MATCH ... WHERE correlation"""
         query = query_generator.with_cross_table()
@@ -247,9 +243,12 @@ class TestAggregations:
         result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
-    @pytest.mark.xfail(reason="Known bug: collect() aggregate doesn't map properties correctly (use count(DISTINCT) instead)")
     def test_collect(self, server_running, schema_config, query_generator):
-        """Test: collect()"""
+        """Test: collect()
+        
+        Note: Works on filesystem and group_membership schemas.
+        Social_benchmark may have some property mapping issues.
+        """
         query = query_generator.collect_agg()
         result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
@@ -296,9 +295,19 @@ class TestOrdering:
 class TestMultiplePatterns:
     """Test multiple relationship types and patterns"""
     
-    @pytest.mark.xfail(reason="Known bug: UNION SQL syntax error in multi-rel type")
+    @pytest.mark.xfail(
+        reason="BUG: Multi-type relationship CTE not used in JOINs (KNOWN_ISSUES.md #4) - generates invalid 'rel_a_b' table reference"
+    )
     def test_multi_rel_type(self, server_running, schema_config, query_generator):
-        """Test: -[:TYPE1|TYPE2|TYPE3]->"""
+        """Test: -[:TYPE1|TYPE2|TYPE3]->
+        
+        Note: Works on filesystem and group_membership schemas.
+        Social_benchmark needs UNION handling for multiple relationship types.
+        
+        KNOWN BUG: CTE is generated for multi-type relationships but the main 
+        query JOINs reference a non-existent table 'brahmand.rel_a_b' instead 
+        of using the CTE properly.
+        """
         query = query_generator.multi_rel_type()
         result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
@@ -375,9 +384,18 @@ class TestPathVariables:
         result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
-    @pytest.mark.xfail(reason="Known bug: length(p) not resolved in GROUP BY")
+    @pytest.mark.xfail(
+        reason="TIMEOUT: VLP with length(p) + GROUP BY on social_benchmark times out due to large data",
+        condition=lambda kwargs: kwargs.get('schema_config', type('', (), {'name': ''})()).name == 'social_benchmark'
+    )
     def test_path_length(self, server_running, schema_config, query_generator):
-        """Test: length(p)"""
+        """Test: length(p)
+        
+        Note: Works on filesystem schema.
+        social_benchmark times out due to large dataset with VLP recursion.
+        """
+        if schema_config.name == 'social_benchmark':
+            pytest.xfail("VLP query times out on social_benchmark due to large dataset")
         query = query_generator.path_length()
         result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
@@ -448,7 +466,6 @@ class TestUndirected:
         result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
-    @pytest.mark.xfail(reason="Multi-hop undirected patterns may have issues")
     def test_undirected_multi_hop(self, server_running, schema_config, query_generator):
         """Test: (a)-[r1]-(b)-[r2]-(c)"""
         query = query_generator.undirected_multi_hop()

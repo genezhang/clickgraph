@@ -1115,17 +1115,23 @@ impl JoinBuilder for LogicalPlan {
                     rel_table, graph_rel.alias
                 );
 
-                // MULTI-HOP FIX: For ID columns, use table lookup based on connection aliases
-                // instead of extract_id_column which fails for nested GraphRel
-                // The left_connection tells us which node alias we're connecting from
+                // MULTI-HOP FIX: For ID columns, use proper extraction based on plan structure
+                // - Single hop (left is GraphNode): use extract_id_column on left
+                // - Multi-hop (left is GraphRel): use extract_end_node_id_column which follows rel.right chain
+                // The left_connection in multi-hop points to the right_connection of the inner GraphRel
                 let start_id_col = if let LogicalPlan::GraphRel(_) = graph_rel.left.as_ref() {
-                    // Multi-hop: left side is another GraphRel, so left_connection points to intermediate node
-                    // Look up the node's table and get its ID column
+                    // Multi-hop: left side is another GraphRel
+                    // The shared node is left_connection, which is the inner GraphRel's right node
+                    // Use extract_end_node_id_column to get ID from the inner GraphRel's right side
                     println!(
-                        "DEBUG: Multi-hop - left_connection={}, using table lookup for ID column",
+                        "DEBUG: Multi-hop - left_connection={}, extracting ID from inner GraphRel's right node",
                         graph_rel.left_connection
                     );
-                    table_to_id_column(&start_table)
+                    extract_end_node_id_column(&graph_rel.left)
+                        .unwrap_or_else(|| {
+                            log::warn!("⚠️ extract_end_node_id_column failed for multi-hop left_connection='{}', using 'id' fallback", graph_rel.left_connection);
+                            "id".to_string()
+                        })
                 } else {
                     // Single hop: extract ID column from the node ViewScan
                     extract_id_column(&graph_rel.left)
@@ -1711,7 +1717,76 @@ impl JoinBuilder for LogicalPlan {
                         joins.extend(swapped_joins);
                     } else {
                         // Normal case: anchor is on left, or non-optional
-                        // Use standard extract_joins
+                        
+                        // CRITICAL FIX: For cross-table WITH patterns where the GraphRel's left_connection
+                        // is NOT the anchor (i.e., it's a NEW node that needs to be joined), we must add
+                        // a join for the left_connection node BEFORE adding the relationship and end node joins.
+                        //
+                        // Example: MATCH (a)-[:FOLLOWS]->(b) WITH a, b MATCH (c)-[:AUTHORED]->(d) WHERE a.id = c.id
+                        // - anchor_alias is None or "a_b" (from CTE)
+                        // - graph_rel.left_connection is "c" (NOT the anchor)
+                        // - We need: JOIN users_bench AS c, then JOIN posts_bench AS r2, then JOIN posts_bench AS d
+                        // - But standard extract_joins only adds r2 and d joins, not c
+                        
+                        let anchor_is_left = anchor_alias
+                            .as_ref()
+                            .map(|a| a == &graph_rel.left_connection)
+                            .unwrap_or(false);
+                        
+                        crate::debug_print!(
+                            "  anchor_is_left={}, anchor_alias={:?}, left_connection={}",
+                            anchor_is_left, anchor_alias, graph_rel.left_connection
+                        );
+                        
+                        if !anchor_is_left {
+                            // The GraphRel's left_connection is a NEW node that needs its own JOIN
+                            // Get the table info for this node
+                            if let LogicalPlan::GraphNode(left_node) = graph_rel.left.as_ref() {
+                                if let LogicalPlan::ViewScan(vs) = left_node.input.as_ref() {
+                                    let left_table_name = vs.source_table.clone();
+                                    let left_table_alias = graph_rel.left_connection.clone();
+                                    
+                                    // Build the join condition from cp.join_condition
+                                    // This is the correlation predicate (e.g., a.user_id = c.user_id)
+                                    let join_conditions = if let Some(ref join_cond) = cp.join_condition {
+                                        if let Ok(render_expr) = RenderExpr::try_from(join_cond.clone()) {
+                                            if let RenderExpr::OperatorApplicationExp(op) = render_expr {
+                                                vec![op]
+                                            } else {
+                                                vec![]
+                                            }
+                                        } else {
+                                            vec![]
+                                        }
+                                    } else {
+                                        vec![]
+                                    };
+                                    
+                                    crate::debug_print!(
+                                        "  Adding JOIN for left_connection '{}': {} with {} conditions",
+                                        left_table_alias, left_table_name, join_conditions.len()
+                                    );
+                                    
+                                    let join_type = if cp.is_optional {
+                                        JoinType::Left
+                                    } else {
+                                        JoinType::Inner
+                                    };
+                                    
+                                    joins.push(super::Join {
+                                        table_name: left_table_name,
+                                        table_alias: left_table_alias,
+                                        joining_on: join_conditions,
+                                        join_type,
+                                        pre_filter: None,
+                                        from_id_column: None,
+                                        to_id_column: None,
+                                    });
+                                }
+                            }
+                        }
+                        
+                        // Now add the standard joins from the GraphRel (relationship and end node)
                         joins.extend(<LogicalPlan as JoinBuilder>::extract_joins(
                             &cp.right, schema,
                         )?);

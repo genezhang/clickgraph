@@ -284,13 +284,13 @@ pub async fn sql_generation_handler(
                 .collect()
         });
 
-        let logical_plan = match query_planner::evaluate_read_query(
+        let (logical_plan, plan_ctx) = match query_planner::evaluate_read_query(
             cypher_ast,
             &graph_schema,
             None, // tenant_id not needed for SQL generation
             view_parameter_values,
         ) {
-            Ok(plan) => plan,
+            Ok(result) => result,
             Err(e) => {
                 let _planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;
                 return Err((
@@ -306,9 +306,9 @@ pub async fn sql_generation_handler(
         };
         let planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;
 
-        // Phase 3: Render plan generation
+        // Phase 3: Render plan generation - use _with_ctx to pass VLP endpoint information
         let render_start = Instant::now();
-        let render_plan = match logical_plan.to_render_plan(&graph_schema) {
+        let render_plan = match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx)) {
             Ok(plan) => plan,
             Err(e) => {
                 return Err((

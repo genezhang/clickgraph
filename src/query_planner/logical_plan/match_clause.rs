@@ -1098,8 +1098,8 @@ pub fn try_generate_relationship_view_scan(
 fn generate_relationship_center(
     rel_alias: &str,
     rel_labels: &Option<Vec<String>>,
-    left_connection: &str,
-    right_connection: &str,
+    _left_connection: &str,
+    _right_connection: &str,
     left_node_label: &Option<String>,
     right_node_label: &Option<String>,
     plan_ctx: &PlanCtx,
@@ -1711,17 +1711,39 @@ fn traverse_connected_pattern_with_mode<'a>(
                 );
             }
 
-            // Register path variable in PlanCtx if present
+            // Register path variable in PlanCtx with full TypedVariable::Path metadata
             if let Some(path_var) = path_variable {
+                // Extract length bounds from graph_rel_node.variable_length for TypedVariable::Path
+                let length_bounds = graph_rel_node.variable_length.as_ref().map(|vlp| {
+                    (vlp.min_hops, vlp.max_hops)
+                });
+                
+                // First register TypedVariable::Path with full metadata
+                plan_ctx.define_path(
+                    path_var.to_string(),
+                    Some(graph_rel_node.left_connection.clone()),   // start_node
+                    Some(graph_rel_node.right_connection.clone()),  // end_node  
+                    Some(rel_alias.clone()),   // relationship
+                    length_bounds,             // length bounds from VLP spec
+                    shortest_path_mode.is_some(), // is_shortest_path
+                );
+                
+                // Then register TableCtx for backward compatibility with code that uses alias_table_ctx_map
+                // insert_table_ctx will skip variable registration since we already defined it
                 plan_ctx.insert_table_ctx(
                     path_var.to_string(),
                     TableCtx::build(
                         path_var.to_string(),
-                        None.map(|l| vec![l]), // Path variables don't have labels
-                        vec![],                // Path variables don't have properties
-                        false,                 // Not a relationship
-                        true,                  // Explicitly named by user
+                        None, // Path variables don't have labels
+                        vec![], // Path variables don't have properties
+                        false, // Not a relationship
+                        true, // Explicitly named by user
                     ),
+                );
+                
+                log::info!(
+                    "📍 Registered path variable '{}' with TypedVariable::Path (start={}, end={}, bounds={:?})",
+                    path_var, graph_rel_node.left_connection, graph_rel_node.right_connection, length_bounds
                 );
             }
 
@@ -1880,17 +1902,38 @@ fn traverse_connected_pattern_with_mode<'a>(
                 );
             }
 
-            // Register path variable in PlanCtx if present
+            // Register path variable in PlanCtx with full TypedVariable::Path metadata
             if let Some(path_var) = path_variable {
+                // Extract length bounds from graph_rel_node.variable_length for TypedVariable::Path
+                let length_bounds = graph_rel_node.variable_length.as_ref().map(|vlp| {
+                    (vlp.min_hops, vlp.max_hops)
+                });
+                
+                // First register TypedVariable::Path with full metadata
+                plan_ctx.define_path(
+                    path_var.to_string(),
+                    Some(start_node_alias.clone()),  // start_node
+                    Some(end_node_alias.clone()),    // end_node  
+                    Some(rel_alias.clone()),         // relationship
+                    length_bounds,                   // length bounds from VLP spec
+                    shortest_path_mode.is_some(),    // is_shortest_path
+                );
+                
+                // Then register TableCtx for backward compatibility with code that uses alias_table_ctx_map
                 plan_ctx.insert_table_ctx(
                     path_var.to_string(),
                     TableCtx::build(
                         path_var.to_string(),
-                        None.map(|l| vec![l]), // Path variables don't have labels
-                        vec![],                // Path variables don't have properties
-                        false,                 // Not a relationship
-                        true,                  // Explicitly named by user
+                        None, // Path variables don't have labels
+                        vec![], // Path variables don't have properties
+                        false, // Not a relationship
+                        true, // Explicitly named by user
                     ),
+                );
+                
+                log::info!(
+                    "📍 Registered path variable '{}' with TypedVariable::Path (start={}, end={}, bounds={:?})",
+                    path_var, start_node_alias, end_node_alias, length_bounds
                 );
             }
 
@@ -2208,17 +2251,38 @@ fn traverse_connected_pattern_with_mode<'a>(
                 );
             }
 
-            // Register path variable in PlanCtx if present
+            // Register path variable in PlanCtx with full TypedVariable::Path metadata
             if let Some(path_var) = path_variable {
+                // Extract length bounds from variable_length in graph_rel_node
+                let length_bounds = graph_rel_node.variable_length.as_ref().map(|vlp| {
+                    (vlp.min_hops, vlp.max_hops)
+                });
+                
+                // First register TypedVariable::Path with full metadata
+                plan_ctx.define_path(
+                    path_var.to_string(),
+                    Some(left_conn.clone()),   // start_node
+                    Some(right_conn.clone()),  // end_node  
+                    Some(rel_alias.clone()),   // relationship
+                    length_bounds,             // length bounds from VLP spec
+                    shortest_path_mode.is_some(), // is_shortest_path
+                );
+                
+                // Then register TableCtx for backward compatibility with code that uses alias_table_ctx_map
                 plan_ctx.insert_table_ctx(
                     path_var.to_string(),
                     TableCtx::build(
                         path_var.to_string(),
-                        None.map(|l| vec![l]), // Path variables don't have labels
-                        vec![],                // Path variables don't have properties
-                        false,                 // Not a relationship
-                        true,                  // Explicitly named by user
+                        None, // Path variables don't have labels
+                        vec![], // Path variables don't have properties
+                        false, // Not a relationship
+                        true, // Explicitly named by user
                     ),
+                );
+                
+                log::info!(
+                    "📍 Registered path variable '{}' with TypedVariable::Path (start={}, end={}, bounds={:?})",
+                    path_var, left_conn, right_conn, length_bounds
                 );
             }
 

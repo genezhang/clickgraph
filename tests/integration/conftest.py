@@ -224,7 +224,9 @@ def load_all_test_schemas():
     # NOTE: Each schema is a separate graph - tests use USE clause to select schema
     schemas_to_load = [
         # Core test schemas (clean separation)
-        ("social_benchmark", "schemas/test/social_benchmark.yaml"),
+        # NOTE: Use benchmarks/social_network schema (has user_id for AUTHORED edge)
+        # NOT schemas/test/ (which has outdated author_id)
+        ("social_benchmark", "benchmarks/social_network/schemas/social_benchmark.yaml"),
         ("test_fixtures", "schemas/test/test_fixtures.yaml"),
         ("denormalized_flights_test", "schemas/test/denormalized_flights.yaml"),  # Comprehensive denormalized FROM/TO properties
         
@@ -235,6 +237,10 @@ def load_all_test_schemas():
         ("group_membership", "schemas/test/group_membership_simple.yaml"),
         ("multi_tenant", "schemas/test/multi_tenant.yaml"),
         ("mixed_denorm_test", "schemas/test/mixed_denorm_test.yaml"),
+        
+        # NOTE: zeek_merged removed because:
+        # 1. The 'zeek' database doesn't exist in integration test environment
+        # 2. zeek tests have their own dedicated test file (test_zeek_merged.py) with proper data setup
         
         # Benchmark schemas
         ("ontime_flights", "schemas/examples/ontime_denormalized.yaml"),

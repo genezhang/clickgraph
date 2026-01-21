@@ -2,6 +2,20 @@
 
 ### 🐛 Bug Fixes
 
+- **VLP + WITH aggregation GROUP BY alias fix**: Fixed incorrect GROUP BY alias in variable-length path queries with aggregation
+  - **Issue**: Queries like `MATCH (a)-[*1..2]->(b) WITH b, COUNT(*) AS cnt RETURN ...` generated `GROUP BY b.end_id` which fails because `b` doesn't exist as a SQL table alias (the FROM clause uses `vlp_a_b AS t`)
+  - **Root Cause**: `expand_table_alias_to_group_by_id_only()` in plan_builder_utils.rs wasn't detecting VLP endpoint aliases and was returning the Cypher alias instead of the VLP CTE alias
+  - **Fix**: Added VLP endpoint detection at the start of the function using `get_graph_rel_from_plan()`. When alias matches VLP left/right connection, returns `t.start_id` or `t.end_id` using the VLP_CTE_DEFAULT_ALIAS constant
+  - **Impact**: VLP + WITH aggregation queries now execute successfully with correct `GROUP BY t.end_id`
+  - **Files**: `src/render_plan/plan_builder_utils.rs` (lines 4476-4530, expand_table_alias_to_group_by_id_only function)
+  - **Tests**: All 784 unit tests passing, verified with social_benchmark schema
+
+- **ArraySlicing property mapping fix**: Property mappings now correctly applied inside ArraySlicing expressions like `collect(n.name)[0..10]`
+  - **Issue**: ArraySlicing handler in `apply_property_mapping` wasn't recursively mapping the inner array expression
+  - **Fix**: Added recursive property mapping for `array`, `from`, and `to` components of ArraySlicing expressions
+  - **Impact**: All 10 `test_collect` tests now pass, expressions like `collect(u.name)[0..2]` correctly generate `full_name` in SQL
+  - **Files**: `src/query_planner/analyzer/filter_tagging.rs` (lines 1057-1088)
+
 - **CTE column aliasing underscore convention fix**: WITH clauses now correctly use underscore aliases (a_name) in CTE columns instead of dot notation (a.name)
   - **Issue**: TableAlias expansion in WITH clauses was using dot notation for column aliases, causing inconsistent naming between CTE and final SELECT
   - **Fix**: Modified CTE extraction to expand TableAlias to individual PropertyAccessExp with underscore aliases using get_properties_with_table_alias()

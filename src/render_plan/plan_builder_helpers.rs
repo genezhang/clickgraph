@@ -3455,10 +3455,27 @@ pub(super) fn get_polymorphic_edge_filter_for_join(
 /// Collect all WHERE predicates from GraphRel nodes in the plan tree.
 /// For optional patterns, filters out predicates that reference ONLY optional aliases
 /// (those are moved to pre_filter for correct LEFT JOIN semantics).
+/// For VLP patterns (variable_length is Some), predicates are already handled in the CTE,
+/// so they are skipped here to avoid duplication in the outer query.
 pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr> {
     let mut predicates = Vec::new();
     match plan {
         LogicalPlan::GraphRel(gr) => {
+            // 🔧 VLP FIX: Skip predicates from VLP GraphRel nodes - they're already in the CTE
+            // This prevents duplicate filters like "WHERE u1.user_id = 1" appearing in both
+            // the CTE and the outer query when combining VLP with additional relationships.
+            if gr.variable_length.is_some() {
+                log::debug!(
+                    "collect_graphrel_predicates: Skipping VLP GraphRel '{}' predicates (already in CTE)",
+                    gr.alias
+                );
+                // Still recurse into children to collect non-VLP predicates
+                predicates.extend(collect_graphrel_predicates(&gr.left));
+                predicates.extend(collect_graphrel_predicates(&gr.center));
+                predicates.extend(collect_graphrel_predicates(&gr.right));
+                return predicates;
+            }
+
             // Add this GraphRel's predicate, but filter out optional-only predicates
             if let Some(ref pred) = gr.where_predicate {
                 let is_optional = gr.is_optional.unwrap_or(false);

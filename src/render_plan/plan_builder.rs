@@ -284,6 +284,15 @@ pub(crate) trait RenderPlanBuilder {
     ) -> RenderPlanBuilderResult<RenderPlan>;
 
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan>;
+    
+    /// Convert to render plan with access to analysis-phase context (PlanCtx).
+    /// This method should be preferred over `to_render_plan` when `plan_ctx` is available,
+    /// as it provides access to VLP endpoint information and other analysis metadata.
+    fn to_render_plan_with_ctx(
+        &self,
+        schema: &GraphSchema,
+        plan_ctx: Option<&PlanCtx>,
+    ) -> RenderPlanBuilderResult<RenderPlan>;
 }
 
 // ============================================================================
@@ -1162,6 +1171,26 @@ impl RenderPlanBuilder for LogicalPlan {
                 std::mem::discriminant(self)
             ),
         }
+    }
+
+    fn to_render_plan_with_ctx(
+        &self,
+        schema: &GraphSchema,
+        plan_ctx: Option<&PlanCtx>,
+    ) -> RenderPlanBuilderResult<RenderPlan> {
+        // CRITICAL: If the plan contains WITH clauses, use the specialized handler
+        // build_chained_with_match_cte_plan handles chained/nested WITH correctly
+        // AND needs plan_ctx for VLP endpoint information
+        use super::plan_builder_utils::{
+            build_chained_with_match_cte_plan, has_with_clause_in_graph_rel,
+        };
+        if has_with_clause_in_graph_rel(self) {
+            return build_chained_with_match_cte_plan(self, schema, plan_ctx);
+        }
+
+        // For all other cases, delegate to the standard to_render_plan
+        // (which doesn't need plan_ctx for non-WITH clause handling)
+        self.to_render_plan(schema)
     }
 }
 
