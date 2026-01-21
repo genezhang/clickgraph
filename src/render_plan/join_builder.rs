@@ -344,13 +344,60 @@ impl JoinBuilder for LogicalPlan {
                     log::info!("🔧 Will skip first join '{}' as it will be used as FROM (anchor_table is None)", skip_alias);
                 }
 
-                // Convert joins, SKIPPING FROM markers (joins with empty joining_on)
-                // FROM markers are used by extract_from(), not extract_joins()
+                // Convert joins
+                // FROM markers (joins with empty joining_on and Inner type) are used by extract_from(), not extract_joins()
+                // But optional entry points (joins with empty joining_on and Left type) need to be rendered as LEFT JOIN ... ON 1=1
                 let mut joins: Vec<Join> = Vec::new();
                 let mut skipped_first = false;
+                let from_alias = graph_joins.anchor_table.as_ref().cloned();
+                
+                // Import logical JoinType for comparison
+                use crate::query_planner::logical_plan::JoinType as LogicalJoinType;
+                use crate::render_plan::render_expr::Literal as RenderLiteral;
+                
                 for logical_join in &graph_joins.joins {
-                    // SKIP FROM markers - they have empty joining_on
+                    // SKIP the FROM table marker - it has empty joining_on AND is the anchor
                     if logical_join.joining_on.is_empty() {
+                        let is_from_table = from_alias.as_ref()
+                            .map(|a| a == &logical_join.table_alias)
+                            .unwrap_or(false);
+                        
+                        if is_from_table {
+                            // This is the FROM table, skip it (will be rendered by extract_from)
+                            log::debug!("🔧 Skipping FROM marker '{}'", logical_join.table_alias);
+                            continue;
+                        }
+                        
+                        // This is an entry point with empty joining_on (not the FROM table)
+                        // Render as JOIN ON 1=1 (cross-join semantics) with appropriate join type
+                        let join_type = if logical_join.join_type == LogicalJoinType::Left {
+                            log::info!("🔧 Optional entry point '{}' will be LEFT JOIN ON 1=1", logical_join.table_alias);
+                            super::JoinType::Left
+                        } else {
+                            // Required entry point (Inner) - render as CROSS JOIN (inner join on 1=1)
+                            log::info!("🔧 Required entry point '{}' will be JOIN ON 1=1 (cross-join)", logical_join.table_alias);
+                            super::JoinType::Join
+                        };
+                        
+                        let cross_join = Join {
+                            join_type,
+                            table_name: logical_join.table_name.clone(),
+                            table_alias: logical_join.table_alias.clone(),
+                            joining_on: vec![
+                                // ON 1=1 condition for cross-product
+                                OperatorApplication {
+                                    operator: Operator::Equal,
+                                    operands: vec![
+                                        RenderExpr::Literal(RenderLiteral::Integer(1)),
+                                        RenderExpr::Literal(RenderLiteral::Integer(1)),
+                                    ],
+                                }
+                            ],
+                            pre_filter: None,
+                            from_id_column: logical_join.from_id_column.clone(),
+                            to_id_column: logical_join.to_id_column.clone(),
+                        };
+                        joins.push(cross_join);
                         continue;
                     }
 

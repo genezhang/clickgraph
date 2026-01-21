@@ -1010,16 +1010,33 @@ impl GraphJoinInference {
 
         // SPECIAL CASE: Check for FROM marker joins (empty joining_on)
         // These are explicitly marked as the FROM table by CartesianProduct cross-table handling
+        // IMPORTANT: Prefer NON-OPTIONAL (Inner) joins over OPTIONAL (Left) joins as anchors
+        // This ensures required patterns become FROM, not optional patterns.
         let mut from_marker_index: Option<usize> = None;
+        let mut first_optional_marker_index: Option<usize> = None;
         for (i, join) in joins.iter().enumerate() {
             if join.joining_on.is_empty() {
-                crate::debug_print!(
-                    "  🏠 Found FROM marker join: '{}' (empty joining_on)",
-                    join.table_alias
-                );
-                from_marker_index = Some(i);
-                break;
+                if join.join_type == JoinType::Inner {
+                    // Prefer Inner (non-optional) as FROM
+                    crate::debug_print!(
+                        "  🏠 Found NON-OPTIONAL FROM marker join: '{}' (Inner)",
+                        join.table_alias
+                    );
+                    from_marker_index = Some(i);
+                    break;
+                } else if first_optional_marker_index.is_none() {
+                    // Track first optional marker as fallback
+                    crate::debug_print!(
+                        "  🏠 Found OPTIONAL marker join: '{}' (Left) - will prefer Inner if found",
+                        join.table_alias
+                    );
+                    first_optional_marker_index = Some(i);
+                }
             }
+        }
+        // Fall back to optional marker if no Inner marker found
+        if from_marker_index.is_none() {
+            from_marker_index = first_optional_marker_index;
         }
 
         // If we found a FROM marker, use it as anchor but STILL reorder the other joins!
@@ -3182,8 +3199,10 @@ impl GraphJoinInference {
                     // Use left as anchor
                     true
                 } else {
-                    // Both same optionality - use default (left as anchor for first rel)
-                    is_first_relationship && !left_is_optional
+                    // Both same optionality - always connect LEFT first for first relationship
+                    // This ensures proper JOIN order: LEFT → EDGE → RIGHT
+                    // (prevents referencing RIGHT in join condition before it's joined)
+                    is_first_relationship
                 };
 
                 log::debug!("🔍 JOIN strategy for CONTAINER_OF: connect_left_first={}, left_alias={}, right_alias={}, is_first_relationship={}",
@@ -3194,18 +3213,20 @@ impl GraphJoinInference {
                     crate::debug_print!("       Connect order: LEFT → EDGE → RIGHT");
                     log::debug!("  📍 Connect order: LEFT → EDGE → RIGHT");
 
-                    // If first relationship and left is anchor, mark it joined AND create FROM marker
-                    if is_first_relationship && !left_is_optional {
+                    // If first relationship, mark left as entry point with FROM marker (empty joining_on)
+                    // This prevents circular dependencies by establishing left as the anchor
+                    // that other joins can reference.
+                    if is_first_relationship {
                         crate::debug_print!(
-                            "       LEFT '{}' is anchor - will be FROM table",
-                            left_alias
+                            "       LEFT '{}' is anchor - will be entry point (optional={})",
+                            left_alias, left_is_optional
                         );
-                        log::debug!("  🎯 LEFT '{}' marked as FROM table (is_first_relationship={}, left_is_optional={})", left_alias, is_first_relationship, left_is_optional);
+                        log::debug!("  🎯 LEFT '{}' marked as entry point (is_first_relationship={}, left_is_optional={})", left_alias, is_first_relationship, left_is_optional);
 
                         // CRITICAL: Create FROM marker for the anchor node!
                         // This preserves the table name so extract_from can find it.
-                        // Without this, anonymous nodes (Scan with no table_name) would fall back
-                        // to using the first JOIN as FROM, which would be the relationship - WRONG!
+                        // For optional patterns, this becomes a LEFT JOIN entry point that
+                        // CartesianProduct can properly handle (no forward-referencing conditions).
                         let left_table_name = Self::get_table_name_with_prefix(
                             left_cte_name,
                             left_alias,
@@ -3215,16 +3236,16 @@ impl GraphJoinInference {
                         let from_marker = Join {
                             table_name: left_table_name,
                             table_alias: left_alias.to_string(),
-                            joining_on: vec![], // Empty = FROM table marker
-                            join_type: JoinType::Inner,
+                            joining_on: vec![], // Empty = entry point marker (FROM or cross-join base)
+                            join_type: Self::determine_join_type(left_is_optional),
                             pre_filter: None,
                             from_id_column: None,
                             to_id_column: None,
                         };
                         Self::push_join_if_not_duplicate(collected_graph_joins, from_marker);
                         crate::debug_print!(
-                            "       🏠 Added FROM marker for anchor node '{}'",
-                            left_alias
+                            "       🏠 Added entry point marker for anchor node '{}' (join_type={:?})",
+                            left_alias, Self::determine_join_type(left_is_optional)
                         );
 
                         join_ctx.insert(left_alias.to_string());
