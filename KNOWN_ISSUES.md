@@ -1,58 +1,44 @@
 # Known Issues
 
-**Active Issues**: 1 bug, 1 architecture debt, 5 feature limitations  
-**Last Updated**: January 20, 2026
+**Active Issues**: 2 bugs, 5 feature limitations  
+**Last Updated**: January 21, 2026
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ---
 
-## Architecture Debt (CRITICAL)
-
-### 1. CTE System Fragmentation - CteManager Never Integrated
-**Status**: 🔴 CRITICAL ARCHITECTURE DEBT  
-**Impact**: Causes recurring bugs, fragile heuristic code, circular debugging sessions  
-**Added**: January 20, 2026
-
-**The Problem**:
-The CTE (Common Table Expression) system is fragmented across 4 files totaling 11,016 lines with overlapping responsibilities:
-
-| File | Lines | Purpose | Status |
-|------|-------|---------|--------|
-| `cte_extraction.rs` | 4,601 | VLP CTE extraction | ✅ In production |
-| `cte_generation.rs` | 735 | CTE context/metadata | ✅ In production |
-| `variable_length_cte.rs` | 3,236 | Recursive CTE SQL | ✅ In production |
-| `cte_manager/mod.rs` | 2,444 | Unified strategy pattern | ❌ **DEAD CODE** |
-
-**Root Cause**:
-- `CteManager` was designed to unify all CTE logic using a strategy pattern (see [cte_unification_design.md](docs/development/cte_unification_design.md))
-- It was implemented (commit c3c84c3, Jan 15, 2026) but **never integrated** into production code paths
-- Production code continues using scattered logic in `cte_extraction.rs` and `plan_builder_utils.rs`
-- Different development sessions keep adding patches/heuristics to the old code instead of completing the integration
-
-**Symptoms**:
-- Fragile string-based heuristics (e.g., looking for `_id` suffix to guess ID columns)
-- Alias-to-column mapping breaks for edge cases (current bug: VLP + WITH aggregation)
-- Different code paths have inconsistent handling of schema variations
-- Repeated "fix → break → fix" cycles on the same issues
-
-**Solution Required**:
-1. Complete `CteManager` integration into production code path
-2. Replace scattered conditionals with strategy pattern
-3. Remove dead code from `cte_extraction.rs` that duplicates `CteManager` functionality
-4. Consolidate column/alias tracking with explicit metadata (not string parsing)
-
-**Files**:
-- Design doc: `docs/development/cte_unification_design.md`
-- Dead code: `src/render_plan/cte_manager/mod.rs`
-- Production code: `src/render_plan/cte_extraction.rs`, `src/render_plan/plan_builder_utils.rs`
-
----
-
 ## Current Bugs
 
-### 1. MULTI_TABLE_LABEL Standalone Node Aggregations Missing FROM Clause
+### 1. OPTIONAL MATCH First with Disconnected Patterns
+**Status**: 🐛 BUG (Architectural)  
+**Error**: Generated SQL has incorrect JOIN order and missing table references  
+**Example**:
+```cypher
+OPTIONAL MATCH (a:User)-[:FOLLOWS]->(b:User) WHERE a.name = 'Eve'
+MATCH (x:User) WHERE x.name = 'Alice'
+RETURN a.name, b.name, x.name
+```
+**Expected**: 1 row with (NULL, NULL, 'Alice') when Eve has no outgoing follows  
+**Actual**: 0 rows or malformed SQL
+
+**Root Cause**: When OPTIONAL MATCH comes first and has no connecting node to the subsequent required MATCH, the join generation assumes the optional pattern's internal anchor (`b`) will be available, but it's never explicitly joined. The architecture assumes all patterns share some nodes.
+
+**Partial Fixes Applied** (January 21, 2026):
+- Added `is_optional_pattern()` helper to LogicalPlan
+- CartesianProduct swap logic when left is optional and right is required
+- FROM marker creation for GraphNode in CartesianProduct
+
+**Remaining Work**: Disconnected optional patterns need either:
+1. Subquery treatment (wrap optional pattern in subquery, LEFT JOIN onto required)
+2. CROSS JOIN anchor (add `b` as CROSS JOIN before LEFT JOINs)
+3. Rework optional join generation for disconnected cases
+
+**Impact**: Blocks OPTIONAL MATCH first queries where patterns don't share nodes  
+**Workaround**: Put required MATCH first: `MATCH (x:User) OPTIONAL MATCH (a:User)-[:FOLLOWS]->(b:User) WHERE a.name = 'Eve' AND x.name = 'Alice' RETURN ...`  
+**Files**: `query_planner/logical_plan/match_clause.rs`, `query_planner/analyzer/graph_join_inference.rs`, `query_planner/logical_plan/mod.rs`
+
+### 2. MULTI_TABLE_LABEL Standalone Node Aggregations Missing FROM Clause
 **Status**: 🐛 BUG  
 **Error**: `Unknown expression or function identifier 'n.ip'` (missing FROM clause in generated SQL)  
 **Example**:

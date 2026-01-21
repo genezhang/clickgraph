@@ -2294,10 +2294,28 @@ fn traverse_connected_pattern_with_mode<'a>(
 
             // If we have an existing plan (e.g., from WITH clause), combine with CartesianProduct
             if has_existing_plan {
+                // CRITICAL FIX: When existing plan is OPTIONAL and new pattern is REQUIRED,
+                // swap them so the required pattern becomes the anchor (FROM clause).
+                // This ensures correct SQL generation:
+                //   OPTIONAL MATCH ... MATCH x → FROM x LEFT JOIN optional_pattern
+                // Instead of wrong:
+                //   FROM optional_pattern CROSS JOIN x
+                let existing_is_optional = plan.is_optional_pattern();
+                let (left, right, cp_is_optional) = if existing_is_optional && !is_optional {
+                    // Swap: required pattern becomes left (anchor), optional becomes right
+                    log::info!(
+                        "🔄 CartesianProduct: Swapping left/right - existing plan is optional, new pattern is required"
+                    );
+                    (new_pattern.clone(), plan.clone(), true) // is_optional=true means RIGHT is optional
+                } else {
+                    // Normal case: existing plan is anchor
+                    (plan.clone(), new_pattern.clone(), is_optional)
+                };
+
                 plan = Arc::new(LogicalPlan::CartesianProduct(CartesianProduct {
-                    left: plan.clone(),   // Previous plan (e.g., Projection from WITH)
-                    right: new_pattern,   // New disconnected pattern
-                    is_optional,          // Pass through the is_optional flag
+                    left,
+                    right,
+                    is_optional: cp_is_optional,
                     join_condition: None, // Will be populated by optimizer if WHERE bridges both sides
                 }));
                 crate::debug_print!(
@@ -2305,7 +2323,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 );
                 crate::debug_print!(
                     "│   Plan is now: CartesianProduct(optional: {})",
-                    is_optional
+                    cp_is_optional
                 );
             } else {
                 plan = new_pattern;
@@ -2434,16 +2452,29 @@ fn traverse_node_pattern(
         };
 
         if has_existing_plan {
-            // Create CartesianProduct to combine existing plan with new node
-            // This generates: FROM existing_table CROSS JOIN new_node_table
+            // CRITICAL FIX: When existing plan is OPTIONAL and new node is from REQUIRED MATCH,
+            // swap them so the required node becomes the anchor (FROM clause).
+            let existing_is_optional = plan.is_optional_pattern();
+            let (left, right, cp_is_optional) = if existing_is_optional {
+                // Swap: required node becomes left (anchor), optional becomes right
+                log::info!(
+                    "🔄 CartesianProduct (node): Swapping - existing plan is optional, node '{}' is required",
+                    new_node_alias
+                );
+                (new_node_plan.clone(), plan.clone(), true) // is_optional=true means RIGHT is optional
+            } else {
+                // Normal case: existing plan is anchor
+                (plan.clone(), new_node_plan.clone(), false)
+            };
+
             log::info!(
                 "Creating CartesianProduct for comma pattern: existing plan + node '{}'",
                 new_node_alias
             );
             Ok(Arc::new(LogicalPlan::CartesianProduct(CartesianProduct {
-                left: plan.clone(),
-                right: new_node_plan,
-                is_optional: false,
+                left,
+                right,
+                is_optional: cp_is_optional,
                 join_condition: None,
             })))
         } else {

@@ -1939,6 +1939,40 @@ impl GraphJoinInference {
                     right_joins.len()
                 );
 
+                // CRITICAL FIX: When LEFT is a simple GraphNode (node-only MATCH pattern) and has no joins,
+                // we need to create a FROM marker for it. Without this, when OPTIONAL MATCH comes first
+                // and required MATCH has a node-only pattern, the required node would be missing from SQL.
+                // This happens in: OPTIONAL MATCH (a)-[]->(b) MATCH (x) RETURN ...
+                // After swap fix in match_clause.rs: CartesianProduct(left=x, right=optional, is_optional=true)
+                // But x has no FROM marker because GraphNode doesn't generate joins.
+                if left_joins.is_empty() {
+                    if let LogicalPlan::GraphNode(gn) = cp.left.as_ref() {
+                        // Extract table info from GraphNode's ViewScan
+                        if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                            log::info!(
+                                "📦 CartesianProduct: Creating FROM marker for GraphNode '{}' (table='{}')",
+                                gn.alias,
+                                vs.source_table
+                            );
+                            let from_marker = Join {
+                                table_name: vs.source_table.clone(),
+                                table_alias: gn.alias.clone(),
+                                joining_on: vec![], // Empty = this is the FROM table
+                                join_type: JoinType::Inner,
+                                pre_filter: None,
+                                from_id_column: None,
+                                to_id_column: None,
+                            };
+                            // Insert at the beginning so it becomes the anchor
+                            collected_graph_joins.insert(0, from_marker);
+                            crate::debug_print!(
+                                "📦 CartesianProduct: Added FROM marker for left GraphNode '{}'",
+                                gn.alias
+                            );
+                        }
+                    }
+                }
+
                 // CRITICAL: Bubble up all joins to the parent collected_graph_joins
                 // The left side joins need to come first
                 collected_graph_joins.extend(left_joins.clone());
