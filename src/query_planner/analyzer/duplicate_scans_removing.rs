@@ -131,10 +131,16 @@ impl DuplicateScansRemoving {
                 limit.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Union(union) => {
+                // CRITICAL: Each Union branch must have its OWN traversed set!
+                // Union represents alternative execution paths (UNION ALL), not sequential patterns.
+                // If we share the traversed set, Branch 1 would incorrectly see Branch 0's
+                // aliases as "already traversed" and replace nodes with Empty.
                 let mut inputs_tf: Vec<Transformed<Arc<LogicalPlan>>> = vec![];
                 for input_plan in union.inputs.iter() {
+                    // Clone the traversed set for each branch to maintain independence
+                    let mut branch_traversed = traversed.clone();
                     let child_tf =
-                        Self::remove_duplicate_scans(input_plan.clone(), traversed, plan_ctx)?;
+                        Self::remove_duplicate_scans(input_plan.clone(), &mut branch_traversed, plan_ctx)?;
                     inputs_tf.push(child_tf);
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())

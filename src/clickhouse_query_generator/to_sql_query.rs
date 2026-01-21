@@ -482,7 +482,32 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
             } else {
                 sql.push_str("SELECT * FROM (\n");
             }
-            sql.push_str(&plan.union.to_sql());
+            
+            // CRITICAL FIX: Generate the first branch's SQL from the base plan
+            // The base plan (plan.select, plan.from, plan.joins, plan.filters) IS the first branch
+            // plan.union only contains branches 2+
+            let first_branch_sql = {
+                let mut branch_sql = String::new();
+                branch_sql.push_str(&plan.select.to_sql());
+                branch_sql.push_str(&plan.from.to_sql());
+                branch_sql.push_str(&plan.joins.to_sql());
+                branch_sql.push_str(&plan.filters.to_sql());
+                branch_sql
+            };
+            sql.push_str(&first_branch_sql);
+            
+            // Now add the remaining branches with UNION ALL
+            if let Some(union) = &plan.union.0 {
+                let union_type_str = match union.union_type {
+                    UnionType::Distinct => "UNION DISTINCT \n",
+                    UnionType::All => "UNION ALL \n",
+                };
+                for union_branch in &union.input {
+                    sql.push_str(union_type_str);
+                    sql.push_str(&union_branch.to_sql());
+                }
+            }
+            
             sql.push_str(") AS __union\n");
 
             // Add GROUP BY if present
@@ -503,7 +528,28 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
             }
         } else {
             // No ordering/limiting - bare UNION is fine
-            sql.push_str(&plan.union.to_sql());
+            // But we still need to output the first branch!
+            let first_branch_sql = {
+                let mut branch_sql = String::new();
+                branch_sql.push_str(&plan.select.to_sql());
+                branch_sql.push_str(&plan.from.to_sql());
+                branch_sql.push_str(&plan.joins.to_sql());
+                branch_sql.push_str(&plan.filters.to_sql());
+                branch_sql
+            };
+            sql.push_str(&first_branch_sql);
+            
+            // Add remaining branches with UNION
+            if let Some(union) = &plan.union.0 {
+                let union_type_str = match union.union_type {
+                    UnionType::Distinct => "UNION DISTINCT \n",
+                    UnionType::All => "UNION ALL \n",
+                };
+                for union_branch in &union.input {
+                    sql.push_str(union_type_str);
+                    sql.push_str(&union_branch.to_sql());
+                }
+            }
         }
 
         return sql;
