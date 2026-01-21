@@ -1856,13 +1856,6 @@ pub fn extract_ctes_with_context(
                         );
                     }
 
-                    let mapped_categorized = CategorizedFilters {
-                        start_node_filters: mapped_start,
-                        end_node_filters: mapped_end,
-                        relationship_filters: mapped_rel,
-                        path_function_filters: mapped_path,
-                    };
-
                     // Create alias mapping for node aliases (standard 3-table schema)
                     let alias_mapping = [
                         (start_alias.clone(), "start_node".to_string()),
@@ -1902,7 +1895,7 @@ pub fn extract_ctes_with_context(
                     }
 
                     // Choose mapping based on which alias the filter uses
-                    let start_sql = mapped_categorized.start_node_filters.as_ref().map(|expr| {
+                    let start_sql = mapped_start.as_ref().map(|expr| {
                         if expr_uses_alias(expr, &rel_alias) {
                             // Denormalized: filter uses rel_alias after property mapping
                             render_expr_to_sql_string(expr, &rel_alias_mapping)
@@ -1911,7 +1904,7 @@ pub fn extract_ctes_with_context(
                             render_expr_to_sql_string(expr, &alias_mapping)
                         }
                     });
-                    let end_sql = mapped_categorized.end_node_filters.as_ref().map(|expr| {
+                    let end_sql = mapped_end.as_ref().map(|expr| {
                         if expr_uses_alias(expr, &rel_alias) {
                             // Denormalized: filter uses rel_alias after property mapping
                             render_expr_to_sql_string(expr, &rel_alias_mapping)
@@ -1921,16 +1914,28 @@ pub fn extract_ctes_with_context(
                         }
                     });
                     // ✅ Relationship filters always use rel_alias_mapping
-                    let rel_sql = mapped_categorized
-                        .relationship_filters
+                    let rel_sql_rendered = mapped_rel
                         .as_ref()
                         .map(|expr| render_expr_to_sql_string(expr, &rel_alias_mapping));
+
+                    // Build CategorizedFilters with both RenderExpr and pre-rendered SQL
+                    // The pre-rendered SQL is used by VariableLengthCteGenerator (backward compat)
+                    // while RenderExpr is used by CteManager (new path)
+                    let mapped_categorized = CategorizedFilters {
+                        start_node_filters: mapped_start,
+                        end_node_filters: mapped_end,
+                        relationship_filters: mapped_rel,
+                        path_function_filters: mapped_path,
+                        start_sql: start_sql.clone(),
+                        end_sql: end_sql.clone(),
+                        relationship_sql: rel_sql_rendered.clone(),
+                    };
 
                     // Note: End node filters are placed INSIDE the CTE (via end_sql above).
                     // Chained pattern filters (nodes outside VLP) are handled separately in
                     // plan_builder.rs via references_only_vlp_aliases check.
 
-                    (start_sql, end_sql, rel_sql, Some(mapped_categorized))
+                    (start_sql, end_sql, rel_sql_rendered, Some(mapped_categorized))
                 } else {
                     (None, None, None, None)
                 };

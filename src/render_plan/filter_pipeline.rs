@@ -6,12 +6,27 @@ use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 
 /// Represents categorized filters for different parts of a query
-#[derive(Debug, Clone)]
+///
+/// This struct supports two modes:
+/// 1. RenderExpr-based: Filters as AST (start_node_filters, end_node_filters, etc.)
+/// 2. Pre-rendered SQL: Filters already rendered to SQL strings (start_sql, end_sql, etc.)
+///
+/// Pre-rendered SQL is used for backward compatibility with VariableLengthCteGenerator
+/// during the transition to CteManager. Once migration is complete, we can remove
+/// the pre-rendered SQL fields.
+#[derive(Debug, Clone, Default)]
 pub struct CategorizedFilters {
+    // RenderExpr-based filters (preferred - supports re-rendering with different alias mappings)
     pub start_node_filters: Option<RenderExpr>,
     pub end_node_filters: Option<RenderExpr>,
     pub relationship_filters: Option<RenderExpr>,
-    pub path_function_filters: Option<RenderExpr>, // Filters on path functions like length(p), nodes(p)
+    pub path_function_filters: Option<RenderExpr>,
+
+    // Pre-rendered SQL strings (for backward compatibility during CteManager transition)
+    // These take precedence over RenderExpr when present
+    pub start_sql: Option<String>,
+    pub end_sql: Option<String>,
+    pub relationship_sql: Option<String>,
 }
 
 /// Categorize filters based on which nodes/relationships they reference
@@ -53,6 +68,9 @@ pub fn categorize_filters(
         end_node_filters: None,
         relationship_filters: None,
         path_function_filters: None,
+        start_sql: None,
+        end_sql: None,
+        relationship_sql: None,
     };
 
     if filter_expr.is_none() {

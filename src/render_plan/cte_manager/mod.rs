@@ -64,6 +64,29 @@ pub enum VlpColumnPosition {
     End,
 }
 
+/// VLP endpoint metadata for converting CteGenerationResult to Cte
+#[derive(Debug, Clone, Default)]
+pub struct VlpEndpointInfo {
+    /// Internal start node alias used in CTE (e.g., "start_node")
+    pub start_alias: String,
+    /// Internal end node alias used in CTE (e.g., "end_node")
+    pub end_alias: String,
+    /// Start node table name
+    pub start_table: String,
+    /// End node table name
+    pub end_table: String,
+    /// Original Cypher alias for start node
+    pub cypher_start_alias: String,
+    /// Original Cypher alias for end node
+    pub cypher_end_alias: String,
+    /// Start node ID column name
+    pub start_id_col: String,
+    /// End node ID column name
+    pub end_id_col: String,
+    /// Path variable name (e.g., "p" in MATCH p = (a)-[*]->(b))
+    pub path_variable: Option<String>,
+}
+
 /// Result of CTE SQL generation
 #[derive(Debug, Clone)]
 pub struct CteGenerationResult {
@@ -75,6 +98,8 @@ pub struct CteGenerationResult {
     pub from_alias: String,
     /// Metadata for all columns in the CTE
     pub columns: Vec<CteColumnMetadata>,
+    /// VLP endpoint info (for conversion to Cte)
+    pub vlp_endpoint: Option<VlpEndpointInfo>,
 }
 
 impl CteGenerationResult {
@@ -154,6 +179,76 @@ impl CteGenerationResult {
         }
         
         columns
+    }
+
+    /// Convert CteGenerationResult to Cte struct for downstream use
+    pub fn to_cte(&self) -> crate::render_plan::Cte {
+        use crate::render_plan::{Cte, CteContent};
+        
+        if let Some(ref endpoint) = self.vlp_endpoint {
+            Cte::new_vlp(
+                self.cte_name.clone(),
+                CteContent::RawSql(self.sql.clone()),
+                self.recursive,
+                endpoint.start_alias.clone(),
+                endpoint.end_alias.clone(),
+                endpoint.start_table.clone(),
+                endpoint.end_table.clone(),
+                endpoint.cypher_start_alias.clone(),
+                endpoint.cypher_end_alias.clone(),
+                endpoint.start_id_col.clone(),
+                endpoint.end_id_col.clone(),
+                endpoint.path_variable.clone(),
+            )
+        } else {
+            Cte::new(
+                self.cte_name.clone(),
+                CteContent::RawSql(self.sql.clone()),
+                self.recursive,
+            )
+        }
+    }
+}
+
+/// Helper function to build WHERE clause from categorized filters.
+///
+/// Prefers pre-rendered SQL strings (start_sql, end_sql, relationship_sql) when available
+/// for backward compatibility with existing filter rendering in cte_extraction.rs.
+/// Falls back to rendering from RenderExpr if pre-rendered SQL is not available.
+fn build_where_clause_from_filters(
+    filters: &CategorizedFilters,
+    alias_mapping: &[(String, String)],
+) -> String {
+    let mut conditions = Vec::new();
+
+    // Add start node filters - prefer pre-rendered SQL
+    if let Some(start_sql) = &filters.start_sql {
+        conditions.push(start_sql.clone());
+    } else if let Some(start_filters) = &filters.start_node_filters {
+        let sql = render_expr_to_sql_string(start_filters, alias_mapping);
+        conditions.push(sql);
+    }
+
+    // Add end node filters - prefer pre-rendered SQL
+    if let Some(end_sql) = &filters.end_sql {
+        conditions.push(end_sql.clone());
+    } else if let Some(end_filters) = &filters.end_node_filters {
+        let sql = render_expr_to_sql_string(end_filters, alias_mapping);
+        conditions.push(sql);
+    }
+
+    // Add relationship filters - prefer pre-rendered SQL
+    if let Some(rel_sql) = &filters.relationship_sql {
+        conditions.push(rel_sql.clone());
+    } else if let Some(rel_filters) = &filters.relationship_filters {
+        let sql = render_expr_to_sql_string(rel_filters, alias_mapping);
+        conditions.push(sql);
+    }
+
+    if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("    WHERE {}", conditions.join(" AND "))
     }
 }
 
@@ -455,6 +550,19 @@ impl FkEdgeCteStrategy {
             &self.id_column,
         );
 
+        // Build VLP endpoint info for FK-edge
+        let vlp_endpoint = VlpEndpointInfo {
+            start_alias: "start_node".to_string(),
+            end_alias: "end_node".to_string(),
+            start_table: self.node_table.clone(),
+            end_table: self.node_table.clone(),
+            cypher_start_alias: self.pattern_ctx.left_node_alias.clone(),
+            cypher_end_alias: self.pattern_ctx.right_node_alias.clone(),
+            start_id_col: self.id_column.clone(),
+            end_id_col: self.id_column.clone(),
+            path_variable: None,
+        };
+
         Ok(CteGenerationResult {
             sql,
             parameters: collect_parameters_from_filters(filters),
@@ -462,6 +570,7 @@ impl FkEdgeCteStrategy {
             recursive: true,
             from_alias: "t".to_string(),
             columns,
+            vlp_endpoint: Some(vlp_endpoint),
         })
     }
 
@@ -664,10 +773,8 @@ impl FkEdgeCteStrategy {
 
     /// Build WHERE clause from categorized filters
     fn build_where_clause(&self, filters: &CategorizedFilters) -> Result<String, CteError> {
-        let mut conditions = Vec::new();
-
         // Create alias mapping: Cypher aliases map to themselves in CTE context
-        let alias_mapping = &[
+        let alias_mapping = vec![
             (
                 self.pattern_ctx.left_node_alias.clone(),
                 self.pattern_ctx.left_node_alias.clone(),
@@ -678,29 +785,7 @@ impl FkEdgeCteStrategy {
             ),
         ];
 
-        // Add start node filters
-        if let Some(start_filters) = &filters.start_node_filters {
-            let sql = render_expr_to_sql_string(start_filters, alias_mapping);
-            conditions.push(sql);
-        }
-
-        // Add end node filters
-        if let Some(end_filters) = &filters.end_node_filters {
-            let sql = render_expr_to_sql_string(end_filters, alias_mapping);
-            conditions.push(sql);
-        }
-
-        // Add relationship filters
-        if let Some(rel_filters) = &filters.relationship_filters {
-            let sql = render_expr_to_sql_string(rel_filters, alias_mapping);
-            conditions.push(sql);
-        }
-
-        if conditions.is_empty() {
-            Ok(String::new())
-        } else {
-            Ok(format!("    WHERE {}", conditions.join(" AND ")))
-        }
+        Ok(build_where_clause_from_filters(filters, &alias_mapping))
     }
 }
 impl TraditionalCteStrategy {
@@ -727,13 +812,30 @@ impl TraditionalCteStrategy {
         let sql = self.generate_recursive_cte_sql(context, properties, filters)?;
 
         // Build column metadata - get ID column from pattern context
-        let id_column = self.get_start_id_column().unwrap_or_else(|_| "id".to_string());
+        let (start_table, start_id_col) = self.get_node_table_info(&self.pattern_ctx.left_node_alias)
+            .unwrap_or_else(|_| ("unknown".to_string(), "id".to_string()));
+        let (end_table, end_id_col) = self.get_node_table_info(&self.pattern_ctx.right_node_alias)
+            .unwrap_or_else(|_| ("unknown".to_string(), "id".to_string()));
+            
         let columns = CteGenerationResult::build_vlp_column_metadata(
             &self.pattern_ctx.left_node_alias,
             &self.pattern_ctx.right_node_alias,
             properties,
-            &id_column,
+            &start_id_col,
         );
+
+        // Build VLP endpoint info for conversion to Cte
+        let vlp_endpoint = VlpEndpointInfo {
+            start_alias: "start_node".to_string(),
+            end_alias: "end_node".to_string(),
+            start_table,
+            end_table,
+            cypher_start_alias: self.pattern_ctx.left_node_alias.clone(),
+            cypher_end_alias: self.pattern_ctx.right_node_alias.clone(),
+            start_id_col,
+            end_id_col,
+            path_variable: None, // Will be set from GraphRel.path_variable later
+        };
 
         Ok(CteGenerationResult {
             sql,
@@ -742,6 +844,7 @@ impl TraditionalCteStrategy {
             recursive: true,
             from_alias: "t".to_string(),
             columns,
+            vlp_endpoint: Some(vlp_endpoint),
         })
     }
 
@@ -1034,10 +1137,8 @@ impl TraditionalCteStrategy {
 
     /// Build WHERE clause from categorized filters
     fn build_where_clause(&self, filters: &CategorizedFilters) -> Result<String, CteError> {
-        let mut conditions = Vec::new();
-
         // Create alias mapping: Cypher aliases map to themselves in CTE context
-        let alias_mapping = &[
+        let alias_mapping = vec![
             (
                 self.pattern_ctx.left_node_alias.clone(),
                 self.pattern_ctx.left_node_alias.clone(),
@@ -1048,29 +1149,7 @@ impl TraditionalCteStrategy {
             ),
         ];
 
-        // Add start node filters
-        if let Some(start_filters) = &filters.start_node_filters {
-            let sql = render_expr_to_sql_string(start_filters, alias_mapping);
-            conditions.push(sql);
-        }
-
-        // Add end node filters
-        if let Some(end_filters) = &filters.end_node_filters {
-            let sql = render_expr_to_sql_string(end_filters, alias_mapping);
-            conditions.push(sql);
-        }
-
-        // Add relationship filters
-        if let Some(rel_filters) = &filters.relationship_filters {
-            let sql = render_expr_to_sql_string(rel_filters, alias_mapping);
-            conditions.push(sql);
-        }
-
-        if conditions.is_empty() {
-            Ok(String::new())
-        } else {
-            Ok(format!("    WHERE {}", conditions.join(" AND ")))
-        }
+        Ok(build_where_clause_from_filters(filters, &alias_mapping))
     }
     pub fn validate(&self, _pattern_ctx: &PatternSchemaContext) -> Result<(), CteError> {
         Ok(())
@@ -1136,6 +1215,19 @@ impl DenormalizedCteStrategy {
             "id", // Denormalized uses generic ID
         );
 
+        // Build VLP endpoint info for denormalized (edge table is the only table)
+        let vlp_endpoint = VlpEndpointInfo {
+            start_alias: "start_node".to_string(),
+            end_alias: "end_node".to_string(),
+            start_table: self.table.clone(),
+            end_table: self.table.clone(),
+            cypher_start_alias: self.pattern_ctx.left_node_alias.clone(),
+            cypher_end_alias: self.pattern_ctx.right_node_alias.clone(),
+            start_id_col: self.from_col.clone(),
+            end_id_col: self.to_col.clone(),
+            path_variable: None,
+        };
+
         Ok(CteGenerationResult {
             sql,
             parameters: collect_parameters_from_filters(filters),
@@ -1143,6 +1235,7 @@ impl DenormalizedCteStrategy {
             recursive: true,
             from_alias: "t".to_string(),
             columns,
+            vlp_endpoint: Some(vlp_endpoint),
         })
     }
 
@@ -1324,18 +1417,24 @@ impl DenormalizedCteStrategy {
     ) -> Result<String, CteError> {
         let mut conditions = Vec::new();
 
-        // Add start node filters
-        if let Some(start_filters) = &filters.start_node_filters {
+        // Add start node filters - prefer pre-rendered SQL
+        if let Some(start_sql) = &filters.start_sql {
+            conditions.push(start_sql.clone());
+        } else if let Some(start_filters) = &filters.start_node_filters {
             conditions.push(start_filters.to_sql());
         }
 
-        // Add end node filters
-        if let Some(end_filters) = &filters.end_node_filters {
+        // Add end node filters - prefer pre-rendered SQL
+        if let Some(end_sql) = &filters.end_sql {
+            conditions.push(end_sql.clone());
+        } else if let Some(end_filters) = &filters.end_node_filters {
             conditions.push(end_filters.to_sql());
         }
 
-        // Add relationship filters
-        if let Some(rel_filters) = &filters.relationship_filters {
+        // Add relationship filters - prefer pre-rendered SQL
+        if let Some(rel_sql) = &filters.relationship_sql {
+            conditions.push(rel_sql.clone());
+        } else if let Some(rel_filters) = &filters.relationship_filters {
             conditions.push(rel_filters.to_sql());
         }
 
@@ -1395,6 +1494,19 @@ impl MixedAccessCteStrategy {
             "id", // Mixed access uses generic ID
         );
 
+        // Build VLP endpoint info for mixed access
+        let vlp_endpoint = VlpEndpointInfo {
+            start_alias: "start_node".to_string(),
+            end_alias: "end_node".to_string(),
+            start_table: "mixed_table".to_string(), // TODO: extract from pattern_ctx
+            end_table: "mixed_table".to_string(),
+            cypher_start_alias: self.pattern_ctx.left_node_alias.clone(),
+            cypher_end_alias: self.pattern_ctx.right_node_alias.clone(),
+            start_id_col: self.join_col.clone(),
+            end_id_col: self.join_col.clone(),
+            path_variable: None,
+        };
+
         Ok(CteGenerationResult {
             sql,
             parameters: collect_parameters_from_filters(filters),
@@ -1402,6 +1514,7 @@ impl MixedAccessCteStrategy {
             recursive: true,
             from_alias: "t".to_string(),
             columns,
+            vlp_endpoint: Some(vlp_endpoint),
         })
     }
 
@@ -1715,10 +1828,8 @@ impl MixedAccessCteStrategy {
 
     /// Build WHERE clause from categorized filters
     fn build_where_clause(&self, filters: &CategorizedFilters) -> Result<String, CteError> {
-        let mut conditions = Vec::new();
-
         // Create alias mapping: Cypher aliases map to themselves in CTE context
-        let alias_mapping = &[
+        let alias_mapping = vec![
             (
                 self.pattern_ctx.left_node_alias.clone(),
                 self.pattern_ctx.left_node_alias.clone(),
@@ -1729,29 +1840,7 @@ impl MixedAccessCteStrategy {
             ),
         ];
 
-        // Add start node filters
-        if let Some(start_filters) = &filters.start_node_filters {
-            let sql = render_expr_to_sql_string(start_filters, alias_mapping);
-            conditions.push(sql);
-        }
-
-        // Add end node filters
-        if let Some(end_filters) = &filters.end_node_filters {
-            let sql = render_expr_to_sql_string(end_filters, alias_mapping);
-            conditions.push(sql);
-        }
-
-        // Add relationship filters
-        if let Some(rel_filters) = &filters.relationship_filters {
-            let sql = render_expr_to_sql_string(rel_filters, alias_mapping);
-            conditions.push(sql);
-        }
-
-        if conditions.is_empty() {
-            Ok(String::new())
-        } else {
-            Ok(format!("    WHERE {}", conditions.join(" AND ")))
-        }
+        Ok(build_where_clause_from_filters(filters, &alias_mapping))
     }
 }
 
@@ -1819,6 +1908,19 @@ impl EdgeToEdgeCteStrategy {
             "id", // Edge-to-edge uses generic ID
         );
 
+        // Build VLP endpoint info for edge-to-edge
+        let vlp_endpoint = VlpEndpointInfo {
+            start_alias: "start_node".to_string(),
+            end_alias: "end_node".to_string(),
+            start_table: self.table.clone(),
+            end_table: self.table.clone(),
+            cypher_start_alias: self.pattern_ctx.left_node_alias.clone(),
+            cypher_end_alias: self.pattern_ctx.right_node_alias.clone(),
+            start_id_col: self.from_col.clone(),
+            end_id_col: self.to_col.clone(),
+            path_variable: None,
+        };
+
         Ok(CteGenerationResult {
             sql,
             parameters: collect_parameters_from_filters(filters),
@@ -1826,6 +1928,7 @@ impl EdgeToEdgeCteStrategy {
             recursive: true,
             from_alias: "t".to_string(),
             columns,
+            vlp_endpoint: Some(vlp_endpoint),
         })
     }
 
@@ -2001,11 +2104,21 @@ impl EdgeToEdgeCteStrategy {
     fn build_where_clause(
         &self,
         _context: &CteGenerationContext,
-        _filters: &CategorizedFilters,
+        filters: &CategorizedFilters,
     ) -> Result<String, CteError> {
-        // TODO: Implement filter conversion when RenderExpr to SQL is available
-        // For now, return empty WHERE clause
-        Ok(String::new())
+        // Use pre-rendered SQL if available
+        let alias_mapping = vec![
+            (
+                self.pattern_ctx.left_node_alias.clone(),
+                self.pattern_ctx.left_node_alias.clone(),
+            ),
+            (
+                self.pattern_ctx.right_node_alias.clone(),
+                self.pattern_ctx.right_node_alias.clone(),
+            ),
+        ];
+
+        Ok(build_where_clause_from_filters(filters, &alias_mapping))
     }
 }
 
@@ -2068,6 +2181,19 @@ impl CoupledCteStrategy {
             "id", // Coupled uses generic ID
         );
 
+        // Build VLP endpoint info for coupled same-row
+        let vlp_endpoint = VlpEndpointInfo {
+            start_alias: "start_node".to_string(),
+            end_alias: "end_node".to_string(),
+            start_table: self.table.clone(),
+            end_table: self.table.clone(),
+            cypher_start_alias: self.pattern_ctx.left_node_alias.clone(),
+            cypher_end_alias: self.pattern_ctx.right_node_alias.clone(),
+            start_id_col: self.from_col.clone(),
+            end_id_col: self.to_col.clone(),
+            path_variable: None,
+        };
+
         Ok(CteGenerationResult {
             sql,
             parameters: collect_parameters_from_filters(filters),
@@ -2075,6 +2201,7 @@ impl CoupledCteStrategy {
             recursive: false, // Coupled edges in same row don't need recursion
             from_alias: self.unified_alias.clone(),
             columns,
+            vlp_endpoint: Some(vlp_endpoint),
         })
     }
 
@@ -2135,11 +2262,21 @@ impl CoupledCteStrategy {
     fn build_where_clause(
         &self,
         _context: &CteGenerationContext,
-        _filters: &CategorizedFilters,
+        filters: &CategorizedFilters,
     ) -> Result<String, CteError> {
-        // TODO: Implement filter conversion when RenderExpr to SQL is available
-        // For now, return empty WHERE clause
-        Ok(String::new())
+        // Use pre-rendered SQL if available
+        let alias_mapping = vec![
+            (
+                self.pattern_ctx.left_node_alias.clone(),
+                self.pattern_ctx.left_node_alias.clone(),
+            ),
+            (
+                self.pattern_ctx.right_node_alias.clone(),
+                self.pattern_ctx.right_node_alias.clone(),
+            ),
+        ];
+
+        Ok(build_where_clause_from_filters(filters, &alias_mapping))
     }
 }
 
@@ -2206,6 +2343,9 @@ mod tests {
             end_node_filters: None,
             relationship_filters: None,
             path_function_filters: None,
+            start_sql: None,
+            end_sql: None,
+            relationship_sql: None,
         };
 
         // Generate SQL
@@ -2279,6 +2419,9 @@ mod tests {
             end_node_filters: None,
             relationship_filters: None,
             path_function_filters: None,
+            start_sql: None,
+            end_sql: None,
+            relationship_sql: None,
         };
 
         // Generate SQL
@@ -2390,6 +2533,9 @@ mod tests {
             end_node_filters: None,
             relationship_filters: None,
             path_function_filters: None,
+            start_sql: None,
+            end_sql: None,
+            relationship_sql: None,
         };
 
         // Generate SQL
@@ -2475,6 +2621,9 @@ mod tests {
             end_node_filters: None,
             relationship_filters: None,
             path_function_filters: None,
+            start_sql: None,
+            end_sql: None,
+            relationship_sql: None,
         };
 
         let result = strategy
@@ -2552,6 +2701,9 @@ mod tests {
             end_node_filters: None,
             relationship_filters: None,
             path_function_filters: None,
+            start_sql: None,
+            end_sql: None,
+            relationship_sql: None,
         };
 
         // Generate SQL
@@ -2626,6 +2778,9 @@ mod tests {
             end_node_filters: None,
             relationship_filters: None,
             path_function_filters: None,
+            start_sql: None,
+            end_sql: None,
+            relationship_sql: None,
         };
 
         // Generate SQL

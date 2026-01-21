@@ -6,7 +6,9 @@
 use std::collections::HashMap;
 
 use crate::clickhouse_query_generator::NodeProperty;
+use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::GraphSchema;
+use crate::query_planner::logical_plan::ShortestPathMode;
 use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::query_planner::logical_plan::VariableLengthSpec;
@@ -30,6 +32,16 @@ pub struct CteGenerationContext {
     fixed_length_joins: HashMap<String, (String, String, Vec<super::Join>)>,
     /// Variable length specification for the path pattern
     pub spec: VariableLengthSpec,
+    /// Path variable name (e.g., "p" in MATCH p = (a)-[*]->(b))
+    pub path_variable: Option<String>,
+    /// Shortest path mode for shortestPath() and allShortestPaths()
+    pub shortest_path_mode: Option<ShortestPathMode>,
+    /// Relationship types for the VLP pattern (for polymorphic edges)
+    pub relationship_types: Option<Vec<String>>,
+    /// Edge ID identifier from schema (for RETURN relationships(p))
+    pub edge_id: Option<Identifier>,
+    /// Relationship Cypher alias (e.g., "r" in (a)-[r*]->(b))
+    pub relationship_cypher_alias: Option<String>,
 }
 
 impl Default for CteGenerationContext {
@@ -42,6 +54,11 @@ impl Default for CteGenerationContext {
             schema: None,
             fixed_length_joins: HashMap::new(),
             spec: VariableLengthSpec::default(),
+            path_variable: None,
+            shortest_path_mode: None,
+            relationship_types: None,
+            edge_id: None,
+            relationship_cypher_alias: None,
         }
     }
 }
@@ -60,11 +77,46 @@ impl CteGenerationContext {
             schema: Some(schema),
             fixed_length_joins: HashMap::new(),
             spec: VariableLengthSpec::default(),
+            path_variable: None,
+            shortest_path_mode: None,
+            relationship_types: None,
+            edge_id: None,
+            relationship_cypher_alias: None,
         }
     }
 
     pub(crate) fn with_spec(mut self, spec: VariableLengthSpec) -> Self {
         self.spec = spec;
+        self
+    }
+
+    /// Set path variable name
+    pub(crate) fn with_path_variable(mut self, path_var: Option<String>) -> Self {
+        self.path_variable = path_var;
+        self
+    }
+
+    /// Set shortest path mode
+    pub(crate) fn with_shortest_path_mode(mut self, mode: Option<ShortestPathMode>) -> Self {
+        self.shortest_path_mode = mode;
+        self
+    }
+
+    /// Set relationship types (for polymorphic edges)
+    pub(crate) fn with_relationship_types(mut self, types: Option<Vec<String>>) -> Self {
+        self.relationship_types = types;
+        self
+    }
+
+    /// Set edge ID from schema
+    pub(crate) fn with_edge_id(mut self, edge_id: Option<Identifier>) -> Self {
+        self.edge_id = edge_id;
+        self
+    }
+
+    /// Set relationship Cypher alias
+    pub(crate) fn with_relationship_cypher_alias(mut self, alias: Option<String>) -> Self {
+        self.relationship_cypher_alias = alias;
         self
     }
 
