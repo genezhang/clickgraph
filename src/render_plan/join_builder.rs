@@ -306,6 +306,16 @@ impl JoinBuilder for LogicalPlan {
                     }
                 }
 
+                // 🔧 FIX: If graph_joins.joins is empty but input has CartesianProduct,
+                // delegate to input.extract_joins() to get the CROSS JOIN
+                // This handles patterns like: MATCH (a:User) MATCH (b:User)
+                if graph_joins.joins.is_empty() {
+                    log::info!(
+                        "🔧 GraphJoins has 0 joins - delegating to input.extract_joins()"
+                    );
+                    return <LogicalPlan as JoinBuilder>::extract_joins(&graph_joins.input, schema);
+                }
+
                 // FIX: Use ViewScan source_table instead of deprecated joins field table_name
                 // The deprecated joins field has incorrect table names for polymorphic relationships
                 // Extract alias → parameterized table reference mapping from GraphRel/GraphNode nodes
@@ -318,13 +328,41 @@ impl JoinBuilder for LogicalPlan {
                 // Edge constraints reference both from/to nodes, so must be applied after both are joined
                 let mut edge_constraints: Vec<(String, RenderExpr)> = Vec::new();
 
+                // 🔧 FIX: When anchor_table is None, from_builder will use the first join as FROM.
+                // We need to skip that join here to avoid duplicate aliases.
+                let first_join_alias_to_skip: Option<String> = if graph_joins.anchor_table.is_none() 
+                    && graph_joins.cte_references.is_empty() 
+                {
+                    graph_joins.joins.first()
+                        .filter(|j| !j.joining_on.is_empty())  // Only non-FROM-marker joins
+                        .map(|j| j.table_alias.clone())
+                } else {
+                    None
+                };
+                
+                if let Some(ref skip_alias) = first_join_alias_to_skip {
+                    log::info!("🔧 Will skip first join '{}' as it will be used as FROM (anchor_table is None)", skip_alias);
+                }
+
                 // Convert joins, SKIPPING FROM markers (joins with empty joining_on)
                 // FROM markers are used by extract_from(), not extract_joins()
                 let mut joins: Vec<Join> = Vec::new();
+                let mut skipped_first = false;
                 for logical_join in &graph_joins.joins {
                     // SKIP FROM markers - they have empty joining_on
                     if logical_join.joining_on.is_empty() {
                         continue;
+                    }
+
+                    // 🔧 FIX: Skip the first join that will be used as FROM when anchor_table is None
+                    if !skipped_first {
+                        if let Some(ref skip_alias) = first_join_alias_to_skip {
+                            if &logical_join.table_alias == skip_alias {
+                                log::info!("🔧 Skipping join '{}' as FROM source", skip_alias);
+                                skipped_first = true;
+                                continue;
+                            }
+                        }
                     }
 
                     let mut render_join: Join = logical_join.clone().try_into()?;
@@ -459,6 +497,44 @@ impl JoinBuilder for LogicalPlan {
                             Some(constraint)
                         };
                         log::debug!("Applied edge constraint to node JOIN: {}", to_alias);
+                    }
+                }
+
+                // 🔧 FIX: Also extract joins from input plan (for CartesianProduct with non-GraphRel right side)
+                // The GraphJoins' joins array only covers the OPTIONAL MATCH joins, but if there's a
+                // CartesianProduct in the input with additional nodes (from required MATCH), we need those too.
+                // Collect the aliases we already have to avoid duplicates.
+                // Include: processed joins, FROM markers (skipped), anchor_table, and first_join if used as FROM
+                let mut existing_aliases: std::collections::HashSet<String> = 
+                    joins.iter().map(|j| j.table_alias.clone()).collect();
+                
+                // Also add FROM marker aliases (joins with empty joining_on that were skipped)
+                for logical_join in &graph_joins.joins {
+                    if logical_join.joining_on.is_empty() {
+                        existing_aliases.insert(logical_join.table_alias.clone());
+                    }
+                }
+                
+                // Also add anchor_table if set
+                if let Some(ref anchor) = graph_joins.anchor_table {
+                    existing_aliases.insert(anchor.clone());
+                }
+                
+                // Also add first_join_alias_to_skip if set
+                if let Some(ref skip_alias) = first_join_alias_to_skip {
+                    existing_aliases.insert(skip_alias.clone());
+                }
+                
+                log::debug!("🔍 existing_aliases before input extraction: {:?}", existing_aliases);
+                
+                let input_joins = <LogicalPlan as JoinBuilder>::extract_joins(&graph_joins.input, schema)?;
+                for input_join in input_joins {
+                    if !existing_aliases.contains(&input_join.table_alias) {
+                        log::info!(
+                            "🔧 Adding missing JOIN from input: {} (alias={})",
+                            input_join.table_name, input_join.table_alias
+                        );
+                        joins.push(input_join);
                     }
                 }
 
@@ -1802,12 +1878,6 @@ impl JoinBuilder for LogicalPlan {
                     // Non-GraphRel right side (e.g., simple node patterns)
                     // Get the right side's FROM table to create a JOIN
                     if let Some(right_from) = cp.right.as_ref().extract_from()? {
-                        let join_type = if cp.is_optional {
-                            JoinType::Left
-                        } else {
-                            JoinType::Inner
-                        };
-
                         if let Some(right_table) = right_from.table {
                             // Convert join_condition to OperatorApplication for the ON clause
                             let joining_on = if let Some(ref join_cond) = cp.join_condition {
@@ -1828,6 +1898,18 @@ impl JoinBuilder for LogicalPlan {
                                 }
                             } else {
                                 vec![] // No join condition - pure CROSS JOIN semantics
+                            };
+
+                            // Determine join type:
+                            // - OPTIONAL: LEFT JOIN
+                            // - With join condition: INNER JOIN (has ON clause)
+                            // - No join condition: JoinType::Join renders as CROSS JOIN
+                            let join_type = if cp.is_optional {
+                                JoinType::Left
+                            } else if joining_on.is_empty() {
+                                JoinType::Join  // Renders as CROSS JOIN when joining_on is empty
+                            } else {
+                                JoinType::Inner
                             };
 
                             crate::debug_print!("CartesianProduct extract_joins: table={}, alias={}, joining_on={:?}",

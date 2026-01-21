@@ -1,7 +1,8 @@
 use ast::{
     CallClause, CreateClause, CypherStatement, DeleteClause, LimitClause, MatchClause,
-    OpenCypherQueryAst, OptionalMatchClause, OrderByClause, RemoveClause, ReturnClause, SetClause,
-    SkipClause, UnionClause, UnionType, UnwindClause, UseClause, WhereClause, WithClause,
+    OpenCypherQueryAst, OptionalMatchClause, OrderByClause, ReadingClause, RemoveClause,
+    ReturnClause, SetClause, SkipClause, UnionClause, UnionType, UnwindClause, UseClause,
+    WhereClause, WithClause,
 };
 pub use common::strip_comments;
 use common::ws;
@@ -97,6 +98,26 @@ pub fn parse_statement(
     Ok((input, query))
 }
 
+/// Parse either a MATCH or OPTIONAL MATCH clause
+fn parse_reading_clause(input: &str) -> IResult<&str, ReadingClause, OpenCypherParsingError> {
+    // Try OPTIONAL MATCH first (since it starts with a longer keyword)
+    if let Ok((remaining, optional_match)) =
+        optional_match_clause::parse_optional_match_clause(input)
+    {
+        return Ok((remaining, ReadingClause::OptionalMatch(optional_match)));
+    }
+
+    // Try regular MATCH
+    if let Ok((remaining, match_clause)) = match_clause::parse_match_clause(input) {
+        return Ok((remaining, ReadingClause::Match(match_clause)));
+    }
+
+    // Neither worked - return an error that doesn't match
+    Err(nom::Err::Error(OpenCypherParsingError {
+        errors: vec![(input, "Expected MATCH or OPTIONAL MATCH clause")],
+    }))
+}
+
 pub fn parse_query_with_nom(
     input: &'_ str,
 ) -> IResult<&'_ str, OpenCypherQueryAst<'_>, OpenCypherParsingError<'_>> {
@@ -106,18 +127,25 @@ pub fn parse_query_with_nom(
     let (input, use_clause): (&str, Option<UseClause>) =
         opt(use_clause::parse_use_clause).parse(input)?;
 
-    // Parse zero or more MATCH clauses (supports: MATCH ... MATCH ... MATCH ...)
-    let (input, match_clauses): (&str, Vec<MatchClause>) =
-        many0(match_clause::parse_match_clause).parse(input)?;
+    // Parse reading clauses (MATCH and OPTIONAL MATCH can appear in any order)
+    let (input, reading_clauses): (&str, Vec<ReadingClause>) =
+        many0(parse_reading_clause).parse(input)?;
 
-    // Parse WHERE clause (can come before OPTIONAL MATCH in queries like:
-    // MATCH (a) WHERE a.name='Alice' OPTIONAL MATCH (a)-[:FOLLOWS]->(b))
+    // Separate into match_clauses and optional_match_clauses for backward compatibility
+    let mut match_clauses: Vec<MatchClause> = Vec::new();
+    let mut optional_match_clauses: Vec<OptionalMatchClause> = Vec::new();
+
+    for clause in &reading_clauses {
+        match clause {
+            ReadingClause::Match(m) => match_clauses.push(m.clone()),
+            ReadingClause::OptionalMatch(o) => optional_match_clauses.push(o.clone()),
+        }
+    }
+
+    // Parse WHERE clause that comes after all MATCH clauses
+    // (Note: Per-MATCH WHERE clauses are handled within each MatchClause)
     let (input, where_clause): (&str, Option<WhereClause>) =
         opt(where_clause::parse_where_clause).parse(input)?;
-
-    // Parse zero or more OPTIONAL MATCH clauses (must come after WHERE if present)
-    let (input, optional_match_clauses): (&str, Vec<OptionalMatchClause>) =
-        many0(optional_match_clause::parse_optional_match_clause).parse(input)?;
 
     let (input, call_clause): (&str, Option<CallClause>) =
         opt(call_clause::parse_call_clause).parse(input)?;
@@ -166,6 +194,7 @@ pub fn parse_query_with_nom(
         use_clause,
         match_clauses,
         optional_match_clauses,
+        reading_clauses,
         call_clause,
         unwind_clauses,
         with_clause,

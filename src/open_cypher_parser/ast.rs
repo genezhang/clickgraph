@@ -27,11 +27,22 @@ pub struct UnionClause<'a> {
     pub query: OpenCypherQueryAst<'a>,
 }
 
+/// Enum representing a reading clause - either MATCH or OPTIONAL MATCH
+/// This allows interleaved MATCH and OPTIONAL MATCH clauses in any order
+#[derive(Debug, PartialEq, Clone)]
+pub enum ReadingClause<'a> {
+    Match(MatchClause<'a>),
+    OptionalMatch(OptionalMatchClause<'a>),
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct OpenCypherQueryAst<'a> {
     pub use_clause: Option<UseClause<'a>>,
     pub match_clauses: Vec<MatchClause<'a>>, // Support multiple MATCH clauses in sequence
     pub optional_match_clauses: Vec<OptionalMatchClause<'a>>,
+    /// Unified reading clauses that preserve the order of MATCH and OPTIONAL MATCH
+    /// When populated, this takes precedence over match_clauses and optional_match_clauses
+    pub reading_clauses: Vec<ReadingClause<'a>>,
     pub call_clause: Option<CallClause<'a>>,
     pub unwind_clauses: Vec<UnwindClause<'a>>, // Support multiple UNWIND clauses for cartesian product
     pub with_clause: Option<WithClause<'a>>,
