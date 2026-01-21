@@ -260,6 +260,24 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                 log::info!("🔧   GROUP BY rewritten from: {} → {}", before, after);
             }
         }
+
+        // 🔧 BUG FIX: Also rewrite ORDER BY expressions for VLP queries
+        // The ORDER BY clause may contain Cypher aliases (e.g., b.name)
+        // that need to be rewritten to use VLP CTE columns (e.g., t.end_name)
+        log::info!(
+            "🔧 VLP ORDER BY rewriting: {} items",
+            plan.order_by.0.len()
+        );
+        for (idx, order_item) in plan.order_by.0.iter_mut().enumerate() {
+            log::info!("🔧 ORDER BY {}: {:?}", idx, order_item.expression);
+            let before = format!("{:?}", order_item.expression);
+            order_item.expression =
+                rewrite_expr_for_vlp(&order_item.expression, &start_alias, &end_alias, &path_variable);
+            let after = format!("{:?}", order_item.expression);
+            if before != after {
+                log::info!("🔧   ORDER BY rewritten from: {} → {}", before, after);
+            }
+        }
     }
 
     plan
