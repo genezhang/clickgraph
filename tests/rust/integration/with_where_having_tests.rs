@@ -60,7 +60,7 @@ fn test_with_aggregation_where_generates_having() {
     let ast = parse_query(cypher).expect("Failed to parse Cypher query");
 
     // Build logical plan
-    let logical_plan =
+    let (logical_plan, _plan_ctx) =
         evaluate_read_query(ast, &schema, None, None).expect("Failed to build logical plan");
 
     // Render to SQL
@@ -117,7 +117,7 @@ fn test_with_where_without_aggregation() {
     let ast = parse_query(cypher).expect("Failed to parse Cypher query");
 
     // Build logical plan
-    let logical_plan =
+    let (logical_plan, _plan_ctx) =
         evaluate_read_query(ast, &schema, None, None).expect("Failed to build logical plan");
 
     // Render to SQL
@@ -166,7 +166,7 @@ fn test_with_aggregation_multiple_conditions() {
     let ast = parse_query(cypher).expect("Failed to parse Cypher query");
 
     // Build logical plan
-    let logical_plan =
+    let (logical_plan, _plan_ctx) =
         evaluate_read_query(ast, &schema, None, None).expect("Failed to build logical plan");
 
     // Render to SQL

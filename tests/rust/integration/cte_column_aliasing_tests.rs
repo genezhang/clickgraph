@@ -107,7 +107,7 @@ fn test_cte_column_aliasing_underscore_convention() {
     let ast = parse_query(cypher).expect("Failed to parse Cypher query");
 
     // Build logical plan
-    let logical_plan =
+    let (logical_plan, _plan_ctx) =
         evaluate_read_query(ast, &schema, None, None).expect("Failed to build logical plan");
 
     // Render to SQL
@@ -187,7 +187,7 @@ fn test_cte_wildcard_expansion_underscore_convention() {
     let ast = parse_query(cypher).expect("Failed to parse Cypher query");
 
     // Build logical plan
-    let logical_plan =
+    let (logical_plan, _plan_ctx) =
         evaluate_read_query(ast, &schema, None, None).expect("Failed to build logical plan");
 
     // Render to SQL
