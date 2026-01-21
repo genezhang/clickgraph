@@ -1172,6 +1172,39 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 Ok(left_render)
             }
+            LogicalPlan::Union(union) => {
+                // Union - convert each branch to RenderPlan and combine with UNION ALL
+                if union.inputs.is_empty() {
+                    return Err(RenderBuildError::InvalidRenderPlan(
+                        "Union has no inputs".to_string(),
+                    ));
+                }
+
+                // Convert first branch to get the base plan
+                let first_input = &union.inputs[0];
+                let mut base_plan = first_input.to_render_plan(schema)?;
+
+                // If there's only one branch, just return it
+                if union.inputs.len() == 1 {
+                    return Ok(base_plan);
+                }
+
+                // Convert remaining branches
+                let mut union_branches = Vec::new();
+                for input in union.inputs.iter().skip(1) {
+                    let branch_plan = input.to_render_plan(schema)?;
+                    union_branches.push(branch_plan);
+                }
+
+                // Store union branches in the base plan
+                // UnionType::All corresponds to UNION ALL
+                base_plan.union = UnionItems(Some(super::Union {
+                    input: union_branches,
+                    union_type: super::UnionType::All,
+                }));
+
+                Ok(base_plan)
+            }
             _ => todo!(
                 "Render plan conversion not implemented for LogicalPlan variant: {:?}",
                 std::mem::discriminant(self)
