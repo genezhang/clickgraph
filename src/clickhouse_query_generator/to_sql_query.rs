@@ -618,7 +618,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
                     sql.push_str(union_type_str);
                     let branch_sql = {
                         let mut bsql = String::new();
-                        bsql.push_str(&plan.select.to_sql());
+                        bsql.push_str(&union_branch.select.to_sql());
                         bsql.push_str(&union_branch.from.to_sql());
                         bsql.push_str(&union_branch.joins.to_sql());
                         bsql.push_str(&union_branch.filters.to_sql());

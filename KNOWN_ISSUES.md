@@ -8,7 +8,7 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ---
 
-## Current Bugs
+## Recently Fixed Bugs
 
 ### 1. MULTI_TABLE_LABEL Standalone Node Aggregations - FIXED ✅
 **Status**: ✅ FIXED (January 22, 2026)  

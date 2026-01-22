@@ -1106,7 +1106,6 @@ impl GraphSchema {
         self.relationships.get(rel_label)
     }
 
-    /// Get denormalized node metadata for a given node label
     /// Get all node schemas with a specific label from all tables
     /// Returns a vector of (table_name, NodeSchema) pairs
     /// Used for MULTI_TABLE_LABEL scenarios where same label exists in multiple tables
