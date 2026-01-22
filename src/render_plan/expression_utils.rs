@@ -3,9 +3,83 @@
 //! This module provides common utilities for working with RenderExpr trees, including
 //! a visitor trait for implementing expression transformations.
 
+use std::collections::{HashMap, HashSet};
 use super::render_expr::{Literal, Operator, PropertyAccess, RenderExpr, TableAlias};
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::join_context::{VLP_CTE_FROM_ALIAS, VLP_START_ID_COLUMN, VLP_END_ID_COLUMN};
+
+// ============================================================================
+// CTE Rewriting Context Structures
+// ============================================================================
+
+/// Context for rewriting expressions to use CTE aliases and column names
+///
+/// Consolidates related parameters for CTE expression rewriting, reducing function
+/// parameter counts and improving maintainability.
+///
+/// Used for two scenarios:
+/// 1. **WITH clause CTEs**: Contains with_aliases and reverse_mapping for property renaming
+/// 2. **Complex CTE references**: Contains cte_references and cte_schemas for JOIN handling
+#[derive(Clone, Debug)]
+pub struct CTERewriteContext {
+    /// The CTE name to use in the rewritten expression
+    pub cte_name: String,
+    
+    /// The FROM alias to use when rewriting property accesses
+    pub from_alias: String,
+    
+    /// Aliases from WITH clause variables (e.g., "a", "b")
+    pub with_aliases: HashSet<String>,
+    
+    /// Mapping of (with_alias, column_name) → cte_column_name
+    /// Used to rename properties from WITH aliases to CTE column names
+    pub reverse_mapping: HashMap<(String, String), String>,
+    
+    /// CTE name references: maps table alias to CTE name
+    pub cte_references: HashMap<String, String>,
+    
+    /// CTE schema information: maps CTE name to (select_items, column_names, alias_mapping, reverse_mapping)
+    /// Used for complex JOIN condition extraction
+    ///
+    /// We use Box to avoid circular type dependencies since SelectItem contains complex types
+    pub cte_schemas: HashMap<String, String>,  // Simplified: just store the CTE name mapping
+}
+
+impl CTERewriteContext {
+    /// Create context for WITH clause CTE rewriting (simple case)
+    pub fn for_with_cte(
+        cte_name: String,
+        from_alias: String,
+        with_aliases: HashSet<String>,
+        reverse_mapping: HashMap<(String, String), String>,
+    ) -> Self {
+        Self {
+            cte_name,
+            from_alias,
+            with_aliases,
+            reverse_mapping,
+            cte_references: HashMap::new(),
+            cte_schemas: HashMap::new(),
+        }
+    }
+
+    /// Create context for complex CTE JOIN rewriting (complex case)
+    pub fn for_complex_cte(
+        cte_name: String,
+        from_alias: String,
+        cte_references: HashMap<String, String>,
+        _cte_schemas: HashMap<String, String>,  // Accept but don't store (not needed for basic rewriting)
+    ) -> Self {
+        Self {
+            cte_name,
+            from_alias,
+            with_aliases: HashSet::new(),
+            reverse_mapping: HashMap::new(),
+            cte_references,
+            cte_schemas: HashMap::new(),
+        }
+    }
+}
 
 /// Trait for visiting/transforming RenderExpr trees
 /// Implements visitor pattern to avoid duplicating recursive traversal logic across multiple functions
