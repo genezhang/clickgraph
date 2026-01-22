@@ -220,6 +220,8 @@ RETURN u.name, distant.name, LENGTH(path) as distance
 
 → Find friends within 3 hops, return NULL if no path exists
 
+**Note**: As of January 2026, OPTIONAL MATCH with variable-length paths correctly handles cases where no path exists, returning the anchor node with NULL values for path-related columns.
+
 ## Implementation Details
 
 ### How It Works

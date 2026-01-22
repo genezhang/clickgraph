@@ -1979,6 +1979,7 @@ impl GraphJoinInference {
                                 pre_filter: None,
                                 from_id_column: None,
                                 to_id_column: None,
+                                graph_rel: None,
                             };
                             // Insert at the beginning so it becomes the anchor
                             collected_graph_joins.insert(0, from_marker);
@@ -2123,6 +2124,7 @@ impl GraphJoinInference {
                                             pre_filter: None,
                                             from_id_column: None,
                                             to_id_column: None,
+                                            graph_rel: None,
                                         };
 
                                         log::info!("📦 Generated JOIN for shared node '{}': {} JOIN {} ON {}.{} = {}.{}",
@@ -2176,6 +2178,7 @@ impl GraphJoinInference {
                                     pre_filter: None,
                                     from_id_column: None,
                                     to_id_column: None,
+                                    graph_rel: None,
                                 };
                                 Self::push_join_if_not_duplicate(
                                     collected_graph_joins,
@@ -2229,6 +2232,7 @@ impl GraphJoinInference {
                                             pre_filter: None,
                                             from_id_column: None,
                                             to_id_column: None,
+                                            graph_rel: None,
                                         };
                                         Self::push_join_if_not_duplicate(
                                             collected_graph_joins,
@@ -3129,6 +3133,7 @@ impl GraphJoinInference {
                     pre_filter: None,
                     from_id_column: None,
                     to_id_column: None,
+                    graph_rel: None,
                 };
                 Self::push_join_if_not_duplicate(collected_graph_joins, from_marker);
                 crate::debug_print!(
@@ -3219,7 +3224,8 @@ impl GraphJoinInference {
                     if is_first_relationship {
                         crate::debug_print!(
                             "       LEFT '{}' is anchor - will be entry point (optional={})",
-                            left_alias, left_is_optional
+                            left_alias,
+                            left_is_optional
                         );
                         log::debug!("  🎯 LEFT '{}' marked as entry point (is_first_relationship={}, left_is_optional={})", left_alias, is_first_relationship, left_is_optional);
 
@@ -3241,6 +3247,7 @@ impl GraphJoinInference {
                             pre_filter: None,
                             from_id_column: None,
                             to_id_column: None,
+                            graph_rel: None,
                         };
                         Self::push_join_if_not_duplicate(collected_graph_joins, from_marker);
                         crate::debug_print!(
@@ -3291,8 +3298,9 @@ impl GraphJoinInference {
                             }],
                             join_type: Self::determine_join_type(left_is_optional),
                             pre_filter: None,
-                from_id_column: None,
-                to_id_column: None,
+                            from_id_column: None,
+                            to_id_column: None,
+                            graph_rel: None,
                         };
                         Self::push_join_if_not_duplicate(collected_graph_joins, left_join);
                         join_ctx.insert(left_alias.to_string());
@@ -3338,6 +3346,7 @@ impl GraphJoinInference {
                         pre_filter: pre_filter.clone(),
                         from_id_column: Some(rel_schema.from_id.clone()),
                         to_id_column: Some(rel_schema.to_id.clone()),
+                        graph_rel: None,
                     };
                     Self::push_join_if_not_duplicate(collected_graph_joins, rel_join);
                     join_ctx.insert(rel_alias.to_string());
@@ -3381,8 +3390,9 @@ impl GraphJoinInference {
                             }],
                             join_type: Self::determine_join_type(right_is_optional),
                             pre_filter: None,
-                from_id_column: None,
-                to_id_column: None,
+                            from_id_column: None,
+                            to_id_column: None,
+                            graph_rel: None,
                         };
 
                         log::debug!(
@@ -3464,6 +3474,7 @@ impl GraphJoinInference {
                         pre_filter: pre_filter.clone(),
                         from_id_column: None,
                         to_id_column: None,
+                        graph_rel: None,
                     };
                     Self::push_join_if_not_duplicate(collected_graph_joins, rel_join);
                     join_ctx.insert(rel_alias.to_string());
@@ -3501,8 +3512,9 @@ impl GraphJoinInference {
                             }],
                             join_type: Self::determine_join_type(left_is_optional),
                             pre_filter: None,
-                from_id_column: None,
-                to_id_column: None,
+                            from_id_column: None,
+                            to_id_column: None,
+                            graph_rel: None,
                         };
 
                         log::debug!(
@@ -3684,8 +3696,9 @@ impl GraphJoinInference {
                         }],
                         join_type: Self::determine_join_type(join_node_optional),
                         pre_filter: None,
-                from_id_column: None,
-                to_id_column: None,
+                        from_id_column: None,
+                        to_id_column: None,
+                        graph_rel: None,
                     };
                     Self::push_join_if_not_duplicate(collected_graph_joins, node_join);
                     join_ctx.insert(join_node_alias.to_string());
@@ -3732,6 +3745,7 @@ impl GraphJoinInference {
                     pre_filter,
                     from_id_column: Some(rel_schema.from_id.clone()),
                     to_id_column: Some(rel_schema.to_id.clone()),
+                    graph_rel: None,
                 };
                 Self::push_join_if_not_duplicate(collected_graph_joins, rel_join);
                 join_ctx.insert(rel_alias.to_string());
@@ -3818,6 +3832,7 @@ impl GraphJoinInference {
                     pre_filter,
                     from_id_column: None,
                     to_id_column: None,
+                    graph_rel: None,
                 };
                 Self::push_join_if_not_duplicate(collected_graph_joins, edge_join);
 
@@ -3993,6 +4008,7 @@ impl GraphJoinInference {
                                 pre_filter: pre_filter.clone(),
                                 from_id_column: Some(from_id.clone()),
                                 to_id_column: Some(to_id.clone()),
+                                graph_rel: None,
                             };
                             Self::push_join_if_not_duplicate(collected_graph_joins, right_join);
                             join_ctx.insert(right_alias.to_string());
@@ -4026,6 +4042,7 @@ impl GraphJoinInference {
                                 pre_filter: None,
                                 from_id_column: Some(from_id.clone()),
                                 to_id_column: Some(to_id.clone()),
+                                graph_rel: None,
                             };
                             Self::push_join_if_not_duplicate(collected_graph_joins, left_join);
                             join_ctx.insert(left_alias.to_string());
@@ -4102,6 +4119,7 @@ impl GraphJoinInference {
                                 pre_filter: pre_filter.clone(),
                                 from_id_column: Some(from_id.clone()),
                                 to_id_column: Some(to_id.clone()),
+                                graph_rel: None,
                             };
                             Self::push_join_if_not_duplicate(collected_graph_joins, left_join);
                             join_ctx.insert(left_alias.to_string());
@@ -4135,6 +4153,7 @@ impl GraphJoinInference {
                                 pre_filter: None,
                                 from_id_column: Some(from_id.clone()),
                                 to_id_column: Some(to_id.clone()),
+                                graph_rel: None,
                             };
                             Self::push_join_if_not_duplicate(collected_graph_joins, right_join);
                             join_ctx.insert(right_alias.to_string());
@@ -4469,6 +4488,77 @@ impl GraphJoinInference {
 
         crate::debug_print!("    🔬 Using PatternSchemaContext: {}", ctx.debug_summary());
 
+        // SPECIAL HANDLING: Optional Variable-Length Paths
+        // For optional VLP, we need to create GraphJoins manually since the normal
+        // join inference logic doesn't handle VLP CTEs as JOINs.
+        if graph_rel.variable_length.is_some() && rel_is_optional {
+            crate::debug_print!(
+                "    🎯 OPTIONAL VLP: Creating GraphJoins for LEFT JOIN to VLP CTE"
+            );
+
+            // 1. Create FROM marker for anchor node (left node)
+            let anchor_join = Join {
+                table_name: left_node_schema.full_table_name(),
+                table_alias: left_alias.clone(),
+                joining_on: vec![], // Empty = FROM marker
+                join_type: JoinType::Inner,
+                pre_filter: None,
+                from_id_column: None,
+                to_id_column: None,
+                graph_rel: None,
+            };
+            collected_graph_joins.push(anchor_join);
+
+            // 2. Create LEFT JOIN to VLP CTE
+            let cte_name = format!("vlp_{}_{}", left_alias, right_alias);
+            let vlp_join = Join {
+                table_name: cte_name.clone(),
+                table_alias: "t".to_string(), // VLP_CTE_FROM_ALIAS
+                joining_on: vec![OperatorApplication {
+                    operator: Operator::Equal,
+                    operands: vec![
+                        LogicalExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(left_alias.clone()),
+                            column: PropertyValue::Column(
+                                left_node_schema
+                                    .node_id
+                                    .columns()
+                                    .first()
+                                    .unwrap()
+                                    .to_string(),
+                            ),
+                        }),
+                        LogicalExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias("t".to_string()),
+                            column: PropertyValue::Column("start_id".to_string()),
+                        }),
+                    ],
+                }],
+                join_type: JoinType::Left,
+                pre_filter: None,
+                from_id_column: Some(
+                    left_node_schema
+                        .node_id
+                        .columns()
+                        .first()
+                        .unwrap()
+                        .to_string(),
+                ),
+                to_id_column: Some("start_id".to_string()),
+                graph_rel: Some(Arc::new(graph_rel.clone())),
+            };
+            collected_graph_joins.push(vlp_join);
+
+            crate::debug_print!(
+                "    ✅ Created OPTIONAL VLP joins: FROM {} LEFT JOIN {} AS t",
+                left_alias,
+                cte_name
+            );
+            crate::debug_print!("    +- infer_graph_join EXIT\n");
+
+            return Ok(());
+        }
+
         let result = self.handle_graph_pattern_v2(
             &ctx,
             &left_alias,
@@ -4508,8 +4598,8 @@ impl GraphJoinInference {
 
     /// Check if this pattern should skip JOIN inference due to variable-length path.
     ///
-    /// Returns `Some(true)` if pattern should be skipped (VLP/shortest path that needs CTE).
-    /// Returns `Some(false)` if pattern should continue (fixed-length like *1, *2, *3).
+    /// Returns `Some(true)` if pattern should be skipped (required VLP/shortest path that needs CTE).
+    /// Returns `Some(false)` if pattern should continue (fixed-length like *1, *2, *3, or optional VLP).
     /// Returns `None` if not a VLP pattern at all.
     fn should_skip_for_vlp(
         &self,
@@ -4521,43 +4611,84 @@ impl GraphJoinInference {
         let is_fixed_length =
             spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none();
 
+        let is_optional = graph_rel.is_optional.unwrap_or(false);
+
         if !is_fixed_length {
-            // Truly variable-length (*1..3, *, etc.) - skip, will use CTE path
-            crate::debug_print!(
-                "    🔍 SKIP: Variable-length path detected (not fixed-length) for rel={}, left={}, right={}",
-                graph_rel.alias, graph_rel.left_connection, graph_rel.right_connection
-            );
+            if is_optional {
+                // Optional variable-length (*1..3, *, etc.) - DON'T skip, create GraphJoins for LEFT JOIN
+                crate::debug_print!(
+                    "    🎯 OPTIONAL VLP: Not skipping, will create GraphJoins for LEFT JOIN for rel={}, left={}, right={}",
+                    graph_rel.alias, graph_rel.left_connection, graph_rel.right_connection
+                );
 
-            let left_alias = graph_rel.left_connection.to_string();
-            let right_alias = graph_rel.right_connection.to_string();
-            let rel_alias = graph_rel.alias.to_string();
+                let left_alias = graph_rel.left_connection.to_string();
+                let right_alias = graph_rel.right_connection.to_string();
+                let rel_alias = graph_rel.alias.to_string();
 
-            // Mark VLP endpoints with proper CTE access information
-            // This is the key fix: subsequent JOINs will now use t.start_id/t.end_id
-            join_ctx.mark_vlp_endpoint(
-                left_alias.clone(),
-                VlpEndpointInfo {
-                    position: VlpPosition::Start,
-                    other_endpoint_alias: right_alias.clone(),
-                    rel_alias: rel_alias.clone(),
-                },
-            );
-            join_ctx.mark_vlp_endpoint(
-                right_alias.clone(),
-                VlpEndpointInfo {
-                    position: VlpPosition::End,
-                    other_endpoint_alias: left_alias.clone(),
-                    rel_alias: rel_alias.clone(),
-                },
-            );
+                // Mark VLP endpoints with proper CTE access information
+                // This is needed for property resolution and subsequent JOINs
+                join_ctx.mark_vlp_endpoint(
+                    left_alias.clone(),
+                    VlpEndpointInfo {
+                        position: VlpPosition::Start,
+                        other_endpoint_alias: right_alias.clone(),
+                        rel_alias: rel_alias.clone(),
+                    },
+                );
+                join_ctx.mark_vlp_endpoint(
+                    right_alias.clone(),
+                    VlpEndpointInfo {
+                        position: VlpPosition::End,
+                        other_endpoint_alias: left_alias.clone(),
+                        rel_alias: rel_alias.clone(),
+                    },
+                );
 
-            log::debug!(
-                "  🎯 VLP: Marked endpoints '{}' (start) and '{}' (end) for rel '{}' - subsequent JOINs will use CTE refs",
-                left_alias, right_alias, rel_alias
-            );
-            log::debug!("  📊 JoinContext: {}", join_ctx.debug_summary());
+                log::debug!(
+                    "  🎯 OPTIONAL VLP: Marked endpoints '{}' (start) and '{}' (end) for rel '{}' - will create GraphJoins",
+                    left_alias, right_alias, rel_alias
+                );
+                log::debug!("  📊 JoinContext: {}", join_ctx.debug_summary());
 
-            Some(true) // Skip this pattern
+                Some(false) // Don't skip - create GraphJoins for optional VLP
+            } else {
+                // Required variable-length (*1..3, *, etc.) - skip, will use CTE path
+                crate::debug_print!(
+                    "    🔍 SKIP: Required variable-length path detected (not fixed-length) for rel={}, left={}, right={}",
+                    graph_rel.alias, graph_rel.left_connection, graph_rel.right_connection
+                );
+
+                let left_alias = graph_rel.left_connection.to_string();
+                let right_alias = graph_rel.right_connection.to_string();
+                let rel_alias = graph_rel.alias.to_string();
+
+                // Mark VLP endpoints with proper CTE access information
+                // This is the key fix: subsequent JOINs will now use t.start_id/t.end_id
+                join_ctx.mark_vlp_endpoint(
+                    left_alias.clone(),
+                    VlpEndpointInfo {
+                        position: VlpPosition::Start,
+                        other_endpoint_alias: right_alias.clone(),
+                        rel_alias: rel_alias.clone(),
+                    },
+                );
+                join_ctx.mark_vlp_endpoint(
+                    right_alias.clone(),
+                    VlpEndpointInfo {
+                        position: VlpPosition::End,
+                        other_endpoint_alias: left_alias.clone(),
+                        rel_alias: rel_alias.clone(),
+                    },
+                );
+
+                log::debug!(
+                    "  🎯 VLP: Marked endpoints '{}' (start) and '{}' (end) for rel '{}' - subsequent JOINs will use CTE refs",
+                    left_alias, right_alias, rel_alias
+                );
+                log::debug!("  📊 JoinContext: {}", join_ctx.debug_summary());
+
+                Some(true) // Skip this pattern
+            }
         } else {
             // Fixed-length (*1, *2, *3) - continue to generate JOINs
             crate::debug_print!(
@@ -5010,6 +5141,7 @@ impl GraphJoinInference {
             pre_filter: None,
             from_id_column: None,
             to_id_column: None,
+            graph_rel: None,
         };
 
         log::debug!(
@@ -5448,6 +5580,7 @@ impl GraphJoinInference {
             pre_filter: None,           // No pre-filter for cross-branch JOINs
             from_id_column: None,
             to_id_column: None,
+            graph_rel: None,
         };
 
         Self::push_join_if_not_duplicate(collected_graph_joins, join);

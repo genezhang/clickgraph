@@ -139,6 +139,7 @@ pub fn generate_vlp_cte_via_manager(
     relationship_cypher_alias: Option<String>,
     start_label: Option<String>,
     end_label: Option<String>,
+    is_optional: Option<bool>,
 ) -> Result<Cte, RenderBuildError> {
     use std::sync::Arc;
 
@@ -158,7 +159,8 @@ pub fn generate_vlp_cte_via_manager(
         .with_relationship_types(relationship_types.clone())
         .with_edge_id(edge_id)
         .with_relationship_cypher_alias(relationship_cypher_alias)
-        .with_node_labels(start_label.clone(), end_label.clone());
+        .with_node_labels(start_label.clone(), end_label.clone())
+        .with_is_optional(is_optional.unwrap_or(false));
 
     // Convert filters to CategorizedFilters format
     let filters = super::filter_pipeline::CategorizedFilters {
@@ -2107,6 +2109,13 @@ pub fn extract_ctes_with_context(
 
                     log::info!("  Final start_filters_sql: {:?}", start_filters_sql);
                     log::info!("  Final end_filters_sql: {:?}", end_filters_sql);
+
+                    // For optional VLP, don't include start node filters in CTE
+                    // The filters should remain on the base table in the final query
+                    if graph_rel.is_optional.unwrap_or(false) {
+                        log::info!("🔧 Optional VLP: Removing start_filters_sql from CTE (will be applied to final FROM)");
+                        start_filters_sql = None;
+                    }
                 }
 
                 // Extract properties from filter expressions for shortest path queries
@@ -2622,6 +2631,7 @@ pub fn extract_ctes_with_context(
                         Some(rel_alias.clone()),
                         Some(start_label.clone()),
                         Some(end_label.clone()),
+                        graph_rel.is_optional,
                     )?;
 
                     // Also extract CTEs from child plans
@@ -4206,6 +4216,7 @@ pub fn expand_fixed_length_joins(
             pre_filter: None,
             from_id_column: None,
             to_id_column: None,
+            graph_rel: None,
         });
 
         // TODO: Add intermediate node JOIN only if properties referenced
@@ -4234,6 +4245,7 @@ pub fn expand_fixed_length_joins(
         pre_filter: None,
         from_id_column: None,
         to_id_column: None,
+        graph_rel: None,
     });
 
     println!(
@@ -4322,6 +4334,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                     pre_filter: None,
                     from_id_column: None,
                     to_id_column: None,
+                    graph_rel: None,
                 });
             }
 
@@ -4373,6 +4386,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                     pre_filter: None,
                     from_id_column: None,
                     to_id_column: None,
+                    graph_rel: None,
                 });
             }
 
@@ -4398,6 +4412,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                 pre_filter: None,
                 from_id_column: None,
                 to_id_column: None,
+                graph_rel: None,
             });
 
             println!(
@@ -4458,6 +4473,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                     pre_filter: None,
                     from_id_column: None,
                     to_id_column: None,
+                    graph_rel: None,
                 });
             }
 

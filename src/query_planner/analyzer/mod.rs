@@ -125,7 +125,10 @@ pub fn initial_analyzing(
     ) {
         Ok(transformed_plan) => transformed_plan.get_plan(),
         Err(e) => {
-            log::warn!("⚠️  BidirectionalUnion failed: {:?}, continuing with original plan", e);
+            log::warn!(
+                "⚠️  BidirectionalUnion failed: {:?}, continuing with original plan",
+                e
+            );
             plan
         }
     };

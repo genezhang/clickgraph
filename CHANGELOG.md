@@ -2,6 +2,37 @@
 
 ### 🐛 Bug Fixes
 
+- **OPTIONAL MATCH with variable-length paths (VLP)**: Fixed SQL generation for OPTIONAL MATCH containing variable-length path patterns
+  - **Issue**: Queries like `MATCH (a:User) WHERE a.name = 'Eve' OPTIONAL MATCH (a)-[:FOLLOWS*1..3]->(b:User) RETURN a.name, COUNT(b)` returned 0 rows instead of 1 row with count=0 when no paths exist
+  - **Root Cause**: VLP CTE was incorrectly used as FROM clause instead of being LEFT JOINed to the anchor node from required MATCH, causing rows with no paths to be filtered out
+  - **Fix**: Added `graph_rel` field to Join struct to track graph relationship information needed for proper LEFT JOIN generation in VLP cases. Updated all Join struct initializers across codebase to include `graph_rel: None` for non-VLP joins and `graph_rel: Some(Arc::new(graph_rel))` for VLP-specific joins
+  - **Impact**: OPTIONAL MATCH tests improved from 24/27 to 25/27 passing (93%). Users with no outgoing paths now correctly appear in results with count=0
+  - **Files**: 
+    - `src/logical_plan/mod.rs` (Join struct definition with new graph_rel field)
+    - `src/render_plan/mod.rs` (Join struct definition with new graph_rel field)
+    - 40+ Join initializers updated across `src/render_plan/` and `src/query_planner/analyzer/` modules
+  - **Tests**: `test_optional_variable_length_no_path`, `test_optional_unbounded_path` now passing
+  - **Generated SQL**: Now correctly generates `FROM users AS a LEFT JOIN vlp_a_b AS t ON t.start_id = a.user_id` instead of `FROM vlp_a_b AS t`
+
+- **OPTIONAL MATCH first pattern with disconnected patterns**: Fixed SQL generation for queries where OPTIONAL MATCH comes before required MATCH with no shared nodes
+  - **Issue**: Queries like `OPTIONAL MATCH (a)-[:FOLLOWS]->(b) WHERE a.name='Eve' MATCH (x) WHERE x.name='Alice'` generated SQL with undefined aliases or incorrect FROM clause selection
+  - **Root Cause**: Three-layer problem:
+    1. GraphJoinInference: connect_left_first logic excluded optional patterns from LEFT-first connection
+    2. GraphJoinInference: FROM marker selection preferred first marker (optional) instead of required patterns
+    3. Join rendering: Joins with empty joining_on were skipped entirely, missing required CROSS JOINs
+  - **Fix**: 
+    1. Changed connect_left_first to always return true for is_first_relationship (regardless of optionality)
+    2. Modified FROM marker creation to include all is_first_relationship patterns with appropriate join_type
+    3. Added FROM marker selection logic preferring Inner (required) over Left (optional) joins
+    4. Implemented CROSS JOIN rendering (ON 1=1) for joins with empty joining_on, distinguishing Left vs Inner
+  - **Impact**: OPTIONAL MATCH tests improved from 17/27 to 24/27 passing (89%)
+  - **Files**: 
+    - `src/query_planner/analyzer/graph_join_inference.rs` (59 lines: connect_left_first, FROM marker logic)
+    - `src/render_plan/plan_builder.rs` (110 lines: CartesianProduct swap logic)
+    - `src/render_plan/join_builder.rs` (53 lines: CROSS JOIN rendering)
+  - **Tests**: test_optional_then_required, test_interleaved_required_optional now passing
+  - **Generated SQL**: `FROM x LEFT JOIN a ON 1=1 LEFT JOIN t1 ON t1.follower_id=a.user_id LEFT JOIN b ON b.user_id=t1.followed_id`
+
 - **VLP + WITH aggregation GROUP BY alias fix**: Fixed incorrect GROUP BY alias in variable-length path queries with aggregation
   - **Issue**: Queries like `MATCH (a)-[*1..2]->(b) WITH b, COUNT(*) AS cnt RETURN ...` generated `GROUP BY b.end_id` which fails because `b` doesn't exist as a SQL table alias (the FROM clause uses `vlp_a_b AS t`)
   - **Root Cause**: `expand_table_alias_to_group_by_id_only()` in plan_builder_utils.rs wasn't detecting VLP endpoint aliases and was returning the Cypher alias instead of the VLP CTE alias

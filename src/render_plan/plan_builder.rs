@@ -1156,6 +1156,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         pre_filter: None,
                         from_id_column: None,
                         to_id_column: None,
+                        graph_rel: None,
                     };
 
                     // Add to existing joins

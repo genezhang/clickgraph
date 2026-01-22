@@ -652,6 +652,9 @@ pub struct Join {
     /// The ID column name from the target/right side of the relationship (if this is a relationship join)
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub to_id_column: Option<String>,
+    /// For VLP joins, the original GraphRel for CTE generation
+    #[serde(skip)]
+    pub graph_rel: Option<Arc<GraphRel>>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Default)]

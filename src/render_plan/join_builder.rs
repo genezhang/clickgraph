@@ -23,8 +23,10 @@ use crate::render_plan::render_expr::{
     AggregateFnCall, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
 };
 use crate::render_plan::{ArrayJoin, Join, JoinType, RenderPlan};
+use std::sync::Arc;
 
 // Helper function imports from plan_builder_helpers
+use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
 use crate::render_plan::cte_extraction::{
     build_vlp_context, expand_fixed_length_joins_with_context, extract_node_label_from_viewscan,
     extract_relationship_columns, get_variable_length_spec, table_to_id_column,
@@ -259,6 +261,7 @@ impl JoinBuilder for LogicalPlan {
                             pre_filter: None,
                             from_id_column: None,
                             to_id_column: None,
+                            graph_rel: None,
                         });
                     }
                 }
@@ -310,9 +313,7 @@ impl JoinBuilder for LogicalPlan {
                 // delegate to input.extract_joins() to get the CROSS JOIN
                 // This handles patterns like: MATCH (a:User) MATCH (b:User)
                 if graph_joins.joins.is_empty() {
-                    log::info!(
-                        "🔧 GraphJoins has 0 joins - delegating to input.extract_joins()"
-                    );
+                    log::info!("🔧 GraphJoins has 0 joins - delegating to input.extract_joins()");
                     return <LogicalPlan as JoinBuilder>::extract_joins(&graph_joins.input, schema);
                 }
 
@@ -330,16 +331,18 @@ impl JoinBuilder for LogicalPlan {
 
                 // 🔧 FIX: When anchor_table is None, from_builder will use the first join as FROM.
                 // We need to skip that join here to avoid duplicate aliases.
-                let first_join_alias_to_skip: Option<String> = if graph_joins.anchor_table.is_none() 
-                    && graph_joins.cte_references.is_empty() 
+                let first_join_alias_to_skip: Option<String> = if graph_joins.anchor_table.is_none()
+                    && graph_joins.cte_references.is_empty()
                 {
-                    graph_joins.joins.first()
-                        .filter(|j| !j.joining_on.is_empty())  // Only non-FROM-marker joins
+                    graph_joins
+                        .joins
+                        .first()
+                        .filter(|j| !j.joining_on.is_empty()) // Only non-FROM-marker joins
                         .map(|j| j.table_alias.clone())
                 } else {
                     None
                 };
-                
+
                 if let Some(ref skip_alias) = first_join_alias_to_skip {
                     log::info!("🔧 Will skip first join '{}' as it will be used as FROM (anchor_table is None)", skip_alias);
                 }
@@ -350,35 +353,42 @@ impl JoinBuilder for LogicalPlan {
                 let mut joins: Vec<Join> = Vec::new();
                 let mut skipped_first = false;
                 let from_alias = graph_joins.anchor_table.as_ref().cloned();
-                
+
                 // Import logical JoinType for comparison
                 use crate::query_planner::logical_plan::JoinType as LogicalJoinType;
                 use crate::render_plan::render_expr::Literal as RenderLiteral;
-                
+
                 for logical_join in &graph_joins.joins {
                     // SKIP the FROM table marker - it has empty joining_on AND is the anchor
                     if logical_join.joining_on.is_empty() {
-                        let is_from_table = from_alias.as_ref()
+                        let is_from_table = from_alias
+                            .as_ref()
                             .map(|a| a == &logical_join.table_alias)
                             .unwrap_or(false);
-                        
+
                         if is_from_table {
                             // This is the FROM table, skip it (will be rendered by extract_from)
                             log::debug!("🔧 Skipping FROM marker '{}'", logical_join.table_alias);
                             continue;
                         }
-                        
+
                         // This is an entry point with empty joining_on (not the FROM table)
                         // Render as JOIN ON 1=1 (cross-join semantics) with appropriate join type
                         let join_type = if logical_join.join_type == LogicalJoinType::Left {
-                            log::info!("🔧 Optional entry point '{}' will be LEFT JOIN ON 1=1", logical_join.table_alias);
+                            log::info!(
+                                "🔧 Optional entry point '{}' will be LEFT JOIN ON 1=1",
+                                logical_join.table_alias
+                            );
                             super::JoinType::Left
                         } else {
                             // Required entry point (Inner) - render as CROSS JOIN (inner join on 1=1)
-                            log::info!("🔧 Required entry point '{}' will be JOIN ON 1=1 (cross-join)", logical_join.table_alias);
+                            log::info!(
+                                "🔧 Required entry point '{}' will be JOIN ON 1=1 (cross-join)",
+                                logical_join.table_alias
+                            );
                             super::JoinType::Join
                         };
-                        
+
                         let cross_join = Join {
                             join_type,
                             table_name: logical_join.table_name.clone(),
@@ -391,11 +401,12 @@ impl JoinBuilder for LogicalPlan {
                                         RenderExpr::Literal(RenderLiteral::Integer(1)),
                                         RenderExpr::Literal(RenderLiteral::Integer(1)),
                                     ],
-                                }
+                                },
                             ],
                             pre_filter: None,
                             from_id_column: logical_join.from_id_column.clone(),
                             to_id_column: logical_join.to_id_column.clone(),
+                            graph_rel: None,
                         };
                         joins.push(cross_join);
                         continue;
@@ -552,34 +563,39 @@ impl JoinBuilder for LogicalPlan {
                 // CartesianProduct in the input with additional nodes (from required MATCH), we need those too.
                 // Collect the aliases we already have to avoid duplicates.
                 // Include: processed joins, FROM markers (skipped), anchor_table, and first_join if used as FROM
-                let mut existing_aliases: std::collections::HashSet<String> = 
+                let mut existing_aliases: std::collections::HashSet<String> =
                     joins.iter().map(|j| j.table_alias.clone()).collect();
-                
+
                 // Also add FROM marker aliases (joins with empty joining_on that were skipped)
                 for logical_join in &graph_joins.joins {
                     if logical_join.joining_on.is_empty() {
                         existing_aliases.insert(logical_join.table_alias.clone());
                     }
                 }
-                
+
                 // Also add anchor_table if set
                 if let Some(ref anchor) = graph_joins.anchor_table {
                     existing_aliases.insert(anchor.clone());
                 }
-                
+
                 // Also add first_join_alias_to_skip if set
                 if let Some(ref skip_alias) = first_join_alias_to_skip {
                     existing_aliases.insert(skip_alias.clone());
                 }
-                
-                log::debug!("🔍 existing_aliases before input extraction: {:?}", existing_aliases);
-                
-                let input_joins = <LogicalPlan as JoinBuilder>::extract_joins(&graph_joins.input, schema)?;
+
+                log::debug!(
+                    "🔍 existing_aliases before input extraction: {:?}",
+                    existing_aliases
+                );
+
+                let input_joins =
+                    <LogicalPlan as JoinBuilder>::extract_joins(&graph_joins.input, schema)?;
                 for input_join in input_joins {
                     if !existing_aliases.contains(&input_join.table_alias) {
                         log::info!(
                             "🔧 Adding missing JOIN from input: {} (alias={})",
-                            input_join.table_name, input_join.table_alias
+                            input_join.table_name,
+                            input_join.table_alias
                         );
                         joins.push(input_join);
                     }
@@ -620,13 +636,77 @@ impl JoinBuilder for LogicalPlan {
                         return Ok(joins);
                     }
 
-                    // VARIABLE-LENGTH VLP (recursive CTE): Return empty joins
-                    // The recursive CTE handles the relationship traversal, so we don't need
-                    // to generate the relationship table join here. The endpoint JOINs
-                    // (to Person tables) will be added by the VLP rendering logic.
+                    // VARIABLE-LENGTH VLP (recursive CTE): Handle based on optionality
+                    // - Optional VLP: Create LEFT JOIN from anchor to CTE
+                    // - Required VLP: Return empty joins (CTE used as FROM)
                     if !vlp_ctx.is_fixed_length {
-                        crate::debug_println!("DEBUG: extract_joins - Variable-length VLP (recursive CTE) - returning empty joins");
-                        return Ok(Vec::new());
+                        let is_optional = graph_rel.is_optional.unwrap_or(false);
+                        log::info!(
+                            "🔍 VLP OPTIONAL CHECK: is_optional={}, graph_rel.is_optional={:?}",
+                            is_optional,
+                            graph_rel.is_optional
+                        );
+
+                        if is_optional {
+                            // OPTIONAL VLP: Need LEFT JOIN from anchor node to VLP CTE
+                            // SQL pattern: FROM users AS a LEFT JOIN vlp_a_b AS t ON a.user_id = t.start_id
+                            crate::debug_println!(
+                                "DEBUG: extract_joins - OPTIONAL VLP - creating LEFT JOIN to CTE"
+                            );
+                            log::info!("✓ OPTIONAL VLP: Creating LEFT JOIN from anchor to CTE");
+
+                            let cte_name = format!(
+                                "vlp_{}_{}",
+                                &graph_rel.left_connection, &graph_rel.right_connection
+                            );
+
+                            // Get the start node's ID column
+                            let start_id_col = extract_id_column(&graph_rel.left)
+                                .unwrap_or_else(|| "user_id".to_string());
+
+                            // Create LEFT JOIN condition: a.user_id = t.start_id
+                            let join_condition = vec![OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(graph_rel.left_connection.clone()),
+                                        column: PropertyValue::Column(start_id_col.clone()),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(VLP_CTE_FROM_ALIAS.to_string()),
+                                        column: PropertyValue::Column("start_id".to_string()),
+                                    }),
+                                ],
+                            }];
+
+                            let vlp_join = Join {
+                                join_type: JoinType::Left,
+                                table_name: cte_name.clone(),
+                                table_alias: VLP_CTE_FROM_ALIAS.to_string(),
+                                joining_on: join_condition,
+                                pre_filter: None,
+                                from_id_column: None,
+                                to_id_column: None,
+                                graph_rel: Some(Arc::new(graph_rel.clone())),
+                            };
+
+                            crate::debug_println!(
+                                "DEBUG: Created OPTIONAL VLP LEFT JOIN: {} AS {}",
+                                cte_name,
+                                VLP_CTE_FROM_ALIAS
+                            );
+                            log::info!(
+                                "✓ Created LEFT JOIN: {} AS {}",
+                                cte_name,
+                                VLP_CTE_FROM_ALIAS
+                            );
+                            return Ok(vec![vlp_join]);
+                        } else {
+                            // Required VLP: CTE used as FROM, no joins needed
+                            crate::debug_println!("DEBUG: extract_joins - Variable-length VLP (recursive CTE) - returning empty joins");
+                            log::info!("✓ Required VLP: CTE as FROM, no joins needed");
+                            return Ok(Vec::new());
+                        }
                     }
                 }
 
@@ -744,6 +824,7 @@ impl JoinBuilder for LogicalPlan {
                             pre_filter: None,
                             from_id_column: Some(rel_cols.from_id.clone()), // Preserve for NULL checks
                             to_id_column: Some(rel_cols.to_id.clone()), // Preserve for NULL checks
+                            graph_rel: None,
                         });
                     }
                     // For single-hop denormalized, no JOINs needed - relationship table IS the data
@@ -846,6 +927,7 @@ impl JoinBuilder for LogicalPlan {
                             pre_filter: None,
                             from_id_column: Some(inner_rel_cols.from_id.clone()),
                             to_id_column: Some(inner_rel_cols.to_id.clone()),
+                            graph_rel: None,
                         });
 
                         // JOIN 2: Non-shared node connecting to relationship
@@ -878,6 +960,7 @@ impl JoinBuilder for LogicalPlan {
                                 pre_filter: None,
                                 from_id_column: None,
                                 to_id_column: None,
+                                graph_rel: None,
                             });
                         }
 
@@ -929,6 +1012,7 @@ impl JoinBuilder for LogicalPlan {
                             pre_filter: None,
                             from_id_column: Some(inner_rel_cols.from_id.clone()),
                             to_id_column: Some(inner_rel_cols.to_id.clone()),
+                            graph_rel: None,
                         });
 
                         // JOIN 2: Non-shared node (right) connecting to relationship
@@ -961,6 +1045,7 @@ impl JoinBuilder for LogicalPlan {
                                 pre_filter: None,
                                 from_id_column: None,
                                 to_id_column: None,
+                                graph_rel: None,
                             });
                         }
 
@@ -1057,6 +1142,7 @@ impl JoinBuilder for LogicalPlan {
                         pre_filter: None,
                         from_id_column: Some(rel_col_start.clone()), // Preserve for NULL checks
                         to_id_column: Some(rel_col_end.clone()),     // Preserve for NULL checks
+                        graph_rel: None,
                     });
 
                     // JOIN 2: CTE (right node) -> Relationship table
@@ -1094,6 +1180,7 @@ impl JoinBuilder for LogicalPlan {
                                 pre_filter: None,
                                 from_id_column: None,
                                 to_id_column: None,
+                                graph_rel: None,
                             });
                         }
                     }
@@ -1591,6 +1678,7 @@ impl JoinBuilder for LogicalPlan {
                     pre_filter: combined_pre_filter,
                     from_id_column: Some(rel_cols.from_id.clone()),
                     to_id_column: Some(rel_cols.to_id.clone()),
+                    graph_rel: None,
                 });
 
                 // CRITICAL FIX: Handle nested GraphRel patterns differently
@@ -1660,6 +1748,7 @@ impl JoinBuilder for LogicalPlan {
                                 pre_filter: None,
                                 from_id_column: None,
                                 to_id_column: None,
+                                graph_rel: None,
                             });
 
                             println!(
@@ -1792,6 +1881,7 @@ impl JoinBuilder for LogicalPlan {
                     pre_filter: right_node_pre_filter.clone(),
                     from_id_column: None,
                     to_id_column: None,
+                    graph_rel: None,
                 });
 
                 println!(
@@ -1911,6 +2001,7 @@ impl JoinBuilder for LogicalPlan {
                                         pre_filter: None,
                                         from_id_column: None,
                                         to_id_column: None,
+                                        graph_rel: None,
                                     });
                                 }
                             }
@@ -1954,7 +2045,7 @@ impl JoinBuilder for LogicalPlan {
                             let join_type = if cp.is_optional {
                                 JoinType::Left
                             } else if joining_on.is_empty() {
-                                JoinType::Join  // Renders as CROSS JOIN when joining_on is empty
+                                JoinType::Join // Renders as CROSS JOIN when joining_on is empty
                             } else {
                                 JoinType::Inner
                             };
@@ -1970,6 +2061,7 @@ impl JoinBuilder for LogicalPlan {
                                 pre_filter: None,
                                 from_id_column: None,
                                 to_id_column: None,
+                                graph_rel: None,
                             });
                         }
                     }

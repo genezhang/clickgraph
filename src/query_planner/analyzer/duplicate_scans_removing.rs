@@ -139,8 +139,11 @@ impl DuplicateScansRemoving {
                 for input_plan in union.inputs.iter() {
                     // Clone the traversed set for each branch to maintain independence
                     let mut branch_traversed = traversed.clone();
-                    let child_tf =
-                        Self::remove_duplicate_scans(input_plan.clone(), &mut branch_traversed, plan_ctx)?;
+                    let child_tf = Self::remove_duplicate_scans(
+                        input_plan.clone(),
+                        &mut branch_traversed,
+                        plan_ctx,
+                    )?;
                     inputs_tf.push(child_tf);
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())

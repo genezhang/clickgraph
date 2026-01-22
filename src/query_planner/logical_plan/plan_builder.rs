@@ -83,9 +83,15 @@ pub fn build_logical_plan(
         for (idx, reading_clause) in query_ast.reading_clauses.iter().enumerate() {
             match reading_clause {
                 ReadingClause::Match(match_clause) => {
-                    log::debug!("build_logical_plan: Processing MATCH clause {} (from reading_clauses)", idx);
-                    logical_plan =
-                        match_clause::evaluate_match_clause(match_clause, logical_plan, &mut plan_ctx)?;
+                    log::debug!(
+                        "build_logical_plan: Processing MATCH clause {} (from reading_clauses)",
+                        idx
+                    );
+                    logical_plan = match_clause::evaluate_match_clause(
+                        match_clause,
+                        logical_plan,
+                        &mut plan_ctx,
+                    )?;
                 }
                 ReadingClause::OptionalMatch(optional_match) => {
                     log::debug!("build_logical_plan: Processing OPTIONAL MATCH clause {} (from reading_clauses)", idx);

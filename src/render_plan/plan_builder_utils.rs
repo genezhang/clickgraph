@@ -3637,6 +3637,7 @@ pub(crate) fn generate_swapped_joins_for_optional_match(
         pre_filter: None,
         from_id_column: Some(rel_col_to_anchor.clone()),
         to_id_column: Some(rel_col_to_new.clone()),
+        graph_rel: None,
     });
 
     // JOIN 2: New node (left_connection) connecting to relationship
@@ -3662,6 +3663,7 @@ pub(crate) fn generate_swapped_joins_for_optional_match(
         pre_filter: None,
         from_id_column: None,
         to_id_column: None,
+        graph_rel: None,
     });
 
     Ok(joins)
@@ -7126,6 +7128,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     pre_filter: None,
                     from_id_column: None,
                     to_id_column: None,
+                    graph_rel: None,
                 };
 
                 // Insert the CTE join at the BEGINNING of the joins list
@@ -9602,6 +9605,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                             pre_filter: j.pre_filter.clone(),
                             from_id_column: j.from_id_column.clone(),
                             to_id_column: j.to_id_column.clone(),
+                            graph_rel: None,
                         })
                     } else {
                         Some(j.clone())

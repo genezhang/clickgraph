@@ -118,6 +118,9 @@ pub struct Join {
     pub from_id_column: Option<String>,
     /// For relationship tables: the target node ID column name (e.g., "Person2Id", "to_id")
     pub to_id_column: Option<String>,
+    /// For VLP joins, the original GraphRel for CTE generation
+    #[serde(skip)]
+    pub graph_rel: Option<std::sync::Arc<crate::query_planner::logical_plan::GraphRel>>,
 }
 
 impl Join {
@@ -215,6 +218,7 @@ impl TryFrom<LogicalJoin> for Join {
             pre_filter,
             from_id_column: value.from_id_column,
             to_id_column: value.to_id_column,
+            graph_rel: None,
         };
         Ok(join)
     }

@@ -1,6 +1,6 @@
 # Known Issues
 
-**Active Issues**: 2 bugs, 5 feature limitations  
+**Active Issues**: 1 bug, 5 feature limitations  
 **Last Updated**: January 21, 2026
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
@@ -10,35 +10,7 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ## Current Bugs
 
-### 1. OPTIONAL MATCH First with Disconnected Patterns
-**Status**: 🐛 BUG (Architectural)  
-**Error**: Generated SQL has incorrect JOIN order and missing table references  
-**Example**:
-```cypher
-OPTIONAL MATCH (a:User)-[:FOLLOWS]->(b:User) WHERE a.name = 'Eve'
-MATCH (x:User) WHERE x.name = 'Alice'
-RETURN a.name, b.name, x.name
-```
-**Expected**: 1 row with (NULL, NULL, 'Alice') when Eve has no outgoing follows  
-**Actual**: 0 rows or malformed SQL
-
-**Root Cause**: When OPTIONAL MATCH comes first and has no connecting node to the subsequent required MATCH, the join generation assumes the optional pattern's internal anchor (`b`) will be available, but it's never explicitly joined. The architecture assumes all patterns share some nodes.
-
-**Partial Fixes Applied** (January 21, 2026):
-- Added `is_optional_pattern()` helper to LogicalPlan
-- CartesianProduct swap logic when left is optional and right is required
-- FROM marker creation for GraphNode in CartesianProduct
-
-**Remaining Work**: Disconnected optional patterns need either:
-1. Subquery treatment (wrap optional pattern in subquery, LEFT JOIN onto required)
-2. CROSS JOIN anchor (add `b` as CROSS JOIN before LEFT JOINs)
-3. Rework optional join generation for disconnected cases
-
-**Impact**: Blocks OPTIONAL MATCH first queries where patterns don't share nodes  
-**Workaround**: Put required MATCH first: `MATCH (x:User) OPTIONAL MATCH (a:User)-[:FOLLOWS]->(b:User) WHERE a.name = 'Eve' AND x.name = 'Alice' RETURN ...`  
-**Files**: `query_planner/logical_plan/match_clause.rs`, `query_planner/analyzer/graph_join_inference.rs`, `query_planner/logical_plan/mod.rs`
-
-### 2. MULTI_TABLE_LABEL Standalone Node Aggregations Missing FROM Clause
+### 1. MULTI_TABLE_LABEL Standalone Node Aggregations Missing FROM Clause
 **Status**: 🐛 BUG  
 **Error**: `Unknown expression or function identifier 'n.ip'` (missing FROM clause in generated SQL)  
 **Example**:
