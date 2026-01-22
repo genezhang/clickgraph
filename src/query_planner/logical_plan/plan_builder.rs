@@ -233,10 +233,60 @@ fn process_with_clause_chain<'a>(
     // This implements WITH's shielding semantics per OpenCypher spec
     let mut child_ctx = PlanCtx::with_parent_scope(plan_ctx, true);
 
+    // Extract the mapping from output aliases to source expressions from the WITH clause items
+    // This handles variable renaming: WITH u AS person maps "person" -> "u"
+    let mut alias_source_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    if let LogicalPlan::WithClause(ref with_node) = *logical_plan {
+        for item in &with_node.items {
+            // Get the output alias
+            if let Some(col_alias) = &item.col_alias {
+                let output_alias = &col_alias.0;
+                // Try to extract the source alias from the expression (e.g., TableAlias("u"))
+                if let Some(source_alias) = extract_source_alias_from_expr(&item.expression) {
+                    alias_source_map.insert(output_alias.clone(), source_alias.clone());
+                    log::debug!(
+                        "process_with_clause_chain: Mapped renaming '{}' AS '{}' (source='{}' -> output='{}')",
+                        source_alias,
+                        output_alias,
+                        source_alias,
+                        output_alias
+                    );
+                }
+            }
+        }
+    }
+
     // Register each exported alias in the child scope
     // These aliases reference the WITH output (will be CTE columns)
     for alias in &exported_aliases {
-        // Check if we can get table context from parent scope
+        // Check if this alias is a renaming of another alias
+        if let Some(source_alias) = alias_source_map.get(alias) {
+            // This is a renaming like WITH u AS person
+            // Try to copy type info from source alias
+            if let Ok(source_table_ctx) = plan_ctx.get_table_ctx(source_alias) {
+                // Create a new TableCtx for the renamed alias, preserving the source's labels
+                log::debug!(
+                    "process_with_clause_chain: Renaming '{}' AS '{}' - copying labels {:?} from source",
+                    source_alias,
+                    alias,
+                    source_table_ctx.get_label_opt()
+                );
+
+                // Rebuild the TableCtx with the new alias but preserve all other properties
+                let renamed_ctx = crate::query_planner::plan_ctx::TableCtx::build(
+                    alias.clone(),                          // New alias
+                    source_table_ctx.get_labels().cloned(), // Preserved labels!
+                    vec![],                                 // Properties will be resolved later
+                    source_table_ctx.is_relation(),         // Preserved: is_relation
+                    true,                                   // Explicit alias from WITH
+                );
+                child_ctx.insert_table_ctx(alias.clone(), renamed_ctx);
+                continue;
+            }
+        }
+
+        // Check if we can get table context from parent scope by name
         if let Ok(parent_table_ctx) = plan_ctx.get_table_ctx(alias) {
             // Clone the table context into child scope
             // This preserves labels, properties, etc. from parent scope
@@ -311,4 +361,45 @@ fn process_with_clause_chain<'a>(
     }
 
     Ok(logical_plan)
+}
+
+/// Extract the source alias from an expression for WITH clause renaming.
+///
+/// For simple variable references like `WITH u AS person`, extracts "u".
+/// Returns None for complex expressions like `WITH COUNT(b) AS count`.
+///
+/// # Examples
+/// - `TableAlias("u")` -> Some("u")
+/// - `PropertyAccessExp("u.name")` -> Some("u")
+/// - `OperatorApplicationExp(COUNT(...))` -> None
+fn extract_source_alias_from_expr(
+    expr: &crate::query_planner::logical_expr::LogicalExpr,
+) -> Option<String> {
+    use crate::query_planner::logical_expr::LogicalExpr;
+
+    match expr {
+        // Simple variable reference: WITH u AS person
+        LogicalExpr::TableAlias(ta) => Some(ta.0.clone()),
+
+        // Property access: WITH u.name AS name - extract the table alias
+        LogicalExpr::PropertyAccessExp(pa) => Some(pa.table_alias.0.clone()),
+
+        // Column reference: WITH x AS y
+        LogicalExpr::Column(col) => Some(col.0.clone()),
+
+        // DISTINCT wrapping: DISTINCT u -> u
+        LogicalExpr::OperatorApplicationExp(op_app) => {
+            if op_app.operator == crate::query_planner::logical_expr::Operator::Distinct {
+                op_app
+                    .operands
+                    .first()
+                    .and_then(|inner| extract_source_alias_from_expr(inner))
+            } else {
+                None
+            }
+        }
+
+        // All other expressions (aggregations, arithmetic, etc.) are not simple aliases
+        _ => None,
+    }
 }

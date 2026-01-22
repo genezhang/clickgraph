@@ -54,15 +54,36 @@ SELECT count(DISTINCT n.ip) AS "unique_count" FROM (
 
 The following Cypher features are **not implemented** (by design - read-only query engine):
 
-### 1. Variable Alias Renaming in WITH Clause
-**Status**: ⚠️ LIMITATION  
-**Example**: `MATCH (u:User) WITH u AS person RETURN person.name`  
-**Error**: `Property 'name' not found on node 'person'`  
-**Root Cause**: When a variable is renamed via `WITH u AS person`, the type information (Node/Relationship/Scalar) is not propagated to the new alias. The new alias `person` doesn't have the label information needed to resolve property mappings.  
-**Impact**: Blocks queries that use alias renaming patterns  
-**Workaround**: Keep the same alias name: `WITH u RETURN u.name`  
-**Files**: `query_planner/analyzer/filter_tagging.rs`, `typed_variable.rs`  
-**Added**: January 20, 2026
+### 1. Variable Alias Renaming in WITH Clause - FIXED ✅
+**Status**: ✅ FIXED (January 22, 2026)  
+**Original Error**: `Property 'name' not found on node 'person'` when using `MATCH (u:User) WITH u AS person RETURN person.name`  
+**Root Cause**: When a variable was renamed via `WITH u AS person`, the type information (Node/Relationship/Scalar) was not propagated to the new alias.  
+**Solution**: Modified `process_with_clause_chain()` in [plan_builder.rs](src/query_planner/logical_plan/plan_builder.rs) to:
+1. Extract source→output alias mappings from `WithClause.items`
+2. For simple variable renamings (e.g., `u AS person`), look up the source variable's labels
+3. Create a new `TableCtx` with the output alias but preserve all type information
+
+**Now Works**:
+```cypher
+-- Simple renaming ✅
+MATCH (u:User) WITH u AS person RETURN person.name
+
+-- Multiple renames ✅
+MATCH (u:User) MATCH (f:User) WITH u AS person, f AS friend RETURN person.name, friend.name
+
+-- Mixed rename and pass-through ✅
+MATCH (u:User) MATCH (f:User) WITH u, f AS friend RETURN u.name, friend.name
+
+-- Renamed variable in subsequent MATCH ✅
+MATCH (u:User) WITH u AS person MATCH (person)-[:FOLLOWS]->(f) RETURN person.name
+
+-- Chained renaming ✅
+MATCH (u:User) WITH u AS a WITH a AS b RETURN b.name
+```
+
+**Files Changed**: [src/query_planner/logical_plan/plan_builder.rs](src/query_planner/logical_plan/plan_builder.rs) - Added variable renaming support and `extract_source_alias_from_expr()` helper  
+**Tests**: All 784 unit tests passing, no regressions  
+**Added**: January 20, 2026 | **Fixed**: January 22, 2026
 
 ### 2. Procedure Calls (APOC/GDS)
 **Status**: ⚠️ NOT IMPLEMENTED (out of scope)  
