@@ -10,23 +10,37 @@ For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
 
 ## Current Bugs
 
-### 1. MULTI_TABLE_LABEL Standalone Node Aggregations Missing FROM Clause
-**Status**: 🐛 BUG  
-**Error**: `Unknown expression or function identifier 'n.ip'` (missing FROM clause in generated SQL)  
+### 1. MULTI_TABLE_LABEL Standalone Node Aggregations - FIXED ✅
+**Status**: ✅ FIXED (January 22, 2026)  
+**Original Error**: `Unknown expression or function identifier 'n.ip'` (missing FROM clause in generated SQL)  
 **Example**:
 ```cypher
 USE zeek_merged
 MATCH (n:IP) RETURN count(DISTINCT n.ip) as unique_count
 ```
-**Generated SQL**:
+**Solution**: Fixed three interconnected issues:
+1. **Multi-table label detection**: Added `get_all_node_schemas_for_label()` method to find ALL tables with same label instead of just one
+2. **Logical planning**: Added MULTI_TABLE_LABEL UNION generation when same label appears in multiple tables
+3. **SQL rendering**: Implemented recursive Union extraction in `extract_union()` to unwrap Union nested inside GraphNode → Projection → GroupBy → GraphJoins
+
+**Generated SQL** (After Fix):
 ```sql
-SELECT countDistinct(n.ip) AS "unique_count"
--- Missing FROM clause entirely!
+SELECT count(DISTINCT n.ip) AS "unique_count" FROM (
+  SELECT n."id.orig_h" AS "n.ip" FROM zeek.conn_log AS n
+  UNION ALL
+  SELECT n."id.resp_h" AS "n.ip" FROM zeek.conn_log AS n
+  UNION ALL
+  SELECT n."id.orig_h" AS "n.ip" FROM zeek.dns_log AS n
+) AS __union
 ```
-**Root Cause**: For MULTI_TABLE_LABEL schemas (where same label appears in multiple tables, like IP in both dns_log and conn_log), standalone node queries with aggregations should generate a UNION over all tables. The UNION structure is created in the logical plan but gets lost during SQL rendering.  
-**Impact**: Blocks standalone aggregation queries on MULTI_TABLE_LABEL schemas  
-**Workaround**: Use relationship patterns to anchor the node: `MATCH (src:IP)-[:DNS_REQUESTED]->(d:Domain) RETURN count(DISTINCT src.ip)`  
-**Files**: `query_planner/logical_plan/match_clause.rs` (UNION creation), `render_plan/plan_builder.rs` (SQL rendering)
+
+**Files Fixed**:
+- `src/graph_catalog/graph_schema.rs` - Added `get_all_node_schemas_for_label()` method
+- `src/query_planner/logical_plan/match_clause.rs` - Added MULTI_TABLE_LABEL UNION generation
+- `src/render_plan/plan_builder.rs` - Implemented recursive Union extraction
+- `src/clickhouse_query_generator/to_sql_query.rs` - Aggregation wrapping for UNION
+
+**Testing**: All 784 unit tests passing, no regressions
 
 ---
 

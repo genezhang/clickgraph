@@ -570,7 +570,21 @@ impl GraphSchema {
     ) -> HashMap<String, ProcessedNodeMetadata> {
         let mut metadata_map: HashMap<String, ProcessedNodeMetadata> = HashMap::new();
 
-        for (rel_type, rel_schema) in relationships {
+        // Collect all actual relationship types (not composite keys)
+        // When both "TYPE" and "TYPE::FROM::TO" exist, we only want to process once
+        let mut processed_rels = std::collections::HashSet::new();
+
+        for (rel_key, rel_schema) in relationships {
+            // Skip composite keys (those with ::) - they're duplicates of the simple key
+            if rel_key.contains("::") {
+                continue;
+            }
+
+            // Process this relationship type
+            if !processed_rels.insert(rel_key.clone()) {
+                continue; // Already processed this type
+            }
+
             // Process from_node denormalized properties
             if let Some(ref from_props) = rel_schema.from_node_properties {
                 let from_label = &rel_schema.from_node;
@@ -583,7 +597,7 @@ impl GraphSchema {
                     metadata.add_property_source(
                         prop_name.clone(),
                         PropertySource {
-                            relationship_type: rel_type.clone(),
+                            relationship_type: rel_key.clone(),
                             side: "from".to_string(),
                             column_name: col_name.clone(),
                         },
@@ -592,7 +606,7 @@ impl GraphSchema {
 
                 // Add ID source
                 metadata.add_id_source(
-                    rel_type.clone(),
+                    rel_key.clone(),
                     "from".to_string(),
                     rel_schema.from_id.clone(),
                 );
@@ -610,7 +624,7 @@ impl GraphSchema {
                     metadata.add_property_source(
                         prop_name.clone(),
                         PropertySource {
-                            relationship_type: rel_type.clone(),
+                            relationship_type: rel_key.clone(),
                             side: "to".to_string(),
                             column_name: col_name.clone(),
                         },
@@ -618,11 +632,7 @@ impl GraphSchema {
                 }
 
                 // Add ID source
-                metadata.add_id_source(
-                    rel_type.clone(),
-                    "to".to_string(),
-                    rel_schema.to_id.clone(),
-                );
+                metadata.add_id_source(rel_key.clone(), "to".to_string(), rel_schema.to_id.clone());
             }
         }
 
@@ -1097,6 +1107,27 @@ impl GraphSchema {
     }
 
     /// Get denormalized node metadata for a given node label
+    /// Get all node schemas with a specific label from all tables
+    /// Returns a vector of (table_name, NodeSchema) pairs
+    /// Used for MULTI_TABLE_LABEL scenarios where same label exists in multiple tables
+    pub fn get_all_node_schemas_for_label(&self, label: &str) -> Vec<(&String, &NodeSchema)> {
+        let mut results = Vec::new();
+
+        // Search composite keys (database::table::label)
+        for (composite_key, schema) in &self.nodes {
+            if composite_key.contains("::") {
+                // This is a composite key
+                let parts: Vec<&str> = composite_key.split("::").collect();
+                if parts.len() == 3 && parts[2] == label {
+                    // Found a match
+                    results.push((composite_key, schema));
+                }
+            }
+        }
+
+        results
+    }
+
     pub fn get_denormalized_node_metadata(
         &self,
         node_label: &str,
