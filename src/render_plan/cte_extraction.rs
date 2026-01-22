@@ -3,9 +3,7 @@
 //! Some functions in this module are reserved for future use or used only in specific code paths.
 #![allow(dead_code)]
 
-use crate::clickhouse_query_generator::variable_length_cte::{
-    NodeProperty, VariableLengthCteGenerator,
-};
+use crate::clickhouse_query_generator::variable_length_cte::NodeProperty;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::graph_catalog::pattern_schema::{JoinStrategy, PatternSchemaContext};
@@ -17,9 +15,9 @@ use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::cte_generation::CteGenerationContext;
 use crate::render_plan::cte_manager::CteManager;
 use crate::render_plan::expression_utils::{
-    contains_string_literal, flatten_addition_operands, has_string_operand,
+    flatten_addition_operands, has_string_operand,
 };
-use crate::utils::cte_naming::{generate_cte_base_name, generate_cte_name};
+use crate::utils::cte_naming::generate_cte_name;
 
 use super::cte_generation::map_property_to_column_with_schema;
 use super::errors::RenderBuildError;

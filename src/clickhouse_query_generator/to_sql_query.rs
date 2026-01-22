@@ -199,7 +199,6 @@ fn populate_cte_property_mappings(plan: &RenderPlan) {
 /// Maps Cypher aliases (a, b) to CTE column names (start_xxx, end_xxx)
 /// For VLP, the CTE includes properties named using the Cypher property name: start_email, start_name, etc.
 fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
-    use crate::graph_catalog::expression_parser::PropertyValue;
 
     // 🔧 FIX: If FROM references a WITH CTE (not the raw VLP CTE), skip this rewriting
     // The WITH CTE has already transformed the columns, and the SELECT items reference

@@ -3371,52 +3371,11 @@ pub fn extract_join_from_equality(
 /// Rewrite CTE column references to include alias prefix
 /// Converts "friend.id" → "friend.friend_id" for consistency
 pub fn rewrite_cte_column_references(expr: &mut crate::render_plan::render_expr::RenderExpr) {
-    use crate::render_plan::render_expr::*;
-
-    match expr {
-        RenderExpr::PropertyAccessExp(pa) => {
-            let table_alias = &pa.table_alias.0;
-            let column_name = match &pa.column {
-                PropertyValue::Column(col) => col.clone(),
-                _ => return,
-            };
-
-            // Check if this looks like a simple property reference (no underscore prefix)
-            // If so, rewrite it to include the alias prefix: "friend.id" → "friend.friend_id"
-            if !column_name.starts_with(&format!("{}_", table_alias)) {
-                let new_column = format!("{}_{}", table_alias, column_name);
-                log::debug!(
-                    "🔧 rewrite_cte_column_references: {}.{} → {}.{}",
-                    table_alias,
-                    column_name,
-                    table_alias,
-                    new_column
-                );
-                pa.column = PropertyValue::Column(new_column);
-            }
-        }
-        RenderExpr::AggregateFnCall(agg) => {
-            // Recursively rewrite arguments
-            for arg in &mut agg.args {
-                rewrite_cte_column_references(arg);
-            }
-        }
-        RenderExpr::ScalarFnCall(func) => {
-            // Recursively rewrite arguments
-            for arg in &mut func.args {
-                rewrite_cte_column_references(arg);
-            }
-        }
-        RenderExpr::OperatorApplicationExp(op) => {
-            // Recursively rewrite all operands
-            for operand in &mut op.operands {
-                rewrite_cte_column_references(operand);
-            }
-        }
-        _ => {
-            // Other expression types don't need rewriting
-        }
-    }
+    use crate::render_plan::expression_utils::MutablePropertyColumnRewriter;
+    
+    // Rewrite columns to include table alias prefix (underscore separator)
+    // E.g., user.id → user.user_id (for CTE column flattening)
+    MutablePropertyColumnRewriter::rewrite_column_with_prefix(expr, '_');
 }
 
 /// Find a GroupBy subplan with is_materialization_boundary=true

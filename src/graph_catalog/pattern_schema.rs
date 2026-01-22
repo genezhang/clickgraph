@@ -655,6 +655,116 @@ impl PatternSchemaContext {
         })
     }
 
+    /// Factory method: Create PatternSchemaContext from a GraphRel pattern.
+    ///
+    /// This consolidates the duplicated logic that appears in multiple places:
+    /// - `cte_extraction.rs::recreate_pattern_schema_context()`
+    /// - `graph_join_inference.rs::compute_pattern_context()`
+    /// - `join_builder.rs` pattern context extraction
+    ///
+    /// # Arguments
+    /// * `graph_rel` - The graph relationship pattern to analyze (type: query_planner::logical_plan::GraphRel)
+    /// * `plan_ctx` - Plan context for extracting node labels (can be None for simple case)
+    /// * `graph_schema` - Graph schema for resolving node and relationship schemas
+    /// * `prev_edge_info` - Optional info about previous edge in multi-hop pattern
+    ///
+    /// # Returns
+    /// `Option<Self>` - Returns None if required schema information is unavailable
+    ///
+    /// Note: This method uses dynamic dispatch to avoid circular imports.
+    /// The graph_rel parameter should be a LogicalPlan::GraphRel variant.
+    pub fn from_graph_rel_dyn(
+        graph_rel_alias: &str,
+        left_connection: &str,
+        right_connection: &str,
+        labels: &Option<Vec<String>>,
+        left_plan: Option<&str>, // Node label from left plan
+        right_plan: Option<&str>, // Node label from right plan
+        plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
+        graph_schema: &GraphSchema,
+        prev_edge_info: Option<(&str, &str, bool)>,
+    ) -> Result<Self, String> {
+        let left_alias = left_connection;
+        let right_alias = right_connection;
+
+        let (left_label, right_label, rel_types) = if let Some(ctx) = plan_ctx {
+            // Try to get labels from plan context first
+            let left_ctx = ctx.get_table_ctx_from_alias_opt(&Some(left_alias.to_string())).ok();
+            let right_ctx = ctx
+                .get_table_ctx_from_alias_opt(&Some(right_alias.to_string()))
+                .ok();
+
+            let left_label_opt = left_ctx.and_then(|c| c.get_label_str().ok());
+            let right_label_opt = right_ctx.and_then(|c| c.get_label_str().ok());
+
+            let rel_types_from_graph: Vec<String> = labels
+                .as_ref()
+                .map(|l| l.clone())
+                .unwrap_or_default();
+
+            if rel_types_from_graph.is_empty() {
+                return Err("No relationship types found".to_string());
+            }
+
+            if let (Some(left), Some(right)) = (left_label_opt, right_label_opt) {
+                (left, right, rel_types_from_graph)
+            } else {
+                // Infer from relationship schema
+                let rel = graph_schema
+                    .get_rel_schema_with_nodes(&rel_types_from_graph[0], None, None)
+                    .map_err(|e| format!("Could not get relationship schema: {}", e))?;
+                (rel.from_node.clone(), rel.to_node.clone(), rel_types_from_graph)
+            }
+        } else {
+            // Use provided labels from plan
+            let left_label = left_plan
+                .map(|l| l.to_string())
+                .ok_or_else(|| "Could not extract left node label".to_string())?;
+            let right_label = right_plan
+                .map(|l| l.to_string())
+                .ok_or_else(|| "Could not extract right node label".to_string())?;
+            let rel_types = labels
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| vec!["UNKNOWN".to_string()]);
+
+            (left_label, right_label, rel_types)
+        };
+
+        // Get relationship schema to find database/table info
+        let rel_schema = graph_schema
+            .get_rel_schema(&rel_types[0])
+            .map_err(|e| format!("Could not get relationship schema: {}", e))?;
+
+        // Build composite key for denormalized edges
+        let composite_left_key = format!(
+            "{}::{}::{}",
+            rel_schema.database, rel_schema.table_name, left_label
+        );
+
+        let left_node_schema = graph_schema
+            .get_node_schema_opt(&composite_left_key)
+            .or_else(|| graph_schema.get_node_schema_opt(&left_label))
+            .ok_or_else(|| format!("Could not find left node schema for '{}'", left_label))?;
+
+        let right_node_schema = graph_schema
+            .get_node_schema_opt(&right_label)
+            .ok_or_else(|| format!("Could not find right node schema for '{}'", right_label))?;
+
+        // Call analyze with extracted information
+        Self::analyze(
+            left_alias,
+            right_alias,
+            left_node_schema,
+            right_node_schema,
+            rel_schema,
+            graph_schema,
+            graph_rel_alias,
+            rel_types,
+            prev_edge_info,
+        )
+    }
+
     /// Resolve node ID column through property mappings.
     ///
     /// The `node_id` in the schema is a Cypher property name (e.g., "ip"),

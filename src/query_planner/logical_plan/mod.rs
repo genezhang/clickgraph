@@ -163,6 +163,38 @@ pub fn reset_cte_counter() {
     CTE_COUNTER.store(1, Ordering::SeqCst);
 }
 
+/// Helper function for the common rebuild_or_clone pattern used across LogicalPlan variants.
+/// 
+/// This consolidates the duplicated logic that appears in 14+ rebuild_or_clone() methods:
+/// - If transformation occurred, build new node with updated children via the provided closure
+/// - If no transformation, return the old plan unchanged
+/// 
+/// # Arguments
+/// * `is_transformed` - Whether any child transformation occurred
+/// * `old_plan` - The original plan to return if no transformation occurred
+/// * `builder` - Closure that constructs the new LogicalPlan variant with transformed children
+#[inline]
+fn handle_rebuild_or_clone<F>(
+    is_transformed: bool,
+    old_plan: Arc<LogicalPlan>,
+    builder: F,
+) -> Transformed<Arc<LogicalPlan>>
+where
+    F: FnOnce() -> Arc<LogicalPlan>,
+{
+    if is_transformed {
+        Transformed::Yes(builder())
+    } else {
+        Transformed::No(old_plan)
+    }
+}
+
+/// Helper for multi-child rebuild pattern (e.g., GraphRel with left/center/right).
+/// Returns true if any child transformation occurred.
+fn any_transformed(transformations: &[&Transformed<Arc<LogicalPlan>>]) -> bool {
+    transformations.iter().any(|tf| tf.is_yes())
+}
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub enum LogicalPlan {
@@ -823,12 +855,11 @@ impl Unwind {
         input_tf: Transformed<Arc<LogicalPlan>>,
         old_plan: Arc<LogicalPlan>,
     ) -> Transformed<Arc<LogicalPlan>> {
-        match input_tf {
-            Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
-                self.with_new_input(new_input),
-            ))),
-            Transformed::No(_) => Transformed::No(old_plan.clone()),
-        }
+        handle_rebuild_or_clone(input_tf.is_yes(), old_plan, || {
+            Arc::new(LogicalPlan::Unwind(self.with_new_input(
+                input_tf.get_plan(),
+            )))
+        })
     }
 }
 
@@ -838,16 +869,12 @@ impl Filter {
         input_tf: Transformed<Arc<LogicalPlan>>,
         old_plan: Arc<LogicalPlan>,
     ) -> Transformed<Arc<LogicalPlan>> {
-        match input_tf {
-            Transformed::Yes(new_input) => {
-                let new_node = LogicalPlan::Filter(Filter {
-                    input: new_input.clone(),
-                    predicate: self.predicate.clone(),
-                });
-                Transformed::Yes(Arc::new(new_node))
-            }
-            Transformed::No(_) => Transformed::No(old_plan.clone()),
-        }
+        handle_rebuild_or_clone(input_tf.is_yes(), old_plan, || {
+            Arc::new(LogicalPlan::Filter(Filter {
+                input: input_tf.get_plan(),
+                predicate: self.predicate.clone(),
+            }))
+        })
     }
 }
 
@@ -857,30 +884,13 @@ impl Projection {
         input_tf: Transformed<Arc<LogicalPlan>>,
         old_plan: Arc<LogicalPlan>,
     ) -> Transformed<Arc<LogicalPlan>> {
-        crate::debug_println!(
-            "DEBUG Projection::rebuild_or_clone: self.distinct = {}",
-            self.distinct
-        );
-        match input_tf {
-            Transformed::Yes(new_input) => {
-                let new_node = LogicalPlan::Projection(Projection {
-                    input: new_input.clone(),
-                    items: self.items.clone(),
-                    distinct: self.distinct,
-                });
-                crate::debug_println!(
-                    "DEBUG Projection::rebuild_or_clone: Created new Projection with distinct = {}",
-                    self.distinct
-                );
-                Transformed::Yes(Arc::new(new_node))
-            }
-            Transformed::No(_) => {
-                crate::debug_println!(
-                    "DEBUG Projection::rebuild_or_clone: No transformation, returning old plan"
-                );
-                Transformed::No(old_plan.clone())
-            }
-        }
+        handle_rebuild_or_clone(input_tf.is_yes(), old_plan, || {
+            Arc::new(LogicalPlan::Projection(Projection {
+                input: input_tf.get_plan(),
+                items: self.items.clone(),
+                distinct: self.distinct,
+            }))
+        })
     }
 }
 
@@ -890,19 +900,15 @@ impl GroupBy {
         input_tf: Transformed<Arc<LogicalPlan>>,
         old_plan: Arc<LogicalPlan>,
     ) -> Transformed<Arc<LogicalPlan>> {
-        match input_tf {
-            Transformed::Yes(new_input) => {
-                let new_node = LogicalPlan::GroupBy(GroupBy {
-                    input: new_input.clone(),
-                    expressions: self.expressions.clone(),
-                    having_clause: self.having_clause.clone(),
-                    is_materialization_boundary: self.is_materialization_boundary,
-                    exposed_alias: self.exposed_alias.clone(),
-                });
-                Transformed::Yes(Arc::new(new_node))
-            }
-            Transformed::No(_) => Transformed::No(old_plan.clone()),
-        }
+        handle_rebuild_or_clone(input_tf.is_yes(), old_plan, || {
+            Arc::new(LogicalPlan::GroupBy(GroupBy {
+                input: input_tf.get_plan(),
+                expressions: self.expressions.clone(),
+                having_clause: self.having_clause.clone(),
+                is_materialization_boundary: self.is_materialization_boundary,
+                exposed_alias: self.exposed_alias.clone(),
+            }))
+        })
     }
 }
 
@@ -912,16 +918,12 @@ impl OrderBy {
         input_tf: Transformed<Arc<LogicalPlan>>,
         old_plan: Arc<LogicalPlan>,
     ) -> Transformed<Arc<LogicalPlan>> {
-        match input_tf {
-            Transformed::Yes(new_input) => {
-                let new_node = LogicalPlan::OrderBy(OrderBy {
-                    input: new_input.clone(),
-                    items: self.items.clone(),
-                });
-                Transformed::Yes(Arc::new(new_node))
-            }
-            Transformed::No(_) => Transformed::No(old_plan.clone()),
-        }
+        handle_rebuild_or_clone(input_tf.is_yes(), old_plan, || {
+            Arc::new(LogicalPlan::OrderBy(OrderBy {
+                input: input_tf.get_plan(),
+                items: self.items.clone(),
+            }))
+        })
     }
 }
 
@@ -931,16 +933,12 @@ impl Skip {
         input_tf: Transformed<Arc<LogicalPlan>>,
         old_plan: Arc<LogicalPlan>,
     ) -> Transformed<Arc<LogicalPlan>> {
-        match input_tf {
-            Transformed::Yes(new_input) => {
-                let new_node = LogicalPlan::Skip(Skip {
-                    input: new_input.clone(),
-                    count: self.count,
-                });
-                Transformed::Yes(Arc::new(new_node))
-            }
-            Transformed::No(_) => Transformed::No(old_plan.clone()),
-        }
+        handle_rebuild_or_clone(input_tf.is_yes(), old_plan, || {
+            Arc::new(LogicalPlan::Skip(Skip {
+                input: input_tf.get_plan(),
+                count: self.count,
+            }))
+        })
     }
 }
 
@@ -950,16 +948,12 @@ impl Limit {
         input_tf: Transformed<Arc<LogicalPlan>>,
         old_plan: Arc<LogicalPlan>,
     ) -> Transformed<Arc<LogicalPlan>> {
-        match input_tf {
-            Transformed::Yes(new_input) => {
-                let new_node = LogicalPlan::Limit(Limit {
-                    input: new_input.clone(),
-                    count: self.count,
-                });
-                Transformed::Yes(Arc::new(new_node))
-            }
-            Transformed::No(_) => Transformed::No(old_plan.clone()),
-        }
+        handle_rebuild_or_clone(input_tf.is_yes(), old_plan, || {
+            Arc::new(LogicalPlan::Limit(Limit {
+                input: input_tf.get_plan(),
+                count: self.count,
+            }))
+        })
     }
 }
 
@@ -970,20 +964,15 @@ impl GraphNode {
         input_tf: Transformed<Arc<LogicalPlan>>,
         old_plan: Arc<LogicalPlan>,
     ) -> Transformed<Arc<LogicalPlan>> {
-        match input_tf {
-            Transformed::Yes(new_input) => {
-                let new_graph_node = LogicalPlan::GraphNode(GraphNode {
-                    input: new_input.clone(),
-                    // self_plan: self_tf.get_plan(),
-                    alias: self.alias.clone(),
-                    label: self.label.clone(),
-                    is_denormalized: self.is_denormalized,
-                    projected_columns: self.projected_columns.clone(),
-                });
-                Transformed::Yes(Arc::new(new_graph_node))
-            }
-            Transformed::No(_) => Transformed::No(old_plan.clone()),
-        }
+        handle_rebuild_or_clone(input_tf.is_yes(), old_plan, || {
+            Arc::new(LogicalPlan::GraphNode(GraphNode {
+                input: input_tf.get_plan(),
+                alias: self.alias.clone(),
+                label: self.label.clone(),
+                is_denormalized: self.is_denormalized,
+                projected_columns: self.projected_columns.clone(),
+            }))
+        })
     }
 }
 
@@ -995,12 +984,8 @@ impl GraphRel {
         right_tf: Transformed<Arc<LogicalPlan>>,
         old_plan: Arc<LogicalPlan>,
     ) -> Transformed<Arc<LogicalPlan>> {
-        let left_changed = left_tf.is_yes();
-        let right_changed = right_tf.is_yes();
-        let center_changed = center_tf.is_yes();
-
-        if left_changed | right_changed | center_changed {
-            let new_graph_rel = LogicalPlan::GraphRel(GraphRel {
+        if any_transformed(&[&left_tf, &center_tf, &right_tf]) {
+            Transformed::Yes(Arc::new(LogicalPlan::GraphRel(GraphRel {
                 left: left_tf.get_plan(),
                 center: center_tf.get_plan(),
                 right: right_tf.get_plan(),
@@ -1008,7 +993,6 @@ impl GraphRel {
                 left_connection: self.left_connection.clone(),
                 right_connection: self.right_connection.clone(),
                 direction: self.direction.clone(),
-                // is_anchor_graph_rel: self.is_anchor_graph_rel,
                 is_rel_anchor: self.is_rel_anchor,
                 variable_length: self.variable_length.clone(),
                 shortest_path_mode: self.shortest_path_mode.clone(),
@@ -1018,10 +1002,9 @@ impl GraphRel {
                 is_optional: self.is_optional,
                 anchor_connection: self.anchor_connection.clone(),
                 cte_references: std::collections::HashMap::new(),
-            });
-            Transformed::Yes(Arc::new(new_graph_rel))
+            })))
         } else {
-            Transformed::No(old_plan.clone())
+            Transformed::No(old_plan)
         }
     }
 }
@@ -1032,21 +1015,18 @@ impl Cte {
         input_tf: Transformed<Arc<LogicalPlan>>,
         old_plan: Arc<LogicalPlan>,
     ) -> Transformed<Arc<LogicalPlan>> {
-        match input_tf {
-            Transformed::Yes(new_input) => {
-                // if new input is empty then remove the CTE
-                if matches!(new_input.as_ref(), LogicalPlan::Empty) {
-                    Transformed::Yes(new_input.clone())
-                } else {
-                    let new_node = LogicalPlan::Cte(Cte {
-                        input: new_input.clone(),
-                        name: self.name.clone(),
-                    });
-                    Transformed::Yes(Arc::new(new_node))
-                }
+        handle_rebuild_or_clone(input_tf.is_yes(), old_plan, || {
+            let new_input = input_tf.get_plan();
+            // If new input is empty then remove the CTE
+            if matches!(new_input.as_ref(), LogicalPlan::Empty) {
+                new_input
+            } else {
+                Arc::new(LogicalPlan::Cte(Cte {
+                    input: new_input,
+                    name: self.name.clone(),
+                }))
             }
-            Transformed::No(_) => Transformed::No(old_plan.clone()),
-        }
+        })
     }
 }
 
@@ -1056,20 +1036,16 @@ impl GraphJoins {
         input_tf: Transformed<Arc<LogicalPlan>>,
         old_plan: Arc<LogicalPlan>,
     ) -> Transformed<Arc<LogicalPlan>> {
-        match input_tf {
-            Transformed::Yes(new_input) => {
-                let new_graph_joins = LogicalPlan::GraphJoins(GraphJoins {
-                    input: new_input.clone(),
-                    joins: self.joins.clone(),
-                    optional_aliases: self.optional_aliases.clone(),
-                    anchor_table: self.anchor_table.clone(),
-                    cte_references: self.cte_references.clone(),
-                    correlation_predicates: vec![],
-                });
-                Transformed::Yes(Arc::new(new_graph_joins))
-            }
-            Transformed::No(_) => Transformed::No(old_plan.clone()),
-        }
+        handle_rebuild_or_clone(input_tf.is_yes(), old_plan, || {
+            Arc::new(LogicalPlan::GraphJoins(GraphJoins {
+                input: input_tf.get_plan(),
+                joins: self.joins.clone(),
+                optional_aliases: self.optional_aliases.clone(),
+                anchor_table: self.anchor_table.clone(),
+                cte_references: self.cte_references.clone(),
+                correlation_predicates: vec![],
+            }))
+        })
     }
 }
 
@@ -1079,26 +1055,18 @@ impl Union {
         inputs_tf: Vec<Transformed<Arc<LogicalPlan>>>,
         old_plan: Arc<LogicalPlan>,
     ) -> Transformed<Arc<LogicalPlan>> {
-        // iterate over inputs_tf vec and check if any one of them is transformed.
-        // If yes then break the iteration and club all inputs irrespective of transformation status.
-        // If no then return the old plan.
-        let mut is_transformed = false;
-        for input_tf in &inputs_tf {
-            if input_tf.is_yes() {
-                is_transformed = true;
-                break;
-            }
-        }
+        // Check if any input was transformed
+        let is_transformed = inputs_tf.iter().any(|tf| tf.is_yes());
+        
         if is_transformed {
             let new_inputs: Vec<Arc<LogicalPlan>> =
                 inputs_tf.into_iter().map(|tf| tf.get_plan()).collect();
-            let new_union = LogicalPlan::Union(Union {
+            Transformed::Yes(Arc::new(LogicalPlan::Union(Union {
                 inputs: new_inputs,
                 union_type: self.union_type.clone(),
-            });
-            Transformed::Yes(Arc::new(new_union))
+            })))
         } else {
-            Transformed::No(old_plan.clone())
+            Transformed::No(old_plan)
         }
     }
 }
