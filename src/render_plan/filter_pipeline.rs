@@ -2,6 +2,7 @@ use super::render_expr::{
     AggregateFnCall, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall,
     TableAlias,
 };
+use super::expression_utils::property_access_expr;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::join_context::{
@@ -529,13 +530,8 @@ pub fn rewrite_labels_subscript_for_multi_type_vlp(expr: &RenderExpr) -> RenderE
                             alias,
                             alias
                         );
-                        // Return x.end_type
-                        return RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias(alias.clone()),
-                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                "end_type".to_string(),
-                            ),
-                        });
+                        // Return x.end_type using factory helper
+                        return property_access_expr(alias, "end_type");
                     }
                 }
             }

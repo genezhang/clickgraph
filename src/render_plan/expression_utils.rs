@@ -542,6 +542,22 @@ impl MutablePropertyColumnRewriter {
     }
 }
 
+/// Factory helpers for common PropertyAccess patterns
+/// These reduce boilerplate when constructing PropertyAccessExp expressions
+
+/// Create a PropertyAccess with a simple column name
+pub fn create_property_access(alias: &str, column: &str) -> PropertyAccess {
+    PropertyAccess {
+        table_alias: TableAlias(alias.to_string()),
+        column: PropertyValue::Column(column.to_string()),
+    }
+}
+
+/// Create a PropertyAccessExp RenderExpr with a simple column name
+pub fn property_access_expr(alias: &str, column: &str) -> RenderExpr {
+    RenderExpr::PropertyAccessExp(create_property_access(alias, column))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,5 +573,23 @@ mod tests {
 
         assert!(references_alias(&expr, "users"));
         assert!(!references_alias(&expr, "posts"));
+    }
+
+    #[test]
+    fn test_create_property_access() {
+        let prop = create_property_access("users", "name");
+        assert_eq!(prop.table_alias.0, "users");
+        assert_eq!(prop.column.raw(), "name");
+    }
+
+    #[test]
+    fn test_property_access_expr() {
+        let expr = property_access_expr("posts", "id");
+        if let RenderExpr::PropertyAccessExp(prop) = expr {
+            assert_eq!(prop.table_alias.0, "posts");
+            assert_eq!(prop.column.raw(), "id");
+        } else {
+            panic!("Expected PropertyAccessExp");
+        }
     }
 }
