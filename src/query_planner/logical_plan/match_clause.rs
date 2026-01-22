@@ -441,7 +441,7 @@ pub fn try_generate_view_scan(
             if rel_types.len() > 1 || metadata.id_sources.values().any(|v| v.len() > 1) {
                 // MULTI-TABLE CASE: Node appears in multiple tables/positions
                 log::info!(
-                    "✓ Denormalized node '{}' appears in {} relationship types - creating multi-table UNION",
+                    "✓ Denormalized node '{}' appears in {} relationship type(s) - creating multi-table UNION",
                     label, rel_types.len()
                 );
 
@@ -459,6 +459,10 @@ pub fn try_generate_view_scan(
                                     label,
                                     full_table_name,
                                     rel_type
+                                );
+                                log::info!(
+                                    "DEBUG: Adding FROM branch. union_inputs before push: len={}",
+                                    union_inputs.len()
                                 );
 
                                 // 🔧 FIX: Populate property_mapping from from_props so full node expansion works
@@ -493,19 +497,43 @@ pub fn try_generate_view_scan(
                                 );
                                 from_scan.is_denormalized = true;
                                 from_scan.from_node_properties = Some(property_mapping);
+                                log::info!(
+                                    "DEBUG: FROM ViewScan properties: from={:?}, to={:?}",
+                                    from_scan
+                                        .from_node_properties
+                                        .as_ref()
+                                        .map(|p| p.keys().collect::<Vec<_>>()),
+                                    from_scan
+                                        .to_node_properties
+                                        .as_ref()
+                                        .map(|p| p.keys().collect::<Vec<_>>())
+                                );
                                 union_inputs
                                     .push(Arc::new(LogicalPlan::ViewScan(Arc::new(from_scan))));
+                                log::info!(
+                                    "DEBUG: Added FROM branch. union_inputs after push: len={}",
+                                    union_inputs.len()
+                                );
                             }
                         }
 
                         // Check if this node is in TO position
                         if rel_schema.to_node == label {
+                            log::info!("DEBUG: Checking TO position. to_node='{}', label='{}', has to_node_properties: {}", rel_schema.to_node, label, rel_schema.to_node_properties.is_some());
                             if let Some(ref to_props) = rel_schema.to_node_properties {
+                                log::info!(
+                                    "DEBUG: TO props: {:?}",
+                                    to_props.keys().collect::<Vec<_>>()
+                                );
                                 log::debug!(
                                     "✓ Adding TO branch for '{}' from table '{}' (rel: {})",
                                     label,
                                     full_table_name,
                                     rel_type
+                                );
+                                log::info!(
+                                    "DEBUG: Adding TO branch. union_inputs before push: len={}",
+                                    union_inputs.len()
                                 );
 
                                 // 🔧 FIX: Populate property_mapping from to_props so full node expansion works
@@ -540,8 +568,23 @@ pub fn try_generate_view_scan(
                                 );
                                 to_scan.is_denormalized = true;
                                 to_scan.to_node_properties = Some(property_mapping);
+                                log::info!(
+                                    "DEBUG: TO ViewScan properties: from={:?}, to={:?}",
+                                    to_scan
+                                        .from_node_properties
+                                        .as_ref()
+                                        .map(|p| p.keys().collect::<Vec<_>>()),
+                                    to_scan
+                                        .to_node_properties
+                                        .as_ref()
+                                        .map(|p| p.keys().collect::<Vec<_>>())
+                                );
                                 union_inputs
                                     .push(Arc::new(LogicalPlan::ViewScan(Arc::new(to_scan))));
+                                log::info!(
+                                    "DEBUG: Added TO branch. union_inputs after push: len={}",
+                                    union_inputs.len()
+                                );
                             }
                         }
                     }
@@ -607,7 +650,7 @@ pub fn try_generate_view_scan(
         // Case 3: BOTH from and to properties → UNION ALL of two ViewScans
         if has_from_props && has_to_props {
             log::info!(
-                "✓ Denormalized node '{}' has BOTH positions - creating UNION ALL",
+                "✓✓✓ SINGLE-TABLE CASE: Denormalized node '{}' has BOTH positions - creating UNION ALL ✓✓✓",
                 label
             );
 
@@ -673,7 +716,10 @@ pub fn try_generate_view_scan(
                 union_type: UnionType::All,
             };
 
-            log::info!("✓ Created UNION ALL for denormalized node '{}'", label);
+            log::info!(
+                ">>>SINGLE-TABLE CASE: Created UNION with 2 branches for '{}' <<<",
+                label
+            );
             return Ok(Some(Arc::new(LogicalPlan::Union(union))));
         }
 
@@ -720,7 +766,64 @@ pub fn try_generate_view_scan(
         return Ok(Some(Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan)))));
     }
 
-    // Log successful resolution
+    // MULTI_TABLE_LABEL CHECK: Non-denormalized nodes with same label in multiple tables
+    // This happens when the config has multiple node definitions with the same label but different tables
+    let all_schemas_for_label = schema.get_all_node_schemas_for_label(label);
+    if all_schemas_for_label.len() > 1 {
+        log::info!(
+            "✓ MULTI_TABLE_LABEL: Found '{}' in {} different tables - creating UNION ALL",
+            label,
+            all_schemas_for_label.len()
+        );
+
+        let mut union_inputs: Vec<Arc<LogicalPlan>> = Vec::new();
+
+        for (_composite_key, other_schema) in all_schemas_for_label {
+            let full_table_name = format!("{}.{}", other_schema.database, other_schema.table_name);
+            let id_column = other_schema
+                .node_id
+                .columns()
+                .first()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "id".to_string());
+
+            let mut view_scan = ViewScan::new(
+                full_table_name,
+                None,
+                other_schema.property_mappings.clone(),
+                id_column,
+                vec![],
+                vec![],
+            );
+
+            view_scan.schema_filter = other_schema.filter.clone();
+            log::debug!(
+                "Added ViewScan for '{}' from table '{}.{}'",
+                label,
+                other_schema.database,
+                other_schema.table_name
+            );
+
+            union_inputs.push(Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))));
+        }
+
+        if union_inputs.len() > 1 {
+            use crate::query_planner::logical_plan::{Union, UnionType};
+            let union = Union {
+                inputs: union_inputs,
+                union_type: UnionType::All,
+            };
+
+            log::info!(
+                "✓ Created MULTI_TABLE_LABEL UNION with {} branches for '{}'",
+                union.inputs.len(),
+                label
+            );
+            return Ok(Some(Arc::new(LogicalPlan::Union(union))));
+        }
+    }
+
+    // SINGLE-TABLE CASE OR NON-DENORMALIZED: Use standard ViewScan logic
     log::info!(
         "✓ ViewScan: Resolved label '{}' to table '{}'",
         label,
@@ -2429,6 +2532,10 @@ fn traverse_node_pattern(
                 inputs: wrapped_inputs,
                 union_type: union.union_type.clone(),
             };
+            log::info!(
+                "✓✓✓ WRAPPING UNION: {} branches being wrapped in GraphNodes ✓✓✓",
+                wrapped_union.inputs.len()
+            );
             return Ok(Arc::new(LogicalPlan::Union(wrapped_union)));
         }
 

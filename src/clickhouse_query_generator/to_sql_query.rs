@@ -466,6 +466,15 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
             .iter()
             .any(|item| matches!(&item.expression, RenderExpr::AggregateFnCall(_)));
 
+        log::debug!(
+            "UNION rendering: has_aggregation={}, select_items={}",
+            has_aggregation,
+            plan.select.items.len()
+        );
+        for (idx, item) in plan.select.items.iter().enumerate() {
+            log::debug!("  select[{}]: expr={:?}", idx, item.expression);
+        }
+
         // Check if we need the subquery wrapper (when there's ORDER BY, LIMIT, GROUP BY, or aggregation)
         let needs_subquery = !plan.order_by.0.is_empty()
             || plan.limit.0.is_some()
@@ -473,20 +482,70 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
             || !plan.group_by.0.is_empty()
             || has_aggregation;
 
+        log::debug!("UNION rendering: needs_subquery={}", needs_subquery);
+
         if needs_subquery {
             // Wrap UNION in a subquery
             // If there are specific SELECT items (aggregation case), use them
             // Otherwise default to SELECT *
-            if !plan.select.items.is_empty() {
+            // For UNION with ordering/limiting, wrap in subquery and apply ORDER BY/LIMIT to outer query
+            sql.push_str("SELECT ");
+
+            if let Some(union) = &plan.union.0 {
+                // For UNION queries with aggregations, we need to select all columns from the subquery
+                // and apply the aggregation in the outer SELECT.
+                // For UNION queries without aggregations, select column aliases.
+                if has_aggregation {
+                    // With aggregation: apply the aggregation functions to the UNION result
+                    // The aggregation expressions will reference columns from the UNION
+                    let agg_select = plan
+                        .select
+                        .items
+                        .iter()
+                        .map(|item| {
+                            // Keep the aggregation expression as-is; it will reference UNION columns
+                            format!(
+                                "{} AS \"{}\"",
+                                item.expression.to_sql(),
+                                item.col_alias
+                                    .as_ref()
+                                    .map(|a| a.0.clone())
+                                    .unwrap_or_else(|| "result".to_string())
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    sql.push_str(&agg_select);
+                } else {
+                    // Without aggregation: select column aliases from the subquery
+                    let alias_select = plan
+                        .select
+                        .items
+                        .iter()
+                        .map(|item| {
+                            if let Some(col_alias) = &item.col_alias {
+                                format!("__union.`{}` AS `{}`", col_alias.0, col_alias.0)
+                            } else {
+                                // Fallback to the expression
+                                item.expression.to_sql()
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    sql.push_str(&alias_select);
+                }
+            } else if !plan.select.items.is_empty() {
                 sql.push_str(&plan.select.to_sql());
-                sql.push_str("FROM (\n");
             } else {
-                sql.push_str("SELECT * FROM (\n");
+                sql.push_str("*");
             }
+
+            sql.push_str(" FROM (\n");
 
             // CRITICAL FIX: Generate the first branch's SQL from the base plan
             // The base plan (plan.select, plan.from, plan.joins, plan.filters) IS the first branch
             // plan.union only contains branches 2+
+            // For denormalized UNIONs, use the plan's own SELECT which has the correct properties for the first branch
             let first_branch_sql = {
                 let mut branch_sql = String::new();
                 branch_sql.push_str(&plan.select.to_sql());
@@ -505,7 +564,16 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
                 };
                 for union_branch in &union.input {
                     sql.push_str(union_type_str);
-                    sql.push_str(&union_branch.to_sql());
+                    let branch_sql = {
+                        let mut bsql = String::new();
+                        // USE each branch's own SELECT items, not the first branch's
+                        bsql.push_str(&union_branch.select.to_sql());
+                        bsql.push_str(&union_branch.from.to_sql());
+                        bsql.push_str(&union_branch.joins.to_sql());
+                        bsql.push_str(&union_branch.filters.to_sql());
+                        bsql
+                    };
+                    sql.push_str(&branch_sql);
                 }
             }
 
@@ -548,7 +616,15 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
                 };
                 for union_branch in &union.input {
                     sql.push_str(union_type_str);
-                    sql.push_str(&union_branch.to_sql());
+                    let branch_sql = {
+                        let mut bsql = String::new();
+                        bsql.push_str(&union_branch.select.to_sql());
+                        bsql.push_str(&union_branch.from.to_sql());
+                        bsql.push_str(&union_branch.joins.to_sql());
+                        bsql.push_str(&union_branch.filters.to_sql());
+                        bsql
+                    };
+                    sql.push_str(&branch_sql);
                 }
             }
         }

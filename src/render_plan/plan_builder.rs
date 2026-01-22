@@ -703,9 +703,28 @@ impl RenderPlanBuilder for LogicalPlan {
         None
     }
 
-    fn extract_union(&self, _schema: &GraphSchema) -> RenderPlanBuilderResult<Option<Union>> {
+    fn extract_union(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<Option<Union>> {
+        // For GraphJoins, check if Union is nested inside (possibly wrapped in GraphNode, Projection, GroupBy, etc.)
+        if let LogicalPlan::GraphJoins(gj) = self {
+            let mut current = gj.input.as_ref();
+            loop {
+                match current {
+                    LogicalPlan::GraphNode(gn) => current = gn.input.as_ref(),
+                    LogicalPlan::Projection(proj) => current = proj.input.as_ref(),
+                    LogicalPlan::GroupBy(gb) => current = gb.input.as_ref(),
+                    LogicalPlan::Union(union) => {
+                        // Found Union nested deep, convert it to render plan
+                        log::debug!("extract_union: found nested Union, converting to render");
+                        let union_render_plan = current.to_render_plan(schema)?;
+                        return Ok(union_render_plan.union.0);
+                    }
+                    _ => break,
+                }
+            }
+        }
+
         // Note: UNION is handled by LogicalPlan::Union nodes in to_render_plan().
-        // This method returns None for GraphJoins/GraphRel which don't directly have UNION.
+        // This method returns None for other node types.
         Ok(None)
     }
 
@@ -723,6 +742,24 @@ impl RenderPlanBuilder for LogicalPlan {
         use super::plan_builder_utils::{
             build_chained_with_match_cte_plan, has_with_clause_in_graph_rel,
         };
+
+        let plan_name = match self {
+            LogicalPlan::GraphJoins(_) => "GraphJoins",
+            LogicalPlan::GraphRel(_) => "GraphRel",
+            LogicalPlan::Projection(_) => "Projection",
+            LogicalPlan::Filter(_) => "Filter",
+            LogicalPlan::OrderBy(_) => "OrderBy",
+            LogicalPlan::Skip(_) => "Skip",
+            LogicalPlan::Limit(_) => "Limit",
+            LogicalPlan::GroupBy(_) => "GroupBy",
+            LogicalPlan::GraphNode(_) => "GraphNode",
+            LogicalPlan::ViewScan(_) => "ViewScan",
+            LogicalPlan::Union(_) => "Union",
+            LogicalPlan::WithClause(_) => "WithClause",
+            _ => "Other",
+        };
+        log::debug!("to_render_plan called with: {}", plan_name);
+
         if has_with_clause_in_graph_rel(self) {
             return build_chained_with_match_cte_plan(self, schema, None);
         }
@@ -826,7 +863,22 @@ impl RenderPlanBuilder for LogicalPlan {
             }
             LogicalPlan::Projection(p) => {
                 // For Projection, convert the input plan and override the select items
+                log::debug!(
+                    "Projection::to_render_plan: input type={}",
+                    match p.input.as_ref() {
+                        LogicalPlan::GraphNode(_) => "GraphNode",
+                        LogicalPlan::Union(_) => "Union",
+                        _ => "Other",
+                    }
+                );
+
                 let mut render_plan = p.input.to_render_plan(schema)?;
+
+                log::debug!(
+                    "Projection::to_render_plan: after input conversion, has_union={}",
+                    render_plan.union.0.is_some()
+                );
+
                 render_plan.select = SelectItems {
                     items: <LogicalPlan as SelectBuilder>::extract_select_items(self)?,
                     distinct: p.distinct,
@@ -908,6 +960,11 @@ impl RenderPlanBuilder for LogicalPlan {
                 // For GroupBy, convert the input plan and set group_by and having_clause
                 let mut render_plan = gb.input.to_render_plan(schema)?;
 
+                log::debug!(
+                    "GroupBy::to_render_plan: has_union={}",
+                    render_plan.union.0.is_some()
+                );
+
                 // Convert group by expressions
                 let group_by_exprs: Result<Vec<RenderExpr>, _> = gb
                     .expressions
@@ -928,7 +985,21 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::GraphNode(gn) => {
                 // GraphNode is a wrapper around a ViewScan that provides the Cypher alias
                 // We need to preserve this alias in the FROM clause
+                log::debug!(
+                    "GraphNode::to_render_plan: input type={}",
+                    match gn.input.as_ref() {
+                        LogicalPlan::Union(_) => "Union",
+                        LogicalPlan::ViewScan(_) => "ViewScan",
+                        _ => "Other",
+                    }
+                );
+
                 let mut render_plan = gn.input.to_render_plan(schema)?;
+
+                log::debug!(
+                    "GraphNode::to_render_plan: after input conversion, has_union={}",
+                    render_plan.union.0.is_some()
+                );
 
                 // Apply GraphNode's alias to the FROM clause
                 if let FromTableItem(Some(ref mut view_ref)) = render_plan.from {
@@ -1260,7 +1331,14 @@ impl RenderPlanBuilder for LogicalPlan {
         use super::plan_builder_utils::{
             build_chained_with_match_cte_plan, has_with_clause_in_graph_rel,
         };
-        if has_with_clause_in_graph_rel(self) {
+
+        let has_with_clause = has_with_clause_in_graph_rel(self);
+        log::debug!(
+            "to_render_plan_with_ctx: has_with_clause={}",
+            has_with_clause
+        );
+
+        if has_with_clause {
             return build_chained_with_match_cte_plan(self, schema, plan_ctx);
         }
 

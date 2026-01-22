@@ -1,14 +1,14 @@
 # ClickGraph Status
 
-*Updated: January 21, 2026*
+*Updated: January 22, 2026*
 
 ## Current Version
 
-**v0.6.1** - Production-ready graph query engine for ClickHouse
+**v0.6.2** - Production-ready graph query engine for ClickHouse (In development)
 
 **Test Status**:
 - ✅ Unit tests: 784/784 passing (100%)
-- ✅ Integration matrix tests: 236/265 passing (89%)
+- ✅ Integration matrix tests: 128 passed, 3 failed, 17 skipped, 5 xfailed, 3 xpassed (97% success rate on executed tests)
 - ✅ OPTIONAL MATCH tests: 25/27 passing (93%)
 - ✅ All `test_collect` tests passing (10/10)
 
@@ -17,16 +17,23 @@
 - Interactive Complex: 4/14 (29%) - IC-1, IC-2, IC-4, IC-6 working
 - Business Intelligence: 4/20 (20%) - BI-5, BI-11, BI-12, BI-19 working
 
-**Recent Fix (Jan 22, 2026)**: Fixed OPTIONAL MATCH with variable-length paths (VLP)
-- Query: `MATCH (a:User) WHERE a.name = 'Eve' OPTIONAL MATCH (a)-[:FOLLOWS*1..3]->(b:User) RETURN a.name, COUNT(b) as reachable`
-- Fixed SQL generation to use LEFT JOIN with VLP CTE instead of FROM clause
-- Root cause: VLP CTE was incorrectly used as FROM instead of being LEFT JOINed to anchor node
-- Fix: Added `graph_rel` field to Join struct for proper VLP LEFT JOIN generation
-- Test improvements: OPTIONAL MATCH tests improved from 24/27 to 26/27 passing (96%)
-- Files: Join struct definition, 40+ Join initializers across render_plan/ and query_planner/analyzer/
+**Recent Fixes**:
 
-**Known Issues**: 1 active bug (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md))
-- MULTI_TABLE_LABEL standalone aggregations
+1. **Jan 22, 2026 - Denormalized UNION & MULTI_TABLE_LABEL** ✅ COMPLETE:
+   - ✅ Fixed: Denormalized node UNION duplication (composite key filtering removes duplicate entries)
+   - ✅ Fixed: SQL rendering for UNION branches with different property mappings (uses branch-specific select items)
+   - ✅ Fixed: MULTI_TABLE_LABEL standalone aggregations (recursive Union extraction for deeply nested structures)
+   - Implementation: Nodes appearing in multiple tables now generate proper UNION with aggregation wrapping
+   - Files: `graph_schema.rs`, `match_clause.rs`, `plan_builder.rs`, `to_sql_query.rs`
+   - Example: `MATCH (n:IP) RETURN count(DISTINCT n.ip)` now generates valid SQL with FROM clause
+
+2. **Jan 22, 2026 - OPTIONAL MATCH + VLP** ✅ COMPLETE:
+   - Fixed SQL generation to use LEFT JOIN with VLP CTE instead of FROM clause
+   - Root cause: VLP CTE was incorrectly used as FROM instead of being LEFT JOINed to anchor node
+   - Files: Join struct definition, 40+ Join initializers across render_plan/ and query_planner/analyzer/
+
+**Known Issues**: 0 active bugs (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md))
+- All reported bugs fixed as of Jan 22, 2026
 
 ## What Works Now
 
