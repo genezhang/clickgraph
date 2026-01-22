@@ -75,28 +75,59 @@ pub fn build_logical_plan(
         ));
     }
 
-    // Process all MATCH clauses in sequence
-    for (idx, match_clause) in query_ast.match_clauses.iter().enumerate() {
-        log::debug!("build_logical_plan: Processing MATCH clause {}", idx);
-        logical_plan =
-            match_clause::evaluate_match_clause(match_clause, logical_plan, &mut plan_ctx)?;
-    }
+    // Process reading clauses (MATCH and OPTIONAL MATCH) in their original order
+    // This supports interleaved patterns like: OPTIONAL MATCH ... MATCH ... OPTIONAL MATCH ...
+    if !query_ast.reading_clauses.is_empty() {
+        // Use the unified reading_clauses that preserve order
+        use crate::open_cypher_parser::ast::ReadingClause;
+        for (idx, reading_clause) in query_ast.reading_clauses.iter().enumerate() {
+            match reading_clause {
+                ReadingClause::Match(match_clause) => {
+                    log::debug!(
+                        "build_logical_plan: Processing MATCH clause {} (from reading_clauses)",
+                        idx
+                    );
+                    logical_plan = match_clause::evaluate_match_clause(
+                        match_clause,
+                        logical_plan,
+                        &mut plan_ctx,
+                    )?;
+                }
+                ReadingClause::OptionalMatch(optional_match) => {
+                    log::debug!("build_logical_plan: Processing OPTIONAL MATCH clause {} (from reading_clauses)", idx);
+                    logical_plan = optional_match_clause::evaluate_optional_match_clause(
+                        optional_match,
+                        logical_plan,
+                        &mut plan_ctx,
+                    )?;
+                }
+            }
+        }
+    } else {
+        // Fallback to separate lists for backward compatibility
+        // Process all MATCH clauses in sequence
+        for (idx, match_clause) in query_ast.match_clauses.iter().enumerate() {
+            log::debug!("build_logical_plan: Processing MATCH clause {}", idx);
+            logical_plan =
+                match_clause::evaluate_match_clause(match_clause, logical_plan, &mut plan_ctx)?;
+        }
 
-    // Process OPTIONAL MATCH clauses after regular MATCH
-    log::debug!(
-        "build_logical_plan: About to process {} OPTIONAL MATCH clauses",
-        query_ast.optional_match_clauses.len()
-    );
-    for (idx, optional_match) in query_ast.optional_match_clauses.iter().enumerate() {
+        // Process OPTIONAL MATCH clauses after regular MATCH
         log::debug!(
-            "build_logical_plan: Processing OPTIONAL MATCH clause {}",
-            idx
+            "build_logical_plan: About to process {} OPTIONAL MATCH clauses",
+            query_ast.optional_match_clauses.len()
         );
-        logical_plan = optional_match_clause::evaluate_optional_match_clause(
-            optional_match,
-            logical_plan,
-            &mut plan_ctx,
-        )?;
+        for (idx, optional_match) in query_ast.optional_match_clauses.iter().enumerate() {
+            log::debug!(
+                "build_logical_plan: Processing OPTIONAL MATCH clause {}",
+                idx
+            );
+            logical_plan = optional_match_clause::evaluate_optional_match_clause(
+                optional_match,
+                logical_plan,
+                &mut plan_ctx,
+            )?;
+        }
     }
 
     // Process UNWIND clauses after MATCH/OPTIONAL MATCH, before WITH

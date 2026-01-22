@@ -45,4 +45,7 @@ pub enum RenderBuildError {
         "Missing table information for {0}. Schema lookup failed and no fallback is available."
     )]
     MissingTableInfo(String),
+
+    #[error("Union has no branches to render")]
+    EmptyUnionBranches,
 }

@@ -1085,28 +1085,52 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Strategy: Render left side as base, render right side and add as JOIN
                 // - Non-optional: CROSS JOIN (or comma-join)
                 // - Optional (is_optional=true): LEFT JOIN
+                //
+                // SPECIAL CASE: When OPTIONAL MATCH comes first (left is optional, right is required),
+                // we need to SWAP the rendering order so that:
+                // 1. Required pattern becomes FROM (base)
+                // 2. Optional pattern becomes LEFT JOIN
+                // This prevents generating invalid SQL where optional joins reference undefined aliases.
+
+                let left_is_optional = cp.left.is_optional_pattern();
+                let right_is_optional = cp.right.is_optional_pattern();
 
                 log::info!(
-                    "🔧 CartesianProduct.to_render_plan: is_optional={}, has_join_condition={}",
+                    "🔧 CartesianProduct.to_render_plan: is_optional={}, left_is_optional={}, right_is_optional={}, has_join_condition={}",
                     cp.is_optional,
+                    left_is_optional,
+                    right_is_optional,
                     cp.join_condition.is_some()
                 );
 
-                // Render left side (base)
-                let mut left_render = cp.left.to_render_plan(schema)?;
+                // Determine if we need to swap: left is optional BUT right is required
+                let swap_order = left_is_optional && !right_is_optional;
 
-                // Render right side
+                if swap_order {
+                    log::info!("🔄 CartesianProduct: SWAPPING order - right (required) becomes FROM, left (optional) becomes LEFT JOIN");
+                }
+
+                // Render both sides
+                let left_render = cp.left.to_render_plan(schema)?;
                 let right_render = cp.right.to_render_plan(schema)?;
 
-                // Merge CTEs from both sides
-                let mut all_ctes = left_render.ctes.0;
-                all_ctes.extend(right_render.ctes.0);
+                // Decide which is base and which is joined based on swap_order
+                let (mut base_render, joined_render, joined_is_optional) = if swap_order {
+                    // Right becomes base, left (optional) becomes joined
+                    (right_render, left_render, true)
+                } else {
+                    // Normal order: left is base, right is joined
+                    (left_render, right_render, cp.is_optional)
+                };
 
-                // Get the right side's FROM as a JOIN target
-                if let FromTableItem(Some(right_from)) = &right_render.from {
-                    // Determine join type based on is_optional
-                    // Note: JoinType::Join is used for CROSS JOIN semantics
-                    let join_type = if cp.is_optional {
+                // Merge CTEs from both sides
+                let mut all_ctes = base_render.ctes.0;
+                all_ctes.extend(joined_render.ctes.0);
+
+                // Get the joined side's FROM as a JOIN target
+                if let FromTableItem(Some(joined_from)) = &joined_render.from {
+                    // Determine join type
+                    let join_type = if joined_is_optional {
                         super::JoinType::Left
                     } else {
                         super::JoinType::Join // CROSS JOIN
@@ -1115,62 +1139,108 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Build join condition if present
                     let joining_on: Vec<OperatorApplication> =
                         if let Some(ref join_cond) = cp.join_condition {
-                            // Convert LogicalExpr join condition to OperatorApplication format
                             extract_join_condition_ops(join_cond).unwrap_or_default()
                         } else {
                             vec![]
                         };
 
-                    // Create the JOIN from the right side's FROM clause
+                    // Create the JOIN from the joined side's FROM clause
                     let join = super::Join {
-                        join_type,
-                        table_name: right_from.name.clone(),
-                        table_alias: right_from
+                        join_type: join_type.clone(),
+                        table_name: joined_from.name.clone(),
+                        table_alias: joined_from
                             .alias
                             .clone()
-                            .unwrap_or_else(|| right_from.name.clone()),
+                            .unwrap_or_else(|| joined_from.name.clone()),
                         joining_on,
                         pre_filter: None,
                         from_id_column: None,
                         to_id_column: None,
+                        graph_rel: None,
                     };
 
                     // Add to existing joins
-                    left_render.joins.0.push(join);
+                    base_render.joins.0.push(join);
 
-                    // Also add any joins from the right side (if the right side had relationships)
-                    left_render.joins.0.extend(right_render.joins.0);
+                    // Add any joins from the joined side
+                    // IMPORTANT: If we swapped and left was optional, these joins need to be LEFT JOINs
+                    if swap_order {
+                        // Convert all joined side's joins to LEFT JOIN since the whole pattern is optional
+                        for mut j in joined_render.joins.0 {
+                            j.join_type = super::JoinType::Left;
+                            base_render.joins.0.push(j);
+                        }
+                    } else {
+                        base_render.joins.0.extend(joined_render.joins.0);
+                    }
                 }
 
-                // If left has no FROM but right does, use right's FROM as base
-                if matches!(left_render.from, FromTableItem(None))
-                    && !matches!(right_render.from, FromTableItem(None))
+                // If base has no FROM but joined does, use joined's FROM as base
+                if matches!(base_render.from, FromTableItem(None))
+                    && !matches!(joined_render.from, FromTableItem(None))
                 {
-                    left_render.from = right_render.from;
+                    base_render.from = joined_render.from.clone();
                 }
 
-                // Merge select items if left has none
-                if left_render.select.items.is_empty() {
-                    left_render.select = right_render.select;
+                // Merge select items if base has none
+                if base_render.select.items.is_empty() {
+                    base_render.select = joined_render.select;
+                } else if swap_order && !joined_render.select.items.is_empty() {
+                    // When swapping, we need to include both sides' select items
+                    // The original left (now joined) had the main select items
+                    base_render.select.items.extend(joined_render.select.items);
                 }
 
                 // Merge filters
-                if let (FilterItems(Some(left_filter)), FilterItems(Some(right_filter))) =
-                    (&left_render.filters, &right_render.filters)
+                if let (FilterItems(Some(base_filter)), FilterItems(Some(joined_filter))) =
+                    (&base_render.filters, &joined_render.filters)
                 {
-                    left_render.filters = FilterItems(Some(RenderExpr::OperatorApplicationExp(
+                    base_render.filters = FilterItems(Some(RenderExpr::OperatorApplicationExp(
                         OperatorApplication {
                             operator: Operator::And,
-                            operands: vec![left_filter.clone(), right_filter.clone()],
+                            operands: vec![base_filter.clone(), joined_filter.clone()],
                         },
                     )));
-                } else if matches!(left_render.filters, FilterItems(None)) {
-                    left_render.filters = right_render.filters;
+                } else if matches!(base_render.filters, FilterItems(None)) {
+                    base_render.filters = joined_render.filters;
                 }
 
-                left_render.ctes = CteItems(all_ctes);
+                base_render.ctes = CteItems(all_ctes);
 
-                Ok(left_render)
+                Ok(base_render)
+            }
+            LogicalPlan::Union(union) => {
+                // Union - convert each branch to RenderPlan and combine with UNION ALL
+                if union.inputs.is_empty() {
+                    return Err(RenderBuildError::InvalidRenderPlan(
+                        "Union has no inputs".to_string(),
+                    ));
+                }
+
+                // Convert first branch to get the base plan
+                let first_input = &union.inputs[0];
+                let mut base_plan = first_input.to_render_plan(schema)?;
+
+                // If there's only one branch, just return it
+                if union.inputs.len() == 1 {
+                    return Ok(base_plan);
+                }
+
+                // Convert remaining branches
+                let mut union_branches = Vec::new();
+                for input in union.inputs.iter().skip(1) {
+                    let branch_plan = input.to_render_plan(schema)?;
+                    union_branches.push(branch_plan);
+                }
+
+                // Store union branches in the base plan
+                // UnionType::All corresponds to UNION ALL
+                base_plan.union = UnionItems(Some(super::Union {
+                    input: union_branches,
+                    union_type: super::UnionType::All,
+                }));
+
+                Ok(base_plan)
             }
             _ => todo!(
                 "Render plan conversion not implemented for LogicalPlan variant: {:?}",

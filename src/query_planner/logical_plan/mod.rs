@@ -652,6 +652,9 @@ pub struct Join {
     /// The ID column name from the target/right side of the relationship (if this is a relationship join)
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub to_id_column: Option<String>,
+    /// For VLP joins, the original GraphRel for CTE generation
+    #[serde(skip)]
+    pub graph_rel: Option<Arc<GraphRel>>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Default)]
@@ -1189,6 +1192,36 @@ impl LogicalPlan {
             }],
             distinct: false,
         })
+    }
+
+    /// Check if this plan represents an optional pattern (from OPTIONAL MATCH).
+    /// Returns true if the plan contains a GraphRel or GraphJoins marked as optional.
+    /// This is used to determine proper anchor selection when combining required and
+    /// optional patterns via CartesianProduct.
+    pub fn is_optional_pattern(&self) -> bool {
+        match self {
+            // GraphRel with is_optional=Some(true) is an optional pattern
+            LogicalPlan::GraphRel(rel) => rel.is_optional.unwrap_or(false),
+            // GraphJoins can have optional=true from the underlying GraphRel
+            LogicalPlan::GraphJoins(joins) => joins.input.is_optional_pattern(),
+            // Recursively check through wrapper nodes
+            LogicalPlan::GraphNode(node) => node.input.is_optional_pattern(),
+            LogicalPlan::Filter(filter) => filter.input.is_optional_pattern(),
+            LogicalPlan::Projection(proj) => proj.input.is_optional_pattern(),
+            LogicalPlan::GroupBy(gb) => gb.input.is_optional_pattern(),
+            LogicalPlan::OrderBy(ob) => ob.input.is_optional_pattern(),
+            LogicalPlan::Skip(skip) => skip.input.is_optional_pattern(),
+            LogicalPlan::Limit(limit) => limit.input.is_optional_pattern(),
+            LogicalPlan::Cte(cte) => cte.input.is_optional_pattern(),
+            LogicalPlan::Unwind(u) => u.input.is_optional_pattern(),
+            // CartesianProduct: check if both sides are optional
+            // (If either side is required, the overall pattern isn't purely optional)
+            LogicalPlan::CartesianProduct(cp) => {
+                cp.left.is_optional_pattern() && (cp.is_optional || cp.right.is_optional_pattern())
+            }
+            // Empty and other leaf nodes are not optional
+            _ => false,
+        }
     }
 }
 

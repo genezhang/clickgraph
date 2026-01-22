@@ -260,6 +260,25 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                 log::info!("🔧   GROUP BY rewritten from: {} → {}", before, after);
             }
         }
+
+        // 🔧 BUG FIX: Also rewrite ORDER BY expressions for VLP queries
+        // The ORDER BY clause may contain Cypher aliases (e.g., b.name)
+        // that need to be rewritten to use VLP CTE columns (e.g., t.end_name)
+        log::info!("🔧 VLP ORDER BY rewriting: {} items", plan.order_by.0.len());
+        for (idx, order_item) in plan.order_by.0.iter_mut().enumerate() {
+            log::info!("🔧 ORDER BY {}: {:?}", idx, order_item.expression);
+            let before = format!("{:?}", order_item.expression);
+            order_item.expression = rewrite_expr_for_vlp(
+                &order_item.expression,
+                &start_alias,
+                &end_alias,
+                &path_variable,
+            );
+            let after = format!("{:?}", order_item.expression);
+            if before != after {
+                log::info!("🔧   ORDER BY rewritten from: {} → {}", before, after);
+            }
+        }
     }
 
     plan
@@ -464,7 +483,32 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
             } else {
                 sql.push_str("SELECT * FROM (\n");
             }
-            sql.push_str(&plan.union.to_sql());
+
+            // CRITICAL FIX: Generate the first branch's SQL from the base plan
+            // The base plan (plan.select, plan.from, plan.joins, plan.filters) IS the first branch
+            // plan.union only contains branches 2+
+            let first_branch_sql = {
+                let mut branch_sql = String::new();
+                branch_sql.push_str(&plan.select.to_sql());
+                branch_sql.push_str(&plan.from.to_sql());
+                branch_sql.push_str(&plan.joins.to_sql());
+                branch_sql.push_str(&plan.filters.to_sql());
+                branch_sql
+            };
+            sql.push_str(&first_branch_sql);
+
+            // Now add the remaining branches with UNION ALL
+            if let Some(union) = &plan.union.0 {
+                let union_type_str = match union.union_type {
+                    UnionType::Distinct => "UNION DISTINCT \n",
+                    UnionType::All => "UNION ALL \n",
+                };
+                for union_branch in &union.input {
+                    sql.push_str(union_type_str);
+                    sql.push_str(&union_branch.to_sql());
+                }
+            }
+
             sql.push_str(") AS __union\n");
 
             // Add GROUP BY if present
@@ -485,7 +529,28 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
             }
         } else {
             // No ordering/limiting - bare UNION is fine
-            sql.push_str(&plan.union.to_sql());
+            // But we still need to output the first branch!
+            let first_branch_sql = {
+                let mut branch_sql = String::new();
+                branch_sql.push_str(&plan.select.to_sql());
+                branch_sql.push_str(&plan.from.to_sql());
+                branch_sql.push_str(&plan.joins.to_sql());
+                branch_sql.push_str(&plan.filters.to_sql());
+                branch_sql
+            };
+            sql.push_str(&first_branch_sql);
+
+            // Add remaining branches with UNION
+            if let Some(union) = &plan.union.0 {
+                let union_type_str = match union.union_type {
+                    UnionType::Distinct => "UNION DISTINCT \n",
+                    UnionType::All => "UNION ALL \n",
+                };
+                for union_branch in &union.input {
+                    sql.push_str(union_type_str);
+                    sql.push_str(&union_branch.to_sql());
+                }
+            }
         }
 
         return sql;

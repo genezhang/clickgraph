@@ -46,6 +46,8 @@ pub struct CteGenerationContext {
     pub start_node_label: Option<String>,
     /// End node label (for polymorphic heterogeneous paths)
     pub end_node_label: Option<String>,
+    /// Whether this VLP is optional (affects start node filter handling)
+    pub is_optional: bool,
 }
 
 impl Default for CteGenerationContext {
@@ -65,6 +67,7 @@ impl Default for CteGenerationContext {
             relationship_cypher_alias: None,
             start_node_label: None,
             end_node_label: None,
+            is_optional: false,
         }
     }
 }
@@ -90,6 +93,7 @@ impl CteGenerationContext {
             relationship_cypher_alias: None,
             start_node_label: None,
             end_node_label: None,
+            is_optional: false,
         }
     }
 
@@ -136,6 +140,12 @@ impl CteGenerationContext {
     ) -> Self {
         self.start_node_label = start_label;
         self.end_node_label = end_label;
+        self
+    }
+
+    /// Set whether this VLP is optional
+    pub(crate) fn with_is_optional(mut self, is_optional: bool) -> Self {
+        self.is_optional = is_optional;
         self
     }
 

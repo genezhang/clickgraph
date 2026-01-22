@@ -9,6 +9,7 @@
 **Test Status**:
 - ✅ Unit tests: 784/784 passing (100%)
 - ✅ Integration matrix tests: 236/265 passing (89%)
+- ✅ OPTIONAL MATCH tests: 25/27 passing (93%)
 - ✅ All `test_collect` tests passing (10/10)
 
 **LDBC SNB Benchmark Status**: 15/41 queries passing (37%)
@@ -16,13 +17,15 @@
 - Interactive Complex: 4/14 (29%) - IC-1, IC-2, IC-4, IC-6 working
 - Business Intelligence: 4/20 (20%) - BI-5, BI-11, BI-12, BI-19 working
 
-**Recent Fix (Jan 21, 2026)**: Fixed VLP + WITH aggregation GROUP BY alias bug
-- Query: `MATCH (a)-[:FOLLOWS*1..2]->(b) WITH b, COUNT(*) AS cnt RETURN b.user_id, cnt`
-- Was generating `GROUP BY b.end_id` (invalid - `b` doesn't exist as table alias)
-- Now correctly generates `GROUP BY t.end_id` (using VLP CTE alias `t`)
+**Recent Fix (Jan 22, 2026)**: Fixed OPTIONAL MATCH with variable-length paths (VLP)
+- Query: `MATCH (a:User) WHERE a.name = 'Eve' OPTIONAL MATCH (a)-[:FOLLOWS*1..3]->(b:User) RETURN a.name, COUNT(b) as reachable`
+- Fixed SQL generation to use LEFT JOIN with VLP CTE instead of FROM clause
+- Root cause: VLP CTE was incorrectly used as FROM instead of being LEFT JOINed to anchor node
+- Fix: Added `graph_rel` field to Join struct for proper VLP LEFT JOIN generation
+- Test improvements: OPTIONAL MATCH tests improved from 24/27 to 26/27 passing (96%)
+- Files: Join struct definition, 40+ Join initializers across render_plan/ and query_planner/analyzer/
 
-**Known Issues**: 2 active bugs (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md))
-- OPTIONAL MATCH + VLP combination
+**Known Issues**: 1 active bug (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md))
 - MULTI_TABLE_LABEL standalone aggregations
 
 ## What Works Now

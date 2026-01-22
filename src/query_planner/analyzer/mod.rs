@@ -113,6 +113,26 @@ pub fn initial_analyzing(
         plan
     };
 
+    // Step 3.5: BidirectionalUnion - Transform undirected patterns (Direction::Either) into UNION ALL
+    // CRITICAL: This MUST run BEFORE GraphJoinInference to avoid OR-based JOINs that ClickHouse handles incorrectly
+    // GraphJoinInference converts GraphRel to GraphJoins, so we need to do the bidirectional expansion first
+    log::info!("🔍 ANALYZER: Running BidirectionalUnion (before GraphJoinInference)");
+    let bidirectional_union = BidirectionalUnion;
+    let plan = match bidirectional_union.analyze_with_graph_schema(
+        plan.clone(),
+        plan_ctx,
+        current_graph_schema,
+    ) {
+        Ok(transformed_plan) => transformed_plan.get_plan(),
+        Err(e) => {
+            log::warn!(
+                "⚠️  BidirectionalUnion failed: {:?}, continuing with original plan",
+                e
+            );
+            plan
+        }
+    };
+
     // Step 4: Graph Join Inference - analyze graph patterns and create PatternSchemaContext
     // MOVED UP from Step 15 to make PatternSchemaContext available for downstream passes
     // This is a pure analysis pass that only needs: GraphSchema, node/edge schemas, pattern structure
@@ -212,15 +232,8 @@ pub fn intermediate_analyzing(
     let transformed_plan = duplicate_scans_removing.analyze(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
 
-    // Transform bidirectional patterns (Direction::Either) into UNION ALL of two directed patterns
-    // This MUST run before GraphJoinInference to avoid OR-based JOINs that ClickHouse handles incorrectly
-    let bidirectional_union = BidirectionalUnion;
-    let transformed_plan = bidirectional_union.analyze_with_graph_schema(
-        plan.clone(),
-        plan_ctx,
-        current_graph_schema,
-    )?;
-    let plan = transformed_plan.get_plan();
+    // NOTE: BidirectionalUnion has been moved to initial_analyzing() to run BEFORE GraphJoinInference
+    // This ensures undirected patterns are expanded to UNION ALL before GraphRel is converted to GraphJoins
 
     // CRITICAL: Resolve variables BEFORE join inference
     // This transforms TableAlias("cnt") → PropertyAccessExp("cnt_cte", "cnt")
