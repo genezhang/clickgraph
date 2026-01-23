@@ -323,223 +323,308 @@ def load_all_test_data(clickhouse_client, test_database, setup_test_database):
     This ensures all integration tests have data available without needing explicit fixtures.
     
     This fixture runs automatically (autouse=True) once per test session.
+    Each schema's data is loaded independently to prevent one failure from blocking others.
     """
     print("\n🔧 Loading comprehensive test data...")
     
-    try:
-        # Create test_integration database and tables
-        clickhouse_client.command("""
-            CREATE TABLE IF NOT EXISTS test_integration.users (
-                user_id UInt32,
-                name String,
-                age UInt32,
-                email String,
-                registration_date Date,
-                is_active UInt8,
-                country String,
-                city String
-            ) ENGINE = Memory
-        """)
-        
-        clickhouse_client.command("""
-            CREATE TABLE IF NOT EXISTS test_integration.follows (
-                follower_id UInt32,
-                followed_id UInt32,
-                since Date
-            ) ENGINE = Memory
-        """)
-        
-        clickhouse_client.command("""
-            CREATE TABLE IF NOT EXISTS test_integration.products (
-                product_id UInt32,
-                name String,
-                price Float32,
-                category String
-            ) ENGINE = Memory
-        """)
-        
-        clickhouse_client.command("""
-            CREATE TABLE IF NOT EXISTS test_integration.purchases (
-                user_id UInt32,
-                product_id UInt32,
-                purchase_date Date,
-                quantity UInt32
-            ) ENGINE = Memory
-        """)
-        
-        # Insert test_integration data
-        clickhouse_client.command("""
-            INSERT INTO test_integration.users VALUES
-                (1, 'Alice', 30, 'alice@example.com', '2023-01-01', 1, 'USA', 'New York'),
-                (2, 'Bob', 25, 'bob@example.com', '2023-02-01', 1, 'USA', 'San Francisco'),
-                (3, 'Charlie', 35, 'charlie@example.com', '2023-03-01', 1, 'UK', 'London'),
-                (4, 'Diana', 28, 'diana@example.com', '2023-04-01', 1, 'Canada', 'Toronto'),
-                (5, 'Eve', 32, 'eve@example.com', '2023-05-01', 1, 'USA', 'Seattle')
-        """)
-        
-        clickhouse_client.command("""
-            INSERT INTO test_integration.follows VALUES
-                (1, 2, '2023-01-15'),
-                (1, 3, '2023-01-20'),
-                (2, 3, '2023-02-10'),
-                (3, 4, '2023-03-05'),
-                (4, 5, '2023-04-15'),
-                (2, 4, '2023-02-20')
-        """)
-        
-        clickhouse_client.command("""
-            INSERT INTO test_integration.products VALUES
-                (101, 'Laptop', 999.99, 'Electronics'),
-                (102, 'Mouse', 29.99, 'Electronics'),
-                (103, 'Keyboard', 79.99, 'Electronics')
-        """)
-        
-        clickhouse_client.command("""
-            INSERT INTO test_integration.purchases VALUES
-                (1, 101, '2024-01-15', 1),
-                (2, 102, '2024-01-20', 2),
-                (3, 101, '2024-02-01', 1),
-                (4, 103, '2024-02-10', 1),
-                (1, 102, '2024-02-15', 3)
-        """)
-        
-        print("  ✓ test_integration data loaded")
-        
-        # Create brahmand database and social benchmark tables
-        clickhouse_client.command("CREATE DATABASE IF NOT EXISTS brahmand")
-        
-        clickhouse_client.command("""
-            CREATE TABLE IF NOT EXISTS brahmand.users_bench (
-                user_id UInt32,
-                full_name String,
-                email_address String,
-                registration_date Date,
-                is_active UInt8,
-                country String,
-                city String
-            ) ENGINE = Memory
-        """)
-        
-        clickhouse_client.command("""
-            CREATE TABLE IF NOT EXISTS brahmand.user_follows_bench (
-                follower_id UInt32,
-                followed_id UInt32,
-                follow_date Date
-            ) ENGINE = Memory
-        """)
-        
-        clickhouse_client.command("""
-            CREATE TABLE IF NOT EXISTS brahmand.posts_bench (
-                post_id UInt32,
-                user_id UInt32,
-                content String,
-                created_at DateTime
-            ) ENGINE = Memory
-        """)
-        
-        clickhouse_client.command("""
-            CREATE TABLE IF NOT EXISTS brahmand.post_likes_bench (
-                user_id UInt32,
-                post_id UInt32,
-                liked_at DateTime
-            ) ENGINE = Memory
-        """)
-        
-        # Insert brahmand data
-        clickhouse_client.command("""
-            INSERT INTO brahmand.users_bench VALUES
-                (1, 'Alice Smith', 'alice@example.com', '2023-01-01', 1, 'USA', 'New York'),
-                (2, 'Bob Johnson', 'bob@example.com', '2023-02-01', 1, 'USA', 'San Francisco'),
-                (3, 'Charlie Brown', 'charlie@example.com', '2023-03-01', 1, 'UK', 'London'),
-                (4, 'Diana Prince', 'diana@example.com', '2023-04-01', 1, 'Canada', 'Toronto'),
-                (5, 'Eve Wilson', 'eve@example.com', '2023-05-01', 1, 'USA', 'Seattle')
-        """)
-        
-        clickhouse_client.command("""
-            INSERT INTO brahmand.user_follows_bench VALUES
-                (1, 2, '2023-01-15'),
-                (1, 3, '2023-01-20'),
-                (2, 3, '2023-02-10'),
-                (3, 4, '2023-03-05'),
-                (4, 5, '2023-04-15'),
-                (2, 4, '2023-02-20')
-        """)
-        
-        clickhouse_client.command("""
-            INSERT INTO brahmand.posts_bench VALUES
-                (1, 1, 'Hello world!', '2024-01-01 10:00:00'),
-                (2, 2, 'My first post', '2024-01-02 11:00:00'),
-                (3, 3, 'Testing ClickGraph', '2024-01-03 12:00:00')
-        """)
-        
-        clickhouse_client.command("""
-            INSERT INTO brahmand.post_likes_bench VALUES
-                (2, 1, '2024-01-01 11:00:00'),
-                (3, 1, '2024-01-01 12:00:00'),
-                (1, 2, '2024-01-02 13:00:00')
-        """)
-        
-        print("  ✓ brahmand (social_benchmark) data loaded")
-        
-        # Create filesystem schema tables (in test_integration database)
-        # Schema: fs_objects (nodes) and fs_parent (relationships)
-        clickhouse_client.command("""
-            CREATE TABLE IF NOT EXISTS test_integration.fs_objects (
-                object_id UInt32,
-                name String,
-                object_type String,  -- 'file' or 'folder'
-                size_bytes UInt64,   -- 0 for folders
-                mime_type Nullable(String),
-                created_at DateTime,
-                modified_at DateTime,
-                owner_id String      -- owner/user
-            ) ENGINE = MergeTree()
-            ORDER BY object_id
-        """)
-        
-        clickhouse_client.command("""
-            CREATE TABLE IF NOT EXISTS test_integration.fs_parent (
-                child_id UInt32,
-                parent_id UInt32
-            ) ENGINE = MergeTree()
-            ORDER BY (child_id, parent_id)
-        """)
-        
-        # Insert filesystem test data
-        # Root folder structure:
-        # /root/ (id=1, folder)
-        # ├── /Documents/ (id=2, folder)
-        # │   ├── report.pdf (id=4, file)
-        # │   └── notes.txt (id=5, file)
-        # ├── /Downloads/ (id=3, folder)
-        # │   └── image.jpg (id=6, file)
-        
-        clickhouse_client.command("""
-            INSERT INTO test_integration.fs_objects VALUES
-                (1, 'root', 'folder', 0, NULL, '2023-01-01 00:00:00', '2023-01-01 00:00:00', 'admin'),
-                (2, 'Documents', 'folder', 0, NULL, '2023-01-02 10:00:00', '2023-01-05 15:30:00', 'user1'),
-                (3, 'Downloads', 'folder', 0, NULL, '2023-01-03 11:00:00', '2023-01-06 14:00:00', 'user1'),
-                (4, 'report.pdf', 'file', 1024000, 'application/pdf', '2023-01-10 09:00:00', '2023-01-10 09:00:00', 'user1'),
-                (5, 'notes.txt', 'file', 2048, 'text/plain', '2023-01-11 10:30:00', '2023-01-12 11:00:00', 'user1'),
-                (6, 'image.jpg', 'file', 5242880, 'image/jpeg', '2023-01-15 14:00:00', '2023-01-15 14:00:00', 'user1')
-        """)
-        
-        clickhouse_client.command("""
-            INSERT INTO test_integration.fs_parent VALUES
-                (2, 1),  -- Documents is child of root
-                (3, 1),  -- Downloads is child of root
-                (4, 2),  -- report.pdf is child of Documents
-                (5, 2),  -- notes.txt is child of Documents
-                (6, 3)   -- image.jpg is child of Downloads
-        """)
-        
-        print("  ✓ test_integration (filesystem schema) data loaded")
-        
-        print("✅ All test data loaded successfully\n")
-        
-    except Exception as e:
-        print(f"⚠️  Warning: Failed to load some test data: {e}")
-        print("   Tests may fail due to missing data\n")
+    def load_test_integration_data():
+        """Load basic test_integration data for initial tests."""
+        try:
+            # Create test_integration database and tables
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS test_integration.users (
+                    user_id UInt32,
+                    name String,
+                    age UInt32,
+                    email String,
+                    registration_date Date,
+                    is_active UInt8,
+                    country String,
+                    city String
+                ) ENGINE = Memory
+            """)
+            
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS test_integration.follows (
+                    follower_id UInt32,
+                    followed_id UInt32,
+                    since Date
+                ) ENGINE = Memory
+            """)
+            
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS test_integration.products (
+                    product_id UInt32,
+                    name String,
+                    price Float32,
+                    category String
+                ) ENGINE = Memory
+            """)
+            
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS test_integration.purchases (
+                    user_id UInt32,
+                    product_id UInt32,
+                    purchase_date Date,
+                    quantity UInt32
+                ) ENGINE = Memory
+            """)
+            
+            # Insert test_integration data
+            clickhouse_client.command("""
+                INSERT INTO test_integration.users VALUES
+                    (1, 'Alice', 30, 'alice@example.com', '2023-01-01', 1, 'USA', 'New York'),
+                    (2, 'Bob', 25, 'bob@example.com', '2023-02-01', 1, 'USA', 'San Francisco'),
+                    (3, 'Charlie', 35, 'charlie@example.com', '2023-03-01', 1, 'UK', 'London'),
+                    (4, 'Diana', 28, 'diana@example.com', '2023-04-01', 1, 'Canada', 'Toronto'),
+                    (5, 'Eve', 32, 'eve@example.com', '2023-05-01', 1, 'USA', 'Seattle')
+            """)
+            
+            clickhouse_client.command("""
+                INSERT INTO test_integration.follows VALUES
+                    (1, 2, '2023-01-15'),
+                    (1, 3, '2023-01-20'),
+                    (2, 3, '2023-02-10'),
+                    (3, 4, '2023-03-05'),
+                    (4, 5, '2023-04-15'),
+                    (2, 4, '2023-02-20')
+            """)
+            
+            clickhouse_client.command("""
+                INSERT INTO test_integration.products VALUES
+                    (101, 'Laptop', 999.99, 'Electronics'),
+                    (102, 'Mouse', 29.99, 'Electronics'),
+                    (103, 'Keyboard', 79.99, 'Electronics')
+            """)
+            
+            clickhouse_client.command("""
+                INSERT INTO test_integration.purchases VALUES
+                    (1, 101, '2024-01-15', 1),
+                    (2, 102, '2024-01-20', 2),
+                    (3, 101, '2024-02-01', 1),
+                    (4, 103, '2024-02-10', 1),
+                    (1, 102, '2024-02-15', 3)
+            """)
+            
+            print("  ✓ test_integration (basic) data loaded")
+        except Exception as e:
+            print(f"  ⚠ test_integration (basic) data load failed: {e}")
+    
+    def load_brahmand_data():
+        """Load brahmand database data for social_benchmark schema."""
+        try:
+            # Create brahmand database and social benchmark tables
+            clickhouse_client.command("CREATE DATABASE IF NOT EXISTS brahmand")
+            
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS brahmand.users_bench (
+                    user_id UInt32,
+                    full_name String,
+                    email_address String,
+                    registration_date Date,
+                    is_active UInt8,
+                    country String,
+                    city String
+                ) ENGINE = Memory
+            """)
+            
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS brahmand.user_follows_bench (
+                    follower_id UInt32,
+                    followed_id UInt32,
+                    follow_date Date
+                ) ENGINE = Memory
+            """)
+            
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS brahmand.posts_bench (
+                    post_id UInt32,
+                    user_id UInt32,
+                    content String,
+                    created_at DateTime
+                ) ENGINE = Memory
+            """)
+            
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS brahmand.post_likes_bench (
+                    user_id UInt32,
+                    post_id UInt32,
+                    liked_at DateTime
+                ) ENGINE = Memory
+            """)
+            
+            # Insert brahmand data
+            clickhouse_client.command("""
+                INSERT INTO brahmand.users_bench VALUES
+                    (1, 'Alice Smith', 'alice@example.com', '2023-01-01', 1, 'USA', 'New York'),
+                    (2, 'Bob Johnson', 'bob@example.com', '2023-02-01', 1, 'USA', 'San Francisco'),
+                    (3, 'Charlie Brown', 'charlie@example.com', '2023-03-01', 1, 'UK', 'London'),
+                    (4, 'Diana Prince', 'diana@example.com', '2023-04-01', 1, 'Canada', 'Toronto'),
+                    (5, 'Eve Wilson', 'eve@example.com', '2023-05-01', 1, 'USA', 'Seattle')
+            """)
+            
+            clickhouse_client.command("""
+                INSERT INTO brahmand.user_follows_bench VALUES
+                    (1, 2, '2023-01-15'),
+                    (1, 3, '2023-01-20'),
+                    (2, 3, '2023-02-10'),
+                    (3, 4, '2023-03-05'),
+                    (4, 5, '2023-04-15'),
+                    (2, 4, '2023-02-20')
+            """)
+            
+            clickhouse_client.command("""
+                INSERT INTO brahmand.posts_bench VALUES
+                    (1, 1, 'Hello world!', '2024-01-01 10:00:00'),
+                    (2, 2, 'My first post', '2024-01-02 11:00:00'),
+                    (3, 3, 'Testing ClickGraph', '2024-01-03 12:00:00')
+            """)
+            
+            clickhouse_client.command("""
+                INSERT INTO brahmand.post_likes_bench VALUES
+                    (2, 1, '2024-01-01 11:00:00'),
+                    (3, 1, '2024-01-01 12:00:00'),
+                    (1, 2, '2024-01-02 13:00:00')
+            """)
+            
+            print("  ✓ brahmand (social_benchmark) data loaded")
+        except Exception as e:
+            print(f"  ⚠ brahmand (social_benchmark) data load failed: {e}")
+    
+    def load_filesystem_data():
+        """Load filesystem schema tables (in test_integration database)."""
+        try:
+            # Schema: fs_objects (nodes) and fs_parent (relationships)
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS test_integration.fs_objects (
+                    object_id UInt32,
+                    name String,
+                    object_type String,  -- 'file' or 'folder'
+                    size_bytes UInt64,   -- 0 for folders
+                    mime_type Nullable(String),
+                    created_at DateTime,
+                    modified_at DateTime,
+                    owner_id String      -- owner/user
+                ) ENGINE = MergeTree()
+                ORDER BY object_id
+            """)
+            
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS test_integration.fs_parent (
+                    child_id UInt32,
+                    parent_id UInt32
+                ) ENGINE = MergeTree()
+                ORDER BY (child_id, parent_id)
+            """)
+            
+            # Insert filesystem test data
+            # Root folder structure:
+            # /root/ (id=1, folder)
+            # ├── /Documents/ (id=2, folder)
+            # │   ├── report.pdf (id=4, file)
+            # │   └── notes.txt (id=5, file)
+            # ├── /Downloads/ (id=3, folder)
+            # │   └── image.jpg (id=6, file)
+            
+            clickhouse_client.command("""
+                INSERT INTO test_integration.fs_objects VALUES
+                    (1, 'root', 'folder', 0, NULL, '2023-01-01 00:00:00', '2023-01-01 00:00:00', 'admin'),
+                    (2, 'Documents', 'folder', 0, NULL, '2023-01-02 10:00:00', '2023-01-05 15:30:00', 'user1'),
+                    (3, 'Downloads', 'folder', 0, NULL, '2023-01-03 11:00:00', '2023-01-06 14:00:00', 'user1'),
+                    (4, 'report.pdf', 'file', 1024000, 'application/pdf', '2023-01-10 09:00:00', '2023-01-10 09:00:00', 'user1'),
+                    (5, 'notes.txt', 'file', 2048, 'text/plain', '2023-01-11 10:30:00', '2023-01-12 11:00:00', 'user1'),
+                    (6, 'image.jpg', 'file', 5242880, 'image/jpeg', '2023-01-15 14:00:00', '2023-01-15 14:00:00', 'user1')
+            """)
+            
+            clickhouse_client.command("""
+                INSERT INTO test_integration.fs_parent VALUES
+                    (2, 1),  -- Documents is child of root
+                    (3, 1),  -- Downloads is child of root
+                    (4, 2),  -- report.pdf is child of Documents
+                    (5, 2),  -- notes.txt is child of Documents
+                    (6, 3)   -- image.jpg is child of Downloads
+            """)
+            
+            print("  ✓ test_integration (filesystem schema) data loaded")
+        except Exception as e:
+            print(f"  ⚠ test_integration (filesystem schema) data load failed: {e}")
+    
+    def load_group_membership_data():
+        """Load group_membership schema tables (in test_integration database)."""
+        try:
+            # Schema: gm_users (User nodes), gm_groups (Group nodes), gm_memberships (MEMBER_OF relationships)
+            # Uses gm_ prefix to avoid conflicts with basic test fixtures
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS test_integration.gm_users (
+                    user_id UInt32,
+                    name String,
+                    email String
+                ) ENGINE = MergeTree()
+                ORDER BY user_id
+            """)
+            
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS test_integration.gm_groups (
+                    id UInt32,
+                    name String,
+                    description String
+                ) ENGINE = MergeTree()
+                ORDER BY id
+            """)
+            
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS test_integration.gm_memberships (
+                    user_id UInt32,
+                    group_id UInt32,
+                    joined_at DateTime,
+                    role String
+                ) ENGINE = MergeTree()
+                ORDER BY (user_id, group_id)
+            """)
+            
+            # Insert group_membership test data
+            # 5 users, 3 groups, ~10 memberships with different roles
+            clickhouse_client.command("""
+                INSERT INTO test_integration.gm_users VALUES
+                    (1, 'Alice', 'alice@example.com'),
+                    (2, 'Bob', 'bob@example.com'),
+                    (3, 'Charlie', 'charlie@example.com'),
+                    (4, 'Diana', 'diana@example.com'),
+                    (5, 'Eve', 'eve@example.com')
+            """)
+            
+            clickhouse_client.command("""
+                INSERT INTO test_integration.gm_groups VALUES
+                    (101, 'Engineering', 'Engineering team'),
+                    (102, 'Product', 'Product team'),
+                    (103, 'Sales', 'Sales team')
+            """)
+            
+            clickhouse_client.command("""
+                INSERT INTO test_integration.gm_memberships VALUES
+                    (1, 101, '2024-01-01 00:00:00', 'admin'),
+                    (2, 101, '2024-01-05 00:00:00', 'member'),
+                    (3, 101, '2024-01-10 00:00:00', 'member'),
+                    (1, 102, '2024-01-15 00:00:00', 'member'),
+                    (4, 102, '2024-01-20 00:00:00', 'admin'),
+                    (5, 102, '2024-01-25 00:00:00', 'viewer'),
+                    (2, 103, '2024-02-01 00:00:00', 'member'),
+                    (3, 103, '2024-02-05 00:00:00', 'member'),
+                    (4, 103, '2024-02-10 00:00:00', 'member'),
+                    (5, 101, '2024-02-15 00:00:00', 'viewer')
+            """)
+            
+            print("  ✓ test_integration (group_membership schema) data loaded")
+        except Exception as e:
+            print(f"  ⚠ test_integration (group_membership schema) data load failed: {e}")
+    
+    # Load each schema's data independently
+    load_test_integration_data()
+    load_brahmand_data()
+    load_filesystem_data()
+    load_group_membership_data()
+    
+    print("✅ All test data loaded successfully\n")
 
 
 @pytest.fixture

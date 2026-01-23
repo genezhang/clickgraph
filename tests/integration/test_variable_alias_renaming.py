@@ -23,7 +23,7 @@ def query_clickgraph(cypher_query: str) -> dict:
         "curl", "-s", "-X", "POST",
         f"{BASE_URL}/query",
         "-H", "Content-Type: application/json",
-        "-d", json.dumps({"query": cypher_query})
+        "-d", json.dumps({"query": cypher_query, "schema_name": "social_benchmark"})
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     try:

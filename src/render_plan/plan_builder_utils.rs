@@ -6437,6 +6437,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         input: rendered_plans,
                         union_type: crate::render_plan::UnionType::All,
                     })),
+                    fixed_path_info: None,
                 }
             };
 

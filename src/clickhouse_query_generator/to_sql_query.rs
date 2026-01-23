@@ -7,7 +7,7 @@ use crate::{
             OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
         },
         {
-            ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem,
+            ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FixedPathMetadata, FromTableItem,
             GroupByExpressions, Join, JoinItems, JoinType, OrderByItems, OrderByOrder, RenderPlan,
             SelectItems, ToSql, UnionItems, UnionType,
         },
@@ -437,11 +437,250 @@ fn derive_cypher_property_name(db_column: &str) -> String {
     }
 }
 
+/// Extract fixed path information from a RenderPlan by analyzing SELECT items and JOINs
+/// Returns FixedPathMetadata if the plan contains a path function call that can be resolved
+fn extract_fixed_path_info_from_plan(plan: &RenderPlan) -> Option<crate::render_plan::FixedPathMetadata> {
+    // Look for path function calls in SELECT items
+    for item in &plan.select.items {
+        if let Some(path_var) = find_path_function_argument(&item.expression) {
+            // Found a path function with argument path_var
+            // Infer hop count from the number of JOINs
+            // For a path (a)-[:T]->(b), we have 2 JOINs (relationship + end node) = 1 hop
+            // For a path (a)-[:T1]->(b)-[:T2]->(c), we have 4 JOINs = 2 hops
+            // Formula: hops = JOINs / 2 (integer division)
+            let hop_count = plan.joins.0.len() as u32 / 2;
+            
+            log::info!(
+                "🔧 Detected fixed path: path_variable={}, hop_count={} (from {} JOINs)",
+                path_var,
+                hop_count,
+                plan.joins.0.len()
+            );
+            
+            return Some(crate::render_plan::FixedPathMetadata {
+                path_variable: path_var,
+                hop_count,
+                node_aliases: vec![],
+                rel_aliases: vec![],
+            });
+        }
+    }
+    
+    // Also check GROUP BY and ORDER BY expressions
+    for expr in &plan.group_by.0 {
+        if let Some(path_var) = find_path_function_argument(expr) {
+            let hop_count = plan.joins.0.len() as u32 / 2;
+            return Some(crate::render_plan::FixedPathMetadata {
+                path_variable: path_var,
+                hop_count,
+                node_aliases: vec![],
+                rel_aliases: vec![],
+            });
+        }
+    }
+    
+    for item in &plan.order_by.0 {
+        if let Some(path_var) = find_path_function_argument(&item.expression) {
+            let hop_count = plan.joins.0.len() as u32 / 2;
+            return Some(crate::render_plan::FixedPathMetadata {
+                path_variable: path_var,
+                hop_count,
+                node_aliases: vec![],
+                rel_aliases: vec![],
+            });
+        }
+    }
+    
+    None
+}
+
+/// Find a path function argument (e.g., the 'p' in length(p))
+/// Returns the variable name if found
+fn find_path_function_argument(expr: &RenderExpr) -> Option<String> {
+    match expr {
+        RenderExpr::ScalarFnCall(func) => {
+            // Check for path functions
+            if matches!(func.name.to_lowercase().as_str(), "length" | "nodes" | "relationships") {
+                if func.args.len() == 1 {
+                    if let RenderExpr::TableAlias(alias) = &func.args[0] {
+                        return Some(alias.0.clone());
+                    }
+                }
+            }
+            
+            // Recursively check arguments
+            for arg in &func.args {
+                if let Some(var) = find_path_function_argument(arg) {
+                    return Some(var);
+                }
+            }
+            None
+        }
+        
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &op.operands {
+                if let Some(var) = find_path_function_argument(operand) {
+                    return Some(var);
+                }
+            }
+            None
+        }
+        
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &agg.args {
+                if let Some(var) = find_path_function_argument(arg) {
+                    return Some(var);
+                }
+            }
+            None
+        }
+        
+        _ => None,
+    }
+}
+
+/// Rewrite path function calls for fixed (non-VLP) path patterns
+/// Converts:
+/// - length(p) → 1 (literal hop count)
+/// - nodes(p) → array of node IDs
+/// - relationships(p) → array of relationship IDs
+fn rewrite_fixed_path_functions(mut plan: RenderPlan) -> RenderPlan {
+    if let Some(ref fixed_path_info) = plan.fixed_path_info {
+        let path_var = fixed_path_info.path_variable.clone();
+        let hop_count = fixed_path_info.hop_count;
+
+        log::info!(
+            "🔧 Fixed path rewriting: path_variable={}, hop_count={}",
+            path_var,
+            hop_count
+        );
+        log::info!("🔧 SELECT has {} items", plan.select.items.len());
+
+        // Rewrite each SELECT item's expressions
+        for (idx, item) in plan.select.items.iter_mut().enumerate() {
+            let before = format!("{:?}", item.expression);
+            item.expression = rewrite_expr_for_fixed_path(&item.expression, &path_var, hop_count);
+            let after = format!("{:?}", item.expression);
+            if before != after {
+                log::info!("🔧   Rewritten from: {} → {}", before, after);
+            }
+        }
+
+        // Also rewrite GROUP BY expressions
+        log::info!("🔧 Fixed path GROUP BY rewriting: {} items", plan.group_by.0.len());
+        for group_expr in &mut plan.group_by.0 {
+            *group_expr = rewrite_expr_for_fixed_path(group_expr, &path_var, hop_count);
+        }
+
+        // Also rewrite ORDER BY expressions
+        log::info!("🔧 Fixed path ORDER BY rewriting: {} items", plan.order_by.0.len());
+        for order_item in &mut plan.order_by.0 {
+            order_item.expression = rewrite_expr_for_fixed_path(&order_item.expression, &path_var, hop_count);
+        }
+    }
+
+    plan
+}
+
+/// Recursively rewrite expressions to handle path function calls on fixed paths
+/// Converts:
+/// - length(p) → literal(hop_count)
+/// - nodes(p) → [node_ids in order] (future enhancement)
+/// - relationships(p) → [rel_ids in order] (future enhancement)
+fn rewrite_expr_for_fixed_path(
+    expr: &RenderExpr,
+    path_variable: &str,
+    hop_count: u32,
+) -> RenderExpr {
+    match expr {
+        // Handle path functions: length(p)
+        RenderExpr::ScalarFnCall(func) => {
+            if func.args.len() == 1 {
+                if let RenderExpr::TableAlias(alias) = &func.args[0] {
+                    if &alias.0 == path_variable {
+                        match func.name.to_lowercase().as_str() {
+                            "length" => {
+                                log::info!(
+                                    "🔧 Fixed path function: length({}) → {}",
+                                    path_variable,
+                                    hop_count
+                                );
+                                return RenderExpr::Literal(Literal::Integer(hop_count as i64));
+                            }
+                            "nodes" => {
+                                log::warn!(
+                                    "🔧 Fixed path function: nodes({}) not yet implemented for fixed paths",
+                                    path_variable
+                                );
+                                // TODO: Return array of node IDs
+                                return expr.clone();
+                            }
+                            "relationships" => {
+                                log::warn!(
+                                    "🔧 Fixed path function: relationships({}) not yet implemented for fixed paths",
+                                    path_variable
+                                );
+                                // TODO: Return array of relationship IDs
+                                return expr.clone();
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            // Not a path function - recursively rewrite arguments
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: func.name.clone(),
+                args: func
+                    .args
+                    .iter()
+                    .map(|a| rewrite_expr_for_fixed_path(a, path_variable, hop_count))
+                    .collect(),
+            })
+        }
+
+        // Recursively rewrite operands in operator applications
+        RenderExpr::OperatorApplicationExp(op) => {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator.clone(),
+                operands: op
+                    .operands
+                    .iter()
+                    .map(|o| rewrite_expr_for_fixed_path(o, path_variable, hop_count))
+                    .collect(),
+            })
+        }
+
+        RenderExpr::AggregateFnCall(agg) => RenderExpr::AggregateFnCall(AggregateFnCall {
+            name: agg.name.clone(),
+            args: agg
+                .args
+                .iter()
+                .map(|a| rewrite_expr_for_fixed_path(a, path_variable, hop_count))
+                .collect(),
+        }),
+
+        // Leave other expressions unchanged
+        other => other.clone(),
+    }
+}
+
 /// Generate SQL from RenderPlan with configurable CTE depth limit
 pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
+    // Extract fixed path information if not already set
+    // This looks at the RenderPlan structure to infer path variable info
+    if plan.fixed_path_info.is_none() {
+        plan.fixed_path_info = extract_fixed_path_info_from_plan(&plan);
+    }
+
     // Rewrite VLP SELECT aliases before SQL generation
     // Maps Cypher aliases (a, b) to CTE column prefixes (start_, end_)
     plan = rewrite_vlp_select_aliases(plan);
+
+    // Rewrite path function calls for fixed (non-VLP) path patterns
+    // Converts length(p) → hop_count, etc.
+    plan = rewrite_fixed_path_functions(plan);
 
     // Pre-populate relationship columns mapping before rendering
     populate_relationship_columns_from_plan(&plan);

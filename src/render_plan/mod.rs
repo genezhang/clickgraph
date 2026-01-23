@@ -76,6 +76,24 @@ pub struct RenderPlan {
     pub skip: SkipItem,
     pub limit: LimitItem,
     pub union: UnionItems,
+    /// Fixed path information for simple (non-VLP) path patterns
+    /// Contains path variable name and hop count for queries like:
+    /// MATCH p = (a)-[:T]->(b) RETURN length(p)
+    pub fixed_path_info: Option<FixedPathMetadata>,
+}
+
+/// Metadata for simple/fixed path patterns (non-VLP)
+/// Used to render path functions like length(p), nodes(p), relationships(p)
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct FixedPathMetadata {
+    /// Path variable name from Cypher (e.g., "p")
+    pub path_variable: String,
+    /// Number of relationships/hops in the path (e.g., 1 for (a)-[r]->(b))
+    pub hop_count: u32,
+    /// List of node table aliases in order: [start_alias, intermediate1, ..., end_alias]
+    pub node_aliases: Vec<String>,
+    /// List of relationship aliases (e.g., ["r"])
+    pub rel_aliases: Vec<String>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

@@ -5,6 +5,7 @@
 //! denormalized schemas and table alias resolution.
 
 use crate::query_planner::logical_plan::LogicalPlan;
+use crate::query_planner::logical_expr::LogicalExpr;
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::plan_builder_helpers::*;
 use crate::render_plan::plan_builder_utils::extract_sorted_properties;
@@ -322,6 +323,32 @@ impl PropertiesBuilder for LogicalPlan {
                 // the UNWIND expression can be added here if needed, but this
                 // preserves the recursive behavior from the previous implementation.
                 return unwind.input.get_properties_with_table_alias(alias);
+            }
+            LogicalPlan::WithClause(wc) => {
+                // ✅ FIX (Phase 6): Handle WITH clauses for variable renaming
+                // When we have `MATCH (u:User) WITH u AS person`, we need to:
+                // 1. Check if `alias` is in the exported_aliases
+                // 2. If yes, find the corresponding source alias in items
+                // 3. Delegate to input to get properties for source alias
+                
+                if wc.exported_aliases.contains(&alias.to_string()) {
+                    // Find the source alias for this exported alias by looking at items
+                    for item in &wc.items {
+                        if let Some(col_alias) = &item.col_alias {
+                            if col_alias.0 == alias {
+                                // This is the item that produces this exported alias
+                                // Try to extract the source alias
+                                if let LogicalExpr::TableAlias(ta) = &item.expression {
+                                    // Simple variable reference like WITH u AS person
+                                    return wc.input.get_properties_with_table_alias(&ta.0);
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // If not found in WITH, delegate to input
+                return wc.input.get_properties_with_table_alias(alias);
             }
             _ => Ok((vec![], None)), // No properties found
         }

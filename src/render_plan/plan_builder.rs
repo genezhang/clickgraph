@@ -811,6 +811,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     skip,
                     limit,
                     union,
+                    fixed_path_info: None,
                 })
             }
             LogicalPlan::GraphRel(gr) => {
@@ -869,6 +870,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     skip,
                     limit,
                     union,
+                    fixed_path_info: None,
                 })
             }
             LogicalPlan::Projection(p) => {
@@ -1050,6 +1052,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     skip: SkipItem(None),
                     limit: LimitItem(None),
                     union: UnionItems(None),
+                    fixed_path_info: None,
                 })
             }
             LogicalPlan::WithClause(with) => {
@@ -1089,8 +1092,16 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                 }
 
-                let cte_select_items =
+                let mut cte_select_items =
                     <LogicalPlan as SelectBuilder>::extract_select_items(with.input.as_ref())?;
+                
+                // ✅ FIX (Phase 6): Remap column aliases to match exported aliases
+                // When we have `WITH u AS person`, the select items will have aliases like `u.name`
+                // but they need to be remapped to `person.name` for the CTE output
+                let alias_mapping = build_with_alias_mapping(&with.items, &with.exported_aliases);
+                if !alias_mapping.is_empty() {
+                    cte_select_items = remap_select_item_aliases(cte_select_items, &alias_mapping);
+                }
                 let cte_from = FromTableItem(with.input.extract_from()?.and_then(|ft| ft.table));
                 let cte_joins = JoinItems(RenderPlanBuilder::extract_joins(
                     with.input.as_ref(),
@@ -1119,6 +1130,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     skip: cte_skip,
                     limit: cte_limit,
                     union: UnionItems(None),
+                    fixed_path_info: None,
                 });
 
                 let cte_name = format!("with_{}_cte", with.exported_aliases.join("_"));
@@ -1159,6 +1171,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     skip,
                     limit,
                     union,
+                    fixed_path_info: None,
                 })
             }
             LogicalPlan::CartesianProduct(cp) => {
@@ -1440,4 +1453,69 @@ fn logical_to_render_expr(expr: &LogicalExpr) -> Option<RenderExpr> {
         LogicalExpr::TableAlias(ta) => Some(RenderExpr::TableAlias(TableAlias(ta.0.clone()))),
         _ => None,
     }
+}
+/// Build a mapping from source alias to exported alias for WITH clause renaming
+/// Returns a HashMap mapping source_alias -> output_alias (e.g., "u" -> "person")
+fn build_with_alias_mapping(
+    items: &[ProjectionItem],
+    exported_aliases: &[String],
+) -> std::collections::HashMap<String, String> {
+    let mut mapping = std::collections::HashMap::new();
+    
+    for item in items {
+        if let Some(col_alias) = &item.col_alias {
+            let output_alias = &col_alias.0;
+            // Extract source alias from the expression
+            if let LogicalExpr::TableAlias(ta) = &item.expression {
+                mapping.insert(ta.0.clone(), output_alias.clone());
+            }
+        }
+    }
+    
+    mapping
+}
+
+/// Remap select item aliases to match WITH clause exported aliases
+/// Changes column aliases like "u_name" to "person_name" when WITH u AS person
+fn remap_select_item_aliases(
+    items: Vec<SelectItem>,
+    alias_mapping: &std::collections::HashMap<String, String>,
+) -> Vec<SelectItem> {
+    let mut remapped = Vec::new();
+    for item in items {
+        if let Some(col_alias) = &item.col_alias {
+            log::info!("Remapping check: col_alias='{}', mapping={:?}", col_alias.0, alias_mapping);
+            // Check if the column alias starts with a source alias
+            for (source_alias, output_alias) in alias_mapping.iter() {
+                // Handle both formats: "u.name" and "u_name"
+                let prefix_dot = format!("{}.", source_alias);
+                let prefix_underscore = format!("{}_", source_alias);
+                
+                if col_alias.0.starts_with(&prefix_dot) {
+                    // Format: "u.name" -> "person.name"
+                    let property_part = &col_alias.0[prefix_dot.len()..];
+                    let new_alias = format!("{}.{}", output_alias, property_part);
+                    log::info!("  -> Remapped (dot) {} to {}", col_alias.0, new_alias);
+                    remapped.push(SelectItem {
+                        expression: item.expression.clone(),
+                        col_alias: Some(ColumnAlias(new_alias)),
+                    });
+                    return remapped; // Early return per item
+                } else if col_alias.0.starts_with(&prefix_underscore) {
+                    // Format: "u_name" -> "person_name"
+                    let property_part = &col_alias.0[prefix_underscore.len()..];
+                    let new_alias = format!("{}_{}", output_alias, property_part);
+                    log::info!("  -> Remapped (underscore) {} to {}", col_alias.0, new_alias);
+                    remapped.push(SelectItem {
+                        expression: item.expression.clone(),
+                        col_alias: Some(ColumnAlias(new_alias)),
+                    });
+                    return remapped; // Early return per item
+                }
+            }
+            log::info!("  -> Not remapped (no prefix match)");
+        }
+        remapped.push(item);
+    }
+    remapped
 }
