@@ -29,7 +29,22 @@
 
 **Recent Fixes**:
 
-1. **Jan 23, 2026 - Phase 7: WHERE Clause Edge Cases with VLP & Aggregations** 🔧 ANALYSIS COMPLETE:
+1. **Jan 23, 2026 - Denormalized Node Rendering in Zeek Schema** 🔧 FIXED:
+   - **Problem**: Queries with anonymous nodes on denormalized schemas were failing
+     - Example: `MATCH ()-[r:ACCESSED]->() RETURN count(*)` on Zeek conn_log
+     - Error: "Missing table information for start node table in extract_joins"
+   - **Root Cause**: Union plans (used for denormalized nodes) weren't handled by render phase helpers
+     - Schema inference correctly created ViewScan Unions for inferred labels
+     - But extract_table_name, extract_id_column, etc. returned None for Union inputs
+     - This caused render phase to fail when trying to build JOINs
+   - **Solution**: Added Union handling to 4 key render phase helper functions
+     - extract_table_name, extract_end_node_table_name, extract_end_node_id_column, extract_id_column
+     - All now recursively check first branch of Union (standard approach for any plan)
+   - **Impact**: Fixes rendering of denormalized node patterns across all schemas (Zeek, etc.)
+   - **Files Modified**: src/render_plan/plan_builder_helpers.rs (+40 lines)
+   - **Testing**: Basic unlabeled query now generates valid SQL; full test suite TBD
+
+2. **Jan 23, 2026 - Phase 7: WHERE Clause Edge Cases with VLP & Aggregations** 🔧 ANALYSIS COMPLETE:
    - **Focus**: Analyze 142 failing WHERE + VLP/aggregation tests and implement fixes
    - **Findings from Code Analysis**:
      - ✅ VLP filter categorization logic is CORRECT (filter_pipeline.rs lines 140-260)
