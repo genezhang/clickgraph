@@ -2,6 +2,7 @@ pub mod alias_resolver;
 pub mod cte_extraction;
 pub mod cte_generation;
 pub mod cte_manager;
+pub mod types;
 mod expression_utils;
 mod feature_flags;
 mod filter_builder;
