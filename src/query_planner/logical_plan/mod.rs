@@ -164,11 +164,11 @@ pub fn reset_cte_counter() {
 }
 
 /// Helper function for the common rebuild_or_clone pattern used across LogicalPlan variants.
-/// 
+///
 /// This consolidates the duplicated logic that appears in 14+ rebuild_or_clone() methods:
 /// - If transformation occurred, build new node with updated children via the provided closure
 /// - If no transformation, return the old plan unchanged
-/// 
+///
 /// # Arguments
 /// * `is_transformed` - Whether any child transformation occurred
 /// * `old_plan` - The original plan to return if no transformation occurred
@@ -856,9 +856,9 @@ impl Unwind {
         old_plan: Arc<LogicalPlan>,
     ) -> Transformed<Arc<LogicalPlan>> {
         handle_rebuild_or_clone(input_tf.is_yes(), old_plan, || {
-            Arc::new(LogicalPlan::Unwind(self.with_new_input(
-                input_tf.get_plan(),
-            )))
+            Arc::new(LogicalPlan::Unwind(
+                self.with_new_input(input_tf.get_plan()),
+            ))
         })
     }
 }
@@ -1057,7 +1057,7 @@ impl Union {
     ) -> Transformed<Arc<LogicalPlan>> {
         // Check if any input was transformed
         let is_transformed = inputs_tf.iter().any(|tf| tf.is_yes());
-        
+
         if is_transformed {
             let new_inputs: Vec<Arc<LogicalPlan>> =
                 inputs_tf.into_iter().map(|tf| tf.get_plan()).collect();

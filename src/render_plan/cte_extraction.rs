@@ -14,9 +14,7 @@ use crate::query_planner::logical_expr::ColumnAlias as LogicalColumnAlias;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::cte_generation::CteGenerationContext;
 use crate::render_plan::cte_manager::CteManager;
-use crate::render_plan::expression_utils::{
-    flatten_addition_operands, has_string_operand,
-};
+use crate::render_plan::expression_utils::{flatten_addition_operands, has_string_operand};
 use crate::utils::cte_naming::generate_cte_name;
 
 use super::cte_generation::map_property_to_column_with_schema;

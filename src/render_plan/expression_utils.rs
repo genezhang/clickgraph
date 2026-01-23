@@ -3,10 +3,12 @@
 //! This module provides common utilities for working with RenderExpr trees, including
 //! a visitor trait for implementing expression transformations.
 
-use std::collections::{HashMap, HashSet};
 use super::render_expr::{Literal, Operator, PropertyAccess, RenderExpr, TableAlias};
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::query_planner::join_context::{VLP_CTE_FROM_ALIAS, VLP_START_ID_COLUMN, VLP_END_ID_COLUMN};
+use crate::query_planner::join_context::{
+    VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
+};
+use std::collections::{HashMap, HashSet};
 
 // ============================================================================
 // CTE Rewriting Context Structures
@@ -24,25 +26,25 @@ use crate::query_planner::join_context::{VLP_CTE_FROM_ALIAS, VLP_START_ID_COLUMN
 pub struct CTERewriteContext {
     /// The CTE name to use in the rewritten expression
     pub cte_name: String,
-    
+
     /// The FROM alias to use when rewriting property accesses
     pub from_alias: String,
-    
+
     /// Aliases from WITH clause variables (e.g., "a", "b")
     pub with_aliases: HashSet<String>,
-    
+
     /// Mapping of (with_alias, column_name) → cte_column_name
     /// Used to rename properties from WITH aliases to CTE column names
     pub reverse_mapping: HashMap<(String, String), String>,
-    
+
     /// CTE name references: maps table alias to CTE name
     pub cte_references: HashMap<String, String>,
-    
+
     /// CTE schema information: maps CTE name to (select_items, column_names, alias_mapping, reverse_mapping)
     /// Used for complex JOIN condition extraction
     ///
     /// We use Box to avoid circular type dependencies since SelectItem contains complex types
-    pub cte_schemas: HashMap<String, String>,  // Simplified: just store the CTE name mapping
+    pub cte_schemas: HashMap<String, String>, // Simplified: just store the CTE name mapping
 }
 
 impl CTERewriteContext {
@@ -68,7 +70,7 @@ impl CTERewriteContext {
         cte_name: String,
         from_alias: String,
         cte_references: HashMap<String, String>,
-        _cte_schemas: HashMap<String, String>,  // Accept but don't store (not needed for basic rewriting)
+        _cte_schemas: HashMap<String, String>, // Accept but don't store (not needed for basic rewriting)
     ) -> Self {
         Self {
             cte_name,
@@ -97,10 +99,7 @@ pub trait ExprVisitor {
                     .map(|arg| self.transform_expr(arg))
                     .collect();
 
-                self.transform_scalar_fn_call(
-                    &fn_call.name,
-                    rewritten_args,
-                )
+                self.transform_scalar_fn_call(&fn_call.name, rewritten_args)
             }
             RenderExpr::OperatorApplicationExp(op_app) => {
                 let rewritten_operands: Vec<RenderExpr> = op_app
@@ -111,9 +110,7 @@ pub trait ExprVisitor {
 
                 self.transform_operator_application(&op_app.operator, rewritten_operands)
             }
-            RenderExpr::PropertyAccessExp(prop) => {
-                self.transform_property_access(prop)
-            }
+            RenderExpr::PropertyAccessExp(prop) => self.transform_property_access(prop),
             RenderExpr::AggregateFnCall(agg) => {
                 let rewritten_args: Vec<RenderExpr> = agg
                     .args
@@ -124,23 +121,25 @@ pub trait ExprVisitor {
                 self.transform_aggregate_fn_call(&agg.name, rewritten_args)
             }
             RenderExpr::List(items) => {
-                let rewritten_items: Vec<RenderExpr> = items
-                    .iter()
-                    .map(|item| self.transform_expr(item))
-                    .collect();
+                let rewritten_items: Vec<RenderExpr> =
+                    items.iter().map(|item| self.transform_expr(item)).collect();
 
                 self.transform_list(rewritten_items)
             }
             RenderExpr::Case(case_expr) => {
-                let new_expr = case_expr.expr.as_ref().map(|e| Box::new(self.transform_expr(e)));
+                let new_expr = case_expr
+                    .expr
+                    .as_ref()
+                    .map(|e| Box::new(self.transform_expr(e)));
                 let new_when_then: Vec<(RenderExpr, RenderExpr)> = case_expr
                     .when_then
                     .iter()
-                    .map(|(when, then)| {
-                        (self.transform_expr(when), self.transform_expr(then))
-                    })
+                    .map(|(when, then)| (self.transform_expr(when), self.transform_expr(then)))
                     .collect();
-                let new_else = case_expr.else_expr.as_ref().map(|e| Box::new(self.transform_expr(e)));
+                let new_else = case_expr
+                    .else_expr
+                    .as_ref()
+                    .map(|e| Box::new(self.transform_expr(e)));
 
                 self.transform_case(new_expr, new_when_then, new_else)
             }
@@ -195,12 +194,8 @@ pub trait ExprVisitor {
     }
 
     // Hook methods for subclasses to override specific cases
-    
-    fn transform_scalar_fn_call(
-        &mut self,
-        name: &str,
-        args: Vec<RenderExpr>,
-    ) -> RenderExpr {
+
+    fn transform_scalar_fn_call(&mut self, name: &str, args: Vec<RenderExpr>) -> RenderExpr {
         RenderExpr::ScalarFnCall(super::render_expr::ScalarFnCall {
             name: name.to_string(),
             args,
@@ -218,28 +213,18 @@ pub trait ExprVisitor {
         })
     }
 
-    fn transform_property_access(
-        &mut self,
-        prop: &PropertyAccess,
-    ) -> RenderExpr {
+    fn transform_property_access(&mut self, prop: &PropertyAccess) -> RenderExpr {
         RenderExpr::PropertyAccessExp(prop.clone())
     }
 
-    fn transform_aggregate_fn_call(
-        &mut self,
-        name: &str,
-        args: Vec<RenderExpr>,
-    ) -> RenderExpr {
+    fn transform_aggregate_fn_call(&mut self, name: &str, args: Vec<RenderExpr>) -> RenderExpr {
         RenderExpr::AggregateFnCall(super::render_expr::AggregateFnCall {
             name: name.to_string(),
             args,
         })
     }
 
-    fn transform_list(
-        &mut self,
-        items: Vec<RenderExpr>,
-    ) -> RenderExpr {
+    fn transform_list(&mut self, items: Vec<RenderExpr>) -> RenderExpr {
         RenderExpr::List(items)
     }
 
@@ -284,10 +269,7 @@ pub trait ExprVisitor {
         })
     }
 
-    fn transform_map_literal(
-        &mut self,
-        entries: Vec<(String, RenderExpr)>,
-    ) -> RenderExpr {
+    fn transform_map_literal(&mut self, entries: Vec<(String, RenderExpr)>) -> RenderExpr {
         RenderExpr::MapLiteral(entries)
     }
 
@@ -502,15 +484,16 @@ pub struct VLPExprRewriter {
 }
 
 impl ExprVisitor for VLPExprRewriter {
-    fn transform_property_access(
-        &mut self,
-        prop: &PropertyAccess,
-    ) -> RenderExpr {
+    fn transform_property_access(&mut self, prop: &PropertyAccess) -> RenderExpr {
         let mut new_prop = prop.clone();
         let raw_col = prop.column.raw();
 
         // Check if this is a relationship alias access (e.g., f.Origin, f.Dest)
-        if let (Some(rel), Some(from), Some(to)) = (self.rel_alias.as_ref(), self.from_col.as_ref(), self.to_col.as_ref()) {
+        if let (Some(rel), Some(from), Some(to)) = (
+            self.rel_alias.as_ref(),
+            self.from_col.as_ref(),
+            self.to_col.as_ref(),
+        ) {
             if prop.table_alias.0 == *rel {
                 new_prop.table_alias = TableAlias(VLP_CTE_FROM_ALIAS.to_string());
                 if raw_col == *from {
@@ -546,10 +529,7 @@ pub struct AliasRewriter {
 }
 
 impl ExprVisitor for AliasRewriter {
-    fn transform_property_access(
-        &mut self,
-        prop: &PropertyAccess,
-    ) -> RenderExpr {
+    fn transform_property_access(&mut self, prop: &PropertyAccess) -> RenderExpr {
         let mut new_prop = prop.clone();
         if let Some(new_alias) = self.alias_map.get(&prop.table_alias.0) {
             log::debug!(

@@ -1,8 +1,8 @@
+use super::expression_utils::property_access_expr;
 use super::render_expr::{
     AggregateFnCall, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall,
     TableAlias,
 };
-use super::expression_utils::property_access_expr;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::join_context::{
@@ -438,7 +438,7 @@ pub fn rewrite_expr_for_var_len_cte(
     _path_var: Option<&str>,
 ) -> RenderExpr {
     use crate::render_plan::expression_utils::ExprVisitor;
-    
+
     let mut rewriter = crate::render_plan::expression_utils::VLPExprRewriter {
         start_cypher_alias: start_cypher_alias.to_string(),
         end_cypher_alias: end_cypher_alias.to_string(),
@@ -466,7 +466,7 @@ pub fn rewrite_vlp_internal_to_cypher_alias(
     end_cypher_alias: &str,
 ) -> RenderExpr {
     use crate::render_plan::expression_utils::ExprVisitor;
-    
+
     let mut rewriter = crate::render_plan::expression_utils::AliasRewriter {
         alias_map: [
             ("start_node".to_string(), start_cypher_alias.to_string()),
@@ -495,7 +495,7 @@ pub fn rewrite_expr_for_mixed_denormalized_cte(
     _path_var: Option<&str>,
 ) -> RenderExpr {
     use crate::render_plan::expression_utils::ExprVisitor;
-    
+
     let mut rewriter = crate::render_plan::expression_utils::VLPExprRewriter {
         start_cypher_alias: start_cypher_alias.to_string(),
         end_cypher_alias: end_cypher_alias.to_string(),

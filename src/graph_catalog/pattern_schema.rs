@@ -678,7 +678,7 @@ impl PatternSchemaContext {
         left_connection: &str,
         right_connection: &str,
         labels: &Option<Vec<String>>,
-        left_plan: Option<&str>, // Node label from left plan
+        left_plan: Option<&str>,  // Node label from left plan
         right_plan: Option<&str>, // Node label from right plan
         plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
         graph_schema: &GraphSchema,
@@ -689,7 +689,9 @@ impl PatternSchemaContext {
 
         let (left_label, right_label, rel_types) = if let Some(ctx) = plan_ctx {
             // Try to get labels from plan context first
-            let left_ctx = ctx.get_table_ctx_from_alias_opt(&Some(left_alias.to_string())).ok();
+            let left_ctx = ctx
+                .get_table_ctx_from_alias_opt(&Some(left_alias.to_string()))
+                .ok();
             let right_ctx = ctx
                 .get_table_ctx_from_alias_opt(&Some(right_alias.to_string()))
                 .ok();
@@ -697,10 +699,8 @@ impl PatternSchemaContext {
             let left_label_opt = left_ctx.and_then(|c| c.get_label_str().ok());
             let right_label_opt = right_ctx.and_then(|c| c.get_label_str().ok());
 
-            let rel_types_from_graph: Vec<String> = labels
-                .as_ref()
-                .map(|l| l.clone())
-                .unwrap_or_default();
+            let rel_types_from_graph: Vec<String> =
+                labels.as_ref().map(|l| l.clone()).unwrap_or_default();
 
             if rel_types_from_graph.is_empty() {
                 return Err("No relationship types found".to_string());
@@ -713,7 +713,11 @@ impl PatternSchemaContext {
                 let rel = graph_schema
                     .get_rel_schema_with_nodes(&rel_types_from_graph[0], None, None)
                     .map_err(|e| format!("Could not get relationship schema: {}", e))?;
-                (rel.from_node.clone(), rel.to_node.clone(), rel_types_from_graph)
+                (
+                    rel.from_node.clone(),
+                    rel.to_node.clone(),
+                    rel_types_from_graph,
+                )
             }
         } else {
             // Use provided labels from plan

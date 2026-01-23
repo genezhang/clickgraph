@@ -1054,11 +1054,7 @@ struct PathFunctionRewriter {
 }
 
 impl ExprVisitor for PathFunctionRewriter {
-    fn transform_scalar_fn_call(
-        &mut self,
-        name: &str,
-        args: Vec<RenderExpr>,
-    ) -> RenderExpr {
+    fn transform_scalar_fn_call(&mut self, name: &str, args: Vec<RenderExpr>) -> RenderExpr {
         // Check if this is a path function call with the path variable as argument
         if args.len() == 1 {
             if let RenderExpr::TableAlias(TableAlias(alias)) = &args[0] {
@@ -1073,9 +1069,7 @@ impl ExprVisitor for PathFunctionRewriter {
 
                     if let Some(col_name) = column_name {
                         return if self.table_alias.is_empty() {
-                            RenderExpr::Column(Column(PropertyValue::Column(
-                                col_name.to_string(),
-                            )))
+                            RenderExpr::Column(Column(PropertyValue::Column(col_name.to_string())))
                         } else {
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(self.table_alias.clone()),

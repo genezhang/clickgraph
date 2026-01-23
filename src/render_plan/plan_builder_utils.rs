@@ -509,13 +509,9 @@ fn rewrite_render_expr_for_cte_operand(
                 expr.clone()
             }
         }
-        RenderExpr::OperatorApplicationExp(inner_op) => {
-            RenderExpr::OperatorApplicationExp(rewrite_operator_application_for_cte_join(
-                inner_op,
-                cte_alias,
-                cte_references,
-            ))
-        }
+        RenderExpr::OperatorApplicationExp(inner_op) => RenderExpr::OperatorApplicationExp(
+            rewrite_operator_application_for_cte_join(inner_op, cte_alias, cte_references),
+        ),
         _ => expr.clone(),
     }
 }
@@ -536,11 +532,9 @@ fn rewrite_render_expr_for_cte(
     >,
 ) -> RenderExpr {
     // Convert cte_schemas to simple HashMap<String, String> format expected by CTERewriteContext
-    let schemas_map: std::collections::HashMap<String, String> = cte_schemas
-        .keys()
-        .map(|k| (k.clone(), k.clone()))
-        .collect();
-    
+    let schemas_map: std::collections::HashMap<String, String> =
+        cte_schemas.keys().map(|k| (k.clone(), k.clone())).collect();
+
     let ctx = crate::render_plan::expression_utils::CTERewriteContext::for_complex_cte(
         cte_alias.to_string(),
         cte_alias.to_string(),
@@ -581,13 +575,9 @@ fn rewrite_render_expr_for_cte_with_context(
                 expr.clone()
             }
         }
-        RenderExpr::OperatorApplicationExp(inner_op) => {
-            RenderExpr::OperatorApplicationExp(rewrite_operator_application_for_cte_join(
-                inner_op,
-                &ctx.cte_name,
-                &ctx.cte_references,
-            ))
-        }
+        RenderExpr::OperatorApplicationExp(inner_op) => RenderExpr::OperatorApplicationExp(
+            rewrite_operator_application_for_cte_join(inner_op, &ctx.cte_name, &ctx.cte_references),
+        ),
         _ => expr.clone(),
     }
 }
@@ -2708,9 +2698,9 @@ pub fn rewrite_cte_expression_with_context(
         }
         RenderExpr::Case(case_expr) => {
             // Recursively rewrite CASE expression
-            let new_expr = case_expr.expr.map(|e| {
-                Box::new(rewrite_cte_expression_with_context(*e, ctx))
-            });
+            let new_expr = case_expr
+                .expr
+                .map(|e| Box::new(rewrite_cte_expression_with_context(*e, ctx)));
             let new_when_then: Vec<(RenderExpr, RenderExpr)> = case_expr
                 .when_then
                 .into_iter()
@@ -2721,9 +2711,9 @@ pub fn rewrite_cte_expression_with_context(
                     )
                 })
                 .collect();
-            let new_else = case_expr.else_expr.map(|e| {
-                Box::new(rewrite_cte_expression_with_context(*e, ctx))
-            });
+            let new_else = case_expr
+                .else_expr
+                .map(|e| Box::new(rewrite_cte_expression_with_context(*e, ctx)));
             RenderExpr::Case(RenderCase {
                 expr: new_expr,
                 when_then: new_when_then,
@@ -3413,7 +3403,7 @@ pub fn extract_join_from_equality(
 /// Converts "friend.id" → "friend.friend_id" for consistency
 pub fn rewrite_cte_column_references(expr: &mut crate::render_plan::render_expr::RenderExpr) {
     use crate::render_plan::expression_utils::MutablePropertyColumnRewriter;
-    
+
     // Rewrite columns to include table alias prefix (underscore separator)
     // E.g., user.id → user.user_id (for CTE column flattening)
     MutablePropertyColumnRewriter::rewrite_column_with_prefix(expr, '_');
