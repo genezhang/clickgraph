@@ -29,7 +29,23 @@
 
 **Recent Fixes**:
 
-1. **Jan 23, 2026 - Denormalized Edge SELECT Clause Table Alias Rewriting** ✅ PARTIAL:
+1. **Jan 23, 2026 - Phase 6: Complex Expression Edge Cases & Variable Renaming** 🚨 IN PROGRESS:
+   - **Focus**: Fix variable renaming in WITH clauses and complex expression edge cases
+   - **Problem**: Variable renaming like `MATCH (u:User) WITH u AS person` fails with "Identifier cannot be resolved"
+   - **Root Cause**: CTE columns use source alias prefix (u_) while SELECT uses output alias (person.name)
+   - **Solution**: Added CTE column prefix remapping for alias changes
+   - **Status**: 
+     - ✅ Root cause identified and documented
+     - ✅ Helper functions `build_with_alias_mapping()` and `remap_select_item_aliases()` implemented
+     - ✅ Properties builder enhanced for WITH clause property resolution
+     - ✅ Test infrastructure fixed (schema specification)
+     - 🚨 Remapping implementation needs debugging (format detection)
+   - **Files Modified**: `render_plan/plan_builder.rs`, `render_plan/properties_builder.rs`, `test_variable_alias_renaming.py`
+   - **Tests Affected**: 7 variable renaming tests (0/7 passing → target: 7/7)
+   - **Continuation**: See [PHASE_6_CONTINUATION.md](PHASE_6_CONTINUATION.md)
+   - **ETA**: 4-6 hours with focused debugging
+
+2. **Jan 23, 2026 - Denormalized Edge SELECT Clause Table Alias Rewriting** ✅ PARTIAL:
    - ✅ Fixed: SELECT clause table alias rewriting for denormalized nodes
    - Problem: When nodes are denormalized onto edges (e.g., origin.city stored in flights table),
      the SELECT clause was using Cypher node alias (origin) instead of actual table alias (f)
@@ -477,6 +493,21 @@ match pattern_ctx.node_access_strategy(node_alias) {
 
 ## Next Priorities
 
+### � PHASE 6 (ACTIVE): Complex Expression Edge Cases & Variable Renaming
+**Status**: Root cause analysis complete, partial implementation (needs debugging)  
+**Current Task**: Debug CTE column remapping for variable renaming in WITH clauses  
+**Tests**: 7 variable renaming tests failing (0/7) + ~30 complex expression tests  
+**Target**: Improve from 80.8% to 95%+ pass rate (3,320+ tests)  
+**Timeline**: 4-6 hours estimated  
+**See**: [PHASE_6_CONTINUATION.md](PHASE_6_CONTINUATION.md) for detailed continuation guide
+
+**Quick Next Steps**:
+1. Add debug logging to identify actual SelectItem col_alias formats
+2. Refine `remap_select_item_aliases()` logic based on format findings
+3. Test all 7 variable renaming tests
+4. Fix complex expression cases using same approach
+5. Run full test suite and validate metrics
+
 ### 🔴 CRITICAL: CTE System Refactoring
 **Status**: Investigation complete, action plan ready  
 **Issue**: CteManager (2,550 lines) was designed but never integrated - production uses scattered code in `cte_extraction.rs` causing fragile heuristics and recurring bugs  
@@ -485,10 +516,11 @@ match pattern_ctx.node_access_strategy(node_alias) {
 **Benefits**: Fix VLP + WITH bugs, eliminate string-based heuristics, consolidate 11,000+ lines of CTE code
 
 ### Immediate (This Week)
-1. **CTE Integration Phase 1-2** - Wire CteManager into production path
-2. Fix IC-9 CTE column naming issue (WITH DISTINCT + WHERE)
-3. Fix scalar aggregate WITH + GROUP BY (TableAlias refactoring)
-4. Address OPTIONAL MATCH + inline property bug
+1. **Phase 6 Completion** - Variable renaming and expression fixes
+2. **CTE Integration Phase 1-2** - Wire CteManager into production path
+3. Fix IC-9 CTE column naming issue (WITH DISTINCT + WHERE)
+4. Fix scalar aggregate WITH + GROUP BY (TableAlias refactoring)
+5. Address OPTIONAL MATCH + inline property bug
 
 ### Short Term (This Month)
 1. Complete CTE Integration Phase 3-5 (column metadata, cleanup)
