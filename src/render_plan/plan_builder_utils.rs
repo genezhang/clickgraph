@@ -465,21 +465,12 @@ fn rewrite_operator_application_for_cte_join(
     op_app: &OperatorApplication,
     cte_alias: &str,
     cte_references: &HashMap<String, String>,
-    cte_schemas: &std::collections::HashMap<
-        String,
-        (
-            Vec<SelectItem>,
-            Vec<String>,
-            HashMap<String, String>,
-            HashMap<(String, String), String>,
-        ),
-    >,
 ) -> OperatorApplication {
     // Rewrite operands to use CTE column names
     let rewritten_operands: Vec<RenderExpr> = op_app
         .operands
         .iter()
-        .map(|operand| rewrite_render_expr_for_cte(operand, cte_alias, cte_references, cte_schemas))
+        .map(|operand| rewrite_render_expr_for_cte_operand(operand, cte_alias, cte_references))
         .collect();
 
     OperatorApplication {
@@ -488,20 +479,12 @@ fn rewrite_operator_application_for_cte_join(
     }
 }
 
-/// Rewrite a RenderExpr to use CTE column names where applicable.
-fn rewrite_render_expr_for_cte(
+/// Rewrite a RenderExpr operand to use CTE column names where applicable.
+/// Helper function that avoids needing cte_schemas parameter.
+fn rewrite_render_expr_for_cte_operand(
     expr: &RenderExpr,
     cte_alias: &str,
     cte_references: &HashMap<String, String>,
-    cte_schemas: &std::collections::HashMap<
-        String,
-        (
-            Vec<SelectItem>,
-            Vec<String>,
-            HashMap<String, String>,
-            HashMap<(String, String), String>,
-        ),
-    >,
 ) -> RenderExpr {
     match expr {
         RenderExpr::PropertyAccessExp(pa) => {
@@ -526,14 +509,75 @@ fn rewrite_render_expr_for_cte(
                 expr.clone()
             }
         }
-        RenderExpr::OperatorApplicationExp(inner_op) => {
-            RenderExpr::OperatorApplicationExp(rewrite_operator_application_for_cte_join(
-                inner_op,
-                cte_alias,
-                cte_references,
-                cte_schemas,
-            ))
+        RenderExpr::OperatorApplicationExp(inner_op) => RenderExpr::OperatorApplicationExp(
+            rewrite_operator_application_for_cte_join(inner_op, cte_alias, cte_references),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+/// Rewrite a RenderExpr to use CTE column names where applicable.
+fn rewrite_render_expr_for_cte(
+    expr: &RenderExpr,
+    cte_alias: &str,
+    cte_references: &HashMap<String, String>,
+    cte_schemas: &std::collections::HashMap<
+        String,
+        (
+            Vec<SelectItem>,
+            Vec<String>,
+            HashMap<String, String>,
+            HashMap<(String, String), String>,
+        ),
+    >,
+) -> RenderExpr {
+    // Convert cte_schemas to simple HashMap<String, String> format expected by CTERewriteContext
+    let schemas_map: std::collections::HashMap<String, String> =
+        cte_schemas.keys().map(|k| (k.clone(), k.clone())).collect();
+
+    let ctx = crate::render_plan::expression_utils::CTERewriteContext::for_complex_cte(
+        cte_alias.to_string(),
+        cte_alias.to_string(),
+        cte_references.clone(),
+        schemas_map,
+    );
+    rewrite_render_expr_for_cte_with_context(expr, &ctx)
+}
+
+/// Rewrite render expressions using CTE context for complex JOIN scenarios
+///
+/// Rewrites property accesses to use CTE alias and column naming patterns.
+/// Used when JOIN conditions need to reference columns from CTE-sourced aliases.
+fn rewrite_render_expr_for_cte_with_context(
+    expr: &RenderExpr,
+    ctx: &crate::render_plan::expression_utils::CTERewriteContext,
+) -> RenderExpr {
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            // Check if this alias is from a CTE
+            if ctx.cte_references.contains_key(&pa.table_alias.0) {
+                // Rewrite to use CTE alias and column naming
+                // E.g., a.user_id -> a_b.a_user_id
+                let cte_column = format!("{}_{}", pa.table_alias.0, pa.column.raw());
+                log::warn!(
+                    "🔧 Rewriting property access: {}.{} -> {}.{}",
+                    pa.table_alias.0,
+                    pa.column.raw(),
+                    ctx.cte_name,
+                    cte_column
+                );
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(ctx.cte_name.clone()),
+                    column: PropertyValue::Column(cte_column),
+                })
+            } else {
+                // Not a CTE reference, keep as-is
+                expr.clone()
+            }
         }
+        RenderExpr::OperatorApplicationExp(inner_op) => RenderExpr::OperatorApplicationExp(
+            rewrite_operator_application_for_cte_join(inner_op, &ctx.cte_name, &ctx.cte_references),
+        ),
         _ => expr.clone(),
     }
 }
@@ -581,7 +625,6 @@ fn extract_cte_join_condition_from_filter(
                             op_app,
                             cte_alias,
                             cte_references,
-                            cte_schemas,
                         ));
                     }
                     None
@@ -2525,12 +2568,36 @@ pub fn remap_cte_names_in_render_plan(
 /// 1. PropertyAccess with WITH alias (e.g., "a.full_name") → rewrite to FROM alias + CTE column (e.g., "a_age.a_name")
 /// 2. PropertyAccess with CTE name (e.g., "with_a_age_cte_1.age") → rewrite to FROM alias (e.g., "a_age.age")
 /// 3. Other expressions → recursively rewrite nested expressions
+/// Rewrite expressions to use CTE context (alias and column names)
+///
+/// Delegates to `rewrite_cte_expression_with_context` for actual rewriting logic.
+/// Maintained for backward compatibility; prefer the context-based version.
 pub fn rewrite_cte_expression(
     expr: crate::render_plan::render_expr::RenderExpr,
     cte_name: &str,
     from_alias: &str,
     with_aliases: &std::collections::HashSet<String>,
     reverse_mapping: &std::collections::HashMap<(String, String), String>,
+) -> crate::render_plan::render_expr::RenderExpr {
+    let ctx = crate::render_plan::expression_utils::CTERewriteContext::for_with_cte(
+        cte_name.to_string(),
+        from_alias.to_string(),
+        with_aliases.clone(),
+        reverse_mapping.clone(),
+    );
+    rewrite_cte_expression_with_context(expr, &ctx)
+}
+
+/// Rewrite expressions to use CTE context (alias and column names) - context version
+///
+/// Rewrites property accesses to use CTE names and column aliases.
+/// Handles three cases:
+/// 1. PropertyAccess with WITH alias (e.g., "a.full_name") → rewrite to FROM alias + CTE column
+/// 2. PropertyAccess with CTE name (e.g., "with_a_age_cte_1.age") → rewrite to FROM alias
+/// 3. Other expressions → recursively rewrite nested expressions
+pub fn rewrite_cte_expression_with_context(
+    expr: crate::render_plan::render_expr::RenderExpr,
+    ctx: &crate::render_plan::expression_utils::CTERewriteContext,
 ) -> crate::render_plan::render_expr::RenderExpr {
     use crate::render_plan::render_expr::*;
 
@@ -2539,7 +2606,7 @@ pub fn rewrite_cte_expression(
             let table_alias = &pa.table_alias.0;
 
             // Case 1: Table alias is a WITH alias (e.g., "a")
-            if with_aliases.contains(table_alias) {
+            if ctx.with_aliases.contains(table_alias) {
                 // Look up the CTE column name from reverse mapping
                 let column_name = match &pa.column {
                     PropertyValue::Column(col) => col.clone(),
@@ -2547,16 +2614,16 @@ pub fn rewrite_cte_expression(
                 };
 
                 let key = (table_alias.clone(), column_name.clone());
-                if let Some(cte_column) = reverse_mapping.get(&key) {
+                if let Some(cte_column) = ctx.reverse_mapping.get(&key) {
                     log::debug!(
                         "🔧 Rewriting {}.{} → {}.{}",
                         table_alias,
                         column_name,
-                        from_alias,
+                        ctx.from_alias,
                         cte_column
                     );
                     RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: TableAlias(from_alias.to_string()),
+                        table_alias: TableAlias(ctx.from_alias.clone()),
                         column: PropertyValue::Column(cte_column.clone()),
                     })
                 } else {
@@ -2565,26 +2632,26 @@ pub fn rewrite_cte_expression(
                         "🔧 Rewriting {}.{} → {}.{} (no mapping)",
                         table_alias,
                         column_name,
-                        from_alias,
+                        ctx.from_alias,
                         column_name
                     );
                     RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: TableAlias(from_alias.to_string()),
+                        table_alias: TableAlias(ctx.from_alias.clone()),
                         column: PropertyValue::Column(column_name),
                     })
                 }
             }
             // Case 2: Table alias is the CTE name itself
-            else if table_alias == cte_name {
+            else if table_alias == &ctx.cte_name {
                 log::debug!(
                     "🔧 Rewriting CTE reference {}.{:?} → {}.{:?}",
                     table_alias,
                     pa.column,
-                    from_alias,
+                    ctx.from_alias,
                     pa.column
                 );
                 RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: TableAlias(from_alias.to_string()),
+                    table_alias: TableAlias(ctx.from_alias.clone()),
                     column: pa.column,
                 })
             }
@@ -2598,9 +2665,7 @@ pub fn rewrite_cte_expression(
             let new_args = agg
                 .args
                 .into_iter()
-                .map(|arg| {
-                    rewrite_cte_expression(arg, cte_name, from_alias, with_aliases, reverse_mapping)
-                })
+                .map(|arg| rewrite_cte_expression_with_context(arg, ctx))
                 .collect();
             RenderExpr::AggregateFnCall(AggregateFnCall {
                 name: agg.name,
@@ -2612,9 +2677,7 @@ pub fn rewrite_cte_expression(
             let new_args = func
                 .args
                 .into_iter()
-                .map(|arg| {
-                    rewrite_cte_expression(arg, cte_name, from_alias, with_aliases, reverse_mapping)
-                })
+                .map(|arg| rewrite_cte_expression_with_context(arg, ctx))
                 .collect();
             RenderExpr::ScalarFnCall(ScalarFnCall {
                 name: func.name,
@@ -2626,15 +2689,7 @@ pub fn rewrite_cte_expression(
             let new_operands = op
                 .operands
                 .into_iter()
-                .map(|operand| {
-                    rewrite_cte_expression(
-                        operand,
-                        cte_name,
-                        from_alias,
-                        with_aliases,
-                        reverse_mapping,
-                    )
-                })
+                .map(|operand| rewrite_cte_expression_with_context(operand, ctx))
                 .collect();
             RenderExpr::OperatorApplicationExp(OperatorApplication {
                 operator: op.operator,
@@ -2643,46 +2698,22 @@ pub fn rewrite_cte_expression(
         }
         RenderExpr::Case(case_expr) => {
             // Recursively rewrite CASE expression
-            let new_expr = case_expr.expr.map(|e| {
-                Box::new(rewrite_cte_expression(
-                    *e,
-                    cte_name,
-                    from_alias,
-                    with_aliases,
-                    reverse_mapping,
-                ))
-            });
+            let new_expr = case_expr
+                .expr
+                .map(|e| Box::new(rewrite_cte_expression_with_context(*e, ctx)));
             let new_when_then: Vec<(RenderExpr, RenderExpr)> = case_expr
                 .when_then
                 .into_iter()
                 .map(|(when, then)| {
                     (
-                        rewrite_cte_expression(
-                            when,
-                            cte_name,
-                            from_alias,
-                            with_aliases,
-                            reverse_mapping,
-                        ),
-                        rewrite_cte_expression(
-                            then,
-                            cte_name,
-                            from_alias,
-                            with_aliases,
-                            reverse_mapping,
-                        ),
+                        rewrite_cte_expression_with_context(when, ctx),
+                        rewrite_cte_expression_with_context(then, ctx),
                     )
                 })
                 .collect();
-            let new_else = case_expr.else_expr.map(|e| {
-                Box::new(rewrite_cte_expression(
-                    *e,
-                    cte_name,
-                    from_alias,
-                    with_aliases,
-                    reverse_mapping,
-                ))
-            });
+            let new_else = case_expr
+                .else_expr
+                .map(|e| Box::new(rewrite_cte_expression_with_context(*e, ctx)));
             RenderExpr::Case(RenderCase {
                 expr: new_expr,
                 when_then: new_when_then,
@@ -3371,52 +3402,11 @@ pub fn extract_join_from_equality(
 /// Rewrite CTE column references to include alias prefix
 /// Converts "friend.id" → "friend.friend_id" for consistency
 pub fn rewrite_cte_column_references(expr: &mut crate::render_plan::render_expr::RenderExpr) {
-    use crate::render_plan::render_expr::*;
+    use crate::render_plan::expression_utils::MutablePropertyColumnRewriter;
 
-    match expr {
-        RenderExpr::PropertyAccessExp(pa) => {
-            let table_alias = &pa.table_alias.0;
-            let column_name = match &pa.column {
-                PropertyValue::Column(col) => col.clone(),
-                _ => return,
-            };
-
-            // Check if this looks like a simple property reference (no underscore prefix)
-            // If so, rewrite it to include the alias prefix: "friend.id" → "friend.friend_id"
-            if !column_name.starts_with(&format!("{}_", table_alias)) {
-                let new_column = format!("{}_{}", table_alias, column_name);
-                log::debug!(
-                    "🔧 rewrite_cte_column_references: {}.{} → {}.{}",
-                    table_alias,
-                    column_name,
-                    table_alias,
-                    new_column
-                );
-                pa.column = PropertyValue::Column(new_column);
-            }
-        }
-        RenderExpr::AggregateFnCall(agg) => {
-            // Recursively rewrite arguments
-            for arg in &mut agg.args {
-                rewrite_cte_column_references(arg);
-            }
-        }
-        RenderExpr::ScalarFnCall(func) => {
-            // Recursively rewrite arguments
-            for arg in &mut func.args {
-                rewrite_cte_column_references(arg);
-            }
-        }
-        RenderExpr::OperatorApplicationExp(op) => {
-            // Recursively rewrite all operands
-            for operand in &mut op.operands {
-                rewrite_cte_column_references(operand);
-            }
-        }
-        _ => {
-            // Other expression types don't need rewriting
-        }
-    }
+    // Rewrite columns to include table alias prefix (underscore separator)
+    // E.g., user.id → user.user_id (for CTE column flattening)
+    MutablePropertyColumnRewriter::rewrite_column_with_prefix(expr, '_');
 }
 
 /// Find a GroupBy subplan with is_materialization_boundary=true
@@ -7090,7 +7080,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 &op_app,
                                 &cte_alias,
                                 &cte_references,
-                                &cte_schemas,
                             );
                             log::warn!(
                                 "🔧 build_chained_with_match_cte_plan: Added JOIN condition from correlation predicate: {:?}",

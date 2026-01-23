@@ -1,6 +1,6 @@
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::GraphSchema;
-use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
+use crate::query_planner::join_context::VLP_END_ID_COLUMN;
 use crate::query_planner::logical_plan::VariableLengthSpec;
 use crate::render_plan::Cte;
 

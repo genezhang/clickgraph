@@ -1,3 +1,4 @@
+use super::expression_utils::property_access_expr;
 use super::render_expr::{
     AggregateFnCall, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall,
     TableAlias,
@@ -436,61 +437,18 @@ pub fn rewrite_expr_for_var_len_cte(
     end_cypher_alias: &str,
     _path_var: Option<&str>,
 ) -> RenderExpr {
-    match expr {
-        RenderExpr::PropertyAccessExp(prop) => {
-            let mut new_prop = prop.clone();
-            if prop.table_alias.0 == start_cypher_alias {
-                new_prop.table_alias = TableAlias(VLP_CTE_FROM_ALIAS.to_string());
-                if prop.column.raw() == "*" {
-                    new_prop.column = prop.column.clone();
-                } else {
-                    new_prop.column = PropertyValue::Column(format!("start_{}", prop.column.raw()));
-                }
-            } else if prop.table_alias.0 == end_cypher_alias {
-                // End node properties stay as is
-            } else {
-                // Other properties stay as is
-            }
-            RenderExpr::PropertyAccessExp(new_prop)
-        }
-        RenderExpr::OperatorApplicationExp(op) => {
-            let rewritten_operands = op
-                .operands
-                .iter()
-                .map(|operand| {
-                    rewrite_expr_for_var_len_cte(
-                        operand,
-                        start_cypher_alias,
-                        end_cypher_alias,
-                        _path_var,
-                    )
-                })
-                .collect();
-            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
-                operands: rewritten_operands,
-            })
-        }
-        RenderExpr::ScalarFnCall(fn_call) => {
-            let rewritten_args = fn_call
-                .args
-                .iter()
-                .map(|arg| {
-                    rewrite_expr_for_var_len_cte(
-                        arg,
-                        start_cypher_alias,
-                        end_cypher_alias,
-                        _path_var,
-                    )
-                })
-                .collect();
-            RenderExpr::ScalarFnCall(ScalarFnCall {
-                name: fn_call.name.clone(),
-                args: rewritten_args,
-            })
-        }
-        _ => expr.clone(),
-    }
+    use crate::render_plan::expression_utils::ExprVisitor;
+
+    let mut rewriter = crate::render_plan::expression_utils::VLPExprRewriter {
+        start_cypher_alias: start_cypher_alias.to_string(),
+        end_cypher_alias: end_cypher_alias.to_string(),
+        start_is_denormalized: false,
+        end_is_denormalized: false,
+        rel_alias: None,
+        from_col: None,
+        to_col: None,
+    };
+    rewriter.transform_expr(expr)
 }
 
 /// Rewrite VLP internal aliases (start_node, end_node) to Cypher aliases (a, b) for non-denormalized patterns
@@ -507,66 +465,18 @@ pub fn rewrite_vlp_internal_to_cypher_alias(
     start_cypher_alias: &str,
     end_cypher_alias: &str,
 ) -> RenderExpr {
-    match expr {
-        RenderExpr::PropertyAccessExp(prop) => {
-            let mut new_prop = prop.clone();
+    use crate::render_plan::expression_utils::ExprVisitor;
 
-            // Rewrite VLP internal aliases to Cypher aliases
-            if prop.table_alias.0 == "start_node" {
-                log::debug!("🔧 Rewriting start_node → {}", start_cypher_alias);
-                new_prop.table_alias = TableAlias(start_cypher_alias.to_string());
-            } else if prop.table_alias.0 == "end_node" {
-                log::debug!("🔧 Rewriting end_node → {}", end_cypher_alias);
-                new_prop.table_alias = TableAlias(end_cypher_alias.to_string());
-            }
-
-            RenderExpr::PropertyAccessExp(new_prop)
-        }
-        RenderExpr::OperatorApplicationExp(op) => {
-            let rewritten_operands = op
-                .operands
-                .iter()
-                .map(|operand| {
-                    rewrite_vlp_internal_to_cypher_alias(
-                        operand,
-                        start_cypher_alias,
-                        end_cypher_alias,
-                    )
-                })
-                .collect();
-            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
-                operands: rewritten_operands,
-            })
-        }
-        RenderExpr::ScalarFnCall(fn_call) => {
-            let rewritten_args = fn_call
-                .args
-                .iter()
-                .map(|arg| {
-                    rewrite_vlp_internal_to_cypher_alias(arg, start_cypher_alias, end_cypher_alias)
-                })
-                .collect();
-            RenderExpr::ScalarFnCall(ScalarFnCall {
-                name: fn_call.name.clone(),
-                args: rewritten_args,
-            })
-        }
-        RenderExpr::AggregateFnCall(agg_fn) => {
-            let rewritten_args = agg_fn
-                .args
-                .iter()
-                .map(|arg| {
-                    rewrite_vlp_internal_to_cypher_alias(arg, start_cypher_alias, end_cypher_alias)
-                })
-                .collect();
-            RenderExpr::AggregateFnCall(AggregateFnCall {
-                name: agg_fn.name.clone(),
-                args: rewritten_args,
-            })
-        }
-        _ => expr.clone(),
-    }
+    let mut rewriter = crate::render_plan::expression_utils::AliasRewriter {
+        alias_map: [
+            ("start_node".to_string(), start_cypher_alias.to_string()),
+            ("end_node".to_string(), end_cypher_alias.to_string()),
+        ]
+        .iter()
+        .cloned()
+        .collect(),
+    };
+    rewriter.transform_expr(expr)
 }
 
 /// Rewrite expressions for mixed denormalized patterns
@@ -584,91 +494,18 @@ pub fn rewrite_expr_for_mixed_denormalized_cte(
     to_col: Option<&str>,
     _path_var: Option<&str>,
 ) -> RenderExpr {
-    match expr {
-        RenderExpr::PropertyAccessExp(prop) => {
-            let mut new_prop = prop.clone();
-            let raw_col = prop.column.raw();
+    use crate::render_plan::expression_utils::ExprVisitor;
 
-            // Check if this is a relationship alias access (e.g., f.Origin, f.Dest)
-            if let (Some(rel), Some(from), Some(to)) = (rel_alias, from_col, to_col) {
-                if prop.table_alias.0 == rel {
-                    new_prop.table_alias = TableAlias(VLP_CTE_FROM_ALIAS.to_string());
-                    if raw_col == from {
-                        // from_col (e.g., Origin) → start_id
-                        new_prop.column = PropertyValue::Column(VLP_START_ID_COLUMN.to_string());
-                    } else if raw_col == to {
-                        // to_col (e.g., Dest) → end_id
-                        new_prop.column = PropertyValue::Column(VLP_END_ID_COLUMN.to_string());
-                    }
-                    return RenderExpr::PropertyAccessExp(new_prop);
-                }
-            }
-
-            // Rewrite only for denormalized nodes
-            if prop.table_alias.0 == start_cypher_alias && start_is_denormalized {
-                // Start node is denormalized → rewrite to t.start_id
-                new_prop.table_alias = TableAlias(VLP_CTE_FROM_ALIAS.to_string());
-                if raw_col != "*" {
-                    new_prop.column = PropertyValue::Column(VLP_START_ID_COLUMN.to_string());
-                }
-            } else if prop.table_alias.0 == end_cypher_alias && end_is_denormalized {
-                // End node is denormalized → rewrite to t.end_id
-                new_prop.table_alias = TableAlias(VLP_CTE_FROM_ALIAS.to_string());
-                if raw_col != "*" {
-                    new_prop.column = PropertyValue::Column(VLP_END_ID_COLUMN.to_string());
-                }
-            }
-            // Standard nodes are left unchanged - they'll be resolved by JOINs
-            RenderExpr::PropertyAccessExp(new_prop)
-        }
-        RenderExpr::OperatorApplicationExp(op) => {
-            let rewritten_operands = op
-                .operands
-                .iter()
-                .map(|operand| {
-                    rewrite_expr_for_mixed_denormalized_cte(
-                        operand,
-                        start_cypher_alias,
-                        end_cypher_alias,
-                        start_is_denormalized,
-                        end_is_denormalized,
-                        rel_alias,
-                        from_col,
-                        to_col,
-                        _path_var,
-                    )
-                })
-                .collect();
-            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
-                operands: rewritten_operands,
-            })
-        }
-        RenderExpr::ScalarFnCall(fn_call) => {
-            let rewritten_args = fn_call
-                .args
-                .iter()
-                .map(|arg| {
-                    rewrite_expr_for_mixed_denormalized_cte(
-                        arg,
-                        start_cypher_alias,
-                        end_cypher_alias,
-                        start_is_denormalized,
-                        end_is_denormalized,
-                        rel_alias,
-                        from_col,
-                        to_col,
-                        _path_var,
-                    )
-                })
-                .collect();
-            RenderExpr::ScalarFnCall(ScalarFnCall {
-                name: fn_call.name.clone(),
-                args: rewritten_args,
-            })
-        }
-        _ => expr.clone(),
-    }
+    let mut rewriter = crate::render_plan::expression_utils::VLPExprRewriter {
+        start_cypher_alias: start_cypher_alias.to_string(),
+        end_cypher_alias: end_cypher_alias.to_string(),
+        start_is_denormalized,
+        end_is_denormalized,
+        rel_alias: rel_alias.map(|s| s.to_string()),
+        from_col: from_col.map(|s| s.to_string()),
+        to_col: to_col.map(|s| s.to_string()),
+    };
+    rewriter.transform_expr(expr)
 }
 
 /// Rewrite labels(x)[1] to x.end_type for multi-type VLP ORDER BY expressions
@@ -693,13 +530,8 @@ pub fn rewrite_labels_subscript_for_multi_type_vlp(expr: &RenderExpr) -> RenderE
                             alias,
                             alias
                         );
-                        // Return x.end_type
-                        return RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias(alias.clone()),
-                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                "end_type".to_string(),
-                            ),
-                        });
+                        // Return x.end_type using factory helper
+                        return property_access_expr(alias, "end_type");
                     }
                 }
             }

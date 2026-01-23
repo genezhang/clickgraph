@@ -15,6 +15,7 @@ mod plan_builder_utils;
 mod properties_builder;
 pub mod property_expansion;
 mod select_builder;
+pub mod types;
 pub mod utils;
 mod view_table_ref;
 

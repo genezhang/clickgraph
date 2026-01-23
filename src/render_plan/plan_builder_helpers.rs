@@ -21,7 +21,7 @@ use super::render_expr::{
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
 use crate::render_plan::expression_utils::{
-    contains_string_literal, flatten_addition_operands, has_string_operand,
+    contains_string_literal, flatten_addition_operands, has_string_operand, ExprVisitor,
 };
 // Note: Direction import commented out until Issue #1 (Undirected Multi-Hop SQL) is fixed
 // use crate::query_planner::logical_expr::Direction;
@@ -1046,6 +1046,49 @@ pub(super) fn references_node_alias(condition: &OperatorApplication, node_alias:
     })
 }
 
+/// Visitor for rewriting path function calls to CTE column references
+/// Converts: length(p) → hop_count, nodes(p) → path_nodes, relationships(p) → path_relationships
+struct PathFunctionRewriter {
+    path_var_name: String,
+    table_alias: String,
+}
+
+impl ExprVisitor for PathFunctionRewriter {
+    fn transform_scalar_fn_call(&mut self, name: &str, args: Vec<RenderExpr>) -> RenderExpr {
+        // Check if this is a path function call with the path variable as argument
+        if args.len() == 1 {
+            if let RenderExpr::TableAlias(TableAlias(alias)) = &args[0] {
+                if alias == &self.path_var_name {
+                    // Convert path functions to CTE column references
+                    let column_name = match name {
+                        "length" => Some("hop_count"),
+                        "nodes" => Some("path_nodes"),
+                        "relationships" => Some("path_relationships"),
+                        _ => None,
+                    };
+
+                    if let Some(col_name) = column_name {
+                        return if self.table_alias.is_empty() {
+                            RenderExpr::Column(Column(PropertyValue::Column(col_name.to_string())))
+                        } else {
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(self.table_alias.clone()),
+                                column: PropertyValue::Column(col_name.to_string()),
+                            })
+                        };
+                    }
+                }
+            }
+        }
+
+        // Default: recursively handled args + rebuild call
+        RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: name.to_string(),
+            args,
+        })
+    }
+}
+
 /// Rewrite path function calls (length, nodes, relationships) to CTE column references
 /// Converts: length(p) → hop_count, nodes(p) → path_nodes, relationships(p) → path_relationships
 pub(super) fn rewrite_path_functions(expr: &RenderExpr, path_var_name: &str) -> RenderExpr {
@@ -1200,82 +1243,11 @@ pub(super) fn rewrite_path_functions_with_table(
     path_var_name: &str,
     table_alias: &str,
 ) -> RenderExpr {
-    match expr {
-        RenderExpr::ScalarFnCall(fn_call) => {
-            // Check if this is a path function call with the path variable as argument
-            if fn_call.args.len() == 1 {
-                if let RenderExpr::TableAlias(TableAlias(alias)) = &fn_call.args[0] {
-                    if alias == path_var_name {
-                        // Convert path functions to CTE column references
-                        let column_name = match fn_call.name.as_str() {
-                            "length" => Some("hop_count"),
-                            "nodes" => Some("path_nodes"),
-                            "relationships" => Some("path_relationships"),
-                            _ => None,
-                        };
-
-                        if let Some(col_name) = column_name {
-                            return if table_alias.is_empty() {
-                                RenderExpr::Column(Column(PropertyValue::Column(
-                                    col_name.to_string(),
-                                )))
-                            } else {
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(table_alias.to_string()),
-                                    column: PropertyValue::Column(col_name.to_string()),
-                                })
-                            };
-                        }
-                    }
-                }
-            }
-
-            // Recursively rewrite arguments for nested calls
-            let rewritten_args: Vec<RenderExpr> = fn_call
-                .args
-                .iter()
-                .map(|arg| rewrite_path_functions_with_table(arg, path_var_name, table_alias))
-                .collect();
-
-            RenderExpr::ScalarFnCall(ScalarFnCall {
-                name: fn_call.name.clone(),
-                args: rewritten_args,
-            })
-        }
-        RenderExpr::OperatorApplicationExp(op) => {
-            // Recursively rewrite operands
-            let rewritten_operands: Vec<RenderExpr> = op
-                .operands
-                .iter()
-                .map(|operand| {
-                    rewrite_path_functions_with_table(operand, path_var_name, table_alias)
-                })
-                .collect();
-
-            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
-                operands: rewritten_operands,
-            })
-        }
-        RenderExpr::PropertyAccessExp(_prop) => {
-            // Don't rewrite property access - it's handled separately
-            expr.clone()
-        }
-        RenderExpr::AggregateFnCall(agg) => {
-            // Recursively rewrite arguments for aggregate functions
-            let rewritten_args: Vec<RenderExpr> = agg
-                .args
-                .iter()
-                .map(|arg| rewrite_path_functions_with_table(arg, path_var_name, table_alias))
-                .collect();
-
-            RenderExpr::AggregateFnCall(AggregateFnCall {
-                name: agg.name.clone(),
-                args: rewritten_args,
-            })
-        }
-        _ => expr.clone(), // For other expression types, return as-is
-    }
+    let mut rewriter = PathFunctionRewriter {
+        path_var_name: path_var_name.to_string(),
+        table_alias: table_alias.to_string(),
+    };
+    rewriter.transform_expr(expr)
 }
 
 /// Rewrite path function calls on LogicalExpr (before conversion to RenderExpr)
