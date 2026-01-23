@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: January 22, 2026*
+*Updated: January 23, 2026*
 
 ## Current Version
 
@@ -11,6 +11,7 @@
 - ✅ Integration matrix tests: 128 passed, 3 failed, 17 skipped, 5 xfailed, 3 xpassed (97% success rate on executed tests)
 - ✅ OPTIONAL MATCH tests: 25/27 passing (93%)
 - ✅ All `test_collect` tests passing (10/10)
+- ⬆️ Denormalized edge SELECT tests: 6/18 passing (33%) - **NEW FIX: Table alias rewriting for SELECT clause**
 
 **Code Quality** (New - January 22, 2026):
 - ✅ Comprehensive refactoring complete (5 phases)
@@ -28,7 +29,19 @@
 
 **Recent Fixes**:
 
-1. **Jan 22, 2026 - Denormalized UNION & MULTI_TABLE_LABEL** ✅ COMPLETE:
+1. **Jan 23, 2026 - Denormalized Edge SELECT Clause Table Alias Rewriting** ✅ PARTIAL:
+   - ✅ Fixed: SELECT clause table alias rewriting for denormalized nodes
+   - Problem: When nodes are denormalized onto edges (e.g., origin.city stored in flights table),
+     the SELECT clause was using Cypher node alias (origin) instead of actual table alias (f)
+   - Solution: Modified `properties_builder.rs` to return the actual table alias (rel.alias) for both
+     left and right denormalized nodes, and updated `select_builder.rs` Case 4 to use this mapping
+   - Example: `MATCH (origin:Airport)-[f:FLIGHT]->(dest:Airport) RETURN origin.city`
+   - Generated SQL: `SELECT f.OriginCityName` (was: `SELECT origin.OriginCityName`)
+   - Status: SELECT clause fixed, WHERE clause requires separate fix (still in progress)
+   - Tests passing: 6/18 denormalized edge tests (all SELECT-only queries passing)
+   - Files: `render_plan/properties_builder.rs`, `render_plan/select_builder.rs`
+
+2. **Jan 22, 2026 - Denormalized UNION & MULTI_TABLE_LABEL** ✅ COMPLETE:
    - ✅ Fixed: Denormalized node UNION duplication (composite key filtering removes duplicate entries)
    - ✅ Fixed: SQL rendering for UNION branches with different property mappings (uses branch-specific select items)
    - ✅ Fixed: MULTI_TABLE_LABEL standalone aggregations (recursive Union extraction for deeply nested structures)
@@ -36,12 +49,12 @@
    - Files: `graph_schema.rs`, `match_clause.rs`, `plan_builder.rs`, `to_sql_query.rs`
    - Example: `MATCH (n:IP) RETURN count(DISTINCT n.ip)` now generates valid SQL with FROM clause
 
-2. **Jan 22, 2026 - OPTIONAL MATCH + VLP** ✅ COMPLETE:
+3. **Jan 22, 2026 - OPTIONAL MATCH + VLP** ✅ COMPLETE:
    - Fixed SQL generation to use LEFT JOIN with VLP CTE instead of FROM clause
    - Root cause: VLP CTE was incorrectly used as FROM instead of being LEFT JOINed to anchor node
    - Files: Join struct definition, 40+ Join initializers across render_plan/ and query_planner/analyzer/
 
-3. **Jan 22, 2026 - Comprehensive Code Quality Refactoring** ✅ COMPLETE:
+4. **Jan 22, 2026 - Comprehensive Code Quality Refactoring** ✅ COMPLETE:
    - Phase 0: Audited 184 files, identified 8 code smells
    - Phase 1: Removed 5 unused imports
    - Phase 2: Consolidated 14 `rebuild_or_clone()` methods → 2 helpers, created PatternSchemaContext factory
