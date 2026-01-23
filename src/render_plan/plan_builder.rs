@@ -798,7 +798,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     schema,
                 )?);
 
-                Ok(RenderPlan {
+                let mut render_plan = RenderPlan {
                     ctes,
                     select: select_items,
                     from,
@@ -812,7 +812,14 @@ impl RenderPlanBuilder for LogicalPlan {
                     limit,
                     union,
                     fixed_path_info: None,
-                })
+                };
+
+                // 🔧 CRITICAL: Rewrite JOIN conditions for UNION branches with VLP
+                // If this render plan has UNIONs with VLP CTEs, we need to rewrite
+                // JOIN conditions that reference Cypher aliases to use VLP CTE columns
+                rewrite_vlp_union_branch_aliases(&mut render_plan)?;
+
+                Ok(render_plan)
             }
             LogicalPlan::GraphRel(gr) => {
                 // For GraphRel, use the same extraction logic as GraphJoins
@@ -1333,6 +1340,13 @@ impl RenderPlanBuilder for LogicalPlan {
                     input: union_branches,
                     union_type: super::UnionType::All,
                 }));
+
+                // 🔧 CRITICAL: After combining UNION branches, rewrite VLP endpoint aliases
+                // This is the RIGHT place to do it - now the plan has the full UNION structure
+                // with both base_plan.joins and union_branches defined
+                log::warn!("❌❌❌ Union handler: About to call rewrite_vlp_union_branch_aliases ❌❌❌");
+                rewrite_vlp_union_branch_aliases(&mut base_plan)?;
+                log::warn!("❌❌❌ Union handler: Finished rewrite_vlp_union_branch_aliases ❌❌❌");
 
                 Ok(base_plan)
             }

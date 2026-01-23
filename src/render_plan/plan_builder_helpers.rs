@@ -356,6 +356,14 @@ pub(super) fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::GraphRel(rel) => extract_table_name(&rel.center),
         LogicalPlan::Filter(filter) => extract_table_name(&filter.input),
         LogicalPlan::Projection(proj) => extract_table_name(&proj.input),
+        // For Union (denormalized nodes), extract from first branch
+        LogicalPlan::Union(union) => {
+            if !union.inputs.is_empty() {
+                extract_table_name(&union.inputs[0])
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -379,6 +387,14 @@ pub(super) fn extract_end_node_table_name(plan: &LogicalPlan) -> Option<String> 
         LogicalPlan::GraphRel(rel) => extract_end_node_table_name(&rel.right),
         LogicalPlan::Filter(filter) => extract_end_node_table_name(&filter.input),
         LogicalPlan::Projection(proj) => extract_end_node_table_name(&proj.input),
+        // For Union (denormalized nodes), extract from first branch
+        LogicalPlan::Union(union) => {
+            if !union.inputs.is_empty() {
+                extract_end_node_table_name(&union.inputs[0])
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -400,6 +416,14 @@ pub(super) fn extract_end_node_id_column(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::GraphRel(rel) => extract_end_node_id_column(&rel.right),
         LogicalPlan::Filter(filter) => extract_end_node_id_column(&filter.input),
         LogicalPlan::Projection(proj) => extract_end_node_id_column(&proj.input),
+        // For Union (denormalized nodes), extract from first branch
+        LogicalPlan::Union(union) => {
+            if !union.inputs.is_empty() {
+                extract_end_node_id_column(&union.inputs[0])
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -700,6 +724,14 @@ pub(super) fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::GraphRel(rel) => extract_id_column(&rel.center),
         LogicalPlan::Filter(filter) => extract_id_column(&filter.input),
         LogicalPlan::Projection(proj) => extract_id_column(&proj.input),
+        // For Union (denormalized nodes), extract from first branch
+        LogicalPlan::Union(union) => {
+            if !union.inputs.is_empty() {
+                extract_id_column(&union.inputs[0])
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }

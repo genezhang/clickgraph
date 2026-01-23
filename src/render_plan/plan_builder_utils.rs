@@ -158,6 +158,19 @@ pub fn build_property_mapping_from_columns(
 /// Strip database prefix from table name (e.g., "db.table" -> "table")
 /// Recursively rewrite RenderExpr to use VLP table aliases
 pub fn rewrite_render_expr_for_vlp(expr: &mut RenderExpr, mappings: &HashMap<String, String>) {
+    // This function is deprecated in favor of rewrite_render_expr_for_vlp_with_from_alias
+    // which properly handles the FROM alias for VLP CTEs. Kept for backward compatibility.
+    rewrite_render_expr_for_vlp_with_from_alias(expr, mappings, "t");
+}
+
+/// Enhanced version that takes the FROM alias into account.
+/// For VLP CTEs, the FROM clause looks like: FROM vlp_a_b AS t
+/// So we need to use the alias (t) when rendering, and also add property prefixes (start_/end_).
+pub fn rewrite_render_expr_for_vlp_with_from_alias(
+    expr: &mut RenderExpr,
+    mappings: &HashMap<String, String>,
+    vlp_from_alias: &str,
+) {
     match expr {
         RenderExpr::Column(column) => {
             // Path functions use bare Column("path_nodes") that get qualified as t.path_nodes during SQL generation
@@ -184,7 +197,7 @@ pub fn rewrite_render_expr_for_vlp(expr: &mut RenderExpr, mappings: &HashMap<Str
                 let rewritten_alias = mappings
                     .get(VLP_CTE_FROM_ALIAS)
                     .cloned()
-                    .unwrap_or_else(|| VLP_CTE_FROM_ALIAS.to_string());
+                    .unwrap_or_else(|| vlp_from_alias.to_string());
                 log::info!(
                     "🔄 Rewriting {}.{} → {}.{}",
                     VLP_CTE_FROM_ALIAS,
@@ -201,47 +214,171 @@ pub fn rewrite_render_expr_for_vlp(expr: &mut RenderExpr, mappings: &HashMap<Str
         }
         RenderExpr::PropertyAccessExp(prop_access) => {
             // Check if this table alias needs rewriting
-            if let Some(new_alias) = mappings.get(&prop_access.table_alias.0) {
+            if let Some(vlp_internal_alias) = mappings.get(&prop_access.table_alias.0) {
+                // CRITICAL: Handle VLP property name rewriting with FROM alias
+                // For normal VLP, the CTE has columns like:
+                //   start_email, start_name, start_city, end_email, end_name, end_city
+                // NOT just: email, name, city
+                //
+                // So when rewriting a.city → use the FROM alias + PREFIX the column:
+                // 1. Keep the FROM alias (t): FROM vlp_a_b AS t
+                // 2. PREFIX the column: city → start_city (for start node) or end_city (for end node)
+                // 3. Final: t.start_city
+                //
+                // The mapping tells us the internal alias (start_node or end_node), which we use
+                // to determine the prefix (start_ or end_).
+                
+                let col_name = prop_access.column.raw();
+                
+                // Determine if this is a start or end node based on the mapping
+                let prefix = if vlp_internal_alias.starts_with("start_") {
+                    "start_"
+                } else if vlp_internal_alias.starts_with("end_") {
+                    "end_"
+                } else {
+                    // Not a node alias, use as-is
+                    ""
+                };
+                
+                let prefixed_col = if !prefix.is_empty() {
+                    format!("{}{}", prefix, col_name)
+                } else {
+                    col_name.to_string()
+                };
+                
                 log::info!(
-                    "🔄 Rewriting {}.{} → {}.{}",
+                    "🔄 VLP: Rewriting {}.{} → {}.{} (vlp_internal_alias={}, prefix={})",
                     prop_access.table_alias.0,
-                    prop_access.column.raw(),
-                    new_alias,
-                    prop_access.column.raw()
+                    col_name,
+                    vlp_from_alias,
+                    prefixed_col,
+                    vlp_internal_alias,
+                    prefix
                 );
-                prop_access.table_alias.0 = new_alias.clone();
+                
+                // Update both the alias (to FROM alias) and the column name (with prefix)
+                prop_access.table_alias.0 = vlp_from_alias.to_string();
+                if !prefix.is_empty() {
+                    // Replace the column with the prefixed version
+                    prop_access.column = PropertyValue::Column(prefixed_col);
+                }
             }
         }
         RenderExpr::OperatorApplicationExp(op_app) => {
             for operand in &mut op_app.operands {
-                rewrite_render_expr_for_vlp(operand, mappings);
+                rewrite_render_expr_for_vlp_with_from_alias(operand, mappings, vlp_from_alias);
             }
         }
         RenderExpr::ScalarFnCall(func) => {
             for arg in &mut func.args {
-                rewrite_render_expr_for_vlp(arg, mappings);
+                rewrite_render_expr_for_vlp_with_from_alias(arg, mappings, vlp_from_alias);
             }
         }
         RenderExpr::AggregateFnCall(func) => {
             for arg in &mut func.args {
-                rewrite_render_expr_for_vlp(arg, mappings);
+                rewrite_render_expr_for_vlp_with_from_alias(arg, mappings, vlp_from_alias);
             }
         }
         RenderExpr::InSubquery(in_exp) => {
-            rewrite_render_expr_for_vlp(&mut in_exp.expr, mappings);
+            rewrite_render_expr_for_vlp_with_from_alias(&mut in_exp.expr, mappings, vlp_from_alias);
         }
         RenderExpr::Case(case_exp) => {
             for (when_expr, then_expr) in &mut case_exp.when_then {
-                rewrite_render_expr_for_vlp(when_expr, mappings);
-                rewrite_render_expr_for_vlp(then_expr, mappings);
+                rewrite_render_expr_for_vlp_with_from_alias(when_expr, mappings, vlp_from_alias);
+                rewrite_render_expr_for_vlp_with_from_alias(then_expr, mappings, vlp_from_alias);
             }
             if let Some(else_expr) = &mut case_exp.else_expr {
-                rewrite_render_expr_for_vlp(else_expr, mappings);
+                rewrite_render_expr_for_vlp_with_from_alias(else_expr, mappings, vlp_from_alias);
             }
         }
         RenderExpr::List(items) => {
             for item in items {
-                rewrite_render_expr_for_vlp(item, mappings);
+                rewrite_render_expr_for_vlp_with_from_alias(item, mappings, vlp_from_alias);
+            }
+        }
+        // Other expression types don't contain table aliases
+        _ => {}
+    }
+}
+
+/// Enhanced version that uses endpoint position information for accurate prefix determination.
+/// This is used when the VLP CTE internal aliases are not properly set,
+/// and we need to infer start/end from the Cypher aliases themselves.
+pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
+    expr: &mut RenderExpr,
+    mappings: &HashMap<String, String>,
+    vlp_from_alias: &str,
+    endpoint_position: &HashMap<String, &str>,
+) {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop_access) => {
+            // Check if this is a Cypher alias (mapping exists)
+            if mappings.contains_key(&prop_access.table_alias.0) {
+                // Determine if this is a start or end node based on endpoint_position
+                let prefix = match endpoint_position.get(prop_access.table_alias.0.as_str()) {
+                    Some(&"start") => "start_",
+                    Some(&"end") => "end_",
+                    _ => {
+                        // Fallback to empty string if endpoint position isn't known
+                        ""
+                    }
+                };
+                
+                let col_name = prop_access.column.raw();
+                let prefixed_col = if !prefix.is_empty() {
+                    format!("{}{}", prefix, col_name)
+                } else {
+                    col_name.to_string()
+                };
+                
+                log::info!(
+                    "🔄 VLP: Rewriting {}.{} → {}.{} (position={}, prefix={})",
+                    prop_access.table_alias.0,
+                    col_name,
+                    vlp_from_alias,
+                    prefixed_col,
+                    endpoint_position.get(prop_access.table_alias.0.as_str()).unwrap_or(&"unknown"),
+                    prefix
+                );
+                
+                // Update both the alias (to FROM alias) and the column name (with prefix)
+                prop_access.table_alias.0 = vlp_from_alias.to_string();
+                if !prefix.is_empty() {
+                    // Replace the column with the prefixed version
+                    prop_access.column = PropertyValue::Column(prefixed_col);
+                }
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op_app) => {
+            for operand in &mut op_app.operands {
+                rewrite_render_expr_for_vlp_with_endpoint_info(operand, mappings, vlp_from_alias, endpoint_position);
+            }
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            for arg in &mut func.args {
+                rewrite_render_expr_for_vlp_with_endpoint_info(arg, mappings, vlp_from_alias, endpoint_position);
+            }
+        }
+        RenderExpr::AggregateFnCall(func) => {
+            for arg in &mut func.args {
+                rewrite_render_expr_for_vlp_with_endpoint_info(arg, mappings, vlp_from_alias, endpoint_position);
+            }
+        }
+        RenderExpr::InSubquery(in_exp) => {
+            rewrite_render_expr_for_vlp_with_endpoint_info(&mut in_exp.expr, mappings, vlp_from_alias, endpoint_position);
+        }
+        RenderExpr::Case(case_exp) => {
+            for (when_expr, then_expr) in &mut case_exp.when_then {
+                rewrite_render_expr_for_vlp_with_endpoint_info(when_expr, mappings, vlp_from_alias, endpoint_position);
+                rewrite_render_expr_for_vlp_with_endpoint_info(then_expr, mappings, vlp_from_alias, endpoint_position);
+            }
+            if let Some(else_expr) = &mut case_exp.else_expr {
+                rewrite_render_expr_for_vlp_with_endpoint_info(else_expr, mappings, vlp_from_alias, endpoint_position);
+            }
+        }
+        RenderExpr::List(items) => {
+            for item in items {
+                rewrite_render_expr_for_vlp_with_endpoint_info(item, mappings, vlp_from_alias, endpoint_position);
             }
         }
         // Other expression types don't contain table aliases
@@ -676,9 +813,14 @@ pub fn extract_vlp_alias_mappings(ctes: &crate::render_plan::CteItems) -> HashMa
         }
 
         // Check if this is a VLP CTE with metadata
-        if let (Some(cypher_start), Some(vlp_start)) =
-            (&cte.vlp_cypher_start_alias, &cte.vlp_start_alias)
-        {
+        if let Some(cypher_start) = &cte.vlp_cypher_start_alias {
+            // Get the VLP internal alias, defaulting to "start_node" if not set
+            let vlp_start = cte
+                .vlp_start_alias
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| "start_node".to_string());
+
             // Check if this is a denormalized VLP (both nodes in same table)
             // ✅ PHASE 2 APPROVED: Derives denormalization from schema structure, not flag
             let is_denormalized =
@@ -703,7 +845,14 @@ pub fn extract_vlp_alias_mappings(ctes: &crate::render_plan::CteItems) -> HashMa
             }
         }
 
-        if let (Some(cypher_end), Some(vlp_end)) = (&cte.vlp_cypher_end_alias, &cte.vlp_end_alias) {
+        if let Some(cypher_end) = &cte.vlp_cypher_end_alias {
+            // Get the VLP internal alias, defaulting to "end_node" if not set
+            let vlp_end = cte
+                .vlp_end_alias
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| "end_node".to_string());
+
             // Check if this is a denormalized VLP (both nodes in same table)
             // ✅ PHASE 2 APPROVED: Same structural check as above
             let is_denormalized =
@@ -3753,7 +3902,9 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         }
     }
 
-    let filtered_mappings: HashMap<String, String> = vlp_mappings.into_iter()
+    let filtered_mappings: HashMap<String, String> = vlp_mappings
+        .clone()
+        .into_iter()
         .filter(|(cypher_alias, _vlp_alias)| {
             // 🔧 FIX: Exclude aliases covered by WITH CTEs
             // These aliases reference the WITH CTE columns, not the raw VLP CTE
@@ -3764,21 +3915,34 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
 
             let is_endpoint = vlp_endpoint_aliases.contains(cypher_alias);
             if is_endpoint {
-                // If endpoint has a JOIN, exclude from rewrite (properties come from JOIN)
-                // If endpoint has NO JOIN, include in rewrite (properties come from CTE - denormalized!)
-                let has_join = endpoint_has_joins.get(cypher_alias).copied().unwrap_or(false);
-                if has_join {
-                    log::warn!("🔍 VLP: Excluding endpoint alias '{}' from rewrite (has JOIN for properties)", cypher_alias);
-                    return false;
-                } else {
-                    log::warn!("✅ VLP: INCLUDING endpoint alias '{}' in rewrite (denormalized - properties in CTE)", cypher_alias);
-                    return true;
-                }
+                // ✅ FIX: ALWAYS include endpoints for rewriting!
+                log::warn!("✅ VLP: INCLUDING endpoint alias '{}' in rewrite (for correct column mapping)", cypher_alias);
+                return true;
             }
             true  // Keep non-endpoint mappings (e.g., path variable)
         })
         .collect();
 
+    // 🔧 ENHANCEMENT: Build a reverse mapping to infer start/end from CTE structure
+    // CTE names are formatted as "vlp_{start}_{end}", so we can infer which endpoint is which
+    // Example: cte_name = "vlp_u_f" means start="u", end="f"
+    let mut endpoint_position: HashMap<String, &str> = HashMap::new();
+    
+    for cte in &plan.ctes.0 {
+        if cte.vlp_cypher_start_alias.is_some() && cte.vlp_cypher_end_alias.is_some() {
+            let start = cte.vlp_cypher_start_alias.as_ref().unwrap();
+            let end = cte.vlp_cypher_end_alias.as_ref().unwrap();
+            
+            endpoint_position.insert(start.clone(), "start");
+            endpoint_position.insert(end.clone(), "end");
+            
+            log::warn!(
+                "🔄 VLP: Endpoint position mapping: '{}' = start, '{}' = end (from CTE {})",
+                start, end, cte.cte_name
+            );
+        }
+    }
+    
     if filtered_mappings.is_empty() {
         log::warn!("🔍 VLP Union Branch: All mappings filtered out - nothing to rewrite");
         return Ok(());
@@ -3813,11 +3977,21 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         //   - x.name → property (SQL generator extracts from end_properties JSON)
         // No table alias rewriting needed - the FROM clause is already correct!
     } else {
+        // Extract the FROM alias for VLP CTE
+        // The FROM clause is: FROM vlp_a_b AS t
+        // We need to use 't' in all SELECT/WHERE/GROUP BY references
+        let vlp_from_alias = plan.from.0.as_ref()
+            .and_then(|from_ref| from_ref.alias.as_ref())
+            .map(|s| s.clone())
+            .unwrap_or_else(|| "t".to_string());  // Default to 't' if no alias found
+        
+        log::warn!("🔧 VLP: FROM alias extracted: '{}'", vlp_from_alias);
+        
         // Rewrite SELECT items using filtered VLP mappings (for non-multi-type VLP)
         log::warn!("🔍 VLP: Rewriting {} SELECT items", plan.select.items.len());
         for (idx, select_item) in plan.select.items.iter_mut().enumerate() {
             log::warn!("   SELECT[{}]: {:?}", idx, select_item.expression);
-            rewrite_render_expr_for_vlp(&mut select_item.expression, &filtered_mappings);
+            rewrite_render_expr_for_vlp_with_endpoint_info(&mut select_item.expression, &filtered_mappings, &vlp_from_alias, &endpoint_position);
         }
     }
 
@@ -3826,7 +4000,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
     // that need to be rewritten to use VLP table aliases (e.g., end_node.firstName = 'Wei')
     if let Some(where_expr) = &mut plan.filters.0 {
         log::warn!("🔄 VLP Union Branch: Rewriting WHERE clause");
-        rewrite_render_expr_for_vlp(where_expr, &filtered_mappings);
+        rewrite_render_expr_for_vlp_with_endpoint_info(where_expr, &filtered_mappings, "t", &endpoint_position);
     }
 
     // 🔧 FIX #5: Also rewrite GROUP BY expressions
@@ -3838,7 +4012,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
     );
     for (idx, group_expr) in plan.group_by.0.iter_mut().enumerate() {
         log::warn!("   GROUP BY[{}]: {:?}", idx, group_expr);
-        rewrite_render_expr_for_vlp(group_expr, &filtered_mappings);
+        rewrite_render_expr_for_vlp_with_endpoint_info(group_expr, &filtered_mappings, "t", &endpoint_position);
     }
 
     // 🔧 FIX #6: Also rewrite CTE bodies - BUT ONLY FOR PATH FUNCTION REWRITES (t → vlp1)
