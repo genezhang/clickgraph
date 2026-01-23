@@ -95,6 +95,12 @@ pub async fn run_with_config(config: ServerConfig) {
 
     // Try to create ClickHouse client (optional for YAML-only mode)
     let client_opt = clickhouse_client::try_get_client();
+    
+    if client_opt.is_some() {
+        log::info!("✓ ClickHouse client created successfully");
+    } else {
+        log::warn!("⚠ ClickHouse client could not be created (missing env vars?)");
+    }
 
     // Create connection pool (uses same env vars as client)
     let connection_pool = match connection_pool::RoleConnectionPool::new() {

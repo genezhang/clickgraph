@@ -538,11 +538,11 @@ def load_all_test_data(clickhouse_client, test_database, setup_test_database):
             
             clickhouse_client.command("""
                 INSERT INTO test_integration.fs_parent VALUES
-                    (2, 1),  -- Documents is child of root
-                    (3, 1),  -- Downloads is child of root
-                    (4, 2),  -- report.pdf is child of Documents
-                    (5, 2),  -- notes.txt is child of Documents
-                    (6, 3)   -- image.jpg is child of Downloads
+                    (2, 1),
+                    (3, 1),
+                    (4, 2),
+                    (5, 2),
+                    (6, 3)
             """)
             
             print("  ✓ test_integration (filesystem schema) data loaded")
