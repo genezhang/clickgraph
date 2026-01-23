@@ -27,7 +27,7 @@ use crate::render_plan::cte_extraction::{
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::filter_pipeline::categorize_filters;
 use crate::render_plan::render_expr::{
-    AggregateFnCall, ColumnAlias, InSubquery, Operator, OperatorApplication, PropertyAccess,
+    AggregateFnCall, Column, ColumnAlias, InSubquery, Operator, OperatorApplication, PropertyAccess,
     RenderCase, RenderExpr, ScalarFnCall, TableAlias,
 };
 use crate::render_plan::view_table_ref::{from_table_to_view_ref, view_ref_to_from_table};
@@ -4134,6 +4134,7 @@ pub(crate) fn expand_table_alias_to_select_items(
     cte_references: &HashMap<String, String>,
     has_aggregation: bool,
     plan_ctx: Option<&PlanCtx>,
+    vlp_cte_metadata: Option<&HashMap<String, (String, Vec<crate::render_plan::CteColumnMetadata>)>>,
 ) -> Vec<SelectItem> {
     log::info!(
         "🔍 expand_table_alias_to_select_items: Expanding alias '{}', cte_references={:?}",
@@ -4363,16 +4364,16 @@ pub(crate) fn expand_table_alias_to_select_items(
                     } else {
                         format!("{}_{}", col_prefix, id_col)
                     };
+                    // 🔧 CRITICAL FIX (Jan 23, 2026): Don't use explicit table alias for VLP columns during WITH clause expansion
+                    // During WITH clause rendering, the FROM alias isn't final yet, so we generate columns without
+                    // a table qualifier. The SQL generator will add the correct alias when rendering FROM clauses.
                     items.push(SelectItem {
-                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias(VLP_CTE_FROM_ALIAS.to_string()),
-                            column: PropertyValue::Column(vlp_col_name),
-                        }),
+                        expression: RenderExpr::Column(Column(PropertyValue::Column(vlp_col_name.clone()))),
                         col_alias: Some(ColumnAlias(format!("{}_{}", alias, id_col))),
                     });
                 }
 
-                // Add property columns (e.g., t.end_city AS u2_city)
+                // Add property columns (e.g., end_city AS u2_city)
                 for (prop_name, _) in &properties {
                     // Skip ID column (already added above)
                     if let Ok(id_col) = plan.find_id_column_for_alias(alias) {
@@ -4395,10 +4396,9 @@ pub(crate) fn expand_table_alias_to_select_items(
 
                     // VLP CTE columns are named: end_city, end_name, etc.
                     let vlp_col_name = format!("{}_{}", col_prefix, prop_name);
-                    let mut expr = RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: TableAlias(VLP_CTE_FROM_ALIAS.to_string()),
-                        column: PropertyValue::Column(vlp_col_name),
-                    });
+                    // 🔧 CRITICAL FIX (Jan 23, 2026): Use bare Column expression instead of PropertyAccessExp with table alias
+                    // This allows the column to be resolved from context (the FROM clause) rather than requiring a specific alias
+                    let mut expr = RenderExpr::Column(Column(PropertyValue::Column(vlp_col_name.clone())));
 
                     // Wrap with anyLast() if aggregation is needed
                     if has_aggregation {
@@ -4415,7 +4415,7 @@ pub(crate) fn expand_table_alias_to_select_items(
                 }
 
                 log::info!(
-                    "🔧 expand_table_alias_to_select_items: Generated {} VLP columns for alias '{}' (prefix='{}')",
+                    "🔧 expand_table_alias_to_select_items: Generated {} VLP columns for alias '{}' (prefix='{}', using bare Column expressions)",
                     items.len(), alias, col_prefix
                 );
 
@@ -5148,6 +5148,7 @@ fn expand_table_aliases_in_plan(
                                 cte_references,
                                 false, // has_aggregation
                                 None,  // plan_ctx
+                                None,  // vlp_cte_metadata
                             );
 
                             if expanded_select_items.is_empty() {
@@ -6055,7 +6056,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                     &cte_schemas,
                                                     &cte_references_for_rendering,
                                                     has_aggregation,  // Enables anyLast() wrapping in unified function
-                                                    plan_ctx  // Pass Option<&PlanCtx> for property pruning
+                                                    plan_ctx,  // Pass Option<&PlanCtx> for property pruning
+                                                    Some(&vlp_cte_metadata)  // Pass VLP CTE metadata for FROM alias lookup
                                                 );
                                                 log::warn!("🔧 build_chained_with_match_cte_plan: Expanded alias '{}' to {} items (aggregation={})",
                                                            alias.0, expanded.len(), has_aggregation);

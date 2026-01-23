@@ -820,7 +820,17 @@ impl RenderPlanBuilder for LogicalPlan {
                     distinct: FilterBuilder::extract_distinct(self),
                 };
                 let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
-                let joins = JoinItems(RenderPlanBuilder::extract_joins(self, schema)?);
+                
+                // 🔧 FIX for VLP: Don't extract joins when this is a Variable-Length Path
+                // VLP patterns use the recursive CTE as FROM, and the joins are only needed
+                // for CTE generation (in extract_ctes_with_context), not for the final SELECT
+                let joins = if gr.variable_length.is_some() {
+                    log::info!("🔧 VLP detected: Skipping JOIN extraction (using CTE as FROM)");
+                    JoinItems(vec![])
+                } else {
+                    JoinItems(RenderPlanBuilder::extract_joins(self, schema)?)
+                };
+                
                 let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
                 let filters = FilterItems(FilterBuilder::extract_filters(self)?);
                 let group_by =

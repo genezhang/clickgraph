@@ -1269,6 +1269,9 @@ pub(super) fn rewrite_logical_path_functions(
                 if let LogicalExpr::TableAlias(TableAlias(alias)) = &fn_call.args[0] {
                     if alias == path_var_name {
                         // Convert path functions to CTE column references
+                        // 🔧 FIX (Jan 23, 2026): Generate bare Column, not PropertyAccess with "t"
+                        // In WITH clause contexts, the VLP CTE may be aliased differently (e.g., "path" instead of "t")
+                        // Using bare columns lets the SQL renderer add the correct table alias later
                         let column_name = match fn_call.name.as_str() {
                             "length" => Some("hop_count"),
                             "nodes" => Some("path_nodes"),
@@ -1277,10 +1280,11 @@ pub(super) fn rewrite_logical_path_functions(
                         };
 
                         if let Some(col_name) = column_name {
-                            // Generate PropertyAccess for the CTE column
-                            // Use VLP_CTE_FROM_ALIAS as the table alias (VLP CTE alias)
+                            // Generate a bare PropertyAccess without table alias
+                            // This will be converted to RenderExpr::Column later,
+                            // which the SQL renderer recognizes as a VLP column
                             return LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(VLP_CTE_FROM_ALIAS.to_string()),
+                                table_alias: TableAlias("__vlp_bare_col".to_string()), // Special marker for bare column
                                 column: PropertyValue::Column(col_name.to_string()),
                             });
                         }

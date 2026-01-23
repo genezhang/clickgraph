@@ -206,6 +206,7 @@ impl PropertiesBuilder for LogicalPlan {
 
                     // Check if alias matches left_connection
                     if alias == rel.left_connection {
+                        log::info!("✅ Found left_connection match for '{}'", alias);
                         // For Incoming direction, left node is on the TO side of the edge
                         let props = if is_incoming {
                             &scan.to_node_properties
@@ -215,9 +216,9 @@ impl PropertiesBuilder for LogicalPlan {
                         if let Some(node_props) = props {
                             let properties = extract_sorted_properties(node_props);
                             if !properties.is_empty() {
-                                // Left connection uses its own alias as the FROM table
-                                // Return None to use the original alias (which IS the FROM)
-                                return Ok((properties, None));
+                                // For denormalized nodes, properties are stored on the edge table
+                                // The edge table is aliased as rel.alias in the FROM clause
+                                return Ok((properties, Some(rel.alias.clone())));
                             }
                         }
                     }
@@ -232,16 +233,10 @@ impl PropertiesBuilder for LogicalPlan {
                         if let Some(node_props) = props {
                             let properties = extract_sorted_properties(node_props);
                             if !properties.is_empty() {
-                                // For fully denormalized edges (both nodes on edge), use left_connection
-                                // alias because it's the FROM table and right node shares the same row
-                                // For partially denormalized, use relationship alias as before
-                                if both_nodes_denormalized {
-                                    // Use left_connection alias (the FROM table)
-                                    return Ok((properties, Some(rel.left_connection.clone())));
-                                } else {
-                                    // Use relationship alias for denormalized nodes
-                                    return Ok((properties, Some(rel.alias.clone())));
-                                }
+                                // For fully denormalized edges (both nodes on edge), use relationship alias
+                                // because the edge table is aliased with rel.alias in the FROM clause
+                                // For partially denormalized, also use relationship alias
+                                return Ok((properties, Some(rel.alias.clone())));
                             }
                         }
                     }

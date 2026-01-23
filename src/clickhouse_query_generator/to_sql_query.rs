@@ -1348,6 +1348,25 @@ impl RenderExpr {
                 if raw_value.contains('.') {
                     raw_value.to_string() // Already has table prefix
                 } else {
+                    // 🔧 CRITICAL FIX (Jan 23, 2026): Detect VLP CTE columns by prefix or name
+                    // VLP CTE columns are named: start_id, end_id, start_city, end_name, etc.
+                    // Plus internal path metadata: hop_count, path_edges, path_relationships, path_nodes
+                    // These should NOT be qualified with a table alias because they come from
+                    // the VLP CTE and the rendering pipeline handles FROM alias separately
+                    if raw_value.starts_with("start_")
+                        || raw_value.starts_with("end_")
+                        || matches!(
+                            raw_value,
+                            "hop_count" | "path_edges" | "path_relationships" | "path_nodes"
+                        )
+                    {
+                        log::info!(
+                            "🔧 Detected VLP CTE column '{}', returning unqualified",
+                            raw_value
+                        );
+                        return raw_value.to_string();
+                    }
+
                     // COMPREHENSIVE FIX: Enhanced heuristic for table alias determination
                     // This handles ALL column names by inferring from column patterns and table context
 
@@ -1579,6 +1598,17 @@ impl RenderExpr {
                     table_alias.0,
                     col_name
                 );
+
+                // 🔧 CRITICAL FIX (Jan 23, 2026): Handle bare VLP columns in WITH clauses
+                // When path functions are rewritten in WITH contexts, they use __vlp_bare_col marker
+                // to indicate the column should be selected without a table alias
+                if table_alias.0 == "__vlp_bare_col" {
+                    log::info!(
+                        "🔧 Detected VLP bare column: {} (from WITH clause path function)",
+                        col_name
+                    );
+                    return col_name.to_string();
+                }
 
                 // Special case: Multi-type VLP properties stored in JSON
                 // Check if this table alias is a multi-type VLP endpoint

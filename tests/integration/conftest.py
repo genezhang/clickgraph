@@ -63,6 +63,26 @@ def clickhouse_conn(clickhouse_client):
     return clickhouse_client
 
 
+@pytest.fixture
+def clickgraph_client():
+    """HTTP client for ClickGraph server at localhost:8080."""
+    class ClickGraphClient:
+        def __init__(self, base_url=CLICKGRAPH_URL):
+            self.base_url = base_url
+        
+        def post(self, endpoint, json=None, headers=None):
+            """POST request to ClickGraph."""
+            url = f"{self.base_url}{endpoint}"
+            return requests.post(url, json=json, headers=headers)
+        
+        def get(self, endpoint, headers=None):
+            """GET request to ClickGraph."""
+            url = f"{self.base_url}{endpoint}"
+            return requests.get(url, headers=headers)
+    
+    return ClickGraphClient()
+
+
 @pytest.fixture(scope="session")
 def test_database():
     """Returns the test database name."""
@@ -237,6 +257,7 @@ def load_all_test_schemas():
         ("group_membership", "schemas/test/group_membership_simple.yaml"),
         ("multi_tenant", "schemas/test/multi_tenant.yaml"),
         ("mixed_denorm_test", "schemas/test/mixed_denorm_test.yaml"),
+        ("filesystem", "schemas/examples/filesystem.yaml"),  # File storage system graph
         
         # NOTE: zeek_merged removed because:
         # 1. The 'zeek' database doesn't exist in integration test environment
@@ -460,11 +481,80 @@ def load_all_test_data(clickhouse_client, test_database, setup_test_database):
         
         print("  ✓ brahmand (social_benchmark) data loaded")
         
+        # Create filesystem schema tables (in test_integration database)
+        # Schema: fs_objects (nodes) and fs_parent (relationships)
+        clickhouse_client.command("""
+            CREATE TABLE IF NOT EXISTS test_integration.fs_objects (
+                object_id UInt32,
+                name String,
+                object_type String,  -- 'file' or 'folder'
+                size_bytes UInt64,   -- 0 for folders
+                mime_type Nullable(String),
+                created_at DateTime,
+                modified_at DateTime,
+                owner_id String      -- owner/user
+            ) ENGINE = MergeTree()
+            ORDER BY object_id
+        """)
+        
+        clickhouse_client.command("""
+            CREATE TABLE IF NOT EXISTS test_integration.fs_parent (
+                child_id UInt32,
+                parent_id UInt32
+            ) ENGINE = MergeTree()
+            ORDER BY (child_id, parent_id)
+        """)
+        
+        # Insert filesystem test data
+        # Root folder structure:
+        # /root/ (id=1, folder)
+        # ├── /Documents/ (id=2, folder)
+        # │   ├── report.pdf (id=4, file)
+        # │   └── notes.txt (id=5, file)
+        # ├── /Downloads/ (id=3, folder)
+        # │   └── image.jpg (id=6, file)
+        
+        clickhouse_client.command("""
+            INSERT INTO test_integration.fs_objects VALUES
+                (1, 'root', 'folder', 0, NULL, '2023-01-01 00:00:00', '2023-01-01 00:00:00', 'admin'),
+                (2, 'Documents', 'folder', 0, NULL, '2023-01-02 10:00:00', '2023-01-05 15:30:00', 'user1'),
+                (3, 'Downloads', 'folder', 0, NULL, '2023-01-03 11:00:00', '2023-01-06 14:00:00', 'user1'),
+                (4, 'report.pdf', 'file', 1024000, 'application/pdf', '2023-01-10 09:00:00', '2023-01-10 09:00:00', 'user1'),
+                (5, 'notes.txt', 'file', 2048, 'text/plain', '2023-01-11 10:30:00', '2023-01-12 11:00:00', 'user1'),
+                (6, 'image.jpg', 'file', 5242880, 'image/jpeg', '2023-01-15 14:00:00', '2023-01-15 14:00:00', 'user1')
+        """)
+        
+        clickhouse_client.command("""
+            INSERT INTO test_integration.fs_parent VALUES
+                (2, 1),  -- Documents is child of root
+                (3, 1),  -- Downloads is child of root
+                (4, 2),  -- report.pdf is child of Documents
+                (5, 2),  -- notes.txt is child of Documents
+                (6, 3)   -- image.jpg is child of Downloads
+        """)
+        
+        print("  ✓ test_integration (filesystem schema) data loaded")
+        
         print("✅ All test data loaded successfully\n")
         
     except Exception as e:
         print(f"⚠️  Warning: Failed to load some test data: {e}")
         print("   Tests may fail due to missing data\n")
+
+
+@pytest.fixture
+def setup_benchmark_data(load_all_test_data):
+    """
+    Fixture that ensures benchmark data is loaded before tests.
+    
+    This is a simple pass-through that depends on load_all_test_data.
+    Tests that need benchmark data can depend on this fixture to ensure
+    social_benchmark tables (users_bench, posts_bench, user_follows_bench, post_likes_bench)
+    are available in the brahmand database.
+    """
+    # Just return control after load_all_test_data has run
+    yield
+    # No cleanup needed - data persists for other tests
 
 
 @pytest.fixture
