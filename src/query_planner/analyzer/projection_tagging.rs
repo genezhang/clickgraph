@@ -14,6 +14,7 @@ use crate::{
         logical_plan::{LogicalPlan, Projection, ProjectionItem},
         plan_ctx::PlanCtx,
         transformed::Transformed,
+        typed_variable::{TypedVariable, VariableSource},
     },
 };
 
@@ -457,12 +458,47 @@ impl ProjectionTagging {
                     None
                 };
 
+                // ====================================================================
+                // CRITICAL: Check if this is a CTE-sourced variable (NEW Jan 2026)
+                // ====================================================================
+                // Do this BEFORE getting mutable table_ctx to avoid borrow checker issues
+                // Same fix as in FilterTagging: if a variable is CTE-sourced,
+                // don't apply schema mapping because CTE columns are already mapped.
+                let is_cte_sourced = if let Some(typed_var) = plan_ctx.lookup_variable(&property_access.table_alias.0) {
+                    matches!(typed_var, TypedVariable::Node(_) | TypedVariable::Relationship(_)) && {
+                        let var_source = match typed_var {
+                            TypedVariable::Node(nv) => Some(&nv.source),
+                            TypedVariable::Relationship(rv) => Some(&rv.source),
+                            _ => None,
+                        };
+                        matches!(var_source, Some(VariableSource::Cte { .. }))
+                    }
+                } else {
+                    false
+                };
+
                 let table_ctx = plan_ctx
                     .get_mut_table_ctx(&property_access.table_alias.0)
                     .map_err(|e| AnalyzerError::PlanCtx {
                         pass: Pass::ProjectionTagging,
                         source: e,
                     })?;
+
+                // If this is a CTE-sourced variable, skip schema mapping
+                if is_cte_sourced {
+                    log::info!(
+                        "🔧 ProjectionTagging: Skipping schema mapping for CTE-sourced variable '{}', property='{}'",
+                        property_access.table_alias.0,
+                        property_access.column.raw()
+                    );
+                    // Return property as-is for CTE lookup
+                    let projection_item = ProjectionItem {
+                        expression: item.expression.clone(),
+                        col_alias: item.col_alias.clone(),
+                    };
+                    table_ctx.insert_projection(projection_item);
+                    return Ok(());
+                }
 
                 crate::debug_print!(
                     "tag_projection: table_ctx label={:?}, is_relation={}",

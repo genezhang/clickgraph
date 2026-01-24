@@ -21,6 +21,7 @@ mod view_table_ref;
 
 use errors::RenderBuildError;
 use render_expr::{ColumnAlias, OperatorApplication, RenderExpr};
+use std::cell::RefCell;
 
 pub use cte_generation::CteGenerationContext;
 pub use cte_manager::{
@@ -29,6 +30,33 @@ pub use cte_manager::{
 pub use filter_pipeline::CategorizedFilters;
 pub use from_table::FromTable;
 pub use view_table_ref::ViewTableRef;
+
+// Thread-local storage for CTE column registry during render phase
+// This allows select_builder and filter_builder to resolve property access expressions
+// for WITH-exported variables to their CTE output column names
+thread_local! {
+    static CTE_COLUMN_REGISTRY_CONTEXT: RefCell<Option<CteColumnRegistry>> = RefCell::new(None);
+}
+
+/// Set the CTE column registry for the current render phase
+/// This should be called before rendering a logical plan that references WITH-exported variables
+pub fn set_cte_column_registry(registry: CteColumnRegistry) {
+    CTE_COLUMN_REGISTRY_CONTEXT.with(|cell| {
+        *cell.borrow_mut() = Some(registry);
+    });
+}
+
+/// Get the CTE column registry for property resolution
+pub fn get_cte_column_registry() -> Option<CteColumnRegistry> {
+    CTE_COLUMN_REGISTRY_CONTEXT.with(|cell| cell.borrow().clone())
+}
+
+/// Clear the CTE column registry after rendering is complete
+pub fn clear_cte_column_registry() {
+    CTE_COLUMN_REGISTRY_CONTEXT.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
 
 use crate::query_planner::join_context::{
     VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,

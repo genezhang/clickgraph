@@ -19,6 +19,7 @@ use crate::{
         logical_plan::{Filter, GroupBy, LogicalPlan, ProjectionItem},
         plan_ctx::PlanCtx,
         transformed::Transformed,
+        typed_variable::{TypedVariable, VariableSource},
     },
 };
 
@@ -630,6 +631,39 @@ impl FilterTagging {
                     // For multi-type VLP, return property as-is without validation
                     // SQL generation will handle JSON extraction
                     return Ok(LogicalExpr::PropertyAccessExp(property_access));
+                }
+
+                // ====================================================================
+                // CRITICAL: Check if this is a CTE-sourced variable (NEW Jan 2026)
+                // ====================================================================
+                // If this alias comes from a CTE (WITH clause export), we should NOT
+                // apply schema mapping because CTE columns are already the mapped columns.
+                // Example:
+                //   MATCH (u:User) WITH u AS person RETURN person.name
+                //   - u.name → maps to full_name (User schema)
+                //   - CTE exports: u_name (not full_name!)
+                //   - person.name should resolve to person.u_name, NOT person.full_name
+                if let Some(typed_var) = plan_ctx.lookup_variable(&property_access.table_alias.0) {
+                    if matches!(typed_var, TypedVariable::Node(_) | TypedVariable::Relationship(_)) {
+                        // Get the variable source
+                        let var_source = match typed_var {
+                            TypedVariable::Node(nv) => Some(&nv.source),
+                            TypedVariable::Relationship(rv) => Some(&rv.source),
+                            _ => None,
+                        };
+
+                        if let Some(VariableSource::Cte { cte_name }) = var_source {
+                            log::info!(
+                                "🔧 FilterTagging: Skipping schema mapping for CTE-sourced variable '{}' (CTE='{}'), property='{}'",
+                                property_access.table_alias.0,
+                                cte_name,
+                                property_access.column.raw()
+                            );
+                            // Return property as-is for CTE lookup
+                            // The render phase or CTE column registry will handle the column mapping
+                            return Ok(LogicalExpr::PropertyAccessExp(property_access));
+                        }
+                    }
                 }
 
                 // Get the label for this table
