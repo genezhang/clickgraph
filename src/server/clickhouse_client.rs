@@ -14,8 +14,14 @@ pub fn try_get_client() -> Option<Client> {
     let database = read_env_var("CLICKHOUSE_DATABASE").unwrap_or_else(|| "default".to_string());
 
     log::info!(
-        "Connecting to ClickHouse at {} (database: {})",
+        "✓ Connecting to ClickHouse at {} as user {} with password {} (database: {})",
         url,
+        user,
+        if password.is_empty() {
+            "[EMPTY]"
+        } else {
+            "[SET]"
+        },
         database
     );
     Some(

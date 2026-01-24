@@ -4,6 +4,7 @@
 //! It resolves property mappings for nodes and relationships, handling
 //! denormalized schemas and table alias resolution.
 
+use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::plan_builder_helpers::*;
@@ -206,6 +207,7 @@ impl PropertiesBuilder for LogicalPlan {
 
                     // Check if alias matches left_connection
                     if alias == rel.left_connection {
+                        log::info!("✅ Found left_connection match for '{}'", alias);
                         // For Incoming direction, left node is on the TO side of the edge
                         let props = if is_incoming {
                             &scan.to_node_properties
@@ -215,9 +217,9 @@ impl PropertiesBuilder for LogicalPlan {
                         if let Some(node_props) = props {
                             let properties = extract_sorted_properties(node_props);
                             if !properties.is_empty() {
-                                // Left connection uses its own alias as the FROM table
-                                // Return None to use the original alias (which IS the FROM)
-                                return Ok((properties, None));
+                                // For denormalized nodes, properties are stored on the edge table
+                                // The edge table is aliased as rel.alias in the FROM clause
+                                return Ok((properties, Some(rel.alias.clone())));
                             }
                         }
                     }
@@ -232,16 +234,10 @@ impl PropertiesBuilder for LogicalPlan {
                         if let Some(node_props) = props {
                             let properties = extract_sorted_properties(node_props);
                             if !properties.is_empty() {
-                                // For fully denormalized edges (both nodes on edge), use left_connection
-                                // alias because it's the FROM table and right node shares the same row
-                                // For partially denormalized, use relationship alias as before
-                                if both_nodes_denormalized {
-                                    // Use left_connection alias (the FROM table)
-                                    return Ok((properties, Some(rel.left_connection.clone())));
-                                } else {
-                                    // Use relationship alias for denormalized nodes
-                                    return Ok((properties, Some(rel.alias.clone())));
-                                }
+                                // For fully denormalized edges (both nodes on edge), use relationship alias
+                                // because the edge table is aliased with rel.alias in the FROM clause
+                                // For partially denormalized, also use relationship alias
+                                return Ok((properties, Some(rel.alias.clone())));
                             }
                         }
                     }
@@ -327,6 +323,32 @@ impl PropertiesBuilder for LogicalPlan {
                 // the UNWIND expression can be added here if needed, but this
                 // preserves the recursive behavior from the previous implementation.
                 return unwind.input.get_properties_with_table_alias(alias);
+            }
+            LogicalPlan::WithClause(wc) => {
+                // ✅ FIX (Phase 6): Handle WITH clauses for variable renaming
+                // When we have `MATCH (u:User) WITH u AS person`, we need to:
+                // 1. Check if `alias` is in the exported_aliases
+                // 2. If yes, find the corresponding source alias in items
+                // 3. Delegate to input to get properties for source alias
+
+                if wc.exported_aliases.contains(&alias.to_string()) {
+                    // Find the source alias for this exported alias by looking at items
+                    for item in &wc.items {
+                        if let Some(col_alias) = &item.col_alias {
+                            if col_alias.0 == alias {
+                                // This is the item that produces this exported alias
+                                // Try to extract the source alias
+                                if let LogicalExpr::TableAlias(ta) = &item.expression {
+                                    // Simple variable reference like WITH u AS person
+                                    return wc.input.get_properties_with_table_alias(&ta.0);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // If not found in WITH, delegate to input
+                return wc.input.get_properties_with_table_alias(alias);
             }
             _ => Ok((vec![], None)), // No properties found
         }

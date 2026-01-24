@@ -44,7 +44,10 @@ use std::fmt;
 pub mod errors;
 pub mod plan_builder;
 pub mod render_expr;
+pub mod render_plan;
 pub mod view_plan;
+
+pub use render_plan::CteColumnRegistry;
 
 #[cfg(test)]
 mod tests;
@@ -76,6 +79,28 @@ pub struct RenderPlan {
     pub skip: SkipItem,
     pub limit: LimitItem,
     pub union: UnionItems,
+    /// Fixed path information for simple (non-VLP) path patterns
+    /// Contains path variable name and hop count for queries like:
+    /// MATCH p = (a)-[:T]->(b) RETURN length(p)
+    pub fixed_path_info: Option<FixedPathMetadata>,
+    /// Per-query CTE column registry - maps (alias, property) to CTE output column name
+    /// Used during SQL rendering to resolve property accesses from WITH clauses
+    #[serde(skip)] // Don't serialize, recreate during rendering
+    pub cte_column_registry: CteColumnRegistry,
+}
+
+/// Metadata for simple/fixed path patterns (non-VLP)
+/// Used to render path functions like length(p), nodes(p), relationships(p)
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct FixedPathMetadata {
+    /// Path variable name from Cypher (e.g., "p")
+    pub path_variable: String,
+    /// Number of relationships/hops in the path (e.g., 1 for (a)-[r]->(b))
+    pub hop_count: u32,
+    /// List of node table aliases in order: [start_alias, intermediate1, ..., end_alias]
+    pub node_aliases: Vec<String>,
+    /// List of relationship aliases (e.g., ["r"])
+    pub rel_aliases: Vec<String>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -314,15 +339,17 @@ impl Cte {
             columns: vec![
                 CteColumnMetadata {
                     cte_column_name: VLP_START_ID_COLUMN.to_string(),
-                    cypher_alias: cypher_start_alias,
-                    property_name: start_id_col,
+                    cypher_alias: cypher_start_alias.clone(),
+                    cypher_property: start_id_col.clone(),
+                    db_column: start_id_col.clone(),
                     is_id_column: true,
                     vlp_position: Some(cte_manager::VlpColumnPosition::Start),
                 },
                 CteColumnMetadata {
                     cte_column_name: VLP_END_ID_COLUMN.to_string(),
-                    cypher_alias: cypher_end_alias,
-                    property_name: end_id_col,
+                    cypher_alias: cypher_end_alias.clone(),
+                    cypher_property: end_id_col.clone(),
+                    db_column: end_id_col.clone(),
                     is_id_column: true,
                     vlp_position: Some(cte_manager::VlpColumnPosition::End),
                 },

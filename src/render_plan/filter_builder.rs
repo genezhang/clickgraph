@@ -121,11 +121,27 @@ impl FilterBuilder for LogicalPlan {
                 // 🔧 BUG #10 FIX: For VLP/shortest path queries, filters from where_predicate
                 // are already pushed into the CTE during extraction. Don't duplicate them
                 // in the outer SELECT WHERE clause.
+                //
+                // ⚠️ CRITICAL FIX (Jan 23, 2026): Don't skip ALL filters!
+                // Filters that reference nodes OUTSIDE the VLP pattern should still be applied
+                // in the final query. Only skip filters that are entirely on VLP nodes.
+                //
+                // Example: MATCH (a:User)-[*]->(b:User) WHERE a.name = 'Alice' AND c.status = 'active'
+                //   - "a.name = 'Alice'" is inside VLP → stays in CTE
+                //   - "c.status = 'active'" is outside VLP → should be in outer SELECT
+                //
+                // For now, we skip ALL VLP filters. This is a known limitation that should be fixed
+                // by implementing filter splitting logic that separates VLP-internal from external filters.
+                // TODO: Implement filter splitting for VLP queries
                 if graph_rel.variable_length.is_some() || graph_rel.shortest_path_mode.is_some() {
                     log::info!(
                         "🔧 BUG #10: Skipping GraphRel filter extraction for VLP/shortest path - already in CTE"
                     );
+                    log::warn!(
+                        "⚠️ NOTE: Filters on nodes OUTSIDE VLP pattern are also skipped (limitation)"
+                    );
                     // Don't extract filters - they're already in the CTE
+                    // TODO: Implement proper filter splitting to handle external filters
                     return Ok(None);
                 }
 

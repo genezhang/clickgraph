@@ -1873,16 +1873,33 @@ impl JoinBuilder for LogicalPlan {
                     "🔧 DEBUG: About to push JOIN 2 (end node): {} AS {}",
                     end_table, graph_rel.right_connection
                 );
-                joins.push(Join {
-                    table_name: end_table,
-                    table_alias: graph_rel.right_connection.clone(),
-                    joining_on: vec![end_join_condition],
-                    join_type,
-                    pre_filter: right_node_pre_filter.clone(),
-                    from_id_column: None,
-                    to_id_column: None,
-                    graph_rel: None,
-                });
+
+                // DENORMALIZED EDGE CHECK: Only add JOIN 2 if target node is a different table
+                // For denormalized edges (e.g., AUTHORED with posts_bench as both edge+node),
+                // end_table == rel_table, so we should NOT join the table again
+                if end_table != rel_table {
+                    joins.push(Join {
+                        table_name: end_table,
+                        table_alias: graph_rel.right_connection.clone(),
+                        joining_on: vec![end_join_condition],
+                        join_type,
+                        pre_filter: right_node_pre_filter.clone(),
+                        from_id_column: None,
+                        to_id_column: None,
+                        graph_rel: None,
+                    });
+                } else {
+                    // Denormalized edge: end_table == rel_table
+                    // No second JOIN needed - relationship table alias serves as target node alias
+                    println!(
+                        "✓ Denormalized edge detected - skipping JOIN 2 for end node (same table as edge)"
+                    );
+                    log::info!(
+                        "✓ Denormalized edge for {}: table '{}' serves as both edge and node",
+                        graph_rel.alias,
+                        rel_table
+                    );
+                }
 
                 println!(
                     "📤 DEBUG: GraphRel (alias={}) returning {} total joins",

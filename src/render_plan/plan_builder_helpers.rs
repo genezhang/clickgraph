@@ -356,6 +356,14 @@ pub(super) fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::GraphRel(rel) => extract_table_name(&rel.center),
         LogicalPlan::Filter(filter) => extract_table_name(&filter.input),
         LogicalPlan::Projection(proj) => extract_table_name(&proj.input),
+        // For Union (denormalized nodes), extract from first branch
+        LogicalPlan::Union(union) => {
+            if !union.inputs.is_empty() {
+                extract_table_name(&union.inputs[0])
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -379,6 +387,14 @@ pub(super) fn extract_end_node_table_name(plan: &LogicalPlan) -> Option<String> 
         LogicalPlan::GraphRel(rel) => extract_end_node_table_name(&rel.right),
         LogicalPlan::Filter(filter) => extract_end_node_table_name(&filter.input),
         LogicalPlan::Projection(proj) => extract_end_node_table_name(&proj.input),
+        // For Union (denormalized nodes), extract from first branch
+        LogicalPlan::Union(union) => {
+            if !union.inputs.is_empty() {
+                extract_end_node_table_name(&union.inputs[0])
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -400,6 +416,14 @@ pub(super) fn extract_end_node_id_column(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::GraphRel(rel) => extract_end_node_id_column(&rel.right),
         LogicalPlan::Filter(filter) => extract_end_node_id_column(&filter.input),
         LogicalPlan::Projection(proj) => extract_end_node_id_column(&proj.input),
+        // For Union (denormalized nodes), extract from first branch
+        LogicalPlan::Union(union) => {
+            if !union.inputs.is_empty() {
+                extract_end_node_id_column(&union.inputs[0])
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -700,6 +724,14 @@ pub(super) fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::GraphRel(rel) => extract_id_column(&rel.center),
         LogicalPlan::Filter(filter) => extract_id_column(&filter.input),
         LogicalPlan::Projection(proj) => extract_id_column(&proj.input),
+        // For Union (denormalized nodes), extract from first branch
+        LogicalPlan::Union(union) => {
+            if !union.inputs.is_empty() {
+                extract_id_column(&union.inputs[0])
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -1269,6 +1301,9 @@ pub(super) fn rewrite_logical_path_functions(
                 if let LogicalExpr::TableAlias(TableAlias(alias)) = &fn_call.args[0] {
                     if alias == path_var_name {
                         // Convert path functions to CTE column references
+                        // 🔧 FIX (Jan 23, 2026): Generate bare Column, not PropertyAccess with "t"
+                        // In WITH clause contexts, the VLP CTE may be aliased differently (e.g., "path" instead of "t")
+                        // Using bare columns lets the SQL renderer add the correct table alias later
                         let column_name = match fn_call.name.as_str() {
                             "length" => Some("hop_count"),
                             "nodes" => Some("path_nodes"),
@@ -1277,10 +1312,11 @@ pub(super) fn rewrite_logical_path_functions(
                         };
 
                         if let Some(col_name) = column_name {
-                            // Generate PropertyAccess for the CTE column
-                            // Use VLP_CTE_FROM_ALIAS as the table alias (VLP CTE alias)
+                            // Generate a bare PropertyAccess without table alias
+                            // This will be converted to RenderExpr::Column later,
+                            // which the SQL renderer recognizes as a VLP column
                             return LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(VLP_CTE_FROM_ALIAS.to_string()),
+                                table_alias: TableAlias("__vlp_bare_col".to_string()), // Special marker for bare column
                                 column: PropertyValue::Column(col_name.to_string()),
                             });
                         }
@@ -2522,7 +2558,7 @@ pub(super) fn is_invalid_filter_expression(expr: &RenderExpr) -> bool {
 pub(super) fn normalize_union_branches(
     union_plans: Vec<super::RenderPlan>,
 ) -> Vec<super::RenderPlan> {
-    use super::{RenderPlan, SelectItem, SelectItems};
+    use super::{CteColumnRegistry, RenderPlan, SelectItem, SelectItems};
     use std::collections::BTreeSet;
 
     if union_plans.is_empty() {
@@ -2600,6 +2636,7 @@ pub(super) fn normalize_union_branches(
                     items: normalized_items,
                     distinct: plan.select.distinct,
                 },
+                cte_column_registry: CteColumnRegistry::new(),
                 ..plan
             }
         })

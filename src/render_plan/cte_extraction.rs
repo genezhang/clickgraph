@@ -2385,14 +2385,16 @@ pub fn extract_ctes_with_context(
                                         crate::render_plan::CteColumnMetadata {
                                             cte_column_name: VLP_START_ID_COLUMN.to_string(),
                                             cypher_alias: start_alias.clone(),
-                                            property_name: "id".to_string(),
+                                            cypher_property: "id".to_string(),
+                                            db_column: "id".to_string(),
                                             is_id_column: true,
                                             vlp_position: Some(crate::render_plan::cte_manager::VlpColumnPosition::Start),
                                         },
                                         crate::render_plan::CteColumnMetadata {
                                             cte_column_name: VLP_END_ID_COLUMN.to_string(),
                                             cypher_alias: end_alias.clone(),
-                                            property_name: "id".to_string(),
+                                            cypher_property: "id".to_string(),
+                                            db_column: "id".to_string(),
                                             is_id_column: true,
                                             vlp_position: Some(crate::render_plan::cte_manager::VlpColumnPosition::End),
                                         },

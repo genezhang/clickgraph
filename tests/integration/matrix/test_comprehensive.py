@@ -57,6 +57,72 @@ def load_all_schemas():
             print(f"Warning: Error loading schema {schema_name}: {e}")
 
 
+@pytest.fixture(scope="session", autouse=True)
+def setup_test_data():
+    """Set up test data for matrix tests (filesystem schema, etc.)."""
+    try:
+        import clickhouse_connect
+        
+        client = clickhouse_connect.get_client(
+            host=os.environ.get("CLICKHOUSE_HOST", "localhost"),
+            port=int(os.environ.get("CLICKHOUSE_PORT", "8123")),
+            username=os.environ.get("CLICKHOUSE_USER", "test_user"),
+            password=os.environ.get("CLICKHOUSE_PASSWORD", "test_pass")
+        )
+        
+        # Drop and recreate filesystem schema tables to prevent data duplication from multiple test runs
+        # This ensures clean state for matrix tests which are heavily parametrized
+        client.command("DROP TABLE IF EXISTS test_integration.fs_objects")
+        client.command("DROP TABLE IF EXISTS test_integration.fs_parent")
+        
+        # Create filesystem schema tables (in test_integration database)
+        client.command("""
+            CREATE TABLE test_integration.fs_objects (
+                object_id UInt32,
+                name String,
+                object_type String,
+                size_bytes UInt64,
+                mime_type Nullable(String),
+                created_at DateTime,
+                modified_at DateTime,
+                owner_id String
+            ) ENGINE = MergeTree()
+            ORDER BY object_id
+        """)
+        
+        client.command("""
+            CREATE TABLE test_integration.fs_parent (
+                child_id UInt32,
+                parent_id UInt32
+            ) ENGINE = MergeTree()
+            ORDER BY (child_id, parent_id)
+        """)
+        
+        # Insert filesystem test data (fresh insertion after drop)
+        client.command("""
+            INSERT INTO test_integration.fs_objects VALUES
+                (1, 'root', 'folder', 0, NULL, '2023-01-01 00:00:00', '2023-01-01 00:00:00', 'admin'),
+                (2, 'Documents', 'folder', 0, NULL, '2023-01-02 10:00:00', '2023-01-05 15:30:00', 'user1'),
+                (3, 'Downloads', 'folder', 0, NULL, '2023-01-03 11:00:00', '2023-01-06 14:00:00', 'user1'),
+                (4, 'report.pdf', 'file', 1024000, 'application/pdf', '2023-01-10 09:00:00', '2023-01-10 09:00:00', 'user1'),
+                (5, 'notes.txt', 'file', 2048, 'text/plain', '2023-01-11 10:30:00', '2023-01-12 11:00:00', 'user1'),
+                (6, 'image.jpg', 'file', 5242880, 'image/jpeg', '2023-01-15 14:00:00', '2023-01-15 14:00:00', 'user1')
+        """)
+        
+        client.command("""
+            INSERT INTO test_integration.fs_parent VALUES
+                (2, 1),
+                (3, 1),
+                (4, 2),
+                (5, 2),
+                (6, 3)
+        """)
+        
+        client.close()
+    except Exception as e:
+        print(f"Warning: Failed to set up test data: {e}")
+
+
 @pytest.fixture(params=list(SCHEMAS.keys()))
 def schema_name(request):
     """Parametrize over all schemas"""

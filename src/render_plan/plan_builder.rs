@@ -33,9 +33,10 @@ use super::render_expr::{
 use super::select_builder::SelectBuilder;
 use super::{
     view_table_ref::{from_table_to_view_ref, view_ref_to_from_table},
-    ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTable, FromTableItem,
-    GroupByExpressions, Join, JoinItems, JoinType, LimitItem, OrderByItem, OrderByItems,
-    OrderByOrder, RenderPlan, SelectItem, SelectItems, SkipItem, Union, UnionItems, ViewTableRef,
+    ArrayJoinItem, Cte, CteColumnRegistry, CteContent, CteItems, FilterItems, FromTable,
+    FromTableItem, GroupByExpressions, Join, JoinItems, JoinType, LimitItem, OrderByItem,
+    OrderByItems, OrderByOrder, RenderPlan, SelectItem, SelectItems, SkipItem, Union, UnionItems,
+    ViewTableRef,
 };
 use crate::render_plan::cte_extraction::extract_ctes_with_context;
 use crate::render_plan::cte_extraction::{
@@ -798,7 +799,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     schema,
                 )?);
 
-                Ok(RenderPlan {
+                let mut render_plan = RenderPlan {
                     ctes,
                     select: select_items,
                     from,
@@ -811,7 +812,19 @@ impl RenderPlanBuilder for LogicalPlan {
                     skip,
                     limit,
                     union,
-                })
+                    fixed_path_info: None,
+                    cte_column_registry: CteColumnRegistry::new(),
+                };
+
+                // Populate the CTE column registry from CTE metadata
+                populate_cte_column_registry(&mut render_plan);
+
+                // 🔧 CRITICAL: Rewrite JOIN conditions for UNION branches with VLP
+                // If this render plan has UNIONs with VLP CTEs, we need to rewrite
+                // JOIN conditions that reference Cypher aliases to use VLP CTE columns
+                rewrite_vlp_union_branch_aliases(&mut render_plan)?;
+
+                Ok(render_plan)
             }
             LogicalPlan::GraphRel(gr) => {
                 // For GraphRel, use the same extraction logic as GraphJoins
@@ -820,7 +833,17 @@ impl RenderPlanBuilder for LogicalPlan {
                     distinct: FilterBuilder::extract_distinct(self),
                 };
                 let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
-                let joins = JoinItems(RenderPlanBuilder::extract_joins(self, schema)?);
+
+                // 🔧 FIX for VLP: Don't extract joins when this is a Variable-Length Path
+                // VLP patterns use the recursive CTE as FROM, and the joins are only needed
+                // for CTE generation (in extract_ctes_with_context), not for the final SELECT
+                let joins = if gr.variable_length.is_some() {
+                    log::info!("🔧 VLP detected: Skipping JOIN extraction (using CTE as FROM)");
+                    JoinItems(vec![])
+                } else {
+                    JoinItems(RenderPlanBuilder::extract_joins(self, schema)?)
+                };
+
                 let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
                 let filters = FilterItems(FilterBuilder::extract_filters(self)?);
                 let group_by =
@@ -859,6 +882,8 @@ impl RenderPlanBuilder for LogicalPlan {
                     skip,
                     limit,
                     union,
+                    fixed_path_info: None,
+                    cte_column_registry: CteColumnRegistry::new(),
                 })
             }
             LogicalPlan::Projection(p) => {
@@ -1040,6 +1065,8 @@ impl RenderPlanBuilder for LogicalPlan {
                     skip: SkipItem(None),
                     limit: LimitItem(None),
                     union: UnionItems(None),
+                    fixed_path_info: None,
+                    cte_column_registry: CteColumnRegistry::new(),
                 })
             }
             LogicalPlan::WithClause(with) => {
@@ -1079,8 +1106,16 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                 }
 
-                let cte_select_items =
+                let mut cte_select_items =
                     <LogicalPlan as SelectBuilder>::extract_select_items(with.input.as_ref())?;
+
+                // ✅ FIX (Phase 6): Remap column aliases to match exported aliases
+                // When we have `WITH u AS person`, the select items will have aliases like `u.name`
+                // but they need to be remapped to `person.name` for the CTE output
+                let alias_mapping = build_with_alias_mapping(&with.items, &with.exported_aliases);
+                if !alias_mapping.is_empty() {
+                    cte_select_items = remap_select_item_aliases(cte_select_items, &alias_mapping);
+                }
                 let cte_from = FromTableItem(with.input.extract_from()?.and_then(|ft| ft.table));
                 let cte_joins = JoinItems(RenderPlanBuilder::extract_joins(
                     with.input.as_ref(),
@@ -1109,6 +1144,8 @@ impl RenderPlanBuilder for LogicalPlan {
                     skip: cte_skip,
                     limit: cte_limit,
                     union: UnionItems(None),
+                    fixed_path_info: None,
+                    cte_column_registry: CteColumnRegistry::new(),
                 });
 
                 let cte_name = format!("with_{}_cte", with.exported_aliases.join("_"));
@@ -1149,6 +1186,8 @@ impl RenderPlanBuilder for LogicalPlan {
                     skip,
                     limit,
                     union,
+                    fixed_path_info: None,
+                    cte_column_registry: CteColumnRegistry::new(),
                 })
             }
             LogicalPlan::CartesianProduct(cp) => {
@@ -1311,6 +1350,17 @@ impl RenderPlanBuilder for LogicalPlan {
                     union_type: super::UnionType::All,
                 }));
 
+                // 🔧 CRITICAL: After combining UNION branches, rewrite VLP endpoint aliases
+                // This is the RIGHT place to do it - now the plan has the full UNION structure
+                // with both base_plan.joins and union_branches defined
+                log::warn!(
+                    "❌❌❌ Union handler: About to call rewrite_vlp_union_branch_aliases ❌❌❌"
+                );
+                rewrite_vlp_union_branch_aliases(&mut base_plan)?;
+                log::warn!(
+                    "❌❌❌ Union handler: Finished rewrite_vlp_union_branch_aliases ❌❌❌"
+                );
+
                 Ok(base_plan)
             }
             _ => todo!(
@@ -1429,5 +1479,89 @@ fn logical_to_render_expr(expr: &LogicalExpr) -> Option<RenderExpr> {
         }
         LogicalExpr::TableAlias(ta) => Some(RenderExpr::TableAlias(TableAlias(ta.0.clone()))),
         _ => None,
+    }
+}
+/// Build a mapping from source alias to exported alias for WITH clause renaming
+/// Returns a HashMap mapping source_alias -> output_alias (e.g., "u" -> "person")
+fn build_with_alias_mapping(
+    items: &[ProjectionItem],
+    exported_aliases: &[String],
+) -> std::collections::HashMap<String, String> {
+    let mut mapping = std::collections::HashMap::new();
+
+    for item in items {
+        if let Some(col_alias) = &item.col_alias {
+            let output_alias = &col_alias.0;
+            // Extract source alias from the expression
+            if let LogicalExpr::TableAlias(ta) = &item.expression {
+                mapping.insert(ta.0.clone(), output_alias.clone());
+            }
+        }
+    }
+
+    mapping
+}
+
+/// Remap select item aliases to match WITH clause exported aliases
+/// Changes column aliases like "u_name" to "person_name" when WITH u AS person
+fn remap_select_item_aliases(
+    items: Vec<SelectItem>,
+    alias_mapping: &std::collections::HashMap<String, String>,
+) -> Vec<SelectItem> {
+    let mut remapped = Vec::new();
+    for item in items {
+        if let Some(col_alias) = &item.col_alias {
+            log::info!(
+                "Remapping check: col_alias='{}', mapping={:?}",
+                col_alias.0,
+                alias_mapping
+            );
+            // Check if the column alias starts with a source alias
+            for (source_alias, output_alias) in alias_mapping.iter() {
+                // Handle both formats: "u.name" and "u_name"
+                let prefix_dot = format!("{}.", source_alias);
+                let prefix_underscore = format!("{}_", source_alias);
+
+                if col_alias.0.starts_with(&prefix_dot) {
+                    // Format: "u.name" -> "person.name"
+                    let property_part = &col_alias.0[prefix_dot.len()..];
+                    let new_alias = format!("{}.{}", output_alias, property_part);
+                    log::info!("  -> Remapped (dot) {} to {}", col_alias.0, new_alias);
+                    remapped.push(SelectItem {
+                        expression: item.expression.clone(),
+                        col_alias: Some(ColumnAlias(new_alias)),
+                    });
+                    return remapped; // Early return per item
+                } else if col_alias.0.starts_with(&prefix_underscore) {
+                    // Format: "u_name" -> "person_name"
+                    let property_part = &col_alias.0[prefix_underscore.len()..];
+                    let new_alias = format!("{}_{}", output_alias, property_part);
+                    log::info!(
+                        "  -> Remapped (underscore) {} to {}",
+                        col_alias.0,
+                        new_alias
+                    );
+                    remapped.push(SelectItem {
+                        expression: item.expression.clone(),
+                        col_alias: Some(ColumnAlias(new_alias)),
+                    });
+                    return remapped; // Early return per item
+                }
+            }
+            log::info!("  -> Not remapped (no prefix match)");
+        }
+        remapped.push(item);
+    }
+    remapped
+}
+
+/// Populate the CTE column registry from a RenderPlan's CTEs.
+/// This extracts all property-to-column mappings from CTE metadata and stores them
+/// in the RenderPlan's registry for use during SQL rendering.
+fn populate_cte_column_registry(plan: &mut RenderPlan) {
+    for cte in &plan.ctes.0 {
+        // Populate registry from CTE metadata
+        plan.cte_column_registry
+            .populate_from_cte_metadata(&cte.cte_name, &cte.columns);
     }
 }

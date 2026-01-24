@@ -298,6 +298,12 @@ pub struct PlanCtx {
     /// Replaces fragmented type tracking in TableCtx and ScopeContext.
     /// See docs/development/variable-type-system-design.md for architecture.
     variables: VariableRegistry,
+    /// **NEW (Jan 2026)**: Track CTE alias source mappings for renamed variables
+    /// Map: new_alias → (original_alias, cte_name)
+    /// Example: "person" → ("u", "with_person_cte_1") for `WITH u AS person`
+    /// Used to resolve property access on renamed CTE aliases:
+    /// When accessing person.name, map to u.name, then to CTE column u_name
+    cte_alias_sources: HashMap<String, (String, String)>,
 }
 
 impl PlanCtx {
@@ -562,6 +568,7 @@ impl PlanCtx {
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
             variables: VariableRegistry::new(),
+            cte_alias_sources: HashMap::new(),
         }
     }
 
@@ -586,6 +593,7 @@ impl PlanCtx {
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
             variables: VariableRegistry::new(),
+            cte_alias_sources: HashMap::new(),
         }
     }
 
@@ -624,6 +632,7 @@ impl PlanCtx {
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
             variables: VariableRegistry::new(),
+            cte_alias_sources: HashMap::new(),
         }
     }
 
@@ -658,6 +667,7 @@ impl PlanCtx {
             pattern_contexts: HashMap::new(), // New scope - patterns computed fresh
             vlp_endpoints: parent.vlp_endpoints.clone(), // Inherit VLP endpoint info from parent
             variables: VariableRegistry::new(), // Fresh variable registry for new scope
+            cte_alias_sources: HashMap::new(),
         }
     }
 
@@ -685,6 +695,7 @@ impl PlanCtx {
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
             variables: VariableRegistry::new(),
+            cte_alias_sources: HashMap::new(),
         }
     }
 
@@ -1081,6 +1092,36 @@ impl PlanCtx {
         } else {
             (alias.to_string(), default_column.to_string())
         }
+    }
+
+    /// Register a CTE alias source mapping for variable renaming
+    /// When a variable is renamed through a WITH clause (u AS person),
+    /// tracks that "person" comes from "u"
+    ///
+    /// # Arguments
+    /// * `new_alias` - The renamed alias (e.g., "person")
+    /// * `original_alias` - The original alias (e.g., "u")
+    /// * `cte_name` - The CTE name (e.g., "with_person_cte_1")
+    pub fn register_cte_alias_source(
+        &mut self,
+        new_alias: String,
+        original_alias: String,
+        cte_name: String,
+    ) {
+        log::info!(
+            "📝 Registered CTE alias source: {} → ({}, {})",
+            new_alias,
+            original_alias,
+            cte_name
+        );
+        self.cte_alias_sources
+            .insert(new_alias, (original_alias, cte_name));
+    }
+
+    /// Get the source (original alias, cte_name) for a CTE-backed alias
+    /// Returns None if alias is not a renamed CTE reference
+    pub fn get_cte_alias_source(&self, alias: &str) -> Option<&(String, String)> {
+        self.cte_alias_sources.get(alias)
     }
 }
 
