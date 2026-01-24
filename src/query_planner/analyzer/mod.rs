@@ -104,6 +104,7 @@ pub fn initial_analyzing(
     // Step 3: CTE Schema Resolver - register CTE schemas in plan_ctx for analyzer/planner
     // This runs after SchemaInference to ensure property mappings are available
     // Registers WithClause CTE schemas, making column info available to downstream passes
+    // Also marks exported aliases as CTE-sourced so FilterTagging skips schema mapping
     let cte_schema_resolver = CteSchemaResolver::new();
     let plan = if let Ok(transformed_plan) =
         cte_schema_resolver.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)

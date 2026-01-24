@@ -2821,13 +2821,30 @@ pub fn rewrite_cte_expression_with_alias_resolution(
                     .map(|orig| (orig.clone(), column_name.clone()));
                 let key_with_renamed = (table_alias.clone(), column_name.clone());
 
+                log::warn!(
+                    "🔧 Lookup for {}.{}: original_alias={:?}, trying key_with_original={:?}",
+                    table_alias,
+                    column_name,
+                    original_alias,
+                    key_with_original
+                );
+
                 let cte_column = key_with_original
                     .as_ref()
-                    .and_then(|k| reverse_mapping.get(k))
-                    .or_else(|| reverse_mapping.get(&key_with_renamed));
+                    .and_then(|k| {
+                        let result = reverse_mapping.get(k);
+                        log::warn!("🔧   key_with_original lookup result: {:?}", result);
+                        result
+                    })
+                    .or_else(|| {
+                        log::warn!("🔧   Trying key_with_renamed={:?}", key_with_renamed);
+                        let result = reverse_mapping.get(&key_with_renamed);
+                        log::warn!("🔧   key_with_renamed lookup result: {:?}", result);
+                        result
+                    });
 
                 if let Some(cte_col) = cte_column {
-                    log::debug!(
+                    log::warn!(
                         "🔧 Rewriting {}.{} → {}.{} (via alias resolution)",
                         table_alias,
                         column_name,
@@ -2840,7 +2857,7 @@ pub fn rewrite_cte_expression_with_alias_resolution(
                     })
                 } else {
                     // No mapping found - might be an aggregate column, use as-is
-                    log::debug!(
+                    log::warn!(
                         "🔧 Rewriting {}.{} → {}.{} (no mapping, using column name)",
                         table_alias,
                         column_name,
@@ -7183,22 +7200,63 @@ pub(crate) fn build_chained_with_match_cte_plan(
             let mut property_mapping =
                 build_property_mapping_from_columns(&select_items_for_schema);
 
+            log::warn!(
+                "🔧 DEBUG: property_mapping BEFORE dot-to-underscore transformation: {} entries",
+                property_mapping.len()
+            );
+            for ((alias, property), cte_column) in property_mapping.iter() {
+                log::warn!(
+                    "🔧   BEFORE: ({}, {}) → {}",
+                    alias,
+                    property,
+                    cte_column
+                );
+            }
+
             // Transform dotted column names to underscores for WITH CTEs
             // (WITH CTE columns use "friend_id", not "friend.id")
             property_mapping = property_mapping
                 .into_iter()
                 .map(|(k, v)| (k, v.replace('.', "_")))
                 .collect();
-
-            cte_schemas.insert(
-                cte_name.clone(),
-                (
-                    select_items_for_schema,
-                    property_names_for_schema.clone(),
-                    alias_to_id_column,
-                    property_mapping.clone(),
-                ),
+            
+            log::warn!(
+                "🔧 DEBUG: property_mapping AFTER dot-to-underscore transformation: {} entries",
+                property_mapping.len()
             );
+            for ((alias, property), cte_column) in property_mapping.iter() {
+                log::warn!(
+                    "🔧   AFTER: ({}, {}) → {}",
+                    alias,
+                    property,
+                    cte_column
+                );
+            }
+
+            log::warn!(
+                "🔧 DEBUG: property_mapping AFTER dot-to-underscore transformation: {} entries",
+                property_mapping.len()
+            );
+            for ((alias, property), cte_column) in property_mapping.iter().take(10) {
+                log::warn!(
+                    "🔧   ({}, {}) → {}",
+                    alias,
+                    property,
+                    cte_column
+                );
+            }
+
+// Store CTE schema with full property mapping
+        cte_schemas.insert(
+            cte_name.clone(),
+            (
+                select_items_for_schema.clone(),
+                property_names_for_schema.clone(),
+                alias_to_id_column,
+                property_mapping.clone(),
+            ),
+        );
+            
             log::info!(
                 "🔧 build_chained_with_match_cte_plan: Stored schema for CTE '{}': {:?}, {} property mappings",
                 cte_name,
@@ -7704,20 +7762,17 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
             // The FROM reference is a CTE. We need to get the property mapping for rewriting.
             // Try two approaches:
-            // 1. If source is ViewScan, use its property_mapping directly
-            // 2. Otherwise, reconstruct mapping from cte_schemas
+            // CRITICAL: When reading from a CTE, ALWAYS reconstruct mapping from cte_schemas
+            // Never use the ViewScan's property_mapping for CTEs - it may have stale/incorrect mappings
+            // The ViewScan is only accurate for base tables, not for CTE references
 
             let property_mapping: Option<HashMap<String, PropertyValue>> =
-                if let LogicalPlan::ViewScan(vs) = from_ref.source.as_ref() {
-                    log::warn!("🔧 build_chained_with_match_cte_plan: Source is ViewScan, using its property_mapping");
-                    Some(vs.property_mapping.clone())
-                } else {
-                    // Source is not ViewScan (probably Empty for CTE reference)
-                    // Reconstruct property_mapping from cte_schemas
-                    log::warn!("🔧 build_chained_with_match_cte_plan: Source is not ViewScan, reconstructing from cte_schemas");
+                if from_ref.name.starts_with("with_") {
+                    // This is definitely a CTE - reconstruct from cte_schemas
+                    log::warn!("🔧 build_chained_with_match_cte_plan: Source is a CTE (name starts with 'with_'), reconstructing from cte_schemas");
 
-                    if let Some((select_items, _, _, _)) = cte_schemas.get(&from_ref.name) {
-                        // Build mapping from SelectItems: column_alias → PropertyValue
+                    if let Some((select_items, _, _, stored_property_mapping)) = cte_schemas.get(&from_ref.name) {
+                        // Use the STORED property_mapping which has correct mappings
                         let mapping: HashMap<String, PropertyValue> = select_items
                             .iter()
                             .filter_map(|item| {
@@ -7731,11 +7786,26 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         for (k, v) in mapping.iter().take(5) {
                             log::warn!("🔧   Mapping: {} → {}", k, v.raw());
                         }
+                        
+                        // DEBUG: Show what's in stored_property_mapping  
+                        log::warn!("🔧 DEBUG: stored_property_mapping has {} entries", stored_property_mapping.len());
+                        for ((alias, prop), cte_col) in stored_property_mapping.iter().take(5) {
+                            log::warn!("🔧   Stored: ({}, {}) → {}", alias, prop, cte_col);
+                        }
+                        
                         Some(mapping)
                     } else {
                         log::warn!("🔧 build_chained_with_match_cte_plan: CTE '{}' not found in cte_schemas", from_ref.name);
                         None
                     }
+                } else if let LogicalPlan::ViewScan(vs) = from_ref.source.as_ref() {
+                    // This is a base table ViewScan - use its property_mapping
+                    log::warn!("🔧 build_chained_with_match_cte_plan: Source is a base table ViewScan, using its property_mapping");
+                    Some(vs.property_mapping.clone())
+                } else {
+                    // Unknown source type
+                    log::warn!("🔧 build_chained_with_match_cte_plan: Unknown source type, trying to reconstruct from cte_schemas");
+                    None
                 };
 
             if let Some(mapping) = property_mapping {
@@ -7827,25 +7897,62 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         "✅ Using explicit property mapping with {} entries",
                         property_mapping.len()
                     );
+                    
+                    log::warn!(
+                        "🔧 CTE '{}' exports columns: {:?}",
+                        from_ref.name,
+                        select_items
+                    );
 
                     // Build reverse_mapping from property_mapping
-                    // Invert: (alias, property) → cte_column
-                    // Invert: (alias, db_column) → cte_column (using property mapping aliases)
+                    // CRITICAL: Only include mappings whose VALUES are actual CTE-exported columns
+                    // This filters out base table mappings that shouldn't be used for CTE remapping
                     reverse_mapping.clear();
 
-                    // Iterate through property_mapping to build both Cypher and DB column mappings
-                    for ((alias, property), _cypher_name) in property_mapping.iter() {
-                        // The CTE column name follows pattern: {alias}_{cypher_property}
-                        // For example: u_name, u_email, etc.
-                        let cte_column = format!("{}_{}", alias, property);
-                        reverse_mapping
-                            .insert((alias.clone(), property.clone()), cte_column.clone());
-                        log::debug!(
-                            "🔧 Added property mapping: ({}, {}) → {}",
+                    // Create a set of actual CTE exported column names for quick lookup
+                    // Extract column names from SelectItem
+                    let cte_columns: std::collections::HashSet<String> =
+                        select_items.iter()
+                            .filter_map(|item| item.col_alias.as_ref().map(|alias| alias.0.clone()))
+                            .collect();
+                    
+                    log::warn!(
+                        "🔧 DEBUG: cte_columns = {:?}",
+                        cte_columns
+                    );
+
+                    // Iterate through property_mapping and only add entries that map to ACTUAL CTE columns
+                    log::warn!(
+                        "🔧 DEBUG: Filtering property_mapping with {} entries",
+                        property_mapping.len()
+                    );
+                    for ((alias, property), cte_column) in property_mapping.iter() {
+                        let in_cte = cte_columns.contains(cte_column);
+                        log::warn!(
+                            "🔧 DEBUG: Checking ({}, {}) → {} - in_cte={}",
                             alias,
                             property,
-                            cte_column
+                            cte_column,
+                            in_cte
                         );
+                        // Only add this mapping if the target column is actually exported by the CTE
+                        if in_cte {
+                            reverse_mapping
+                                .insert((alias.clone(), property.clone()), cte_column.clone());
+                            log::debug!(
+                                "🔧 Added property mapping: ({}, {}) → {}",
+                                alias,
+                                property,
+                                cte_column
+                            );
+                        } else {
+                            log::warn!(
+                                "🔧 Skipped property mapping (not CTE column): ({}, {}) → {}",
+                                alias,
+                                property,
+                                cte_column
+                            );
+                        }
                     }
 
                     // Also extract database column names from the property mapping in graph schema
@@ -9771,7 +9878,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
             select_items,
             property_names,
             _,
-            _,
+            stored_property_mapping,  // <-- USE THIS to get correct DB column mappings
         )) = cte_schemas.get(cte_name)
         {
             let mut mapping = HashMap::new();
@@ -9822,6 +9929,30 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                         mapping.insert(
                             cte_col_name.clone(),
                             PropertyValue::Column(cte_col_name.clone()),
+                        );
+                    }
+                }
+            }
+
+            // CRITICAL FIX: Add DB column mappings from stored_property_mapping
+            // The stored_property_mapping has entries like ((u, full_name), u_name)
+            // which tells us: DB column "full_name" should map to CTE column "u_name"
+            // We need to add these to the ViewScan property_mapping as:
+            // ("full_name", Column("u_name"))
+            for ((alias, db_prop), cte_column) in stored_property_mapping.iter() {
+                if alias == with_alias {
+                    // This is a mapping for our alias (e.g., "u")
+                    // Add it to the mapping if not already present
+                    if !mapping.contains_key(db_prop) {
+                        mapping.insert(
+                            db_prop.clone(),
+                            PropertyValue::Column(cte_column.clone()),
+                        );
+                        log::debug!(
+                            "🔧 create_cte_reference: Added DB column mapping from stored: ({}, {}) → {}",
+                            alias,
+                            db_prop,
+                            cte_column
                         );
                     }
                 }

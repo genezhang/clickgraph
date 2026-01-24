@@ -2090,7 +2090,7 @@ impl RenderExpr {
                 // This registry is populated during plan building with actual CTE output column names
                 if let Some(cte_col) = get_cte_column_from_context(&table_alias.0, col_name) {
                     log::debug!(
-                        "🔧 Registry lookup: {}.{} → {} (from CTE column registry)",
+                        "✅ CTE registry HIT: {}.{} → {} (from CTE column registry)",
                         table_alias.0,
                         col_name,
                         cte_col
