@@ -915,7 +915,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         log::debug!("    ({}, {}) -> {}", alias, prop, col);
                     }
                     
-                    use crate::render_plan::{set_cte_column_registry, clear_cte_column_registry};
+                    use crate::render_plan::{set_cte_column_registry, clear_cte_column_registry, clear_denormalized_aliases};
                     set_cte_column_registry(render_plan.cte_column_registry.clone());
                     
                     // Extract select items with the registry available
@@ -923,6 +923,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     
                     // Clean up the thread-local registry
                     clear_cte_column_registry();
+                    clear_denormalized_aliases();
                     
                     render_plan.select = SelectItems {
                         items: select_items,
@@ -1309,8 +1310,9 @@ impl RenderPlanBuilder for LogicalPlan {
                 
                 // Clear the CTE registry after rendering the right side
                 if !left_render.ctes.0.is_empty() {
-                    use crate::render_plan::clear_cte_column_registry;
+                    use crate::render_plan::{clear_cte_column_registry, clear_denormalized_aliases};
                     clear_cte_column_registry();
+                    clear_denormalized_aliases();
                 }
 
                 // Decide which is base and which is joined based on swap_order

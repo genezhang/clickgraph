@@ -58,6 +58,37 @@ pub fn clear_cte_column_registry() {
     });
 }
 
+// Denormalized edge alias mapping: maps target node alias to edge alias
+// For denormalized edges (e.g., AUTHORED where posts_bench is both edge and target node),
+// when we skip the second JOIN, we need to map the target node alias to the edge alias
+// so property resolution works correctly
+thread_local! {
+    static DENORMALIZED_EDGE_ALIASES: RefCell<std::collections::HashMap<String, String>> = 
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// Register an alias mapping for denormalized edges
+/// Maps target_node_alias → edge_alias (e.g., "d" → "r2")
+pub fn register_denormalized_alias(target_node_alias: &str, edge_alias: &str) {
+    DENORMALIZED_EDGE_ALIASES.with(|cell| {
+        cell.borrow_mut().insert(target_node_alias.to_string(), edge_alias.to_string());
+    });
+}
+
+/// Look up the edge alias for a target node alias (if denormalized)
+pub fn get_denormalized_alias_mapping(target_node_alias: &str) -> Option<String> {
+    DENORMALIZED_EDGE_ALIASES.with(|cell| {
+        cell.borrow().get(target_node_alias).cloned()
+    })
+}
+
+/// Clear all denormalized alias mappings after rendering is complete
+pub fn clear_denormalized_aliases() {
+    DENORMALIZED_EDGE_ALIASES.with(|cell| {
+        cell.borrow_mut().clear();
+    });
+}
+
 use crate::query_planner::join_context::{
     VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
 };

@@ -1891,6 +1891,12 @@ impl JoinBuilder for LogicalPlan {
                 } else {
                     // Denormalized edge: end_table == rel_table
                     // No second JOIN needed - relationship table alias serves as target node alias
+                    // Register the mapping: target_node_alias → edge_alias
+                    // This allows property resolution to map "d" references to "r2" columns
+                    crate::render_plan::register_denormalized_alias(
+                        &graph_rel.right_connection,
+                        &graph_rel.alias,
+                    );
                     println!(
                         "✓ Denormalized edge detected - skipping JOIN 2 for end node (same table as edge)"
                     );
@@ -1898,6 +1904,11 @@ impl JoinBuilder for LogicalPlan {
                         "✓ Denormalized edge for {}: table '{}' serves as both edge and node",
                         graph_rel.alias,
                         rel_table
+                    );
+                    log::info!(
+                        "✓ Registered alias mapping: {} → {}",
+                        graph_rel.right_connection,
+                        graph_rel.alias
                     );
                 }
 
