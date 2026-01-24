@@ -4,8 +4,8 @@
 //! It resolves property mappings for nodes and relationships, handling
 //! denormalized schemas and table alias resolution.
 
-use crate::query_planner::logical_plan::LogicalPlan;
 use crate::query_planner::logical_expr::LogicalExpr;
+use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::plan_builder_helpers::*;
 use crate::render_plan::plan_builder_utils::extract_sorted_properties;
@@ -330,7 +330,7 @@ impl PropertiesBuilder for LogicalPlan {
                 // 1. Check if `alias` is in the exported_aliases
                 // 2. If yes, find the corresponding source alias in items
                 // 3. Delegate to input to get properties for source alias
-                
+
                 if wc.exported_aliases.contains(&alias.to_string()) {
                     // Find the source alias for this exported alias by looking at items
                     for item in &wc.items {
@@ -346,7 +346,7 @@ impl PropertiesBuilder for LogicalPlan {
                         }
                     }
                 }
-                
+
                 // If not found in WITH, delegate to input
                 return wc.input.get_properties_with_table_alias(alias);
             }

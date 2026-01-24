@@ -7,9 +7,9 @@ use crate::{
             OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
         },
         {
-            ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FixedPathMetadata, FromTableItem,
-            GroupByExpressions, Join, JoinItems, JoinType, OrderByItems, OrderByOrder, RenderPlan,
-            SelectItems, ToSql, UnionItems, UnionType,
+            ArrayJoinItem, Cte, CteColumnRegistry, CteContent, CteItems, FilterItems,
+            FixedPathMetadata, FromTableItem, GroupByExpressions, Join, JoinItems, JoinType,
+            OrderByItems, OrderByOrder, RenderPlan, SelectItems, ToSql, UnionItems, UnionType,
         },
     },
 };
@@ -20,20 +20,190 @@ use std::collections::HashMap;
 use super::function_registry::get_function_mapping;
 use super::function_translator::{get_ch_function_name, CH_PASSTHROUGH_PREFIX};
 
-thread_local! {
-    /// Thread-local mapping of relationship alias → (from_id_column, to_id_column)
-    /// Populated during JOIN rendering, used for IS NULL checks on relationship aliases
-    static RELATIONSHIP_COLUMNS: RefCell<HashMap<String, (String, String)>> = RefCell::new(HashMap::new());
+/// TASK-LOCAL RENDER CONTEXT: Per-async-task storage for query rendering
+/// Each Axum async task (HTTP request) gets its own isolated context.
+/// Multiple concurrent queries on same OS thread have zero interference.
+///
+/// Why task_local instead of thread_local:
+/// - thread_local: Shared by all async tasks on same OS thread (UNSAFE for concurrent queries)
+/// - task_local: Each async task gets isolated storage (SAFE)
+///
+/// Usage:
+/// 1. At query handler entry: RENDER_CONTEXT_REGISTRY.scope(registry, async { ... }).await
+/// 2. During rendering: get_cte_column_from_context() accesses current task's registry
+/// 3. When task completes: context automatically cleaned up
+tokio::task_local! {
+    /// Task-local CTE column registry: (cte_alias, cypher_property) → cte_output_column
+    /// Populated once per query at render_to_sql() entry
+    /// Isolated to current async task - no interference with concurrent queries
+    pub static RENDER_CONTEXT_CTE_REGISTRY: RefCell<Option<CteColumnRegistry>>;
+}
 
-    /// Thread-local mapping of CTE alias → property mapping (Cypher property → CTE column name)
+/// Retrieve CTE column for property within current render context (task-local)
+/// Returns None if not in task context or property not found (safe fallback)
+fn get_cte_column_from_context(cte_alias: &str, property: &str) -> Option<String> {
+    // Access the task-local context
+    // task_local! uses sync accessors, not .with()
+    RENDER_CONTEXT_CTE_REGISTRY
+        .try_with(|ctx| {
+            ctx.borrow()
+                .as_ref()
+                .and_then(|registry| registry.lookup(cte_alias, property))
+        })
+        .ok()
+        .flatten()
+}
+
+/// Set the CTE registry for the current async task
+/// Call at render_to_sql() entry to make registry available to rendering code
+fn set_render_context_cte_registry(registry: CteColumnRegistry) {
+    // task_local! doesn't support runtime initialization, so we use try_with
+    // If we're not in a task context, this returns an error which we ignore
+    let _ = RENDER_CONTEXT_CTE_REGISTRY.try_with(|ctx| {
+        let prev = ctx.borrow_mut().replace(registry);
+        if prev.is_some() {
+            log::warn!("⚠️ Overwriting previous render context - possible re-entrancy");
+        }
+    });
+}
+
+/// Clear the CTE registry for the current async task
+/// Call at render_to_sql() exit to clean up
+fn clear_render_context_cte_registry() {
+    // task_local! sync cleanup
+    let _ = RENDER_CONTEXT_CTE_REGISTRY.try_with(|ctx| {
+        ctx.borrow_mut().take();
+    });
+}
+
+// ============================================================================
+// RELATIONSHIP COLUMNS CONTEXT (for IS NULL checks on relationship aliases)
+// ============================================================================
+
+fn set_render_context_relationship_columns(columns: HashMap<String, (String, String)>) {
+    let _ = RENDER_CONTEXT_RELATIONSHIP_COLUMNS.try_with(|ctx| {
+        ctx.borrow_mut().replace(columns);
+    });
+}
+
+fn get_relationship_columns_from_context(alias: &str) -> Option<(String, String)> {
+    RENDER_CONTEXT_RELATIONSHIP_COLUMNS
+        .try_with(|ctx| {
+            ctx.borrow()
+                .as_ref()
+                .and_then(|cols| cols.get(alias).cloned())
+        })
+        .ok()
+        .flatten()
+}
+
+fn clear_render_context_relationship_columns() {
+    let _ = RENDER_CONTEXT_RELATIONSHIP_COLUMNS.try_with(|ctx| {
+        ctx.borrow_mut().take();
+    });
+}
+
+// ============================================================================
+// CTE PROPERTY MAPPINGS CONTEXT (for CTE property → column resolution)
+// ============================================================================
+
+fn set_render_context_cte_property_mappings(mappings: HashMap<String, HashMap<String, String>>) {
+    let _ = RENDER_CONTEXT_CTE_PROPERTY_MAPPINGS.try_with(|ctx| {
+        ctx.borrow_mut().replace(mappings);
+    });
+}
+
+fn get_cte_property_from_context(cte_alias: &str, property: &str) -> Option<String> {
+    RENDER_CONTEXT_CTE_PROPERTY_MAPPINGS
+        .try_with(|ctx| {
+            ctx.borrow().as_ref().and_then(|mappings| {
+                mappings
+                    .get(cte_alias)
+                    .and_then(|props| props.get(property).cloned())
+            })
+        })
+        .ok()
+        .flatten()
+}
+
+fn clear_render_context_cte_property_mappings() {
+    let _ = RENDER_CONTEXT_CTE_PROPERTY_MAPPINGS.try_with(|ctx| {
+        ctx.borrow_mut().take();
+    });
+}
+
+// ============================================================================
+// MULTI-TYPE VLP ALIASES CONTEXT (for multi-type VLP JSON property extraction)
+// ============================================================================
+
+fn set_render_context_multi_type_vlp_aliases(aliases: HashMap<String, String>) {
+    let _ = RENDER_CONTEXT_MULTI_TYPE_VLP_ALIASES.try_with(|ctx| {
+        ctx.borrow_mut().replace(aliases);
+    });
+}
+
+fn is_multi_type_vlp_alias_from_context(alias: &str) -> bool {
+    RENDER_CONTEXT_MULTI_TYPE_VLP_ALIASES
+        .try_with(|ctx| {
+            ctx.borrow()
+                .as_ref()
+                .map(|aliases| aliases.contains_key(alias))
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+fn clear_render_context_multi_type_vlp_aliases() {
+    let _ = RENDER_CONTEXT_MULTI_TYPE_VLP_ALIASES.try_with(|ctx| {
+        ctx.borrow_mut().take();
+    });
+}
+
+/// Set ALL render context for the current async task
+/// Call at render_to_sql() entry
+fn set_all_render_contexts(
+    cte_registry: CteColumnRegistry,
+    relationship_columns: HashMap<String, (String, String)>,
+    cte_mappings: HashMap<String, HashMap<String, String>>,
+    multi_type_aliases: HashMap<String, String>,
+) {
+    set_render_context_cte_registry(cte_registry);
+    set_render_context_relationship_columns(relationship_columns);
+    set_render_context_cte_property_mappings(cte_mappings);
+    set_render_context_multi_type_vlp_aliases(multi_type_aliases);
+}
+
+/// Clear ALL render contexts for the current async task
+/// Call at render_to_sql() exit (before final return)
+fn clear_all_render_contexts() {
+    clear_render_context_cte_registry();
+    clear_render_context_relationship_columns();
+    clear_render_context_cte_property_mappings();
+    clear_render_context_multi_type_vlp_aliases();
+}
+
+/// TASK-LOCAL RENDER CONTEXT: Per-async-task storage for rendering state
+/// Each Axum async task (HTTP request) gets its own isolated context.
+/// Multiple concurrent queries on same OS thread have zero interference.
+///
+/// Lifecycle:
+/// 1. At render_to_sql() entry: Set all three contexts
+/// 2. During rendering: Access contexts for property/column lookups
+/// 3. At render_to_sql() exit: Clear all contexts before return
+tokio::task_local! {
+    /// Task-local mapping of relationship alias → (from_id_column, to_id_column)
+    /// Populated during JOIN rendering, used for IS NULL checks on relationship aliases
+    pub static RENDER_CONTEXT_RELATIONSHIP_COLUMNS: RefCell<Option<HashMap<String, (String, String)>>>;
+
+    /// Task-local mapping of CTE alias → property mapping (Cypher property → CTE column name)
     /// Example: "cnt_friend" → { "id" → "friend_id", "firstName" → "friend_firstName" }
     /// Populated from RenderPlan CTEs during SQL generation
-    static CTE_PROPERTY_MAPPINGS: RefCell<HashMap<String, HashMap<String, String>>> = RefCell::new(HashMap::new());
+    pub static RENDER_CONTEXT_CTE_PROPERTY_MAPPINGS: RefCell<Option<HashMap<String, HashMap<String, String>>>>;
 
-    /// Thread-local set of table aliases that are multi-type VLP endpoints
+    /// Task-local set of table aliases that are multi-type VLP endpoints
     /// Example: "x" for query (u)-[:FOLLOWS|AUTHORED*1..2]->(x)
     /// Properties on these aliases need JSON extraction from end_properties column
-    static MULTI_TYPE_VLP_ALIASES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    pub static RENDER_CONTEXT_MULTI_TYPE_VLP_ALIASES: RefCell<Option<HashMap<String, String>>>;
 }
 
 /// Check if an expression contains a string literal (recursively for nested + operations)
@@ -64,135 +234,144 @@ fn flatten_addition_operands(expr: &RenderExpr) -> Vec<String> {
     }
 }
 
-/// Pre-populate the relationship columns mapping from a RenderPlan
-/// This must be called BEFORE rendering SQL so that IS NULL expressions can look up columns
-pub fn populate_relationship_columns_from_plan(plan: &RenderPlan) {
-    // Collect all CTE plans first (to avoid recursive borrow inside borrow_mut)
-    let mut cte_plans = Vec::new();
-    for cte in &plan.ctes.0 {
-        if let CteContent::Structured(ref cte_plan) = cte.content {
-            cte_plans.push(cte_plan);
+/// Build the relationship columns mapping from a RenderPlan (for collecting data)
+/// Returns the mapping of alias → (from_id_column, to_id_column)
+fn build_relationship_columns_from_plan(plan: &RenderPlan) -> HashMap<String, (String, String)> {
+    let mut map = HashMap::new();
+
+    // Add joins from main plan - extract column from joining_on conditions
+    for join in &plan.joins.0 {
+        if let Some(from_col) = join.get_relationship_id_column() {
+            // For now, just store from_col for both (we only need one for NULL checks)
+            map.insert(join.table_alias.clone(), (from_col.clone(), from_col));
         }
     }
 
-    // Now populate the mapping (single borrow scope)
-    RELATIONSHIP_COLUMNS.with(|rc| {
-        let mut map = rc.borrow_mut();
-        map.clear();
-
-        // Add joins from main plan - extract column from joining_on conditions
-        for join in &plan.joins.0 {
-            if let Some(from_col) = join.get_relationship_id_column() {
-                // For now, just store from_col for both (we only need one for NULL checks)
-                map.insert(join.table_alias.clone(), (from_col.clone(), from_col));
-            }
-        }
-
-        // Also process unions (each branch has its own joins)
-        if let Some(ref union) = plan.union.0 {
-            for union_plan in &union.input {
-                for join in &union_plan.joins.0 {
-                    if let Some(from_col) = join.get_relationship_id_column() {
-                        map.insert(join.table_alias.clone(), (from_col.clone(), from_col));
-                    }
+    // Also process unions (each branch has its own joins)
+    if let Some(ref union) = plan.union.0 {
+        for union_plan in &union.input {
+            for join in &union_plan.joins.0 {
+                if let Some(from_col) = join.get_relationship_id_column() {
+                    map.insert(join.table_alias.clone(), (from_col.clone(), from_col));
                 }
             }
         }
-    });
-
-    // Process CTEs recursively AFTER releasing the borrow
-    for cte_plan in cte_plans {
-        populate_relationship_columns_from_plan(cte_plan);
     }
+
+    // Process CTEs recursively and merge results
+    for cte in &plan.ctes.0 {
+        if let CteContent::Structured(ref cte_plan) = cte.content {
+            let cte_map = build_relationship_columns_from_plan(cte_plan);
+            map.extend(cte_map);
+        }
+    }
+
+    map
+}
+
+/// Pre-populate the relationship columns mapping from a RenderPlan
+/// This builds the mapping and sets it in the task-local context
+fn populate_relationship_columns_from_plan(plan: &RenderPlan) {
+    let map = build_relationship_columns_from_plan(plan);
+    set_render_context_relationship_columns(map);
+}
+
+/// Build CTE property mappings from RenderPlan CTEs (for collecting data)
+/// Returns mapping of CTE alias → (property → column name)
+fn build_cte_property_mappings(plan: &RenderPlan) -> HashMap<String, HashMap<String, String>> {
+    let mut map = HashMap::new();
+
+    // Process each CTE in the plan
+    for cte in &plan.ctes.0 {
+        if let CteContent::Structured(ref cte_plan) = cte.content {
+            let mut property_map: HashMap<String, String> = HashMap::new();
+
+            // Build property mapping from SELECT items
+            // Format: "property_name" → "cte_column_name"
+            //
+            // IMPORTANT: We use the FULL column name as the property name (e.g., "user_id" → "user_id")
+            // because the column names in CTEs already come from ViewScan.property_mapping.
+            //
+            // Previous behavior: Used underscore/dot parsing to extract suffix (e.g., "user_id" → "id")
+            // This broke auto-discovery schemas where property names include underscores.
+            // Example bug: node_id=user_id with auto_discover_columns should expose property "user_id",
+            // not "id" (which doesn't exist in the database).
+            for select_item in &cte_plan.select.items {
+                if let Some(ref col_alias) = select_item.col_alias {
+                    let cte_col = col_alias.0.as_str();
+
+                    // Identity mapping: property name = column name
+                    property_map.insert(cte_col.to_string(), cte_col.to_string());
+                }
+            }
+
+            if !property_map.is_empty() {
+                log::debug!(
+                    "🗺️  CTE '{}' property mapping: {:?}",
+                    cte.cte_name,
+                    property_map
+                );
+                map.insert(cte.cte_name.clone(), property_map.clone());
+            }
+        }
+    }
+
+    // CRITICAL: Also scan main plan's FROM clause to map CTE aliases
+    // Example: FROM with_cnt_friend_cte_1 AS cnt_friend
+    // We need to map BOTH "with_cnt_friend_cte_1" AND "cnt_friend" to the same property mapping
+    if let Some(ref from_table) = plan.from.0 {
+        let table_name = &from_table.name;
+        let alias = from_table.alias.as_ref().unwrap_or(table_name);
+
+        // If this FROM references a CTE (name starts with "with_" or matches a CTE name)
+        if let Some(cte_mapping) = map.get(table_name).cloned() {
+            if alias != table_name {
+                log::debug!(
+                    "🔗 Aliasing CTE '{}' as '{}' with same property mapping",
+                    table_name,
+                    alias
+                );
+                map.insert(alias.clone(), cte_mapping);
+            }
+        }
+    }
+
+    map
+}
+
+/// Build multi-type VLP aliases tracking from RenderPlan
+/// Returns mapping of Cypher alias → CTE name for multi-type VLP queries
+fn build_multi_type_vlp_aliases(plan: &RenderPlan) -> HashMap<String, String> {
+    let mut aliases = HashMap::new();
+
+    // Track multi-type VLP aliases for JSON property extraction
+    // Multi-type VLP CTEs have names like "vlp_multi_type_u_x"
+    // and their end_properties column contains JSON with node properties
+    for cte in &plan.ctes.0 {
+        if cte.cte_name.starts_with("vlp_multi_type_") {
+            // Extract Cypher alias from CTE metadata if available
+            if let Some(ref cypher_end_alias) = cte.vlp_cypher_end_alias {
+                aliases.insert(cypher_end_alias.clone(), cte.cte_name.clone());
+                log::info!(
+                    "🎯 Tracked multi-type VLP alias: '{}' → CTE '{}'",
+                    cypher_end_alias,
+                    cte.cte_name
+                );
+            }
+        }
+    }
+
+    aliases
 }
 
 /// Populate CTE property mappings from RenderPlan CTEs
 /// Extracts column aliases from CTE SELECT items to build property → column name mappings
 fn populate_cte_property_mappings(plan: &RenderPlan) {
-    CTE_PROPERTY_MAPPINGS.with(|cpm| {
-        let mut map = cpm.borrow_mut();
-        map.clear();
+    let cte_mappings = build_cte_property_mappings(plan);
+    let multi_type_aliases = build_multi_type_vlp_aliases(plan);
 
-        // Process each CTE in the plan
-        for cte in &plan.ctes.0 {
-            if let CteContent::Structured(ref cte_plan) = cte.content {
-                let mut property_map: HashMap<String, String> = HashMap::new();
-
-                // Build property mapping from SELECT items
-                // Format: "property_name" → "cte_column_name"
-                //
-                // IMPORTANT: We use the FULL column name as the property name (e.g., "user_id" → "user_id")
-                // because the column names in CTEs already come from ViewScan.property_mapping.
-                //
-                // Previous behavior: Used underscore/dot parsing to extract suffix (e.g., "user_id" → "id")
-                // This broke auto-discovery schemas where property names include underscores.
-                // Example bug: node_id=user_id with auto_discover_columns should expose property "user_id",
-                // not "id" (which doesn't exist in the database).
-                for select_item in &cte_plan.select.items {
-                    if let Some(ref col_alias) = select_item.col_alias {
-                        let cte_col = col_alias.0.as_str();
-
-                        // Identity mapping: property name = column name
-                        property_map.insert(cte_col.to_string(), cte_col.to_string());
-                    }
-                }
-
-                if !property_map.is_empty() {
-                    log::debug!(
-                        "🗺️  CTE '{}' property mapping: {:?}",
-                        cte.cte_name,
-                        property_map
-                    );
-                    map.insert(cte.cte_name.clone(), property_map.clone());
-                }
-            }
-        }
-
-        // Clear multi-type VLP aliases from previous queries (thread-local state)
-        MULTI_TYPE_VLP_ALIASES.with(|mvla| {
-            mvla.borrow_mut().clear();
-        });
-
-        // Track multi-type VLP aliases for JSON property extraction
-        // Multi-type VLP CTEs have names like "vlp_multi_type_u_x"
-        // and their end_properties column contains JSON with node properties
-        for cte in &plan.ctes.0 {
-            if cte.cte_name.starts_with("vlp_multi_type_") {
-                // Extract Cypher alias from CTE metadata if available
-                if let Some(ref cypher_end_alias) = cte.vlp_cypher_end_alias {
-                    MULTI_TYPE_VLP_ALIASES.with(|mvla| {
-                        mvla.borrow_mut()
-                            .insert(cypher_end_alias.clone(), cte.cte_name.clone());
-                    });
-                    log::info!(
-                        "🎯 Tracked multi-type VLP alias: '{}' → CTE '{}'",
-                        cypher_end_alias,
-                        cte.cte_name
-                    );
-                }
-            }
-        }
-
-        // CRITICAL: Also scan main plan's FROM clause to map CTE aliases
-        // Example: FROM with_cnt_friend_cte_1 AS cnt_friend
-        // We need to map BOTH "with_cnt_friend_cte_1" AND "cnt_friend" to the same property mapping
-        if let Some(ref from_table) = plan.from.0 {
-            let table_name = &from_table.name;
-            let alias = from_table.alias.as_ref().unwrap_or(table_name);
-
-            // If this FROM references a CTE (name starts with "with_" or matches a CTE name)
-            if let Some(cte_mapping) = map.get(table_name).cloned() {
-                if alias != table_name {
-                    log::debug!(
-                        "🔗 Aliasing CTE '{}' as '{}' with same property mapping",
-                        table_name,
-                        alias
-                    );
-                    map.insert(alias.clone(), cte_mapping);
-                }
-            }
-        }
-    });
+    set_render_context_cte_property_mappings(cte_mappings);
+    set_render_context_multi_type_vlp_aliases(multi_type_aliases);
 }
 
 /// Rewrite property access in SELECT, GROUP BY items for VLP queries
@@ -439,7 +618,9 @@ fn derive_cypher_property_name(db_column: &str) -> String {
 
 /// Extract fixed path information from a RenderPlan by analyzing SELECT items and JOINs
 /// Returns FixedPathMetadata if the plan contains a path function call that can be resolved
-fn extract_fixed_path_info_from_plan(plan: &RenderPlan) -> Option<crate::render_plan::FixedPathMetadata> {
+fn extract_fixed_path_info_from_plan(
+    plan: &RenderPlan,
+) -> Option<crate::render_plan::FixedPathMetadata> {
     // Look for path function calls in SELECT items
     for item in &plan.select.items {
         if let Some(path_var) = find_path_function_argument(&item.expression) {
@@ -449,14 +630,14 @@ fn extract_fixed_path_info_from_plan(plan: &RenderPlan) -> Option<crate::render_
             // For a path (a)-[:T1]->(b)-[:T2]->(c), we have 4 JOINs = 2 hops
             // Formula: hops = JOINs / 2 (integer division)
             let hop_count = plan.joins.0.len() as u32 / 2;
-            
+
             log::info!(
                 "🔧 Detected fixed path: path_variable={}, hop_count={} (from {} JOINs)",
                 path_var,
                 hop_count,
                 plan.joins.0.len()
             );
-            
+
             return Some(crate::render_plan::FixedPathMetadata {
                 path_variable: path_var,
                 hop_count,
@@ -465,7 +646,7 @@ fn extract_fixed_path_info_from_plan(plan: &RenderPlan) -> Option<crate::render_
             });
         }
     }
-    
+
     // Also check GROUP BY and ORDER BY expressions
     for expr in &plan.group_by.0 {
         if let Some(path_var) = find_path_function_argument(expr) {
@@ -478,7 +659,7 @@ fn extract_fixed_path_info_from_plan(plan: &RenderPlan) -> Option<crate::render_
             });
         }
     }
-    
+
     for item in &plan.order_by.0 {
         if let Some(path_var) = find_path_function_argument(&item.expression) {
             let hop_count = plan.joins.0.len() as u32 / 2;
@@ -490,7 +671,7 @@ fn extract_fixed_path_info_from_plan(plan: &RenderPlan) -> Option<crate::render_
             });
         }
     }
-    
+
     None
 }
 
@@ -500,14 +681,17 @@ fn find_path_function_argument(expr: &RenderExpr) -> Option<String> {
     match expr {
         RenderExpr::ScalarFnCall(func) => {
             // Check for path functions
-            if matches!(func.name.to_lowercase().as_str(), "length" | "nodes" | "relationships") {
+            if matches!(
+                func.name.to_lowercase().as_str(),
+                "length" | "nodes" | "relationships"
+            ) {
                 if func.args.len() == 1 {
                     if let RenderExpr::TableAlias(alias) = &func.args[0] {
                         return Some(alias.0.clone());
                     }
                 }
             }
-            
+
             // Recursively check arguments
             for arg in &func.args {
                 if let Some(var) = find_path_function_argument(arg) {
@@ -516,7 +700,7 @@ fn find_path_function_argument(expr: &RenderExpr) -> Option<String> {
             }
             None
         }
-        
+
         RenderExpr::OperatorApplicationExp(op) => {
             for operand in &op.operands {
                 if let Some(var) = find_path_function_argument(operand) {
@@ -525,7 +709,7 @@ fn find_path_function_argument(expr: &RenderExpr) -> Option<String> {
             }
             None
         }
-        
+
         RenderExpr::AggregateFnCall(agg) => {
             for arg in &agg.args {
                 if let Some(var) = find_path_function_argument(arg) {
@@ -534,7 +718,7 @@ fn find_path_function_argument(expr: &RenderExpr) -> Option<String> {
             }
             None
         }
-        
+
         _ => None,
     }
 }
@@ -567,15 +751,22 @@ fn rewrite_fixed_path_functions(mut plan: RenderPlan) -> RenderPlan {
         }
 
         // Also rewrite GROUP BY expressions
-        log::info!("🔧 Fixed path GROUP BY rewriting: {} items", plan.group_by.0.len());
+        log::info!(
+            "🔧 Fixed path GROUP BY rewriting: {} items",
+            plan.group_by.0.len()
+        );
         for group_expr in &mut plan.group_by.0 {
             *group_expr = rewrite_expr_for_fixed_path(group_expr, &path_var, hop_count);
         }
 
         // Also rewrite ORDER BY expressions
-        log::info!("🔧 Fixed path ORDER BY rewriting: {} items", plan.order_by.0.len());
+        log::info!(
+            "🔧 Fixed path ORDER BY rewriting: {} items",
+            plan.order_by.0.len()
+        );
         for order_item in &mut plan.order_by.0 {
-            order_item.expression = rewrite_expr_for_fixed_path(&order_item.expression, &path_var, hop_count);
+            order_item.expression =
+                rewrite_expr_for_fixed_path(&order_item.expression, &path_var, hop_count);
         }
     }
 
@@ -682,11 +873,18 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
     // Converts length(p) → hop_count, etc.
     plan = rewrite_fixed_path_functions(plan);
 
-    // Pre-populate relationship columns mapping before rendering
-    populate_relationship_columns_from_plan(&plan);
+    // Build ALL rendering contexts (CTE registry, relationship columns, CTE mappings, multi-type aliases)
+    let relationship_columns = build_relationship_columns_from_plan(&plan);
+    let cte_mappings = build_cte_property_mappings(&plan);
+    let multi_type_aliases = build_multi_type_vlp_aliases(&plan);
 
-    // Pre-populate CTE property mappings from CTE metadata
-    populate_cte_property_mappings(&plan);
+    // TASK-LOCAL: Set ALL contexts for this async task's rendering context
+    set_all_render_contexts(
+        plan.cte_column_registry.clone(),
+        relationship_columns,
+        cte_mappings,
+        multi_type_aliases,
+    );
 
     let mut sql = String::new();
 
@@ -925,6 +1123,9 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
         ));
     }
 
+    // CLEANUP: Clear ALL task-local render contexts before returning
+    clear_all_render_contexts();
+
     sql
 }
 
@@ -970,27 +1171,34 @@ impl SelectItems {
             // Should be: SELECT p.* FROM ... AS p (valid)
             //
             // 🔧 UNWIND FIX: Skip `.*` expansion for UNWIND aliases since they're scalars, not tables
-            let rendered_expr =
-                if let RenderExpr::TableAlias(TableAlias(alias_name)) = &item.expression {
-                    if let Some(col_alias) = &item.col_alias {
-                        if alias_name == &col_alias.0 {
-                            // Check if this is an UNWIND alias - don't use `.*` for scalars
-                            if unwind_aliases.contains(alias_name) {
-                                // UNWIND alias: render as just the alias (scalar value)
-                                alias_name.clone()
-                            } else {
-                                // Path/table alias: use `.*` expansion
-                                format!("{}.*", alias_name)
-                            }
+            //
+            // 🔧 SCALAR FIX: ColumnAlias never gets `.*` expansion - it's a scalar column reference
+            // This handles: WITH n.email as group_key ... RETURN group_key
+            // where group_key is a scalar column, not a node/table
+            let rendered_expr = if let RenderExpr::ColumnAlias(_) = &item.expression {
+                // ColumnAlias is always rendered as-is (scalar reference)
+                // No wildcard expansion: group_key stays group_key, not group_key.*
+                item.expression.to_sql()
+            } else if let RenderExpr::TableAlias(TableAlias(alias_name)) = &item.expression {
+                if let Some(col_alias) = &item.col_alias {
+                    if alias_name == &col_alias.0 {
+                        // Check if this is an UNWIND alias - don't use `.*` for scalars
+                        if unwind_aliases.contains(alias_name) {
+                            // UNWIND alias: render as just the alias (scalar value)
+                            alias_name.clone()
                         } else {
-                            item.expression.to_sql()
+                            // Path/table alias: use `.*` expansion
+                            format!("{}.*", alias_name)
                         }
                     } else {
                         item.expression.to_sql()
                     }
                 } else {
                     item.expression.to_sql()
-                };
+                }
+            } else {
+                item.expression.to_sql()
+            };
 
             sql.push_str(&rendered_expr);
 
@@ -1851,60 +2059,55 @@ impl RenderExpr {
 
                 // Special case: Multi-type VLP properties stored in JSON
                 // Check if this table alias is a multi-type VLP endpoint
-                let multi_type_json_result = MULTI_TYPE_VLP_ALIASES.with(|mvla| {
-                    let aliases = mvla.borrow();
-                    log::info!("🔍 Checking MULTI_TYPE_VLP_ALIASES for '{}' (map has {} entries)",
-                              table_alias.0, aliases.len());
-                    for (k, v) in aliases.iter() {
-                        log::info!("  - '{}' → '{}'", k, v);
-                    }
-
-                    if aliases.contains_key(&table_alias.0) {
-                        log::info!("🎯 Found '{}' in MULTI_TYPE_VLP_ALIASES!", table_alias.0);
-                        // Properties like end_type, end_id, hop_count, path_relationships are direct CTE columns
-                        if col_name == VLP_START_ID_COLUMN || col_name == VLP_END_ID_COLUMN
-                            || matches!(col_name, "end_type" | "end_properties" | "hop_count" | "path_relationships")
-                        {
-                            log::info!("🎯 Multi-type VLP CTE column: {}.{}", table_alias.0, col_name);
-                            return Some(format!("{}.{}", table_alias.0, col_name));
-                        }
-
+                if is_multi_type_vlp_alias_from_context(&table_alias.0) {
+                    log::info!("🎯 Found '{}' in multi-type VLP aliases!", table_alias.0);
+                    // Properties like end_type, end_id, hop_count, path_relationships are direct CTE columns
+                    if col_name == VLP_START_ID_COLUMN
+                        || col_name == VLP_END_ID_COLUMN
+                        || matches!(
+                            col_name,
+                            "end_type" | "end_properties" | "hop_count" | "path_relationships"
+                        )
+                    {
+                        log::info!(
+                            "🎯 Multi-type VLP CTE column: {}.{}",
+                            table_alias.0,
+                            col_name
+                        );
+                        return format!("{}.{}", table_alias.0, col_name);
+                    } else {
                         // Regular properties need JSON extraction from end_properties
                         log::info!("🎯 Multi-type VLP JSON extraction: {}.{} → JSON_VALUE({}.end_properties, '$.{}')",
                                   table_alias.0, col_name, table_alias.0, col_name);
-                        return Some(format!(
+                        return format!(
                             "JSON_VALUE({}.end_properties, '$.{}')",
                             table_alias.0, col_name
-                        ));
-                    } else {
-                        log::info!("❌ '{}' NOT found in MULTI_TYPE_VLP_ALIASES", table_alias.0);
+                        );
                     }
-                    None
-                });
+                }
 
-                if let Some(sql) = multi_type_json_result {
-                    return sql;
+                // 🔧 Check the CTE column registry (foolproof system)
+                // This registry is populated during plan building with actual CTE output column names
+                if let Some(cte_col) = get_cte_column_from_context(&table_alias.0, col_name) {
+                    log::debug!(
+                        "🔧 Registry lookup: {}.{} → {} (from CTE column registry)",
+                        table_alias.0,
+                        col_name,
+                        cte_col
+                    );
+                    return format!("{}.{}", table_alias.0, cte_col);
                 }
 
                 // Check if table_alias refers to a CTE and needs property mapping
-                let cte_mapped_result = CTE_PROPERTY_MAPPINGS.with(|cpm| {
-                    let map = cpm.borrow();
-                    if let Some(property_map) = map.get(&table_alias.0) {
-                        if let Some(cte_col) = property_map.get(col_name) {
-                            log::debug!(
-                                "🔧 CTE property mapping: {}.{} → {}",
-                                table_alias.0,
-                                col_name,
-                                cte_col
-                            );
-                            return Some(format!("{}.{}", table_alias.0, cte_col));
-                        }
-                    }
-                    None
-                });
-
-                if let Some(sql) = cte_mapped_result {
-                    return sql;
+                // (fallback to task-local context for backward compatibility)
+                if let Some(cte_col) = get_cte_property_from_context(&table_alias.0, col_name) {
+                    log::debug!(
+                        "🔧 CTE property mapping (legacy): {}.{} → {}",
+                        table_alias.0,
+                        col_name,
+                        cte_col
+                    );
+                    return format!("{}.{}", table_alias.0, cte_col);
                 }
 
                 // Property has been resolved from schema during query planning.
@@ -1969,25 +2172,22 @@ impl RenderExpr {
 
                             // Look up the actual column name from the JOIN metadata (populated during rendering)
                             // This ensures we use the CORRECT column for the SPECIFIC relationship table
-                            let id_col = RELATIONSHIP_COLUMNS.with(|rc| {
-                                let map = rc.borrow();
-                                if let Some((from_id, _to_id)) = map.get(table_alias) {
-                                    // Use from_id - any ID column works since LEFT JOIN makes all NULL together
-                                    from_id.clone()
-                                } else {
-                                    // ERROR: r.* wildcard is ALWAYS for relationships
-                                    // If alias not in map = bug in planning (missing from_id_column population)
-                                    panic!(
-                                        "Internal error: Relationship alias '{}' not found in column mapping. \
-                                         This indicates a bug in query planning - relationship JOINs should populate \
-                                         from_id_column during creation. Check graph_join_inference.rs line ~2547.",
-                                        table_alias
-                                    )
-                                }
-                            });
-
-                            let id_sql = format!("{}.{}", table_alias, id_col);
-                            return format!("{} {}", id_sql, op_str);
+                            if let Some((from_id, _to_id)) =
+                                get_relationship_columns_from_context(table_alias)
+                            {
+                                // Use from_id - any ID column works since LEFT JOIN makes all NULL together
+                                let id_sql = format!("{}.{}", table_alias, from_id);
+                                return format!("{} {}", id_sql, op_str);
+                            } else {
+                                // ERROR: r.* wildcard is ALWAYS for relationships
+                                // If alias not in map = bug in planning (missing from_id_column population)
+                                panic!(
+                                    "Internal error: Relationship alias '{}' not found in column mapping. \
+                                     This indicates a bug in query planning - relationship JOINs should populate \
+                                     from_id_column during creation. Check graph_join_inference.rs line ~2547.",
+                                    table_alias
+                                )
+                            }
                         }
                     }
                 }

@@ -177,12 +177,17 @@ impl ScopeContext {
 pub struct VariableResolver {
     /// Counter for generating unique CTE names
     cte_counter: std::cell::RefCell<usize>,
+
+    /// Collected alias sources during analysis: exported_alias → (source_alias, cte_name)
+    /// These are registered into PlanCtx after resolution completes
+    alias_sources: std::cell::RefCell<HashMap<String, (String, String)>>,
 }
 
 impl VariableResolver {
     pub fn new() -> Self {
         VariableResolver {
             cte_counter: std::cell::RefCell::new(1),
+            alias_sources: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -344,7 +349,32 @@ impl VariableResolver {
                     .map(|item| self.resolve_projection_item(item, scope))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                // Step 5: Build cte_references map for this WITH clause
+                // Step 5: Register alias sources for renamed variables
+                // When we have `WITH u AS person`, we need to track that person → (u, cte_name)
+                // This is critical for property resolution during rendering
+                for (i, item) in resolved_items.iter().enumerate() {
+                    if i < wc.exported_aliases.len() {
+                        let exported_alias = &wc.exported_aliases[i];
+
+                        // Try to extract the source alias from the expression
+                        // Common case: WITH u AS person - expression is TableAlias("u")
+                        if let LogicalExpr::TableAlias(source_alias_ta) = &item.expression {
+                            let source_alias_str = source_alias_ta.0.clone();
+                            log::info!(
+                                "🔍 VariableResolver: Collecting alias source: {} ← ({}, {})",
+                                exported_alias,
+                                source_alias_str,
+                                cte_name
+                            );
+                            self.alias_sources.borrow_mut().insert(
+                                exported_alias.clone(),
+                                (source_alias_str, cte_name.clone()),
+                            );
+                        }
+                    }
+                }
+
+                // Step 5b: Build cte_references map for this WITH clause
                 // This tells downstream what CTEs we're referencing
                 let mut cte_references = HashMap::new();
                 for alias in &wc.exported_aliases {
@@ -1190,6 +1220,22 @@ impl AnalyzerPass for VariableResolver {
 
         // Resolve the entire plan tree, passing plan_ctx for TypedVariable lookup
         let result = self.resolve(logical_plan, &root_scope, Some(plan_ctx))?;
+
+        // Register all collected alias sources into PlanCtx
+        let alias_sources = self.alias_sources.borrow();
+        for (exported_alias, (source_alias, cte_name)) in alias_sources.iter() {
+            log::info!(
+                "🔍 VariableResolver: Registering alias source {} ← ({}, {})",
+                exported_alias,
+                source_alias,
+                cte_name
+            );
+            plan_ctx.register_cte_alias_source(
+                exported_alias.clone(),
+                source_alias.clone(),
+                cte_name.clone(),
+            );
+        }
 
         // DEBUG: Check result cte_references
         fn count_cte_refs(plan: &LogicalPlan) -> usize {

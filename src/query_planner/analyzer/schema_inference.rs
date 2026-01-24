@@ -54,7 +54,11 @@ impl SchemaInference {
                     // Get inferred label from TableCtx
                     match plan_ctx.get_table_ctx(&graph_node.alias) {
                         Ok(table_ctx) => {
-                            log::debug!("SchemaInference: Found table_ctx for node '{}' with labels {:?}", graph_node.alias, table_ctx.get_labels());
+                            log::debug!(
+                                "SchemaInference: Found table_ctx for node '{}' with labels {:?}",
+                                graph_node.alias,
+                                table_ctx.get_labels()
+                            );
                             if let Some(labels) = table_ctx.get_labels() {
                                 if !labels.is_empty() && labels[0] != "$any" {
                                     let label = &labels[0];
@@ -99,11 +103,18 @@ impl SchemaInference {
                                     log::debug!("SchemaInference: Node '{}' has no labels or $any label, skipping ViewScan creation", graph_node.alias);
                                 }
                             } else {
-                                log::debug!("SchemaInference: No labels found for node '{}' in table_ctx", graph_node.alias);
+                                log::debug!(
+                                    "SchemaInference: No labels found for node '{}' in table_ctx",
+                                    graph_node.alias
+                                );
                             }
                         }
                         Err(e) => {
-                            log::debug!("SchemaInference: No table_ctx found for node '{}': {:?}", graph_node.alias, e);
+                            log::debug!(
+                                "SchemaInference: No table_ctx found for node '{}': {:?}",
+                                graph_node.alias,
+                                e
+                            );
                         }
                     }
                 }

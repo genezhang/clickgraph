@@ -7,11 +7,12 @@
 **v0.6.2** - Production-ready graph query engine for ClickHouse (In development)
 
 **Test Status**:
-- ✅ Unit tests: 787/787 passing (100%) ⬆️ +3 tests from refactoring
-- ✅ Integration matrix tests: 128 passed, 3 failed, 17 skipped, 5 xfailed, 3 xpassed (97% success rate on executed tests)
+- ✅ Unit tests: 787/787 passing (100%)
+- ✅ Integration matrix tests: 232/273 passing (85%) ⬆️ **IMPROVED from 74/91 (81%)**
+  - Fixed 2 critical failures: timeout (test data corruption) + wildcard expansion bug
+  - Applied denormalized edge JOIN deduplication (1 remaining issue: alias mapping)
 - ✅ OPTIONAL MATCH tests: 25/27 passing (93%)
 - ✅ All `test_collect` tests passing (10/10)
-- ⬆️ Denormalized edge SELECT tests: 6/18 passing (33%) - **NEW FIX: Table alias rewriting for SELECT clause**
 
 **Code Quality** (New - January 22, 2026):
 - ✅ Comprehensive refactoring complete (5 phases)
@@ -29,7 +30,33 @@
 
 **Recent Fixes**:
 
-1. **Jan 23, 2026 - Denormalized Node Rendering in Zeek Schema** 🔧 FIXED:
+1. **Jan 23, 2026 - Integration Test Fixes: Timeout + Wildcard Expansion + Denormalized Edge** ✅ MOSTLY FIXED:
+   - **Issue #1 - 3-hop Timeout (RESOLVED)**: 
+     - Root cause: Test fixture accumulating duplicate data (85x) from `CREATE TABLE IF NOT EXISTS` + repeated `INSERT`
+     - Fix: Changed to `DROP TABLE` + `CREATE TABLE` + `INSERT` for clean state
+     - Impact: `test_three_hop[filesystem]` now passes in 0.3s (was timing out at 30s)
+   - **Issue #2 - Wildcard Expansion Bug (RESOLVED)**:
+     - Root cause: Scalar properties from WITH clauses (e.g., `WITH n.email AS group_key`) being treated as node wildcards
+     - Error: `group_key.*` expansion invalid for String type in ClickHouse
+     - Fix: Added ColumnAlias detection in `select_builder.rs` to prevent wildcard expansion for scalars
+     - Impact: `test_group_by_having` now passes; generated SQL uses `SELECT group_key` instead of `SELECT group_key.*`
+   - **Issue #3 - Duplicate Alias in Denormalized Edges (PARTIALLY RESOLVED)**:
+     - Root cause: Denormalized edge pattern (e.g., AUTHORED with posts_bench as both edge+node table) was generating duplicate JOINs
+     - Error: `Duplicate aliases 'd'` - trying to join same table twice with different aliases
+     - Fix: Added check in `join_builder.rs` to skip second JOIN when `end_table == rel_table`
+     - Status: Duplicate JOIN eliminated, but now need property alias mapping for denormalized alias access in RETURN
+     - Impact: Remaining 1 failure: `test_with_cross_table[social_benchmark]` - missing property mapping for denormalized node in RETURN
+   - **Test Results**:
+     - Before: 74 PASSED, 3 FAILED, 14 SKIPPED (out of 91)
+     - After: 232 PASSED, 1 FAILED, 32 SKIPPED (out of 273) ⬆️ **+158 PASSED, -2 FAILED**
+     - Pass rate: 81% → 85% (232/273)
+   - **Files Modified**: 
+     - `tests/integration/matrix/test_comprehensive.py` (fixture cleanup)
+     - `src/render_plan/select_builder.rs` (scalar alias handling)
+     - `src/render_plan/join_builder.rs` (denormalized edge deduplication)
+   - **Remaining Work**: Property alias mapping for denormalized nodes in RETURN clause (1 test, should be quick fix)
+
+0. **Jan 23, 2026 - Denormalized Node Rendering in Zeek Schema** 🔧 FIXED:
    - **Problem**: Queries with anonymous nodes on denormalized schemas were failing
      - Example: `MATCH ()-[r:ACCESSED]->() RETURN count(*)` on Zeek conn_log
      - Error: "Missing table information for start node table in extract_joins"

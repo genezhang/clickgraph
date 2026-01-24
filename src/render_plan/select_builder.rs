@@ -158,9 +158,19 @@ impl SelectBuilder for LogicalPlan {
                                             "⚠️ No properties found for alias '{}'",
                                             table_alias.0
                                         );
-                                        // Fall back to keeping it as-is (will likely fail)
+
+                                        // SCALAR FIX: If no properties found, treat as a scalar column alias
+                                        // This handles cases like:
+                                        //   WITH n.email as group_key ... RETURN group_key
+                                        // where 'group_key' is a scalar (String from email), not a node
+                                        // Using ColumnAlias prevents wildcard expansion (group_key.*)
+                                        // which is invalid for scalars in ClickHouse
+                                        log::info!(
+                                            "🔍 Treating '{}' as scalar ColumnAlias (no node properties found)",
+                                            table_alias.0
+                                        );
                                         select_items.push(SelectItem {
-                                            expression: RenderExpr::TableAlias(RenderTableAlias(
+                                            expression: RenderExpr::ColumnAlias(ColumnAlias(
                                                 table_alias.0.clone(),
                                             )),
                                             col_alias: item
@@ -333,11 +343,13 @@ impl SelectBuilder for LogicalPlan {
                         // Case 4: PropertyAccessExp - special handling for denormalized nodes
                         LogicalExpr::PropertyAccessExp(prop_access) => {
                             let cypher_alias = &prop_access.table_alias.0;
-                            let col_name = prop_access.column.raw();  // This is the resolved column name (e.g., "OriginCityName")
-                            
+                            let col_name = prop_access.column.raw(); // This is the resolved column name (e.g., "OriginCityName")
+
                             // For denormalized nodes in edges, we need to get the actual table alias
                             // Try to get properties with actual table alias
-                            if let Ok((_properties, actual_table_alias_opt)) = self.get_properties_with_table_alias(cypher_alias) {
+                            if let Ok((_properties, actual_table_alias_opt)) =
+                                self.get_properties_with_table_alias(cypher_alias)
+                            {
                                 if let Some(actual_table_alias) = actual_table_alias_opt {
                                     select_items.push(SelectItem {
                                         expression: RenderExpr::PropertyAccessExp(PropertyAccess {
@@ -352,7 +364,7 @@ impl SelectBuilder for LogicalPlan {
                                     continue;
                                 }
                             }
-                            
+
                             // Default handling: pass through the PropertyAccessExp as-is
                             select_items.push(SelectItem {
                                 expression: item.expression.clone().try_into()?,

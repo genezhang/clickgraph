@@ -48,14 +48,19 @@ pub enum CteError {
 }
 
 /// Metadata for a column in a generated CTE
+///
+/// This provides complete information for mapping Cypher property accesses to CTE columns
+/// WITHOUT heuristics or underscore splitting.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CteColumnMetadata {
     /// The column name in the CTE (e.g., "end_id", "end_city")
     pub cte_column_name: String,
     /// The Cypher alias this column belongs to (e.g., "u2")
     pub cypher_alias: String,
-    /// The original property name (e.g., "user_id", "city")
-    pub property_name: String,
+    /// The Cypher property name from schema (e.g., "city", "email", "name")
+    pub cypher_property: String,
+    /// The actual DB column name from schema (e.g., "city", "email_address", "full_name")
+    pub db_column: String,
     /// Whether this is an ID column (used for GROUP BY)
     pub is_id_column: bool,
     /// The VLP position (Start or End) for VLP CTEs
@@ -144,7 +149,8 @@ impl CteGenerationResult {
         columns.push(CteColumnMetadata {
             cte_column_name: VLP_START_ID_COLUMN.to_string(),
             cypher_alias: left_alias.to_string(),
-            property_name: id_column.to_string(),
+            cypher_property: id_column.to_string(),
+            db_column: id_column.to_string(),
             is_id_column: true,
             vlp_position: Some(VlpColumnPosition::Start),
         });
@@ -153,7 +159,8 @@ impl CteGenerationResult {
         columns.push(CteColumnMetadata {
             cte_column_name: VLP_END_ID_COLUMN.to_string(),
             cypher_alias: right_alias.to_string(),
-            property_name: id_column.to_string(),
+            cypher_property: id_column.to_string(),
+            db_column: id_column.to_string(),
             is_id_column: true,
             vlp_position: Some(VlpColumnPosition::End),
         });
@@ -165,12 +172,19 @@ impl CteGenerationResult {
                 continue;
             }
 
+            // Use property names directly from schema - NO SPLITTING!
+            // prop.alias: Cypher property name (e.g., "email", "full_name")
+            // prop.column_name: DB column name (e.g., "email_address", "full_name")
+            let cypher_property_name = &prop.alias;
+            let db_column_name = &prop.column_name;
+
             // Start node property (only for properties belonging to start node)
             if prop.cypher_alias == left_alias {
                 columns.push(CteColumnMetadata {
-                    cte_column_name: format!("start_{}", prop.alias),
+                    cte_column_name: format!("start_{}", cypher_property_name),
                     cypher_alias: left_alias.to_string(),
-                    property_name: prop.alias.clone(),
+                    cypher_property: cypher_property_name.clone(),
+                    db_column: db_column_name.clone(),
                     is_id_column: false,
                     vlp_position: Some(VlpColumnPosition::Start),
                 });
@@ -179,9 +193,10 @@ impl CteGenerationResult {
             // End node property (only for properties belonging to end node)
             if prop.cypher_alias == right_alias {
                 columns.push(CteColumnMetadata {
-                    cte_column_name: format!("end_{}", prop.alias),
+                    cte_column_name: format!("end_{}", cypher_property_name),
                     cypher_alias: right_alias.to_string(),
-                    property_name: prop.alias.clone(),
+                    cypher_property: cypher_property_name.clone(),
+                    db_column: db_column_name.clone(),
                     is_id_column: false,
                     vlp_position: Some(VlpColumnPosition::End),
                 });

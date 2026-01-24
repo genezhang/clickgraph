@@ -27,17 +27,17 @@ use crate::render_plan::cte_extraction::{
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::filter_pipeline::categorize_filters;
 use crate::render_plan::render_expr::{
-    AggregateFnCall, Column, ColumnAlias, InSubquery, Operator, OperatorApplication, PropertyAccess,
-    RenderCase, RenderExpr, ScalarFnCall, TableAlias,
+    AggregateFnCall, Column, ColumnAlias, InSubquery, Operator, OperatorApplication,
+    PropertyAccess, RenderCase, RenderExpr, ScalarFnCall, TableAlias,
 };
 use crate::render_plan::view_table_ref::{from_table_to_view_ref, view_ref_to_from_table};
 use crate::render_plan::JoinType;
 use crate::render_plan::OrderByItem;
 use crate::render_plan::SelectItem;
 use crate::render_plan::{
-    ArrayJoin, ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem,
-    GroupByExpressions, Join, JoinItems, LimitItem, OrderByItems, OrderByOrder, RenderPlan,
-    SelectItems, SkipItem, Union, UnionItems,
+    ArrayJoin, ArrayJoinItem, Cte, CteColumnRegistry, CteContent, CteItems, FilterItems,
+    FromTableItem, GroupByExpressions, Join, JoinItems, LimitItem, OrderByItems, OrderByOrder,
+    RenderPlan, SelectItems, SkipItem, Union, UnionItems,
 };
 use crate::render_plan::{FromTable, ViewTableRef};
 use crate::utils::cte_naming::generate_cte_name;
@@ -227,9 +227,9 @@ pub fn rewrite_render_expr_for_vlp_with_from_alias(
                 //
                 // The mapping tells us the internal alias (start_node or end_node), which we use
                 // to determine the prefix (start_ or end_).
-                
+
                 let col_name = prop_access.column.raw();
-                
+
                 // Determine if this is a start or end node based on the mapping
                 let prefix = if vlp_internal_alias.starts_with("start_") {
                     "start_"
@@ -239,13 +239,13 @@ pub fn rewrite_render_expr_for_vlp_with_from_alias(
                     // Not a node alias, use as-is
                     ""
                 };
-                
+
                 let prefixed_col = if !prefix.is_empty() {
                     format!("{}{}", prefix, col_name)
                 } else {
                     col_name.to_string()
                 };
-                
+
                 log::info!(
                     "🔄 VLP: Rewriting {}.{} → {}.{} (vlp_internal_alias={}, prefix={})",
                     prop_access.table_alias.0,
@@ -255,7 +255,7 @@ pub fn rewrite_render_expr_for_vlp_with_from_alias(
                     vlp_internal_alias,
                     prefix
                 );
-                
+
                 // Update both the alias (to FROM alias) and the column name (with prefix)
                 prop_access.table_alias.0 = vlp_from_alias.to_string();
                 if !prefix.is_empty() {
@@ -301,89 +301,154 @@ pub fn rewrite_render_expr_for_vlp_with_from_alias(
     }
 }
 
-/// Enhanced version that uses endpoint position information for accurate prefix determination.
-/// This is used when the VLP CTE internal aliases are not properly set,
-/// and we need to infer start/end from the Cypher aliases themselves.
+/// Enhanced version with NEW lookup-based mapping using complete metadata.
+/// Maps (cypher_alias, db_column) → (cte_column_name, vlp_position)
+/// NO HEURISTICS - all matching is direct and exact.
 pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
     expr: &mut RenderExpr,
     mappings: &HashMap<String, String>,
     vlp_from_alias: &str,
     endpoint_position: &HashMap<String, &str>,
+    cte_column_mapping: &HashMap<
+        (String, String),
+        (String, crate::render_plan::cte_manager::VlpColumnPosition),
+    >,
 ) {
+    log::warn!("🔍 REWRITE: Processing expr with new lookup-based mapping (no splitting)");
     match expr {
         RenderExpr::PropertyAccessExp(prop_access) => {
             // Check if this is a Cypher alias (mapping exists)
             if mappings.contains_key(&prop_access.table_alias.0) {
-                // Determine if this is a start or end node based on endpoint_position
-                let prefix = match endpoint_position.get(prop_access.table_alias.0.as_str()) {
-                    Some(&"start") => "start_",
-                    Some(&"end") => "end_",
-                    _ => {
-                        // Fallback to empty string if endpoint position isn't known
-                        ""
-                    }
-                };
-                
-                let col_name = prop_access.column.raw();
-                let prefixed_col = if !prefix.is_empty() {
-                    format!("{}{}", prefix, col_name)
-                } else {
-                    col_name.to_string()
-                };
-                
-                log::info!(
-                    "🔄 VLP: Rewriting {}.{} → {}.{} (position={}, prefix={})",
-                    prop_access.table_alias.0,
-                    col_name,
-                    vlp_from_alias,
-                    prefixed_col,
-                    endpoint_position.get(prop_access.table_alias.0.as_str()).unwrap_or(&"unknown"),
-                    prefix
+                log::warn!(
+                    "✅ REWRITE: Found table_alias '{}' in mappings",
+                    prop_access.table_alias.0
                 );
-                
-                // Update both the alias (to FROM alias) and the column name (with prefix)
-                prop_access.table_alias.0 = vlp_from_alias.to_string();
-                if !prefix.is_empty() {
-                    // Replace the column with the prefixed version
-                    prop_access.column = PropertyValue::Column(prefixed_col);
+
+                let col_name = prop_access.column.raw();
+                let alias = prop_access.table_alias.0.clone();
+
+                // NEW ALGORITHM: Direct lookup using DB column name
+                // No splitting, no guessing - just look up the exact DB column name
+                if let Some((cte_column_name, _position)) =
+                    cte_column_mapping.get(&(alias.clone(), col_name.to_string()))
+                {
+                    log::warn!(
+                        "✅ REWRITE: Direct lookup SUCCESS: ({}, {}) → {}",
+                        alias,
+                        col_name,
+                        cte_column_name
+                    );
+
+                    // Rewrite to use the CTE column
+                    prop_access.table_alias.0 = vlp_from_alias.to_string();
+                    prop_access.column = PropertyValue::Column(cte_column_name.clone());
+                } else {
+                    // Fallback: construct from endpoint_position
+                    // This handles cases where metadata wasn't fully populated
+                    let prefix = match endpoint_position.get(alias.as_str()) {
+                        Some(&"start") => "start_",
+                        Some(&"end") => "end_",
+                        _ => "",
+                    };
+
+                    let fallback_col = format!("{}{}", prefix, col_name);
+                    log::warn!(
+                        "⚠️ REWRITE: Lookup FAILED for ({}, {}), falling back to: {}",
+                        alias,
+                        col_name,
+                        fallback_col
+                    );
+
+                    prop_access.table_alias.0 = vlp_from_alias.to_string();
+                    prop_access.column = PropertyValue::Column(fallback_col);
                 }
+            }
+        }
+        RenderExpr::Case(case_expr) => {
+            // Recursively rewrite expressions in the CASE
+            for (when_expr, then_expr) in &mut case_expr.when_then {
+                rewrite_render_expr_for_vlp_with_endpoint_info(
+                    when_expr,
+                    mappings,
+                    vlp_from_alias,
+                    endpoint_position,
+                    cte_column_mapping,
+                );
+                rewrite_render_expr_for_vlp_with_endpoint_info(
+                    then_expr,
+                    mappings,
+                    vlp_from_alias,
+                    endpoint_position,
+                    cte_column_mapping,
+                );
+            }
+            if let Some(else_expr) = &mut case_expr.else_expr {
+                rewrite_render_expr_for_vlp_with_endpoint_info(
+                    else_expr,
+                    mappings,
+                    vlp_from_alias,
+                    endpoint_position,
+                    cte_column_mapping,
+                );
             }
         }
         RenderExpr::OperatorApplicationExp(op_app) => {
             for operand in &mut op_app.operands {
-                rewrite_render_expr_for_vlp_with_endpoint_info(operand, mappings, vlp_from_alias, endpoint_position);
+                rewrite_render_expr_for_vlp_with_endpoint_info(
+                    operand,
+                    mappings,
+                    vlp_from_alias,
+                    endpoint_position,
+                    cte_column_mapping,
+                );
             }
         }
-        RenderExpr::ScalarFnCall(func) => {
-            for arg in &mut func.args {
-                rewrite_render_expr_for_vlp_with_endpoint_info(arg, mappings, vlp_from_alias, endpoint_position);
+        RenderExpr::ScalarFnCall(fn_call) => {
+            for arg in &mut fn_call.args {
+                rewrite_render_expr_for_vlp_with_endpoint_info(
+                    arg,
+                    mappings,
+                    vlp_from_alias,
+                    endpoint_position,
+                    cte_column_mapping,
+                );
             }
         }
-        RenderExpr::AggregateFnCall(func) => {
-            for arg in &mut func.args {
-                rewrite_render_expr_for_vlp_with_endpoint_info(arg, mappings, vlp_from_alias, endpoint_position);
+        RenderExpr::AggregateFnCall(fn_call) => {
+            for arg in &mut fn_call.args {
+                rewrite_render_expr_for_vlp_with_endpoint_info(
+                    arg,
+                    mappings,
+                    vlp_from_alias,
+                    endpoint_position,
+                    cte_column_mapping,
+                );
             }
         }
         RenderExpr::InSubquery(in_exp) => {
-            rewrite_render_expr_for_vlp_with_endpoint_info(&mut in_exp.expr, mappings, vlp_from_alias, endpoint_position);
+            rewrite_render_expr_for_vlp_with_endpoint_info(
+                &mut in_exp.expr,
+                mappings,
+                vlp_from_alias,
+                endpoint_position,
+                cte_column_mapping,
+            );
         }
-        RenderExpr::Case(case_exp) => {
-            for (when_expr, then_expr) in &mut case_exp.when_then {
-                rewrite_render_expr_for_vlp_with_endpoint_info(when_expr, mappings, vlp_from_alias, endpoint_position);
-                rewrite_render_expr_for_vlp_with_endpoint_info(then_expr, mappings, vlp_from_alias, endpoint_position);
-            }
-            if let Some(else_expr) = &mut case_exp.else_expr {
-                rewrite_render_expr_for_vlp_with_endpoint_info(else_expr, mappings, vlp_from_alias, endpoint_position);
-            }
+        _ => {
+            // Other expression types don't need rewriting
         }
-        RenderExpr::List(items) => {
-            for item in items {
-                rewrite_render_expr_for_vlp_with_endpoint_info(item, mappings, vlp_from_alias, endpoint_position);
-            }
-        }
-        // Other expression types don't contain table aliases
-        _ => {}
     }
+}
+
+/// Legacy version kept for compatibility - redirects to new implementation
+pub fn rewrite_render_expr_for_vlp_with_endpoint_info_legacy(
+    _expr: &mut RenderExpr,
+    _mappings: &HashMap<String, String>,
+    _vlp_from_alias: &str,
+    _endpoint_position: &HashMap<String, &str>,
+    _old_mapping: &HashMap<(String, String), String>,
+) {
+    log::warn!("🔍 LEGACY REWRITE: This function is deprecated, use new lookup-based version");
 }
 
 pub fn extract_cte_references(plan: &LogicalPlan) -> HashMap<String, String> {
@@ -2717,6 +2782,213 @@ pub fn remap_cte_names_in_render_plan(
 /// 1. PropertyAccess with WITH alias (e.g., "a.full_name") → rewrite to FROM alias + CTE column (e.g., "a_age.a_name")
 /// 2. PropertyAccess with CTE name (e.g., "with_a_age_cte_1.age") → rewrite to FROM alias (e.g., "a_age.age")
 /// 3. Other expressions → recursively rewrite nested expressions
+/// Rewrite expressions to use CTE context (alias and column names) with alias source resolution
+///
+/// This version uses plan_ctx to resolve alias sources from WITH clauses.
+/// When an alias has been renamed (e.g., "person" from "u"), this resolves the mapping.
+pub fn rewrite_cte_expression_with_alias_resolution(
+    expr: crate::render_plan::render_expr::RenderExpr,
+    cte_name: &str,
+    from_alias: &str,
+    with_aliases: &std::collections::HashSet<String>,
+    reverse_mapping: &std::collections::HashMap<(String, String), String>,
+    plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
+) -> crate::render_plan::render_expr::RenderExpr {
+    use crate::render_plan::render_expr::*;
+
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            let table_alias = &pa.table_alias.0;
+
+            // Case 1: Table alias is a WITH alias (e.g., "person" from "WITH u AS person")
+            if with_aliases.contains(table_alias) {
+                let column_name = match &pa.column {
+                    PropertyValue::Column(col) => col.clone(),
+                    _ => return RenderExpr::PropertyAccessExp(pa), // Don't rewrite complex columns
+                };
+
+                // Try to resolve alias source from plan_ctx
+                let original_alias = if let Some(ctx) = plan_ctx {
+                    ctx.get_cte_alias_source(table_alias)
+                        .map(|(source_alias, _)| source_alias.clone())
+                } else {
+                    None
+                };
+
+                // First try mapping with original alias (if found), then with the renamed alias
+                let key_with_original = original_alias
+                    .as_ref()
+                    .map(|orig| (orig.clone(), column_name.clone()));
+                let key_with_renamed = (table_alias.clone(), column_name.clone());
+
+                let cte_column = key_with_original
+                    .as_ref()
+                    .and_then(|k| reverse_mapping.get(k))
+                    .or_else(|| reverse_mapping.get(&key_with_renamed));
+
+                if let Some(cte_col) = cte_column {
+                    log::debug!(
+                        "🔧 Rewriting {}.{} → {}.{} (via alias resolution)",
+                        table_alias,
+                        column_name,
+                        from_alias,
+                        cte_col
+                    );
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(from_alias.to_string()),
+                        column: PropertyValue::Column(cte_col.clone()),
+                    })
+                } else {
+                    // No mapping found - might be an aggregate column, use as-is
+                    log::debug!(
+                        "🔧 Rewriting {}.{} → {}.{} (no mapping, using column name)",
+                        table_alias,
+                        column_name,
+                        from_alias,
+                        column_name
+                    );
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(from_alias.to_string()),
+                        column: PropertyValue::Column(column_name),
+                    })
+                }
+            }
+            // Case 2: Table alias is the CTE name itself
+            else if table_alias == cte_name {
+                log::debug!(
+                    "🔧 Rewriting CTE reference {}.{:?} → {}.{:?}",
+                    table_alias,
+                    pa.column,
+                    from_alias,
+                    pa.column
+                );
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(from_alias.to_string()),
+                    column: pa.column,
+                })
+            }
+            // Case 3: Keep as-is
+            else {
+                RenderExpr::PropertyAccessExp(pa)
+            }
+        }
+        // Recursively handle other expression types
+        RenderExpr::AggregateFnCall(agg) => {
+            let new_args = agg
+                .args
+                .into_iter()
+                .map(|arg| {
+                    rewrite_cte_expression_with_alias_resolution(
+                        arg,
+                        cte_name,
+                        from_alias,
+                        with_aliases,
+                        reverse_mapping,
+                        plan_ctx,
+                    )
+                })
+                .collect();
+            RenderExpr::AggregateFnCall(AggregateFnCall {
+                name: agg.name,
+                args: new_args,
+            })
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            let new_args = func
+                .args
+                .into_iter()
+                .map(|arg| {
+                    rewrite_cte_expression_with_alias_resolution(
+                        arg,
+                        cte_name,
+                        from_alias,
+                        with_aliases,
+                        reverse_mapping,
+                        plan_ctx,
+                    )
+                })
+                .collect();
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: func.name,
+                args: new_args,
+            })
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            let new_operands = op
+                .operands
+                .into_iter()
+                .map(|operand| {
+                    rewrite_cte_expression_with_alias_resolution(
+                        operand,
+                        cte_name,
+                        from_alias,
+                        with_aliases,
+                        reverse_mapping,
+                        plan_ctx,
+                    )
+                })
+                .collect();
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator,
+                operands: new_operands,
+            })
+        }
+        RenderExpr::Case(case_expr) => {
+            let new_expr = case_expr.expr.map(|e| {
+                Box::new(rewrite_cte_expression_with_alias_resolution(
+                    *e,
+                    cte_name,
+                    from_alias,
+                    with_aliases,
+                    reverse_mapping,
+                    plan_ctx,
+                ))
+            });
+            let new_when_then = case_expr
+                .when_then
+                .into_iter()
+                .map(|(when, then)| {
+                    (
+                        rewrite_cte_expression_with_alias_resolution(
+                            when,
+                            cte_name,
+                            from_alias,
+                            with_aliases,
+                            reverse_mapping,
+                            plan_ctx,
+                        ),
+                        rewrite_cte_expression_with_alias_resolution(
+                            then,
+                            cte_name,
+                            from_alias,
+                            with_aliases,
+                            reverse_mapping,
+                            plan_ctx,
+                        ),
+                    )
+                })
+                .collect();
+            let new_else = case_expr.else_expr.map(|e| {
+                Box::new(rewrite_cte_expression_with_alias_resolution(
+                    *e,
+                    cte_name,
+                    from_alias,
+                    with_aliases,
+                    reverse_mapping,
+                    plan_ctx,
+                ))
+            });
+            RenderExpr::Case(RenderCase {
+                expr: new_expr,
+                when_then: new_when_then,
+                else_expr: new_else,
+            })
+        }
+        // For all other expressions, return as-is
+        other => other,
+    }
+}
+
 /// Rewrite expressions to use CTE context (alias and column names)
 ///
 /// Delegates to `rewrite_cte_expression_with_context` for actual rewriting logic.
@@ -2728,13 +3000,14 @@ pub fn rewrite_cte_expression(
     with_aliases: &std::collections::HashSet<String>,
     reverse_mapping: &std::collections::HashMap<(String, String), String>,
 ) -> crate::render_plan::render_expr::RenderExpr {
-    let ctx = crate::render_plan::expression_utils::CTERewriteContext::for_with_cte(
-        cte_name.to_string(),
-        from_alias.to_string(),
-        with_aliases.clone(),
-        reverse_mapping.clone(),
-    );
-    rewrite_cte_expression_with_context(expr, &ctx)
+    rewrite_cte_expression_with_alias_resolution(
+        expr,
+        cte_name,
+        from_alias,
+        with_aliases,
+        reverse_mapping,
+        None,
+    )
 }
 
 /// Rewrite expressions to use CTE context (alias and column names) - context version
@@ -3829,6 +4102,68 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         vlp_mappings.len()
     );
 
+    // Extract VLP column metadata for property name resolution
+    // This maps (cypher_alias, property_name) → cte_column_name
+    // E.g., (a, email_address) → start_email (or start_email_address depending on CTE)
+    let mut cte_column_mapping: HashMap<(String, String), String> = HashMap::new();
+    log::warn!("🔧 VLP: Total CTEs in plan: {}", plan.ctes.0.len());
+
+    // ✨ NEW APPROACH: Build metadata-based lookup mapping
+    // Maps: (cypher_alias, db_column) → (cte_column_name, vlp_position)
+    // This is lookup-based, NOT heuristic-based. No splitting needed!
+    let mut cte_column_mapping: HashMap<
+        (String, String),
+        (String, crate::render_plan::cte_manager::VlpColumnPosition),
+    > = HashMap::new();
+
+    for (idx, cte) in plan.ctes.0.iter().enumerate() {
+        log::warn!(
+            "🔧 VLP: CTE[{}]: name={}, columns={}, vlp_cypher_start={:?}, vlp_cypher_end={:?}",
+            idx,
+            cte.cte_name,
+            cte.columns.len(),
+            cte.vlp_cypher_start_alias,
+            cte.vlp_cypher_end_alias
+        );
+        if cte.cte_name.starts_with("vlp_") {
+            log::warn!(
+                "🔧 VLP: Processing VLP CTE '{}' with {} columns",
+                cte.cte_name,
+                cte.columns.len()
+            );
+            for (col_idx, col_meta) in cte.columns.iter().enumerate() {
+                if let Some(position) = col_meta.vlp_position {
+                    log::warn!(
+                        "🔧   Column[{}]: cte={}, alias={}, cypher_prop={}, db_col={}, pos={:?}",
+                        col_idx,
+                        col_meta.cte_column_name,
+                        col_meta.cypher_alias,
+                        col_meta.cypher_property,
+                        col_meta.db_column,
+                        position
+                    );
+                    // Build lookup key: (cypher_alias, db_column_name)
+                    // This is what we'll match against when rewriting PropertyAccessExp
+                    let key = (col_meta.cypher_alias.clone(), col_meta.db_column.clone());
+                    let value = (col_meta.cte_column_name.clone(), position);
+                    cte_column_mapping.insert(key, value);
+                    log::info!(
+                        "✅ VLP Lookup Entry: ({}, {}) → ({}, {:?})",
+                        col_meta.cypher_alias,
+                        col_meta.db_column,
+                        col_meta.cte_column_name,
+                        position
+                    );
+                }
+            }
+        }
+    }
+
+    log::warn!(
+        "🔧 VLP: Built {} column lookup entries from CTE metadata (NO splitting!)",
+        cte_column_mapping.len()
+    );
+
     // ✨ ARCHITECTURAL FIX: Filter mappings based on whether endpoint JOINs exist
     //
     // For NORMAL VLP:
@@ -3909,17 +4244,23 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
             // 🔧 FIX: Exclude aliases covered by WITH CTEs
             // These aliases reference the WITH CTE columns, not the raw VLP CTE
             if aliases_covered_by_with_cte.contains(cypher_alias) {
-                log::warn!("🔧 VLP: Excluding alias '{}' from rewrite (covered by WITH CTE)", cypher_alias);
+                log::warn!(
+                    "🔧 VLP: Excluding alias '{}' from rewrite (covered by WITH CTE)",
+                    cypher_alias
+                );
                 return false;
             }
 
             let is_endpoint = vlp_endpoint_aliases.contains(cypher_alias);
             if is_endpoint {
                 // ✅ FIX: ALWAYS include endpoints for rewriting!
-                log::warn!("✅ VLP: INCLUDING endpoint alias '{}' in rewrite (for correct column mapping)", cypher_alias);
+                log::warn!(
+                    "✅ VLP: INCLUDING endpoint alias '{}' in rewrite (for correct column mapping)",
+                    cypher_alias
+                );
                 return true;
             }
-            true  // Keep non-endpoint mappings (e.g., path variable)
+            true // Keep non-endpoint mappings (e.g., path variable)
         })
         .collect();
 
@@ -3927,22 +4268,24 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
     // CTE names are formatted as "vlp_{start}_{end}", so we can infer which endpoint is which
     // Example: cte_name = "vlp_u_f" means start="u", end="f"
     let mut endpoint_position: HashMap<String, &str> = HashMap::new();
-    
+
     for cte in &plan.ctes.0 {
         if cte.vlp_cypher_start_alias.is_some() && cte.vlp_cypher_end_alias.is_some() {
             let start = cte.vlp_cypher_start_alias.as_ref().unwrap();
             let end = cte.vlp_cypher_end_alias.as_ref().unwrap();
-            
+
             endpoint_position.insert(start.clone(), "start");
             endpoint_position.insert(end.clone(), "end");
-            
+
             log::warn!(
                 "🔄 VLP: Endpoint position mapping: '{}' = start, '{}' = end (from CTE {})",
-                start, end, cte.cte_name
+                start,
+                end,
+                cte.cte_name
             );
         }
     }
-    
+
     if filtered_mappings.is_empty() {
         log::warn!("🔍 VLP Union Branch: All mappings filtered out - nothing to rewrite");
         return Ok(());
@@ -3980,18 +4323,27 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         // Extract the FROM alias for VLP CTE
         // The FROM clause is: FROM vlp_a_b AS t
         // We need to use 't' in all SELECT/WHERE/GROUP BY references
-        let vlp_from_alias = plan.from.0.as_ref()
+        let vlp_from_alias = plan
+            .from
+            .0
+            .as_ref()
             .and_then(|from_ref| from_ref.alias.as_ref())
             .map(|s| s.clone())
-            .unwrap_or_else(|| "t".to_string());  // Default to 't' if no alias found
-        
+            .unwrap_or_else(|| "t".to_string()); // Default to 't' if no alias found
+
         log::warn!("🔧 VLP: FROM alias extracted: '{}'", vlp_from_alias);
-        
+
         // Rewrite SELECT items using filtered VLP mappings (for non-multi-type VLP)
         log::warn!("🔍 VLP: Rewriting {} SELECT items", plan.select.items.len());
         for (idx, select_item) in plan.select.items.iter_mut().enumerate() {
             log::warn!("   SELECT[{}]: {:?}", idx, select_item.expression);
-            rewrite_render_expr_for_vlp_with_endpoint_info(&mut select_item.expression, &filtered_mappings, &vlp_from_alias, &endpoint_position);
+            rewrite_render_expr_for_vlp_with_endpoint_info(
+                &mut select_item.expression,
+                &filtered_mappings,
+                &vlp_from_alias,
+                &endpoint_position,
+                &cte_column_mapping,
+            );
         }
     }
 
@@ -4000,7 +4352,13 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
     // that need to be rewritten to use VLP table aliases (e.g., end_node.firstName = 'Wei')
     if let Some(where_expr) = &mut plan.filters.0 {
         log::warn!("🔄 VLP Union Branch: Rewriting WHERE clause");
-        rewrite_render_expr_for_vlp_with_endpoint_info(where_expr, &filtered_mappings, "t", &endpoint_position);
+        rewrite_render_expr_for_vlp_with_endpoint_info(
+            where_expr,
+            &filtered_mappings,
+            "t",
+            &endpoint_position,
+            &cte_column_mapping,
+        );
     }
 
     // 🔧 FIX #5: Also rewrite GROUP BY expressions
@@ -4012,7 +4370,13 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
     );
     for (idx, group_expr) in plan.group_by.0.iter_mut().enumerate() {
         log::warn!("   GROUP BY[{}]: {:?}", idx, group_expr);
-        rewrite_render_expr_for_vlp_with_endpoint_info(group_expr, &filtered_mappings, "t", &endpoint_position);
+        rewrite_render_expr_for_vlp_with_endpoint_info(
+            group_expr,
+            &filtered_mappings,
+            "t",
+            &endpoint_position,
+            &cte_column_mapping,
+        );
     }
 
     // 🔧 FIX #6: Also rewrite CTE bodies - BUT ONLY FOR PATH FUNCTION REWRITES (t → vlp1)
@@ -4308,7 +4672,9 @@ pub(crate) fn expand_table_alias_to_select_items(
     cte_references: &HashMap<String, String>,
     has_aggregation: bool,
     plan_ctx: Option<&PlanCtx>,
-    vlp_cte_metadata: Option<&HashMap<String, (String, Vec<crate::render_plan::CteColumnMetadata>)>>,
+    vlp_cte_metadata: Option<
+        &HashMap<String, (String, Vec<crate::render_plan::CteColumnMetadata>)>,
+    >,
 ) -> Vec<SelectItem> {
     log::info!(
         "🔍 expand_table_alias_to_select_items: Expanding alias '{}', cte_references={:?}",
@@ -4542,7 +4908,9 @@ pub(crate) fn expand_table_alias_to_select_items(
                     // During WITH clause rendering, the FROM alias isn't final yet, so we generate columns without
                     // a table qualifier. The SQL generator will add the correct alias when rendering FROM clauses.
                     items.push(SelectItem {
-                        expression: RenderExpr::Column(Column(PropertyValue::Column(vlp_col_name.clone()))),
+                        expression: RenderExpr::Column(Column(PropertyValue::Column(
+                            vlp_col_name.clone(),
+                        ))),
                         col_alias: Some(ColumnAlias(format!("{}_{}", alias, id_col))),
                     });
                 }
@@ -4572,7 +4940,8 @@ pub(crate) fn expand_table_alias_to_select_items(
                     let vlp_col_name = format!("{}_{}", col_prefix, prop_name);
                     // 🔧 CRITICAL FIX (Jan 23, 2026): Use bare Column expression instead of PropertyAccessExp with table alias
                     // This allows the column to be resolved from context (the FROM clause) rather than requiring a specific alias
-                    let mut expr = RenderExpr::Column(Column(PropertyValue::Column(vlp_col_name.clone())));
+                    let mut expr =
+                        RenderExpr::Column(Column(PropertyValue::Column(vlp_col_name.clone())));
 
                     // Wrap with anyLast() if aggregation is needed
                     if has_aggregation {
@@ -6612,6 +6981,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         union_type: crate::render_plan::UnionType::All,
                     })),
                     fixed_path_info: None,
+                    cte_column_registry: CteColumnRegistry::new(),
                 }
             };
 
@@ -7379,7 +7749,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 log::warn!("🔧 build_chained_with_match_cte_plan: Rewriting SELECT items to use FROM alias '{}'", from_alias);
 
                 // Extract all WITH aliases from CTE name for rewriting
-                // CTE name format: with_a_age_cte_1 → aliases are "a", "age"
+                // Using the original approach but with a fix:
+                // If a column is expanded to a single item, treat it as a scalar (don't expand with *)
                 let with_aliases: HashSet<String> =
                     if let Some(stripped) = from_ref.name.strip_prefix("with_") {
                         if let Some(cte_pos) = stripped.rfind("_cte") {
@@ -7457,50 +7828,74 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         property_mapping.len()
                     );
 
-                    // Direct lookup instead of fragile pattern matching
-                    reverse_mapping = property_mapping.clone();
+                    // Build reverse_mapping from property_mapping
+                    // Invert: (alias, property) → cte_column
+                    // Invert: (alias, db_column) → cte_column (using property mapping aliases)
+                    reverse_mapping.clear();
 
-                    // CRITICAL FIX: Also add database column name mappings
-                    // The CTE columns use Cypher property names (e.g., "a_name")
-                    // but expressions may use database column names (e.g., "full_name")
-                    // We need to map BOTH to the same CTE column
-                    for item in select_items {
-                        if let Some(col_alias) = &item.col_alias {
-                            let cte_column = &col_alias.0;
+                    // Iterate through property_mapping to build both Cypher and DB column mappings
+                    for ((alias, property), _cypher_name) in property_mapping.iter() {
+                        // The CTE column name follows pattern: {alias}_{cypher_property}
+                        // For example: u_name, u_email, etc.
+                        let cte_column = format!("{}_{}", alias, property);
+                        reverse_mapping
+                            .insert((alias.clone(), property.clone()), cte_column.clone());
+                        log::debug!(
+                            "🔧 Added property mapping: ({}, {}) → {}",
+                            alias,
+                            property,
+                            cte_column
+                        );
+                    }
 
-                            // Extract alias and Cypher property from CTE column (e.g., "a_name" → ("a", "name"))
-                            if let Some(underscore_pos) = cte_column.find('_') {
-                                let alias = &cte_column[..underscore_pos];
-                                let cypher_prop = &cte_column[underscore_pos + 1..];
+                    // Also extract database column names from the property mapping in graph schema
+                    // The property_mapping might use Cypher property names, but we also need to map
+                    // the actual database column names (which may differ, like full_name vs name)
+                    if let Some((_, _, _, property_mapping_extra)) = cte_schemas.get(&from_ref.name)
+                    {
+                        for item in select_items {
+                            if let Some(col_alias) = &item.col_alias {
+                                let cte_column = &col_alias.0;
 
-                                // Try to extract database column name from the expression
-                                if let RenderExpr::AggregateFnCall(agg) = &item.expression {
-                                    // For aggregated columns like anyLast(a.full_name), look inside
-                                    if let Some(RenderExpr::PropertyAccessExp(pa)) =
-                                        agg.args.first()
+                                // Extract alias and property from CTE column (e.g., "u_name" → ("u", "name"))
+                                if let Some(underscore_pos) = cte_column.find('_') {
+                                    let alias_str = &cte_column[..underscore_pos];
+
+                                    // Try to extract database column name from the expression
+                                    let db_col = if let RenderExpr::AggregateFnCall(agg) =
+                                        &item.expression
                                     {
-                                        if let PropertyValue::Column(db_col) = &pa.column {
-                                            // Add mapping: (alias, db_column) → cte_column
-                                            // E.g., ("a", "full_name") → "a_name"
-                                            let key = (alias.to_string(), db_col.clone());
-                                            if !reverse_mapping.contains_key(&key) {
-                                                reverse_mapping
-                                                    .insert(key.clone(), cte_column.clone());
-                                                log::warn!(
-                                                    "🔧 Added DB column mapping: {:?} → {}",
-                                                    key,
-                                                    cte_column
-                                                );
+                                        // For aggregated columns like anyLast(u.full_name), look inside
+                                        if let Some(RenderExpr::PropertyAccessExp(pa)) =
+                                            agg.args.first()
+                                        {
+                                            if let PropertyValue::Column(col) = &pa.column {
+                                                Some(col.clone())
+                                            } else {
+                                                None
                                             }
+                                        } else {
+                                            None
                                         }
-                                    }
-                                } else if let RenderExpr::PropertyAccessExp(pa) = &item.expression {
-                                    // For non-aggregated columns like a.user_id
-                                    if let PropertyValue::Column(db_col) = &pa.column {
-                                        let key = (alias.to_string(), db_col.clone());
+                                    } else if let RenderExpr::PropertyAccessExp(pa) =
+                                        &item.expression
+                                    {
+                                        // For non-aggregated columns like u.full_name
+                                        if let PropertyValue::Column(col) = &pa.column {
+                                            Some(col.clone())
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    };
+
+                                    // Add the DB column → CTE column mapping
+                                    if let Some(db_col_name) = db_col {
+                                        let key = (alias_str.to_string(), db_col_name.clone());
                                         if !reverse_mapping.contains_key(&key) {
                                             reverse_mapping.insert(key.clone(), cte_column.clone());
-                                            log::warn!(
+                                            log::debug!(
                                                 "🔧 Added DB column mapping: {:?} → {}",
                                                 key,
                                                 cte_column
@@ -7512,7 +7907,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         }
                     }
 
-                    log::warn!("🔧 build_chained_with_match_cte_plan: Built reverse mapping with {} entries from explicit property mapping", reverse_mapping.len());
+                    log::warn!("🔧 build_chained_with_match_cte_plan: Built reverse mapping with {} entries", reverse_mapping.len());
+                    for ((alias, prop), col) in &reverse_mapping {
+                        log::debug!("🔧   Mapping: ({}, {}) → {}", alias, prop, col);
+                    }
                 } else {
                     log::warn!("⚠️ CTE '{}' not found in cte_schemas", from_ref.name);
                 }
@@ -7563,13 +7961,73 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                         })
                                         .collect();
 
-                                    log::warn!("🔧 build_chained_with_match_cte_plan: Expanded '{}' to {} columns", table_alias.0, expanded.len());
+                                    // SCALAR FIX: If expansion results in a single column with name matching the alias,
+                                    // it's a scalar (e.g., WITH n.email as group_key) and should NOT be expanded.
+                                    // Instead, keep it as a ColumnAlias reference to prevent invalid wildcard expansion
+                                    // (group_key.* is invalid for scalars in ClickHouse)
+                                    log::warn!("🔧 build_chained_with_match_cte_plan: Expanded '{}' to {} columns: {:?}", table_alias.0, expanded.len(),
+                                        expanded.iter().map(|si| format!("{:?}", si.col_alias)).collect::<Vec<_>>());
+
+                                    if expanded.len() == 1 {
+                                        if let Some(col_alias) = &expanded[0].col_alias {
+                                            // Extract the scalar column name (e.g., "group_key_email_address" → "email_address")
+                                            let col_name = col_alias.0.strip_prefix(&alias_prefix).unwrap_or(&col_alias.0);
+                                            log::warn!("🔧 build_chained_with_match_cte_plan: Single column detected: '{}', stripped: '{}', contains_underscore: {}", col_alias.0, col_name, col_name.contains('_'));
+                                            // Check if it's a direct column (scalar from property access) or multi-level
+                                            // Single-level columns are scalars: group_key_email → email
+                                            // Multi-level would have more structure
+                                            if !col_name.contains('_') || expanded[0].col_alias.as_ref().unwrap().0 == table_alias.0 {
+                                                log::info!(
+                                                    "🔍 Treating TableAlias('{}') as scalar (single CTE column), NOT expanding",
+                                                    table_alias.0
+                                                );
+                                                // Return as ColumnAlias to prevent wildcard expansion
+                                                return vec![SelectItem {
+                                                    expression: RenderExpr::ColumnAlias(ColumnAlias(table_alias.0.clone())),
+                                                    col_alias: item.col_alias.clone(),
+                                                }];
+                                            }
+                                        }
+                                    }
+
+                                    log::warn!("🔧 build_chained_with_match_cte_plan: NOT treating as scalar, returning {} expanded columns", expanded.len());
                                     return expanded;
                                 } else {
                                     log::warn!("⚠️ build_chained_with_match_cte_plan: CTE '{}' not found in schemas", from_ref.name);
                                 }
                             } else {
                                 log::warn!("⚠️ build_chained_with_match_cte_plan: TableAlias '{}' not in with_aliases: {:?}", table_alias.0, with_aliases);
+
+                                // SCALAR FIX: Check if this alias might be a scalar that was split across with_aliases
+                                // For example, if "group_key" isn't in with_aliases but "group" and "key" are,
+                                // this is likely a scalar. Look for a CTE column with exact name match.
+                                // Try to find a CTE column matching this alias exactly
+                                if let Some((select_items, _, _, _)) = cte_schemas.get(&from_ref.name) {
+                                    let matching_cols: Vec<_> = select_items.iter()
+                                        .filter(|si| {
+                                            si.col_alias.as_ref()
+                                                .map(|ca| ca.0 == table_alias.0)  // Exact match with alias name
+                                                .unwrap_or(false)
+                                        })
+                                        .collect();
+
+                                    if matching_cols.len() == 1 {
+                                        // Found exactly one CTE column with this name - it's a scalar!
+                                        log::info!(
+                                            "🔍 Treating TableAlias('{}') as scalar (found single CTE column with exact name), rewriting to use FROM alias '{}'",
+                                            table_alias.0,
+                                            from_alias
+                                        );
+                                        // Return with proper FROM alias prefix (like PropertyAccessExp would have)
+                                        return vec![SelectItem {
+                                            expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(from_alias.to_string()),
+                                                column: PropertyValue::Column(table_alias.0.clone()),
+                                            }),
+                                            col_alias: item.col_alias.clone(),
+                                        }];
+                                    }
+                                }
                             }
                         }
                         // ALSO check for PropertyAccessExp(a, "a") - this happens when TableAlias
@@ -7610,12 +8068,14 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         }
 
                         // Not a TableAlias or not from WITH - rewrite expression normally
-                        item.expression = rewrite_cte_expression(
+                        // Use alias resolution to handle WITH aliases (e.g., person from u)
+                        item.expression = rewrite_cte_expression_with_alias_resolution(
                             item.expression,
                             &from_ref.name,
                             from_alias,
                             &with_aliases,
                             &reverse_mapping,
+                            plan_ctx,
                         );
                         vec![item]
                     })
@@ -7635,13 +8095,16 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         .iter()
                         .map(|condition| {
                             // OperatorApplication is a RenderExpr, so we can rewrite it directly
-                            if let RenderExpr::OperatorApplicationExp(op) = rewrite_cte_expression(
-                                RenderExpr::OperatorApplicationExp(condition.clone()),
-                                &from_ref.name,
-                                from_alias,
-                                &with_aliases,
-                                &reverse_mapping,
-                            ) {
+                            if let RenderExpr::OperatorApplicationExp(op) =
+                                rewrite_cte_expression_with_alias_resolution(
+                                    RenderExpr::OperatorApplicationExp(condition.clone()),
+                                    &from_ref.name,
+                                    from_alias,
+                                    &with_aliases,
+                                    &reverse_mapping,
+                                    plan_ctx,
+                                )
+                            {
                                 op
                             } else {
                                 condition.clone()
@@ -7652,12 +8115,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                 if let Some(filter_expr) = &render_plan.filters.0 {
                     log::warn!("🔧 build_chained_with_match_cte_plan: Rewriting WHERE clause");
-                    render_plan.filters.0 = Some(rewrite_cte_expression(
+                    render_plan.filters.0 = Some(rewrite_cte_expression_with_alias_resolution(
                         filter_expr.clone(),
                         &from_ref.name,
                         from_alias,
                         &with_aliases,
                         &reverse_mapping,
+                        plan_ctx,
                     ));
                 }
 
@@ -7672,12 +8136,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         .0
                         .iter()
                         .map(|expr| {
-                            rewrite_cte_expression(
+                            rewrite_cte_expression_with_alias_resolution(
                                 expr.clone(),
                                 &from_ref.name,
                                 from_alias,
                                 &with_aliases,
                                 &reverse_mapping,
+                                plan_ctx,
                             )
                         })
                         .collect();
@@ -7690,12 +8155,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         render_plan.order_by.0.len()
                     );
                     for order_item in &mut render_plan.order_by.0 {
-                        order_item.expression = rewrite_cte_expression(
+                        order_item.expression = rewrite_cte_expression_with_alias_resolution(
                             order_item.expression.clone(),
                             &from_ref.name,
                             from_alias,
                             &with_aliases,
                             &reverse_mapping,
+                            plan_ctx,
                         );
                     }
                 }
@@ -7742,19 +8208,20 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 );
 
                 // Rewrite SELECT items that reference this JOIN alias
-                // Use rewrite_cte_expression which changes BOTH column name AND table alias
+                // Use rewrite_cte_expression_with_alias_resolution which changes BOTH column name AND table alias
                 log::warn!("🔧 build_chained_with_match_cte_plan: Rewriting SELECT items for JOIN alias '{}'", join_alias);
                 render_plan.select.items = render_plan
                     .select
                     .items
                     .into_iter()
                     .map(|mut item| {
-                        item.expression = rewrite_cte_expression(
+                        item.expression = rewrite_cte_expression_with_alias_resolution(
                             item.expression,
                             &join.table_name,
                             join_alias,
                             &with_aliases,
                             &reverse_mapping,
+                            plan_ctx,
                         );
                         item
                     })
@@ -7769,12 +8236,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         .iter()
                         .cloned()
                         .map(|expr| {
-                            rewrite_cte_expression(
+                            rewrite_cte_expression_with_alias_resolution(
                                 expr,
                                 &join.table_name,
                                 join_alias,
                                 &with_aliases,
                                 &reverse_mapping,
+                                plan_ctx,
                             )
                         })
                         .collect();
@@ -7784,12 +8252,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 if !render_plan.order_by.0.is_empty() {
                     log::warn!("🔧 build_chained_with_match_cte_plan: Rewriting ORDER BY expressions for JOIN alias '{}'", join_alias);
                     for order_item in &mut render_plan.order_by.0 {
-                        order_item.expression = rewrite_cte_expression(
+                        order_item.expression = rewrite_cte_expression_with_alias_resolution(
                             order_item.expression.clone(),
                             &join.table_name,
                             join_alias,
                             &with_aliases,
                             &reverse_mapping,
+                            plan_ctx,
                         );
                     }
                 }
@@ -7813,12 +8282,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 // need to be rewritten to use CTE column names (e.g., friend.friend_id != 933)
                 if let Some(ref mut filter_expr) = render_plan.filters.0 {
                     log::warn!("🔧 build_chained_with_match_cte_plan: Rewriting WHERE clause for CTE JOIN alias '{}'", join_alias);
-                    *filter_expr = rewrite_cte_expression(
+                    *filter_expr = rewrite_cte_expression_with_alias_resolution(
                         filter_expr.clone(),
                         &join.table_name,
                         join_alias,
                         &with_aliases,
                         &reverse_mapping,
+                        plan_ctx,
                     );
                 }
 
@@ -7831,12 +8301,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     log::warn!("🔧 build_chained_with_match_cte_plan: Rewriting {} ARRAY JOIN expressions for CTE JOIN alias '{}'",
                                render_plan.array_join.0.len(), join_alias);
                     for array_join_item in &mut render_plan.array_join.0 {
-                        array_join_item.expression = rewrite_cte_expression(
+                        array_join_item.expression = rewrite_cte_expression_with_alias_resolution(
                             array_join_item.expression.clone(),
                             &join.table_name,
                             join_alias,
                             &with_aliases,
                             &reverse_mapping,
+                            plan_ctx,
                         );
                     }
                 }

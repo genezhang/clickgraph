@@ -70,9 +70,14 @@ def setup_test_data():
             password=os.environ.get("CLICKHOUSE_PASSWORD", "test_pass")
         )
         
+        # Drop and recreate filesystem schema tables to prevent data duplication from multiple test runs
+        # This ensures clean state for matrix tests which are heavily parametrized
+        client.command("DROP TABLE IF EXISTS test_integration.fs_objects")
+        client.command("DROP TABLE IF EXISTS test_integration.fs_parent")
+        
         # Create filesystem schema tables (in test_integration database)
         client.command("""
-            CREATE TABLE IF NOT EXISTS test_integration.fs_objects (
+            CREATE TABLE test_integration.fs_objects (
                 object_id UInt32,
                 name String,
                 object_type String,
@@ -86,14 +91,14 @@ def setup_test_data():
         """)
         
         client.command("""
-            CREATE TABLE IF NOT EXISTS test_integration.fs_parent (
+            CREATE TABLE test_integration.fs_parent (
                 child_id UInt32,
                 parent_id UInt32
             ) ENGINE = MergeTree()
             ORDER BY (child_id, parent_id)
         """)
         
-        # Insert filesystem test data
+        # Insert filesystem test data (fresh insertion after drop)
         client.command("""
             INSERT INTO test_integration.fs_objects VALUES
                 (1, 'root', 'folder', 0, NULL, '2023-01-01 00:00:00', '2023-01-01 00:00:00', 'admin'),
