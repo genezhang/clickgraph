@@ -1132,8 +1132,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                 }
 
+                log::warn!("🔍🔍🔍 BEFORE extract_select_items for WITH.input");
                 let mut cte_select_items =
                     <LogicalPlan as SelectBuilder>::extract_select_items(with.input.as_ref())?;
+                log::warn!("🔍🔍🔍 AFTER extract_select_items: got {} items", cte_select_items.len());
 
                 // ✅ FIX (Phase 6): Remap column aliases to match exported aliases
                 // When we have `WITH u AS person`, the select items will have aliases like `u.name`

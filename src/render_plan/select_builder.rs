@@ -79,6 +79,7 @@ pub trait SelectBuilder {
 /// Implementation of SelectBuilder for LogicalPlan
 impl SelectBuilder for LogicalPlan {
     fn extract_select_items(&self) -> Result<Vec<SelectItem>, RenderBuildError> {
+        log::warn!("🔍🔍🔍 extract_select_items CALLED on plan type");
         crate::debug_println!("DEBUG: extract_select_items called on: {:?}", self);
         let select_items = match &self {
             LogicalPlan::Empty => vec![],
@@ -442,12 +443,44 @@ impl SelectBuilder for LogicalPlan {
             LogicalPlan::Unwind(u) => u.input.extract_select_items()?,
             LogicalPlan::CartesianProduct(cp) => {
                 // Combine select items from both sides
-                let mut items = cp.left.extract_select_items()?;
-                items.extend(cp.right.extract_select_items()?);
+                log::warn!(
+                    "🔍 CartesianProduct.extract_select_items START"
+                );
+                let left_items = cp.left.extract_select_items()?;
+                log::warn!(
+                    "🔍 CartesianProduct.extract_select_items: left side returned {} items",
+                    left_items.len()
+                );
+                let right_items = cp.right.extract_select_items()?;
+                log::warn!(
+                    "🔍 CartesianProduct.extract_select_items: right side returned {} items, combining...",
+                    right_items.len()
+                );
+                let mut items = left_items;
+                items.extend(right_items);
+                log::warn!(
+                    "🔍 CartesianProduct.extract_select_items DONE: total {} items",
+                    items.len()
+                );
                 items
             }
             LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_select_items()?,
-            LogicalPlan::WithClause(wc) => wc.input.extract_select_items()?,
+            LogicalPlan::WithClause(wc) => {
+                log::warn!("🔍 WithClause.extract_select_items: calling extract on input");
+                let items = wc.input.extract_select_items()?;
+                log::warn!(
+                    "🔍 WithClause.extract_select_items DONE: extracted {} items from input plan",
+                    items.len()
+                );
+                for (idx, item) in items.iter().enumerate() {
+                    log::warn!(
+                        "🔍   Item[{}]: alias={:?}",
+                        idx,
+                        item.col_alias.as_ref().map(|a| a.0.clone())
+                    );
+                }
+                items
+            }
         };
 
         Ok(select_items)
