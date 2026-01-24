@@ -22,10 +22,7 @@ services:
       - clickhouse_data:/var/lib/clickhouse  # Named volume - Windows MergeTree fix
 
   clickgraph:
-    # Build locally to use current code
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: genezhang/clickgraph:latest
     container_name: clickgraph
     depends_on:
       clickhouse-service:
