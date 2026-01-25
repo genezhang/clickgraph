@@ -7142,16 +7142,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
             );
             log::warn!("🔧 Completed expression rewriting for CTE '{}'", cte_name);
 
-            // Create the CTE (without nested CTEs, they've been hoisted)
-            let with_cte = Cte::new(
-                cte_name.clone(),
-                CteContent::Structured(with_cte_render.clone()),
-                false,
-            );
-            all_ctes.push(with_cte);
-
-            // Store CTE schema for later reference creation
-            // Extract SELECT items from the rendered plan
+            // Extract SELECT items to build column metadata BEFORE creating the CTE
+            // This allows the Cte to store column information for later CTE registry population
             let (select_items_for_schema, property_names_for_schema) = match &with_cte_render.union
             {
                 UnionItems(Some(union)) if !union.input.is_empty() => {
@@ -7172,6 +7164,60 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     (items, names)
                 }
             };
+
+            // Build column metadata from SELECT items
+            // This extracts: (cypher_alias, cypher_property) -> cte_column_name
+            // E.g., from SELECT a.user_id AS a_user_id, extract: ("a", "user_id") -> "a_user_id"
+            let mut cte_columns: Vec<crate::render_plan::cte_manager::CteColumnMetadata> = Vec::new();
+            for item in &select_items_for_schema {
+                if let Some(col_alias) = &item.col_alias {
+                    let cte_column_name = col_alias.0.clone();
+                    
+                    // Try to extract (alias, property) from the CTE column name
+                    // Format: {alias}_{property} (e.g., "a_user_id" -> ("a", "user_id"))
+                    if let Some(first_underscore) = cte_column_name.find('_') {
+                        let potential_alias = &cte_column_name[..first_underscore];
+                        let potential_property = &cte_column_name[first_underscore + 1..];
+                        
+                        // Verify this is likely correct by checking if alias appears in with_alias
+                        // For "a_b" (composite alias), split by '_' to check components
+                        let alias_parts: Vec<&str> = with_alias.split('_').collect();
+                        if alias_parts.contains(&potential_alias) {
+                            cte_columns.push(crate::render_plan::cte_manager::CteColumnMetadata {
+                                cypher_alias: potential_alias.to_string(),
+                                cypher_property: potential_property.to_string(),
+                                cte_column_name: cte_column_name.clone(),
+                                db_column: potential_property.to_string(), // Approximation
+                                is_id_column: potential_property.ends_with("_id") || potential_property == "id",
+                                vlp_position: None,
+                            });
+                            log::debug!(
+                                "  Added CTE column metadata: ({}, {}) -> {}",
+                                potential_alias,
+                                potential_property,
+                                cte_column_name
+                            );
+                        }
+                    }
+                }
+            }
+
+            log::warn!(
+                "🔧 Extracted {} column metadata entries for CTE '{}'",
+                cte_columns.len(),
+                cte_name
+            );
+
+            // Create the CTE with column metadata
+            let mut with_cte = Cte::new(
+                cte_name.clone(),
+                CteContent::Structured(with_cte_render.clone()),
+                false,
+            );
+            with_cte.columns = cte_columns;
+            all_ctes.push(with_cte);
+
+            // Store CTE schema for later reference creation
 
             // Compute ID column mappings for this CTE using the DETERMINISTIC formula
             // Maps: alias → CTE column name that holds the ID
@@ -8137,18 +8183,23 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 }
                             }
                         }
-                        // ALSO check for PropertyAccessExp(a, "a") - this happens when TableAlias
-                        // was incorrectly converted to PropertyAccessExp by earlier phases
+                        // ALSO check for PropertyAccessExp - this happens when TableAlias
+                        // was converted to PropertyAccessExp by earlier phases. Handle two cases:
+                        // 1. PropertyAccessExp(a, "a") - col equals table_alias, indicating full node
+                        // 2. PropertyAccessExp(with_a_b_cte_0, "b") - col is a WITH alias being accessed from CTE
                         else if let RenderExpr::PropertyAccessExp(ref pa) = item.expression {
                             if let PropertyValue::Column(ref col) = pa.column {
-                                // Check if column name equals table alias (indicating full node reference)
-                                if col == &pa.table_alias.0 && with_aliases.contains(&pa.table_alias.0) {
-                                    log::warn!("🔧 build_chained_with_match_cte_plan: Found PropertyAccessExp({}, {}
-
-) - treating as full node", pa.table_alias.0, col);
-                                    // Expand this like TableAlias
+                                // Check if this is a full node reference:
+                                // Case 1: column name equals table alias AND table alias is a WITH alias
+                                let case1 = col == &pa.table_alias.0 && with_aliases.contains(&pa.table_alias.0);
+                                // Case 2: column is a WITH alias AND we're accessing from the CTE name
+                                let case2 = with_aliases.contains(col) && pa.table_alias.0 == from_ref.name;
+                                
+                                if case1 || case2 {
+                                    log::warn!("🔧 build_chained_with_match_cte_plan: Found PropertyAccessExp({}, {}) - treating as full node (case1={}, case2={})", pa.table_alias.0, col, case1, case2);
+                                    // Expand this like TableAlias - use the col (WITH alias) not pa.table_alias.0
                                     if let Some((select_items, _, _, _)) = cte_schemas.get(&from_ref.name) {
-                                        let alias_prefix = format!("{}_", pa.table_alias.0);
+                                        let alias_prefix = format!("{}_", col);
                                         let expanded: Vec<SelectItem> = select_items.iter()
                                             .filter(|si| {
                                                 si.col_alias.as_ref()
@@ -8167,7 +8218,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                             })
                                             .collect();
 
-                                        log::warn!("🔧 build_chained_with_match_cte_plan: Expanded PropertyAccessExp('{}') to {} columns", pa.table_alias.0, expanded.len());
+                                        log::warn!("🔧 build_chained_with_match_cte_plan: Expanded PropertyAccessExp('{}', '{}') to {} columns", pa.table_alias.0, col, expanded.len());
                                         return expanded;
                                     }
                                 }
@@ -8431,6 +8482,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
     all_ctes.extend(render_plan.ctes.0.into_iter());
     render_plan.ctes = CteItems(all_ctes);
 
+
+
     // Skip validation - CTEs are hoisted progressively through recursion
     // ClickHouse will validate CTE references when executing the SQL
     // Validation here causes false failures when nested calls reference outer CTEs
@@ -8442,8 +8495,9 @@ pub(crate) fn build_chained_with_match_cte_plan(
     rewrite_vlp_union_branch_aliases(&mut render_plan)?;
 
     log::info!(
-        "🔧 build_chained_with_match_cte_plan: Success - final plan has {} CTEs",
-        render_plan.ctes.0.len()
+        "🔧 build_chained_with_match_cte_plan: Success - final plan has {} CTEs, registry has {} entries",
+        render_plan.ctes.0.len(),
+        render_plan.cte_column_registry.alias_property_to_column.len()
     );
 
     Ok(render_plan)

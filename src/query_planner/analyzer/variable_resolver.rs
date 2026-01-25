@@ -259,6 +259,12 @@ impl VariableResolver {
             LogicalPlan::GroupBy(gb) => {
                 self.collect_schema_entities(&gb.input, entities);
             }
+            // Handle CartesianProduct - collect from right side only
+            // (left side might have WITH clause which we don't cross)
+            LogicalPlan::CartesianProduct(cp) => {
+                log::debug!("🔍 collect_schema_entities: CartesianProduct - collecting from right side");
+                self.collect_schema_entities(&cp.right, entities);
+            }
             // Empty, Scan, Subquery: no entities
             _ => {}
         }
@@ -431,48 +437,118 @@ impl VariableResolver {
                 );
 
                 // Build projection scope
-                // Start with current scope (or WITH exported scope if input is WithClause)
-                let mut projection_scope = if let LogicalPlan::WithClause(wc) = new_input.as_ref() {
-                    log::info!("🔍 VariableResolver: Input is WithClause, adding {} exported aliases to scope",
-                               wc.exported_aliases.len());
+                // Start with current scope (or WITH exported scope if input is WithClause or CartesianProduct)
+                let mut projection_scope = match new_input.as_ref() {
+                    LogicalPlan::WithClause(wc) => {
+                        log::info!("🔍 VariableResolver: Input is WithClause, adding {} exported aliases to scope",
+                                   wc.exported_aliases.len());
 
-                    let mut with_scope = scope.clone();
-                    for alias in &wc.exported_aliases {
-                        if let Some(cte_name) = wc.cte_references.get(alias) {
-                            // **Architecture (Jan 2026)**:
-                            // - TypedVariable provides TYPE info (Node, Relationship, Scalar)
-                            // - ScopeContext provides CTE NAME mapping
-                            // TypedVariable is the SINGLE SOURCE OF TRUTH for type information.
-                            let var_source = if let Some(entity_type) = plan_ctx
-                                .and_then(|ctx| Self::lookup_entity_from_plan_ctx(ctx, alias))
-                            {
-                                // Found in TypedVariable - it's an entity
-                                log::info!(
-                                    "🔍 VariableResolver: Projection alias '{}' is {:?} (from TypedVariable)",
-                                    alias, entity_type
-                                );
-                                VarSource::CteEntity {
-                                    cte_name: cte_name.clone(),
-                                    alias: alias.clone(),
-                                    entity_type,
-                                }
-                            } else {
-                                // Not in TypedVariable → it's a scalar
-                                log::info!(
-                                    "🔍 VariableResolver: Projection alias '{}' not in TypedVariable, treating as scalar",
-                                    alias
-                                );
-                                VarSource::CteColumn {
-                                    cte_name: cte_name.clone(),
-                                    column_name: alias.clone(),
-                                }
-                            };
-                            with_scope.add_variable(alias.clone(), var_source);
+                        let mut with_scope = scope.clone();
+                        for alias in &wc.exported_aliases {
+                            if let Some(cte_name) = wc.cte_references.get(alias) {
+                                // **Architecture (Jan 2026)**:
+                                // - TypedVariable provides TYPE info (Node, Relationship, Scalar)
+                                // - ScopeContext provides CTE NAME mapping
+                                // TypedVariable is the SINGLE SOURCE OF TRUTH for type information.
+                                let var_source = if let Some(entity_type) = plan_ctx
+                                    .and_then(|ctx| Self::lookup_entity_from_plan_ctx(ctx, alias))
+                                {
+                                    // Found in TypedVariable - it's an entity
+                                    log::info!(
+                                        "🔍 VariableResolver: Projection alias '{}' is {:?} (from TypedVariable)",
+                                        alias, entity_type
+                                    );
+                                    VarSource::CteEntity {
+                                        cte_name: cte_name.clone(),
+                                        alias: alias.clone(),
+                                        entity_type,
+                                    }
+                                } else {
+                                    // Not in TypedVariable → it's a scalar
+                                    log::info!(
+                                        "🔍 VariableResolver: Projection alias '{}' not in TypedVariable, treating as scalar",
+                                        alias
+                                    );
+                                    VarSource::CteColumn {
+                                        cte_name: cte_name.clone(),
+                                        column_name: alias.clone(),
+                                    }
+                                };
+                                with_scope.add_variable(alias.clone(), var_source);
+                            }
                         }
+                        with_scope
                     }
-                    with_scope
-                } else {
-                    scope.clone()
+
+                    // CRITICAL FIX (Jan 25, 2026): Handle CartesianProduct input to Projection
+                    // When Projection's input is CartesianProduct (e.g., from MATCH...WITH...MATCH...RETURN)
+                    // We need to look at the left side for the WithClause and extract CTE-exported variables
+                    LogicalPlan::CartesianProduct(cp) => {
+                        log::info!("🔍 VariableResolver: Input is CartesianProduct, looking for CTE-exported variables");
+
+                        // Recursively look for WithClause in the left side of CartesianProduct
+                        let mut with_clause_opt: Option<&LogicalPlan> = None;
+                        let mut current = &*cp.left;
+                        loop {
+                            match current {
+                                LogicalPlan::WithClause(wc) => {
+                                    with_clause_opt = Some(current);
+                                    break;
+                                }
+                                LogicalPlan::Projection(proj) => {
+                                    current = &*proj.input;
+                                }
+                                LogicalPlan::Filter(filt) => {
+                                    current = &*filt.input;
+                                }
+                                LogicalPlan::GroupBy(gb) => {
+                                    current = &*gb.input;
+                                }
+                                _ => break,
+                            }
+                        }
+
+                        let mut cart_scope = scope.clone();
+
+                        if let Some(LogicalPlan::WithClause(wc)) = with_clause_opt {
+                            log::info!("🔍 VariableResolver: Found WITH in CartesianProduct.left, adding {} exported aliases",
+                                       wc.exported_aliases.len());
+
+                            for alias in &wc.exported_aliases {
+                                if let Some(cte_name) = wc.cte_references.get(alias) {
+                                    let var_source = if let Some(entity_type) = plan_ctx
+                                        .and_then(|ctx| Self::lookup_entity_from_plan_ctx(ctx, alias))
+                                    {
+                                        // Found in TypedVariable - it's an entity
+                                        log::info!(
+                                            "🔍 VariableResolver: CartesianProduct alias '{}' is {:?} (from TypedVariable)",
+                                            alias, entity_type
+                                        );
+                                        VarSource::CteEntity {
+                                            cte_name: cte_name.clone(),
+                                            alias: alias.clone(),
+                                            entity_type,
+                                        }
+                                    } else {
+                                        // Not in TypedVariable → it's a scalar
+                                        log::info!(
+                                            "🔍 VariableResolver: CartesianProduct alias '{}' not in TypedVariable, treating as scalar",
+                                            alias
+                                        );
+                                        VarSource::CteColumn {
+                                            cte_name: cte_name.clone(),
+                                            column_name: alias.clone(),
+                                        }
+                                    };
+                                    cart_scope.add_variable(alias.clone(), var_source);
+                                }
+                            }
+                        }
+
+                        cart_scope
+                    }
+
+                    _ => scope.clone()
                 };
 
                 // CRITICAL FIX: Add all schema entities to projection scope
