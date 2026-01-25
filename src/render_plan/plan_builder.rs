@@ -1138,6 +1138,42 @@ impl RenderPlanBuilder for LogicalPlan {
                     <LogicalPlan as SelectBuilder>::extract_select_items(with.input.as_ref())?;
                 log::warn!("🔍🔍🔍 AFTER extract_select_items: got {} items", cte_select_items.len());
 
+                // 🔧 FIX: Process scalar expressions from WITH items
+                // For expressions like `u.name AS userName`, we need to:
+                // 1. Rewrite property access (u.name → u.full_name based on schema)
+                // 2. Convert to SelectItem and add to cte_select_items
+                use crate::query_planner::logical_expr::expression_rewriter::{
+                    ExpressionRewriteContext, rewrite_expression_with_property_mapping,
+                };
+                let rewrite_ctx = ExpressionRewriteContext::new(&with.input);
+                
+                for item in &with.items {
+                    // Skip TableAlias items (node pass-through) - they're already expanded
+                    if matches!(&item.expression, LogicalExpr::TableAlias(_)) {
+                        continue;
+                    }
+                    
+                    // Rewrite the expression to map properties to DB columns
+                    let rewritten_expr = rewrite_expression_with_property_mapping(&item.expression, &rewrite_ctx);
+                    
+                    // Convert to RenderExpr
+                    let render_expr: RenderExpr = rewritten_expr.try_into().map_err(|e| {
+                        RenderBuildError::InvalidRenderPlan(format!(
+                            "Failed to convert WITH expression: {:?}", e
+                        ))
+                    })?;
+                    
+                    // Use the explicit alias from the WITH item
+                    let col_alias = item.col_alias.as_ref().map(|ca| ColumnAlias(ca.0.clone()));
+                    
+                    log::info!("🔧 Added WITH scalar expression: {:?} AS {:?}", render_expr, col_alias);
+                    
+                    cte_select_items.push(SelectItem {
+                        expression: render_expr,
+                        col_alias,
+                    });
+                }
+
                 // ✅ FIX (Phase 6): Remap column aliases to match exported aliases
                 // When we have `WITH u AS person`, the select items will have aliases like `u.name`
                 // but they need to be remapped to `person.name` for the CTE output

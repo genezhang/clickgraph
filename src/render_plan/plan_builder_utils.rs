@@ -6635,9 +6635,21 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                     item.expression.clone()
                                                 };
 
+                                                // 🔧 CRITICAL FIX: Apply property mapping for WITH expressions
+                                                // Maps Cypher property names (e.g., u.name) to DB columns (e.g., full_name)
+                                                // This is the same rewriting that RETURN clause does
+                                                use crate::query_planner::logical_expr::expression_rewriter::{
+                                                    ExpressionRewriteContext, rewrite_expression_with_property_mapping,
+                                                };
+                                                let rewrite_ctx = ExpressionRewriteContext::new(plan_to_render);
+                                                let rewritten_expr = rewrite_expression_with_property_mapping(&logical_expr, &rewrite_ctx);
+                                                log::info!(
+                                                    "🔧 build_chained_with_match_cte_plan: Rewrote WITH expression with property mapping"
+                                                );
+
                                                 // CRITICAL: Expand collect(node) to groupArray(tuple(...)) BEFORE converting to RenderExpr
                                                 // This must happen in WITH context too, not just in extract_select_items()
-                                                let expanded_expr = if let crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(ref agg) = logical_expr {
+                                                let expanded_expr = if let crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(ref agg) = rewritten_expr {
                                                     if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
                                                         if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(ref alias) = agg.args[0] {
                                                             log::warn!("🔧 WITH context: Expanding collect({}) to groupArray(tuple(...))", alias.0);
@@ -6656,17 +6668,17 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                                 }
                                                                 _ => {
                                                                     log::warn!("⚠️  Could not expand collect({}) in WITH - no properties found, keeping as-is", alias.0);
-                                                                    logical_expr
+                                                                    rewritten_expr
                                                                 }
                                                             }
                                                         } else {
-                                                            logical_expr
+                                                            rewritten_expr
                                                         }
                                                     } else {
-                                                        logical_expr
+                                                        rewritten_expr
                                                     }
                                                 } else {
-                                                    logical_expr
+                                                    rewritten_expr
                                                 };
 
                                                 let expr_result: Result<RenderExpr, _> = expanded_expr.try_into();
