@@ -183,7 +183,7 @@ fn test_denormalized_from_node_property() {
         "Airport",
         Some("FLIGHT"),
         Some(NodeRole::From), // FROM node -> use from_node_properties
-        None, // schema_name - will be resolved from global state
+        None,                 // schema_name - will be resolved from global state
     );
 
     assert!(result.is_ok());
@@ -210,7 +210,7 @@ fn test_denormalized_to_node_property() {
         "Airport",
         Some("FLIGHT"),
         Some(NodeRole::To), // TO node -> use to_node_properties
-        None, // schema_name - will be resolved from global state
+        None,               // schema_name - will be resolved from global state
     );
 
     assert!(result.is_ok());
@@ -251,10 +251,8 @@ fn test_no_relationship_context() {
     // (they only exist in edge tables, need to know which edge)
     let result = map_property_to_column_with_relationship_context(
         "city", // Denormalized property
-        "Airport",
-        None, // No relationship context
-        None,
-        None, // schema_name - will be resolved from global state
+        "Airport", None, // No relationship context
+        None, None, // schema_name - will be resolved from global state
     );
 
     // Should fail because 'city' only exists in edge tables
@@ -266,10 +264,7 @@ fn test_no_relationship_context() {
     // But non-denormalized properties should still work
     let result2 = map_property_to_column_with_relationship_context(
         "code", // Non-denormalized property (in node table)
-        "Airport",
-        None,
-        None,
-        None, // schema_name - will be resolved from global state
+        "Airport", None, None, None, // schema_name - will be resolved from global state
     );
 
     assert!(result2.is_ok());
