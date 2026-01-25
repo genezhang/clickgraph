@@ -11,7 +11,7 @@
 - ✅ Integration matrix tests: 232/273 passing (85%) ⬆️ **IMPROVED from 74/91 (81%)**
   - Fixed 2 critical failures: timeout (test data corruption) + wildcard expansion bug
   - Applied denormalized edge JOIN deduplication (1 remaining issue: alias mapping)
-- ✅ OPTIONAL MATCH tests: 25/27 passing (93%)
+- ✅ OPTIONAL MATCH tests: 26/27 passing (96%)
 - ✅ All `test_collect` tests passing (10/10)
 
 **Code Quality** (New - January 22, 2026):
@@ -318,7 +318,6 @@ CALL pagerank(
 
 **Critical Issues**:
 1. **Scalar aggregates in WITH + GROUP BY** - TableAlias architecture limitation
-2. **OPTIONAL MATCH + inline property** - Generates invalid SQL (affects LDBC IS-7)
 
 **Parser Limitations**:
 - No write operations (`CREATE`, `SET`, `DELETE`, `MERGE`)

@@ -1,6 +1,16 @@
 ## [Unreleased]
 
-### 🚀 Features
+### � Bug Fixes
+
+- **OPTIONAL MATCH + Inline Property Filters**: Fixed invalid SQL generation when inline properties appear on nodes in OPTIONAL MATCH clauses
+  - **Problem**: Inline property filters like `(b:TestUser {name: 'Bob'})` in OPTIONAL MATCH were incorrectly injected as WHERE conditions instead of LEFT JOIN conditions
+  - **Root Cause**: `FilterIntoGraphRel` optimizer was injecting filters into `ViewScan.view_filter` for all GraphNode patterns, including optional ones
+  - **Solution**: Modified `FilterIntoGraphRel` to skip filter injection for optional aliases (identified via `plan_ctx.get_optional_aliases()`)
+  - **Impact**: LDBC IS-7 query and similar patterns with inline properties in OPTIONAL MATCH now generate correct LEFT JOIN SQL
+  - **Files**: `src/query_planner/optimizer/filter_into_graph_rel.rs`
+  - **Tests**: Added `test_optional_match_inline_properties` test case, all OPTIONAL MATCH tests now 26/27 passing (96%)
+
+### �🚀 Features
 
 - **Multi-Table Label Union (MULTI_TABLE_LABEL)**: Complete support for aggregation queries on nodes that appear in multiple tables
   - **Feature**: Nodes with the same label appearing in multiple contexts (e.g., IP appearing in dns_log FROM, dns_log TO, and conn_log) now generate proper UNION queries with aggregation

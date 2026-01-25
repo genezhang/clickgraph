@@ -322,6 +322,25 @@ class TestOptionalMatchWithProperties:
             assert results[0][col_idx_age] is None
 
 
+    def test_optional_match_inline_properties(self, simple_graph):
+        """Test OPTIONAL MATCH with inline property filters on nodes."""
+        response = execute_cypher(
+            """
+            MATCH (a:TestUser)
+            WHERE a.name = 'Alice'
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser {name: 'Bob'})
+            RETURN a.name, b.name
+            """,
+            schema_name=simple_graph["schema_name"]
+        )
+        
+        assert_query_success(response)
+        # Alice follows Bob, so should return one row
+        assert_row_count(response, 1)
+        assert_contains_value(response, "a.name", "Alice")
+        assert_contains_value(response, "b.name", "Bob")
+
+
 class TestOptionalMatchAggregation:
     """Test aggregations with OPTIONAL MATCH."""
     
