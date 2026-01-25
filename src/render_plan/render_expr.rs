@@ -61,7 +61,7 @@ pub fn get_current_schema_name() -> Option<String> {
 /// Call this at query handler exit for cleanup
 pub fn clear_current_schema_name() {
     let _ = QUERY_SCHEMA_NAME.try_with(|cell| {
-        cell.borrow_mut().take();
+        *cell.borrow_mut() = None;
     });
 }
 

@@ -215,7 +215,7 @@ pub async fn query_handler(
     // - Expression rendering
     // The context is read-only during query execution and cleared at the end.
     set_current_schema_name(Some(schema_name.to_string()));
-    // They will be substituted at execution time via $placeholder syntax
+
     let cache_key = query_cache::QueryCacheKey::new(clean_query, schema_name);
     let mut cache_status = "MISS";
 

@@ -664,7 +664,7 @@ pub fn map_property_to_column_with_relationship_context(
     }
 
     // ✅ FIXED: Use deterministic schema lookup
-    // Priority: explicit schema_name > thread-local CURRENT_SCHEMA_NAME > prefer social_benchmark > search all schemas (legacy)
+    // Priority: explicit schema_name > task-local QUERY_SCHEMA_NAME > search all schemas (fallback)
     let resolved_schema_name = schema_name
         .map(|s| s.to_string())
         .or_else(|| super::render_expr::get_current_schema_name());
@@ -720,7 +720,7 @@ pub fn map_property_to_column_with_relationship_context(
             .ok_or_else(|| {
                 let available_schemas: Vec<String> = schemas.keys().map(|s| s.clone()).collect();
                 let msg = format!(
-                    "CRITICAL: Node label '{}' not found. Schema context was missing (no explicit schema_name and CURRENT_SCHEMA_NAME thread-local not set). Available schemas: {}. This is a bug in schema context propagation.",
+                    "CRITICAL: Node label '{}' not found. Schema context was missing (no explicit schema_name and QUERY_SCHEMA_NAME task_local not set). Available schemas: {}. This is a bug in schema context propagation.",
                     node_label,
                     available_schemas.join(", ")
                 );
