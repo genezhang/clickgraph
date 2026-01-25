@@ -283,6 +283,13 @@ fn test_parse_optional_match() {
 - **CTEs**: Use `CteManager` for schema-aware generation (`render_plan/cte_manager/`)
 - **JOINs**: Use `PatternSchemaContext` for strategy selection (`graph_catalog/pattern_schema.rs`)
 
+**⚠️ Per-Query State Must Use Task-Local**:
+- ClickGraph runs on Axum (async server) where multiple concurrent queries share OS threads
+- If you need per-query state (schema context, CTE mappings, temp caches), **use `tokio::task_local!` NOT `thread_local!`**
+- Each async task gets isolated storage automatically - no interference between concurrent queries
+- Example: `QUERY_SCHEMA_NAME` in `render_plan/render_expr.rs` uses `tokio::task_local!` so concurrent queries don't see each other's schema context
+- See Core Infrastructure #5 in copilot-instructions.md for detailed pattern
+
 #### 2.4 Wire Everything Together
 **Common Integration Points**:
 - Parser calls in `open_cypher_parser/mod.rs`

@@ -5262,7 +5262,15 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
                 Vec::new()
             }
         }
-        Err(_) => Vec::new(),
+        Err(_) => {
+            // Final fallback: assume this is a scalar alias from WITH clause
+            // For scalars, use the alias as a column reference
+            log::warn!("⚠️ expand_table_alias_to_group_by_id_only: Final fallback - treating '{}' as scalar column", alias);
+            vec![RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(alias.to_string()),
+                column: PropertyValue::Column(alias.to_string()),
+            })]
+        }
     }
 }
 pub(crate) fn rewrite_render_plan_expressions(

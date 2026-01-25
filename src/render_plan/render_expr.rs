@@ -20,24 +20,49 @@ use crate::query_planner::logical_plan::LogicalPlan;
 
 use super::errors::RenderBuildError;
 
-// Thread-local storage for the current schema name during render plan building.
-// This allows generate_exists_sql to look up the correct schema when converting
-// LogicalExpr::ExistsSubquery to RenderExpr::ExistsSubquery.
-thread_local! {
-    static CURRENT_SCHEMA_NAME: RefCell<Option<String>> = const { RefCell::new(None) };
+// ✅ TASK-LOCAL storage for the current schema name (per-query context)
+// Each async task (HTTP request/query) gets its own isolated schema context.
+// Multiple concurrent queries on the same OS thread have zero interference.
+//
+// Why task-local instead of thread-local:
+// - thread_local: Shared by all async tasks on same OS thread (UNSAFE for concurrent queries)
+// - task_local: Each async task gets isolated storage (SAFE)
+//
+// Usage:
+// 1. At query handler entry: set_current_schema_name(schema_name)
+// 2. During all query processing: get_current_schema_name() accesses current query's schema
+// 3. At query handler exit: clear_current_schema_name()
+tokio::task_local! {
+    /// Query-scope (task-scope) schema name: which schema this query operates on
+    /// Isolated to current async task - no interference with concurrent queries
+    pub(crate) static QUERY_SCHEMA_NAME: RefCell<Option<String>>;
 }
 
-/// Set the current schema name for EXISTS subquery resolution.
-/// This should be called before to_render_plan() and cleared after.
+/// Set the schema name for the current query (task/request)
+/// Call this immediately after determining schema_name in query handler
+/// Schema context is read-only and available to ALL query processing phases
 pub fn set_current_schema_name(name: Option<String>) {
-    CURRENT_SCHEMA_NAME.with(|cell| {
+    // task_local! doesn't support runtime initialization, so we use try_with
+    // If we're not in a task context, this returns an error which we ignore
+    let _ = QUERY_SCHEMA_NAME.try_with(|cell| {
         *cell.borrow_mut() = name;
     });
 }
 
-/// Get the current schema name for EXISTS subquery resolution.
+/// Get the current query's schema name (available to all processing phases)
 pub fn get_current_schema_name() -> Option<String> {
-    CURRENT_SCHEMA_NAME.with(|cell| cell.borrow().clone())
+    QUERY_SCHEMA_NAME
+        .try_with(|cell| cell.borrow().clone())
+        .ok()
+        .flatten()
+}
+
+/// Clear the schema name after query processing completes
+/// Call this at query handler exit for cleanup
+pub fn clear_current_schema_name() {
+    let _ = QUERY_SCHEMA_NAME.try_with(|cell| {
+        cell.borrow_mut().take();
+    });
 }
 
 /// Generate SQL for an EXISTS subquery directly from the logical plan

@@ -464,6 +464,7 @@ pub(crate) fn extract_var_len_properties(
                                 node_label,
                                 relationship_type,
                                 None,
+                                None,
                             )
                             .unwrap_or_else(|_| property_name.to_string());
                             let alias = property_name.to_string();
@@ -590,7 +591,18 @@ pub(crate) fn map_property_to_column_with_schema(
     property: &str,
     node_label: &str,
 ) -> Result<String, String> {
-    map_property_to_column_with_relationship_context(property, node_label, None, None)
+    map_property_to_column_with_relationship_context(property, node_label, None, None, None)
+}
+
+/// Map property to column with explicit schema context (preferred)
+/// When schema_name is provided, it searches ONLY that schema (deterministic)
+/// When schema_name is None, it searches all schemas (legacy behavior)
+pub(crate) fn map_property_to_column_with_schema_context(
+    property: &str,
+    node_label: &str,
+    schema_name: Option<&str>,
+) -> Result<String, String> {
+    map_property_to_column_with_relationship_context(property, node_label, None, None, schema_name)
 }
 
 /// Schema-aware property mapping with relationship context
@@ -609,6 +621,7 @@ pub fn map_property_to_column_with_relationship_context(
     node_label: &str,
     relationship_type: Option<&str>,
     node_role: Option<NodeRole>,
+    schema_name: Option<&str>,
 ) -> Result<String, String> {
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -650,16 +663,26 @@ pub fn map_property_to_column_with_relationship_context(
         return Err(msg);
     }
 
-    // 🔥 PRAGMATIC FIX: Search for the node label in ALL loaded schemas
-    // (In the future, we should pass schema_name through the rendering pipeline)
-    let schema = schemas
-        .values()
-        .find(|s| s.get_nodes_schemas().contains_key(node_label))
-        .ok_or_else(|| {
+    // ✅ FIXED: Use deterministic schema lookup
+    // Priority: explicit schema_name > thread-local CURRENT_SCHEMA_NAME > prefer social_benchmark > search all schemas (legacy)
+    let resolved_schema_name = schema_name
+        .map(|s| s.to_string())
+        .or_else(|| super::render_expr::get_current_schema_name());
+
+    log::info!(
+        "🔍 map_property_to_column_with_relationship_context: property='{}', node_label='{}', resolved_schema_name={:?}",
+        property,
+        node_label,
+        resolved_schema_name
+    );
+
+    let schema = if let Some(sname) = resolved_schema_name {
+        log::info!("  ✓ Using explicit schema: {}", sname);
+        schemas.get(&sname).ok_or_else(|| {
             let available_schemas: Vec<String> = schemas.keys().map(|s| s.clone()).collect();
             let msg = format!(
-                "Node label '{}' not found in any loaded schema. Available schemas: {}",
-                node_label,
+                "Schema '{}' not found. Available schemas: {}",
+                sname,
                 available_schemas.join(", ")
             );
             if let Ok(mut file) = OpenOptions::new()
@@ -670,7 +693,48 @@ pub fn map_property_to_column_with_relationship_context(
                 let _ = writeln!(file, "ERROR: {}", msg);
             }
             msg
-        })?;
+        })?
+    } else {
+        // ❌ ARCHITECTURAL ISSUE: Schema context is missing!
+        // This should NEVER happen in production. Schema must be explicitly specified.
+        // Each query operates within ONE schema scope - never cross-schema search.
+
+        log::error!(
+            "🚨 CRITICAL: map_property_to_column called without schema context for property='{}', node_label='{}'",
+            property,
+            node_label
+        );
+        log::error!(
+            "   Available schemas: {:?}",
+            schemas.keys().collect::<Vec<_>>()
+        );
+        log::error!(
+            "   This indicates a bug in schema context propagation through the rendering pipeline."
+        );
+
+        // Fallback: Search all schemas (this is a bug - should never happen)
+        // Log the schema that is being used (will help debug the root cause)
+        schemas
+            .values()
+            .find(|s| s.get_nodes_schemas().contains_key(node_label))
+            .ok_or_else(|| {
+                let available_schemas: Vec<String> = schemas.keys().map(|s| s.clone()).collect();
+                let msg = format!(
+                    "CRITICAL: Node label '{}' not found. Schema context was missing (no explicit schema_name and CURRENT_SCHEMA_NAME thread-local not set). Available schemas: {}. This is a bug in schema context propagation.",
+                    node_label,
+                    available_schemas.join(", ")
+                );
+                log::error!("{}", msg);
+                if let Ok(mut file) = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("debug_property_mapping.log")
+                {
+                    let _ = writeln!(file, "CRITICAL ERROR: {}", msg);
+                }
+                msg
+            })?
+    };
 
     // Get the node schema first
     let node_schema = schema.get_nodes_schemas().get(node_label).ok_or_else(|| {

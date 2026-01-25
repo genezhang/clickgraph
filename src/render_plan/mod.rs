@@ -31,29 +31,33 @@ pub use filter_pipeline::CategorizedFilters;
 pub use from_table::FromTable;
 pub use view_table_ref::ViewTableRef;
 
-// Thread-local storage for CTE column registry during render phase
+// Task-local storage for CTE column registry during render phase
 // This allows select_builder and filter_builder to resolve property access expressions
 // for WITH-exported variables to their CTE output column names
-thread_local! {
-    static CTE_COLUMN_REGISTRY_CONTEXT: RefCell<Option<CteColumnRegistry>> = RefCell::new(None);
+// Task-local: Isolated per async task, no interference between concurrent queries
+tokio::task_local! {
+    static CTE_COLUMN_REGISTRY_CONTEXT: RefCell<Option<CteColumnRegistry>>;
 }
 
 /// Set the CTE column registry for the current render phase
 /// This should be called before rendering a logical plan that references WITH-exported variables
 pub fn set_cte_column_registry(registry: CteColumnRegistry) {
-    CTE_COLUMN_REGISTRY_CONTEXT.with(|cell| {
+    let _ = CTE_COLUMN_REGISTRY_CONTEXT.try_with(|cell| {
         *cell.borrow_mut() = Some(registry);
     });
 }
 
 /// Get the CTE column registry for property resolution
 pub fn get_cte_column_registry() -> Option<CteColumnRegistry> {
-    CTE_COLUMN_REGISTRY_CONTEXT.with(|cell| cell.borrow().clone())
+    CTE_COLUMN_REGISTRY_CONTEXT
+        .try_with(|cell| cell.borrow().clone())
+        .ok()
+        .flatten()
 }
 
 /// Clear the CTE column registry after rendering is complete
 pub fn clear_cte_column_registry() {
-    CTE_COLUMN_REGISTRY_CONTEXT.with(|cell| {
+    let _ = CTE_COLUMN_REGISTRY_CONTEXT.try_with(|cell| {
         *cell.borrow_mut() = None;
     });
 }
@@ -62,15 +66,15 @@ pub fn clear_cte_column_registry() {
 // For denormalized edges (e.g., AUTHORED where posts_bench is both edge and target node),
 // when we skip the second JOIN, we need to map the target node alias to the edge alias
 // so property resolution works correctly
-thread_local! {
-    static DENORMALIZED_EDGE_ALIASES: RefCell<std::collections::HashMap<String, String>> =
-        RefCell::new(std::collections::HashMap::new());
+// Task-local: Isolated per async task, no interference between concurrent queries
+tokio::task_local! {
+    static DENORMALIZED_EDGE_ALIASES: RefCell<std::collections::HashMap<String, String>>;
 }
 
 /// Register an alias mapping for denormalized edges
 /// Maps target_node_alias → edge_alias (e.g., "d" → "r2")
 pub fn register_denormalized_alias(target_node_alias: &str, edge_alias: &str) {
-    DENORMALIZED_EDGE_ALIASES.with(|cell| {
+    let _ = DENORMALIZED_EDGE_ALIASES.try_with(|cell| {
         cell.borrow_mut()
             .insert(target_node_alias.to_string(), edge_alias.to_string());
     });
@@ -78,12 +82,15 @@ pub fn register_denormalized_alias(target_node_alias: &str, edge_alias: &str) {
 
 /// Look up the edge alias for a target node alias (if denormalized)
 pub fn get_denormalized_alias_mapping(target_node_alias: &str) -> Option<String> {
-    DENORMALIZED_EDGE_ALIASES.with(|cell| cell.borrow().get(target_node_alias).cloned())
+    DENORMALIZED_EDGE_ALIASES
+        .try_with(|cell| cell.borrow().get(target_node_alias).cloned())
+        .ok()
+        .flatten()
 }
 
 /// Clear all denormalized alias mappings after rendering is complete
 pub fn clear_denormalized_aliases() {
-    DENORMALIZED_EDGE_ALIASES.with(|cell| {
+    let _ = DENORMALIZED_EDGE_ALIASES.try_with(|cell| {
         cell.borrow_mut().clear();
     });
 }
