@@ -577,8 +577,12 @@ impl OptimizerPass for FilterIntoGraphRel {
                         if view_scan.view_filter.is_some() {
                             println!("FilterIntoGraphRel: GraphNode's ViewScan already has view_filter, skipping");
                         } else {
-                            // Look for filters in plan_ctx for the GraphNode's alias
-                            let mut filters_to_apply: Vec<LogicalExpr> = Vec::new();
+                            // Skip if this is an optional alias - filters should be JOIN conditions, not WHERE
+                            if plan_ctx.get_optional_aliases().contains(&graph_node.alias) {
+                                println!("FilterIntoGraphRel: Skipping filter injection for optional GraphNode alias '{}'", graph_node.alias);
+                            } else {
+                                // Look for filters in plan_ctx for the GraphNode's alias
+                                let mut filters_to_apply: Vec<LogicalExpr> = Vec::new();
 
                             if let Ok(table_ctx) = plan_ctx
                                 .get_table_ctx_from_alias_opt(&Some(graph_node.alias.clone()))
@@ -680,6 +684,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                     "FilterIntoGraphRel: No matching filters found for GraphNode alias '{}'",
                                     graph_node.alias
                                 );
+                            }
                             }
                         }
                     }
