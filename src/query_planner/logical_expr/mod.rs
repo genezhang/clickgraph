@@ -13,6 +13,7 @@ use std::{fmt, sync::Arc};
 mod serde_arc;
 
 pub mod errors;
+pub mod expression_rewriter;
 
 /// Type of graph entity (node or relationship).
 /// Used in CteEntityRef to indicate what kind of entity is being referenced.

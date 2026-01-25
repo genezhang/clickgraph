@@ -434,9 +434,12 @@ impl ProjectionTagging {
                     property_access.column.raw()
                 );
 
-                // Get denormalized alias info and pattern context BEFORE mutable borrow
-                // (to avoid borrow checker issues)
-                // Clone pattern context so we don't hold immutable reference
+                // ====================================================================
+                // CRITICAL: Check if this is a CTE-sourced variable (NEW Jan 2026)
+                // ====================================================================
+                // Do this BEFORE getting mutable table_ctx to avoid borrow checker issues
+                // Same fix as in FilterTagging: if a variable is CTE-sourced,
+                // don't apply schema mapping because CTE columns are already mapped.
                 let denorm_info =
                     plan_ctx.get_denormalized_alias_info(&property_access.table_alias.0);
                 let pattern_ctx_opt = denorm_info.as_ref().and_then(|(owning_edge, _, _, _)| {
@@ -457,12 +460,37 @@ impl ProjectionTagging {
                     None
                 };
 
+                // Check if this table is CTE-sourced (simpler and more reliable than VariableRegistry)
+                let is_cte_sourced = plan_ctx
+                    .get_table_ctx(&property_access.table_alias.0)
+                    .map(|tc| tc.is_cte_reference())
+                    .unwrap_or(false);
+
                 let table_ctx = plan_ctx
                     .get_mut_table_ctx(&property_access.table_alias.0)
                     .map_err(|e| AnalyzerError::PlanCtx {
                         pass: Pass::ProjectionTagging,
                         source: e,
                     })?;
+
+                // If this is a CTE-sourced variable, skip schema mapping
+                if is_cte_sourced {
+                    if let Some(cte_name) = table_ctx.get_cte_name() {
+                        log::info!(
+                            "🔧 ProjectionTagging: Skipping schema mapping for CTE-sourced variable '{}' (CTE='{}'), property='{}'",
+                            property_access.table_alias.0,
+                            cte_name,
+                            property_access.column.raw()
+                        );
+                        // Return property as-is for CTE lookup
+                        let projection_item = ProjectionItem {
+                            expression: item.expression.clone(),
+                            col_alias: item.col_alias.clone(),
+                        };
+                        table_ctx.insert_projection(projection_item);
+                        return Ok(());
+                    }
+                }
 
                 crate::debug_print!(
                     "tag_projection: table_ctx label={:?}, is_relation={}",

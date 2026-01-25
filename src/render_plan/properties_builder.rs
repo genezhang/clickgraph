@@ -306,12 +306,24 @@ impl PropertiesBuilder for LogicalPlan {
                 // For CartesianProduct, search both branches and return the first match
                 // This mirrors the UNION behavior but for exactly two inputs.
                 // If the alias is not found in either branch, return no properties.
-                if let Ok(result) = cp.left.get_properties_with_table_alias(alias) {
-                    return Ok(result);
+                // 🔧 CRITICAL FIX (Jan 24, 2026): Only return from left branch if properties found!
+                // Previously, we returned immediately even with empty Vec, preventing right branch search.
+                if let Ok((props, table_alias)) = cp.left.get_properties_with_table_alias(alias) {
+                    if !props.is_empty() {
+                        log::debug!("🔍 CartesianProduct: Found alias '{}' in LEFT branch with {} properties", alias, props.len());
+                        return Ok((props, table_alias));
+                    }
                 }
-                if let Ok(result) = cp.right.get_properties_with_table_alias(alias) {
-                    return Ok(result);
+                if let Ok((props, table_alias)) = cp.right.get_properties_with_table_alias(alias) {
+                    if !props.is_empty() {
+                        log::debug!("🔍 CartesianProduct: Found alias '{}' in RIGHT branch with {} properties", alias, props.len());
+                        return Ok((props, table_alias));
+                    }
                 }
+                log::debug!(
+                    "🔍 CartesianProduct: Alias '{}' not found in either branch",
+                    alias
+                );
                 Ok((vec![], None)) // No properties found
             }
             LogicalPlan::Unwind(unwind) => {

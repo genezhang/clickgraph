@@ -30,7 +30,24 @@
 
 **Recent Fixes**:
 
-1. **Jan 23, 2026 - Integration Test Fixes: Timeout + Wildcard Expansion + Denormalized Edge** ✅ MOSTLY FIXED:
+1. **Jan 24, 2026 - CTE Variable Aliasing with Schema Mapping** ✅ FIXED:
+   - **Problem**: Query `MATCH (u:User) WITH u AS person RETURN person.name` generated wrong SQL
+     - Generated: `SELECT person.full_name` (wrong: full_name is DB column, should be CTE's exported column)
+     - Expected: `SELECT person.u_name` (correct: CTE exports u.name as u_name)
+   - **Root Cause**: FilterTagging was applying schema mapping (name → full_name) to CTE-sourced aliases without realizing the mapping scope changed (base table vs CTE)
+   - **Solution Architecture**:
+     - Step 3 (CteSchemaResolver): Mark all exported aliases with `is_cte_reference()` flag
+     - Step 7 (FilterTagging): Check flag before applying schema mapping - skip if CTE-sourced
+     - Render time: CTE column registry maps (alias, property) → cte_output_column for correct SQL
+   - **Impact**: Single-variable WITH aliasing now fully functional
+   - **Test Status**: ✅ `test_simple_node_renaming` PASSES
+   - **Known Limitation**: Cartesian product WITH clauses (multiple variables) still failing (separate issue)
+   - **Files Modified**:
+     - `src/query_planner/analyzer/cte_schema_resolver.rs` (+12 lines: alias marking loop)
+     - `src/query_planner/analyzer/filter_tagging.rs` (+9 lines: is_cte_reference check)
+     - `src/query_planner/analyzer/mod.rs` (updated CteSchemaResolver comment)
+
+0. **Jan 23, 2026 - Integration Test Fixes: Timeout + Wildcard Expansion + Denormalized Edge** ✅ MOSTLY FIXED:
    - **Issue #1 - 3-hop Timeout (RESOLVED)**: 
      - Root cause: Test fixture accumulating duplicate data (85x) from `CREATE TABLE IF NOT EXISTS` + repeated `INSERT`
      - Fix: Changed to `DROP TABLE` + `CREATE TABLE` + `INSERT` for clean state

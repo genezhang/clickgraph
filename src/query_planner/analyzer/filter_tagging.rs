@@ -392,6 +392,8 @@ impl FilterTagging {
         FilterTagging
     }
 
+    /// Check if an alias is exported from a WITH clause in the plan tree.
+    /// This helps detect CTE-sourced variables during FilterTagging.
     /// Check if an alias is the endpoint of a multi-type VLP pattern.
     /// A multi-type VLP pattern has a GraphRel with variable_length and multiple labels (relationship types).
     fn is_multi_type_vlp_endpoint(plan: &LogicalPlan, alias: &str) -> bool {
@@ -629,6 +631,31 @@ impl FilterTagging {
                     );
                     // For multi-type VLP, return property as-is without validation
                     // SQL generation will handle JSON extraction
+                    return Ok(LogicalExpr::PropertyAccessExp(property_access));
+                }
+
+                // ====================================================================
+                // CRITICAL: Check if this is a CTE-sourced variable (marked by CtePrediction)
+                // ====================================================================
+                // If this alias comes from a CTE (WITH clause export), we should NOT
+                // apply schema mapping because CTE columns are already the mapped columns.
+                // Example:
+                //   MATCH (u:User) WITH u AS person RETURN person.name
+                //   - u.name → maps to full_name (User schema)
+                //   - CTE exports: u_name (not full_name!)
+                //   - person.name should resolve to person.u_name, NOT person.full_name
+                //
+                // The CtePrediction pass (Step 3.25) runs before FilterTagging and marks
+                // all WITH-exported aliases with is_cte_reference() = true.
+
+                if table_ctx.is_cte_reference() {
+                    log::info!(
+                        "🔧 FilterTagging: Skipping schema mapping for CTE-sourced variable '{}', property='{}'",
+                        property_access.table_alias.0,
+                        property_access.column.raw()
+                    );
+                    // Return property as-is for CTE lookup
+                    // The render phase will use CTE's exported columns
                     return Ok(LogicalExpr::PropertyAccessExp(property_access));
                 }
 

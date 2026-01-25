@@ -72,6 +72,21 @@ impl CteSchemaResolver {
         // This preserves node/relationship type information across WITH boundaries
         plan_ctx.register_cte_entity_types(&cte_name, &with_clause.exported_aliases);
 
+        // Mark exported aliases as CTE-sourced so FilterTagging skips schema mapping
+        // This prevents property→column→CTE-column cascading mappings
+        for alias in &with_clause.exported_aliases {
+            if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias) {
+                let mut updated_ctx = table_ctx.clone();
+                // Use placeholder - will be updated later with actual CTE name
+                updated_ctx.set_cte_reference(Some("__WITH_EXPORTED__".to_string()));
+                plan_ctx.insert_table_ctx(alias.clone(), updated_ctx);
+                log::debug!(
+                    "🔧 CteSchemaResolver: Marked alias '{}' as CTE-sourced",
+                    alias
+                );
+            }
+        }
+
         log::info!(
             "✅ CteSchemaResolver: Registered CTE '{}' with {} columns",
             cte_name,

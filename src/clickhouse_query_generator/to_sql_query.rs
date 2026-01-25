@@ -1180,6 +1180,11 @@ impl SelectItems {
                 // No wildcard expansion: group_key stays group_key, not group_key.*
                 item.expression.to_sql()
             } else if let RenderExpr::TableAlias(TableAlias(alias_name)) = &item.expression {
+                log::debug!(
+                    "🔍 Rendering TableAlias '{}', col_alias={:?}",
+                    alias_name,
+                    item.col_alias
+                );
                 if let Some(col_alias) = &item.col_alias {
                     if alias_name == &col_alias.0 {
                         // Check if this is an UNWIND alias - don't use `.*` for scalars
@@ -1191,6 +1196,11 @@ impl SelectItems {
                             format!("{}.*", alias_name)
                         }
                     } else {
+                        log::debug!(
+                            "  Alias mismatch: col_alias={} != expr_alias={}",
+                            col_alias.0,
+                            alias_name
+                        );
                         item.expression.to_sql()
                     }
                 } else {
@@ -2090,7 +2100,7 @@ impl RenderExpr {
                 // This registry is populated during plan building with actual CTE output column names
                 if let Some(cte_col) = get_cte_column_from_context(&table_alias.0, col_name) {
                     log::debug!(
-                        "🔧 Registry lookup: {}.{} → {} (from CTE column registry)",
+                        "✅ CTE registry HIT: {}.{} → {} (from CTE column registry)",
                         table_alias.0,
                         col_name,
                         cte_col

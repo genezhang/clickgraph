@@ -588,6 +588,36 @@ RUST_LOG=debug cargo run --bin clickgraph 2>&1 | tee server.log
 - **Cause**: Recursion not visiting all plan nodes
 - **Fix**: Ensure left AND right branches are recursed
 
+**Pattern 5: Early Return in Tree Search** ⭐ (Jan 24, 2026)
+- **Symptom**: Single-variable cases work, multi-variable cases fail silently
+- **Cause**: Returning first `Ok()` result even if it's empty (e.g., empty Vec)
+- **Example**: CartesianProduct search: checked left branch, got empty Vec, returned immediately without trying right branch
+- **Fix**: Validate result is meaningful before returning
+  ```rust
+  // ❌ WRONG: Returns immediately, even with empty result
+  if let Ok(result) = search_left() {
+      return Ok(result);  // Could be empty!
+  }
+  if let Ok(result) = search_right() {
+      return Ok(result);
+  }
+  
+  // ✅ CORRECT: Only return if result is meaningful
+  if let Ok(result) = search_left() {
+      if !result.is_empty() {
+          return Ok(result);  // Verified non-empty
+      }
+  }
+  if let Ok(result) = search_right() {
+      if !result.is_empty() {
+          return Ok(result);
+      }
+  }
+  ```
+- **Testing**: Always test multi-variable cases alongside single-variable
+  - Single var: `MATCH (u) WITH u AS person` ✅ Easy to pass
+  - Multi var: `MATCH (u) MATCH (f) WITH u AS p, f AS fr` ✅ Catches branch-search bugs
+
 ### Exit Criteria
 - [ ] Root cause identified
 - [ ] Fix implemented

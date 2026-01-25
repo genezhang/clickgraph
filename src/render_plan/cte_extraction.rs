@@ -10,6 +10,9 @@ use crate::graph_catalog::pattern_schema::{JoinStrategy, PatternSchemaContext};
 use crate::query_planner::join_context::{
     VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
 };
+use crate::query_planner::logical_expr::expression_rewriter::{
+    rewrite_projection_items_with_property_mapping, ExpressionRewriteContext,
+};
 use crate::query_planner::logical_expr::ColumnAlias as LogicalColumnAlias;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::cte_generation::CteGenerationContext;
@@ -2953,13 +2956,23 @@ pub fn extract_ctes_with_context(
             // This ensures the CTE has the proper aggregation structure
             use crate::query_planner::logical_expr::LogicalExpr;
 
+            // 🔧 SHARED EXPRESSION PROCESSING: Rewrite property access expressions
+            // This maps Cypher property names (e.g., u.name) to DB column names (e.g., full_name)
+            // using the schema configuration. This is the SAME processing RETURN clause does.
+            let rewrite_ctx = ExpressionRewriteContext::new(&wc.input);
+            let rewritten_items =
+                rewrite_projection_items_with_property_mapping(&wc.items, &rewrite_ctx);
+            log::info!(
+                "🔧 CTE Extraction: Rewrote {} WITH items with property mapping",
+                rewritten_items.len()
+            );
+
             // First pass: Check if we have any aggregations
-            let has_aggregation_in_items = wc
-                .items
+            let has_aggregation_in_items = rewritten_items
                 .iter()
                 .any(|item| matches!(&item.expression, LogicalExpr::AggregateFnCall(_)));
 
-            let expanded_items: Vec<_> = wc.items.iter().flat_map(|item| {
+            let expanded_items: Vec<_> = rewritten_items.iter().flat_map(|item| {
                 if let LogicalExpr::AggregateFnCall(ref agg) = item.expression {
                     if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
                         if let LogicalExpr::TableAlias(ref alias) = agg.args[0] {
