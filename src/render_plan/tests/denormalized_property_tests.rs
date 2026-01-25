@@ -183,6 +183,7 @@ fn test_denormalized_from_node_property() {
         "Airport",
         Some("FLIGHT"),
         Some(NodeRole::From), // FROM node -> use from_node_properties
+        None, // schema_name - will be resolved from global state
     );
 
     assert!(result.is_ok());
@@ -197,7 +198,7 @@ fn test_denormalized_from_node_property() {
 #[serial]
 fn test_denormalized_to_node_property() {
     let schema = setup_denormalized_schema();
-    init_test_schema(schema);
+    init_test_schema(schema.clone());
 
     // For to_node properties, we need a different test setup
     // In reality, the query generator determines which side based on the query pattern
@@ -209,6 +210,7 @@ fn test_denormalized_to_node_property() {
         "Airport",
         Some("FLIGHT"),
         Some(NodeRole::To), // TO node -> use to_node_properties
+        None, // schema_name - will be resolved from global state
     );
 
     assert!(result.is_ok());
@@ -228,6 +230,7 @@ fn test_fallback_to_node_property() {
         "Airport",
         Some("FLIGHT"),
         None, // Role doesn't matter for non-denormalized properties
+        None, // schema_name - will be resolved from global state
     );
 
     assert!(result.is_ok());
@@ -248,8 +251,10 @@ fn test_no_relationship_context() {
     // (they only exist in edge tables, need to know which edge)
     let result = map_property_to_column_with_relationship_context(
         "city", // Denormalized property
-        "Airport", None, // No relationship context
+        "Airport",
+        None, // No relationship context
         None,
+        None, // schema_name - will be resolved from global state
     );
 
     // Should fail because 'city' only exists in edge tables
@@ -261,7 +266,10 @@ fn test_no_relationship_context() {
     // But non-denormalized properties should still work
     let result2 = map_property_to_column_with_relationship_context(
         "code", // Non-denormalized property (in node table)
-        "Airport", None, None,
+        "Airport",
+        None,
+        None,
+        None, // schema_name - will be resolved from global state
     );
 
     assert!(result2.is_ok());
@@ -285,6 +293,7 @@ fn test_relationship_property() {
         "Airport",
         Some("FLIGHT"),
         None, // Role irrelevant for this test
+        None, // schema_name - will be resolved from global state
     );
 
     // This should fail because flight_num is not a node property
@@ -361,6 +370,7 @@ fn test_multiple_relationships_same_node() {
         "Airport",
         Some("FLIGHT"),
         Some(NodeRole::From),
+        None, // schema_name - will be resolved from global state
     );
     assert!(result1.is_ok());
     assert_eq!(result1.unwrap(), "origin_city");
@@ -371,6 +381,7 @@ fn test_multiple_relationships_same_node() {
         "Airport",
         Some("AUTHORED"), // Wrong relationship - doesn't have Airport's city property
         None,
+        None, // schema_name - will be resolved from global state
     );
     // Should fail because AUTHORED relationship doesn't have Airport's denormalized properties
     assert!(
@@ -384,6 +395,7 @@ fn test_multiple_relationships_same_node() {
         "Airport",
         Some("AUTHORED"),
         None,
+        None, // schema_name - will be resolved from global state
     );
     assert!(result3.is_ok());
     assert_eq!(
@@ -530,6 +542,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
         "Airport",
         Some("FLIGHT"),
         Some(NodeRole::From),
+        None, // schema_name - will be resolved from global state
     );
     assert!(result.is_ok());
     assert_eq!(
@@ -544,6 +557,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
         "Airport",
         Some("FLIGHT"),
         Some(NodeRole::From),
+        None, // schema_name - will be resolved from global state
     );
     assert!(result.is_ok());
     assert_eq!(
