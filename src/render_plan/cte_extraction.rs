@@ -2960,7 +2960,8 @@ pub fn extract_ctes_with_context(
             // This maps Cypher property names (e.g., u.name) to DB column names (e.g., full_name)
             // using the schema configuration. This is the SAME processing RETURN clause does.
             let rewrite_ctx = ExpressionRewriteContext::new(&wc.input);
-            let rewritten_items = rewrite_projection_items_with_property_mapping(&wc.items, &rewrite_ctx);
+            let rewritten_items =
+                rewrite_projection_items_with_property_mapping(&wc.items, &rewrite_ctx);
             log::info!(
                 "🔧 CTE Extraction: Rewrote {} WITH items with property mapping",
                 rewritten_items.len()

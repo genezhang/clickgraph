@@ -644,10 +644,10 @@ impl FilterTagging {
                 //   - u.name → maps to full_name (User schema)
                 //   - CTE exports: u_name (not full_name!)
                 //   - person.name should resolve to person.u_name, NOT person.full_name
-                // 
+                //
                 // The CtePrediction pass (Step 3.25) runs before FilterTagging and marks
                 // all WITH-exported aliases with is_cte_reference() = true.
-                
+
                 if table_ctx.is_cte_reference() {
                     log::info!(
                         "🔧 FilterTagging: Skipping schema mapping for CTE-sourced variable '{}', property='{}'",

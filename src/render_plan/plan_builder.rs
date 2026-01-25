@@ -908,23 +908,44 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Set it as thread-local so that extract_select_items can use it for property resolution
                 if matches!(p.input.as_ref(), LogicalPlan::WithClause(_)) {
                     log::info!("🔧 Projection over WithClause: Setting CTE registry for property resolution");
-                    log::debug!("  Registry has {} aliases", render_plan.cte_column_registry.alias_to_cte_name.len());
-                    log::debug!("  Aliases: {:?}", render_plan.cte_column_registry.alias_to_cte_name.keys().collect::<Vec<_>>());
-                    log::debug!("  Mappings: {} entries", render_plan.cte_column_registry.alias_property_to_column.len());
-                    for ((alias, prop), col) in &render_plan.cte_column_registry.alias_property_to_column {
+                    log::debug!(
+                        "  Registry has {} aliases",
+                        render_plan.cte_column_registry.alias_to_cte_name.len()
+                    );
+                    log::debug!(
+                        "  Aliases: {:?}",
+                        render_plan
+                            .cte_column_registry
+                            .alias_to_cte_name
+                            .keys()
+                            .collect::<Vec<_>>()
+                    );
+                    log::debug!(
+                        "  Mappings: {} entries",
+                        render_plan
+                            .cte_column_registry
+                            .alias_property_to_column
+                            .len()
+                    );
+                    for ((alias, prop), col) in
+                        &render_plan.cte_column_registry.alias_property_to_column
+                    {
                         log::debug!("    ({}, {}) -> {}", alias, prop, col);
                     }
-                    
-                    use crate::render_plan::{set_cte_column_registry, clear_cte_column_registry, clear_denormalized_aliases};
+
+                    use crate::render_plan::{
+                        clear_cte_column_registry, clear_denormalized_aliases,
+                        set_cte_column_registry,
+                    };
                     set_cte_column_registry(render_plan.cte_column_registry.clone());
-                    
+
                     // Extract select items with the registry available
                     let select_items = <LogicalPlan as SelectBuilder>::extract_select_items(self)?;
-                    
+
                     // Clean up the thread-local registry
                     clear_cte_column_registry();
                     clear_denormalized_aliases();
-                    
+
                     render_plan.select = SelectItems {
                         items: select_items,
                         distinct: p.distinct,
@@ -1136,38 +1157,47 @@ impl RenderPlanBuilder for LogicalPlan {
                 log::warn!("🔍🔍🔍 BEFORE extract_select_items for WITH.input");
                 let mut cte_select_items =
                     <LogicalPlan as SelectBuilder>::extract_select_items(with.input.as_ref())?;
-                log::warn!("🔍🔍🔍 AFTER extract_select_items: got {} items", cte_select_items.len());
+                log::warn!(
+                    "🔍🔍🔍 AFTER extract_select_items: got {} items",
+                    cte_select_items.len()
+                );
 
                 // 🔧 FIX: Process scalar expressions from WITH items
                 // For expressions like `u.name AS userName`, we need to:
                 // 1. Rewrite property access (u.name → u.full_name based on schema)
                 // 2. Convert to SelectItem and add to cte_select_items
                 use crate::query_planner::logical_expr::expression_rewriter::{
-                    ExpressionRewriteContext, rewrite_expression_with_property_mapping,
+                    rewrite_expression_with_property_mapping, ExpressionRewriteContext,
                 };
                 let rewrite_ctx = ExpressionRewriteContext::new(&with.input);
-                
+
                 for item in &with.items {
                     // Skip TableAlias items (node pass-through) - they're already expanded
                     if matches!(&item.expression, LogicalExpr::TableAlias(_)) {
                         continue;
                     }
-                    
+
                     // Rewrite the expression to map properties to DB columns
-                    let rewritten_expr = rewrite_expression_with_property_mapping(&item.expression, &rewrite_ctx);
-                    
+                    let rewritten_expr =
+                        rewrite_expression_with_property_mapping(&item.expression, &rewrite_ctx);
+
                     // Convert to RenderExpr
                     let render_expr: RenderExpr = rewritten_expr.try_into().map_err(|e| {
                         RenderBuildError::InvalidRenderPlan(format!(
-                            "Failed to convert WITH expression: {:?}", e
+                            "Failed to convert WITH expression: {:?}",
+                            e
                         ))
                     })?;
-                    
+
                     // Use the explicit alias from the WITH item
                     let col_alias = item.col_alias.as_ref().map(|ca| ColumnAlias(ca.0.clone()));
-                    
-                    log::info!("🔧 Added WITH scalar expression: {:?} AS {:?}", render_expr, col_alias);
-                    
+
+                    log::info!(
+                        "🔧 Added WITH scalar expression: {:?} AS {:?}",
+                        render_expr,
+                        col_alias
+                    );
+
                     cte_select_items.push(SelectItem {
                         expression: render_expr,
                         col_alias,
@@ -1181,14 +1211,17 @@ impl RenderPlanBuilder for LogicalPlan {
                 if !alias_mapping.is_empty() {
                     cte_select_items = remap_select_item_aliases(cte_select_items, &alias_mapping);
                 }
-                
+
                 // Build CTE column registry BEFORE moving cte_select_items into CteContent
                 // Map (exported_alias, cypher_property) -> cte_output_column
                 let mut registry = CteColumnRegistry::new();
                 let cte_name_temp = format!("with_{}_cte", with.exported_aliases.join("_"));
-                
-                log::info!("📊 Building CTE column registry for WITH clause with exports: {:?}", with.exported_aliases);
-                
+
+                log::info!(
+                    "📊 Building CTE column registry for WITH clause with exports: {:?}",
+                    with.exported_aliases
+                );
+
                 for (idx, item) in cte_select_items.iter().enumerate() {
                     if let Some(col_alias) = &item.col_alias {
                         log::debug!("  Item[{}]: col_alias = '{}'", idx, col_alias.0);
@@ -1196,7 +1229,11 @@ impl RenderPlanBuilder for LogicalPlan {
                         if let Some(dot_pos) = col_alias.0.find('.') {
                             let alias_part = &col_alias.0[..dot_pos];
                             let prop_part = &col_alias.0[dot_pos + 1..];
-                            log::debug!("    -> Parsed as alias='{}', property='{}'", alias_part, prop_part);
+                            log::debug!(
+                                "    -> Parsed as alias='{}', property='{}'",
+                                alias_part,
+                                prop_part
+                            );
                             registry.register(
                                 alias_part.to_string(),
                                 cte_name_temp.clone(),
@@ -1209,7 +1246,11 @@ impl RenderPlanBuilder for LogicalPlan {
                             for exported_alias in &with.exported_aliases {
                                 if col_alias.0.starts_with(&format!("{}_", exported_alias)) {
                                     let prop_part = &col_alias.0[exported_alias.len() + 1..];
-                                    log::debug!("    -> Parsed as alias='{}', property='{}'", exported_alias, prop_part);
+                                    log::debug!(
+                                        "    -> Parsed as alias='{}', property='{}'",
+                                        exported_alias,
+                                        prop_part
+                                    );
                                     registry.register(
                                         exported_alias.clone(),
                                         cte_name_temp.clone(),
@@ -1222,11 +1263,13 @@ impl RenderPlanBuilder for LogicalPlan {
                         }
                     }
                 }
-                
-                log::info!("✅ Built CTE column registry: {} aliases, {} properties", 
-                    with.exported_aliases.len(), 
-                    registry.alias_property_to_column.len());
-                
+
+                log::info!(
+                    "✅ Built CTE column registry: {} aliases, {} properties",
+                    with.exported_aliases.len(),
+                    registry.alias_property_to_column.len()
+                );
+
                 let cte_from = FromTableItem(with.input.extract_from()?.and_then(|ft| ft.table));
                 let cte_joins = JoinItems(RenderPlanBuilder::extract_joins(
                     with.input.as_ref(),
@@ -1298,7 +1341,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     limit,
                     union,
                     fixed_path_info: None,
-                    cte_column_registry: registry,  // Use the registry we built from WITH clause exports
+                    cte_column_registry: registry, // Use the registry we built from WITH clause exports
                 })
             }
             LogicalPlan::CartesianProduct(cp) => {
@@ -1333,7 +1376,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 // Render both sides
                 let left_render = cp.left.to_render_plan(schema)?;
-                
+
                 // CRITICAL FIX: Pass CTE registry from left side to right side
                 // When left is a WITH clause, it creates CTEs with column aliases
                 // The right side needs to know about these to resolve property access expressions
@@ -1341,12 +1384,14 @@ impl RenderPlanBuilder for LogicalPlan {
                     use crate::render_plan::set_cte_column_registry;
                     set_cte_column_registry(left_render.cte_column_registry.clone());
                 }
-                
+
                 let right_render = cp.right.to_render_plan(schema)?;
-                
+
                 // Clear the CTE registry after rendering the right side
                 if !left_render.ctes.0.is_empty() {
-                    use crate::render_plan::{clear_cte_column_registry, clear_denormalized_aliases};
+                    use crate::render_plan::{
+                        clear_cte_column_registry, clear_denormalized_aliases,
+                    };
                     clear_cte_column_registry();
                     clear_denormalized_aliases();
                 }

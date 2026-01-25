@@ -63,10 +63,8 @@ fn find_label_for_alias_in_plan(plan: &LogicalPlan, target_alias: &str) -> Optio
                 .or_else(|| find_label_for_alias_in_plan(&rel.right, target_alias))
                 .or_else(|| find_label_for_alias_in_plan(&rel.center, target_alias))
         }
-        LogicalPlan::CartesianProduct(cp) => {
-            find_label_for_alias_in_plan(&cp.left, target_alias)
-                .or_else(|| find_label_for_alias_in_plan(&cp.right, target_alias))
-        }
+        LogicalPlan::CartesianProduct(cp) => find_label_for_alias_in_plan(&cp.left, target_alias)
+            .or_else(|| find_label_for_alias_in_plan(&cp.right, target_alias)),
         LogicalPlan::GraphJoins(gj) => find_label_for_alias_in_plan(&gj.input, target_alias),
         LogicalPlan::Filter(filter) => find_label_for_alias_in_plan(&filter.input, target_alias),
         LogicalPlan::Projection(proj) => find_label_for_alias_in_plan(&proj.input, target_alias),
@@ -156,7 +154,7 @@ pub fn rewrite_expression_with_property_mapping(
         LogicalExpr::PropertyAccessExp(prop) => {
             let alias = &prop.table_alias.0;
             let cypher_property = prop.column.raw();
-            
+
             log::debug!(
                 "🔍 Expression rewriter: Processing PropertyAccessExp {}.{}",
                 alias,
@@ -179,7 +177,7 @@ pub fn rewrite_expression_with_property_mapping(
                                 );
                                 return expr.clone();
                             }
-                            
+
                             log::debug!(
                                 "✓ Property mapping: {}.{} → {}.{} (label={})",
                                 alias,
@@ -339,12 +337,12 @@ pub fn rewrite_expression_with_property_mapping(
         },
 
         // InSubquery: Rewrite the expression part (subplan is a full plan, not expr)
-        LogicalExpr::InSubquery(subq) => LogicalExpr::InSubquery(
-            crate::query_planner::logical_expr::InSubquery {
+        LogicalExpr::InSubquery(subq) => {
+            LogicalExpr::InSubquery(crate::query_planner::logical_expr::InSubquery {
                 expr: Box::new(rewrite_expression_with_property_mapping(&subq.expr, ctx)),
                 subplan: subq.subplan.clone(),
-            },
-        ),
+            })
+        }
 
         // Leaf expressions that don't need rewriting
         LogicalExpr::Literal(_)

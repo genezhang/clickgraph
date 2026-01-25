@@ -320,7 +320,10 @@ impl PropertiesBuilder for LogicalPlan {
                         return Ok((props, table_alias));
                     }
                 }
-                log::debug!("🔍 CartesianProduct: Alias '{}' not found in either branch", alias);
+                log::debug!(
+                    "🔍 CartesianProduct: Alias '{}' not found in either branch",
+                    alias
+                );
                 Ok((vec![], None)) // No properties found
             }
             LogicalPlan::Unwind(unwind) => {

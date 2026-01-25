@@ -262,7 +262,9 @@ impl VariableResolver {
             // Handle CartesianProduct - collect from right side only
             // (left side might have WITH clause which we don't cross)
             LogicalPlan::CartesianProduct(cp) => {
-                log::debug!("🔍 collect_schema_entities: CartesianProduct - collecting from right side");
+                log::debug!(
+                    "🔍 collect_schema_entities: CartesianProduct - collecting from right side"
+                );
                 self.collect_schema_entities(&cp.right, entities);
             }
             // Empty, Scan, Subquery: no entities
@@ -516,9 +518,10 @@ impl VariableResolver {
 
                             for alias in &wc.exported_aliases {
                                 if let Some(cte_name) = wc.cte_references.get(alias) {
-                                    let var_source = if let Some(entity_type) = plan_ctx
-                                        .and_then(|ctx| Self::lookup_entity_from_plan_ctx(ctx, alias))
-                                    {
+                                    let var_source = if let Some(entity_type) =
+                                        plan_ctx.and_then(|ctx| {
+                                            Self::lookup_entity_from_plan_ctx(ctx, alias)
+                                        }) {
                                         // Found in TypedVariable - it's an entity
                                         log::info!(
                                             "🔍 VariableResolver: CartesianProduct alias '{}' is {:?} (from TypedVariable)",
@@ -548,7 +551,7 @@ impl VariableResolver {
                         cart_scope
                     }
 
-                    _ => scope.clone()
+                    _ => scope.clone(),
                 };
 
                 // CRITICAL FIX: Add all schema entities to projection scope

@@ -80,7 +80,10 @@ impl CteSchemaResolver {
                 // Use placeholder - will be updated later with actual CTE name
                 updated_ctx.set_cte_reference(Some("__WITH_EXPORTED__".to_string()));
                 plan_ctx.insert_table_ctx(alias.clone(), updated_ctx);
-                log::debug!("🔧 CteSchemaResolver: Marked alias '{}' as CTE-sourced", alias);
+                log::debug!(
+                    "🔧 CteSchemaResolver: Marked alias '{}' as CTE-sourced",
+                    alias
+                );
             }
         }
 

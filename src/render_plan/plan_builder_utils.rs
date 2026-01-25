@@ -7180,17 +7180,18 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // Build column metadata from SELECT items
             // This extracts: (cypher_alias, cypher_property) -> cte_column_name
             // E.g., from SELECT a.user_id AS a_user_id, extract: ("a", "user_id") -> "a_user_id"
-            let mut cte_columns: Vec<crate::render_plan::cte_manager::CteColumnMetadata> = Vec::new();
+            let mut cte_columns: Vec<crate::render_plan::cte_manager::CteColumnMetadata> =
+                Vec::new();
             for item in &select_items_for_schema {
                 if let Some(col_alias) = &item.col_alias {
                     let cte_column_name = col_alias.0.clone();
-                    
+
                     // Try to extract (alias, property) from the CTE column name
                     // Format: {alias}_{property} (e.g., "a_user_id" -> ("a", "user_id"))
                     if let Some(first_underscore) = cte_column_name.find('_') {
                         let potential_alias = &cte_column_name[..first_underscore];
                         let potential_property = &cte_column_name[first_underscore + 1..];
-                        
+
                         // Verify this is likely correct by checking if alias appears in with_alias
                         // For "a_b" (composite alias), split by '_' to check components
                         let alias_parts: Vec<&str> = with_alias.split('_').collect();
@@ -7200,7 +7201,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 cypher_property: potential_property.to_string(),
                                 cte_column_name: cte_column_name.clone(),
                                 db_column: potential_property.to_string(), // Approximation
-                                is_id_column: potential_property.ends_with("_id") || potential_property == "id",
+                                is_id_column: potential_property.ends_with("_id")
+                                    || potential_property == "id",
                                 vlp_position: None,
                             });
                             log::debug!(
@@ -7263,12 +7265,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 property_mapping.len()
             );
             for ((alias, property), cte_column) in property_mapping.iter() {
-                log::warn!(
-                    "🔧   BEFORE: ({}, {}) → {}",
-                    alias,
-                    property,
-                    cte_column
-                );
+                log::warn!("🔧   BEFORE: ({}, {}) → {}", alias, property, cte_column);
             }
 
             // Transform dotted column names to underscores for WITH CTEs
@@ -7277,18 +7274,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 .into_iter()
                 .map(|(k, v)| (k, v.replace('.', "_")))
                 .collect();
-            
+
             log::warn!(
                 "🔧 DEBUG: property_mapping AFTER dot-to-underscore transformation: {} entries",
                 property_mapping.len()
             );
             for ((alias, property), cte_column) in property_mapping.iter() {
-                log::warn!(
-                    "🔧   AFTER: ({}, {}) → {}",
-                    alias,
-                    property,
-                    cte_column
-                );
+                log::warn!("🔧   AFTER: ({}, {}) → {}", alias, property, cte_column);
             }
 
             log::warn!(
@@ -7296,25 +7288,20 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 property_mapping.len()
             );
             for ((alias, property), cte_column) in property_mapping.iter().take(10) {
-                log::warn!(
-                    "🔧   ({}, {}) → {}",
-                    alias,
-                    property,
-                    cte_column
-                );
+                log::warn!("🔧   ({}, {}) → {}", alias, property, cte_column);
             }
 
-// Store CTE schema with full property mapping
-        cte_schemas.insert(
-            cte_name.clone(),
-            (
-                select_items_for_schema.clone(),
-                property_names_for_schema.clone(),
-                alias_to_id_column,
-                property_mapping.clone(),
-            ),
-        );
-            
+            // Store CTE schema with full property mapping
+            cte_schemas.insert(
+                cte_name.clone(),
+                (
+                    select_items_for_schema.clone(),
+                    property_names_for_schema.clone(),
+                    alias_to_id_column,
+                    property_mapping.clone(),
+                ),
+            );
+
             log::info!(
                 "🔧 build_chained_with_match_cte_plan: Stored schema for CTE '{}': {:?}, {} property mappings",
                 cte_name,
@@ -7824,47 +7811,57 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // Never use the ViewScan's property_mapping for CTEs - it may have stale/incorrect mappings
             // The ViewScan is only accurate for base tables, not for CTE references
 
-            let property_mapping: Option<HashMap<String, PropertyValue>> =
-                if from_ref.name.starts_with("with_") {
-                    // This is definitely a CTE - reconstruct from cte_schemas
-                    log::warn!("🔧 build_chained_with_match_cte_plan: Source is a CTE (name starts with 'with_'), reconstructing from cte_schemas");
+            let property_mapping: Option<HashMap<String, PropertyValue>> = if from_ref
+                .name
+                .starts_with("with_")
+            {
+                // This is definitely a CTE - reconstruct from cte_schemas
+                log::warn!("🔧 build_chained_with_match_cte_plan: Source is a CTE (name starts with 'with_'), reconstructing from cte_schemas");
 
-                    if let Some((select_items, _, _, stored_property_mapping)) = cte_schemas.get(&from_ref.name) {
-                        // Use the STORED property_mapping which has correct mappings
-                        let mapping: HashMap<String, PropertyValue> = select_items
-                            .iter()
-                            .filter_map(|item| {
-                                item.col_alias.as_ref().map(|alias| {
-                                    (alias.0.clone(), PropertyValue::Column(alias.0.clone()))
-                                })
+                if let Some((select_items, _, _, stored_property_mapping)) =
+                    cte_schemas.get(&from_ref.name)
+                {
+                    // Use the STORED property_mapping which has correct mappings
+                    let mapping: HashMap<String, PropertyValue> = select_items
+                        .iter()
+                        .filter_map(|item| {
+                            item.col_alias.as_ref().map(|alias| {
+                                (alias.0.clone(), PropertyValue::Column(alias.0.clone()))
                             })
-                            .collect();
+                        })
+                        .collect();
 
-                        log::warn!("🔧 build_chained_with_match_cte_plan: Reconstructed {} property mappings from CTE schema", mapping.len());
-                        for (k, v) in mapping.iter().take(5) {
-                            log::warn!("🔧   Mapping: {} → {}", k, v.raw());
-                        }
-                        
-                        // DEBUG: Show what's in stored_property_mapping  
-                        log::warn!("🔧 DEBUG: stored_property_mapping has {} entries", stored_property_mapping.len());
-                        for ((alias, prop), cte_col) in stored_property_mapping.iter().take(5) {
-                            log::warn!("🔧   Stored: ({}, {}) → {}", alias, prop, cte_col);
-                        }
-                        
-                        Some(mapping)
-                    } else {
-                        log::warn!("🔧 build_chained_with_match_cte_plan: CTE '{}' not found in cte_schemas", from_ref.name);
-                        None
+                    log::warn!("🔧 build_chained_with_match_cte_plan: Reconstructed {} property mappings from CTE schema", mapping.len());
+                    for (k, v) in mapping.iter().take(5) {
+                        log::warn!("🔧   Mapping: {} → {}", k, v.raw());
                     }
-                } else if let LogicalPlan::ViewScan(vs) = from_ref.source.as_ref() {
-                    // This is a base table ViewScan - use its property_mapping
-                    log::warn!("🔧 build_chained_with_match_cte_plan: Source is a base table ViewScan, using its property_mapping");
-                    Some(vs.property_mapping.clone())
+
+                    // DEBUG: Show what's in stored_property_mapping
+                    log::warn!(
+                        "🔧 DEBUG: stored_property_mapping has {} entries",
+                        stored_property_mapping.len()
+                    );
+                    for ((alias, prop), cte_col) in stored_property_mapping.iter().take(5) {
+                        log::warn!("🔧   Stored: ({}, {}) → {}", alias, prop, cte_col);
+                    }
+
+                    Some(mapping)
                 } else {
-                    // Unknown source type
-                    log::warn!("🔧 build_chained_with_match_cte_plan: Unknown source type, trying to reconstruct from cte_schemas");
+                    log::warn!(
+                        "🔧 build_chained_with_match_cte_plan: CTE '{}' not found in cte_schemas",
+                        from_ref.name
+                    );
                     None
-                };
+                }
+            } else if let LogicalPlan::ViewScan(vs) = from_ref.source.as_ref() {
+                // This is a base table ViewScan - use its property_mapping
+                log::warn!("🔧 build_chained_with_match_cte_plan: Source is a base table ViewScan, using its property_mapping");
+                Some(vs.property_mapping.clone())
+            } else {
+                // Unknown source type
+                log::warn!("🔧 build_chained_with_match_cte_plan: Unknown source type, trying to reconstruct from cte_schemas");
+                None
+            };
 
             if let Some(mapping) = property_mapping {
                 // Rewrite SELECT items to use FROM alias and CTE column names
@@ -7955,7 +7952,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         "✅ Using explicit property mapping with {} entries",
                         property_mapping.len()
                     );
-                    
+
                     log::warn!(
                         "🔧 CTE '{}' exports columns: {:?}",
                         from_ref.name,
@@ -7969,15 +7966,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                     // Create a set of actual CTE exported column names for quick lookup
                     // Extract column names from SelectItem
-                    let cte_columns: std::collections::HashSet<String> =
-                        select_items.iter()
-                            .filter_map(|item| item.col_alias.as_ref().map(|alias| alias.0.clone()))
-                            .collect();
-                    
-                    log::warn!(
-                        "🔧 DEBUG: cte_columns = {:?}",
-                        cte_columns
-                    );
+                    let cte_columns: std::collections::HashSet<String> = select_items
+                        .iter()
+                        .filter_map(|item| item.col_alias.as_ref().map(|alias| alias.0.clone()))
+                        .collect();
+
+                    log::warn!("🔧 DEBUG: cte_columns = {:?}", cte_columns);
 
                     // Iterate through property_mapping and only add entries that map to ACTUAL CTE columns
                     log::warn!(
@@ -8206,7 +8200,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 let case1 = col == &pa.table_alias.0 && with_aliases.contains(&pa.table_alias.0);
                                 // Case 2: column is a WITH alias AND we're accessing from the CTE name
                                 let case2 = with_aliases.contains(col) && pa.table_alias.0 == from_ref.name;
-                                
+
                                 if case1 || case2 {
                                     log::warn!("🔧 build_chained_with_match_cte_plan: Found PropertyAccessExp({}, {}) - treating as full node (case1={}, case2={})", pa.table_alias.0, col, case1, case2);
                                     // Expand this like TableAlias - use the col (WITH alias) not pa.table_alias.0
@@ -8493,8 +8487,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
     // Add all CTEs (innermost first, which is correct order for SQL)
     all_ctes.extend(render_plan.ctes.0.into_iter());
     render_plan.ctes = CteItems(all_ctes);
-
-
 
     // Skip validation - CTEs are hoisted progressively through recursion
     // ClickHouse will validate CTE references when executing the SQL
@@ -9944,7 +9936,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
             select_items,
             property_names,
             _,
-            stored_property_mapping,  // <-- USE THIS to get correct DB column mappings
+            stored_property_mapping, // <-- USE THIS to get correct DB column mappings
         )) = cte_schemas.get(cte_name)
         {
             let mut mapping = HashMap::new();
@@ -10010,10 +10002,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                     // This is a mapping for our alias (e.g., "u")
                     // Add it to the mapping if not already present
                     if !mapping.contains_key(db_prop) {
-                        mapping.insert(
-                            db_prop.clone(),
-                            PropertyValue::Column(cte_column.clone()),
-                        );
+                        mapping.insert(db_prop.clone(), PropertyValue::Column(cte_column.clone()));
                         log::debug!(
                             "🔧 create_cte_reference: Added DB column mapping from stored: ({}, {}) → {}",
                             alias,
