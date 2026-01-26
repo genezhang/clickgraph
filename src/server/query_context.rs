@@ -34,8 +34,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::future::Future;
 
-use crate::render_plan::CteColumnRegistry;
-
 /// Per-query context holding all query-scoped state
 /// This replaces multiple scattered task_local!/thread_local! declarations
 #[derive(Debug, Clone, Default)]
@@ -43,9 +41,7 @@ pub struct QueryContext {
     /// Schema name for this query (from USE clause or request parameter)
     pub schema_name: Option<String>,
 
-    /// CTE column registry: (cte_alias, property) → column name
-    /// Used by select_builder and filter_builder to resolve property access
-    pub cte_column_registry: Option<CteColumnRegistry>,
+    /// Denormalized edge alias mapping: target_node_alias → edge_alias
 
     /// Denormalized edge alias mapping: target_node_alias → edge_alias
     /// For denormalized edges where the edge table serves as both edge and target node
@@ -134,28 +130,6 @@ pub fn clear_current_schema_name() {
 // ============================================================================
 // CTE COLUMN REGISTRY ACCESSORS
 // ============================================================================
-
-/// Set the CTE column registry for the current query
-pub fn set_cte_column_registry(registry: CteColumnRegistry) {
-    let _ = QUERY_CONTEXT.try_with(|ctx| {
-        ctx.borrow_mut().cte_column_registry = Some(registry);
-    });
-}
-
-/// Get the CTE column registry for property resolution
-pub fn get_cte_column_registry() -> Option<CteColumnRegistry> {
-    QUERY_CONTEXT
-        .try_with(|ctx| ctx.borrow().cte_column_registry.clone())
-        .ok()
-        .flatten()
-}
-
-/// Clear the CTE column registry
-pub fn clear_cte_column_registry() {
-    let _ = QUERY_CONTEXT.try_with(|ctx| {
-        ctx.borrow_mut().cte_column_registry = None;
-    });
-}
 
 // ============================================================================
 // DENORMALIZED ALIAS ACCESSORS
@@ -279,14 +253,12 @@ pub fn clear_multi_type_vlp_aliases() {
 
 /// Set all render contexts at once (for render phase entry)
 pub fn set_all_render_contexts(
-    cte_registry: CteColumnRegistry,
     relationship_columns: HashMap<String, (String, String)>,
     cte_mappings: HashMap<String, HashMap<String, String>>,
     multi_type_aliases: HashMap<String, String>,
 ) {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
         let mut ctx = ctx.borrow_mut();
-        ctx.cte_column_registry = Some(cte_registry);
         ctx.relationship_columns = relationship_columns;
         ctx.cte_property_mappings = cte_mappings;
         ctx.multi_type_vlp_aliases = multi_type_aliases;
@@ -297,7 +269,6 @@ pub fn set_all_render_contexts(
 pub fn clear_all_render_contexts() {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
         let mut ctx = ctx.borrow_mut();
-        ctx.cte_column_registry = None;
         ctx.relationship_columns.clear();
         ctx.cte_property_mappings.clear();
         ctx.multi_type_vlp_aliases.clear();

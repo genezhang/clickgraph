@@ -2,6 +2,13 @@
 
 ### 🐛 Bug Fixes
 
+- **Nested WITH Filtered Exports** (Jan 26, 2026): Fixed infinite iteration loop in nested WITH clauses with filtered exports
+  - **Problem**: Queries like `MATCH (u:User) WITH u AS person WITH person.name AS name RETURN name` hit 10-iteration safety limit and failed
+  - **Root Cause**: `collapse_passthrough_with()` required both key and CTE name match (`key == target_alias && this_cte_name == target_cte_name`) instead of just key match
+  - **Solution**: Changed condition to `key == target_alias` to allow passthrough WITH collapse when key matches target alias
+  - **Impact**: Nested WITH with filtered exports now work correctly (3/4 test scenarios passing, aggregation remains separate issue)
+  - **Files**: `src/render_plan/plan_builder_utils.rs`
+
 - **EXISTS Subquery Schema Context** (Jan 25, 2026): Fixed EXISTS subqueries using wrong schema/table
   - **Problem**: EXISTS subqueries like `WHERE EXISTS { MATCH (a)-[:FOLLOWS]->(b) }` were generating SQL with wrong tables
   - **Root Cause**: `tokio::task_local!` for query schema context requires `.scope()` wrapper; without it, `try_with()` returns `None` and fallback schema search picks wrong schema when multiple schemas have same relationship type

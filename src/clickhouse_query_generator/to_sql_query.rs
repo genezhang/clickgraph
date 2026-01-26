@@ -13,8 +13,8 @@ use crate::{
         },
     },
     server::query_context::{
-        self, clear_all_render_contexts, get_cte_column_registry, get_cte_property_mapping,
-        get_relationship_columns, is_multi_type_vlp_alias, set_all_render_contexts,
+        self, clear_all_render_contexts, get_cte_property_mapping, get_relationship_columns,
+        is_multi_type_vlp_alias, set_all_render_contexts,
     },
 };
 use std::collections::HashMap;
@@ -26,11 +26,6 @@ use super::function_translator::{get_ch_function_name, CH_PASSTHROUGH_PREFIX};
 // ============================================================================
 // RENDER CONTEXT ACCESSORS (delegating to unified query_context)
 // ============================================================================
-
-/// Retrieve CTE column for property within current render context
-fn get_cte_column_from_context(cte_alias: &str, property: &str) -> Option<String> {
-    get_cte_column_registry().and_then(|registry| registry.lookup(cte_alias, property))
-}
 
 /// Get relationship columns for IS NULL checks
 fn get_relationship_columns_from_context(alias: &str) -> Option<(String, String)> {
@@ -720,12 +715,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
     let multi_type_aliases = build_multi_type_vlp_aliases(&plan);
 
     // TASK-LOCAL: Set ALL contexts for this async task's rendering context
-    set_all_render_contexts(
-        plan.cte_column_registry.clone(),
-        relationship_columns,
-        cte_mappings,
-        multi_type_aliases,
-    );
+    set_all_render_contexts(relationship_columns, cte_mappings, multi_type_aliases);
 
     let mut sql = String::new();
 
@@ -1935,18 +1925,6 @@ impl RenderExpr {
                             table_alias.0, col_name
                         );
                     }
-                }
-
-                // 🔧 Check the CTE column registry (foolproof system)
-                // This registry is populated during plan building with actual CTE output column names
-                if let Some(cte_col) = get_cte_column_from_context(&table_alias.0, col_name) {
-                    log::debug!(
-                        "✅ CTE registry HIT: {}.{} → {} (from CTE column registry)",
-                        table_alias.0,
-                        col_name,
-                        cte_col
-                    );
-                    return format!("{}.{}", table_alias.0, cte_col);
                 }
 
                 // Check if table_alias refers to a CTE and needs property mapping

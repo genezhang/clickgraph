@@ -20,7 +20,8 @@ use crate::query_planner::logical_expr::{
     CteEntityRef as LogicalCteEntityRef, LogicalExpr, PropertyAccess as LogicalPropertyAccess,
     TableAlias,
 };
-use crate::query_planner::logical_plan::LogicalPlan;
+use crate::query_planner::logical_plan::{LogicalPlan, ProjectionItem};
+use crate::query_planner::typed_variable::{TypedVariable, VariableSource};
 use crate::render_plan::cte_extraction::get_path_variable;
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::properties_builder::PropertiesBuilder;
@@ -30,114 +31,21 @@ use crate::render_plan::render_expr::{
 };
 use crate::render_plan::SelectItem;
 
-/// Try to resolve properties for an alias from the CTE column registry
-/// This is used for WITH-exported variables like 'person' in 'WITH u AS person'
-fn try_get_cte_properties(alias: &str) -> Option<Vec<(String, String)>> {
-    use crate::render_plan::get_cte_column_registry;
-
-    let registry = get_cte_column_registry()?;
-
-    log::debug!("🔍 try_get_cte_properties({}) - checking registry", alias);
-    log::debug!(
-        "  Registry aliases: {:?}",
-        registry.alias_to_cte_name.keys().collect::<Vec<_>>()
-    );
-    log::debug!(
-        "  Registry mappings: {} entries",
-        registry.alias_property_to_column.len()
-    );
-
-    // Check if this alias is registered as a CTE alias
-    if !registry.is_cte_alias(alias) {
-        log::debug!("  ❌ '{}' is NOT a CTE alias", alias);
-        return None;
-    }
-
-    log::debug!("  ✅ '{}' IS a CTE alias", alias);
-
-    // Collect all properties for this CTE alias from the registry
-    let mut properties = Vec::new();
-    for ((cte_alias, prop_name), col_name) in &registry.alias_property_to_column {
-        if cte_alias == alias {
-            properties.push((prop_name.clone(), col_name.clone()));
-            log::debug!("    Found property: {} -> {}", prop_name, col_name);
-        }
-    }
-
-    // Sort for consistent output
-    properties.sort_by(|a, b| a.0.cmp(&b.0));
-
-    log::debug!("  Collected {} properties", properties.len());
-
-    if properties.is_empty() {
-        None
-    } else {
-        Some(properties)
-    }
-}
-
-/// Get the table alias to use for a CTE alias
-/// For VLP CTEs, this is "t", for regular WITH CTEs, it's the cypher_alias itself
-fn get_table_alias_for_cte(cypher_alias: &str) -> Option<String> {
-    use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
-    use crate::render_plan::get_cte_column_registry;
-
-    let registry = get_cte_column_registry()?;
-
-    log::warn!(
-        "🔍 get_table_alias_for_cte('{}') - Registry has {} aliases, {} mappings",
-        cypher_alias,
-        registry.alias_to_cte_name.len(),
-        registry.alias_property_to_column.len()
-    );
-    log::warn!(
-        "   Registered aliases: {:?}",
-        registry.alias_to_cte_name.keys().collect::<Vec<_>>()
-    );
-
-    // Check if this alias is registered as a CTE alias
-    if let Some(cte_name) = registry.alias_to_cte_name.get(cypher_alias) {
-        log::warn!(
-            "   ✅ Found CTE '{}' for alias '{}'",
-            cte_name,
-            cypher_alias
-        );
-        // If it's a VLP CTE (name starts with "vlp_"), use "t" as table alias
-        if cte_name.starts_with("vlp_") {
-            log::warn!(
-                "   → VLP CTE detected, using table alias '{}'",
-                VLP_CTE_FROM_ALIAS
-            );
-            Some(VLP_CTE_FROM_ALIAS.to_string())
-        } else {
-            // For regular WITH CTEs, use the FROM alias from registry
-            // This defaults to the CTE name but can be overridden by FROM clause
-            let from_alias = registry
-                .alias_to_from_alias
-                .get(cypher_alias)
-                .cloned()
-                .unwrap_or_else(|| cte_name.clone());
-            log::warn!(
-                "   → Regular WITH CTE, using FROM alias '{}'",
-                from_alias
-            );
-            Some(from_alias)
-        }
-    } else {
-        log::warn!("   ❌ Alias '{}' not found in CTE registry", cypher_alias);
-        None
-    }
-}
-
 /// SelectBuilder trait for extracting SELECT items from logical plans
 pub trait SelectBuilder {
     /// Extract SELECT items from the logical plan
-    fn extract_select_items(&self) -> Result<Vec<SelectItem>, RenderBuildError>;
+    fn extract_select_items(
+        &self,
+        plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
+    ) -> Result<Vec<SelectItem>, RenderBuildError>;
 }
 
 /// Implementation of SelectBuilder for LogicalPlan
 impl SelectBuilder for LogicalPlan {
-    fn extract_select_items(&self) -> Result<Vec<SelectItem>, RenderBuildError> {
+    fn extract_select_items(
+        &self,
+        plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
+    ) -> Result<Vec<SelectItem>, RenderBuildError> {
         log::warn!("🔍🔍🔍 extract_select_items CALLED on plan type");
         crate::debug_println!("DEBUG: extract_select_items called on: {:?}", self);
         let select_items = match &self {
@@ -152,7 +60,7 @@ impl SelectBuilder for LogicalPlan {
                     view_scan
                         .projections
                         .iter()
-                        .map(|proj| {
+                        .map(|proj: &LogicalExpr| {
                             let expr: RenderExpr = proj.clone().try_into()?;
                             Ok(SelectItem {
                                 expression: expr,
@@ -165,9 +73,9 @@ impl SelectBuilder for LogicalPlan {
                     view_scan
                         .property_mapping
                         .iter()
-                        .map(|(prop_name, col_name)| {
+                        .map(|(prop_name, prop_value): (&String, &PropertyValue)| {
                             Ok(SelectItem {
-                                expression: RenderExpr::Column(Column(col_name.clone())),
+                                expression: RenderExpr::Column(Column(prop_value.clone())),
                                 col_alias: Some(ColumnAlias(prop_name.clone())),
                             })
                         })
@@ -184,14 +92,14 @@ impl SelectBuilder for LogicalPlan {
                 let mut items = vec![];
 
                 // Get SELECT items from left node
-                items.extend(graph_rel.left.extract_select_items()?);
+                items.extend(graph_rel.left.extract_select_items(plan_ctx)?);
 
                 // Get SELECT items from right node (for OPTIONAL MATCH, this is the optional part)
-                items.extend(graph_rel.right.extract_select_items()?);
+                items.extend(graph_rel.right.extract_select_items(plan_ctx)?);
 
                 items
             }
-            LogicalPlan::Filter(filter) => filter.input.extract_select_items()?,
+            LogicalPlan::Filter(filter) => filter.input.extract_select_items(plan_ctx)?,
             LogicalPlan::Projection(projection) => {
                 // Convert ProjectionItem expressions to SelectItems
                 // CRITICAL: Expand table aliases (RETURN n → all properties)
@@ -199,54 +107,23 @@ impl SelectBuilder for LogicalPlan {
 
                 for item in &projection.items {
                     match &item.expression {
-                        // Case 0: ColumnAlias that refers to a CTE-exported variable (e.g., RETURN a when a was exported in WITH)
+                        // Case 0: ColumnAlias (regular column reference)
                         LogicalExpr::ColumnAlias(col_alias) => {
                             log::info!(
-                                "🔍 Expanding ColumnAlias('{}') from CTE export",
+                                "🔍 ColumnAlias('{}') - treating as regular column",
                                 col_alias.0
                             );
 
-                            // Check if this column alias refers to a CTE-exported variable
-                            let properties_opt = try_get_cte_properties(&col_alias.0);
-
-                            if let Some(cte_props) = properties_opt {
-                                log::info!(
-                                    "✅ ColumnAlias '{}' is a CTE export with {} properties",
-                                    col_alias.0,
-                                    cte_props.len()
-                                );
-
-                                // Expand to multiple SelectItems, one per property
-                                for (prop_name, col_name) in cte_props {
-                                    select_items.push(SelectItem {
-                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: RenderTableAlias(col_alias.0.clone()),
-                                            column: PropertyValue::Column(col_name),
-                                        }),
-                                        col_alias: Some(ColumnAlias(format!(
-                                            "{}.{}",
-                                            col_alias.0, prop_name
-                                        ))),
-                                    });
-                                }
-                                log::info!(
-                                    "✅ Expanded CTE export '{}' to {} properties",
-                                    col_alias.0,
-                                    select_items.len()
-                                );
-                            } else {
-                                // Not a CTE export, just a regular column alias - pass through as-is
-                                log::debug!("ℹ️ ColumnAlias '{}' is not a CTE export, treating as regular column", col_alias.0);
-                                select_items.push(SelectItem {
-                                    expression: RenderExpr::ColumnAlias(ColumnAlias(
-                                        col_alias.0.clone(),
-                                    )),
-                                    col_alias: item
-                                        .col_alias
-                                        .as_ref()
-                                        .map(|ca| ColumnAlias(ca.0.clone())),
-                                });
-                            }
+                            // Regular column alias - pass through as-is
+                            select_items.push(SelectItem {
+                                expression: RenderExpr::ColumnAlias(ColumnAlias(
+                                    col_alias.0.clone(),
+                                )),
+                                col_alias: item
+                                    .col_alias
+                                    .as_ref()
+                                    .map(|ca| ColumnAlias(ca.0.clone())),
+                            });
                         }
 
                         // Case 1: TableAlias (e.g., RETURN n)
@@ -256,135 +133,89 @@ impl SelectBuilder for LogicalPlan {
                                 table_alias.0
                             );
 
-                            // CRITICAL FIX: Check if this is a WITH-exported CTE variable first
-                            // For 'WITH u AS person', person is a CTE alias with pre-determined columns
-                            // These should NOT be looked up from the schema, but from the CTE registry
-                            let properties_opt = try_get_cte_properties(&table_alias.0);
-
-                            let (properties, table_alias_for_render) = if let Some(cte_props) =
-                                properties_opt
-                            {
-                                log::info!("✅ Using CTE properties for CTE alias '{}' (found {} properties)", table_alias.0, cte_props.len());
-                                (Some(cte_props), table_alias.0.clone())
-                            } else {
-                                // Not a CTE alias, try to get from the logical plan
-                                // Also check if this is a denormalized edge alias mapping
-                                let mapped_alias =
-                                    crate::render_plan::get_denormalized_alias_mapping(
-                                        &table_alias.0,
-                                    )
-                                    .unwrap_or_else(|| table_alias.0.clone());
-
-                                if mapped_alias != table_alias.0 {
-                                    log::info!(
-                                        "🔍 Denormalized alias mapping found: '{}' → '{}'",
-                                        table_alias.0,
-                                        mapped_alias
-                                    );
-                                }
-
-                                match self.get_properties_with_table_alias(&mapped_alias) {
-                                    Ok((props, _)) => {
-                                        if props.is_empty() {
-                                            (None, table_alias.0.clone())
-                                        } else {
-                                            (Some(props), mapped_alias)
+                            // NEW APPROACH: Use TypedVariable for type/source checking
+                            if let Some(plan_ctx) = plan_ctx {
+                                match plan_ctx.lookup_variable(&table_alias.0) {
+                                    Some(typed_var) if typed_var.is_entity() => {
+                                        // Entity (Node or Relationship) - expand properties
+                                        match &typed_var.source() {
+                                            VariableSource::Match => {
+                                                // Base table: use schema + logical plan table alias
+                                                self.expand_base_table_entity(
+                                                    &table_alias.0,
+                                                    typed_var,
+                                                    &mut select_items,
+                                                );
+                                            }
+                                            VariableSource::Cte { cte_name } => {
+                                                // CTE: parse CTE name, compute FROM alias, expand
+                                                self.expand_cte_entity(
+                                                    &table_alias.0,
+                                                    typed_var,
+                                                    cte_name,
+                                                    Some(plan_ctx),
+                                                    &mut select_items,
+                                                );
+                                            }
+                                            _ => {
+                                                log::warn!("⚠️ Entity variable '{}' has unexpected source, treating as scalar", table_alias.0);
+                                                select_items.push(SelectItem {
+                                                    expression: RenderExpr::ColumnAlias(
+                                                        ColumnAlias(table_alias.0.clone()),
+                                                    ),
+                                                    col_alias: item
+                                                        .col_alias
+                                                        .as_ref()
+                                                        .map(|ca| ColumnAlias(ca.0.clone())),
+                                                });
+                                            }
                                         }
                                     }
-                                    Err(_) => (None, table_alias.0.clone()),
-                                }
-                            };
-
-                            if let Some(properties) = properties {
-                                // Expand to multiple SelectItems, one per property
-                                for (prop_name, col_name) in properties {
-                                    select_items.push(SelectItem {
-                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: RenderTableAlias(
-                                                table_alias_for_render.clone(),
-                                            ),
-                                            column: PropertyValue::Column(col_name),
-                                        }),
-                                        col_alias: Some(ColumnAlias(format!(
-                                            "{}.{}",
-                                            table_alias.0, prop_name
-                                        ))),
-                                    });
-                                }
-                                log::info!(
-                                    "✅ Expanded '{}' to {} properties",
-                                    table_alias.0,
-                                    select_items.len()
-                                );
-                            } else if let Some(path_var_name) = get_path_variable(self) {
-                                // Check if this is a path variable
-                                if path_var_name == table_alias.0 {
-                                    log::info!(
-                                        "✅ Path variable '{}' detected, expanding to VLP CTE path columns",
-                                        table_alias.0
-                                    );
-
-                                    // Use the VLP CTE default alias for path columns
-                                    let cte_alias = VLP_CTE_FROM_ALIAS;
-
-                                    // Expand to the standard VLP path columns
-                                    // These columns are generated by the VLP CTE builder
-                                    let path_columns = vec![
-                                        ("nodes", "path_nodes"),
-                                        ("relationships", "path_relationships"),
-                                        ("edges", "path_edges"),
-                                        ("length", "hop_count"),
-                                    ];
-
-                                    for (prop_name, col_name) in path_columns {
-                                        select_items.push(SelectItem {
-                                            expression: RenderExpr::PropertyAccessExp(
-                                                PropertyAccess {
-                                                    table_alias: RenderTableAlias(
-                                                        cte_alias.to_string(),
+                                    Some(typed_var) if typed_var.is_scalar() => {
+                                        // Scalar - single item, no expansion
+                                        match &typed_var.source() {
+                                            VariableSource::Cte { cte_name } => {
+                                                self.expand_cte_scalar(
+                                                    &table_alias.0,
+                                                    cte_name,
+                                                    &mut select_items,
+                                                );
+                                            }
+                                            _ => {
+                                                // Base table scalar or other
+                                                select_items.push(SelectItem {
+                                                    expression: RenderExpr::ColumnAlias(
+                                                        ColumnAlias(table_alias.0.clone()),
                                                     ),
-                                                    column: PropertyValue::Column(
-                                                        col_name.to_string(),
-                                                    ),
-                                                },
-                                            ),
-                                            col_alias: Some(ColumnAlias(format!(
-                                                "{}.{}",
-                                                table_alias.0, prop_name
-                                            ))),
-                                        });
+                                                    col_alias: item
+                                                        .col_alias
+                                                        .as_ref()
+                                                        .map(|ca| ColumnAlias(ca.0.clone())),
+                                                });
+                                            }
+                                        }
                                     }
-                                } else {
-                                    // Not a path variable and no properties - treat as scalar
-                                    log::warn!(
-                                        "⚠️ No properties found for alias '{}', treating as scalar",
-                                        table_alias.0
-                                    );
-                                    select_items.push(SelectItem {
-                                        expression: RenderExpr::ColumnAlias(ColumnAlias(
-                                            table_alias.0.clone(),
-                                        )),
-                                        col_alias: item
-                                            .col_alias
-                                            .as_ref()
-                                            .map(|ca| ColumnAlias(ca.0.clone())),
-                                    });
+                                    _ => {
+                                        // Unknown variable or path/collection - fallback to old logic
+                                        log::warn!("⚠️ Variable '{}' not found in TypedVariable registry, using fallback logic", table_alias.0);
+                                        self.fallback_table_alias_expansion(
+                                            &table_alias,
+                                            item,
+                                            &mut select_items,
+                                        );
+                                    }
                                 }
                             } else {
-                                // No properties and not a path variable - treat as scalar
+                                // No PlanCtx available - use fallback logic
                                 log::warn!(
-                                    "⚠️ No properties found for alias '{}', treating as scalar",
+                                    "⚠️ No PlanCtx available for '{}', using fallback logic",
                                     table_alias.0
                                 );
-                                select_items.push(SelectItem {
-                                    expression: RenderExpr::ColumnAlias(ColumnAlias(
-                                        table_alias.0.clone(),
-                                    )),
-                                    col_alias: item
-                                        .col_alias
-                                        .as_ref()
-                                        .map(|ca| ColumnAlias(ca.0.clone())),
-                                });
+                                self.fallback_table_alias_expansion(
+                                    &table_alias,
+                                    item,
+                                    &mut select_items,
+                                );
                             }
                         }
 
@@ -395,28 +226,24 @@ impl SelectBuilder for LogicalPlan {
                                 prop.table_alias.0
                             );
 
-                            // CRITICAL FIX: Check if this is a CTE-sourced variable first
-                            let properties_opt = try_get_cte_properties(&prop.table_alias.0);
-                            let (properties, table_alias_for_render) = if let Some(cte_props) =
-                                properties_opt
-                            {
-                                log::info!("✅ Using CTE properties for wildcard expansion on CTE alias '{}' (found {} properties)", prop.table_alias.0, cte_props.len());
-                                (Some(cte_props), prop.table_alias.0.clone())
-                            } else {
-                                // Not a CTE alias, get from logical plan
-                                // Also check if this is a denormalized edge alias mapping
-                                let mapped_alias =
-                                    crate::render_plan::get_denormalized_alias_mapping(
-                                        &prop.table_alias.0,
-                                    )
-                                    .unwrap_or_else(|| prop.table_alias.0.clone());
+                            // Check if this is a denormalized edge alias mapping
+                            let mapped_alias = crate::render_plan::get_denormalized_alias_mapping(
+                                &prop.table_alias.0,
+                            )
+                            .unwrap_or_else(|| prop.table_alias.0.clone());
 
-                                if mapped_alias != prop.table_alias.0 {
-                                    log::info!("🔍 Denormalized alias mapping found for wildcard: '{}' → '{}'", prop.table_alias.0, mapped_alias);
-                                }
+                            if mapped_alias != prop.table_alias.0 {
+                                log::info!(
+                                    "🔍 Denormalized alias mapping found for wildcard: '{}' → '{}'",
+                                    prop.table_alias.0,
+                                    mapped_alias
+                                );
+                            }
 
+                            let (properties, table_alias_for_render) =
                                 match self.get_properties_with_table_alias(&mapped_alias) {
                                     Ok((props, _)) => {
+                                        let props: Vec<(String, String)> = props;
                                         if props.is_empty() {
                                             (None, prop.table_alias.0.clone())
                                         } else {
@@ -424,8 +251,7 @@ impl SelectBuilder for LogicalPlan {
                                         }
                                     }
                                     Err(_) => (None, prop.table_alias.0.clone()),
-                                }
-                            };
+                                };
 
                             if let Some(properties) = properties {
                                 // Expand to multiple SelectItems, one per property
@@ -523,25 +349,7 @@ impl SelectBuilder for LogicalPlan {
                                 col_name
                             );
 
-                            // CRITICAL FIX: Check if this is a CTE alias first (for VLP cases)
-                            // For VLP CTEs, properties should be accessed from the CTE result, not the relationship table
-                            if let Some(table_alias) = get_table_alias_for_cte(cypher_alias) {
-                                log::warn!("✅ PropertyAccessExp('{}.{}') is a CTE alias - using table alias '{}'", cypher_alias, col_name, table_alias);
-                                // For CTE aliases, use the correct table alias (t for VLP, cypher_alias for WITH)
-                                select_items.push(SelectItem {
-                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: RenderTableAlias(table_alias),
-                                        column: PropertyValue::Column(col_name.to_string()),
-                                    }),
-                                    col_alias: item
-                                        .col_alias
-                                        .as_ref()
-                                        .map(|ca| ColumnAlias(ca.0.clone())),
-                                });
-                                continue;
-                            }
-
-                            log::warn!("   → get_table_alias_for_cte returned None, trying get_properties_with_table_alias...");
+                            log::warn!("   → trying get_properties_with_table_alias...");
 
                             // For denormalized nodes in edges, we need to get the actual table alias
                             // Try to get properties with actual table alias
@@ -604,27 +412,29 @@ impl SelectBuilder for LogicalPlan {
 
                 select_items
             }
-            LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_select_items()?,
+            LogicalPlan::GraphJoins(graph_joins) => {
+                graph_joins.input.extract_select_items(plan_ctx)?
+            }
             LogicalPlan::GroupBy(group_by) => {
                 // GroupBy doesn't define select items, extract from input
-                group_by.input.extract_select_items()?
+                group_by.input.extract_select_items(plan_ctx)?
             }
-            LogicalPlan::OrderBy(order_by) => order_by.input.extract_select_items()?,
-            LogicalPlan::Skip(skip) => skip.input.extract_select_items()?,
-            LogicalPlan::Limit(limit) => limit.input.extract_select_items()?,
-            LogicalPlan::Cte(cte) => cte.input.extract_select_items()?,
+            LogicalPlan::OrderBy(order_by) => order_by.input.extract_select_items(plan_ctx)?,
+            LogicalPlan::Skip(skip) => skip.input.extract_select_items(plan_ctx)?,
+            LogicalPlan::Limit(limit) => limit.input.extract_select_items(plan_ctx)?,
+            LogicalPlan::Cte(cte) => cte.input.extract_select_items(plan_ctx)?,
             LogicalPlan::Union(_) => vec![],
             LogicalPlan::PageRank(_) => vec![],
-            LogicalPlan::Unwind(u) => u.input.extract_select_items()?,
+            LogicalPlan::Unwind(u) => u.input.extract_select_items(plan_ctx)?,
             LogicalPlan::CartesianProduct(cp) => {
                 // Combine select items from both sides
                 log::warn!("🔍 CartesianProduct.extract_select_items START");
-                let left_items = cp.left.extract_select_items()?;
+                let left_items = cp.left.extract_select_items(plan_ctx)?;
                 log::warn!(
                     "🔍 CartesianProduct.extract_select_items: left side returned {} items",
                     left_items.len()
                 );
-                let right_items = cp.right.extract_select_items()?;
+                let right_items = cp.right.extract_select_items(plan_ctx)?;
                 log::warn!(
                     "🔍 CartesianProduct.extract_select_items: right side returned {} items, combining...",
                     right_items.len()
@@ -637,10 +447,12 @@ impl SelectBuilder for LogicalPlan {
                 );
                 items
             }
-            LogicalPlan::GraphNode(graph_node) => graph_node.input.extract_select_items()?,
+            LogicalPlan::GraphNode(graph_node) => {
+                graph_node.input.extract_select_items(plan_ctx)?
+            }
             LogicalPlan::WithClause(wc) => {
                 log::warn!("🔍 WithClause.extract_select_items: calling extract on input");
-                let items = wc.input.extract_select_items()?;
+                let items = wc.input.extract_select_items(plan_ctx)?;
                 log::warn!(
                     "🔍 WithClause.extract_select_items DONE: extracted {} items from input plan",
                     items.len()
@@ -657,5 +469,184 @@ impl SelectBuilder for LogicalPlan {
         };
 
         Ok(select_items)
+    }
+}
+
+// ============================================================================
+// Helper Methods for TypedVariable-Based Resolution
+// ============================================================================
+
+impl LogicalPlan {
+    /// Expand a base table entity (Node/Relationship from MATCH)
+    fn expand_base_table_entity(
+        &self,
+        alias: &str,
+        typed_var: &TypedVariable,
+        select_items: &mut Vec<SelectItem>,
+    ) {
+        log::info!("✅ Expanding base table entity '{}' to properties", alias);
+
+        // Get labels from TypedVariable
+        let labels = match typed_var {
+            TypedVariable::Node(node) => &node.labels,
+            TypedVariable::Relationship(rel) => &rel.rel_types,
+            _ => return, // Should not happen
+        };
+
+        // Use existing logic to get properties and table alias
+        let mapped_alias = crate::render_plan::get_denormalized_alias_mapping(alias)
+            .unwrap_or_else(|| alias.to_string());
+
+        if mapped_alias != alias {
+            log::info!(
+                "🔍 Denormalized alias mapping: '{}' → '{}'",
+                alias,
+                mapped_alias
+            );
+        }
+
+        match self.get_properties_with_table_alias(&mapped_alias) {
+            Ok((properties, _)) if !properties.is_empty() => {
+                let prop_count = properties.len();
+                for (prop_name, col_name) in properties {
+                    select_items.push(SelectItem {
+                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: RenderTableAlias(mapped_alias.clone()),
+                            column: PropertyValue::Column(col_name),
+                        }),
+                        col_alias: Some(ColumnAlias(format!("{}.{}", alias, prop_name))),
+                    });
+                }
+                log::info!(
+                    "✅ Expanded base table '{}' to {} properties",
+                    alias,
+                    prop_count
+                );
+            }
+            _ => {
+                log::warn!("⚠️ No properties found for base table entity '{}'", alias);
+            }
+        }
+    }
+
+    /// Expand a CTE-sourced entity (Node/Relationship from WITH)
+    fn expand_cte_entity(
+        &self,
+        alias: &str,
+        typed_var: &TypedVariable,
+        cte_name: &str,
+        plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
+        select_items: &mut Vec<SelectItem>,
+    ) {
+        log::info!(
+            "✅ Expanding CTE entity '{}' from CTE '{}' to properties",
+            alias,
+            cte_name
+        );
+
+        // Parse CTE name to get aliases and compute FROM alias
+        let from_alias = self.compute_from_alias_from_cte_name(cte_name);
+        log::info!("🔍 CTE '{}' → FROM alias '{}'", cte_name, from_alias);
+
+        // Get labels from TypedVariable
+        let labels = match typed_var {
+            TypedVariable::Node(node) => &node.labels,
+            TypedVariable::Relationship(rel) => &rel.rel_types,
+            _ => return, // Should not happen
+        };
+
+        // Get properties from schema
+        let plan_ctx = plan_ctx.unwrap(); // Should always be Some for CTE expansion
+        let schema = plan_ctx.schema();
+        let properties = if let TypedVariable::Node(_) = typed_var {
+            schema.get_node_properties(labels)
+        } else {
+            schema.get_relationship_properties(labels)
+        };
+
+        if properties.is_empty() {
+            log::warn!(
+                "⚠️ No properties found in schema for CTE entity '{}'",
+                alias
+            );
+            return;
+        }
+
+        // Generate CTE column names and SelectItems
+        let prop_count = properties.len();
+        for (prop_name, db_column) in properties {
+            let cte_column = format!("{}_{}", alias, db_column);
+            select_items.push(SelectItem {
+                expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: RenderTableAlias(from_alias.clone()),
+                    column: PropertyValue::Column(cte_column),
+                }),
+                col_alias: Some(ColumnAlias(format!("{}.{}", alias, prop_name))),
+            });
+        }
+        log::info!(
+            "✅ Expanded CTE entity '{}' to {} properties",
+            alias,
+            prop_count
+        );
+    }
+
+    /// Handle a CTE-sourced scalar (from WITH)
+    fn expand_cte_scalar(&self, alias: &str, cte_name: &str, select_items: &mut Vec<SelectItem>) {
+        log::info!("✅ Handling CTE scalar '{}' from CTE '{}'", alias, cte_name);
+
+        // Compute FROM alias
+        let from_alias = self.compute_from_alias_from_cte_name(cte_name);
+
+        // For scalars, use the alias as column name (assumes CTE generates alias column)
+        select_items.push(SelectItem {
+            expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: RenderTableAlias(from_alias),
+                column: PropertyValue::Column(alias.to_string()),
+            }),
+            col_alias: Some(ColumnAlias(alias.to_string())),
+        });
+    }
+
+    /// Fallback logic for when TypedVariable is not available
+    fn fallback_table_alias_expansion(
+        &self,
+        table_alias: &TableAlias,
+        item: &ProjectionItem,
+        select_items: &mut Vec<SelectItem>,
+    ) {
+        // Base table logic
+        let mapped_alias = crate::render_plan::get_denormalized_alias_mapping(&table_alias.0)
+            .unwrap_or_else(|| table_alias.0.clone());
+
+        let (properties, table_alias_for_render) =
+            match self.get_properties_with_table_alias(&mapped_alias) {
+                Ok((props, _)) if !props.is_empty() => (Some(props), mapped_alias),
+                _ => (None, table_alias.0.clone()),
+            };
+
+        if let Some(properties) = properties {
+            for (prop_name, col_name) in properties {
+                select_items.push(SelectItem {
+                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: RenderTableAlias(table_alias_for_render.clone()),
+                        column: PropertyValue::Column(col_name),
+                    }),
+                    col_alias: Some(ColumnAlias(format!("{}.{}", table_alias.0, prop_name))),
+                });
+            }
+        } else {
+            // Scalar fallback
+            select_items.push(SelectItem {
+                expression: RenderExpr::ColumnAlias(ColumnAlias(table_alias.0.clone())),
+                col_alias: item.col_alias.as_ref().map(|ca| ColumnAlias(ca.0.clone())),
+            });
+        }
+    }
+
+    /// Compute FROM alias from CTE name
+    fn compute_from_alias_from_cte_name(&self, cte_name: &str) -> String {
+        // The FROM alias is simply the CTE name itself
+        cte_name.to_string()
     }
 }

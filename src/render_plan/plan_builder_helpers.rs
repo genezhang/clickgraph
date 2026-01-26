@@ -2562,7 +2562,7 @@ pub(super) fn is_invalid_filter_expression(expr: &RenderExpr) -> bool {
 pub(super) fn normalize_union_branches(
     union_plans: Vec<super::RenderPlan>,
 ) -> Vec<super::RenderPlan> {
-    use super::{CteColumnRegistry, RenderPlan, SelectItem, SelectItems};
+    use super::{RenderPlan, SelectItem, SelectItems};
     use std::collections::BTreeSet;
 
     if union_plans.is_empty() {
@@ -2640,7 +2640,6 @@ pub(super) fn normalize_union_branches(
                     items: normalized_items,
                     distinct: plan.select.distinct,
                 },
-                cte_column_registry: CteColumnRegistry::new(),
                 ..plan
             }
         })

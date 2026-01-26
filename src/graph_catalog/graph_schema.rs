@@ -1106,6 +1106,44 @@ impl GraphSchema {
         self.relationships.get(rel_label)
     }
 
+    /// Get properties for a node label as (property_name, column_or_expr) pairs
+    pub fn get_node_properties(&self, labels: &[String]) -> Vec<(String, String)> {
+        if let Some(label) = labels.first() {
+            if let Some(node_schema) = self.get_node_schema_opt(label) {
+                node_schema
+                    .property_mappings
+                    .iter()
+                    .map(|(prop_name, prop_value)| {
+                        (prop_name.clone(), prop_value.raw().to_string())
+                    })
+                    .collect()
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        }
+    }
+
+    /// Get properties for a relationship type as (property_name, column_or_expr) pairs
+    pub fn get_relationship_properties(&self, rel_types: &[String]) -> Vec<(String, String)> {
+        if let Some(rel_type) = rel_types.first() {
+            if let Some(rel_schema) = self.get_relationships_schema_opt(rel_type) {
+                rel_schema
+                    .property_mappings
+                    .iter()
+                    .map(|(prop_name, prop_value)| {
+                        (prop_name.clone(), prop_value.raw().to_string())
+                    })
+                    .collect()
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        }
+    }
+
     /// Get all node schemas with a specific label from all tables
     /// Returns a vector of (table_name, NodeSchema) pairs
     /// Used for MULTI_TABLE_LABEL scenarios where same label exists in multiple tables
