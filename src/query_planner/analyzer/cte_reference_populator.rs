@@ -53,7 +53,7 @@ impl CteReferencePopulator {
 
                 if input_resolved.is_yes() {
                     let new_wc = WithClause {
-                        cte_name: None,
+                        cte_name: wc.cte_name.clone(),
                         input: input_resolved.get_plan(),
                         ..wc.clone()
                     };

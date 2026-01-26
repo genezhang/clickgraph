@@ -347,7 +347,7 @@ impl AnalyzerPass for CteColumnResolver {
 
                 if child_tf.is_yes() {
                     Transformed::Yes(Arc::new(LogicalPlan::WithClause(WithClause {
-                        cte_name: None,
+                        cte_name: wc.cte_name.clone(),
                         input: child_tf.get_plan(),
                         items: resolved_items,
                         where_clause: resolved_where,

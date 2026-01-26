@@ -201,7 +201,7 @@ impl DuplicateScansRemoving {
                 match child_tf {
                     Transformed::Yes(new_input) => {
                         let new_with = crate::query_planner::logical_plan::WithClause {
-                            cte_name: None,
+                            cte_name: with_clause.cte_name.clone(),
                             input: new_input,
                             items: with_clause.items.clone(),
                             distinct: with_clause.distinct,
