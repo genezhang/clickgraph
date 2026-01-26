@@ -2976,7 +2976,7 @@ pub fn extract_ctes_with_context(
             // which led to node lookups failing in VLP queries
             Ok(vec![Cte::new(
                 logical_cte.name.clone(),
-                super::CteContent::Structured(logical_cte.input.to_render_plan(schema)?),
+                super::CteContent::Structured(logical_cte.input.to_render_plan(schema, None)?),
                 false,
             )])
         }
@@ -3267,7 +3267,7 @@ pub fn extract_ctes_with_context(
                 LogicalPlan::Projection(projection_with_with_items)
             };
 
-            let mut cte_render_plan = plan_to_render.to_render_plan(schema)?;
+            let mut cte_render_plan = plan_to_render.to_render_plan(schema, None)?;
 
             // Add WHERE clause from WITH to the CTE render plan
             if let Some(where_clause) = &wc.where_clause {

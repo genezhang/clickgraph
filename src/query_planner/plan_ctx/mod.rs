@@ -329,21 +329,12 @@ impl PlanCtx {
                     table_ctx.get_to_node_label().cloned(),
                     VariableSource::Match,
                 );
-            } else if table_ctx.is_path_variable() {
-                // It's a path variable (no labels, not a relationship)
-                // Note: We don't have full path info here (start/end nodes, bounds),
-                // so we register a basic path. The full info would need to be passed
-                // from the caller or set via define_path() directly.
-                self.variables.define_path(
-                    alias.clone(),
-                    None,  // start_node - not available from TableCtx
-                    None,  // end_node - not available from TableCtx
-                    None,  // relationship - not available from TableCtx
-                    None,  // length_bounds - not available from TableCtx
-                    false, // is_shortest_path - would need explicit flag
-                );
             } else {
-                // It's a node variable
+                // It's a node variable (even if labels are empty)
+                // NOTE: is_path_variable() returns true for nodes with no labels,
+                // but we should NOT treat them as path variables here. Path variables
+                // are explicitly created via define_path() during MATCH processing.
+                // Nodes without labels are just unlabeled nodes, not paths!
                 self.variables
                     .define_node(alias.clone(), labels, VariableSource::Match);
             }

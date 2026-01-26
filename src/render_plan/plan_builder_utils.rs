@@ -6656,7 +6656,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 } else {
                     // No nested WITH clauses - render directly
                     log::warn!("🔧 build_chained_with_match_cte_plan: Plan has no nested WITH clauses, rendering directly");
-                    plan_to_render.to_render_plan(schema)?
+                    plan_to_render.to_render_plan(schema, None)?
                 };
                 // CRITICAL: Extract CTE schemas from nested rendering
                 // When rendering nested WITHs, the recursive call builds CTEs that we need
@@ -7880,7 +7880,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
     // All WITH clauses have been processed, now render the final plan
     // Use non-recursive render to get the base plan
-    let mut render_plan = current_plan.to_render_plan(schema)?;
+    let mut render_plan = current_plan.to_render_plan_with_ctx(schema, plan_ctx)?;
 
     log::info!(
         "🔧 build_chained_with_match_cte_plan: Final render complete. FROM: {:?}, SELECT items: {}",
@@ -8903,7 +8903,7 @@ pub(crate) fn build_with_aggregation_match_cte_plan(
     );
 
     // Step 3: Render the GroupBy subplan as a CTE
-    let mut group_by_render = group_by_plan.to_render_plan(schema)?;
+    let mut group_by_render = group_by_plan.to_render_plan(schema, None)?;
 
     // Note: GROUP BY optimization (reducing to ID-only) is now done in extract_group_by()
     // This happens automatically during to_render_plan() call above.
@@ -8980,7 +8980,7 @@ pub(crate) fn build_with_aggregation_match_cte_plan(
     log::warn!("🔧 build_with_aggregation_match_cte_plan: Transformed plan to use CTE reference");
 
     // Step 7: Render the transformed outer query
-    let mut render_plan = transformed_plan.to_render_plan(schema)?;
+    let mut render_plan = transformed_plan.to_render_plan(schema, None)?;
 
     // Step 8: Post-process outer query: Fix the FROM table to use CTE and fix join references
     // The outer query's FROM should be the CTE, and joins should be for the outer MATCH pattern only

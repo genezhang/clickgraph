@@ -95,6 +95,13 @@ pub enum VarSource {
         entity_type: EntityType,
     },
 
+    /// Variable is a path from current scope MATCH
+    /// Example: `MATCH p = (a)-[*]->(b)` → p maps to PathEntity
+    PathEntity {
+        /// Alias in the query (e.g., "p")
+        alias: String,
+    },
+
     /// Variable is a node/relationship exported through a CTE
     /// Example: `WITH a, count(b) as cnt` → a maps to CteEntity (NOT a single column!)
     /// This tells resolver to keep as TableAlias for renderer to expand
@@ -1080,6 +1087,16 @@ impl VariableResolver {
                         // Leave as TableAlias - it will be expanded by renderer
                         log::debug!(
                             "🔍 VariableResolver: '{}' is schema entity, keeping as TableAlias",
+                            alias.0
+                        );
+                        Ok(expr.clone())
+                    }
+
+                    Some(VarSource::PathEntity { .. }) => {
+                        // This is a path variable from MATCH
+                        // Leave as TableAlias - it will be expanded by renderer
+                        log::debug!(
+                            "🔍 VariableResolver: '{}' is path entity, keeping as TableAlias",
                             alias.0
                         );
                         Ok(expr.clone())

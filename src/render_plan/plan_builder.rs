@@ -287,7 +287,9 @@ pub(crate) trait RenderPlanBuilder {
         schema: &GraphSchema,
     ) -> RenderPlanBuilderResult<RenderPlan>;
 
-    fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan>;
+    fn to_render_plan(&self, schema: &GraphSchema, plan_ctx: Option<&PlanCtx>) -> RenderPlanBuilderResult<RenderPlan> {
+        self.to_render_plan_with_ctx(schema, plan_ctx)
+    }
 
     /// Convert to render plan with access to analysis-phase context (PlanCtx).
     /// This method should be preferred over `to_render_plan` when `plan_ctx` is available,
@@ -612,7 +614,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // 🔧 FIX: Use the schema parameter instead of creating an empty schema
                 let render_cte = Cte::new(
                     strip_database_prefix(&logical_cte.name),
-                    super::CteContent::Structured(logical_cte.input.to_render_plan(schema)?),
+                    super::CteContent::Structured(logical_cte.input.to_render_plan(schema, None)?),
                     false, // is_recursive
                 );
                 Some(render_cte)
@@ -721,7 +723,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     LogicalPlan::Union(union) => {
                         // Found Union nested deep, convert it to render plan
                         log::debug!("extract_union: found nested Union, converting to render");
-                        let union_render_plan = current.to_render_plan(schema)?;
+                        let union_render_plan = current.to_render_plan(schema, None)?;
                         return Ok(union_render_plan.union.0);
                     }
                     _ => break,
@@ -742,7 +744,7 @@ impl RenderPlanBuilder for LogicalPlan {
         <LogicalPlan as JoinBuilder>::try_build_join_based_plan(self, schema)
     }
 
-    fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan> {
+    fn to_render_plan(&self, schema: &GraphSchema, plan_ctx: Option<&PlanCtx>) -> RenderPlanBuilderResult<RenderPlan> {
         // CRITICAL: If the plan contains WITH clauses, use the specialized handler
         // build_chained_with_match_cte_plan handles chained/nested WITH correctly
         use super::plan_builder_utils::{
@@ -773,7 +775,7 @@ impl RenderPlanBuilder for LogicalPlan {
         match self {
             LogicalPlan::GraphJoins(gj) => {
                 let mut select_items = SelectItems {
-                    items: <LogicalPlan as SelectBuilder>::extract_select_items(self, None)?,
+                    items: <LogicalPlan as SelectBuilder>::extract_select_items(self, plan_ctx)?,
                     distinct: FilterBuilder::extract_distinct(self),
                 };
                 let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
@@ -976,7 +978,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
                     // Now extract select items with CTE registry available
                     let mut select_items = SelectItems {
-                        items: <LogicalPlan as SelectBuilder>::extract_select_items(self, None)?,
+                        items: <LogicalPlan as SelectBuilder>::extract_select_items(self, plan_ctx)?,
                         distinct: FilterBuilder::extract_distinct(self),
                     };
                     let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
@@ -1039,7 +1041,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                 );
 
-                let mut render_plan = p.input.to_render_plan(schema)?;
+                let mut render_plan = p.input.to_render_plan_with_ctx(schema, plan_ctx)?;
 
                 log::debug!(
                     "Projection::to_render_plan: after input conversion, has_union={}",
@@ -1053,19 +1055,20 @@ impl RenderPlanBuilder for LogicalPlan {
 
                     // Extract select items with PlanCtx available for TypedVariable resolution
                     let select_items =
-                        <LogicalPlan as SelectBuilder>::extract_select_items(self, None)?;
+                        <LogicalPlan as SelectBuilder>::extract_select_items(self, plan_ctx)?;
                     render_plan.select = SelectItems {
                         items: select_items,
                         distinct: p.distinct,
                     };
                 } else {
                     let mut select_items =
-                        <LogicalPlan as SelectBuilder>::extract_select_items(self, None)?;
+                        <LogicalPlan as SelectBuilder>::extract_select_items(self, plan_ctx)?;
 
                     // Check if this Projection is over an optional VLP GraphRel
                     if let LogicalPlan::GraphRel(gr) = p.input.as_ref() {
                         if gr.variable_length.is_some() && gr.is_optional.unwrap_or(false) {
                             log::info!("🎯 Projection over optional VLP: aggregations handled by LEFT JOIN with COUNT(*)");
+
 
                             // ClickHouse returns 0 (not NULL) for COUNT(*) with empty groups in LEFT JOIN + GROUP BY
                             // So no COALESCE wrapper needed - aggregations work correctly as-is
@@ -1081,7 +1084,7 @@ impl RenderPlanBuilder for LogicalPlan {
             }
             LogicalPlan::Filter(f) => {
                 // For Filter, convert the input plan and combine filters
-                let mut render_plan = f.input.to_render_plan(schema)?;
+                let mut render_plan = f.input.to_render_plan(schema, None)?;
 
                 // 🔧 BUG #10 FIX: For VLP/shortest path queries, filters on start/end nodes
                 // are already pushed into the CTE during extraction. Don't duplicate them
@@ -1126,7 +1129,7 @@ impl RenderPlanBuilder for LogicalPlan {
             }
             LogicalPlan::OrderBy(ob) => {
                 // For OrderBy, convert the input plan and set order_by
-                let mut render_plan = ob.input.to_render_plan(schema)?;
+                let mut render_plan = ob.input.to_render_plan(schema, None)?;
 
                 // Convert logical OrderByItems to render OrderByItems
                 let order_by_items: Result<Vec<OrderByItem>, _> = ob
@@ -1140,19 +1143,19 @@ impl RenderPlanBuilder for LogicalPlan {
             }
             LogicalPlan::Skip(s) => {
                 // For Skip, convert the input plan and set skip
-                let mut render_plan = s.input.to_render_plan(schema)?;
+                let mut render_plan = s.input.to_render_plan(schema, None)?;
                 render_plan.skip = SkipItem(Some(s.count));
                 Ok(render_plan)
             }
             LogicalPlan::Limit(l) => {
                 // For Limit, convert the input plan and set limit
-                let mut render_plan = l.input.to_render_plan(schema)?;
+                let mut render_plan = l.input.to_render_plan(schema, None)?;
                 render_plan.limit = LimitItem(Some(l.count));
                 Ok(render_plan)
             }
             LogicalPlan::GroupBy(gb) => {
                 // For GroupBy, convert the input plan and set group_by and having_clause
-                let mut render_plan = gb.input.to_render_plan(schema)?;
+                let mut render_plan = gb.input.to_render_plan(schema, None)?;
 
                 log::debug!(
                     "GroupBy::to_render_plan: has_union={}",
@@ -1188,7 +1191,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                 );
 
-                let mut render_plan = gn.input.to_render_plan(schema)?;
+                let mut render_plan = gn.input.to_render_plan(schema, None)?;
 
                 log::debug!(
                     "GraphNode::to_render_plan: after input conversion, has_union={}",
@@ -1440,14 +1443,14 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
 
                 // Render both sides
-                let left_render = cp.left.to_render_plan(schema)?;
+                let left_render = cp.left.to_render_plan(schema, None)?;
 
                 // CRITICAL FIX: Pass CTE registry from left side to right side
                 // When left is a WITH clause, it creates CTEs with column aliases
                 // The right side needs to know about these to resolve property access expressions
                 // REMOVED: CTE registry no longer used
 
-                let right_render = cp.right.to_render_plan(schema)?;
+                let right_render = cp.right.to_render_plan(schema, None)?;
 
                 // Clear the CTE registry after rendering the right side
                 // REMOVED: CTE registry no longer used
@@ -1557,7 +1560,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 // Convert first branch to get the base plan
                 let first_input = &union.inputs[0];
-                let mut base_plan = first_input.to_render_plan(schema)?;
+                let mut base_plan = first_input.to_render_plan(schema, None)?;
 
                 // If there's only one branch, just return it
                 if union.inputs.len() == 1 {
@@ -1567,7 +1570,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Convert remaining branches
                 let mut union_branches = Vec::new();
                 for input in union.inputs.iter().skip(1) {
-                    let branch_plan = input.to_render_plan(schema)?;
+                    let branch_plan = input.to_render_plan(schema, None)?;
                     union_branches.push(branch_plan);
                 }
 
@@ -1620,9 +1623,123 @@ impl RenderPlanBuilder for LogicalPlan {
             return build_chained_with_match_cte_plan(self, schema, plan_ctx);
         }
 
-        // For all other cases, delegate to the standard to_render_plan
-        // (which doesn't need plan_ctx for non-WITH clause handling)
-        self.to_render_plan(schema)
+        // For all other cases, handle directly with plan_ctx available
+        log::info!("🔍 to_render_plan_with_ctx: Processing plan type: {:?}", std::mem::discriminant(self));
+        match self {
+            LogicalPlan::GraphJoins(gj) => {
+                let mut select_items = SelectItems {
+                    items: <LogicalPlan as SelectBuilder>::extract_select_items(self, plan_ctx)?,
+                    distinct: FilterBuilder::extract_distinct(self),
+                };
+                let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
+                let joins = JoinItems(RenderPlanBuilder::extract_joins(self, schema)?);
+                let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
+                let filters = FilterItems(FilterBuilder::extract_filters(self)?);
+                let group_by =
+                    GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
+                let having_clause = self.extract_having()?;
+
+                // 🔧 BUG #11 FIX: Wrap non-ID, non-aggregated columns with anyLast() when GROUP BY present
+                // This fixes queries like: RETURN a, count(b) where a expands to all properties
+                // but GROUP BY only has a.user_id
+                select_items.items =
+                    apply_anylast_wrapping_for_group_by(select_items.items, &group_by.0, self)?;
+
+                let order_by = OrderByItems(self.extract_order_by()?);
+                let skip = SkipItem(self.extract_skip());
+                let limit = LimitItem(self.extract_limit());
+                let union = UnionItems(self.extract_union(schema)?);
+
+                // Extract CTEs from the input plan
+                let mut context = super::cte_generation::CteGenerationContext::new();
+                let ctes = CteItems(extract_ctes_with_context(
+                    self,
+                    &"".to_string(),
+                    &mut context,
+                    schema,
+                )?);
+
+                Ok(RenderPlan {
+                    ctes,
+                    select: select_items,
+                    from,
+                    joins,
+                    array_join,
+                    filters,
+                    group_by,
+                    having_clause,
+                    order_by,
+                    skip,
+                    limit,
+                    union,
+                    fixed_path_info: None,
+                })
+            }
+            LogicalPlan::GraphRel(gr) => {
+                // For VLP GraphRel, build the VLP CTE plan
+                build_chained_with_match_cte_plan(self, schema, plan_ctx)
+            }
+            LogicalPlan::Projection(proj) => {
+                // For Projection wrapping VLP GraphRel, delegate to the input
+                proj.input.to_render_plan_with_ctx(schema, plan_ctx)
+            }
+            LogicalPlan::Filter(f) => {
+                // For Filter, delegate to the input with plan_ctx to handle VLP properly
+                let mut render_plan = f.input.to_render_plan_with_ctx(schema, plan_ctx)?;
+
+                // Apply the same VLP filtering logic as to_render_plan
+                use super::plan_builder_helpers::has_variable_length_or_shortest_path;
+                let has_vlp_or_shortest_path = has_variable_length_or_shortest_path(&f.input);
+
+                if !has_vlp_or_shortest_path {
+                    // For non-VLP queries, add the filter to the render plan
+                    let mut filter_expr: RenderExpr = f.predicate.clone().try_into()?;
+                    apply_property_mapping_to_expr(&mut filter_expr, &f.input);
+
+                    render_plan.filters = match render_plan.filters.0 {
+                        Some(existing) => FilterItems(Some(RenderExpr::OperatorApplicationExp(
+                            crate::render_plan::render_expr::OperatorApplication {
+                                operator: crate::render_plan::render_expr::Operator::And,
+                                operands: vec![existing, filter_expr],
+                            },
+                        ))),
+                        None => FilterItems(Some(filter_expr)),
+                    };
+                }
+
+                Ok(render_plan)
+            }
+            LogicalPlan::Limit(l) => {
+                // For Limit, delegate to the input with plan_ctx to handle VLP properly
+                let mut render_plan = l.input.to_render_plan_with_ctx(schema, plan_ctx)?;
+                render_plan.limit = LimitItem(Some(l.count));
+                Ok(render_plan)
+            }
+            LogicalPlan::Skip(s) => {
+                // For Skip, delegate to the input with plan_ctx to handle VLP properly
+                let mut render_plan = s.input.to_render_plan_with_ctx(schema, plan_ctx)?;
+                render_plan.skip = SkipItem(Some(s.count));
+                Ok(render_plan)
+            }
+            LogicalPlan::OrderBy(ob) => {
+                // For OrderBy, delegate to the input with plan_ctx to handle VLP properly
+                let mut render_plan = ob.input.to_render_plan_with_ctx(schema, plan_ctx)?;
+                
+                // Convert logical OrderByItems to render OrderByItems
+                let order_by_items: Result<Vec<OrderByItem>, _> = ob
+                    .items
+                    .iter()
+                    .map(|item| item.clone().try_into())
+                    .collect();
+                render_plan.order_by = OrderByItems(order_by_items?);
+                Ok(render_plan)
+            }
+            _ => {
+                // For other plan types, delegate to try_build_join_based_plan
+                // (which calls extract_select_items with None - acceptable for non-VLP cases)
+                <LogicalPlan as JoinBuilder>::try_build_join_based_plan(self, schema)
+            }
+        }
     }
 }
 

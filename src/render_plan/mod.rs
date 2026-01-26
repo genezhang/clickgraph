@@ -65,7 +65,7 @@ pub fn logical_plan_to_render_plan(
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
 ) -> Result<RenderPlan, errors::RenderBuildError> {
     use plan_builder::RenderPlanBuilder;
-    logical_plan.to_render_plan(schema)
+    logical_plan.to_render_plan(schema, None)
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

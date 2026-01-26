@@ -135,6 +135,7 @@ impl SelectBuilder for LogicalPlan {
 
                             // NEW APPROACH: Use TypedVariable for type/source checking
                             if let Some(plan_ctx) = plan_ctx {
+                                log::info!("🔍 PlanCtx available, looking up variable '{}'", table_alias.0);
                                 match plan_ctx.lookup_variable(&table_alias.0) {
                                     Some(typed_var) if typed_var.is_entity() => {
                                         // Entity (Node or Relationship) - expand properties
@@ -183,6 +184,57 @@ impl SelectBuilder for LogicalPlan {
                                             }
                                             _ => {
                                                 // Base table scalar or other
+                                                select_items.push(SelectItem {
+                                                    expression: RenderExpr::ColumnAlias(
+                                                        ColumnAlias(table_alias.0.clone()),
+                                                    ),
+                                                    col_alias: item
+                                                        .col_alias
+                                                        .as_ref()
+                                                        .map(|ca| ColumnAlias(ca.0.clone())),
+                                                });
+                                            }
+                                        }
+                                    }
+                                    Some(typed_var) if typed_var.is_path() => {
+                                        log::info!("🔍 Path variable '{}' found, source: {:?}", table_alias.0, typed_var.source());
+                                        // Path variable - construct path object from CTE columns
+                                        match &typed_var.source() {
+                                            VariableSource::Cte { cte_name } => {
+                                                self.expand_cte_path(
+                                                    &table_alias.0,
+                                                    cte_name,
+                                                    &mut select_items,
+                                                );
+                                            }
+                                            VariableSource::Match => {
+                                                // VLP path variable from MATCH clause
+                                                // GUARD: Only expand if this plan actually contains VLP
+                                                use crate::render_plan::plan_builder_helpers::has_variable_length_or_shortest_path;
+                                                if has_variable_length_or_shortest_path(self) {
+                                                    log::info!("🔍 Calling expand_vlp_path for MATCH-sourced path '{}'", table_alias.0);
+                                                    // use 't' as table alias
+                                                    self.expand_vlp_path(
+                                                        &table_alias.0,
+                                                        &mut select_items,
+                                                    );
+                                                } else {
+                                                    // Plan doesn't have VLP - this is a false positive
+                                                    // Treat as regular column alias
+                                                    log::warn!("⚠️ Path variable '{}' found but plan has no VLP, treating as column alias", table_alias.0);
+                                                    select_items.push(SelectItem {
+                                                        expression: RenderExpr::ColumnAlias(
+                                                            ColumnAlias(table_alias.0.clone()),
+                                                        ),
+                                                        col_alias: item
+                                                            .col_alias
+                                                            .as_ref()
+                                                            .map(|ca| ColumnAlias(ca.0.clone())),
+                                                    });
+                                                }
+                                            }
+                                            _ => {
+                                                log::warn!("⚠️ Path variable '{}' has unexpected source, treating as scalar", table_alias.0);
                                                 select_items.push(SelectItem {
                                                     expression: RenderExpr::ColumnAlias(
                                                         ColumnAlias(table_alias.0.clone()),
@@ -604,6 +656,84 @@ impl LogicalPlan {
                 table_alias: RenderTableAlias(from_alias),
                 column: PropertyValue::Column(alias.to_string()),
             }),
+            col_alias: Some(ColumnAlias(alias.to_string())),
+        });
+    }
+
+    /// Handle a CTE-sourced path variable (from WITH clauses)
+    fn expand_cte_path(&self, alias: &str, cte_name: &str, select_items: &mut Vec<SelectItem>) {
+        log::info!("✅ Handling CTE path '{}' from CTE '{}'", alias, cte_name);
+
+        // Compute FROM alias
+        let from_alias = self.compute_from_alias_from_cte_name(cte_name);
+
+        // For path variables, construct a tuple from path-related columns
+        // Path columns typically include: path_nodes, hop_count, path_relationships, path_edges
+        let path_columns = vec![
+            "path_nodes",
+            "hop_count", 
+            "path_relationships",
+            "path_edges"
+        ];
+
+        // Create property access expressions for each path column
+        let path_exprs: Vec<RenderExpr> = path_columns
+            .into_iter()
+            .map(|col| {
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: RenderTableAlias(from_alias.clone()),
+                    column: PropertyValue::Column(col.to_string()),
+                })
+            })
+            .collect();
+
+        // Create tuple expression for the path object
+        let tuple_expr = RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: "tuple".to_string(),
+            args: path_exprs,
+        });
+
+        select_items.push(SelectItem {
+            expression: tuple_expr,
+            col_alias: Some(ColumnAlias(alias.to_string())),
+        });
+    }
+
+    /// Handle a MATCH-sourced path variable (from VLP patterns)
+    fn expand_vlp_path(&self, alias: &str, select_items: &mut Vec<SelectItem>) {
+        log::info!("✅ Handling VLP path '{}' with table alias 't'", alias);
+
+        // For VLP path variables, the table alias is typically 't'
+        let from_alias = "t";
+
+        // For path variables, construct a tuple from path-related columns
+        // Path columns typically include: path_nodes, hop_count, path_relationships, path_edges
+        let path_columns = vec![
+            "path_nodes",
+            "hop_count", 
+            "path_relationships",
+            "path_edges"
+        ];
+
+        // Create property access expressions for each path column
+        let path_exprs: Vec<RenderExpr> = path_columns
+            .into_iter()
+            .map(|col| {
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: RenderTableAlias(from_alias.to_string()),
+                    column: PropertyValue::Column(col.to_string()),
+                })
+            })
+            .collect();
+
+        // Create tuple expression for the path object
+        let tuple_expr = RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: "tuple".to_string(),
+            args: path_exprs,
+        });
+
+        select_items.push(SelectItem {
+            expression: tuple_expr,
             col_alias: Some(ColumnAlias(alias.to_string())),
         });
     }
