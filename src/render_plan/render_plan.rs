@@ -16,12 +16,22 @@ pub struct CteColumnRegistry {
     /// Map: cte_alias → cte_name for context
     /// Used for debugging and validation
     pub alias_to_cte_name: HashMap<String, String>,
+
+    /// Map: cypher_alias → FROM alias for column references
+    /// This is determined at reference time (not CTE creation time)
+    /// Example: "b" → "with_a_b_cte_1" (use CTE name as default)
+    /// Can be overridden when FROM clause uses explicit alias like "AS a_b"
+    pub alias_to_from_alias: HashMap<String, String>,
 }
 
 impl CteColumnRegistry {
     /// Create a new empty registry
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            alias_property_to_column: HashMap::new(),
+            alias_to_cte_name: HashMap::new(),
+            alias_to_from_alias: HashMap::new(),
+        }
     }
 
     /// Register a column mapping: (alias, property) → column
@@ -55,6 +65,8 @@ impl CteColumnRegistry {
             .extend(other.alias_property_to_column.clone());
         self.alias_to_cte_name
             .extend(other.alias_to_cte_name.clone());
+        self.alias_to_from_alias
+            .extend(other.alias_to_from_alias.clone());
     }
 
     /// Populate registry from CTE column metadata.
@@ -64,6 +76,9 @@ impl CteColumnRegistry {
         cte_name: &str,
         columns: &[crate::render_plan::CteColumnMetadata],
     ) {
+        // Track unique cypher_aliases in this CTE
+        let mut seen_aliases = std::collections::HashSet::new();
+        
         for metadata in columns {
             self.register(
                 metadata.cypher_alias.clone(),
@@ -71,6 +86,13 @@ impl CteColumnRegistry {
                 metadata.cypher_property.clone(),
                 metadata.cte_column_name.clone(),
             );
+            seen_aliases.insert(metadata.cypher_alias.clone());
+        }
+        
+        // Set default FROM alias to CTE name for all unique aliases
+        // This can be overridden later if FROM clause uses explicit "AS alias"
+        for alias in seen_aliases {
+            self.alias_to_from_alias.insert(alias, cte_name.to_string());
         }
     }
 }

@@ -110,9 +110,18 @@ fn get_table_alias_for_cte(cypher_alias: &str) -> Option<String> {
             );
             Some(VLP_CTE_FROM_ALIAS.to_string())
         } else {
-            // For regular WITH CTEs, the table alias is the cypher_alias
-            log::warn!("   → Regular WITH CTE, using cypher_alias as table alias");
-            Some(cypher_alias.to_string())
+            // For regular WITH CTEs, use the FROM alias from registry
+            // This defaults to the CTE name but can be overridden by FROM clause
+            let from_alias = registry
+                .alias_to_from_alias
+                .get(cypher_alias)
+                .cloned()
+                .unwrap_or_else(|| cte_name.clone());
+            log::warn!(
+                "   → Regular WITH CTE, using FROM alias '{}'",
+                from_alias
+            );
+            Some(from_alias)
         }
     } else {
         log::warn!("   ❌ Alias '{}' not found in CTE registry", cypher_alias);
