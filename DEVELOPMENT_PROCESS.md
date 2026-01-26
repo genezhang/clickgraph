@@ -1044,6 +1044,26 @@ LogicalPlan::Unwind(u) => {
 
 **⚠️ REQUIRED FINAL STEP: All code must be reviewed before merging to main!**
 
+### ⚠️ PRE-PUSH CHECKLIST (DO NOT SKIP!)
+
+**Run these commands IN ORDER before pushing:**
+
+```bash
+# 1. Format (CI will fail without this!)
+cargo fmt --all
+
+# 2. Check clippy warnings
+cargo clippy --all-targets
+
+# 3. Verify tests pass
+cargo test
+
+# 4. Integration tests (if applicable)
+pytest tests/integration/
+```
+
+**Why this matters**: CI checks will fail if formatting is wrong, wasting time and requiring force-push fixes.
+
 ### Entry Criteria
 - [ ] Phase 5 (Documentation) complete
 - [ ] All tests passing (unit + integration)
@@ -1055,9 +1075,10 @@ LogicalPlan::Unwind(u) => {
 
 #### 6.1 Pre-PR Self-Review Checklist
 
-**Code Quality**:
+**Code Quality** (⚠️ MUST ALL PASS BEFORE PUSHING):
 - [ ] All tests passing: `cargo test` (unit) and `pytest` (integration)
-- [ ] **Code formatting applied: `cargo fmt --all`** ⚠️ MANDATORY
+- [ ] **Code formatting applied: `cargo fmt --all`** ⚠️ MANDATORY - CI will fail without this
+- [ ] **Clippy lints pass: `cargo clippy --all-targets`** ⚠️ Check for warnings
 - [ ] No compilation warnings
 - [ ] Code follows Rust style guidelines
 - [ ] No debug/temporary code left in (println!, commented blocks)
@@ -1082,11 +1103,18 @@ LogicalPlan::Unwind(u) => {
 #### 6.2 Push Feature Branch
 
 ```bash
-# MANDATORY: Format code before pushing
+# MANDATORY PRE-PUSH CHECKS (in order):
+# 1. Format code
 cargo fmt --all
 
-# Verify formatting didn't break anything
+# 2. Check for clippy warnings
+cargo clippy --all-targets
+
+# 3. Verify tests still pass after formatting
 cargo test --lib
+
+# 4. Run integration tests
+pytest tests/integration/
 
 # Final commit with all changes
 git status
