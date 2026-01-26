@@ -5652,7 +5652,7 @@ pub(crate) fn update_graph_joins_cte_refs(
                     .iter()
                     .find_map(|alias| cte_references.get(alias))
                     .cloned()
-                    .or_else(|| Some(old_cte_name.clone()))
+                    .or(Some(old_cte_name.clone()))
             } else {
                 None
             };

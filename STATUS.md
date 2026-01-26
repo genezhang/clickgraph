@@ -50,16 +50,13 @@
      4. Added `cte_references` HashMap fallback in `extract_table_name()` when cte_name is None
    - **Impact**: Test now PASSES ✅ without #[ignore] attribute
    - **Test Results**: 33/33 integration tests passing (no regressions)
-   - **Known Limitations** (documented in notes/with_clause_fixes_2026-01-25.md):
-     - FROM clause still has CTE name mismatch (minor - doesn't affect results)
-     - JOIN conditions use unmapped CTE column names (correctness issue, would fail at runtime)
    - **Files Modified**: 
      - `src/query_planner/analyzer/graph_join_inference.rs` (resolve_column fallback)
      - `src/render_plan/plan_builder_utils.rs` (WithClause handler, Join.table_name update)
      - `src/render_plan/plan_builder_helpers.rs` (extract_table_name fallback)
      - `tests/rust/integration/complex_feature_tests.rs` (removed #[ignore])
 
-2. **Jan 25, 2026 - Integration Test Audit Fixes** ✅ FIXED:
+3. **Jan 25, 2026 - Integration Test Audit Fixes** ✅ FIXED:
    - **EXISTS Subquery Schema Context Issue**:
      - **Problem**: EXISTS subqueries using wrong table (e.g., `brahmand.follows_expressions_test` instead of `brahmand.user_follows_bench`)
      - **Root Cause**: `tokio::task_local!` for `QUERY_SCHEMA_NAME` requires `.scope()` wrapper that wasn't implemented; `try_with()` was silently returning `None`, causing fallback schema search to pick wrong schema
