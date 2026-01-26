@@ -827,94 +827,201 @@ impl RenderPlanBuilder for LogicalPlan {
                 Ok(render_plan)
             }
             LogicalPlan::GraphRel(gr) => {
-                // Extract CTEs first for variable-length paths
-                let mut context = super::cte_generation::CteGenerationContext::new();
-                let ctes = CteItems(extract_ctes_with_context(
-                    self,
-                    &gr.right_connection,
-                    &mut context,
-                    schema,
-                )?);
+                // Check if this is an optional variable-length path
+                let is_optional_vlp =
+                    gr.variable_length.is_some() && gr.is_optional.unwrap_or(false);
 
-                // Create temporary render plan to populate CTE registry
-                let mut temp_render_plan = RenderPlan {
-                    ctes: ctes.clone(),
-                    select: SelectItems {
-                        items: vec![],
-                        distinct: false,
-                    },
-                    from: FromTableItem(None),
-                    joins: JoinItems(vec![]),
-                    array_join: ArrayJoinItem(vec![]),
-                    filters: FilterItems(None),
-                    group_by: GroupByExpressions(vec![]),
-                    having_clause: None,
-                    order_by: OrderByItems(vec![]),
-                    skip: SkipItem(None),
-                    limit: LimitItem(None),
-                    union: UnionItems(None),
-                    fixed_path_info: None,
-                    cte_column_registry: CteColumnRegistry::new(),
-                };
+                if is_optional_vlp {
+                    // Handle optional VLP: use base table as FROM, CTE as LEFT JOIN
+                    log::info!("🎯 OPTIONAL VLP detected: restructuring query to use LEFT JOIN");
 
-                // Populate the CTE column registry from CTE metadata
-                populate_cte_column_registry(&mut temp_render_plan);
+                    // Extract CTEs first for variable-length paths
+                    let mut context = super::cte_generation::CteGenerationContext::new();
+                    let ctes = CteItems(extract_ctes_with_context(
+                        self,
+                        &gr.right_connection,
+                        &mut context,
+                        schema,
+                    )?);
 
-                // Set the CTE column registry in task-local storage for property resolution
-                use crate::render_plan::set_cte_column_registry;
-                set_cte_column_registry(temp_render_plan.cte_column_registry.clone());
+                    // For optional VLP, FROM should be the start node table
+                    // Extract FROM from the start node (left side of GraphRel)
+                    let from = FromTableItem(gr.left.extract_from()?.and_then(|ft| ft.table));
 
-                // Now extract select items with CTE registry available
-                let mut select_items = SelectItems {
-                    items: <LogicalPlan as SelectBuilder>::extract_select_items(self)?,
-                    distinct: FilterBuilder::extract_distinct(self),
-                };
-                let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
+                    // Generate unique names to avoid conflicts
+                    let vlp_alias = format!("__vlp_{}_{}", gr.left_connection, gr.right_connection);
+                    let cte_name = format!("vlp_{}_{}", gr.left_connection, gr.right_connection);
+                    let start_id_column = extract_id_column(&gr.left).ok_or_else(|| {
+                        RenderBuildError::MissingTableInfo(
+                            "start node ID column for optional VLP".to_string(),
+                        )
+                    })?;
 
-                // 🔧 FIX for VLP: Don't extract joins when this is a Variable-Length Path
-                // VLP patterns use the recursive CTE as FROM, and the joins are only needed
-                // for CTE generation (in extract_ctes_with_context), not for the final SELECT
-                let joins = if gr.variable_length.is_some() {
-                    log::info!("🔧 VLP detected: Skipping JOIN extraction (using CTE as FROM)");
-                    JoinItems(vec![])
+                    // Create join condition using the dynamic VLP alias and start node ID column
+                    let join_condition = OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(gr.left_connection.clone()),
+                                column:
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        start_id_column.clone(),
+                                    ),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(vlp_alias.clone()),
+                                column:
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        "start_id".to_string(),
+                                    ),
+                            }),
+                        ],
+                    };
+
+                    let vlp_join = Join {
+                        join_type: JoinType::Left,
+                        table_name: format!(
+                            "(SELECT start_id, COUNT(*) as __vlp_count FROM {} GROUP BY start_id)",
+                            cte_name
+                        ),
+                        table_alias: vlp_alias.clone(),
+                        joining_on: vec![join_condition],
+                        pre_filter: None,
+                        from_id_column: None,
+                        to_id_column: None,
+                        graph_rel: None,
+                    };
+
+                    let joins = JoinItems(vec![vlp_join]);
+
+                    // Extract select items WITHOUT CTE registry (properties come from base table)
+                    let mut select_items = SelectItems {
+                        items: <LogicalPlan as SelectBuilder>::extract_select_items(self)?,
+                        distinct: FilterBuilder::extract_distinct(self),
+                    };
+
+                    let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
+                    let filters = FilterItems(FilterBuilder::extract_filters(self)?);
+                    let group_by = GroupByExpressions(
+                        <LogicalPlan as GroupByBuilder>::extract_group_by(self)?,
+                    );
+                    let having_clause = self.extract_having()?;
+
+                    let order_by = OrderByItems(self.extract_order_by()?);
+                    let skip = SkipItem(self.extract_skip());
+                    let limit = LimitItem(self.extract_limit());
+                    let union = UnionItems(self.extract_union(schema)?);
+
+                    let mut render_plan = RenderPlan {
+                        ctes,
+                        select: select_items,
+                        from,
+                        joins,
+                        array_join,
+                        filters,
+                        group_by,
+                        having_clause,
+                        order_by,
+                        skip,
+                        limit,
+                        union,
+                        fixed_path_info: None,
+                        cte_column_registry: CteColumnRegistry::new(), // Not needed for optional VLP
+                    };
+
+                    Ok(render_plan)
                 } else {
-                    JoinItems(RenderPlanBuilder::extract_joins(self, schema)?)
-                };
+                    // Regular VLP or non-VLP GraphRel
+                    // Extract CTEs first for variable-length paths
+                    let mut context = super::cte_generation::CteGenerationContext::new();
+                    let ctes = CteItems(extract_ctes_with_context(
+                        self,
+                        &gr.right_connection,
+                        &mut context,
+                        schema,
+                    )?);
 
-                let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
-                let filters = FilterItems(FilterBuilder::extract_filters(self)?);
-                let group_by =
-                    GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
-                let having_clause = self.extract_having()?;
+                    // Create temporary render plan to populate CTE registry
+                    let mut temp_render_plan = RenderPlan {
+                        ctes: ctes.clone(),
+                        select: SelectItems {
+                            items: vec![],
+                            distinct: false,
+                        },
+                        from: FromTableItem(None),
+                        joins: JoinItems(vec![]),
+                        array_join: ArrayJoinItem(vec![]),
+                        filters: FilterItems(None),
+                        group_by: GroupByExpressions(vec![]),
+                        having_clause: None,
+                        order_by: OrderByItems(vec![]),
+                        skip: SkipItem(None),
+                        limit: LimitItem(None),
+                        union: UnionItems(None),
+                        fixed_path_info: None,
+                        cte_column_registry: CteColumnRegistry::new(),
+                    };
 
-                // 🔧 BUG #11 FIX: Wrap non-ID, non-aggregated columns with anyLast() when GROUP BY present
-                select_items.items =
-                    apply_anylast_wrapping_for_group_by(select_items.items, &group_by.0, self)?;
+                    // Populate the CTE column registry from CTE metadata
+                    populate_cte_column_registry(&mut temp_render_plan);
 
-                let order_by = OrderByItems(self.extract_order_by()?);
+                    // Set the CTE column registry in task-local storage for property resolution
+                    use crate::render_plan::set_cte_column_registry;
+                    set_cte_column_registry(temp_render_plan.cte_column_registry.clone());
 
-                let skip = SkipItem(self.extract_skip());
-                let limit = LimitItem(self.extract_limit());
-                let union = UnionItems(self.extract_union(schema)?);
+                    // Now extract select items with CTE registry available
+                    let mut select_items = SelectItems {
+                        items: <LogicalPlan as SelectBuilder>::extract_select_items(self)?,
+                        distinct: FilterBuilder::extract_distinct(self),
+                    };
+                    let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
 
-                let mut render_plan = RenderPlan {
-                    ctes,
-                    select: select_items,
-                    from,
-                    joins,
-                    array_join,
-                    filters,
-                    group_by,
-                    having_clause,
-                    order_by,
-                    skip,
-                    limit,
-                    union,
-                    fixed_path_info: None,
-                    cte_column_registry: temp_render_plan.cte_column_registry,
-                };
+                    // 🔧 FIX for VLP: Don't extract joins when this is a Variable-Length Path
+                    // VLP patterns use the recursive CTE as FROM, and the joins are only needed
+                    // for CTE generation (in extract_ctes_with_context), not for the final SELECT
+                    let joins = if gr.variable_length.is_some() {
+                        log::info!("🔧 VLP detected: Skipping JOIN extraction (using CTE as FROM)");
+                        JoinItems(vec![])
+                    } else {
+                        JoinItems(RenderPlanBuilder::extract_joins(self, schema)?)
+                    };
 
-                Ok(render_plan)
+                    let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
+                    let filters = FilterItems(FilterBuilder::extract_filters(self)?);
+                    let group_by = GroupByExpressions(
+                        <LogicalPlan as GroupByBuilder>::extract_group_by(self)?,
+                    );
+                    let having_clause = self.extract_having()?;
+
+                    // 🔧 BUG #11 FIX: Wrap non-ID, non-aggregated columns with anyLast() when GROUP BY present
+                    select_items.items =
+                        apply_anylast_wrapping_for_group_by(select_items.items, &group_by.0, self)?;
+
+                    let order_by = OrderByItems(self.extract_order_by()?);
+
+                    let skip = SkipItem(self.extract_skip());
+                    let limit = LimitItem(self.extract_limit());
+                    let union = UnionItems(self.extract_union(schema)?);
+
+                    let mut render_plan = RenderPlan {
+                        ctes,
+                        select: select_items,
+                        from,
+                        joins,
+                        array_join,
+                        filters,
+                        group_by,
+                        having_clause,
+                        order_by,
+                        skip,
+                        limit,
+                        union,
+                        fixed_path_info: None,
+                        cte_column_registry: temp_render_plan.cte_column_registry,
+                    };
+
+                    Ok(render_plan)
+                }
             }
             LogicalPlan::Projection(p) => {
                 // For Projection, convert the input plan and override the select items
@@ -981,8 +1088,21 @@ impl RenderPlanBuilder for LogicalPlan {
                         distinct: p.distinct,
                     };
                 } else {
+                    let mut select_items =
+                        <LogicalPlan as SelectBuilder>::extract_select_items(self)?;
+
+                    // Check if this Projection is over an optional VLP GraphRel
+                    if let LogicalPlan::GraphRel(gr) = p.input.as_ref() {
+                        if gr.variable_length.is_some() && gr.is_optional.unwrap_or(false) {
+                            log::info!("🎯 Projection over optional VLP: aggregations handled by LEFT JOIN with COUNT(*)");
+
+                            // ClickHouse returns 0 (not NULL) for COUNT(*) with empty groups in LEFT JOIN + GROUP BY
+                            // So no COALESCE wrapper needed - aggregations work correctly as-is
+                        }
+                    }
+
                     render_plan.select = SelectItems {
-                        items: <LogicalPlan as SelectBuilder>::extract_select_items(self)?,
+                        items: select_items,
                         distinct: p.distinct,
                     };
                 }
