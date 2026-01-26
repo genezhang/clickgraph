@@ -5644,11 +5644,12 @@ pub(crate) fn update_graph_joins_cte_refs(
         LogicalPlan::WithClause(wc) => {
             // Update the WithClause's cte_name and cte_references if applicable
             let new_input = update_graph_joins_cte_refs(&wc.input, cte_references)?;
-            
+
             // Check if this WithClause's cte_name needs updating
             let updated_cte_name = if let Some(ref old_cte_name) = wc.cte_name {
                 // Check if any alias exported by this WITH has a new CTE name
-                wc.exported_aliases.iter()
+                wc.exported_aliases
+                    .iter()
                     .find_map(|alias| cte_references.get(alias))
                     .cloned()
                     .or_else(|| Some(old_cte_name.clone()))

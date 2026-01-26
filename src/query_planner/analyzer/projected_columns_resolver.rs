@@ -310,7 +310,7 @@ impl AnalyzerPass for ProjectedColumnsResolver {
                 if child_tf.is_yes() {
                     Transformed::Yes(Arc::new(LogicalPlan::WithClause(
                         crate::query_planner::logical_plan::WithClause {
-                            cte_name: None,
+                            cte_name: wc.cte_name.clone(), // PRESERVE from CteSchemaResolver
                             input: child_tf.get_plan(),
                             ..wc.clone()
                         },
