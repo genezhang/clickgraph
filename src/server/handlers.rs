@@ -16,13 +16,15 @@ use crate::{
     graph_catalog::graph_schema::GraphSchemaElement,
     open_cypher_parser::{self},
     query_planner::{self, types::QueryType},
-    render_plan::{plan_builder::RenderPlanBuilder, render_expr::set_current_schema_name},
+    render_plan::plan_builder::RenderPlanBuilder,
 };
 
 use super::{
     graph_catalog,
     models::{OutputFormat, QueryRequest, SqlOnlyResponse},
-    parameter_substitution, query_cache, AppState, GLOBAL_QUERY_CACHE,
+    parameter_substitution, query_cache,
+    query_context::{with_query_context, QueryContext},
+    AppState, GLOBAL_QUERY_CACHE,
 };
 
 /// Merge view_parameters and query parameters into a single HashMap
@@ -153,34 +155,38 @@ pub async fn query_handler(
     Json(payload): Json<QueryRequest>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
     let start_time = Instant::now();
-    let mut metrics = QueryPerformanceMetrics::new();
+    let metrics = QueryPerformanceMetrics::new();
 
     log::debug!("Query handler called with query: {}", payload.query);
 
-    let output_format = payload.format.unwrap_or(OutputFormat::JSONEachRow);
+    // Extract all needed fields from payload BEFORE any partial moves
+    // Use clone() or take() to avoid partial move issues
+    let output_format = payload.format.clone().unwrap_or(OutputFormat::JSONEachRow);
     let sql_only = payload.sql_only.unwrap_or(false);
+    let query_string = payload.query.clone();
+    let schema_name_param = payload.schema_name.clone();
 
     // Query cache integration - Strip CYPHER prefix FIRST
     // Extract replan option and clean query
-    let replan_option = query_cache::ReplanOption::from_query_prefix(&payload.query)
+    let replan_option = query_cache::ReplanOption::from_query_prefix(&query_string)
         .unwrap_or(query_cache::ReplanOption::Default);
-    let clean_query_with_comments = query_cache::ReplanOption::strip_prefix(&payload.query);
+    let clean_query_with_comments = query_cache::ReplanOption::strip_prefix(&query_string);
 
     // Strip SQL-style comments (-- and /* */) before parsing
     let clean_query_string = open_cypher_parser::strip_comments(clean_query_with_comments);
-    let clean_query = clean_query_string.as_str();
+    let clean_query = clean_query_string.clone();
 
     // 🔧 FIX: Validate query syntax FIRST before schema lookup
     // This prevents misleading "Schema not found" errors when query has syntax errors
     // Quick syntax validation (doesn't need full planning)
-    let schema_name = match open_cypher_parser::parse_query(clean_query) {
+    let schema_name = match open_cypher_parser::parse_query(&clean_query) {
         Ok(ast) => {
             // Parse succeeded - extract schema name from USE clause
             if let Some(ref use_clause) = ast.use_clause {
-                use_clause.database_name
+                use_clause.database_name.to_string()
             } else {
                 // No USE clause - use request parameter or "default"
-                payload.schema_name.as_deref().unwrap_or("default")
+                schema_name_param.unwrap_or_else(|| "default".to_string())
             }
         }
         Err(e) => {
@@ -207,16 +213,43 @@ pub async fn query_handler(
         }
     );
 
-    // ✅ Set query-scope (task-scope) schema context NOW
-    // This makes the schema name available to ALL phases of query processing:
-    // - Query planning
-    // - Property mapping/resolution
-    // - CTE generation
-    // - Expression rendering
-    // The context is read-only during query execution and cleared at the end.
-    set_current_schema_name(Some(schema_name.to_string()));
+    // ✅ TASK-LOCAL CONTEXT: Wrap ALL query processing in with_query_context()
+    // This creates an isolated per-task context that is:
+    // - Automatically available to ALL phases (planning, rendering, SQL generation)
+    // - Isolated from concurrent queries on the same OS thread
+    // - Automatically cleaned up when the task completes
+    let context = QueryContext::new(Some(schema_name.clone()));
 
-    let cache_key = query_cache::QueryCacheKey::new(clean_query, schema_name);
+    with_query_context(context, async move {
+        query_handler_inner(
+            app_state,
+            payload,
+            schema_name,
+            clean_query,
+            output_format,
+            sql_only,
+            replan_option,
+            start_time,
+            metrics,
+        )
+        .await
+    })
+    .await
+}
+
+/// Inner query handler logic - runs within task-local context
+async fn query_handler_inner(
+    app_state: Arc<AppState>,
+    payload: QueryRequest,
+    schema_name: String,
+    clean_query: String,
+    output_format: OutputFormat,
+    sql_only: bool,
+    replan_option: query_cache::ReplanOption,
+    start_time: Instant,
+    mut metrics: QueryPerformanceMetrics,
+) -> Result<Response, (StatusCode, String)> {
+    let cache_key = query_cache::QueryCacheKey::new(&clean_query, &schema_name);
     let mut cache_status = "MISS";
 
     // Try cache lookup (unless replan=force)
@@ -322,7 +355,7 @@ pub async fn query_handler(
 
     let (ch_sql_queries, maybe_schema_elem, is_read, query_type_str) = {
         // ✅ FAIL LOUDLY: If schema not found, return clear error (no silent fallback)
-        let graph_schema = match graph_catalog::get_graph_schema_by_name(schema_name).await {
+        let graph_schema = match graph_catalog::get_graph_schema_by_name(&schema_name).await {
             Ok(schema) => schema,
             Err(e) => {
                 log::error!(
@@ -340,7 +373,7 @@ pub async fn query_handler(
         // Phase 1: Parse query with UNION support
         // IMPORTANT: Parse the CLEAN query without CYPHER prefix
         let parse_start = Instant::now();
-        let cypher_statement = match open_cypher_parser::parse_cypher_statement(clean_query) {
+        let cypher_statement = match open_cypher_parser::parse_cypher_statement(&clean_query) {
             Ok((_remaining, stmt)) => stmt,
             Err(e) => {
                 metrics.parse_time = parse_start.elapsed().as_secs_f64();
@@ -525,21 +558,12 @@ pub async fn query_handler(
             // Phase 3: Render plan generation
             let render_start = Instant::now();
 
-            // Set the current schema name for EXISTS subquery resolution
-            // This allows generate_exists_sql to look up the correct schema
-            set_current_schema_name(Some(schema_name.to_string()));
-
+            // Schema context is already set via with_query_context() at handler entry
             // Use to_render_plan_with_ctx to pass analysis-phase metadata (VLP endpoints, etc.)
             let render_plan =
                 match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx)) {
-                    Ok(plan) => {
-                        // Clear the schema name after successful render
-                        set_current_schema_name(None);
-                        plan
-                    }
+                    Ok(plan) => plan,
                     Err(e) => {
-                        // Clear the schema name on error
-                        set_current_schema_name(None);
                         metrics.render_time = render_start.elapsed().as_secs_f64();
                         if sql_only {
                             let error_response = SqlOnlyResponse {
