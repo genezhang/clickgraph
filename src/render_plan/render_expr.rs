@@ -20,47 +20,41 @@ use crate::query_planner::logical_plan::LogicalPlan;
 
 use super::errors::RenderBuildError;
 
-// ✅ TASK-LOCAL storage for the current schema name (per-query context)
-// Each async task (HTTP request/query) gets its own isolated schema context.
-// Multiple concurrent queries on the same OS thread have zero interference.
-//
-// Why task-local instead of thread-local:
-// - thread_local: Shared by all async tasks on same OS thread (UNSAFE for concurrent queries)
-// - task_local: Each async task gets isolated storage (SAFE)
+// Thread-local storage for the current schema name (per-query context)
+// 
+// NOTE: Using thread_local! instead of tokio::task_local! because:
+// - task_local! requires wrapping ALL query processing in a .scope() call
+// - The current architecture doesn't easily support that pattern
+// - thread_local! works correctly for our single-request-at-a-time HTTP handler pattern
+// - For true concurrent isolation, refactor to pass schema explicitly through the call chain
 //
 // Usage:
 // 1. At query handler entry: set_current_schema_name(schema_name)
 // 2. During all query processing: get_current_schema_name() accesses current query's schema
 // 3. At query handler exit: clear_current_schema_name()
-tokio::task_local! {
-    /// Query-scope (task-scope) schema name: which schema this query operates on
-    /// Isolated to current async task - no interference with concurrent queries
-    pub(crate) static QUERY_SCHEMA_NAME: RefCell<Option<String>>;
+thread_local! {
+    /// Query-scope schema name: which schema this query operates on
+    static QUERY_SCHEMA_NAME: RefCell<Option<String>> = RefCell::new(None);
 }
 
 /// Set the schema name for the current query (task/request)
 /// Call this immediately after determining schema_name in query handler
 /// Schema context is read-only and available to ALL query processing phases
 pub fn set_current_schema_name(name: Option<String>) {
-    // task_local! doesn't support runtime initialization, so we use try_with
-    // If we're not in a task context, this returns an error which we ignore
-    let _ = QUERY_SCHEMA_NAME.try_with(|cell| {
+    QUERY_SCHEMA_NAME.with(|cell| {
         *cell.borrow_mut() = name;
     });
 }
 
 /// Get the current query's schema name (available to all processing phases)
 pub fn get_current_schema_name() -> Option<String> {
-    QUERY_SCHEMA_NAME
-        .try_with(|cell| cell.borrow().clone())
-        .ok()
-        .flatten()
+    QUERY_SCHEMA_NAME.with(|cell| cell.borrow().clone())
 }
 
 /// Clear the schema name after query processing completes
 /// Call this at query handler exit for cleanup
 pub fn clear_current_schema_name() {
-    let _ = QUERY_SCHEMA_NAME.try_with(|cell| {
+    QUERY_SCHEMA_NAME.with(|cell| {
         *cell.borrow_mut() = None;
     });
 }
