@@ -8157,6 +8157,33 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                         }
                                     }
 
+                                    // CRITICAL FIX: If expansion returns 0 columns, check if this is a direct scalar column
+                                    // For WITH ... AS prop, count(*) AS cnt, the CTE columns are named "prop" and "cnt" directly
+                                    // NOT "prop_<something>". We should reference them directly.
+                                    if expanded.is_empty() {
+                                        // Check if CTE has an exact-match column with this alias name
+                                        let has_exact_match = select_items.iter().any(|si| {
+                                            si.col_alias.as_ref()
+                                                .map(|ca| ca.0 == table_alias.0)
+                                                .unwrap_or(false)
+                                        });
+                                        
+                                        if has_exact_match {
+                                            log::info!(
+                                                "🔍 TableAlias('{}') is a scalar (exact CTE column match), referencing directly",
+                                                table_alias.0
+                                            );
+                                            // Reference the CTE column directly using FROM alias
+                                            return vec![SelectItem {
+                                                expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                    table_alias: TableAlias(from_alias.to_string()),
+                                                    column: PropertyValue::Column(table_alias.0.clone()),
+                                                }),
+                                                col_alias: item.col_alias.clone(),
+                                            }];
+                                        }
+                                    }
+
                                     log::warn!("🔧 build_chained_with_match_cte_plan: NOT treating as scalar, returning {} expanded columns", expanded.len());
                                     return expanded;
                                 } else {
@@ -8232,6 +8259,30 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                             })
                                             .collect();
 
+                                        // SCALAR FIX: If expansion found 0 columns, check if this is a scalar
+                                        // Scalars have CTE columns with exact name (e.g., "cnt") not prefix pattern ("cnt_*")
+                                        if expanded.is_empty() {
+                                            let has_exact_match = select_items.iter().any(|si| {
+                                                si.col_alias.as_ref()
+                                                    .map(|ca| ca.0 == *col)  // col is the WITH alias
+                                                    .unwrap_or(false)
+                                            });
+                                            
+                                            if has_exact_match {
+                                                log::info!(
+                                                    "🔍 PropertyAccessExp('{}', '{}') is a scalar (found exact CTE column match), rewriting to use FROM alias '{}'",
+                                                    pa.table_alias.0, col, from_alias
+                                                );
+                                                return vec![SelectItem {
+                                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                        table_alias: TableAlias(from_alias.to_string()),
+                                                        column: PropertyValue::Column(col.clone()),
+                                                    }),
+                                                    col_alias: item.col_alias.clone(),
+                                                }];
+                                            }
+                                        }
+                                        
                                         log::warn!("🔧 build_chained_with_match_cte_plan: Expanded PropertyAccessExp('{}', '{}') to {} columns", pa.table_alias.0, col, expanded.len());
                                         return expanded;
                                     }
