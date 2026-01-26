@@ -857,7 +857,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         )
                     })?;
 
-                    // Create join condition: u.user_id = vlp.start_id
+                    // Create join condition using the dynamic VLP alias and start node ID column
                     let join_condition = OperatorApplication {
                         operator: Operator::Equal,
                         operands: vec![
