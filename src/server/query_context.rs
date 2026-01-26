@@ -329,10 +329,7 @@ mod tests {
     async fn test_denormalized_aliases() {
         with_query_context(QueryContext::empty(), async {
             register_denormalized_alias("d", "r2");
-            assert_eq!(
-                get_denormalized_alias_mapping("d"),
-                Some("r2".to_string())
-            );
+            assert_eq!(get_denormalized_alias_mapping("d"), Some("r2".to_string()));
             assert_eq!(get_denormalized_alias_mapping("unknown"), None);
         })
         .await;
