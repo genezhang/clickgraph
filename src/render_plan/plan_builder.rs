@@ -839,7 +839,10 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Create temporary render plan to populate CTE registry
                 let mut temp_render_plan = RenderPlan {
                     ctes: ctes.clone(),
-                    select: SelectItems { items: vec![], distinct: false },
+                    select: SelectItems {
+                        items: vec![],
+                        distinct: false,
+                    },
                     from: FromTableItem(None),
                     joins: JoinItems(vec![]),
                     array_join: ArrayJoinItem(vec![]),

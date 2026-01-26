@@ -1307,8 +1307,8 @@ impl DenormalizedCteStrategy {
             // which matches how properties are selected in add_property_selections
             columns.push(CteColumnMetadata {
                 cte_column_name: prop.column_name.clone(), // e.g., "OriginCityName"
-                cypher_alias: prop.cypher_alias.clone(), // e.g., "origin"
-                cypher_property: prop.alias.clone(), // e.g., "city"
+                cypher_alias: prop.cypher_alias.clone(),   // e.g., "origin"
+                cypher_property: prop.alias.clone(),       // e.g., "city"
                 db_column: prop.column_name.clone(),
                 is_id_column: false,
                 vlp_position: if prop.cypher_alias == self.pattern_ctx.left_node_alias {

@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: January 23, 2026*
+*Updated: January 25, 2026*
 
 ## Current Version
 
@@ -8,13 +8,14 @@
 
 **Test Status**:
 - ✅ Unit tests: 787/787 passing (100%)
-- ✅ Integration matrix tests: 232/273 passing (85%) ⬆️ **IMPROVED from 74/91 (81%)**
-  - Fixed 2 critical failures: timeout (test data corruption) + wildcard expansion bug
-  - Applied denormalized edge JOIN deduplication (1 remaining issue: alias mapping)
+- ✅ Integration matrix tests: 233/273 passing (85%) ⬆️ **IMPROVED**
+  - Fixed EXISTS subquery schema context issue (thread_local vs task_local)
+  - Fixed WITH+aggregation scalar export handling
 - ✅ Denormalized edge tests: 16/18 passing (89%) ⬆️ **FIXED VLP property access issue**
   - Fixed VLP CTE property access for denormalized relationships
   - All denormalized edge functionality now working correctly
 - ✅ OPTIONAL MATCH tests: 26/27 passing (96%)
+- ✅ EXISTS subquery tests: 3/3 passing (100%) ✅ **ALL FIXED**
 - ✅ All `test_collect` tests passing (10/10)
 
 **Code Quality** (New - January 22, 2026):
@@ -33,7 +34,21 @@
 
 **Recent Fixes**:
 
-1. **Jan 24, 2026 - CTE Variable Aliasing with Schema Mapping** ✅ FIXED:
+1. **Jan 25, 2026 - Integration Test Audit Fixes** ✅ FIXED:
+   - **EXISTS Subquery Schema Context Issue**:
+     - **Problem**: EXISTS subqueries using wrong table (e.g., `brahmand.follows_expressions_test` instead of `brahmand.user_follows_bench`)
+     - **Root Cause**: `tokio::task_local!` for `QUERY_SCHEMA_NAME` requires `.scope()` wrapper that wasn't implemented; `try_with()` was silently returning `None`, causing fallback schema search to pick wrong schema
+     - **Solution**: Changed from `tokio::task_local!` to `thread_local!` which works without scope wrapping for HTTP handler pattern
+     - **Files**: `src/render_plan/render_expr.rs`
+     - **Impact**: All EXISTS tests now passing (3/3)
+   - **WITH+Aggregation Scalar Export Issue**:
+     - **Problem**: Queries like `WITH count(r) AS total RETURN total` failed with "CTE not found" errors
+     - **Root Cause**: Scalar exports from WITH clauses (TableAlias and PropertyAccessExp types) weren't generating proper CTE references
+     - **Solution**: Added handling for TableAlias and PropertyAccessExp in `export_single_with_item_to_cte()` function
+     - **Files**: `src/render_plan/plan_builder_utils.rs`
+     - **Impact**: WITH+aggregation patterns now work correctly
+
+2. **Jan 24, 2026 - CTE Variable Aliasing with Schema Mapping** ✅ FIXED:
    - **Problem**: Query `MATCH (u:User) WITH u AS person RETURN person.name` generated wrong SQL
      - Generated: `SELECT person.full_name` (wrong: full_name is DB column, should be CTE's exported column)
      - Expected: `SELECT person.u_name` (correct: CTE exports u.name as u_name)

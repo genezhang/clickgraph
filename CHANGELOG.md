@@ -1,6 +1,20 @@
 ## [Unreleased]
 
-### � Bug Fixes
+### 🐛 Bug Fixes
+
+- **EXISTS Subquery Schema Context** (Jan 25, 2026): Fixed EXISTS subqueries using wrong schema/table
+  - **Problem**: EXISTS subqueries like `WHERE EXISTS { MATCH (a)-[:FOLLOWS]->(b) }` were generating SQL with wrong tables
+  - **Root Cause**: `tokio::task_local!` for query schema context requires `.scope()` wrapper; without it, `try_with()` returns `None` and fallback schema search picks wrong schema when multiple schemas have same relationship type
+  - **Solution**: Changed from `tokio::task_local!` to `thread_local!` which is accessible without scope wrapping
+  - **Impact**: All EXISTS subquery tests now passing (3/3)
+  - **Files**: `src/render_plan/render_expr.rs`
+
+- **WITH+Aggregation Scalar Export** (Jan 25, 2026): Fixed WITH clauses with aggregations not generating CTE references
+  - **Problem**: Queries like `MATCH (a)-[r]->(b) WITH count(r) AS total RETURN total` failed with "CTE not found" errors
+  - **Root Cause**: `export_single_with_item_to_cte()` didn't handle `TableAlias` and `PropertyAccessExp` expression types for scalar exports
+  - **Solution**: Added explicit handling for TableAlias (direct alias reference) and PropertyAccessExp (property.name pattern) in WITH item export logic
+  - **Impact**: WITH clauses with aggregated scalars now work correctly
+  - **Files**: `src/render_plan/plan_builder_utils.rs`
 
 - **Denormalized VLP Property Access**: Fixed incorrect table alias usage in VLP queries with denormalized relationships
   - **Problem**: Queries like `MATCH path = (origin:Airport)-[f:FLIGHT*1..2]->(dest:Airport) RETURN origin.city` generated `SELECT f.OriginCityName` instead of `t.OriginCityName`

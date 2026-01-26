@@ -241,7 +241,10 @@ impl FilterBuilder for LogicalPlan {
                         .next()
                         .expect("all_predicates has exactly one element");
                     // Apply property mapping for denormalized nodes
-                    apply_property_mapping_to_expr(&mut single_pred, &LogicalPlan::GraphRel(graph_rel.clone()));
+                    apply_property_mapping_to_expr(
+                        &mut single_pred,
+                        &LogicalPlan::GraphRel(graph_rel.clone()),
+                    );
                     Some(single_pred)
                 } else {
                     // Combine with AND
@@ -253,7 +256,10 @@ impl FilterBuilder for LogicalPlan {
                         .into_iter()
                         .map(|mut pred| {
                             // Apply property mapping for denormalized nodes
-                            apply_property_mapping_to_expr(&mut pred, &LogicalPlan::GraphRel(graph_rel.clone()));
+                            apply_property_mapping_to_expr(
+                                &mut pred,
+                                &LogicalPlan::GraphRel(graph_rel.clone()),
+                            );
                             pred
                         })
                         .reduce(|acc, pred| {

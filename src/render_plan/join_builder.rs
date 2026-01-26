@@ -110,7 +110,10 @@ impl JoinBuilder for LogicalPlan {
     }
 
     fn extract_joins(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<Vec<Join>> {
-        println!("🔧 DEBUG: extract_joins called on plan type: {:?}", std::mem::discriminant(self));
+        println!(
+            "🔧 DEBUG: extract_joins called on plan type: {:?}",
+            std::mem::discriminant(self)
+        );
         // Helper functions for edge constraint compilation
 
         // Extract relationship type and node labels from GraphRel in the plan
@@ -607,8 +610,10 @@ impl JoinBuilder for LogicalPlan {
             LogicalPlan::GraphRel(graph_rel) => {
                 // FIX: GraphRel must generate JOINs for the relationship traversal
                 // This fixes OPTIONAL MATCH queries by creating proper JOIN clauses
-                println!("🔧 DEBUG: GraphRel.extract_joins called for alias='{}', left='{}', right='{}'",
-                         graph_rel.alias, graph_rel.left_connection, graph_rel.right_connection);
+                println!(
+                    "🔧 DEBUG: GraphRel.extract_joins called for alias='{}', left='{}', right='{}'",
+                    graph_rel.alias, graph_rel.left_connection, graph_rel.right_connection
+                );
 
                 // 🚀 FIXED-LENGTH VLP: Use consolidated VlpContext for all schema types
                 if let Some(vlp_ctx) = build_vlp_context(graph_rel) {
@@ -1883,8 +1888,12 @@ impl JoinBuilder for LogicalPlan {
                 // Example: AUTHORED relationship uses posts_bench for both relationship and Post node
                 // - Relationship join: posts_bench AS r2 ON r2.author_id = a.user_id
                 // - End node join: posts_bench AS d ON d.post_id = r2.post_id
-                println!("🔧 DEBUG: Checking denormalized: end_table='{}', rel_table='{}', equal={}",
-                         end_table, rel_table, end_table == rel_table);
+                println!(
+                    "🔧 DEBUG: Checking denormalized: end_table='{}', rel_table='{}', equal={}",
+                    end_table,
+                    rel_table,
+                    end_table == rel_table
+                );
                 if end_table != rel_table {
                     // Standard case: different tables for relationship and end node
                     joins.push(Join {

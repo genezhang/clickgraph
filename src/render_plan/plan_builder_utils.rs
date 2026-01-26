@@ -8167,7 +8167,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                 .map(|ca| ca.0 == table_alias.0)
                                                 .unwrap_or(false)
                                         });
-                                        
+
                                         if has_exact_match {
                                             log::info!(
                                                 "🔍 TableAlias('{}') is a scalar (exact CTE column match), referencing directly",
@@ -8267,7 +8267,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                     .map(|ca| ca.0 == *col)  // col is the WITH alias
                                                     .unwrap_or(false)
                                             });
-                                            
+
                                             if has_exact_match {
                                                 log::info!(
                                                     "🔍 PropertyAccessExp('{}', '{}') is a scalar (found exact CTE column match), rewriting to use FROM alias '{}'",
@@ -8282,7 +8282,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                 }];
                                             }
                                         }
-                                        
+
                                         log::warn!("🔧 build_chained_with_match_cte_plan: Expanded PropertyAccessExp('{}', '{}') to {} columns", pa.table_alias.0, col, expanded.len());
                                         return expanded;
                                     }

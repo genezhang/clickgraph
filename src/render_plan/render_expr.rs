@@ -21,7 +21,7 @@ use crate::query_planner::logical_plan::LogicalPlan;
 use super::errors::RenderBuildError;
 
 // Thread-local storage for the current schema name (per-query context)
-// 
+//
 // NOTE: Using thread_local! instead of tokio::task_local! because:
 // - task_local! requires wrapping ALL query processing in a .scope() call
 // - The current architecture doesn't easily support that pattern
