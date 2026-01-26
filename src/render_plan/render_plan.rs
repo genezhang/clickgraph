@@ -59,6 +59,34 @@ impl CteColumnRegistry {
         self.alias_to_cte_name.contains_key(alias)
     }
 
+    /// Get all properties for a Cypher alias (e.g., all columns for node "b")
+    /// Returns list of (property_name, column_name) tuples
+    pub fn get_properties_for_alias(&self, alias: &str) -> Vec<(String, String)> {
+        self.alias_property_to_column
+            .iter()
+            .filter_map(|((a, prop), col)| {
+                if a == alias {
+                    Some((prop.clone(), col.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Get the FROM alias to use in SQL for this Cypher alias
+    pub fn get_from_alias(&self, alias: &str) -> Option<&String> {
+        self.alias_to_from_alias.get(alias)
+    }
+
+    /// Check if this alias represents a composite (node/edge with multiple properties)
+    pub fn is_composite_alias(&self, alias: &str) -> bool {
+        self.alias_property_to_column
+            .keys()
+            .filter(|(a, _)| a == alias)
+            .count() > 1
+    }
+
     /// Merge another registry into this one (for nested plans)
     pub fn merge(&mut self, other: &CteColumnRegistry) {
         self.alias_property_to_column
