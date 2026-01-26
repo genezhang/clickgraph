@@ -5506,6 +5506,138 @@ pub(crate) fn rewrite_operator_application_with_cte_alias(
         operands: new_operands,
     }
 }
+
+/// Helper: Rewrite LogicalExpr to update PropertyAccessExp table aliases with updated CTE names
+fn rewrite_logical_expr_cte_refs(
+    expr: &crate::query_planner::logical_expr::LogicalExpr,
+    cte_references: &std::collections::HashMap<String, String>,
+) -> crate::query_planner::logical_expr::LogicalExpr {
+    use crate::query_planner::logical_expr::LogicalExpr;
+
+    match expr {
+        LogicalExpr::PropertyAccessExp(prop) => {
+            // Check if the table_alias references an old CTE name that needs updating
+            if let Some(new_cte_name) = cte_references.get(&prop.table_alias.0) {
+                log::info!(
+                    "🔧 rewrite_logical_expr_cte_refs: Updating PropertyAccessExp table_alias '{}' → '{}'",
+                    prop.table_alias.0,
+                    new_cte_name
+                );
+                LogicalExpr::PropertyAccessExp(crate::query_planner::logical_expr::PropertyAccess {
+                    table_alias: crate::query_planner::logical_expr::TableAlias(new_cte_name.clone()),
+                    column: prop.column.clone(),
+                })
+            } else {
+                expr.clone()
+            }
+        }
+        LogicalExpr::OperatorApplicationExp(op) => {
+            let new_operands: Vec<_> = op
+                .operands
+                .iter()
+                .map(|operand| rewrite_logical_expr_cte_refs(operand, cte_references))
+                .collect();
+            LogicalExpr::OperatorApplicationExp(crate::query_planner::logical_expr::OperatorApplication {
+                operator: op.operator,
+                operands: new_operands,
+            })
+        }
+        LogicalExpr::ScalarFnCall(func) => {
+            let new_args: Vec<_> = func
+                .args
+                .iter()
+                .map(|arg| rewrite_logical_expr_cte_refs(arg, cte_references))
+                .collect();
+            LogicalExpr::ScalarFnCall(crate::query_planner::logical_expr::ScalarFnCall {
+                name: func.name.clone(),
+                args: new_args,
+            })
+        }
+        LogicalExpr::AggregateFnCall(agg) => {
+            let new_args: Vec<_> = agg
+                .args
+                .iter()
+                .map(|arg| rewrite_logical_expr_cte_refs(arg, cte_references))
+                .collect();
+            LogicalExpr::AggregateFnCall(crate::query_planner::logical_expr::AggregateFnCall {
+                name: agg.name.clone(),
+                args: new_args,
+            })
+        }
+        LogicalExpr::List(items) => {
+            let new_items: Vec<_> = items
+                .iter()
+                .map(|item| rewrite_logical_expr_cte_refs(item, cte_references))
+                .collect();
+            LogicalExpr::List(new_items)
+        }
+        // Other expression types don't contain PropertyAccessExp, so clone as-is
+        _ => expr.clone(),
+    }
+}
+
+/// Helper: Rewrite RenderExpr to update PropertyAccessExp table aliases with updated CTE names
+fn rewrite_render_expr_cte_refs(
+    expr: &crate::render_plan::render_expr::RenderExpr,
+    cte_references: &std::collections::HashMap<String, String>,
+) -> crate::render_plan::render_expr::RenderExpr {
+    use crate::render_plan::render_expr::RenderExpr;
+
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            // Check if the table_alias references an old CTE name that needs updating
+            if let Some(new_cte_name) = cte_references.get(&prop.table_alias.0) {
+                log::info!(
+                    "🔧 rewrite_render_expr_cte_refs: Updating PropertyAccessExp table_alias '{}' → '{}'",
+                    prop.table_alias.0,
+                    new_cte_name
+                );
+                RenderExpr::PropertyAccessExp(crate::render_plan::render_expr::PropertyAccess {
+                    table_alias: crate::render_plan::render_expr::TableAlias(new_cte_name.clone()),
+                    column: prop.column.clone(),
+                })
+            } else {
+                expr.clone()
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            let new_operands: Vec<_> = op
+                .operands
+                .iter()
+                .map(|operand| rewrite_render_expr_cte_refs(operand, cte_references))
+                .collect();
+            RenderExpr::OperatorApplicationExp(crate::render_plan::render_expr::OperatorApplication {
+                operator: op.operator,
+                operands: new_operands,
+            })
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            let new_args: Vec<_> = func
+                .args
+                .iter()
+                .map(|arg| rewrite_render_expr_cte_refs(arg, cte_references))
+                .collect();
+            RenderExpr::ScalarFnCall(crate::render_plan::render_expr::ScalarFnCall {
+                name: func.name.clone(),
+                args: new_args,
+            })
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            let new_args: Vec<_> = agg
+                .args
+                .iter()
+                .map(|arg| rewrite_render_expr_cte_refs(arg, cte_references))
+                .collect();
+            RenderExpr::AggregateFnCall(crate::render_plan::render_expr::AggregateFnCall {
+                name: agg.name.clone(),
+                args: new_args,
+            })
+        }
+        // Other expression types don't contain PropertyAccessExp, so clone as-is
+        _ => expr.clone(),
+    }
+}
+
 pub(crate) fn update_graph_joins_cte_refs(
     plan: &LogicalPlan,
     cte_references: &std::collections::HashMap<String, String>,
@@ -5635,9 +5767,19 @@ pub(crate) fn update_graph_joins_cte_refs(
         }
         LogicalPlan::Projection(proj) => {
             let new_input = update_graph_joins_cte_refs(&proj.input, cte_references)?;
+            
+            // 🔧 FIX: Update PropertyAccessExp expressions in projection items with updated CTE names
+            let updated_items: Vec<_> = proj.items.iter().map(|item| {
+                let updated_expr = rewrite_logical_expr_cte_refs(&item.expression, cte_references);
+                crate::query_planner::logical_plan::ProjectionItem {
+                    expression: updated_expr,
+                    col_alias: item.col_alias.clone(),
+                }
+            }).collect();
+
             Ok(LogicalPlan::Projection(Projection {
                 input: Arc::new(new_input),
-                items: proj.items.clone(),
+                items: updated_items,
                 distinct: proj.distinct,
             }))
         }
@@ -5672,26 +5814,38 @@ pub(crate) fn update_graph_joins_cte_refs(
         }
         LogicalPlan::Filter(f) => {
             let new_input = update_graph_joins_cte_refs(&f.input, cte_references)?;
+            let updated_predicate = rewrite_logical_expr_cte_refs(&f.predicate, cte_references);
             Ok(LogicalPlan::Filter(Filter {
                 input: Arc::new(new_input),
-                predicate: f.predicate.clone(),
+                predicate: updated_predicate,
             }))
         }
         LogicalPlan::GroupBy(gb) => {
             let new_input = update_graph_joins_cte_refs(&gb.input, cte_references)?;
+            let updated_expressions: Vec<_> = gb.expressions.iter()
+                .map(|expr| rewrite_logical_expr_cte_refs(expr, cte_references))
+                .collect();
+            let updated_having = gb.having_clause.as_ref()
+                .map(|h| rewrite_logical_expr_cte_refs(h, cte_references));
             Ok(LogicalPlan::GroupBy(GroupBy {
                 input: Arc::new(new_input),
-                expressions: gb.expressions.clone(),
-                having_clause: gb.having_clause.clone(),
+                expressions: updated_expressions,
+                having_clause: updated_having,
                 is_materialization_boundary: gb.is_materialization_boundary,
                 exposed_alias: gb.exposed_alias.clone(),
             }))
         }
         LogicalPlan::OrderBy(ob) => {
             let new_input = update_graph_joins_cte_refs(&ob.input, cte_references)?;
+            let updated_items: Vec<_> = ob.items.iter().map(|item| {
+                crate::query_planner::logical_plan::OrderByItem {
+                    expression: rewrite_logical_expr_cte_refs(&item.expression, cte_references),
+                    order: item.order.clone(),
+                }
+            }).collect();
             Ok(LogicalPlan::OrderBy(OrderBy {
                 input: Arc::new(new_input),
-                items: ob.items.clone(),
+                items: updated_items,
             }))
         }
         LogicalPlan::Limit(lim) => {
