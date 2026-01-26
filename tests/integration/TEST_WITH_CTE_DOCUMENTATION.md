@@ -188,6 +188,27 @@ RETURN p
 
 ---
 
+### 9. Denormalized Edges ✅
+**File**: `TestWithDenormalizedEdges`
+
+Tests WITH when node properties are stored in edge table (edge case).
+
+```cypher
+MATCH (from:Airport)-[flight:FLIGHT]->(to:Airport)
+WITH from, flight, to
+RETURN from, flight, to
+```
+
+**Expected**: All variables expand (denormalized properties accessible)
+
+**Why it tests the fix**:
+- Complex schema variation test
+- Validates denormalized alias mapping still works with CTEs
+- Edge case: property location affects expansion
+- Regression test for denormalized patterns
+
+---
+
 ## Running the Tests
 
 ### Prerequisites

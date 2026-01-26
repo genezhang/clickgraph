@@ -53,7 +53,7 @@ fn cypher_to_sql(cypher: &str) -> String {
     println!("Final logical plan after optimizer: {:?}", logical_plan);
 
     let render_plan = logical_plan
-        .to_render_plan(&graph_schema, None)
+        .to_render_plan(&graph_schema)
         .expect("Failed to build render plan");
 
     clickhouse_query_generator::generate_sql(render_plan, 100)

@@ -54,7 +54,7 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
                 })?;
 
             // Convert logical plan to render plan using the full pipeline
-            let render_plan = exists.subplan.to_render_plan(schema, None)?;
+            let render_plan = exists.subplan.to_render_plan(schema)?;
 
             // Generate SQL from render plan
             let sql = render_plan_to_sql(render_plan, 10); // Use default max_cte_depth
@@ -1094,7 +1094,7 @@ impl TryFrom<LogicalInSubquery> for InSubquery {
             std::collections::HashMap::new(),
             std::collections::HashMap::new(),
         );
-        let sub_plan = value.subplan.clone().to_render_plan(&empty_schema, None)?;
+        let sub_plan = value.subplan.clone().to_render_plan(&empty_schema)?;
         let in_sub_query = InSubquery {
             expr: Box::new((value.expr.as_ref().clone()).try_into()?),
             subplan: Box::new(sub_plan),

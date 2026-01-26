@@ -42,6 +42,8 @@ pub struct QueryContext {
     pub schema_name: Option<String>,
 
     /// Denormalized edge alias mapping: target_node_alias → edge_alias
+
+    /// Denormalized edge alias mapping: target_node_alias → edge_alias
     /// For denormalized edges where the edge table serves as both edge and target node
     pub denormalized_aliases: HashMap<String, String>,
 

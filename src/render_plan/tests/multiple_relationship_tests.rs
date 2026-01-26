@@ -345,7 +345,7 @@ mod multiple_relationship_tests {
         let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan(&schema, None);
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(
             render_plan.is_ok(),
             "Failed to create render plan: {:?}",
@@ -417,7 +417,7 @@ mod multiple_relationship_tests {
         let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan(&schema, None);
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(
             render_plan.is_ok(),
             "Failed to create render plan: {:?}",
@@ -510,7 +510,7 @@ mod multiple_relationship_tests {
         let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan(&schema, None);
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(
             render_plan.is_ok(),
             "Failed to create render plan: {:?}",
@@ -561,7 +561,7 @@ mod multiple_relationship_tests {
         let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan(&schema, None);
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(
             render_plan.is_ok(),
             "Failed to create render plan: {:?}",
@@ -651,7 +651,7 @@ mod multiple_relationship_tests {
         let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan(&schema, None);
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(
             render_plan.is_ok(),
             "Failed to create render plan: {:?}",
@@ -713,7 +713,7 @@ mod multiple_relationship_tests {
         let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan(&schema, None);
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(
             render_plan.is_ok(),
             "Failed to create render plan: {:?}",
@@ -766,7 +766,7 @@ mod multiple_relationship_tests {
         let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan(&schema, None);
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(
             render_plan.is_ok(),
             "Failed to create render plan: {:?}",
@@ -811,7 +811,7 @@ mod multiple_relationship_tests {
         let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan(&schema, None);
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(
             render_plan.is_ok(),
             "Failed to create render plan: {:?}",
@@ -865,7 +865,7 @@ mod multiple_relationship_tests {
         let (logical_plan, _plan_ctx) = build_logical_plan(&query, &schema, None, None, None)
             .expect("Failed to build logical plan");
 
-        let render_plan = logical_plan.to_render_plan(&schema, None);
+        let render_plan = logical_plan.to_render_plan(&schema);
         assert!(
             render_plan.is_ok(),
             "Failed to create render plan: {:?}",

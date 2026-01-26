@@ -26,7 +26,33 @@ VERBOSE=false
 SPECIFIC_TEST=""
 SHOW_SQL=false
 
-# Function definitions (must be before usage)
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -v|--verbose)
+            VERBOSE=true
+            shift
+            ;;
+        -t|--test)
+            SPECIFIC_TEST="$2"
+            shift 2
+            ;;
+        -s|--show-sql)
+            SHOW_SQL=true
+            shift
+            ;;
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            show_help
+            exit 1
+            ;;
+    esac
+done
+
 show_help() {
     cat << EOF
 WITH CTE Node Expansion Tests - Test Runner
@@ -65,6 +91,7 @@ Test Categories:
     
     Edge Case Tests:
         - TestWithPolymorphicLabels
+        - TestWithDenormalizedEdges
     
     Regression Tests:
         - TestWithRegressionCases
@@ -87,34 +114,6 @@ Examples:
 
 EOF
 }
-
-# Parse arguments
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        -v|--verbose)
-            VERBOSE=true
-            shift
-            ;;
-        -t|--test)
-            SPECIFIC_TEST="$2"
-            shift 2
-            ;;
-        -s|--show-sql)
-            SHOW_SQL=true
-            shift
-            ;;
-        -h|--help)
-            show_help
-            exit 0
-            ;;
-        *)
-            echo "Unknown option: $1"
-            show_help
-            exit 1
-            ;;
-    esac
-done
-
 
 check_servers() {
     echo -e "${BLUE}📋 Checking server availability...${NC}"
