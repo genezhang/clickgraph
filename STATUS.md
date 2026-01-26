@@ -252,6 +252,12 @@ WITH n WHERE n.age > 25
 MATCH (n)-[:FOLLOWS]->(m)
 RETURN n, m
 
+-- Nested WITH with filtered exports
+MATCH (u:User)
+WITH u AS person
+WITH person.name AS name
+RETURN name
+
 -- UNWIND
 UNWIND [1, 2, 3] AS x
 UNWIND [10, 20] AS y

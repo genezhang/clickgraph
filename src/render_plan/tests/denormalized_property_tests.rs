@@ -919,7 +919,7 @@ fn test_denormalized_standalone_node_return_all_properties() {
     }
 
     // Also test extract_select_items - this is where the actual SQL SELECT columns are generated
-    match projection.extract_select_items() {
+    match projection.extract_select_items(None) {
         Ok(select_items) => {
             assert!(
                 !select_items.is_empty(),
@@ -1048,7 +1048,7 @@ fn test_denormalized_standalone_node_both_positions() {
     }
 
     // Test extract_select_items for UNION case
-    match projection.extract_select_items() {
+    match projection.extract_select_items(None) {
         Ok(select_items) => {
             assert!(
                 !select_items.is_empty(),

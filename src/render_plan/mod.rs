@@ -1,4 +1,3 @@
-pub mod alias_resolver;
 pub mod cte_extraction;
 pub mod cte_generation;
 pub mod cte_manager;
@@ -31,11 +30,10 @@ pub use filter_pipeline::CategorizedFilters;
 pub use from_table::FromTable;
 pub use view_table_ref::ViewTableRef;
 
-// Re-export CTE column registry and denormalized alias accessors from unified query context
+// Re-export denormalized alias accessors from unified query context
 // See server/query_context.rs for the task_local! implementation with .scope() support
 pub use crate::server::query_context::{
-    clear_cte_column_registry, clear_denormalized_aliases, get_cte_column_registry,
-    get_denormalized_alias_mapping, register_denormalized_alias, set_cte_column_registry,
+    clear_denormalized_aliases, get_denormalized_alias_mapping, register_denormalized_alias,
 };
 
 use crate::query_planner::join_context::{
@@ -52,10 +50,7 @@ use std::fmt;
 pub mod errors;
 pub mod plan_builder;
 pub mod render_expr;
-pub mod render_plan;
 pub mod view_plan;
-
-pub use render_plan::CteColumnRegistry;
 
 #[cfg(test)]
 mod tests;
@@ -91,10 +86,6 @@ pub struct RenderPlan {
     /// Contains path variable name and hop count for queries like:
     /// MATCH p = (a)-[:T]->(b) RETURN length(p)
     pub fixed_path_info: Option<FixedPathMetadata>,
-    /// Per-query CTE column registry - maps (alias, property) to CTE output column name
-    /// Used during SQL rendering to resolve property accesses from WITH clauses
-    #[serde(skip)] // Don't serialize, recreate during rendering
-    pub cte_column_registry: CteColumnRegistry,
 }
 
 /// Metadata for simple/fixed path patterns (non-VLP)
