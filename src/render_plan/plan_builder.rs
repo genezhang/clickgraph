@@ -1734,6 +1734,49 @@ impl RenderPlanBuilder for LogicalPlan {
                 render_plan.order_by = OrderByItems(order_by_items?);
                 Ok(render_plan)
             }
+            LogicalPlan::Union(union) => {
+                // Union - convert each branch to RenderPlan with plan_ctx and combine
+                if union.inputs.is_empty() {
+                    return Err(RenderBuildError::InvalidRenderPlan(
+                        "Union has no inputs".to_string(),
+                    ));
+                }
+
+                // Convert first branch with plan_ctx
+                let first_input = &union.inputs[0];
+                let mut base_plan = first_input.to_render_plan_with_ctx(schema, plan_ctx)?;
+
+                // If there's only one branch, just return it
+                if union.inputs.len() == 1 {
+                    return Ok(base_plan);
+                }
+
+                // Convert remaining branches with plan_ctx
+                let mut union_branches = Vec::new();
+                for input in union.inputs.iter().skip(1) {
+                    let branch_plan = input.to_render_plan_with_ctx(schema, plan_ctx)?;
+                    union_branches.push(branch_plan);
+                }
+
+                // Store union branches in the base plan
+                // UnionType::All corresponds to UNION ALL
+                base_plan.union = UnionItems(Some(super::Union {
+                    input: union_branches,
+                    union_type: super::UnionType::All,
+                }));
+
+                // 🔧 CRITICAL: After combining UNION branches, rewrite VLP endpoint aliases
+                // This is the RIGHT place to do it - now the plan has the full UNION structure
+                log::warn!(
+                    "❌❌❌ Union handler in to_render_plan_with_ctx: About to call rewrite_vlp_union_branch_aliases ❌❌❌"
+                );
+                rewrite_vlp_union_branch_aliases(&mut base_plan)?;
+                log::warn!(
+                    "❌❌❌ Union handler in to_render_plan_with_ctx: Finished rewrite_vlp_union_branch_aliases ❌❌❌"
+                );
+
+                Ok(base_plan)
+            }
             _ => {
                 // For other plan types, delegate to try_build_join_based_plan
                 // (which calls extract_select_items with None - acceptable for non-VLP cases)
