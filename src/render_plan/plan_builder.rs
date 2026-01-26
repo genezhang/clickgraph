@@ -827,7 +827,41 @@ impl RenderPlanBuilder for LogicalPlan {
                 Ok(render_plan)
             }
             LogicalPlan::GraphRel(gr) => {
-                // For GraphRel, use the same extraction logic as GraphJoins
+                // Extract CTEs first for variable-length paths
+                let mut context = super::cte_generation::CteGenerationContext::new();
+                let ctes = CteItems(extract_ctes_with_context(
+                    self,
+                    &gr.right_connection,
+                    &mut context,
+                    schema,
+                )?);
+
+                // Create temporary render plan to populate CTE registry
+                let mut temp_render_plan = RenderPlan {
+                    ctes: ctes.clone(),
+                    select: SelectItems { items: vec![], distinct: false },
+                    from: FromTableItem(None),
+                    joins: JoinItems(vec![]),
+                    array_join: ArrayJoinItem(vec![]),
+                    filters: FilterItems(None),
+                    group_by: GroupByExpressions(vec![]),
+                    having_clause: None,
+                    order_by: OrderByItems(vec![]),
+                    skip: SkipItem(None),
+                    limit: LimitItem(None),
+                    union: UnionItems(None),
+                    fixed_path_info: None,
+                    cte_column_registry: CteColumnRegistry::new(),
+                };
+
+                // Populate the CTE column registry from CTE metadata
+                populate_cte_column_registry(&mut temp_render_plan);
+
+                // Set the CTE column registry in task-local storage for property resolution
+                use crate::render_plan::set_cte_column_registry;
+                set_cte_column_registry(temp_render_plan.cte_column_registry.clone());
+
+                // Now extract select items with CTE registry available
                 let mut select_items = SelectItems {
                     items: <LogicalPlan as SelectBuilder>::extract_select_items(self)?,
                     distinct: FilterBuilder::extract_distinct(self),
@@ -856,20 +890,11 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 let order_by = OrderByItems(self.extract_order_by()?);
 
-                // Extract CTEs for variable-length paths
-                let mut context = super::cte_generation::CteGenerationContext::new();
-                let ctes = CteItems(extract_ctes_with_context(
-                    self,
-                    &gr.right_connection,
-                    &mut context,
-                    schema,
-                )?);
-
                 let skip = SkipItem(self.extract_skip());
                 let limit = LimitItem(self.extract_limit());
                 let union = UnionItems(self.extract_union(schema)?);
 
-                Ok(RenderPlan {
+                let mut render_plan = RenderPlan {
                     ctes,
                     select: select_items,
                     from,
@@ -883,8 +908,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     limit,
                     union,
                     fixed_path_info: None,
-                    cte_column_registry: CteColumnRegistry::new(),
-                })
+                    cte_column_registry: temp_render_plan.cte_column_registry,
+                };
+
+                Ok(render_plan)
             }
             LogicalPlan::Projection(p) => {
                 // For Projection, convert the input plan and override the select items

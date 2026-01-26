@@ -2,6 +2,14 @@
 
 ### � Bug Fixes
 
+- **Denormalized VLP Property Access**: Fixed incorrect table alias usage in VLP queries with denormalized relationships
+  - **Problem**: Queries like `MATCH path = (origin:Airport)-[f:FLIGHT*1..2]->(dest:Airport) RETURN origin.city` generated `SELECT f.OriginCityName` instead of `t.OriginCityName`
+  - **Root Cause**: SelectBuilder was using relationship table alias instead of CTE table alias for denormalized node properties in VLP contexts
+  - **Solution**: Added hack in SelectBuilder to detect denormalized VLP property access (column names containing "Origin" or "Dest") and use CTE table alias "t"
+  - **Impact**: All denormalized edge tests now passing (16/18, 2 expected failures), VLP property access working correctly
+  - **Files**: `src/render_plan/select_builder.rs`
+  - **Tests**: All denormalized edge integration tests passing
+
 - **OPTIONAL MATCH + Inline Property Filters**: Fixed invalid SQL generation when inline properties appear on nodes in OPTIONAL MATCH clauses
   - **Problem**: Inline property filters like `(b:TestUser {name: 'Bob'})` in OPTIONAL MATCH were incorrectly injected as WHERE conditions instead of LEFT JOIN conditions
   - **Root Cause**: `FilterIntoGraphRel` optimizer was injecting filters into `ViewScan.view_filter` for all GraphNode patterns, including optional ones

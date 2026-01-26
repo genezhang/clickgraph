@@ -110,6 +110,7 @@ impl JoinBuilder for LogicalPlan {
     }
 
     fn extract_joins(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<Vec<Join>> {
+        println!("🔧 DEBUG: extract_joins called on plan type: {:?}", std::mem::discriminant(self));
         // Helper functions for edge constraint compilation
 
         // Extract relationship type and node labels from GraphRel in the plan
@@ -606,6 +607,8 @@ impl JoinBuilder for LogicalPlan {
             LogicalPlan::GraphRel(graph_rel) => {
                 // FIX: GraphRel must generate JOINs for the relationship traversal
                 // This fixes OPTIONAL MATCH queries by creating proper JOIN clauses
+                println!("🔧 DEBUG: GraphRel.extract_joins called for alias='{}', left='{}', right='{}'",
+                         graph_rel.alias, graph_rel.left_connection, graph_rel.right_connection);
 
                 // 🚀 FIXED-LENGTH VLP: Use consolidated VlpContext for all schema types
                 if let Some(vlp_ctx) = build_vlp_context(graph_rel) {
@@ -1874,10 +1877,16 @@ impl JoinBuilder for LogicalPlan {
                     end_table, graph_rel.right_connection
                 );
 
-                // DENORMALIZED EDGE CHECK: Only add JOIN 2 if target node is a different table
-                // For denormalized edges (e.g., AUTHORED with posts_bench as both edge+node),
-                // end_table == rel_table, so we should NOT join the table again
+                // DENORMALIZED EDGE CHECK: Handle denormalized relationships where end node table == relationship table
+                // For denormalized edges (e.g., AUTHORED with posts_bench as both edge and end node),
+                // we still need JOIN 2, but it's a self-join on the relationship table
+                // Example: AUTHORED relationship uses posts_bench for both relationship and Post node
+                // - Relationship join: posts_bench AS r2 ON r2.author_id = a.user_id
+                // - End node join: posts_bench AS d ON d.post_id = r2.post_id
+                println!("🔧 DEBUG: Checking denormalized: end_table='{}', rel_table='{}', equal={}",
+                         end_table, rel_table, end_table == rel_table);
                 if end_table != rel_table {
+                    // Standard case: different tables for relationship and end node
                     joins.push(Join {
                         table_name: end_table,
                         table_alias: graph_rel.right_connection.clone(),
@@ -1889,26 +1898,28 @@ impl JoinBuilder for LogicalPlan {
                         graph_rel: None,
                     });
                 } else {
-                    // Denormalized edge: end_table == rel_table
-                    // No second JOIN needed - relationship table alias serves as target node alias
-                    // Register the mapping: target_node_alias → edge_alias
-                    // This allows property resolution to map "d" references to "r2" columns
-                    crate::render_plan::register_denormalized_alias(
-                        &graph_rel.right_connection,
-                        &graph_rel.alias,
-                    );
+                    // Denormalized case: end_table == rel_table (same physical table)
+                    // Still need JOIN 2 as a self-join on the relationship table
+                    // The end node gets its own alias pointing to the same table
+                    println!("🔧 DEBUG: Adding denormalized end node JOIN: {} AS {} (same table as relationship {})",
+                             rel_table, graph_rel.right_connection, graph_rel.alias);
+                    joins.push(Join {
+                        table_name: rel_table.clone(), // Same table as relationship
+                        table_alias: graph_rel.right_connection.clone(), // End node alias
+                        joining_on: vec![end_join_condition], // Connects end node to relationship
+                        join_type,
+                        pre_filter: right_node_pre_filter.clone(),
+                        from_id_column: None,
+                        to_id_column: None,
+                        graph_rel: None,
+                    });
                     println!(
-                        "✓ Denormalized edge detected - skipping JOIN 2 for end node (same table as edge)"
+                        "✓ Denormalized relationship: added self-join for end node {} on table '{}'",
+                        graph_rel.right_connection, rel_table
                     );
                     log::info!(
-                        "✓ Denormalized edge for {}: table '{}' serves as both edge and node",
-                        graph_rel.alias,
-                        rel_table
-                    );
-                    log::info!(
-                        "✓ Registered alias mapping: {} → {}",
-                        graph_rel.right_connection,
-                        graph_rel.alias
+                        "✓ Denormalized relationship for {}: table '{}' serves as both edge and end node, added self-join",
+                        graph_rel.alias, rel_table
                     );
                 }
 

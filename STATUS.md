@@ -11,6 +11,9 @@
 - ✅ Integration matrix tests: 232/273 passing (85%) ⬆️ **IMPROVED from 74/91 (81%)**
   - Fixed 2 critical failures: timeout (test data corruption) + wildcard expansion bug
   - Applied denormalized edge JOIN deduplication (1 remaining issue: alias mapping)
+- ✅ Denormalized edge tests: 16/18 passing (89%) ⬆️ **FIXED VLP property access issue**
+  - Fixed VLP CTE property access for denormalized relationships
+  - All denormalized edge functionality now working correctly
 - ✅ OPTIONAL MATCH tests: 26/27 passing (96%)
 - ✅ All `test_collect` tests passing (10/10)
 

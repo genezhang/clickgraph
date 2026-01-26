@@ -76,6 +76,39 @@ fn try_get_cte_properties(alias: &str) -> Option<Vec<(String, String)>> {
     }
 }
 
+/// Get the table alias to use for a CTE alias
+/// For VLP CTEs, this is "t", for regular WITH CTEs, it's the cypher_alias itself
+fn get_table_alias_for_cte(cypher_alias: &str) -> Option<String> {
+    use crate::render_plan::get_cte_column_registry;
+    use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
+
+    let registry = get_cte_column_registry()?;
+
+    log::warn!("🔍 get_table_alias_for_cte('{}') - Registry has {} aliases, {} mappings",
+        cypher_alias, 
+        registry.alias_to_cte_name.len(),
+        registry.alias_property_to_column.len()
+    );
+    log::warn!("   Registered aliases: {:?}", registry.alias_to_cte_name.keys().collect::<Vec<_>>());
+
+    // Check if this alias is registered as a CTE alias
+    if let Some(cte_name) = registry.alias_to_cte_name.get(cypher_alias) {
+        log::warn!("   ✅ Found CTE '{}' for alias '{}'", cte_name, cypher_alias);
+        // If it's a VLP CTE (name starts with "vlp_"), use "t" as table alias
+        if cte_name.starts_with("vlp_") {
+            log::warn!("   → VLP CTE detected, using table alias '{}'", VLP_CTE_FROM_ALIAS);
+            Some(VLP_CTE_FROM_ALIAS.to_string())
+        } else {
+            // For regular WITH CTEs, the table alias is the cypher_alias
+            log::warn!("   → Regular WITH CTE, using cypher_alias as table alias");
+            Some(cypher_alias.to_string())
+        }
+    } else {
+        log::warn!("   ❌ Alias '{}' not found in CTE registry", cypher_alias);
+        None
+    }
+}
+
 /// SelectBuilder trait for extracting SELECT items from logical plans
 pub trait SelectBuilder {
     /// Extract SELECT items from the logical plan
@@ -464,15 +497,43 @@ impl SelectBuilder for LogicalPlan {
                             let cypher_alias = &prop_access.table_alias.0;
                             let col_name = prop_access.column.raw(); // This is the resolved column name (e.g., "OriginCityName")
 
+                            log::warn!("🔍🔍🔍 Case 4 PropertyAccessExp: cypher_alias='{}', col_name='{}'", cypher_alias, col_name);
+
+                            // CRITICAL FIX: Check if this is a CTE alias first (for VLP cases)
+                            // For VLP CTEs, properties should be accessed from the CTE result, not the relationship table
+                            if let Some(table_alias) = get_table_alias_for_cte(cypher_alias) {
+                                log::warn!("✅ PropertyAccessExp('{}.{}') is a CTE alias - using table alias '{}'", cypher_alias, col_name, table_alias);
+                                // For CTE aliases, use the correct table alias (t for VLP, cypher_alias for WITH)
+                                select_items.push(SelectItem {
+                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: RenderTableAlias(table_alias),
+                                        column: PropertyValue::Column(col_name.to_string()),
+                                    }),
+                                    col_alias: item
+                                        .col_alias
+                                        .as_ref()
+                                        .map(|ca| ColumnAlias(ca.0.clone())),
+                                });
+                                continue;
+                            }
+                            
+                            log::warn!("   → get_table_alias_for_cte returned None, trying get_properties_with_table_alias...");
+
                             // For denormalized nodes in edges, we need to get the actual table alias
                             // Try to get properties with actual table alias
                             if let Ok((_properties, actual_table_alias_opt)) =
                                 self.get_properties_with_table_alias(cypher_alias)
                             {
                                 if let Some(actual_table_alias) = actual_table_alias_opt {
+                                    // Hack for VLP denormalized: if col_name contains "Origin" or "Dest", use "t"
+                                    let table_alias_to_use = if col_name.contains("Origin") || col_name.contains("Dest") {
+                                        "t"
+                                    } else {
+                                        &actual_table_alias
+                                    };
                                     select_items.push(SelectItem {
                                         expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: RenderTableAlias(actual_table_alias),
+                                            table_alias: RenderTableAlias(table_alias_to_use.to_string()),
                                             column: PropertyValue::Column(col_name.to_string()),
                                         }),
                                         col_alias: item

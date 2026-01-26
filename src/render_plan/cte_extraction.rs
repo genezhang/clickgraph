@@ -368,13 +368,15 @@ fn extract_bound_node_filter(
     plan: &LogicalPlan,
     node_alias: &str,
     cte_alias: &str,
+    relationship_type: Option<&str>,
+    node_role: Option<crate::render_plan::cte_generation::NodeRole>,
 ) -> Option<String> {
     match plan {
         LogicalPlan::Filter(filter) => {
             // Found a filter - convert to RenderExpr and then to SQL
             if let Ok(mut render_expr) = RenderExpr::try_from(filter.predicate.clone()) {
-                // Apply property mapping to the filter expression
-                apply_property_mapping_to_expr(&mut render_expr, plan);
+                // Apply property mapping to the filter expression with relationship context
+                apply_property_mapping_to_expr_with_context(&mut render_expr, plan, relationship_type, node_role);
 
                 // Create alias mapping: node_alias → cte_alias (e.g., "p1" → "start_node")
                 let alias_mapping = [(node_alias.to_string(), cte_alias.to_string())];
@@ -391,15 +393,15 @@ fn extract_bound_node_filter(
         }
         LogicalPlan::GraphNode(node) => {
             // Recurse into the node's input in case there's a filter there
-            extract_bound_node_filter(&node.input, node_alias, cte_alias)
+            extract_bound_node_filter(&node.input, node_alias, cte_alias, relationship_type, node_role)
         }
         LogicalPlan::CartesianProduct(cp) => {
             // For CartesianProduct, the filter might be on either side
             // Try right first (most recent pattern), then left
-            if let Some(filter) = extract_bound_node_filter(&cp.right, node_alias, cte_alias) {
+            if let Some(filter) = extract_bound_node_filter(&cp.right, node_alias, cte_alias, relationship_type, node_role) {
                 Some(filter)
             } else {
-                extract_bound_node_filter(&cp.left, node_alias, cte_alias)
+                extract_bound_node_filter(&cp.left, node_alias, cte_alias, relationship_type, node_role)
             }
         }
         _ => None,
@@ -1406,14 +1408,28 @@ fn get_node_info_from_schema(node_label: &str) -> Option<(String, String)> {
 
 /// Apply property mapping to an expression
 fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
+    apply_property_mapping_to_expr_with_context(expr, plan, None, None);
+}
+
+fn apply_property_mapping_to_expr_with_context(
+    expr: &mut RenderExpr,
+    plan: &LogicalPlan,
+    relationship_type: Option<&str>,
+    node_role: Option<crate::render_plan::cte_generation::NodeRole>,
+) {
     match expr {
         RenderExpr::PropertyAccessExp(prop) => {
             // Get the node label for this table alias
             if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
-                // Map the property to the correct column
+                // Map the property to the correct column with relationship context
                 let mapped_column =
-                    map_property_to_column_with_schema(&prop.column.raw(), &node_label)
-                        .unwrap_or_else(|_| prop.column.raw().to_string());
+                    crate::render_plan::cte_generation::map_property_to_column_with_relationship_context(
+                        &prop.column.raw(),
+                        &node_label,
+                        relationship_type,
+                        node_role,
+                        None, // schema_name will be resolved from task-local
+                    ).unwrap_or_else(|_| prop.column.raw().to_string());
                 prop.column = PropertyValue::Column(mapped_column);
             }
         }
@@ -1441,26 +1457,26 @@ fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
         }
         RenderExpr::OperatorApplicationExp(op) => {
             for operand in &mut op.operands {
-                apply_property_mapping_to_expr(operand, plan);
+                apply_property_mapping_to_expr_with_context(operand, plan, relationship_type, node_role);
             }
         }
         RenderExpr::ScalarFnCall(func) => {
             for arg in &mut func.args {
-                apply_property_mapping_to_expr(arg, plan);
+                apply_property_mapping_to_expr_with_context(arg, plan, relationship_type, node_role);
             }
         }
         RenderExpr::AggregateFnCall(agg) => {
             for arg in &mut agg.args {
-                apply_property_mapping_to_expr(arg, plan);
+                apply_property_mapping_to_expr_with_context(arg, plan, relationship_type, node_role);
             }
         }
         RenderExpr::List(list) => {
             for item in list {
-                apply_property_mapping_to_expr(item, plan);
+                apply_property_mapping_to_expr_with_context(item, plan, relationship_type, node_role);
             }
         }
         RenderExpr::InSubquery(subq) => {
-            apply_property_mapping_to_expr(&mut subq.expr, plan);
+            apply_property_mapping_to_expr_with_context(&mut subq.expr, plan, relationship_type, node_role);
         }
         // Other expression types don't contain nested expressions
         _ => {}
@@ -1471,7 +1487,10 @@ fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
 fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
     match plan {
         LogicalPlan::GraphNode(node) if node.alias == alias => {
-            extract_node_label_from_viewscan(&node.input)
+            // For denormalized nodes, the label is stored directly on GraphNode
+            // For normal nodes, we need to extract from ViewScan input
+            node.label.clone()
+                .or_else(|| extract_node_label_from_viewscan(&node.input))
         }
         LogicalPlan::GraphNode(node) => get_node_label_for_alias(alias, &node.input),
         LogicalPlan::GraphRel(rel) => get_node_label_for_alias(alias, &rel.left)
@@ -1624,6 +1643,7 @@ pub fn extract_ctes_with_context(
         LogicalPlan::GraphRel(graph_rel) => {
             // Handle variable-length paths with context
             if let Some(spec) = &graph_rel.variable_length {
+                log::warn!("🔧 VLP ENTRY: Entering variable-length path handling for spec={:?}", spec);
                 log::debug!("🔧 VLP: Entering variable-length path handling");
                 // Extract actual table names directly from ViewScan - with fallback to label lookup
                 let left_plan_desc = match graph_rel.left.as_ref() {
@@ -1944,22 +1964,27 @@ pub fn extract_ctes_with_context(
                         categorized.relationship_filters
                     );
 
-                    // Now apply property mapping to each categorized filter separately
+                    // Now apply property mapping to each categorized filter separately with relationship context
+                    let rel_type = rel_labels.first().map(|s| s.as_str());
                     let mut mapped_start = categorized.start_node_filters.clone();
                     let mut mapped_end = categorized.end_node_filters.clone();
                     let mut mapped_rel = categorized.relationship_filters.clone();
                     let mut mapped_path = categorized.path_function_filters.clone();
 
                     if let Some(ref mut expr) = mapped_start {
-                        apply_property_mapping_to_expr(
+                        apply_property_mapping_to_expr_with_context(
                             expr,
                             &LogicalPlan::GraphRel(graph_rel.clone()),
+                            rel_type,
+                            Some(crate::render_plan::cte_generation::NodeRole::From),
                         );
                     }
                     if let Some(ref mut expr) = mapped_end {
-                        apply_property_mapping_to_expr(
+                        apply_property_mapping_to_expr_with_context(
                             expr,
                             &LogicalPlan::GraphRel(graph_rel.clone()),
+                            rel_type,
+                            Some(crate::render_plan::cte_generation::NodeRole::To),
                         );
                     }
                     if let Some(ref mut expr) = mapped_rel {
@@ -2070,51 +2095,67 @@ pub fn extract_ctes_with_context(
                 log::info!("  rel_filters_sql: {:?}", rel_filters_sql);
 
                 // 🔧 BOUND NODE FIX: Extract filters from bound nodes (Filter → GraphNode)
-                // For queries like: MATCH (p1:Person {id: 1}), (p2:Person {id: 2}), path = shortestPath((p1)-[:KNOWS*]-(p2))
-                // The {id: 1} and {id: 2} filters are in Filter nodes wrapping the GraphNodes, not in where_predicate
-                if graph_rel.shortest_path_mode.is_some() {
-                    log::info!("🔍 shortestPath: Checking for bound node filters...");
-                    log::info!("  Start alias: {}, End alias: {}", start_alias, end_alias);
-                    log::info!("  Current start_filters_sql: {:?}", start_filters_sql);
-                    log::info!("  Current end_filters_sql: {:?}", end_filters_sql);
+                // For ALL VLP queries, inline property predicates like {code: 'LAX'} are in Filter nodes
+                // wrapping the GraphNodes, not in where_predicate.
+                // Examples:
+                //   - MATCH path = (p1:Person {id: 1})-[:KNOWS*]-(p2:Person {id: 2})
+                //   - MATCH (origin:Airport {code: 'LAX'})-[:FLIGHT*1..2]->(dest:Airport {code: 'ATL'})
+                log::warn!("🔍 VLP BOUND NODE FIX: Extracting inline property predicates from bound nodes...");
+                log::warn!("  Start alias: {}, End alias: {}", start_alias, end_alias);
+                log::warn!("  Current start_filters_sql: {:?}", start_filters_sql);
+                log::warn!("  Current end_filters_sql: {:?}", end_filters_sql);
+                log::warn!("  graph_rel.left type: {:?}", std::mem::discriminant(graph_rel.left.as_ref()));
+                log::warn!("  graph_rel.right type: {:?}", std::mem::discriminant(graph_rel.right.as_ref()));
 
-                    // Extract start node filter (from left side)
-                    if let Some(bound_start_filter) =
-                        extract_bound_node_filter(&graph_rel.left, &start_alias, "start_node")
-                    {
-                        log::info!("🔧 Adding bound start node filter: {}", bound_start_filter);
-                        start_filters_sql = Some(match start_filters_sql {
-                            Some(existing) => {
-                                format!("({}) AND ({})", existing, bound_start_filter)
-                            }
-                            None => bound_start_filter,
-                        });
-                    } else {
-                        log::info!("⚠️  No bound start node filter found");
-                    }
+                // Extract start node filter (from left side) with relationship context for denormalized schemas
+                let rel_type = graph_rel.labels.as_ref().and_then(|labels| labels.first()).map(|s| s.as_str());
+                if let Some(bound_start_filter) =
+                    extract_bound_node_filter(
+                        &graph_rel.left,
+                        &start_alias,
+                        "start_node",
+                        rel_type,
+                        Some(crate::render_plan::cte_generation::NodeRole::From)
+                    )
+                {
+                    log::info!("🔧 Adding bound start node filter: {}", bound_start_filter);
+                    start_filters_sql = Some(match start_filters_sql {
+                        Some(existing) => {
+                            format!("({}) AND ({})", existing, bound_start_filter)
+                        }
+                        None => bound_start_filter,
+                    });
+                } else {
+                    log::info!("⚠️  No bound start node filter found");
+                }
 
-                    // Extract end node filter (from right side)
-                    if let Some(bound_end_filter) =
-                        extract_bound_node_filter(&graph_rel.right, &end_alias, "end_node")
-                    {
-                        log::info!("🔧 Adding bound end node filter: {}", bound_end_filter);
-                        end_filters_sql = Some(match end_filters_sql {
-                            Some(existing) => format!("({}) AND ({})", existing, bound_end_filter),
-                            None => bound_end_filter,
-                        });
-                    } else {
-                        log::info!("⚠️  No bound end node filter found");
-                    }
+                // Extract end node filter (from right side)
+                if let Some(bound_end_filter) =
+                    extract_bound_node_filter(
+                        &graph_rel.right,
+                        &end_alias,
+                        "end_node",
+                        rel_type,
+                        Some(crate::render_plan::cte_generation::NodeRole::To)
+                    )
+                {
+                    log::info!("🔧 Adding bound end node filter: {}", bound_end_filter);
+                    end_filters_sql = Some(match end_filters_sql {
+                        Some(existing) => format!("({}) AND ({})", existing, bound_end_filter),
+                        None => bound_end_filter,
+                    });
+                } else {
+                    log::info!("⚠️  No bound end node filter found");
+                }
 
-                    log::info!("  Final start_filters_sql: {:?}", start_filters_sql);
-                    log::info!("  Final end_filters_sql: {:?}", end_filters_sql);
+                log::info!("  Final start_filters_sql: {:?}", start_filters_sql);
+                log::info!("  Final end_filters_sql: {:?}", end_filters_sql);
 
-                    // For optional VLP, don't include start node filters in CTE
-                    // The filters should remain on the base table in the final query
-                    if graph_rel.is_optional.unwrap_or(false) {
-                        log::info!("🔧 Optional VLP: Removing start_filters_sql from CTE (will be applied to final FROM)");
-                        start_filters_sql = None;
-                    }
+                // For optional VLP, don't include start node filters in CTE
+                // The filters should remain on the base table in the final query
+                if graph_rel.is_optional.unwrap_or(false) {
+                    log::info!("🔧 Optional VLP: Removing start_filters_sql from CTE (will be applied to final FROM)");
+                    start_filters_sql = None;
                 }
 
                 // Extract properties from filter expressions for shortest path queries

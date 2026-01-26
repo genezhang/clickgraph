@@ -1278,13 +1278,46 @@ impl DenormalizedCteStrategy {
         // Build the recursive CTE SQL for denormalized schema
         let sql = self.generate_recursive_cte_sql(context, properties, filters)?;
 
-        // Build column metadata
-        let columns = CteGenerationResult::build_vlp_column_metadata(
-            &self.pattern_ctx.left_node_alias,
-            &self.pattern_ctx.right_node_alias,
-            properties,
-            "id", // Denormalized uses generic ID
-        );
+        // Build column metadata for denormalized schema
+        let mut columns = Vec::new();
+
+        // Add start node ID column
+        columns.push(CteColumnMetadata {
+            cte_column_name: VLP_START_ID_COLUMN.to_string(),
+            cypher_alias: self.pattern_ctx.left_node_alias.clone(),
+            cypher_property: "id".to_string(),
+            db_column: self.from_col.clone(),
+            is_id_column: true,
+            vlp_position: Some(VlpColumnPosition::Start),
+        });
+
+        // Add end node ID column
+        columns.push(CteColumnMetadata {
+            cte_column_name: VLP_END_ID_COLUMN.to_string(),
+            cypher_alias: self.pattern_ctx.right_node_alias.clone(),
+            cypher_property: "id".to_string(),
+            db_column: self.to_col.clone(),
+            is_id_column: true,
+            vlp_position: Some(VlpColumnPosition::End),
+        });
+
+        // Add property columns - for denormalized, properties are selected as-is
+        for prop in properties {
+            // For denormalized schema, the CTE column name is the DB column name (e.g., "OriginCityName")
+            // which matches how properties are selected in add_property_selections
+            columns.push(CteColumnMetadata {
+                cte_column_name: prop.column_name.clone(), // e.g., "OriginCityName"
+                cypher_alias: prop.cypher_alias.clone(), // e.g., "origin"
+                cypher_property: prop.alias.clone(), // e.g., "city"
+                db_column: prop.column_name.clone(),
+                is_id_column: false,
+                vlp_position: if prop.cypher_alias == self.pattern_ctx.left_node_alias {
+                    Some(VlpColumnPosition::Start)
+                } else {
+                    Some(VlpColumnPosition::End)
+                },
+            });
+        }
 
         // Build VLP endpoint info for denormalized (edge table is the only table)
         let vlp_endpoint = VlpEndpointInfo {
