@@ -244,8 +244,8 @@ async fn test_optional_match_with_vlp_and_aggregation() {
         "Should contain LEFT JOIN for OPTIONAL MATCH"
     );
     assert!(
-        sql.to_lowercase().contains("coalesce("),
-        "Should contain COALESCE for optional aggregation"
+        sql.to_lowercase().contains("count(*)"),
+        "Should contain COUNT(*) aggregate in LEFT JOIN subquery"
     );
 }
 

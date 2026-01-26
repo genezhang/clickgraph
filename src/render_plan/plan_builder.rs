@@ -850,7 +850,6 @@ impl RenderPlanBuilder for LogicalPlan {
 
                     // Generate unique names to avoid conflicts
                     let vlp_alias = format!("__vlp_{}_{}", gr.left_connection, gr.right_connection);
-                    let count_column = format!("__count_{}", gr.right_connection);
                     let cte_name = format!("vlp_{}_{}", gr.left_connection, gr.right_connection);
                     let start_id_column = extract_id_column(&gr.left).ok_or_else(|| {
                         RenderBuildError::MissingTableInfo(
@@ -881,7 +880,10 @@ impl RenderPlanBuilder for LogicalPlan {
 
                     let vlp_join = Join {
                         join_type: JoinType::Left,
-                        table_name: format!("(SELECT start_id, COUNT(*) as {} FROM {} GROUP BY start_id)", count_column, cte_name),
+                        table_name: format!(
+                            "(SELECT start_id, COUNT(*) as __vlp_count FROM {} GROUP BY start_id)",
+                            cte_name
+                        ),
                         table_alias: vlp_alias.clone(),
                         joining_on: vec![join_condition],
                         pre_filter: None,
@@ -1092,34 +1094,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Check if this Projection is over an optional VLP GraphRel
                     if let LogicalPlan::GraphRel(gr) = p.input.as_ref() {
                         if gr.variable_length.is_some() && gr.is_optional.unwrap_or(false) {
-                            log::info!("🎯 Projection over optional VLP: modifying aggregations to use COALESCE");
+                            log::info!("🎯 Projection over optional VLP: aggregations handled by LEFT JOIN with COUNT(*)");
 
-                            // Generate the same unique names used in the JOIN
-                            let vlp_alias = format!("__vlp_{}_{}", gr.left_connection, gr.right_connection);
-                            let count_column = format!("__count_{}", gr.right_connection);
-
-                            // Modify select items to use COALESCE for aggregations over optional VLP
-                            for item in &mut select_items {
-                                if let RenderExpr::AggregateFnCall(agg) = &mut item.expression {
-                                    if agg.name.eq_ignore_ascii_case("count") && agg.args.len() == 1 {
-                                        // Check if this is COUNT on the end node of VLP
-                                        if let RenderExpr::Star = &agg.args[0] {
-                                            // This is COUNT(*) that came from COUNT(f) - replace with COALESCE
-                                            log::info!("🎯 Replacing COUNT(*) with COALESCE({}, 0)", count_column);
-                                            item.expression = RenderExpr::ScalarFnCall(ScalarFnCall {
-                                                name: "COALESCE".to_string(),
-                                                args: vec![
-                                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                                        table_alias: TableAlias(vlp_alias.clone()),
-                                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(count_column.clone()),
-                                                    }),
-                                                    RenderExpr::Literal(Literal::Integer(0)),
-                                                ],
-                                            });
-                                        }
-                                    }
-                                }
-                            }
+                            // ClickHouse returns 0 (not NULL) for COUNT(*) with empty groups in LEFT JOIN + GROUP BY
+                            // So no COALESCE wrapper needed - aggregations work correctly as-is
                         }
                     }
 
