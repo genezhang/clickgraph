@@ -366,7 +366,7 @@ pub(super) fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
             } else {
                 None
             }
-        },
+        }
         // For Union (denormalized nodes), extract from first branch
         LogicalPlan::Union(union) => {
             if !union.inputs.is_empty() {

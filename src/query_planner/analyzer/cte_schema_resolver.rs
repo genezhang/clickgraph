@@ -121,7 +121,11 @@ impl AnalyzerPass for CteSchemaResolver {
 
                 // Return updated plan with CTE name stored in WithClause
                 let updated_wc = crate::query_planner::logical_plan::WithClause {
-                    input: if child_tf.is_yes() { child_tf.get_plan() } else { wc.input.clone() },
+                    input: if child_tf.is_yes() {
+                        child_tf.get_plan()
+                    } else {
+                        wc.input.clone()
+                    },
                     cte_name: Some(cte_name.clone()),
                     ..wc.clone()
                 };

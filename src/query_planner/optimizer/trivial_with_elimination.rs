@@ -91,7 +91,7 @@ impl TrivialWithElimination {
                         );
                         // Skip the inner WITH
                         return Ok(Arc::new(LogicalPlan::WithClause(WithClause {
-            cte_name: None,
+                            cte_name: None,
                             input: inner_with.input.clone(),
                             items: with.items.clone(),
                             distinct: with.distinct,
@@ -106,7 +106,7 @@ impl TrivialWithElimination {
                 }
 
                 Ok(Arc::new(LogicalPlan::WithClause(WithClause {
-            cte_name: None,
+                    cte_name: None,
                     input: optimized_input,
                     items: with.items.clone(),
                     distinct: with.distinct,

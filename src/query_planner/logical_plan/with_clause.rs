@@ -2,9 +2,7 @@ use crate::{
     open_cypher_parser::ast::WithClause as AstWithClause,
     query_planner::{
         logical_expr::LogicalExpr,
-        logical_plan::{
-            errors::LogicalPlanError, LogicalPlan, OrderByItem, ProjectionItem,
-        },
+        logical_plan::{errors::LogicalPlanError, LogicalPlan, OrderByItem, ProjectionItem},
     },
 };
 use std::sync::Arc;
@@ -49,7 +47,8 @@ pub fn evaluate_with_clause<'a>(
 
     // Create the new WithClause type with all modifiers - returns error if items lack required aliases
     let mut with_node =
-        crate::query_planner::logical_plan::WithClause::new(plan, projection_items)?.with_distinct(with_clause.distinct);
+        crate::query_planner::logical_plan::WithClause::new(plan, projection_items)?
+            .with_distinct(with_clause.distinct);
 
     // Add ORDER BY if present
     if let Some(ref order_by_ast) = with_clause.order_by {

@@ -298,7 +298,7 @@ impl TypeInference {
 
                 if input_transformed.is_yes() {
                     let new_wc = crate::query_planner::logical_plan::WithClause {
-            cte_name: None,
+                        cte_name: None,
                         input: input_transformed.get_plan().clone(),
                         items: wc.items.clone(),
                         distinct: wc.distinct,

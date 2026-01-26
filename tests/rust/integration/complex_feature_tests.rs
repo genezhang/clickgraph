@@ -39,11 +39,26 @@ fn create_test_schema() -> GraphSchema {
             node_id: NodeIdSchema::single("user_id".to_string(), "UInt64".to_string()),
             property_mappings: {
                 let mut props = HashMap::new();
-                props.insert("user_id".to_string(), PropertyValue::Column("user_id".to_string()));
-                props.insert("name".to_string(), PropertyValue::Column("full_name".to_string()));
-                props.insert("email".to_string(), PropertyValue::Column("email_address".to_string()));
-                props.insert("registration_date".to_string(), PropertyValue::Column("registration_date".to_string()));
-                props.insert("is_active".to_string(), PropertyValue::Column("is_active".to_string()));
+                props.insert(
+                    "user_id".to_string(),
+                    PropertyValue::Column("user_id".to_string()),
+                );
+                props.insert(
+                    "name".to_string(),
+                    PropertyValue::Column("full_name".to_string()),
+                );
+                props.insert(
+                    "email".to_string(),
+                    PropertyValue::Column("email_address".to_string()),
+                );
+                props.insert(
+                    "registration_date".to_string(),
+                    PropertyValue::Column("registration_date".to_string()),
+                );
+                props.insert(
+                    "is_active".to_string(),
+                    PropertyValue::Column("is_active".to_string()),
+                );
                 props
             },
             view_parameters: None,
@@ -76,11 +91,26 @@ fn create_test_schema() -> GraphSchema {
             node_id: NodeIdSchema::single("post_id".to_string(), "UInt64".to_string()),
             property_mappings: {
                 let mut props = HashMap::new();
-                props.insert("post_id".to_string(), PropertyValue::Column("post_id".to_string()));
-                props.insert("author_id".to_string(), PropertyValue::Column("author_id".to_string()));
-                props.insert("title".to_string(), PropertyValue::Column("post_title".to_string()));
-                props.insert("content".to_string(), PropertyValue::Column("post_content".to_string()));
-                props.insert("date".to_string(), PropertyValue::Column("post_date".to_string()));
+                props.insert(
+                    "post_id".to_string(),
+                    PropertyValue::Column("post_id".to_string()),
+                );
+                props.insert(
+                    "author_id".to_string(),
+                    PropertyValue::Column("author_id".to_string()),
+                );
+                props.insert(
+                    "title".to_string(),
+                    PropertyValue::Column("post_title".to_string()),
+                );
+                props.insert(
+                    "content".to_string(),
+                    PropertyValue::Column("post_content".to_string()),
+                );
+                props.insert(
+                    "date".to_string(),
+                    PropertyValue::Column("post_date".to_string()),
+                );
                 props
             },
             view_parameters: None,
@@ -117,7 +147,10 @@ fn create_test_schema() -> GraphSchema {
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: {
                 let mut props = HashMap::new();
-                props.insert("follow_date".to_string(), PropertyValue::Column("follow_date".to_string()));
+                props.insert(
+                    "follow_date".to_string(),
+                    PropertyValue::Column("follow_date".to_string()),
+                );
                 props
             },
             view_parameters: None,
@@ -143,10 +176,7 @@ fn create_test_schema() -> GraphSchema {
         RelationshipSchema {
             database: "test".to_string(),
             table_name: "post_authors".to_string(),
-            column_names: vec![
-                "author_id".to_string(),
-                "post_id".to_string(),
-            ],
+            column_names: vec!["author_id".to_string(), "post_id".to_string()],
             from_node: "User".to_string(),
             to_node: "Post".to_string(),
             from_node_table: "users".to_string(),
@@ -190,19 +220,33 @@ async fn test_optional_match_with_vlp_and_aggregation() {
     let ast = parse_query(cypher).expect("Failed to parse complex OPTIONAL MATCH + VLP query");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build logical plan for complex query: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build logical plan for complex query: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for complex query: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for complex query: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("left join"), "Should contain LEFT JOIN for OPTIONAL MATCH");
-    assert!(sql.to_lowercase().contains("count("), "Should contain COUNT aggregation");
+    assert!(
+        sql.to_lowercase().contains("left join"),
+        "Should contain LEFT JOIN for OPTIONAL MATCH"
+    );
+    assert!(
+        sql.to_lowercase().contains("count("),
+        "Should contain COUNT aggregation"
+    );
 }
 
 /// Test shortestPath combined with WITH clause and filtering
@@ -220,19 +264,33 @@ async fn test_shortest_path_with_with_clause() {
     let ast = parse_query(cypher).expect("Failed to parse shortestPath + WITH + WHERE");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build plan for shortestPath + WITH: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build plan for shortestPath + WITH: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for shortestPath + WITH: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for shortestPath + WITH: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("with recursive"), "Should contain WITH RECURSIVE for shortestPath");
-    assert!(sql.to_lowercase().contains("length("), "Should contain length function");
+    assert!(
+        sql.to_lowercase().contains("with recursive"),
+        "Should contain WITH RECURSIVE for shortestPath"
+    );
+    assert!(
+        sql.to_lowercase().contains("length("),
+        "Should contain length function"
+    );
 }
 
 /// Test multiple relationship types combined with VLP
@@ -248,18 +306,29 @@ async fn test_multiple_relationship_types_with_vlp() {
     let ast = parse_query(cypher).expect("Failed to parse multiple rel types + VLP");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build plan for multiple rel types + VLP: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build plan for multiple rel types + VLP: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for multiple rel types + VLP: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for multiple rel types + VLP: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("union"), "Should contain UNION for multiple relationship types");
+    assert!(
+        sql.to_lowercase().contains("union"),
+        "Should contain UNION for multiple relationship types"
+    );
 }
 
 /// Test WITH clause property renaming and object passing
@@ -277,18 +346,29 @@ async fn test_with_clause_property_renaming() {
     let ast = parse_query(cypher).expect("Failed to parse WITH clause property renaming");
 
     let result = evaluate_read_query(ast, &schema, None, None);
-    assert!(result.is_ok(), "Failed to evaluate read query for WITH clause property renaming: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to evaluate read query for WITH clause property renaming: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan(logical_plan, &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for WITH clause property renaming: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for WITH clause property renaming: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("with"), "Should contain WITH clause");
+    assert!(
+        sql.to_lowercase().contains("with"),
+        "Should contain WITH clause"
+    );
 }
 
 /// Test complex aggregation with multiple features
@@ -309,19 +389,33 @@ async fn test_complex_aggregation_with_multiple_features() {
     let ast = parse_query(cypher).expect("Failed to parse complex aggregation query");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build plan for complex aggregation: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build plan for complex aggregation: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for complex aggregation: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for complex aggregation: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("count("), "Should contain COUNT aggregation");
-    assert!(sql.to_lowercase().contains("limit"), "Should contain LIMIT clause");
+    assert!(
+        sql.to_lowercase().contains("count("),
+        "Should contain COUNT aggregation"
+    );
+    assert!(
+        sql.to_lowercase().contains("limit"),
+        "Should contain LIMIT clause"
+    );
 }
 
 /// Test shortestPath with property filters
@@ -340,18 +434,29 @@ async fn test_shortest_path_with_property_filters() {
     let ast = parse_query(cypher).expect("Failed to parse shortestPath with property filters");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build plan for shortestPath with filters: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build plan for shortestPath with filters: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for shortestPath with filters: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for shortestPath with filters: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("with recursive"), "Should contain WITH RECURSIVE for shortestPath");
+    assert!(
+        sql.to_lowercase().contains("with recursive"),
+        "Should contain WITH RECURSIVE for shortestPath"
+    );
 }
 
 /// Test VLP with relationship property filters
@@ -367,18 +472,29 @@ async fn test_vlp_with_relationship_property_filters() {
     let ast = parse_query(cypher).expect("Failed to parse VLP with relationship filters");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build plan for VLP with relationship filters: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build plan for VLP with relationship filters: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for VLP with relationship filters: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for VLP with relationship filters: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("count("), "Should contain COUNT aggregation");
+    assert!(
+        sql.to_lowercase().contains("count("),
+        "Should contain COUNT aggregation"
+    );
 }
 
 /// Test error handling for invalid VLP ranges
@@ -387,7 +503,10 @@ fn test_invalid_vlp_range_error_handling() {
     let cypher = "MATCH (a)-[*0..0]->(b) RETURN a, b"; // Invalid: zero hops
 
     let result = parse_query(cypher);
-    assert!(result.is_ok(), "Parsing should succeed, validation happens later");
+    assert!(
+        result.is_ok(),
+        "Parsing should succeed, validation happens later"
+    );
 
     // TODO: Add validation tests once we have query validation
 }
@@ -398,7 +517,10 @@ fn test_invalid_shortest_path_error_handling() {
     let cypher = "MATCH path = shortestPath((a)-[*0..0]->(b)) RETURN path"; // Invalid range
 
     let result = parse_query(cypher);
-    assert!(result.is_ok(), "Parsing should succeed, validation happens later");
+    assert!(
+        result.is_ok(),
+        "Parsing should succeed, validation happens later"
+    );
 
     // TODO: Add validation tests once we have query validation
 }
@@ -416,11 +538,19 @@ fn test_many_relationship_types_union() {
     let ast = parse_query(cypher).expect("Failed to parse many relationship types");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build plan for many relationship types: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build plan for many relationship types: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for many relationship types: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for many relationship types: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
@@ -441,18 +571,29 @@ async fn test_pattern_comprehension_complex() {
     let ast = parse_query(cypher).expect("Failed to parse complex pattern comprehensions");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build plan for pattern comprehensions: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build plan for pattern comprehensions: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for pattern comprehensions: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for pattern comprehensions: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("size("), "Should contain SIZE function");
+    assert!(
+        sql.to_lowercase().contains("size("),
+        "Should contain SIZE function"
+    );
 }
 
 /// Test multiple OPTIONAL MATCH clauses in a single query
@@ -470,18 +611,29 @@ async fn test_multiple_optional_match_clauses() {
     let ast = parse_query(cypher).expect("Failed to parse multiple OPTIONAL MATCH query");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build logical plan for multiple optional matches: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build logical plan for multiple optional matches: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for multiple optional matches: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for multiple optional matches: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("count("), "Should contain COUNT aggregations");
+    assert!(
+        sql.to_lowercase().contains("count("),
+        "Should contain COUNT aggregations"
+    );
 }
 
 /// Test OPTIONAL MATCH with WHERE clauses and complex conditions
@@ -499,19 +651,33 @@ async fn test_optional_match_with_where_conditions() {
     let ast = parse_query(cypher).expect("Failed to parse OPTIONAL MATCH with WHERE");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build logical plan for optional match with WHERE: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build logical plan for optional match with WHERE: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for optional match with WHERE: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for optional match with WHERE: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("where"), "Should contain WHERE clause");
-    assert!(sql.to_lowercase().contains("count("), "Should contain COUNT aggregation");
+    assert!(
+        sql.to_lowercase().contains("where"),
+        "Should contain WHERE clause"
+    );
+    assert!(
+        sql.to_lowercase().contains("count("),
+        "Should contain COUNT aggregation"
+    );
 }
 
 /// Test complex aggregations with multiple functions and GROUP BY
@@ -532,21 +698,41 @@ async fn test_complex_aggregations_with_group_by() {
     let ast = parse_query(cypher).expect("Failed to parse complex aggregations query");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build logical plan for complex aggregations: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build logical plan for complex aggregations: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for complex aggregations: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for complex aggregations: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("count("), "Should contain COUNT functions");
-    assert!(sql.to_lowercase().contains("max("), "Should contain MAX function");
-    assert!(sql.to_lowercase().contains("min("), "Should contain MIN function");
-    assert!(sql.to_lowercase().contains("distinct"), "Should contain DISTINCT keyword");
+    assert!(
+        sql.to_lowercase().contains("count("),
+        "Should contain COUNT functions"
+    );
+    assert!(
+        sql.to_lowercase().contains("max("),
+        "Should contain MAX function"
+    );
+    assert!(
+        sql.to_lowercase().contains("min("),
+        "Should contain MIN function"
+    );
+    assert!(
+        sql.to_lowercase().contains("distinct"),
+        "Should contain DISTINCT keyword"
+    );
 }
 
 /// Test complex WHERE clauses with multiple conditions and operators
@@ -567,19 +753,33 @@ async fn test_complex_where_clauses_multiple_conditions() {
     let ast = parse_query(cypher).expect("Failed to parse complex WHERE conditions");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build logical plan for complex WHERE: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build logical plan for complex WHERE: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for complex WHERE: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for complex WHERE: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("where"), "Should contain WHERE clause");
-    assert!(sql.to_lowercase().contains("and"), "Should contain AND operators");
+    assert!(
+        sql.to_lowercase().contains("where"),
+        "Should contain WHERE clause"
+    );
+    assert!(
+        sql.to_lowercase().contains("and"),
+        "Should contain AND operators"
+    );
 }
 
 /// Test ORDER BY with complex expressions and aggregations
@@ -596,20 +796,37 @@ async fn test_order_by_with_complex_expressions() {
     let ast = parse_query(cypher).expect("Failed to parse ORDER BY with aggregations");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build logical plan for ORDER BY: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build logical plan for ORDER BY: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for ORDER BY: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for ORDER BY: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("order by"), "Should contain ORDER BY clause");
-    assert!(sql.to_lowercase().contains("desc"), "Should contain DESC keyword");
-    assert!(sql.to_lowercase().contains("asc"), "Should contain ASC keyword");
+    assert!(
+        sql.to_lowercase().contains("order by"),
+        "Should contain ORDER BY clause"
+    );
+    assert!(
+        sql.to_lowercase().contains("desc"),
+        "Should contain DESC keyword"
+    );
+    assert!(
+        sql.to_lowercase().contains("asc"),
+        "Should contain ASC keyword"
+    );
 }
 
 /// Test LIMIT and OFFSET with complex queries
@@ -627,19 +844,33 @@ async fn test_limit_offset_with_complex_queries() {
     let ast = parse_query(cypher).expect("Failed to parse LIMIT/OFFSET query");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build logical plan for LIMIT/OFFSET: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build logical plan for LIMIT/OFFSET: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for LIMIT/OFFSET: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for LIMIT/OFFSET: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("limit"), "Should contain LIMIT clause");
-    assert!(sql.to_lowercase().contains("offset"), "Should contain OFFSET clause");
+    assert!(
+        sql.to_lowercase().contains("limit"),
+        "Should contain LIMIT clause"
+    );
+    assert!(
+        sql.to_lowercase().contains("offset"),
+        "Should contain OFFSET clause"
+    );
 }
 
 /// Test complex CASE expressions in RETURN clauses
@@ -662,22 +893,45 @@ async fn test_case_expressions_in_return() {
     let ast = parse_query(cypher).expect("Failed to parse CASE expression query");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build logical plan for CASE expressions: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build logical plan for CASE expressions: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for CASE expressions: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for CASE expressions: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("case"), "Should contain CASE expression");
-    assert!(sql.to_lowercase().contains("when"), "Should contain WHEN clauses");
-    assert!(sql.to_lowercase().contains("then"), "Should contain THEN clauses");
-    assert!(sql.to_lowercase().contains("else"), "Should contain ELSE clause");
-    assert!(sql.to_lowercase().contains("end"), "Should contain END keyword");
+    assert!(
+        sql.to_lowercase().contains("case"),
+        "Should contain CASE expression"
+    );
+    assert!(
+        sql.to_lowercase().contains("when"),
+        "Should contain WHEN clauses"
+    );
+    assert!(
+        sql.to_lowercase().contains("then"),
+        "Should contain THEN clauses"
+    );
+    assert!(
+        sql.to_lowercase().contains("else"),
+        "Should contain ELSE clause"
+    );
+    assert!(
+        sql.to_lowercase().contains("end"),
+        "Should contain END keyword"
+    );
 }
 
 /// Test complex property access patterns with nested expressions
@@ -696,18 +950,29 @@ async fn test_complex_property_access_patterns() {
     let ast = parse_query(cypher).expect("Failed to parse complex property access");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build logical plan for complex property access: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build logical plan for complex property access: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for complex property access: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for complex property access: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("is not null"), "Should contain IS NOT NULL checks");
+    assert!(
+        sql.to_lowercase().contains("is not null"),
+        "Should contain IS NOT NULL checks"
+    );
 }
 
 /// Test UNION operations with complex feature combinations
@@ -728,18 +993,29 @@ async fn test_union_with_complex_features() {
     let ast = parse_query(cypher).expect("Failed to parse UNION query");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build logical plan for UNION: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build logical plan for UNION: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for UNION: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for UNION: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("union"), "Should contain UNION keyword");
+    assert!(
+        sql.to_lowercase().contains("union"),
+        "Should contain UNION keyword"
+    );
 }
 
 /// Test deeply nested expressions and function calls
@@ -762,17 +1038,31 @@ async fn test_deeply_nested_expressions() {
     let ast = parse_query(cypher).expect("Failed to parse deeply nested expressions");
 
     let result = build_logical_plan(&ast, &schema, None, None, None);
-    assert!(result.is_ok(), "Failed to build logical plan for nested expressions: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to build logical plan for nested expressions: {:?}",
+        result.err()
+    );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
     let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
-    assert!(render_result.is_ok(), "Failed to render SQL for nested expressions: {:?}", render_result.err());
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for nested expressions: {:?}",
+        render_result.err()
+    );
 
     let render_plan = render_result.unwrap();
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
     // Verify the query contains expected elements
-    assert!(sql.to_lowercase().contains("case"), "Should contain CASE expression");
-    assert!(sql.to_lowercase().contains("*"), "Should contain multiplication operator");
+    assert!(
+        sql.to_lowercase().contains("case"),
+        "Should contain CASE expression"
+    );
+    assert!(
+        sql.to_lowercase().contains("*"),
+        "Should contain multiplication operator"
+    );
 }

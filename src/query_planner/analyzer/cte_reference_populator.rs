@@ -53,7 +53,7 @@ impl CteReferencePopulator {
 
                 if input_resolved.is_yes() {
                     let new_wc = WithClause {
-            cte_name: None,
+                        cte_name: None,
                         input: input_resolved.get_plan(),
                         ..wc.clone()
                     };
@@ -135,7 +135,8 @@ impl CteReferencePopulator {
             }
 
             LogicalPlan::Filter(filter) => {
-                let input_resolved = self.populate(filter.input.clone(), available_ctes, plan_ctx)?;
+                let input_resolved =
+                    self.populate(filter.input.clone(), available_ctes, plan_ctx)?;
                 if input_resolved.is_yes() {
                     let new_filter = crate::query_planner::logical_plan::Filter {
                         input: input_resolved.get_plan(),

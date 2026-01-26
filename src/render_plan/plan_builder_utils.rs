@@ -9393,7 +9393,7 @@ pub(crate) fn collapse_passthrough_with(
                 let new_input =
                     collapse_passthrough_with(&wc.input, target_alias, target_cte_name)?;
                 Ok(LogicalPlan::WithClause(WithClause {
-            cte_name: None,
+                    cte_name: None,
                     input: Arc::new(new_input),
                     items: wc.items.clone(),
                     order_by: wc.order_by.clone(),
@@ -10168,7 +10168,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
 
                 Ok(LogicalPlan::WithClause(
                     crate::query_planner::logical_plan::WithClause {
-            cte_name: None,
+                        cte_name: None,
                         input: Arc::new(new_input),
                         items: wc.items.clone(),
                         distinct: wc.distinct,
@@ -10213,7 +10213,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
 
                 Ok(LogicalPlan::WithClause(
                     crate::query_planner::logical_plan::WithClause {
-            cte_name: None,
+                        cte_name: None,
                         input: Arc::new(new_input),
                         items: wc.items.clone(),
                         distinct: wc.distinct,
