@@ -396,6 +396,7 @@ impl VariableResolver {
 
                 // Step 6: Return new WithClause with resolved data
                 let new_wc = WithClause {
+                    cte_name: None,
                     input: new_input,
                     items: resolved_items,
                     distinct: wc.distinct,

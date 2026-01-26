@@ -53,6 +53,7 @@ pub fn enrich_unwind_with_tuple_info(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan>
         }
         LogicalPlan::WithClause(wc) => Arc::new(LogicalPlan::WithClause(
             crate::query_planner::logical_plan::WithClause {
+                cte_name: None,
                 input: enrich_unwind_with_tuple_info(wc.input.clone()),
                 ..wc.clone()
             },

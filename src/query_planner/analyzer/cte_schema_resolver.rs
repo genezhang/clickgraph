@@ -53,7 +53,7 @@ impl CteSchemaResolver {
     }
 
     /// Process a WithClause and register its schema
-    fn register_with_clause_schema(with_clause: &WithClause, plan_ctx: &mut PlanCtx) {
+    fn register_with_clause_schema(with_clause: &WithClause, plan_ctx: &mut PlanCtx) -> String {
         // Generate CTE name using centralized utility
         let cte_counter = plan_ctx.cte_counter;
         plan_ctx.cte_counter += 1;
@@ -92,6 +92,8 @@ impl CteSchemaResolver {
             cte_name,
             with_clause.items.len()
         );
+
+        cte_name
     }
 }
 
@@ -115,19 +117,20 @@ impl AnalyzerPass for CteSchemaResolver {
                     self.analyze_with_graph_schema(wc.input.clone(), plan_ctx, _graph_schema)?;
 
                 // Register this WITH clause's schema
-                Self::register_with_clause_schema(wc, plan_ctx);
+                let cte_name = Self::register_with_clause_schema(wc, plan_ctx);
 
-                // Return unchanged plan (we only modify plan_ctx, not the plan itself)
-                if child_tf.is_yes() {
-                    Transformed::Yes(Arc::new(LogicalPlan::WithClause(
-                        crate::query_planner::logical_plan::WithClause {
-                            input: child_tf.get_plan(),
-                            ..wc.clone()
-                        },
-                    )))
-                } else {
-                    Transformed::No(logical_plan.clone())
-                }
+                // Return updated plan with CTE name stored in WithClause
+                let updated_wc = crate::query_planner::logical_plan::WithClause {
+                    input: if child_tf.is_yes() {
+                        child_tf.get_plan()
+                    } else {
+                        wc.input.clone()
+                    },
+                    cte_name: Some(cte_name.clone()),
+                    ..wc.clone()
+                };
+
+                Transformed::Yes(Arc::new(LogicalPlan::WithClause(updated_wc)))
             }
 
             // Recursively process other plan types

@@ -91,6 +91,7 @@ impl TrivialWithElimination {
                         );
                         // Skip the inner WITH
                         return Ok(Arc::new(LogicalPlan::WithClause(WithClause {
+                            cte_name: None,
                             input: inner_with.input.clone(),
                             items: with.items.clone(),
                             distinct: with.distinct,
@@ -105,6 +106,7 @@ impl TrivialWithElimination {
                 }
 
                 Ok(Arc::new(LogicalPlan::WithClause(WithClause {
+                    cte_name: None,
                     input: optimized_input,
                     items: with.items.clone(),
                     distinct: with.distinct,
@@ -215,6 +217,7 @@ mod tests {
     fn test_identifies_trivial_with() {
         // WITH a, b (simple pass-through)
         let with = WithClause {
+            cte_name: None,
             input: Arc::new(LogicalPlan::Empty),
             items: vec![ProjectionItem {
                 expression: LogicalExpr::TableAlias(
@@ -239,6 +242,7 @@ mod tests {
     #[test]
     fn test_identifies_non_trivial_with_distinct() {
         let mut with = WithClause {
+            cte_name: None,
             input: Arc::new(LogicalPlan::Empty),
             items: vec![],
             distinct: true, // DISTINCT makes it non-trivial
@@ -256,6 +260,7 @@ mod tests {
     #[test]
     fn test_identifies_non_trivial_with_aggregation() {
         let with = WithClause {
+            cte_name: None,
             input: Arc::new(LogicalPlan::Empty),
             items: vec![ProjectionItem {
                 expression: LogicalExpr::AggregateFnCall(

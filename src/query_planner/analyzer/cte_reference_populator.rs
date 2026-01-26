@@ -28,18 +28,20 @@ impl CteReferencePopulator {
     ///
     /// @param plan: The plan to process
     /// @param available_ctes: Map of alias -> CTE name for all CTEs visible at this point
+    /// @param plan_ctx: Plan context for looking up CTE names
     fn populate(
         &self,
         plan: Arc<LogicalPlan>,
         available_ctes: &HashMap<String, String>,
+        plan_ctx: &PlanCtx,
     ) -> Result<Transformed<Arc<LogicalPlan>>, AnalyzerError> {
         match plan.as_ref() {
             LogicalPlan::WithClause(wc) => {
                 // CRITICAL: Add this WITH's exports to available_ctes BEFORE processing input
                 // This way, GraphRels inside the input can find the CTE references
                 let mut input_ctes = available_ctes.clone();
-                for alias in &wc.exported_aliases {
-                    if let Some(cte_name) = wc.cte_references.get(alias) {
+                if let Some(cte_name) = &wc.cte_name {
+                    for alias in &wc.exported_aliases {
                         log::info!("🔍 CteReferencePopulator: Adding WITH export '{}' -> '{}' for input processing",
                                    alias, cte_name);
                         input_ctes.insert(alias.clone(), cte_name.clone());
@@ -47,10 +49,11 @@ impl CteReferencePopulator {
                 }
 
                 // Process the input with updated CTE context
-                let input_resolved = self.populate(wc.input.clone(), &input_ctes)?;
+                let input_resolved = self.populate(wc.input.clone(), &input_ctes, plan_ctx)?;
 
                 if input_resolved.is_yes() {
                     let new_wc = WithClause {
+                        cte_name: wc.cte_name.clone(),
                         input: input_resolved.get_plan(),
                         ..wc.clone()
                     };
@@ -86,16 +89,16 @@ impl CteReferencePopulator {
                 // Process children with updated CTE context (add this WITH's exports if left is a WITH)
                 let mut child_ctes = available_ctes.clone();
                 if let LogicalPlan::WithClause(wc) = rel.left.as_ref() {
-                    for alias in &wc.exported_aliases {
-                        if let Some(cte_name) = wc.cte_references.get(alias) {
+                    if let Some(cte_name) = &wc.cte_name {
+                        for alias in &wc.exported_aliases {
                             child_ctes.insert(alias.clone(), cte_name.clone());
                         }
                     }
                 }
 
-                let left_resolved = self.populate(rel.left.clone(), &child_ctes)?;
-                let center_resolved = self.populate(rel.center.clone(), &child_ctes)?;
-                let right_resolved = self.populate(rel.right.clone(), &child_ctes)?;
+                let left_resolved = self.populate(rel.left.clone(), &child_ctes, plan_ctx)?;
+                let center_resolved = self.populate(rel.center.clone(), &child_ctes, plan_ctx)?;
+                let right_resolved = self.populate(rel.right.clone(), &child_ctes, plan_ctx)?;
 
                 if left_resolved.is_yes()
                     || center_resolved.is_yes()
@@ -117,7 +120,7 @@ impl CteReferencePopulator {
 
             // For all other node types, recursively process children
             LogicalPlan::Projection(proj) => {
-                let input_resolved = self.populate(proj.input.clone(), available_ctes)?;
+                let input_resolved = self.populate(proj.input.clone(), available_ctes, plan_ctx)?;
                 if input_resolved.is_yes() {
                     let new_proj = crate::query_planner::logical_plan::Projection {
                         input: input_resolved.get_plan(),
@@ -132,7 +135,8 @@ impl CteReferencePopulator {
             }
 
             LogicalPlan::Filter(filter) => {
-                let input_resolved = self.populate(filter.input.clone(), available_ctes)?;
+                let input_resolved =
+                    self.populate(filter.input.clone(), available_ctes, plan_ctx)?;
                 if input_resolved.is_yes() {
                     let new_filter = crate::query_planner::logical_plan::Filter {
                         input: input_resolved.get_plan(),
@@ -145,7 +149,7 @@ impl CteReferencePopulator {
             }
 
             LogicalPlan::GraphJoins(gj) => {
-                let input_resolved = self.populate(gj.input.clone(), available_ctes)?;
+                let input_resolved = self.populate(gj.input.clone(), available_ctes, plan_ctx)?;
                 if input_resolved.is_yes() {
                     let new_gj = crate::query_planner::logical_plan::GraphJoins {
                         input: input_resolved.get_plan(),
@@ -167,12 +171,12 @@ impl AnalyzerPass for CteReferencePopulator {
     fn analyze(
         &self,
         logical_plan: Arc<LogicalPlan>,
-        _plan_ctx: &mut PlanCtx,
+        plan_ctx: &mut PlanCtx,
     ) -> Result<Transformed<Arc<LogicalPlan>>, AnalyzerError> {
         log::info!("🔍 CteReferencePopulator: Starting CTE reference population");
 
         let empty_ctes = HashMap::new();
-        let result = self.populate(logical_plan, &empty_ctes)?;
+        let result = self.populate(logical_plan, &empty_ctes, plan_ctx)?;
 
         log::info!(
             "🔍 CteReferencePopulator: Completed - transformed: {}",

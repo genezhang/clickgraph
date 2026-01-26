@@ -356,6 +356,14 @@ pub(super) fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::GraphRel(rel) => extract_table_name(&rel.center),
         LogicalPlan::Filter(filter) => extract_table_name(&filter.input),
         LogicalPlan::Projection(proj) => extract_table_name(&proj.input),
+        // For WithClause, return the CTE name if available; otherwise, we cannot determine it
+        LogicalPlan::WithClause(wc) => {
+            if let Some(cte_name) = &wc.cte_name {
+                Some(cte_name.clone())
+            } else {
+                None
+            }
+        }
         // For Union (denormalized nodes), extract from first branch
         LogicalPlan::Union(union) => {
             if !union.inputs.is_empty() {
