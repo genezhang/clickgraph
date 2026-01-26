@@ -312,6 +312,10 @@ pub struct WithClause {
     /// E.g., `WITH a, b.name AS name` exports ["a", "name"]
     pub exported_aliases: Vec<String>,
 
+    /// The CTE name assigned to this WITH clause (populated by CteSchemaResolver)
+    /// Used by CteReferencePopulator to build available_ctes map
+    pub cte_name: Option<String>,
+
     /// CTE references map: alias → CTE name
     /// Populated by analyzer to resolve which variables come from previous CTEs.
     /// Example: {"b": "with_a_b_cte"} means variable `b` comes from CTE `with_a_b_cte`.
@@ -358,6 +362,7 @@ impl WithClause {
             limit: None,
             where_clause: None,
             exported_aliases,
+            cte_name: None,
             cte_references: std::collections::HashMap::new(),
         })
     }

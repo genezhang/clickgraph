@@ -371,6 +371,7 @@ impl AnalyzerPass for FilterTagging {
                 }
 
                 let new_with = crate::query_planner::logical_plan::WithClause {
+            cte_name: None,
                     input: child_tf.get_plan().clone(),
                     items: mapped_items,
                     distinct: with_clause.distinct,

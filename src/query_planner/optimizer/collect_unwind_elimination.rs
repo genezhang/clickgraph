@@ -268,6 +268,7 @@ impl CollectUnwindElimination {
                 let (optimized_input, alias_map) = Self::optimize_node(with.input.clone())?;
                 Ok((
                     Arc::new(LogicalPlan::WithClause(WithClause {
+            cte_name: None,
                         input: optimized_input,
                         items: with.items.clone(),
                         distinct: with.distinct,
@@ -501,6 +502,7 @@ impl CollectUnwindElimination {
                                             // Create modified WITH clause without the collect
                                             let new_with =
                                                 Arc::new(LogicalPlan::WithClause(WithClause {
+            cte_name: None,
                                                     input: optimized_input,
                                                     items: new_items,
                                                     distinct: with.distinct,
@@ -558,6 +560,7 @@ mod tests {
         let base = Arc::new(LogicalPlan::Empty);
 
         let with_plan = Arc::new(LogicalPlan::WithClause(WithClause {
+            cte_name: None,
             input: base,
             items: vec![ProjectionItem {
                 expression: LogicalExpr::AggregateFnCall(AggregateFnCall {
@@ -601,6 +604,7 @@ mod tests {
         let base = Arc::new(LogicalPlan::Empty);
 
         let with_plan = Arc::new(LogicalPlan::WithClause(WithClause {
+            cte_name: None,
             input: base,
             items: vec![
                 ProjectionItem {
