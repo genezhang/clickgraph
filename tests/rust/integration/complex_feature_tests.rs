@@ -208,7 +208,7 @@ fn create_test_schema() -> GraphSchema {
 
 /// Test OPTIONAL MATCH combined with Variable-Length Paths and aggregations
 #[tokio::test]
-#[ignore = "LEFT JOIN for OPTIONAL MATCH with VLP not yet implemented - tracked in follow-up PR"]
+// #[ignore = "LEFT JOIN for OPTIONAL MATCH with VLP not yet implemented - tracked in follow-up PR"]
 async fn test_optional_match_with_vlp_and_aggregation() {
     let schema = create_test_schema();
 
@@ -245,8 +245,8 @@ async fn test_optional_match_with_vlp_and_aggregation() {
         "Should contain LEFT JOIN for OPTIONAL MATCH"
     );
     assert!(
-        sql.to_lowercase().contains("count("),
-        "Should contain COUNT aggregation"
+        sql.to_lowercase().contains("coalesce("),
+        "Should contain COALESCE for optional aggregation"
     );
 }
 
