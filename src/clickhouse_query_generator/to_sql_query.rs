@@ -7,9 +7,9 @@ use crate::{
             OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
         },
         {
-            ArrayJoinItem, Cte, CteContent, CteItems, FilterItems,
-            FromTableItem, GroupByExpressions, Join, JoinItems, JoinType,
-            OrderByItems, OrderByOrder, RenderPlan, SelectItems, ToSql, UnionItems, UnionType,
+            ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem,
+            GroupByExpressions, Join, JoinItems, JoinType, OrderByItems, OrderByOrder, RenderPlan,
+            SelectItems, ToSql, UnionItems, UnionType,
         },
     },
     server::query_context::{

@@ -532,7 +532,8 @@ See `docs/configuration.md` for complete configuration documentation.
 - **[Features Overview](docs/features.md)** - Comprehensive feature list
 - **[API Documentation](docs/api.md)** - HTTP REST API and Bolt protocol
 - **[Configuration Guide](docs/configuration.md)** - Server configuration and CLI options
-- **[Development Process](DEVELOPMENT_PROCESS.md)** - ⭐ **5-phase feature workflow** (START HERE for contributors!)
+- **[Dev Quick Start](DEV_QUICK_START.md)** - ⚡ **30-second workflow** (START HERE for contributors!)
+- **[Development Process](DEVELOPMENT_PROCESS.md)** - Detailed 6-phase workflow (reference)
 - **[Current Status](STATUS.md)** - What works now, what's in progress
 - **[Known Issues](KNOWN_ISSUES.md)** - Active bugs and limitations
 
@@ -581,7 +582,8 @@ ClickGraph welcomes contributions! Key areas for development:
 - Documentation improvements
 
 **Development Resources**:
-- [DEVELOPMENT_PROCESS.md](DEVELOPMENT_PROCESS.md) - ⭐ **5-phase feature development workflow** (START HERE!)
+- [DEV_QUICK_START.md](DEV_QUICK_START.md) - ⚡ **Essential 30-second workflow** (START HERE!)
+- [DEVELOPMENT_PROCESS.md](DEVELOPMENT_PROCESS.md) - Detailed 6-phase workflow (reference)
 - [STATUS.md](STATUS.md) - Current project status and test results
 - [KNOWN_ISSUES.md](KNOWN_ISSUES.md) - Active bugs and limitations
 - [.github/copilot-instructions.md](.github/copilot-instructions.md) - Architecture and conventions

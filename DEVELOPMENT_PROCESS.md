@@ -1,10 +1,16 @@
 # Development Process - ClickGraph Development
 
+**⚡ TL;DR: See [DEV_QUICK_START.md](DEV_QUICK_START.md) for the essential 30-second workflow.**
+
+**This document is 1400+ lines.** Use it as a reference when you need details. For day-to-day work, use DEV_QUICK_START.md.
+
+---
+
 **Purpose**: Standardized process for bug fixes, improvements, and features in ClickGraph. Based on lessons learned from OPTIONAL MATCH, Variable-Length Paths, Shortest Path, PageRank implementations.
 
 **Note**: ClickGraph is in **late-stage development**. Most work is now bug fixes, performance improvements, and refinements rather than new features.
 
-**Last Updated**: January 20, 2026
+**Last Updated**: January 25, 2026
 
 ---
 
