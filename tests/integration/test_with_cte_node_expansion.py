@@ -13,7 +13,6 @@ Test Scenarios:
 6. Cross-Table WITH - Multi-hop WITH + RETURN
 7. Optional Match with WITH - OPTIONAL MATCH then WITH
 8. Polymorphic Node Labels - Multiple labels for same node (edge case)
-9. Denormalized Edges - Nodes stored in edge table (edge case)
 
 Each test verifies:
 - WITH-exported variables expand to multiple columns

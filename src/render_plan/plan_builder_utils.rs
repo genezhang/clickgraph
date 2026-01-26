@@ -6484,7 +6484,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                    is_simple_passthrough);
 
                         if is_simple_passthrough {
-                            log::error!("🔧 TEST: This should show up");
                             log::warn!(
                                 "🔧 DEBUG: ENTERING passthrough collapse for '{}'",
                                 with_alias
@@ -6492,14 +6491,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                             // CRITICAL FIX: For passthrough WITHs, we need to collapse them too!
                             // They wrap an existing CTE reference and should be removed.
-                            // For passthrough, use empty string to indicate passthrough collapse
-                            let target_cte = "".to_string();
+                            // For passthrough, use None to indicate passthrough collapse (by key only)
                             log::warn!(
-                                "🔧 build_chained_with_match_cte_plan: Collapsing passthrough WITH for '{}' with CTE '{}'",
-                                with_alias, target_cte
+                                "🔧 build_chained_with_match_cte_plan: Collapsing passthrough WITH for '{}'",
+                                with_alias
                             );
                             current_plan =
-                                collapse_passthrough_with(&current_plan, &with_alias, &target_cte)?;
+                                collapse_passthrough_with(&current_plan, &with_alias, None)?;
                             log::warn!(
                                 "🔧 build_chained_with_match_cte_plan: After passthrough collapse, plan discriminant: {:?}",
                                 std::mem::discriminant(&current_plan)
@@ -9657,13 +9655,13 @@ pub(crate) fn find_all_with_clauses_grouped(
 pub(crate) fn collapse_passthrough_with(
     plan: &LogicalPlan,
     target_alias: &str,
-    target_cte_name: &str, // Analyzer's CTE name (e.g., "with_lnm_cte_4")
+    target_cte_name: Option<&str>, // None indicates passthrough collapse (by key only); Some indicates CTE name match
 ) -> RenderPlanBuilderResult<LogicalPlan> {
     use crate::query_planner::logical_plan::*;
     use std::sync::Arc;
 
     log::warn!(
-        "🔧 collapse_passthrough_with: ENTERING with plan type {:?}, target_alias='{}', target_cte_name='{}'",
+        "🔧 collapse_passthrough_with: ENTERING with plan type {:?}, target_alias='{}', target_cte_name={:?}",
         std::mem::discriminant(plan), target_alias, target_cte_name
     );
 
@@ -9690,14 +9688,29 @@ pub(crate) fn collapse_passthrough_with(
                 wc.cte_references, wc.exported_aliases
             );
             log::warn!(
-                "🔧 collapse_passthrough_with: Checking WithClause key='{}' target='{}' this_cte='{}' target_cte='{}'",
+                "🔧 collapse_passthrough_with: Checking WithClause key='{}' target='{}' this_cte='{}' target_cte={:?}",
                 key, target_alias, this_cte_name, target_cte_name
             );
-            if key == target_alias {
+            
+            // Collapse if:
+            // 1. target_cte_name is None (passthrough collapse by key only), AND key matches target_alias
+            // 2. OR target_cte_name is Some, AND both key and CTE name match
+            let should_collapse = match target_cte_name {
+                None => {
+                    // Passthrough collapse: match on key only
+                    key == target_alias
+                }
+                Some(target_cte) => {
+                    // CTE name collapse: match on both key and CTE name
+                    key == target_alias && this_cte_name == target_cte
+                }
+            };
+            
+            if should_collapse {
                 // FORCE COLLAPSE for passthrough WITHs
                 log::warn!(
-                    "🔧 collapse_passthrough_with: FORCE COLLAPSING WithClause key='{}' target='{}'",
-                    key, target_alias
+                    "🔧 collapse_passthrough_with: COLLAPSING WithClause key='{}' target='{}' (passthrough={:?})",
+                    key, target_alias, target_cte_name.is_none()
                 );
                 Ok(wc.input.as_ref().clone())
             } else {

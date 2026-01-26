@@ -4,10 +4,11 @@
 
 - **Nested WITH Filtered Exports** (Jan 26, 2026): Fixed infinite iteration loop in nested WITH clauses with filtered exports
   - **Problem**: Queries like `MATCH (u:User) WITH u AS person WITH person.name AS name RETURN name` hit 10-iteration safety limit and failed
-  - **Root Cause**: `collapse_passthrough_with()` required both key and CTE name match (`key == target_alias && this_cte_name == target_cte_name`) instead of just key match
-  - **Solution**: Changed condition to `key == target_alias` to allow passthrough WITH collapse when key matches target alias
-  - **Impact**: Nested WITH with filtered exports now work correctly (3/4 test scenarios passing, aggregation remains separate issue)
-  - **Files**: `src/render_plan/plan_builder_utils.rs`
+  - **Root Cause**: `collapse_passthrough_with()` required both key and CTE name match instead of allowing passthrough collapse by key only
+  - **Solution**: Changed to use `Option<&str>` for `target_cte_name` parameter where `None` indicates passthrough collapse (by key only)
+  - **Impact**: Nested WITH with filtered exports now work correctly for non-aggregating scenarios (3/4 regression scenarios passing). Aggregation on top of nested WITH with filtered exports remains unchanged and is tracked as a separate follow-up.
+  - **Refactor**: Removed the `CteColumnRegistry` from the `RenderPlan` struct and all related code paths, simplifying CTE property resolution logic. CTE column ownership is now tracked directly during query planning in `plan_builder_utils.rs`.
+  - **Files**: `src/render_plan/plan_builder_utils.rs`, `src/render_plan/select_builder.rs`, `src/render_plan/plan_builder.rs`
 
 - **EXISTS Subquery Schema Context** (Jan 25, 2026): Fixed EXISTS subqueries using wrong schema/table
   - **Problem**: EXISTS subqueries like `WHERE EXISTS { MATCH (a)-[:FOLLOWS]->(b) }` were generating SQL with wrong tables

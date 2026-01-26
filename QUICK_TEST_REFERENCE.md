@@ -55,9 +55,6 @@ pytest test_with_cte_node_expansion.py::TestWithOptionalMatch -v
 # Scenario 8: Polymorphic
 pytest test_with_cte_node_expansion.py::TestWithPolymorphicLabels -v
 
-# Scenario 9: Denormalized
-pytest test_with_cte_node_expansion.py::TestWithDenormalizedEdges -v
-
 # Regression tests
 pytest test_with_cte_node_expansion.py::TestWithRegressionCases -v
 ```
@@ -171,7 +168,6 @@ curl -X POST http://localhost:8080/query \
 | 6 | Cross-table | TestWithCrossTable | test_with_cross_table_multi_hop |
 | 7 | Optional | TestWithOptionalMatch | test_optional_match_with_export |
 | 8 | Polymorphic | TestWithPolymorphicLabels | test_with_multi_label_node |
-| 9 | Denormalized | TestWithDenormalizedEdges | test_with_denormalized_properties |
 
 ## Pre-Test Checklist
 

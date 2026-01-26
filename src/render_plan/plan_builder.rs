@@ -820,11 +820,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     limit,
                     union,
                     fixed_path_info: None,
-                    // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
                 };
-
-                // Populate the CTE column registry from CTE metadata
-                // populate_cte_column_registry(&mut render_plan);
 
                 // 🔧 CRITICAL: Rewrite JOIN conditions for UNION branches with VLP
                 // If this render plan has UNIONs with VLP CTEs, we need to rewrite
@@ -933,7 +929,6 @@ impl RenderPlanBuilder for LogicalPlan {
                         limit,
                         union,
                         fixed_path_info: None,
-                        // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
                     };
 
                     Ok(render_plan)
@@ -966,15 +961,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         limit: LimitItem(None),
                         union: UnionItems(None),
                         fixed_path_info: None,
-                        // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
                     };
-
-                    // Populate the CTE column registry from CTE metadata
-                    // populate_cte_column_registry(&mut temp_render_plan);
-
-                    // Set the CTE column registry in task-local storage for property resolution
-                    // use crate::render_plan::set_cte_column_registry;
-                    // set_cte_column_registry(temp_render_plan.cte_column_registry.clone());
 
                     // Now extract select items with CTE registry available
                     let mut select_items = SelectItems {
@@ -1024,7 +1011,6 @@ impl RenderPlanBuilder for LogicalPlan {
                         limit,
                         union,
                         fixed_path_info: None,
-                        // cte_column_registry: temp_render_plan.cte_column_registry, // REMOVED: No longer used
                     };
 
                     Ok(render_plan)
@@ -1238,7 +1224,6 @@ impl RenderPlanBuilder for LogicalPlan {
                     limit: LimitItem(None),
                     union: UnionItems(None),
                     fixed_path_info: None,
-                    // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
                 })
             }
             LogicalPlan::WithClause(with) => {
@@ -1367,7 +1352,6 @@ impl RenderPlanBuilder for LogicalPlan {
                     limit: cte_limit,
                     union: UnionItems(None),
                     fixed_path_info: None,
-                    // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
                 });
 
                 let cte_name = format!("with_{}_cte", with.exported_aliases.join("_"));
@@ -1409,7 +1393,6 @@ impl RenderPlanBuilder for LogicalPlan {
                     limit,
                     union,
                     fixed_path_info: None,
-                    // cte_column_registry: registry, // REMOVED: No longer used
                 })
             }
             LogicalPlan::CartesianProduct(cp) => {

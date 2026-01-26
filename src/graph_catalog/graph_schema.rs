@@ -1107,6 +1107,10 @@ impl GraphSchema {
     }
 
     /// Get properties for a node label as (property_name, column_or_expr) pairs
+    ///
+    /// **Note**: If multiple labels are provided, only the first label is used for property resolution.
+    /// This method does not merge properties from all labels. For multi-label entities, consider
+    /// the returned properties as applying to the primary (first) label only.
     pub fn get_node_properties(&self, labels: &[String]) -> Vec<(String, String)> {
         if let Some(label) = labels.first() {
             if let Some(node_schema) = self.get_node_schema_opt(label) {
@@ -1126,6 +1130,10 @@ impl GraphSchema {
     }
 
     /// Get properties for a relationship type as (property_name, column_or_expr) pairs
+    ///
+    /// **Note**: If multiple relationship types are provided, only the first type is used for property resolution.
+    /// This method does not merge properties from all types. For multi-type relationships, consider
+    /// the returned properties as applying to the primary (first) type only.
     pub fn get_relationship_properties(&self, rel_types: &[String]) -> Vec<(String, String)> {
         if let Some(rel_type) = rel_types.first() {
             if let Some(rel_schema) = self.get_relationships_schema_opt(rel_type) {

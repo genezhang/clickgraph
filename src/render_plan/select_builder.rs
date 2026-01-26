@@ -608,7 +608,17 @@ impl LogicalPlan {
         };
 
         // Get properties from schema
-        let plan_ctx = plan_ctx.unwrap(); // Should always be Some for CTE expansion
+        let plan_ctx = match plan_ctx {
+            Some(ctx) => ctx,
+            None => {
+                log::warn!(
+                    "⚠️ Cannot expand CTE entity '{}' from CTE '{}' because planning context is missing",
+                    alias,
+                    cte_name
+                );
+                return;
+            }
+        };
         let schema = plan_ctx.schema();
         let properties = if let TypedVariable::Node(_) = typed_var {
             schema.get_node_properties(labels)
