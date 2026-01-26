@@ -334,7 +334,6 @@ async fn test_multiple_relationship_types_with_vlp() {
 
 /// Test WITH clause property renaming and object passing
 #[tokio::test]
-#[ignore = "WITH clause property renaming with object passing not yet implemented"]
 async fn test_with_clause_property_renaming() {
     let schema = create_test_schema();
 

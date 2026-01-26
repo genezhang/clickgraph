@@ -356,14 +356,8 @@ pub(super) fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::GraphRel(rel) => extract_table_name(&rel.center),
         LogicalPlan::Filter(filter) => extract_table_name(&filter.input),
         LogicalPlan::Projection(proj) => extract_table_name(&proj.input),
-        // For WithClause, return the CTE name if available; otherwise, we cannot determine it
-        LogicalPlan::WithClause(wc) => {
-            if let Some(cte_name) = &wc.cte_name {
-                Some(cte_name.clone())
-            } else {
-                None
-            }
-        }
+        // For WithClause, return the CTE name (always set by analysis phase)
+        LogicalPlan::WithClause(wc) => wc.cte_name.clone(),
         // For Union (denormalized nodes), extract from first branch
         LogicalPlan::Union(union) => {
             if !union.inputs.is_empty() {
@@ -395,6 +389,8 @@ pub(super) fn extract_end_node_table_name(plan: &LogicalPlan) -> Option<String> 
         LogicalPlan::GraphRel(rel) => extract_end_node_table_name(&rel.right),
         LogicalPlan::Filter(filter) => extract_end_node_table_name(&filter.input),
         LogicalPlan::Projection(proj) => extract_end_node_table_name(&proj.input),
+        // For WithClause, return the CTE name (always set by analysis phase)
+        LogicalPlan::WithClause(wc) => wc.cte_name.clone(),
         // For Union (denormalized nodes), extract from first branch
         LogicalPlan::Union(union) => {
             if !union.inputs.is_empty() {
