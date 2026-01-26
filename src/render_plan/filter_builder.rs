@@ -236,12 +236,16 @@ impl FilterBuilder for LogicalPlan {
                 } else if all_predicates.len() == 1 {
                     log::trace!("Found 1 GraphRel predicate");
                     // Safety: len() == 1 guarantees next() returns Some
-                    Some(
-                        all_predicates
-                            .into_iter()
-                            .next()
-                            .expect("all_predicates has exactly one element"),
-                    )
+                    let mut single_pred = all_predicates
+                        .into_iter()
+                        .next()
+                        .expect("all_predicates has exactly one element");
+                    // Apply property mapping for denormalized nodes
+                    apply_property_mapping_to_expr(
+                        &mut single_pred,
+                        &LogicalPlan::GraphRel(graph_rel.clone()),
+                    );
+                    Some(single_pred)
                 } else {
                     // Combine with AND
                     log::trace!(
@@ -250,6 +254,14 @@ impl FilterBuilder for LogicalPlan {
                     );
                     let combined = all_predicates
                         .into_iter()
+                        .map(|mut pred| {
+                            // Apply property mapping for denormalized nodes
+                            apply_property_mapping_to_expr(
+                                &mut pred,
+                                &LogicalPlan::GraphRel(graph_rel.clone()),
+                            );
+                            pred
+                        })
                         .reduce(|acc, pred| {
                             RenderExpr::OperatorApplicationExp(OperatorApplication {
                                 operator: Operator::And,

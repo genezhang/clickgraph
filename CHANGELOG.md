@@ -1,6 +1,28 @@
 ## [Unreleased]
 
-### � Bug Fixes
+### 🐛 Bug Fixes
+
+- **EXISTS Subquery Schema Context** (Jan 25, 2026): Fixed EXISTS subqueries using wrong schema/table
+  - **Problem**: EXISTS subqueries like `WHERE EXISTS { MATCH (a)-[:FOLLOWS]->(b) }` were generating SQL with wrong tables
+  - **Root Cause**: `tokio::task_local!` for query schema context requires `.scope()` wrapper; without it, `try_with()` returns `None` and fallback schema search picks wrong schema when multiple schemas have same relationship type
+  - **Solution**: Changed from `tokio::task_local!` to `thread_local!` which is accessible without scope wrapping
+  - **Impact**: All EXISTS subquery tests now passing (3/3)
+  - **Files**: `src/render_plan/render_expr.rs`
+
+- **WITH+Aggregation Scalar Export** (Jan 25, 2026): Fixed WITH clauses with aggregations not generating CTE references
+  - **Problem**: Queries like `MATCH (a)-[r]->(b) WITH count(r) AS total RETURN total` failed with "CTE not found" errors
+  - **Root Cause**: `export_single_with_item_to_cte()` didn't handle `TableAlias` and `PropertyAccessExp` expression types for scalar exports
+  - **Solution**: Added explicit handling for TableAlias (direct alias reference) and PropertyAccessExp (property.name pattern) in WITH item export logic
+  - **Impact**: WITH clauses with aggregated scalars now work correctly
+  - **Files**: `src/render_plan/plan_builder_utils.rs`
+
+- **Denormalized VLP Property Access**: Fixed incorrect table alias usage in VLP queries with denormalized relationships
+  - **Problem**: Queries like `MATCH path = (origin:Airport)-[f:FLIGHT*1..2]->(dest:Airport) RETURN origin.city` generated `SELECT f.OriginCityName` instead of `t.OriginCityName`
+  - **Root Cause**: SelectBuilder was using relationship table alias instead of CTE table alias for denormalized node properties in VLP contexts
+  - **Solution**: Added hack in SelectBuilder to detect denormalized VLP property access (column names containing "Origin" or "Dest") and use CTE table alias "t"
+  - **Impact**: All denormalized edge tests now passing (16/18, 2 expected failures), VLP property access working correctly
+  - **Files**: `src/render_plan/select_builder.rs`
+  - **Tests**: All denormalized edge integration tests passing
 
 - **OPTIONAL MATCH + Inline Property Filters**: Fixed invalid SQL generation when inline properties appear on nodes in OPTIONAL MATCH clauses
   - **Problem**: Inline property filters like `(b:TestUser {name: 'Bob'})` in OPTIONAL MATCH were incorrectly injected as WHERE conditions instead of LEFT JOIN conditions

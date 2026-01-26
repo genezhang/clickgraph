@@ -2244,10 +2244,11 @@ fn traverse_connected_pattern_with_mode<'a>(
                 shortest_path_mode: shortest_path_mode.clone(),
                 path_variable: path_variable.map(|s| s.to_string()),
                 where_predicate: {
-                    // 🔧 FIX: For shortestPath with bound nodes, extract filters/properties from left/right nodes
-                    // When nodes like (p1:Person {id: 1}) are bound before shortestPath, their filters
+                    // 🔧 FIX: For VLP patterns (including shortestPath), extract filters/properties from bound nodes
+                    // When nodes like (p1:Airport {code: 'LAX'}) are used with VLP patterns, their filters
                     // are in plan_ctx but not automatically merged into GraphRel.where_predicate
-                    if shortest_path_mode.is_some() {
+                    // This is needed for VLP CTE generation to apply correct filters with property mapping
+                    if shortest_path_mode.is_some() || rel.variable_length.is_some() {
                         use crate::query_planner::logical_expr::{Operator, OperatorApplication};
                         let mut node_filters = vec![];
 
@@ -2262,7 +2263,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                                 match convert_properties(props, &left_conn) {
                                     Ok(mut prop_filters) => {
                                         log::info!(
-                                            "🔧 shortestPath: Converted {} properties to filters for left node '{}'",
+                                            "🔧 VLP: Converted {} properties to filters for left node '{}'",
                                             prop_filters.len(),
                                             left_conn
                                         );
@@ -2290,7 +2291,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                                 match convert_properties(props, &right_conn) {
                                     Ok(mut prop_filters) => {
                                         log::info!(
-                                            "🔧 shortestPath: Converted {} properties to filters for right node '{}'",
+                                            "🔧 VLP: Converted {} properties to filters for right node '{}'",
                                             prop_filters.len(),
                                             right_conn
                                         );
@@ -2310,7 +2311,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                         // Combine all filters with AND
                         if !node_filters.is_empty() {
                             log::info!(
-                                "🔧 shortestPath: Merged {} bound node filters into where_predicate for rel '{}'",
+                                "🔧 VLP: Merged {} bound node filters into where_predicate for rel '{}'",
                                 node_filters.len(),
                                 rel_alias
                             );
