@@ -208,7 +208,6 @@ fn create_test_schema() -> GraphSchema {
 
 /// Test OPTIONAL MATCH combined with Variable-Length Paths and aggregations
 #[tokio::test]
-// #[ignore = "LEFT JOIN for OPTIONAL MATCH with VLP not yet implemented - tracked in follow-up PR"]
 async fn test_optional_match_with_vlp_and_aggregation() {
     let schema = create_test_schema();
 

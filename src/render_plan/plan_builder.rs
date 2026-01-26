@@ -848,7 +848,9 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Extract FROM from the start node (left side of GraphRel)
                     let from = FromTableItem(gr.left.extract_from()?.and_then(|ft| ft.table));
 
-                    // Create a LEFT JOIN to the aggregated VLP CTE
+                    // Generate unique names to avoid conflicts
+                    let vlp_alias = format!("__vlp_{}_{}", gr.left_connection, gr.right_connection);
+                    let count_column = format!("__count_{}", gr.right_connection);
                     let cte_name = format!("vlp_{}_{}", gr.left_connection, gr.right_connection);
                     let start_id_column = extract_id_column(&gr.left).ok_or_else(|| {
                         RenderBuildError::MissingTableInfo(
@@ -868,7 +870,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     ),
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias("vlp".to_string()),
+                                table_alias: TableAlias(vlp_alias.clone()),
                                 column:
                                     crate::graph_catalog::expression_parser::PropertyValue::Column(
                                         "start_id".to_string(),
@@ -879,8 +881,8 @@ impl RenderPlanBuilder for LogicalPlan {
 
                     let vlp_join = Join {
                         join_type: JoinType::Left,
-                        table_name: format!("(SELECT start_id, COUNT(*) as follower_count FROM {} GROUP BY start_id)", cte_name),
-                        table_alias: "vlp".to_string(),
+                        table_name: format!("(SELECT start_id, COUNT(*) as {} FROM {} GROUP BY start_id)", count_column, cte_name),
+                        table_alias: vlp_alias.clone(),
                         joining_on: vec![join_condition],
                         pre_filter: None,
                         from_id_column: None,
@@ -1092,20 +1094,24 @@ impl RenderPlanBuilder for LogicalPlan {
                         if gr.variable_length.is_some() && gr.is_optional.unwrap_or(false) {
                             log::info!("🎯 Projection over optional VLP: modifying aggregations to use COALESCE");
 
+                            // Generate the same unique names used in the JOIN
+                            let vlp_alias = format!("__vlp_{}_{}", gr.left_connection, gr.right_connection);
+                            let count_column = format!("__count_{}", gr.right_connection);
+
                             // Modify select items to use COALESCE for aggregations over optional VLP
                             for item in &mut select_items {
                                 if let RenderExpr::AggregateFnCall(agg) = &mut item.expression {
-                                    if agg.name == "COUNT" && agg.args.len() == 1 {
+                                    if agg.name.eq_ignore_ascii_case("count") && agg.args.len() == 1 {
                                         // Check if this is COUNT on the end node of VLP
                                         if let RenderExpr::Star = &agg.args[0] {
                                             // This is COUNT(*) that came from COUNT(f) - replace with COALESCE
-                                            log::info!("🎯 Replacing COUNT(*) with COALESCE(vlp.follower_count, 0)");
+                                            log::info!("🎯 Replacing COUNT(*) with COALESCE({}, 0)", count_column);
                                             item.expression = RenderExpr::ScalarFnCall(ScalarFnCall {
                                                 name: "COALESCE".to_string(),
                                                 args: vec![
                                                     RenderExpr::PropertyAccessExp(PropertyAccess {
-                                                        table_alias: TableAlias("vlp".to_string()),
-                                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column("follower_count".to_string()),
+                                                        table_alias: TableAlias(vlp_alias.clone()),
+                                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(count_column.clone()),
                                                     }),
                                                     RenderExpr::Literal(Literal::Integer(0)),
                                                 ],
