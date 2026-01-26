@@ -29,6 +29,7 @@ pub mod handlers;
 mod models;
 mod parameter_substitution;
 mod query_cache;
+pub mod query_context;
 mod sql_generation_handler;
 
 // #[derive(Clone)]

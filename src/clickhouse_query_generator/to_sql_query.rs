@@ -7,203 +7,44 @@ use crate::{
             OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
         },
         {
-            ArrayJoinItem, Cte, CteColumnRegistry, CteContent, CteItems, FilterItems,
-            FixedPathMetadata, FromTableItem, GroupByExpressions, Join, JoinItems, JoinType,
-            OrderByItems, OrderByOrder, RenderPlan, SelectItems, ToSql, UnionItems, UnionType,
+            ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem,
+            GroupByExpressions, Join, JoinItems, JoinType, OrderByItems, OrderByOrder, RenderPlan,
+            SelectItems, ToSql, UnionItems, UnionType,
         },
     },
+    server::query_context::{
+        self, clear_all_render_contexts, get_cte_column_registry, get_cte_property_mapping,
+        get_relationship_columns, is_multi_type_vlp_alias, set_all_render_contexts,
+    },
 };
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 // Import function translator for Neo4j -> ClickHouse function mappings
 use super::function_registry::get_function_mapping;
 use super::function_translator::{get_ch_function_name, CH_PASSTHROUGH_PREFIX};
 
-/// TASK-LOCAL RENDER CONTEXT: Per-async-task storage for query rendering
-/// Each Axum async task (HTTP request) gets its own isolated context.
-/// Multiple concurrent queries on same OS thread have zero interference.
-///
-/// Why task_local instead of thread_local:
-/// - thread_local: Shared by all async tasks on same OS thread (UNSAFE for concurrent queries)
-/// - task_local: Each async task gets isolated storage (SAFE)
-///
-/// Usage:
-/// 1. At query handler entry: RENDER_CONTEXT_REGISTRY.scope(registry, async { ... }).await
-/// 2. During rendering: get_cte_column_from_context() accesses current task's registry
-/// 3. When task completes: context automatically cleaned up
-tokio::task_local! {
-    /// Task-local CTE column registry: (cte_alias, cypher_property) → cte_output_column
-    /// Populated once per query at render_to_sql() entry
-    /// Isolated to current async task - no interference with concurrent queries
-    pub static RENDER_CONTEXT_CTE_REGISTRY: RefCell<Option<CteColumnRegistry>>;
-}
+// ============================================================================
+// RENDER CONTEXT ACCESSORS (delegating to unified query_context)
+// ============================================================================
 
-/// Retrieve CTE column for property within current render context (task-local)
-/// Returns None if not in task context or property not found (safe fallback)
+/// Retrieve CTE column for property within current render context
 fn get_cte_column_from_context(cte_alias: &str, property: &str) -> Option<String> {
-    // Access the task-local context
-    // task_local! uses sync accessors, not .with()
-    RENDER_CONTEXT_CTE_REGISTRY
-        .try_with(|ctx| {
-            ctx.borrow()
-                .as_ref()
-                .and_then(|registry| registry.lookup(cte_alias, property))
-        })
-        .ok()
-        .flatten()
+    get_cte_column_registry().and_then(|registry| registry.lookup(cte_alias, property))
 }
 
-/// Set the CTE registry for the current async task
-/// Call at render_to_sql() entry to make registry available to rendering code
-fn set_render_context_cte_registry(registry: CteColumnRegistry) {
-    // task_local! doesn't support runtime initialization, so we use try_with
-    // If we're not in a task context, this returns an error which we ignore
-    let _ = RENDER_CONTEXT_CTE_REGISTRY.try_with(|ctx| {
-        let prev = ctx.borrow_mut().replace(registry);
-        if prev.is_some() {
-            log::warn!("⚠️ Overwriting previous render context - possible re-entrancy");
-        }
-    });
-}
-
-/// Clear the CTE registry for the current async task
-/// Call at render_to_sql() exit to clean up
-fn clear_render_context_cte_registry() {
-    // task_local! sync cleanup
-    let _ = RENDER_CONTEXT_CTE_REGISTRY.try_with(|ctx| {
-        ctx.borrow_mut().take();
-    });
-}
-
-// ============================================================================
-// RELATIONSHIP COLUMNS CONTEXT (for IS NULL checks on relationship aliases)
-// ============================================================================
-
-fn set_render_context_relationship_columns(columns: HashMap<String, (String, String)>) {
-    let _ = RENDER_CONTEXT_RELATIONSHIP_COLUMNS.try_with(|ctx| {
-        ctx.borrow_mut().replace(columns);
-    });
-}
-
+/// Get relationship columns for IS NULL checks
 fn get_relationship_columns_from_context(alias: &str) -> Option<(String, String)> {
-    RENDER_CONTEXT_RELATIONSHIP_COLUMNS
-        .try_with(|ctx| {
-            ctx.borrow()
-                .as_ref()
-                .and_then(|cols| cols.get(alias).cloned())
-        })
-        .ok()
-        .flatten()
+    get_relationship_columns(alias)
 }
 
-fn clear_render_context_relationship_columns() {
-    let _ = RENDER_CONTEXT_RELATIONSHIP_COLUMNS.try_with(|ctx| {
-        ctx.borrow_mut().take();
-    });
-}
-
-// ============================================================================
-// CTE PROPERTY MAPPINGS CONTEXT (for CTE property → column resolution)
-// ============================================================================
-
-fn set_render_context_cte_property_mappings(mappings: HashMap<String, HashMap<String, String>>) {
-    let _ = RENDER_CONTEXT_CTE_PROPERTY_MAPPINGS.try_with(|ctx| {
-        ctx.borrow_mut().replace(mappings);
-    });
-}
-
+/// Get CTE property mapping
 fn get_cte_property_from_context(cte_alias: &str, property: &str) -> Option<String> {
-    RENDER_CONTEXT_CTE_PROPERTY_MAPPINGS
-        .try_with(|ctx| {
-            ctx.borrow().as_ref().and_then(|mappings| {
-                mappings
-                    .get(cte_alias)
-                    .and_then(|props| props.get(property).cloned())
-            })
-        })
-        .ok()
-        .flatten()
+    get_cte_property_mapping(cte_alias, property)
 }
 
-fn clear_render_context_cte_property_mappings() {
-    let _ = RENDER_CONTEXT_CTE_PROPERTY_MAPPINGS.try_with(|ctx| {
-        ctx.borrow_mut().take();
-    });
-}
-
-// ============================================================================
-// MULTI-TYPE VLP ALIASES CONTEXT (for multi-type VLP JSON property extraction)
-// ============================================================================
-
-fn set_render_context_multi_type_vlp_aliases(aliases: HashMap<String, String>) {
-    let _ = RENDER_CONTEXT_MULTI_TYPE_VLP_ALIASES.try_with(|ctx| {
-        ctx.borrow_mut().replace(aliases);
-    });
-}
-
+/// Check if alias is a multi-type VLP endpoint
 fn is_multi_type_vlp_alias_from_context(alias: &str) -> bool {
-    RENDER_CONTEXT_MULTI_TYPE_VLP_ALIASES
-        .try_with(|ctx| {
-            ctx.borrow()
-                .as_ref()
-                .map(|aliases| aliases.contains_key(alias))
-                .unwrap_or(false)
-        })
-        .unwrap_or(false)
-}
-
-fn clear_render_context_multi_type_vlp_aliases() {
-    let _ = RENDER_CONTEXT_MULTI_TYPE_VLP_ALIASES.try_with(|ctx| {
-        ctx.borrow_mut().take();
-    });
-}
-
-/// Set ALL render context for the current async task
-/// Call at render_to_sql() entry
-fn set_all_render_contexts(
-    cte_registry: CteColumnRegistry,
-    relationship_columns: HashMap<String, (String, String)>,
-    cte_mappings: HashMap<String, HashMap<String, String>>,
-    multi_type_aliases: HashMap<String, String>,
-) {
-    set_render_context_cte_registry(cte_registry);
-    set_render_context_relationship_columns(relationship_columns);
-    set_render_context_cte_property_mappings(cte_mappings);
-    set_render_context_multi_type_vlp_aliases(multi_type_aliases);
-}
-
-/// Clear ALL render contexts for the current async task
-/// Call at render_to_sql() exit (before final return)
-fn clear_all_render_contexts() {
-    clear_render_context_cte_registry();
-    clear_render_context_relationship_columns();
-    clear_render_context_cte_property_mappings();
-    clear_render_context_multi_type_vlp_aliases();
-}
-
-/// TASK-LOCAL RENDER CONTEXT: Per-async-task storage for rendering state
-/// Each Axum async task (HTTP request) gets its own isolated context.
-/// Multiple concurrent queries on same OS thread have zero interference.
-///
-/// Lifecycle:
-/// 1. At render_to_sql() entry: Set all three contexts
-/// 2. During rendering: Access contexts for property/column lookups
-/// 3. At render_to_sql() exit: Clear all contexts before return
-tokio::task_local! {
-    /// Task-local mapping of relationship alias → (from_id_column, to_id_column)
-    /// Populated during JOIN rendering, used for IS NULL checks on relationship aliases
-    pub static RENDER_CONTEXT_RELATIONSHIP_COLUMNS: RefCell<Option<HashMap<String, (String, String)>>>;
-
-    /// Task-local mapping of CTE alias → property mapping (Cypher property → CTE column name)
-    /// Example: "cnt_friend" → { "id" → "friend_id", "firstName" → "friend_firstName" }
-    /// Populated from RenderPlan CTEs during SQL generation
-    pub static RENDER_CONTEXT_CTE_PROPERTY_MAPPINGS: RefCell<Option<HashMap<String, HashMap<String, String>>>>;
-
-    /// Task-local set of table aliases that are multi-type VLP endpoints
-    /// Example: "x" for query (u)-[:FOLLOWS|AUTHORED*1..2]->(x)
-    /// Properties on these aliases need JSON extraction from end_properties column
-    pub static RENDER_CONTEXT_MULTI_TYPE_VLP_ALIASES: RefCell<Option<HashMap<String, String>>>;
+    is_multi_type_vlp_alias(alias)
 }
 
 /// Check if an expression contains a string literal (recursively for nested + operations)
@@ -270,10 +111,10 @@ fn build_relationship_columns_from_plan(plan: &RenderPlan) -> HashMap<String, (S
 }
 
 /// Pre-populate the relationship columns mapping from a RenderPlan
-/// This builds the mapping and sets it in the task-local context
+/// This builds the mapping and sets it in the query context
 fn populate_relationship_columns_from_plan(plan: &RenderPlan) {
     let map = build_relationship_columns_from_plan(plan);
-    set_render_context_relationship_columns(map);
+    query_context::set_relationship_columns(map);
 }
 
 /// Build CTE property mappings from RenderPlan CTEs (for collecting data)
@@ -370,8 +211,8 @@ fn populate_cte_property_mappings(plan: &RenderPlan) {
     let cte_mappings = build_cte_property_mappings(plan);
     let multi_type_aliases = build_multi_type_vlp_aliases(plan);
 
-    set_render_context_cte_property_mappings(cte_mappings);
-    set_render_context_multi_type_vlp_aliases(multi_type_aliases);
+    query_context::set_cte_property_mappings(cte_mappings);
+    query_context::set_multi_type_vlp_aliases(multi_type_aliases);
 }
 
 /// Rewrite property access in SELECT, GROUP BY items for VLP queries

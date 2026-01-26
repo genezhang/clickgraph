@@ -20,44 +20,11 @@ use crate::query_planner::logical_plan::LogicalPlan;
 
 use super::errors::RenderBuildError;
 
-// Thread-local storage for the current schema name (per-query context)
-//
-// NOTE: Using thread_local! instead of tokio::task_local! because:
-// - task_local! requires wrapping ALL query processing in a .scope() call
-// - The current architecture doesn't easily support that pattern
-// - thread_local! works correctly for our single-request-at-a-time HTTP handler pattern
-// - For true concurrent isolation, refactor to pass schema explicitly through the call chain
-//
-// Usage:
-// 1. At query handler entry: set_current_schema_name(schema_name)
-// 2. During all query processing: get_current_schema_name() accesses current query's schema
-// 3. At query handler exit: clear_current_schema_name()
-thread_local! {
-    /// Query-scope schema name: which schema this query operates on
-    static QUERY_SCHEMA_NAME: RefCell<Option<String>> = RefCell::new(None);
-}
-
-/// Set the schema name for the current query (task/request)
-/// Call this immediately after determining schema_name in query handler
-/// Schema context is read-only and available to ALL query processing phases
-pub fn set_current_schema_name(name: Option<String>) {
-    QUERY_SCHEMA_NAME.with(|cell| {
-        *cell.borrow_mut() = name;
-    });
-}
-
-/// Get the current query's schema name (available to all processing phases)
-pub fn get_current_schema_name() -> Option<String> {
-    QUERY_SCHEMA_NAME.with(|cell| cell.borrow().clone())
-}
-
-/// Clear the schema name after query processing completes
-/// Call this at query handler exit for cleanup
-pub fn clear_current_schema_name() {
-    QUERY_SCHEMA_NAME.with(|cell| {
-        *cell.borrow_mut() = None;
-    });
-}
+// Re-export schema name accessors from the unified query context
+// See server/query_context.rs for the task_local! implementation with .scope() support
+pub use crate::server::query_context::{
+    clear_current_schema_name, get_current_schema_name, set_current_schema_name,
+};
 
 /// Generate SQL for an EXISTS subquery directly from the logical plan
 /// This is a simplified approach that generates basic EXISTS SQL

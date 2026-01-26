@@ -4419,9 +4419,9 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
     let path_function_mappings: HashMap<String, String> = filtered_mappings
         .iter()
         .filter(|(from_alias, _to_alias)| {
-            // Only keep "t" mapping (for path functions like length(path))
+            // Only keep VLP_CTE_FROM_ALIAS mapping (for path functions like length(path))
             // Exclude endpoint node aliases
-            *from_alias == "t"
+            *from_alias == VLP_CTE_FROM_ALIAS
         })
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
