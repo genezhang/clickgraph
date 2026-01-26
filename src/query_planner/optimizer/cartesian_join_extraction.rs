@@ -90,7 +90,7 @@ impl OptimizerPass for CartesianJoinExtraction {
 
                             // Create new WithClause with updated CartesianProduct
                             let new_with = crate::query_planner::logical_plan::WithClause {
-                                cte_name: None,
+                                cte_name: with_clause.cte_name.clone(), // PRESERVE from CteSchemaResolver
                                 input: Arc::new(LogicalPlan::CartesianProduct(new_cp)),
                                 items: with_clause.items.clone(),
                                 distinct: with_clause.distinct,
@@ -433,7 +433,7 @@ impl OptimizerPass for CartesianJoinExtraction {
                 match child_tf {
                     Transformed::Yes(new_child) => {
                         let new_with = crate::query_planner::logical_plan::WithClause {
-                            cte_name: None,
+                            cte_name: with_clause.cte_name.clone(), // PRESERVE from CteSchemaResolver
                             input: new_child,
                             items: with_clause.items.clone(),
                             distinct: with_clause.distinct,

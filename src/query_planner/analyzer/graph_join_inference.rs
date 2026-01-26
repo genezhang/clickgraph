@@ -605,7 +605,7 @@ impl GraphJoinInference {
     /// # Returns
     /// The resolved column name (e.g., "p_firstName" for CTE, "firstName" for base table)
     fn resolve_column(schema_column: &str, table_name: &str, plan_ctx: &PlanCtx) -> String {
-        // Check if this is a CTE reference (including multi-variant CTEs)
+        // Check if this is a CTE reference
         if plan_ctx.is_cte(table_name) {
             // Look up the exported column name from registered mappings
             if let Some(cte_column) = plan_ctx.get_cte_column(table_name, schema_column) {
@@ -2957,14 +2957,15 @@ impl GraphJoinInference {
     ) -> String {
         // Check if this alias references a CTE from WITH clause
         if let Ok(table_ctx) = plan_ctx.get_table_ctx_from_alias_opt(&Some(alias.to_string())) {
-            if table_ctx.get_cte_name().is_some() {
-                // CTE reference - no database prefix
+            if let Some(cte_ref) = table_ctx.get_cte_name() {
+                // CTE reference - use the cte_reference from TableCtx (may have counter suffix)
+                // During rendering, update_graph_joins_cte_refs() updates this to final name
                 crate::debug_print!(
-                    "    🔍 Table name for alias '{}': '{}' (CTE - no prefix)",
+                    "    🔍 Table name for alias '{}': '{}' (CTE - from TableCtx.cte_reference)",
                     alias,
-                    cte_name
+                    cte_ref
                 );
-                return cte_name.to_string();
+                return cte_ref.to_string();
             }
         }
 
@@ -2987,14 +2988,15 @@ impl GraphJoinInference {
     ) -> String {
         // Check if this alias references a CTE from WITH clause
         if let Ok(table_ctx) = plan_ctx.get_table_ctx_from_alias_opt(&Some(alias.to_string())) {
-            if table_ctx.get_cte_name().is_some() {
-                // CTE reference - no database prefix
+            if let Some(cte_ref) = table_ctx.get_cte_name() {
+                // CTE reference - use the cte_reference from TableCtx (may have counter suffix)
+                // During rendering, update_graph_joins_cte_refs() updates this to final name
                 crate::debug_print!(
-                    "    🔍 Rel table name for alias '{}': '{}' (CTE - no prefix)",
+                    "    🔍 Rel table name for alias '{}': '{}' (CTE - from TableCtx.cte_reference)",
                     alias,
-                    cte_name
+                    cte_ref
                 );
-                return cte_name.to_string();
+                return cte_ref.to_string();
             }
         }
 

@@ -5581,9 +5581,32 @@ pub(crate) fn update_graph_joins_cte_refs(
                 None
             };
 
+            // 🔧 FIX: Update Join.table_name for CTEs in the joins array
+            // When a CTE is finalized during rendering (e.g., "with_user_obj_cte" → "with_user_obj_cte_1"),
+            // we need to update the table_name in joins that reference it.
+            let updated_joins: Vec<_> = gj.joins.iter().map(|j| {
+                // Check if this join's table_alias references a CTE with an updated name
+                if let Some(new_cte_name) = cte_references.get(&j.table_alias) {
+                    // Check if the table_name needs updating (it's a CTE reference)
+                    // CTE table names don't have database prefix, regular tables do
+                    if !j.table_name.contains('.') && &j.table_name != new_cte_name {
+                        log::info!(
+                            "🔧 update_graph_joins_cte_refs: Updating Join.table_name '{}' → '{}' for alias '{}'",
+                            j.table_name,
+                            new_cte_name,
+                            j.table_alias
+                        );
+                        let mut updated_join = j.clone();
+                        updated_join.table_name = new_cte_name.clone();
+                        return updated_join;
+                    }
+                }
+                j.clone()
+            }).collect();
+
             Ok(LogicalPlan::GraphJoins(GraphJoins {
                 input: Arc::new(new_input),
-                joins: gj.joins.clone(),
+                joins: updated_joins,
                 optional_aliases: gj.optional_aliases.clone(),
                 anchor_table: new_anchor_table,
                 cte_references: cte_references.clone(), // UPDATE HERE!
@@ -5616,6 +5639,35 @@ pub(crate) fn update_graph_joins_cte_refs(
                 input: Arc::new(new_input),
                 items: proj.items.clone(),
                 distinct: proj.distinct,
+            }))
+        }
+        LogicalPlan::WithClause(wc) => {
+            // Update the WithClause's cte_name and cte_references if applicable
+            let new_input = update_graph_joins_cte_refs(&wc.input, cte_references)?;
+
+            // Check if this WithClause's cte_name needs updating
+            let updated_cte_name = if let Some(ref old_cte_name) = wc.cte_name {
+                // Check if any alias exported by this WITH has a new CTE name
+                wc.exported_aliases
+                    .iter()
+                    .find_map(|alias| cte_references.get(alias))
+                    .cloned()
+                    .or(Some(old_cte_name.clone()))
+            } else {
+                None
+            };
+
+            log::info!(
+                "🔧 update_graph_joins_cte_refs: Updating WithClause.cte_name from {:?} to {:?}",
+                wc.cte_name,
+                updated_cte_name
+            );
+
+            Ok(LogicalPlan::WithClause(WithClause {
+                input: Arc::new(new_input),
+                cte_name: updated_cte_name,
+                cte_references: cte_references.clone(), // UPDATE HERE!
+                ..wc.clone()
             }))
         }
         LogicalPlan::Filter(f) => {
@@ -6866,27 +6918,38 @@ pub(crate) fn build_chained_with_match_cte_plan(
             let aliases_key = sorted_exported_aliases.join("_");
 
             // CRITICAL FIX: Use CTE name from analyzer's cte_references if available
-            // The VariableResolver already assigned CTE names and stored them in cte_references.
-            // Using those names ensures consistency between expressions and CTE definitions.
+            // **ARCHITECTURAL FIX (Jan 25, 2026)**: Use WithClause.cte_name directly from analysis phase
+            // The CteSchemaResolver in the analyzer already generated the final CTE name with counter
+            // and stored it in WithClause.cte_name. We should use it directly instead of regenerating.
+            //
+            // Why this is the right approach:
+            // 1. CTE names are generated ONCE during analysis with consistent counters (plan_ctx.cte_counter)
+            // 2. WithClause.cte_name stores the final name (e.g., "with_a_b_cte_1")
+            // 3. Rendering should just USE this name, not try to regenerate with different counters
+            //
+            // The old approach tried to extract from cte_references HashMap, which is:
+            // - Incomplete: only contains CTEs that other nodes explicitly reference
+            // - Inconsistent: regenerates counters instead of using analysis phase values
+            // - Source of two-phase mismatch: analysis generates "with_a_b_cte_1", rendering tries "with_a_b_cte_2"
             let mut cte_name = with_plans
                 .first()
                 .and_then(|plan| match plan {
                     LogicalPlan::WithClause(wc) => {
-                        // Get CTE name from the first exported alias's cte_reference
-                        wc.exported_aliases.first()
-                            .and_then(|alias| wc.cte_references.get(alias))
-                            .cloned()
+                        // **PRIMARY PATH**: Use the CTE name set by CteSchemaResolver in analysis phase
+                        // This is the single source of truth for the WITH clause's CTE name
+                        wc.cte_name.clone()
                     }
                     _ => None,
                 })
                 .unwrap_or_else(|| {
-                    // Fallback: Generate unique CTE name using centralized utility
+                    // FALLBACK ONLY: If cte_name somehow not set (shouldn't happen after fix)
+                    // Generate unique CTE name using centralized utility
                     // Format: with_<sorted_aliases>_cte_<seq>
                     let seq_num = cte_sequence_numbers.entry(aliases_key.clone()).or_insert(1);
                     let current_seq = *seq_num;
                     let name = generate_cte_name(&sorted_exported_aliases, current_seq);
                     *seq_num += 1; // Increment for next iteration
-                    log::warn!("🔧 build_chained_with_match_cte_plan: Fallback - Generated unique CTE name '{}' from exported aliases {:?} (sequence {})",
+                    log::warn!("🔧 build_chained_with_match_cte_plan: FALLBACK - WithClause.cte_name was None! Generated CTE name '{}' from aliases {:?} (sequence {}). This indicates analyzer didn't set cte_name properly.",
                                name, exported_aliases, current_seq);
                     name
                 });

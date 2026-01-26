@@ -129,3 +129,4 @@ tests/private/*.bak
 
 # PR description drafts
 PR_*.md
+/WITH_CLAUSE_BUG_FIX.md
