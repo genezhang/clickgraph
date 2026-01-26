@@ -135,7 +135,10 @@ impl SelectBuilder for LogicalPlan {
 
                             // NEW APPROACH: Use TypedVariable for type/source checking
                             if let Some(plan_ctx) = plan_ctx {
-                                log::info!("🔍 PlanCtx available, looking up variable '{}'", table_alias.0);
+                                log::info!(
+                                    "🔍 PlanCtx available, looking up variable '{}'",
+                                    table_alias.0
+                                );
                                 match plan_ctx.lookup_variable(&table_alias.0) {
                                     Some(typed_var) if typed_var.is_entity() => {
                                         // Entity (Node or Relationship) - expand properties
@@ -197,7 +200,11 @@ impl SelectBuilder for LogicalPlan {
                                         }
                                     }
                                     Some(typed_var) if typed_var.is_path() => {
-                                        log::info!("🔍 Path variable '{}' found, source: {:?}", table_alias.0, typed_var.source());
+                                        log::info!(
+                                            "🔍 Path variable '{}' found, source: {:?}",
+                                            table_alias.0,
+                                            typed_var.source()
+                                        );
                                         // Path variable - construct path object from CTE columns
                                         match &typed_var.source() {
                                             VariableSource::Cte { cte_name } => {
@@ -681,9 +688,9 @@ impl LogicalPlan {
         // Path columns typically include: path_nodes, hop_count, path_relationships, path_edges
         let path_columns = vec![
             "path_nodes",
-            "hop_count", 
+            "hop_count",
             "path_relationships",
-            "path_edges"
+            "path_edges",
         ];
 
         // Create property access expressions for each path column
@@ -720,9 +727,9 @@ impl LogicalPlan {
         // Path columns typically include: path_nodes, hop_count, path_relationships, path_edges
         let path_columns = vec![
             "path_nodes",
-            "hop_count", 
+            "hop_count",
             "path_relationships",
-            "path_edges"
+            "path_edges",
         ];
 
         // Create property access expressions for each path column

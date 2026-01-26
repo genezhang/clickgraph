@@ -9691,7 +9691,7 @@ pub(crate) fn collapse_passthrough_with(
                 "🔧 collapse_passthrough_with: Checking WithClause key='{}' target='{}' this_cte='{}' target_cte={:?}",
                 key, target_alias, this_cte_name, target_cte_name
             );
-            
+
             // Collapse if:
             // 1. target_cte_name is None (passthrough collapse by key only), AND key matches target_alias
             // 2. OR target_cte_name is Some, AND both key and CTE name match
@@ -9705,7 +9705,7 @@ pub(crate) fn collapse_passthrough_with(
                     key == target_alias && this_cte_name == target_cte
                 }
             };
-            
+
             if should_collapse {
                 // FORCE COLLAPSE for passthrough WITHs
                 log::warn!(

@@ -287,7 +287,11 @@ pub(crate) trait RenderPlanBuilder {
         schema: &GraphSchema,
     ) -> RenderPlanBuilderResult<RenderPlan>;
 
-    fn to_render_plan(&self, schema: &GraphSchema, plan_ctx: Option<&PlanCtx>) -> RenderPlanBuilderResult<RenderPlan> {
+    fn to_render_plan(
+        &self,
+        schema: &GraphSchema,
+        plan_ctx: Option<&PlanCtx>,
+    ) -> RenderPlanBuilderResult<RenderPlan> {
         self.to_render_plan_with_ctx(schema, plan_ctx)
     }
 
@@ -744,7 +748,11 @@ impl RenderPlanBuilder for LogicalPlan {
         <LogicalPlan as JoinBuilder>::try_build_join_based_plan(self, schema)
     }
 
-    fn to_render_plan(&self, schema: &GraphSchema, plan_ctx: Option<&PlanCtx>) -> RenderPlanBuilderResult<RenderPlan> {
+    fn to_render_plan(
+        &self,
+        schema: &GraphSchema,
+        plan_ctx: Option<&PlanCtx>,
+    ) -> RenderPlanBuilderResult<RenderPlan> {
         // CRITICAL: If the plan contains WITH clauses, use the specialized handler
         // build_chained_with_match_cte_plan handles chained/nested WITH correctly
         use super::plan_builder_utils::{
@@ -965,7 +973,9 @@ impl RenderPlanBuilder for LogicalPlan {
 
                     // Now extract select items with CTE registry available
                     let mut select_items = SelectItems {
-                        items: <LogicalPlan as SelectBuilder>::extract_select_items(self, plan_ctx)?,
+                        items: <LogicalPlan as SelectBuilder>::extract_select_items(
+                            self, plan_ctx,
+                        )?,
                         distinct: FilterBuilder::extract_distinct(self),
                     };
                     let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
@@ -1054,7 +1064,6 @@ impl RenderPlanBuilder for LogicalPlan {
                     if let LogicalPlan::GraphRel(gr) = p.input.as_ref() {
                         if gr.variable_length.is_some() && gr.is_optional.unwrap_or(false) {
                             log::info!("🎯 Projection over optional VLP: aggregations handled by LEFT JOIN with COUNT(*)");
-
 
                             // ClickHouse returns 0 (not NULL) for COUNT(*) with empty groups in LEFT JOIN + GROUP BY
                             // So no COALESCE wrapper needed - aggregations work correctly as-is
@@ -1607,7 +1616,10 @@ impl RenderPlanBuilder for LogicalPlan {
         }
 
         // For all other cases, handle directly with plan_ctx available
-        log::info!("🔍 to_render_plan_with_ctx: Processing plan type: {:?}", std::mem::discriminant(self));
+        log::info!(
+            "🔍 to_render_plan_with_ctx: Processing plan type: {:?}",
+            std::mem::discriminant(self)
+        );
         match self {
             LogicalPlan::GraphJoins(gj) => {
                 let mut select_items = SelectItems {
@@ -1707,7 +1719,7 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::OrderBy(ob) => {
                 // For OrderBy, delegate to the input with plan_ctx to handle VLP properly
                 let mut render_plan = ob.input.to_render_plan_with_ctx(schema, plan_ctx)?;
-                
+
                 // Convert logical OrderByItems to render OrderByItems
                 let order_by_items: Result<Vec<OrderByItem>, _> = ob
                     .items
