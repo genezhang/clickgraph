@@ -57,9 +57,12 @@ pub fn evaluate_with_clause<'a>(
             .iter()
             .map(|item| OrderByItem::try_from(item.clone()))
             .collect();
-        let order_by_items = order_by_items.map_err(|e| LogicalPlanError::QueryPlanningError(
-            format!("Failed to convert WITH ORDER BY item: {}", e)
-        ))?;
+        let order_by_items = order_by_items.map_err(|e| {
+            LogicalPlanError::QueryPlanningError(format!(
+                "Failed to convert WITH ORDER BY item: {}",
+                e
+            ))
+        })?;
         with_node = with_node.with_order_by(order_by_items);
     }
 
@@ -75,10 +78,13 @@ pub fn evaluate_with_clause<'a>(
 
     // Add WHERE if present
     if let Some(ref where_ast) = with_clause.where_clause {
-        let predicate: LogicalExpr = LogicalExpr::try_from(where_ast.conditions.clone())
-            .map_err(|e| LogicalPlanError::QueryPlanningError(
-                format!("Failed to convert WITH WHERE expression: {}", e)
-            ))?;
+        let predicate: LogicalExpr =
+            LogicalExpr::try_from(where_ast.conditions.clone()).map_err(|e| {
+                LogicalPlanError::QueryPlanningError(format!(
+                    "Failed to convert WITH WHERE expression: {}",
+                    e
+                ))
+            })?;
         with_node = with_node.with_where(predicate);
     }
 

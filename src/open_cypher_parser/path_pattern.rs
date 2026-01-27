@@ -182,14 +182,14 @@ fn get_relation_node(
 }
 
 /// Parse consecutive relationships with depth tracking to prevent stack overflow.
-/// 
+///
 /// Depth limit protects against adversarial inputs like:
 /// `(a)-[]->(b)-[]->(c)-[]->...(repeated thousands of times)`
-/// 
+///
 /// # Arguments
 /// * `input` - Input string to parse
 /// * `depth` - Current recursion depth (starts at 1 for first relationship after initial node)
-/// 
+///
 /// # Returns
 /// Vector of (relationship, node) pairs representing the chain
 fn parse_consecutive_relationships_with_depth(
@@ -293,7 +293,7 @@ fn parse_name_or_labels_with_properties(
 /// Parse multiple labels/types separated by | (e.g., User|Person or FOLLOWS|LIKES)
 /// This is the common parser for both node labels and relationship types since
 /// they share identical syntax: `Label1|Label2|Label3`
-/// 
+///
 /// Returns None if no labels are found, Some(vec![...]) otherwise
 fn parse_multi_labels_or_types(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'_ str>>> {
     let (remainder, first_label) =
@@ -1430,13 +1430,13 @@ mod tests {
         for i in 0..10 {
             query.push_str(&format!("-[:REL{}]->(n{})", i, i));
         }
-        
+
         let result = parse_path_pattern(&query);
         assert!(
             result.is_ok(),
             "Should parse 10 consecutive relationships without hitting depth limit"
         );
-        
+
         if let Ok((_, PathPattern::ConnectedPattern(connected))) = result {
             assert_eq!(connected.len(), 10, "Should have 10 relationship patterns");
         } else {
@@ -1451,15 +1451,19 @@ mod tests {
         for i in 0..50 {
             query.push_str(&format!("-[]->(n{})", i));
         }
-        
+
         let result = parse_path_pattern(&query);
         assert!(
             result.is_ok(),
             "Should parse exactly 50 consecutive relationships (at limit)"
         );
-        
+
         if let Ok((_, PathPattern::ConnectedPattern(connected))) = result {
-            assert_eq!(connected.len(), 50, "Should have exactly 50 relationship patterns");
+            assert_eq!(
+                connected.len(),
+                50,
+                "Should have exactly 50 relationship patterns"
+            );
         } else {
             panic!("Expected ConnectedPattern");
         }
@@ -1472,12 +1476,12 @@ mod tests {
         for i in 0..51 {
             query.push_str(&format!("-[]->(n{})", i));
         }
-        
+
         let result = parse_path_pattern(&query);
         match result {
             Err(nom::Err::Failure(Error { code, .. })) => {
                 assert_eq!(
-                    code, 
+                    code,
                     ErrorKind::TooLarge,
                     "Should fail with TooLarge error when exceeding depth limit"
                 );
@@ -1498,7 +1502,7 @@ mod tests {
         for i in 0..100 {
             query.push_str(&format!("-[:T{}]->(n{})", i, i));
         }
-        
+
         let result = parse_path_pattern(&query);
         assert!(
             result.is_err(),

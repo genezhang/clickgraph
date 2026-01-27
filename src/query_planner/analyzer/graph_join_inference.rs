@@ -1425,7 +1425,12 @@ impl GraphJoinInference {
             if predicates.is_empty() {
                 None
             } else if predicates.len() == 1 {
-                Some(predicates.into_iter().next().expect("Vector with len==1 must have element"))
+                Some(
+                    predicates
+                        .into_iter()
+                        .next()
+                        .expect("Vector with len==1 must have element"),
+                )
             } else {
                 Some(LogicalExpr::OperatorApplicationExp(LogicalOpApp {
                     operator: Operator::And,
@@ -4697,7 +4702,8 @@ impl GraphJoinInference {
             // Fixed-length (*1, *2, *3) - continue to generate JOINs
             crate::debug_print!(
                 "    ⚡ Fixed-length pattern (*{}) detected - will generate inline JOINs",
-                spec.exact_hop_count().expect("Fixed-length pattern must have exact hop count")
+                spec.exact_hop_count()
+                    .expect("Fixed-length pattern must have exact hop count")
             );
             Some(false) // Don't skip, process normally
         }
@@ -4921,7 +4927,10 @@ impl GraphJoinInference {
 
                     // Combine with OR
                     if or_operands.len() == 1 {
-                        or_operands.into_iter().next().expect("Vector with len==1 must have element")
+                        or_operands
+                            .into_iter()
+                            .next()
+                            .expect("Vector with len==1 must have element")
                     } else {
                         LogicalExpr::OperatorApplicationExp(OperatorApplication {
                             operator: Operator::Or,

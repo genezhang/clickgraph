@@ -130,9 +130,9 @@ pub fn evaluate_cypher_statement(
         union_type,
     }));
 
-    let final_ctx = combined_ctx.ok_or_else(|| LogicalPlanError::QueryPlanningError(
-        "Failed to merge plan contexts for UNION".to_string()
-    ))?;
+    let final_ctx = combined_ctx.ok_or_else(|| {
+        LogicalPlanError::QueryPlanningError("Failed to merge plan contexts for UNION".to_string())
+    })?;
     Ok((union_plan, final_ctx))
 }
 

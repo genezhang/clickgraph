@@ -14,9 +14,9 @@ pub fn evaluate_order_by_clause<'a>(
         .iter()
         .map(|item| OrderByItem::try_from(item.clone()))
         .collect();
-    let predicates = predicates.map_err(|e| LogicalPlanError::QueryPlanningError(
-        format!("Failed to convert ORDER BY item: {}", e)
-    ))?;
+    let predicates = predicates.map_err(|e| {
+        LogicalPlanError::QueryPlanningError(format!("Failed to convert ORDER BY item: {}", e))
+    })?;
     Ok(Arc::new(LogicalPlan::OrderBy(OrderBy {
         input: plan,
         items: predicates,

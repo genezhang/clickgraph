@@ -12,10 +12,13 @@ pub fn evaluate_where_clause<'a>(
     where_clause: &WhereClause<'a>,
     plan: Arc<LogicalPlan>,
 ) -> Result<Arc<LogicalPlan>, LogicalPlanError> {
-    let predicates: LogicalExpr = LogicalExpr::try_from(where_clause.conditions.clone())
-        .map_err(|e| LogicalPlanError::QueryPlanningError(
-            format!("Failed to convert WHERE clause expression: {}", e)
-        ))?;
+    let predicates: LogicalExpr =
+        LogicalExpr::try_from(where_clause.conditions.clone()).map_err(|e| {
+            LogicalPlanError::QueryPlanningError(format!(
+                "Failed to convert WHERE clause expression: {}",
+                e
+            ))
+        })?;
     log::debug!(
         "evaluate_where_clause: WHERE predicate after conversion: {:?}",
         predicates

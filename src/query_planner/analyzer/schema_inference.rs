@@ -358,10 +358,11 @@ impl SchemaInference {
                     plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone()));
 
                 // If contexts don't exist yet, skip (will be handled in later passes)
-                let (left_table_ctx, right_table_ctx) = match (left_table_ctx_opt, right_table_ctx_opt) {
-                    (Ok(left), Ok(right)) => (left, right),
-                    _ => return Ok(()),
-                };
+                let (left_table_ctx, right_table_ctx) =
+                    match (left_table_ctx_opt, right_table_ctx_opt) {
+                        (Ok(left), Ok(right)) => (left, right),
+                        _ => return Ok(()),
+                    };
 
                 let rel_table_ctx = plan_ctx.get_rel_table_ctx(&graph_rel.alias).map_err(|e| {
                     AnalyzerError::PlanCtx {
@@ -702,7 +703,6 @@ impl SchemaInference {
                 self.get_table_name_from_filters_and_projections(graph_schema, right_table_ctx);
             // Check the location of extracted nodes in the rel schema because the left and right of a graph changes with direction
             if let Some(left_table_name) = extracted_left_node_table_result {
-
                 // Handle polymorphic edges with $any wildcards
                 let right_table_name = if relation_schema.from_node == left_table_name {
                     // Left is from_node, so right is to_node
@@ -768,7 +768,6 @@ impl SchemaInference {
                     right_table_name,
                 ));
             } else if let Some(right_table_name) = extracted_right_node_table_result {
-
                 // Handle polymorphic edges with $any wildcards
                 let left_table_name = if relation_schema.from_node == right_table_name {
                     // Right is from_node, so left is to_node
@@ -1069,28 +1068,28 @@ impl SchemaInference {
             if extracted_left_node_table_result.is_some()
                 && extracted_right_node_table_result.is_some()
             {
-                if let (Some(left_table_name), Some(right_table_name)) = 
-                    (extracted_left_node_table_result, extracted_right_node_table_result) {
-
-                for (_, relation_schema) in graph_schema.get_relationships_schemas().iter() {
-                    if (relation_schema.from_node == left_table_name
-                        && relation_schema.to_node == right_table_name)
-                        || (relation_schema.from_node == right_table_name
-                            && relation_schema.to_node == left_table_name)
-                    {
-                        let rel_table_name = &relation_schema.table_name;
-                        return Ok((
-                            left_table_name,
-                            rel_table_name.to_string(),
-                            right_table_name,
-                        ));
+                if let (Some(left_table_name), Some(right_table_name)) = (
+                    extracted_left_node_table_result,
+                    extracted_right_node_table_result,
+                ) {
+                    for (_, relation_schema) in graph_schema.get_relationships_schemas().iter() {
+                        if (relation_schema.from_node == left_table_name
+                            && relation_schema.to_node == right_table_name)
+                            || (relation_schema.from_node == right_table_name
+                                && relation_schema.to_node == left_table_name)
+                        {
+                            let rel_table_name = &relation_schema.table_name;
+                            return Ok((
+                                left_table_name,
+                                rel_table_name.to_string(),
+                                right_table_name,
+                            ));
+                        }
                     }
-                }
                 }
             }
             // only left node is extracted but not able to extract the right node
-            else if let Some(left_table_name) = extracted_left_node_table_result
-            {
+            else if let Some(left_table_name) = extracted_left_node_table_result {
                 for (_, relation_schema) in graph_schema.get_relationships_schemas().iter() {
                     if relation_schema.from_node == left_table_name {
                         let right_table_name = &graph_schema
@@ -1124,8 +1123,7 @@ impl SchemaInference {
                 }
             }
             // only right node is extracted but not able to extract the left node
-            else if let Some(right_table_name) = extracted_right_node_table_result
-            {
+            else if let Some(right_table_name) = extracted_right_node_table_result {
                 for (_, relation_schema) in graph_schema.get_relationships_schemas().iter() {
                     if relation_schema.from_node == right_table_name {
                         let left_table_name = &graph_schema

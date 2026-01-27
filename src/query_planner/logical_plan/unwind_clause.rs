@@ -33,10 +33,9 @@ pub fn evaluate_unwind_clause(
     plan_ctx: &mut PlanCtx,
 ) -> Result<Arc<LogicalPlan>, LogicalPlanError> {
     // Convert the Cypher expression to a LogicalExpr
-    let expression = LogicalExpr::try_from(unwind_clause.expression.clone())
-        .map_err(|e| LogicalPlanError::QueryPlanningError(
-            format!("Failed to convert UNWIND expression: {}", e)
-        ))?;
+    let expression = LogicalExpr::try_from(unwind_clause.expression.clone()).map_err(|e| {
+        LogicalPlanError::QueryPlanningError(format!("Failed to convert UNWIND expression: {}", e))
+    })?;
 
     // Register the UNWIND alias as a projection alias
     // This allows subsequent clauses (WHERE, RETURN) to reference it
