@@ -35,7 +35,7 @@
 
 use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
 use crate::query_planner::logical_plan::LogicalPlan;
-use crate::utils::cte_naming::{is_generated_cte_name, extract_cte_base_name};
+use crate::utils::cte_naming::{extract_cte_base_name, is_generated_cte_name};
 use log::debug;
 use std::sync::Arc;
 

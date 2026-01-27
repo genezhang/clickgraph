@@ -108,7 +108,7 @@ pub fn extract_cte_base_name(name: &str) -> Option<String> {
     }
     // Format: with_..._cte_{counter}
     // Find last occurrence of "_cte_" to strip counter
-    name.rfind("_cte_").map(|pos| name[..pos + 4].to_string())  // +4 for "_cte"
+    name.rfind("_cte_").map(|pos| name[..pos + 4].to_string()) // +4 for "_cte"
 }
 
 /// Extract aliases from a CTE name.
@@ -226,9 +226,9 @@ mod tests {
         assert!(is_generated_cte_name("with_p_cte_1"));
         assert!(is_generated_cte_name("with_a_b_c_cte_5"));
         assert!(is_generated_cte_name("with_cte_1"));
-        assert!(!is_generated_cte_name("with_p_cte"));  // Missing counter
+        assert!(!is_generated_cte_name("with_p_cte")); // Missing counter
         assert!(!is_generated_cte_name("user_table"));
-        assert!(!is_generated_cte_name("cte_1"));  // Missing "with_" prefix
+        assert!(!is_generated_cte_name("cte_1")); // Missing "with_" prefix
     }
 
     #[test]
@@ -246,6 +246,6 @@ mod tests {
             Some("with_cte".to_string())
         );
         assert_eq!(extract_cte_base_name("invalid"), None);
-        assert_eq!(extract_cte_base_name("with_p_cte"), None);  // Missing counter
+        assert_eq!(extract_cte_base_name("with_p_cte"), None); // Missing counter
     }
 }

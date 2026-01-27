@@ -7,7 +7,7 @@ use crate::query_planner::logical_plan::{
     GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem, ViewScan,
 };
 use crate::query_planner::plan_ctx::PlanCtx;
-use crate::utils::cte_naming::{generate_cte_name, generate_cte_base_name};
+use crate::utils::cte_naming::{generate_cte_base_name, generate_cte_name};
 use log::debug;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
