@@ -83,12 +83,10 @@ impl AnalyzerPass for QueryValidation {
                     plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone()));
 
                 // If contexts don't exist yet, skip (will be validated in later passes)
-                if left_ctx_opt.is_err() || right_ctx_opt.is_err() {
-                    return Ok(Transformed::No(logical_plan));
-                }
-
-                let left_ctx = left_ctx_opt.unwrap();
-                let right_ctx = right_ctx_opt.unwrap();
+                let (left_ctx, right_ctx) = match (left_ctx_opt, right_ctx_opt) {
+                    (Ok(left), Ok(right)) => (left, right),
+                    _ => return Ok(Transformed::No(logical_plan)),
+                };
 
                 // Double-check labels exist (should always be true if !should_skip)
                 if left_ctx.get_label_opt().is_none() || right_ctx.get_label_opt().is_none() {

@@ -358,12 +358,10 @@ impl SchemaInference {
                     plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone()));
 
                 // If contexts don't exist yet, skip (will be handled in later passes)
-                if left_table_ctx_opt.is_err() || right_table_ctx_opt.is_err() {
-                    return Ok(());
-                }
-
-                let left_table_ctx = left_table_ctx_opt.unwrap();
-                let right_table_ctx = right_table_ctx_opt.unwrap();
+                let (left_table_ctx, right_table_ctx) = match (left_table_ctx_opt, right_table_ctx_opt) {
+                    (Ok(left), Ok(right)) => (left, right),
+                    _ => return Ok(()),
+                };
 
                 let rel_table_ctx = plan_ctx.get_rel_table_ctx(&graph_rel.alias).map_err(|e| {
                     AnalyzerError::PlanCtx {
@@ -703,9 +701,7 @@ impl SchemaInference {
             let extracted_right_node_table_result =
                 self.get_table_name_from_filters_and_projections(graph_schema, right_table_ctx);
             // Check the location of extracted nodes in the rel schema because the left and right of a graph changes with direction
-            if extracted_left_node_table_result.is_some() {
-                #[allow(clippy::unnecessary_unwrap)]
-                let left_table_name = extracted_left_node_table_result.unwrap();
+            if let Some(left_table_name) = extracted_left_node_table_result {
 
                 // Handle polymorphic edges with $any wildcards
                 let right_table_name = if relation_schema.from_node == left_table_name {
@@ -771,8 +767,7 @@ impl SchemaInference {
                     rel_table_name.to_string(),
                     right_table_name,
                 ));
-            } else if extracted_right_node_table_result.is_some() {
-                let right_table_name = extracted_right_node_table_result.unwrap();
+            } else if let Some(right_table_name) = extracted_right_node_table_result {
 
                 // Handle polymorphic edges with $any wildcards
                 let left_table_name = if relation_schema.from_node == right_table_name {
@@ -979,25 +974,25 @@ impl SchemaInference {
                 self.get_table_name_from_filters_and_projections(graph_schema, left_table_ctx);
 
             if relations_found.len() > 1 && extracted_left_node_table_result.is_some() {
-                #[allow(clippy::unnecessary_unwrap)]
-                let extracted_left_node_table_name = extracted_left_node_table_result.unwrap();
-                for relation_schema in &relations_found {
-                    let rel_table_name = &relation_schema.table_name;
-                    // if the existing right node is present at from_node in relation
-                    // and the left node's extracted column is present in curren found relation's column names
-                    // then use the current relation and new left node name
+                if let Some(extracted_left_node_table_name) = extracted_left_node_table_result {
+                    for relation_schema in &relations_found {
+                        let rel_table_name = &relation_schema.table_name;
+                        // if the existing right node is present at from_node in relation
+                        // and the left node's extracted column is present in curren found relation's column names
+                        // then use the current relation and new left node name
 
-                    if (relation_schema.from_node == right_table_name
-                        && relation_schema.to_node == extracted_left_node_table_name)
-                        || relation_schema.to_node == right_table_name
-                            && relation_schema.from_node == extracted_left_node_table_name
-                    {
-                        let left_table_name = extracted_left_node_table_name;
-                        return Ok((
-                            left_table_name.to_string(),
-                            rel_table_name.to_string(),
-                            right_table_name.to_string(),
-                        ));
+                        if (relation_schema.from_node == right_table_name
+                            && relation_schema.to_node == extracted_left_node_table_name)
+                            || relation_schema.to_node == right_table_name
+                                && relation_schema.from_node == extracted_left_node_table_name
+                        {
+                            let left_table_name = extracted_left_node_table_name;
+                            return Ok((
+                                left_table_name.to_string(),
+                                rel_table_name.to_string(),
+                                right_table_name.to_string(),
+                            ));
+                        }
                     }
                 }
             }
@@ -1074,10 +1069,8 @@ impl SchemaInference {
             if extracted_left_node_table_result.is_some()
                 && extracted_right_node_table_result.is_some()
             {
-                #[allow(clippy::unnecessary_unwrap)]
-                let left_table_name = extracted_left_node_table_result.unwrap();
-                #[allow(clippy::unnecessary_unwrap)]
-                let right_table_name = extracted_right_node_table_result.unwrap();
+                if let (Some(left_table_name), Some(right_table_name)) = 
+                    (extracted_left_node_table_result, extracted_right_node_table_result) {
 
                 for (_, relation_schema) in graph_schema.get_relationships_schemas().iter() {
                     if (relation_schema.from_node == left_table_name
@@ -1093,12 +1086,11 @@ impl SchemaInference {
                         ));
                     }
                 }
+                }
             }
             // only left node is extracted but not able to extract the right node
-            else if extracted_left_node_table_result.is_some()
-                && extracted_right_node_table_result.is_none()
+            else if let Some(left_table_name) = extracted_left_node_table_result
             {
-                let left_table_name = extracted_left_node_table_result.unwrap();
                 for (_, relation_schema) in graph_schema.get_relationships_schemas().iter() {
                     if relation_schema.from_node == left_table_name {
                         let right_table_name = &graph_schema
@@ -1132,11 +1124,8 @@ impl SchemaInference {
                 }
             }
             // only right node is extracted but not able to extract the left node
-            else if extracted_left_node_table_result.is_none()
-                && extracted_right_node_table_result.is_some()
+            else if let Some(right_table_name) = extracted_right_node_table_result
             {
-                #[allow(clippy::unnecessary_unwrap)]
-                let right_table_name = extracted_right_node_table_result.unwrap();
                 for (_, relation_schema) in graph_schema.get_relationships_schemas().iter() {
                     if relation_schema.from_node == right_table_name {
                         let left_table_name = &graph_schema
