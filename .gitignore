@@ -111,6 +111,8 @@ docs1/
 !docs/images/**
 !docs/features/
 !docs/features/**
+!docs/audits/
+!docs/audits/**
 !README.md
 !ROADMAP.md
 !KNOWN_ISSUES.md
