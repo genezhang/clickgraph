@@ -57,7 +57,7 @@ impl VlpTransitivityCheck {
         let base_type = Self::extract_type_name(rel_type);
 
         // Get all relationship schemas for this type
-        let rel_schemas = schema.get_all_rel_schemas_by_type(base_type);
+        let rel_schemas = schema.rel_schemas_for_type(base_type);
 
         if rel_schemas.is_empty() {
             return Err(AnalyzerError::RelationshipTypeNotFound(

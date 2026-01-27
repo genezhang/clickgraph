@@ -396,7 +396,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         // Add end node ID as String (handles UNION type compatibility)
         if let Ok(node_schema) = self
             .schema
-            .get_nodes_schemas()
+            .all_node_schemas()
             .get(node_type)
             .ok_or("Node not found")
         {
@@ -429,7 +429,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         if let Ok(start_type) = self.start_labels.first().ok_or("No start type") {
             if let Ok(node_schema) = self
                 .schema
-                .get_nodes_schemas()
+                .all_node_schemas()
                 .get(start_type)
                 .ok_or("Node not found")
             {
@@ -460,7 +460,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         // Serialize all properties as JSON string using map() for proper JSON object format
         if let Ok(node_schema) = self
             .schema
-            .get_nodes_schemas()
+            .all_node_schemas()
             .get(node_type)
             .ok_or("Node not found")
         {
@@ -512,7 +512,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
     /// Get table name for a node type
     fn get_node_table(&self, node_type: &str) -> Result<String, String> {
         self.schema
-            .get_nodes_schemas()
+            .all_node_schemas()
             .get(node_type)
             .map(|n| n.table_name.clone())
             .ok_or_else(|| format!("Node table not found for type '{}'", node_type))
@@ -522,7 +522,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
     /// 🔧 PARAMETERIZED VIEW FIX: Applies view parameters if the node schema has view_parameters defined
     fn get_node_table_with_db(&self, node_type: &str) -> Result<String, String> {
         self.schema
-            .get_nodes_schemas()
+            .all_node_schemas()
             .get(node_type)
             .map(|n| {
                 let base_table = if n.database.is_empty() {
@@ -659,7 +659,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
     /// Get ID column for a node type
     fn get_node_id_column(&self, node_type: &str) -> Result<String, String> {
         self.schema
-            .get_nodes_schemas()
+            .all_node_schemas()
             .get(node_type)
             .map(|n| n.node_id.column().to_string())
             .ok_or_else(|| format!("Node ID column not found for type '{}'", node_type))

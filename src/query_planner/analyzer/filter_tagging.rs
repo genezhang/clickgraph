@@ -713,7 +713,7 @@ impl FilterTagging {
                     // Fallback to schema-level check if strategy lookup fails
                     let schema_embedded = table_ctx
                         .get_label_opt()
-                        .and_then(|label| plan_ctx.schema().get_node_schema_opt(&label))
+                        .and_then(|label| plan_ctx.schema().node_schema_opt(&label))
                         .map(|node_schema| node_schema.is_denormalized)
                         .unwrap_or(false);
 
@@ -948,7 +948,7 @@ impl FilterTagging {
                                                 // Use find_property_in_viewscan_with_edge to get the actual column
                                                 // Node id_column in schema is the logical property name (e.g., "id")
                                                 let id_property = if let Ok(node_schema) =
-                                                    graph_schema.get_node_schema(&label)
+                                                    graph_schema.node_schema(&label)
                                                 {
                                                     node_schema
                                                         .node_id
@@ -980,9 +980,7 @@ impl FilterTagging {
                                         }
                                     } else {
                                         // For regular (non-denormalized) nodes, use the node_id column directly
-                                        if let Ok(node_schema) =
-                                            graph_schema.get_node_schema(&label)
-                                        {
+                                        if let Ok(node_schema) = graph_schema.node_schema(&label) {
                                             Some(
                                                 node_schema
                                                     .node_id
@@ -1128,7 +1126,7 @@ impl FilterTagging {
                         // Check if this is a polymorphic table with label_column
                         // We need to look up the node schema to see if it has label_column
                         if let Some(first_label) = known_labels.first() {
-                            if let Ok(node_schema) = graph_schema.get_node_schema(first_label) {
+                            if let Ok(node_schema) = graph_schema.node_schema(first_label) {
                                 if let Some(label_col) = &node_schema.label_column {
                                     // Polymorphic table - generate runtime check: label_column = 'check_label'
                                     println!(

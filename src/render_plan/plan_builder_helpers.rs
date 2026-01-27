@@ -1386,7 +1386,7 @@ pub(super) fn get_node_table_for_alias(alias: &str) -> String {
                 // Look up the node type from the alias - this is a simplified lookup
                 // In a real implementation, we'd need to track node types per alias
                 // For now, assume "User" type for common cases
-                if let Some(user_node) = schema.get_node_schema_opt("User") {
+                if let Some(user_node) = schema.node_schema_opt("User") {
                     // Return fully qualified table name: database.table_name
                     return format!("{}.{}", user_node.database, user_node.table_name);
                 }
@@ -1418,7 +1418,7 @@ pub(super) fn get_node_id_columns_for_alias(alias: &str) -> Vec<String> {
 
             if let Some(schema) = schema_opt {
                 // Look up the node type from the alias - this is a simplified lookup
-                if let Some(user_node) = schema.get_node_schema_opt("User") {
+                if let Some(user_node) = schema.node_schema_opt("User") {
                     return user_node
                         .node_id
                         .columns()
@@ -1528,7 +1528,7 @@ pub(super) fn get_node_info_from_schema(node_label: &str) -> Option<(String, Vec
             let schema_opt = schemas.get("default").or_else(|| schemas.values().next());
 
             if let Some(schema) = schema_opt {
-                if let Ok(node_schema) = schema.get_node_schema(node_label) {
+                if let Ok(node_schema) = schema.node_schema(node_label) {
                     return Some((
                         node_schema.table_name.clone(),
                         node_schema
@@ -1567,7 +1567,7 @@ pub(super) fn get_node_table_for_alias_with_schema(
     let label = get_node_label_for_alias(alias, plan)?;
 
     // Look up the table from schema
-    let node_schema = schema.get_node_schema(&label).ok()?;
+    let node_schema = schema.node_schema(&label).ok()?;
 
     // Return fully qualified table name
     Some(format!(
@@ -1587,7 +1587,7 @@ pub(super) fn get_node_id_column_for_alias_with_schema(
     let label = get_node_label_for_alias(alias, plan)?;
 
     // Look up the node schema
-    let node_schema = schema.get_node_schema(&label).ok()?;
+    let node_schema = schema.node_schema(&label).ok()?;
 
     // Return first ID column
     node_schema.node_id.columns().first().map(|s| s.to_string())
@@ -1603,7 +1603,7 @@ pub(super) fn get_node_id_columns_for_alias_with_schema(
     let label = get_node_label_for_alias(alias, plan)?;
 
     // Look up the node schema
-    let node_schema = schema.get_node_schema(&label).ok()?;
+    let node_schema = schema.node_schema(&label).ok()?;
 
     // Return all ID columns
     Some(
@@ -1621,7 +1621,7 @@ pub(super) fn get_node_info_from_schema_with_schema(
     node_label: &str,
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
 ) -> Option<(String, Vec<String>)> {
-    let node_schema = schema.get_node_schema(node_label).ok()?;
+    let node_schema = schema.node_schema(node_label).ok()?;
     Some((
         format!("{}.{}", node_schema.database, node_schema.table_name),
         node_schema

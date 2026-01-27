@@ -461,7 +461,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                     .map(|rel_schema| rel_schema.table_name.as_str())
                             } else {
                                 schema
-                                    .get_node_schema_opt(&label)
+                                    .node_schema_opt(&label)
                                     .map(|node_schema| node_schema.table_name.as_str())
                             };
 

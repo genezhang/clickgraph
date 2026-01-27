@@ -209,7 +209,7 @@ ORDER BY pagerank DESC
             let mut id_column = None;
 
             for label in labels {
-                let node_schema = self.schema.get_nodes_schemas().get(label).ok_or_else(|| {
+                let node_schema = self.schema.all_node_schemas().get(label).ok_or_else(|| {
                     ClickhouseQueryGeneratorError::SchemaError(format!(
                         "Node label '{}' not found in schema",
                         label
@@ -275,7 +275,7 @@ ORDER BY pagerank DESC
 
             let node_schema = self
                 .schema
-                .get_nodes_schemas()
+                .all_node_schemas()
                 .get(node_type)
                 .ok_or_else(|| {
                     ClickhouseQueryGeneratorError::SchemaError(format!(

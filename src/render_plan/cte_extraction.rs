@@ -70,11 +70,11 @@ fn recreate_pattern_schema_context(
         .unwrap_or_else(|| vec!["UNKNOWN".to_string()]);
 
     // Get node schemas
-    let left_node_schema = schema.get_node_schema(&left_label).map_err(|e| {
+    let left_node_schema = schema.node_schema(&left_label).map_err(|e| {
         RenderBuildError::MissingTableInfo(format!("Could not get left node schema: {}", e))
     })?;
 
-    let right_node_schema = schema.get_node_schema(&right_label).map_err(|e| {
+    let right_node_schema = schema.node_schema(&right_label).map_err(|e| {
         RenderBuildError::MissingTableInfo(format!("Could not get right node schema: {}", e))
     })?;
 
@@ -1076,7 +1076,7 @@ pub fn label_to_table_name_with_schema(
     label: &str,
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
 ) -> String {
-    match schema.get_node_schema(label) {
+    match schema.node_schema(label) {
         Ok(node_schema) => {
             // Use fully qualified table name: database.table_name
             format!("{}.{}", node_schema.database, node_schema.table_name)
@@ -1360,7 +1360,7 @@ pub fn table_to_id_column_with_schema(
 ) -> Result<String, String> {
     // Find node schema by table name
     // Handle both fully qualified (database.table) and simple (table) names
-    for node_schema in schema.get_nodes_schemas().values() {
+    for node_schema in schema.all_node_schemas().values() {
         let fully_qualified = format!("{}.{}", node_schema.database, node_schema.table_name);
         if node_schema.table_name == table || fully_qualified == table {
             return Ok(node_schema
@@ -1892,7 +1892,7 @@ pub fn extract_ctes_with_context(
                 //
                 // See: docs/development/schema-testing-requirements.md
                 let start_id_col = if !start_label.is_empty() {
-                    if let Ok(node_schema) = schema.get_node_schema(&start_label) {
+                    if let Ok(node_schema) = schema.node_schema(&start_label) {
                         if node_schema.is_denormalized {
                             // For denormalized nodes, use relationship column
                             from_col.clone()
@@ -1911,7 +1911,7 @@ pub fn extract_ctes_with_context(
                 };
 
                 let end_id_col = if !end_label.is_empty() {
-                    if let Ok(node_schema) = schema.get_node_schema(&end_label) {
+                    if let Ok(node_schema) = schema.node_schema(&end_label) {
                         if node_schema.is_denormalized {
                             // For denormalized nodes, use relationship column
                             to_col.clone()
@@ -2256,7 +2256,7 @@ pub fn extract_ctes_with_context(
 
                     // Get all properties for start node using the schema parameter (which is already in scope)
                     if !start_label.is_empty() {
-                        if let Ok(start_node_schema) = schema.get_node_schema(&start_label) {
+                        if let Ok(start_node_schema) = schema.node_schema(&start_label) {
                             log::warn!(
                                 "🔧 BUG #7: Found start node schema with {} properties",
                                 start_node_schema.property_mappings.len()
@@ -2275,7 +2275,7 @@ pub fn extract_ctes_with_context(
 
                     // Get all properties for end node
                     if !end_label.is_empty() {
-                        if let Ok(end_node_schema) = schema.get_node_schema(&end_label) {
+                        if let Ok(end_node_schema) = schema.node_schema(&end_label) {
                             log::warn!(
                                 "🔧 BUG #7: Found end node schema with {} properties",
                                 end_node_schema.property_mappings.len()
@@ -2648,7 +2648,7 @@ pub fn extract_ctes_with_context(
                         // Handle both "table" and "database.table" formats
                         let rel_table_name = rel_table.split('.').last().unwrap_or(&rel_table);
 
-                        if let Some(node_schema) = schema.get_nodes_schemas().values().find(|n| {
+                        if let Some(node_schema) = schema.all_node_schemas().values().find(|n| {
                             let schema_table =
                                 n.table_name.split('.').last().unwrap_or(&n.table_name);
                             schema_table == rel_table_name
@@ -4238,7 +4238,7 @@ pub fn get_node_schema_by_table<'a>(
     schema: &'a GraphSchema,
     table_name: &str,
 ) -> Option<(&'a str, &'a crate::graph_catalog::graph_schema::NodeSchema)> {
-    for (label, node_schema) in schema.get_nodes_schemas() {
+    for (label, node_schema) in schema.all_node_schemas() {
         if node_schema.table_name == table_name {
             return Some((label.as_str(), node_schema));
         }

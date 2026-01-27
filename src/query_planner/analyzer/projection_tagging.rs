@@ -628,7 +628,7 @@ impl ProjectionTagging {
                                 }
                             } else {
                                 // No strategy found - fallback to schema-based resolution
-                                if let Ok(node_schema) = graph_schema.get_node_schema(&label) {
+                                if let Ok(node_schema) = graph_schema.node_schema(&label) {
                                     if node_schema.is_denormalized {
                                         // Fallback for cases where strategy lookup fails
                                         crate::graph_catalog::expression_parser::PropertyValue::Column(
@@ -848,7 +848,7 @@ impl ProjectionTagging {
                                     } else {
                                         // Node ID column - use first column for composite IDs
                                         let id_column = if let Ok(node_schema) =
-                                            graph_schema.get_node_schema(&label)
+                                            graph_schema.node_schema(&label)
                                         {
                                             node_schema
                                                 .node_id
@@ -1151,7 +1151,7 @@ impl ProjectionTagging {
                                     // The id_column specifies which property represents the node's identity
                                     // e.g., for IP nodes, id_column = "ip", so count(distinct ip) -> count(distinct ip.ip)
                                     let node_schema = graph_schema
-                                        .get_node_schema(&table_label)
+                                        .node_schema(&table_label)
                                         .map_err(|e| AnalyzerError::GraphSchema {
                                             pass: Pass::ProjectionTagging,
                                             source: e,
@@ -1196,11 +1196,11 @@ impl ProjectionTagging {
                                 } else {
                                     // Standard node - use node schema's ID column
                                     let table_schema = graph_schema
-                                        .get_node_schema(&table_label)
+                                        .node_schema(&table_label)
                                         .map_err(|e| AnalyzerError::GraphSchema {
-                                        pass: Pass::ProjectionTagging,
-                                        source: e,
-                                    })?;
+                                            pass: Pass::ProjectionTagging,
+                                            source: e,
+                                        })?;
                                     let table_node_id = table_schema
                                         .node_id
                                         .columns()

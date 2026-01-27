@@ -353,10 +353,25 @@ impl NodeIdSchema {
     }
 
     /// Get the column name for single-column identifiers.
-    /// **PANICS** if called on composite identifier.
+    ///
+    /// **Panics** if called on composite identifier.
     /// For composite-safe access, use `columns()` or `sql_tuple()`.
     pub fn column(&self) -> &str {
-        self.id.as_single()
+        match self.id.as_single() {
+            Ok(col) => col,
+            Err(_) => panic!(
+                "Attempted to access single column on composite node identifier. \
+                This is a schema configuration error - composite node IDs should use \
+                columns() for safe access or sql_tuple() for SQL generation."
+            ),
+        }
+    }
+
+    /// Get the column name for single-column identifiers, with error handling.
+    ///
+    /// Preferred for new code over `column()` to handle composite identifiers gracefully.
+    pub fn column_or_error(&self) -> Result<&str, String> {
+        self.id.as_single().map_err(|e| e.to_string())
     }
 
     /// Check if this is a composite identifier
@@ -540,8 +555,11 @@ impl GraphSchema {
         // Second pass: build index, skipping simple keys when composite exists
         for composite_key in relationships.keys() {
             let type_name = if composite_key.contains("::") {
-                // This is a composite key - extract the type name
-                composite_key.split("::").next().unwrap_or(composite_key)
+                // This is a composite key - extract the type name (before first ::)
+                composite_key
+                    .split("::")
+                    .next()
+                    .unwrap_or(composite_key.as_str())
             } else {
                 // This is a simple key - skip if we have composite keys for this type
                 if composite_types.contains(composite_key) {
@@ -686,9 +704,9 @@ impl GraphSchema {
         self.version += 1;
     }
 
-    pub fn get_node_schema(&self, node_label: &str) -> Result<&NodeSchema, GraphSchemaError> {
+    pub fn node_schema(&self, node_label: &str) -> Result<&NodeSchema, GraphSchemaError> {
         log::debug!(
-            "get_node_schema: Looking for node_label='{}' in schema (has {} nodes: {:?})",
+            "node_schema: Looking for node_label='{}' in schema (has {} nodes: {:?})",
             node_label,
             self.nodes.len(),
             self.nodes.keys().take(5).collect::<Vec<_>>()
@@ -696,7 +714,7 @@ impl GraphSchema {
 
         self.nodes.get(node_label).ok_or_else(|| {
             log::warn!(
-                "get_node_schema: Node '{}' NOT FOUND. Available nodes: {:?}",
+                "node_schema: Node '{}' NOT FOUND. Available nodes: {:?}",
                 node_label,
                 self.nodes.keys().collect::<Vec<_>>()
             );
@@ -794,7 +812,7 @@ impl GraphSchema {
 
     /// Get all relationship schemas matching a type name
     /// O(1) lookup using secondary index instead of O(n) iteration
-    pub fn get_all_rel_schemas_by_type(&self, rel_type: &str) -> Vec<&RelationshipSchema> {
+    pub fn rel_schemas_for_type(&self, rel_type: &str) -> Vec<&RelationshipSchema> {
         // Use secondary index for O(1) lookup
         if let Some(composite_keys) = self.rel_type_index.get(rel_type) {
             composite_keys
@@ -1094,11 +1112,11 @@ impl GraphSchema {
         &self.relationships
     }
 
-    pub fn get_nodes_schemas(&self) -> &HashMap<String, NodeSchema> {
+    pub fn all_node_schemas(&self) -> &HashMap<String, NodeSchema> {
         &self.nodes
     }
 
-    pub fn get_node_schema_opt(&self, node_label: &str) -> Option<&NodeSchema> {
+    pub fn node_schema_opt(&self, node_label: &str) -> Option<&NodeSchema> {
         self.nodes.get(node_label)
     }
 
@@ -1109,7 +1127,7 @@ impl GraphSchema {
     /// Get properties for a node label as (property_name, column_or_expr) pairs
     pub fn get_node_properties(&self, labels: &[String]) -> Vec<(String, String)> {
         if let Some(label) = labels.first() {
-            if let Some(node_schema) = self.get_node_schema_opt(label) {
+            if let Some(node_schema) = self.node_schema_opt(label) {
                 node_schema
                     .property_mappings
                     .iter()

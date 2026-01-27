@@ -164,8 +164,8 @@ impl AnalyzerPass for QueryValidation {
                 // Example: Company (filter on Organisation table) should match Organisation
                 let from_matches = from_label_match || {
                     if let (Ok(query_node), Ok(schema_node)) = (
-                        graph_schema.get_node_schema(query_from),
-                        graph_schema.get_node_schema(schema_from),
+                        graph_schema.node_schema(query_from),
+                        graph_schema.node_schema(schema_from),
                     ) {
                         query_node.table_name == schema_node.table_name
                     } else {
@@ -175,8 +175,8 @@ impl AnalyzerPass for QueryValidation {
 
                 let to_matches = to_label_match || {
                     if let (Ok(query_node), Ok(schema_node)) = (
-                        graph_schema.get_node_schema(query_to),
-                        graph_schema.get_node_schema(schema_to),
+                        graph_schema.node_schema(query_to),
+                        graph_schema.node_schema(schema_to),
                     ) {
                         query_node.table_name == schema_node.table_name
                     } else {

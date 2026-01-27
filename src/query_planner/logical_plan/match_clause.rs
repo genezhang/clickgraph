@@ -43,7 +43,7 @@ fn infer_node_label_from_schema(
     schema: &GraphSchema,
     plan_ctx: &PlanCtx,
 ) -> LogicalPlanResult<Option<String>> {
-    let node_schemas = schema.get_nodes_schemas();
+    let node_schemas = schema.all_node_schemas();
 
     // Case 1: Single node type in schema - use it
     if node_schemas.len() == 1 {
@@ -108,10 +108,10 @@ fn infer_node_label_from_schema(
 /// - Schema: FLIGHT has from_node=Airport, to_node=Airport
 /// - Result: Both nodes inferred as Airport
 ///
-// REMOVED: Old parsing-time label inference (now handled by TypeInference analyzer pass)
-// The TypeInference pass runs after parsing and provides more robust inference
-// that works across WITH boundaries and handles both node labels and edge types.
-
+/// REMOVED: Old parsing-time label inference (now handled by TypeInference analyzer pass)
+/// The TypeInference pass runs after parsing and provides more robust inference
+/// that works across WITH boundaries and handles both node labels and edge types.
+///
 /// Infer relationship type from typed node labels when edge is untyped.
 ///
 /// Handles two cases:
@@ -398,7 +398,7 @@ fn is_denormalized_scan(plan: &Arc<LogicalPlan>) -> bool {
 fn is_label_denormalized(label: &Option<String>, plan_ctx: &PlanCtx) -> bool {
     if let Some(label_str) = label {
         let schema = plan_ctx.schema();
-        if let Ok(node_schema) = schema.get_node_schema(label_str) {
+        if let Ok(node_schema) = schema.node_schema(label_str) {
             crate::debug_print!(
                 "is_label_denormalized: label '{}' is_denormalized = {}",
                 label_str,
@@ -427,7 +427,7 @@ pub fn try_generate_view_scan(
     let schema = plan_ctx.schema();
 
     // Look up the node schema for this label
-    let node_schema = match schema.get_node_schema(label) {
+    let node_schema = match schema.node_schema(label) {
         Ok(s) => s,
         Err(e) => {
             log::warn!("Could not find node schema for label '{}': {:?}", label, e);

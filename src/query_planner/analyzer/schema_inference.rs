@@ -716,7 +716,7 @@ impl SchemaInference {
                         }
                     } else {
                         graph_schema
-                            .get_node_schema(&relation_schema.to_node)
+                            .node_schema(&relation_schema.to_node)
                             .map_err(|e| AnalyzerError::GraphSchema {
                                 pass: Pass::SchemaInference,
                                 source: e,
@@ -735,7 +735,7 @@ impl SchemaInference {
                         }
                     } else {
                         graph_schema
-                            .get_node_schema(&relation_schema.to_node)
+                            .node_schema(&relation_schema.to_node)
                             .map_err(|e| AnalyzerError::GraphSchema {
                                 pass: Pass::SchemaInference,
                                 source: e,
@@ -753,7 +753,7 @@ impl SchemaInference {
                         }
                     } else {
                         graph_schema
-                            .get_node_schema(&relation_schema.from_node)
+                            .node_schema(&relation_schema.from_node)
                             .map_err(|e| AnalyzerError::GraphSchema {
                                 pass: Pass::SchemaInference,
                                 source: e,
@@ -776,7 +776,7 @@ impl SchemaInference {
                         right_table_name.clone()
                     } else {
                         graph_schema
-                            .get_node_schema(&relation_schema.to_node)
+                            .node_schema(&relation_schema.to_node)
                             .map_err(|e| AnalyzerError::GraphSchema {
                                 pass: Pass::SchemaInference,
                                 source: e,
@@ -791,7 +791,7 @@ impl SchemaInference {
                         right_table_name.clone()
                     } else {
                         graph_schema
-                            .get_node_schema(&relation_schema.to_node)
+                            .node_schema(&relation_schema.to_node)
                             .map_err(|e| AnalyzerError::GraphSchema {
                                 pass: Pass::SchemaInference,
                                 source: e,
@@ -805,7 +805,7 @@ impl SchemaInference {
                         right_table_name.clone()
                     } else {
                         graph_schema
-                            .get_node_schema(&relation_schema.from_node)
+                            .node_schema(&relation_schema.from_node)
                             .map_err(|e| AnalyzerError::GraphSchema {
                                 pass: Pass::SchemaInference,
                                 source: e,
@@ -933,9 +933,9 @@ impl SchemaInference {
             //         .ok_or(AnalyzerError::MissingRelationLabel)?;
 
             //     let right_table_name = if relation_schema.from_node == left_table_name {
-            //         &graph_schema.get_node_schema(&relation_schema.to_node)?.table_name
+            //         &graph_schema.node_schema(&relation_schema.to_node)?.table_name
             //     } else {
-            //         &graph_schema.get_node_schema(&relation_schema.from_node)?.table_name
+            //         &graph_schema.node_schema(&relation_schema.from_node)?.table_name
             //     };
             //     let rel_table_name = &relation_schema.table_name;
             //     return Ok((
@@ -1042,9 +1042,9 @@ impl SchemaInference {
             //         .ok_or(AnalyzerError::MissingRelationLabel)?;
 
             //     let left_table_name = if relation_schema.from_node == right_table_name {
-            //         &graph_schema.get_node_schema(&relation_schema.to_node)?.table_name
+            //         &graph_schema.node_schema(&relation_schema.to_node)?.table_name
             //     } else {
-            //         &graph_schema.get_node_schema(&relation_schema.from_node)?.table_name
+            //         &graph_schema.node_schema(&relation_schema.from_node)?.table_name
             //     };
             //     let rel_table_name = &relation_schema.table_name;
             //     return Ok((
@@ -1093,7 +1093,7 @@ impl SchemaInference {
                 for (_, relation_schema) in graph_schema.get_relationships_schemas().iter() {
                     if relation_schema.from_node == left_table_name {
                         let right_table_name = &graph_schema
-                            .get_node_schema(&relation_schema.to_node)
+                            .node_schema(&relation_schema.to_node)
                             .map_err(|e| AnalyzerError::GraphSchema {
                                 pass: Pass::SchemaInference,
                                 source: e,
@@ -1107,7 +1107,7 @@ impl SchemaInference {
                         ));
                     } else if relation_schema.to_node == left_table_name {
                         let right_table_name = &graph_schema
-                            .get_node_schema(&relation_schema.from_node)
+                            .node_schema(&relation_schema.from_node)
                             .map_err(|e| AnalyzerError::GraphSchema {
                                 pass: Pass::SchemaInference,
                                 source: e,
@@ -1127,7 +1127,7 @@ impl SchemaInference {
                 for (_, relation_schema) in graph_schema.get_relationships_schemas().iter() {
                     if relation_schema.from_node == right_table_name {
                         let left_table_name = &graph_schema
-                            .get_node_schema(&relation_schema.to_node)
+                            .node_schema(&relation_schema.to_node)
                             .map_err(|e| AnalyzerError::GraphSchema {
                                 pass: Pass::SchemaInference,
                                 source: e,
@@ -1141,7 +1141,7 @@ impl SchemaInference {
                         ));
                     } else if relation_schema.to_node == right_table_name {
                         let left_table_name = &graph_schema
-                            .get_node_schema(&relation_schema.from_node)
+                            .node_schema(&relation_schema.from_node)
                             .map_err(|e| AnalyzerError::GraphSchema {
                                 pass: Pass::SchemaInference,
                                 source: e,
@@ -1180,7 +1180,7 @@ impl SchemaInference {
             "".to_string()
         };
         if !column_name.is_empty() {
-            for (_, node_schema) in graph_schema.get_nodes_schemas().iter() {
+            for (_, node_schema) in graph_schema.all_node_schemas().iter() {
                 if node_schema.column_names.contains(&column_name) {
                     return Some(node_schema.table_name.clone());
                 }

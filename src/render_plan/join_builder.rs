@@ -471,8 +471,8 @@ impl JoinBuilder for LogicalPlan {
                                         constraint_expr
                                     );
                                     if let (Some(from_schema), Some(to_schema)) = (
-                                        schema.get_node_schema_opt(&from_label),
-                                        schema.get_node_schema_opt(&to_label),
+                                        schema.node_schema_opt(&from_label),
+                                        schema.node_schema_opt(&to_label),
                                     ) {
                                         // Find from/to aliases from JOIN conditions
                                         // For standard edge, use extract_node_aliases_from_joins
@@ -1631,8 +1631,8 @@ impl JoinBuilder for LogicalPlan {
                                                         Some(from_node_schema),
                                                         Some(to_node_schema),
                                                     ) = (
-                                                        schema.get_node_schema_opt(start_label),
-                                                        schema.get_node_schema_opt(end_label),
+                                                        schema.node_schema_opt(start_label),
+                                                        schema.node_schema_opt(end_label),
                                                     ) {
                                                         log::info!("🔍 Found both node schemas, compiling constraint...");
                                                         // Compile the constraint expression

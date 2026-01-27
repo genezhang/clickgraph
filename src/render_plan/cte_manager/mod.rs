@@ -329,7 +329,7 @@ impl CteManager {
                 // Get the node schema by table name
                 // We need to find which node label corresponds to this table
                 let target_node_label = schema
-                    .get_nodes_schemas()
+                    .all_node_schemas()
                     .iter()
                     .find(|(_, node_schema)| node_schema.table_name == *target_table)
                     .map(|(label, _)| label)
@@ -341,13 +341,12 @@ impl CteManager {
                     })?;
 
                 // Get the target node's schema
-                let target_node_schema =
-                    schema.get_node_schema(target_node_label).map_err(|e| {
-                        CteError::SchemaValidationError(format!(
-                            "Failed to get node schema for {}: {}",
-                            target_node_label, e
-                        ))
-                    })?;
+                let target_node_schema = schema.node_schema(target_node_label).map_err(|e| {
+                    CteError::SchemaValidationError(format!(
+                        "Failed to get node schema for {}: {}",
+                        target_node_label, e
+                    ))
+                })?;
 
                 // Get the ID column from the node schema
                 match &target_node_schema.node_id.id {

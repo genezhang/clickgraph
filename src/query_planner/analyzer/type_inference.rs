@@ -178,7 +178,7 @@ impl TypeInference {
                     if let Some(ref types) = edge_types {
                         for rel_type in types {
                             // Use get_all_rel_schemas_by_type to handle composite keys
-                            let rel_schemas = graph_schema.get_all_rel_schemas_by_type(rel_type);
+                            let rel_schemas = graph_schema.rel_schemas_for_type(rel_type);
                             log::debug!(
                                 "🎯 TypeInference: Found {} schema(s) for rel_type '{}'",
                                 rel_schemas.len(),
@@ -377,7 +377,7 @@ impl TypeInference {
                                 log::info!("🏷️ TypeInference: Creating ViewScan for GraphNode '{}' with inferred label '{}'", node.alias, label);
 
                                 // Get node schema to create ViewScan
-                                if let Ok(node_schema) = graph_schema.get_node_schema(label) {
+                                if let Ok(node_schema) = graph_schema.node_schema(label) {
                                     let full_table_name = format!(
                                         "{}.{}",
                                         node_schema.database, node_schema.table_name

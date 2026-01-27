@@ -747,12 +747,12 @@ impl PatternSchemaContext {
         );
 
         let left_node_schema = graph_schema
-            .get_node_schema_opt(&composite_left_key)
-            .or_else(|| graph_schema.get_node_schema_opt(&left_label))
+            .node_schema_opt(&composite_left_key)
+            .or_else(|| graph_schema.node_schema_opt(&left_label))
             .ok_or_else(|| format!("Could not find left node schema for '{}'", left_label))?;
 
         let right_node_schema = graph_schema
-            .get_node_schema_opt(&right_label)
+            .node_schema_opt(&right_label)
             .ok_or_else(|| format!("Could not find right node schema for '{}'", right_label))?;
 
         // Call analyze with extracted information
