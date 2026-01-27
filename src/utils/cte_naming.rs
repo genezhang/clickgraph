@@ -241,12 +241,12 @@ mod tests {
         assert!(is_generated_cte_name("with_p_cte_1"));
         assert!(is_generated_cte_name("with_a_b_c_cte_5"));
         assert!(is_generated_cte_name("with_cte_1"));
-        
+
         // Base names without counter (used in render plan)
         assert!(is_generated_cte_name("with_p_cte"));
         assert!(is_generated_cte_name("with_a_b_c_cte"));
         assert!(is_generated_cte_name("with_cte"));
-        
+
         // Not CTE names
         assert!(!is_generated_cte_name("user_table"));
         assert!(!is_generated_cte_name("with_p")); // Missing _cte

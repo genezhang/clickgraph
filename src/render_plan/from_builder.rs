@@ -873,7 +873,7 @@ impl LogicalPlan {
                         if counter_str.starts_with('_') {
                             counter_str[1..].parse::<usize>().unwrap_or(0)
                         } else {
-                            0  // Base name without counter
+                            0 // Base name without counter
                         }
                     } else {
                         0
