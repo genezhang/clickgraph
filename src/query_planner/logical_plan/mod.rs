@@ -30,6 +30,7 @@ use crate::{
 use super::plan_ctx::PlanCtx;
 
 pub mod errors;
+pub use errors::LogicalPlanError;
 // pub mod logical_plan;
 mod filter_view;
 pub mod match_clause; // Public for schema_inference to access ViewScan generation functions
@@ -129,7 +130,10 @@ pub fn evaluate_cypher_statement(
         union_type,
     }));
 
-    Ok((union_plan, combined_ctx.unwrap()))
+    let final_ctx = combined_ctx.ok_or_else(|| LogicalPlanError::QueryPlanningError(
+        "Failed to merge plan contexts for UNION".to_string()
+    ))?;
+    Ok((union_plan, final_ctx))
 }
 
 /// Global counter for generating simple, human-readable aliases like t1, t2, t3...

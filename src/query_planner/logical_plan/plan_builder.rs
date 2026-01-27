@@ -139,7 +139,7 @@ pub fn build_logical_plan(
             unwind_clause_ast.alias
         );
         logical_plan =
-            unwind_clause::evaluate_unwind_clause(unwind_clause_ast, logical_plan, &mut plan_ctx);
+            unwind_clause::evaluate_unwind_clause(unwind_clause_ast, logical_plan, &mut plan_ctx)?;
     }
 
     // Process WITH clause before WHERE to create intermediate projections
@@ -319,7 +319,7 @@ fn process_with_clause_chain<'a>(
     if let Some(subsequent_unwind) = &with_clause_ast.subsequent_unwind {
         log::debug!("process_with_clause_chain: Processing subsequent UNWIND clause after WITH");
         logical_plan =
-            unwind_clause::evaluate_unwind_clause(subsequent_unwind, logical_plan, &mut child_ctx);
+            unwind_clause::evaluate_unwind_clause(subsequent_unwind, logical_plan, &mut child_ctx)?;
     }
 
     // Process subsequent MATCH clause if present (e.g., WITH u MATCH (u)-[:FOLLOWS]->(f))

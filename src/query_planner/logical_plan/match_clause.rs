@@ -1437,9 +1437,13 @@ fn traverse_connected_pattern_with_mode<'a>(
             .map(|props| {
                 props
                     .into_iter()
-                    .map(|p| Property::try_from(p).unwrap())
-                    .collect()
+                    .map(|p| Property::try_from(p))
+                    .collect::<Result<Vec<_>, _>>()
             })
+            .transpose()
+            .map_err(|e| LogicalPlanError::QueryPlanningError(
+                format!("Failed to convert start node property: {}", e)
+            ))?
             .unwrap_or_else(Vec::new);
 
         // Extract end node info early - needed for filtering anonymous edge types
@@ -1575,9 +1579,13 @@ fn traverse_connected_pattern_with_mode<'a>(
             .map(|props| {
                 props
                     .into_iter()
-                    .map(|p| Property::try_from(p).unwrap())
-                    .collect()
+                    .map(|p| Property::try_from(p))
+                    .collect::<Result<Vec<_>, _>>()
             })
+            .transpose()
+            .map_err(|e| LogicalPlanError::QueryPlanningError(
+                format!("Failed to convert relationship property: {}", e)
+            ))?
             .unwrap_or_else(Vec::new);
 
         crate::debug_print!(
@@ -1592,9 +1600,13 @@ fn traverse_connected_pattern_with_mode<'a>(
             .map(|props| {
                 props
                     .into_iter()
-                    .map(|p| Property::try_from(p).unwrap())
-                    .collect()
+                    .map(|p| Property::try_from(p))
+                    .collect::<Result<Vec<_>, _>>()
             })
+            .transpose()
+            .map_err(|e| LogicalPlanError::QueryPlanningError(
+                format!("Failed to convert end node property: {}", e)
+            ))?
             .unwrap_or_else(Vec::new);
 
         // if start alias already present in ctx map, it means the current nested connected pattern's start node will be connecting at right side plan and end node will be at the left
@@ -1877,7 +1889,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 log::info!(
                     ">>> Updated '{}' with label: {}",
                     end_node_alias,
-                    end_node_label.as_ref().unwrap()
+                    end_node_label.as_ref().expect("end_node_label was checked to be Some")
                 );
             } else {
                 log::warn!(
@@ -2332,7 +2344,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                                             operands: vec![acc, filter],
                                         })
                                     })
-                                    .unwrap(),
+                                    .expect("node_filters is non-empty, reduce() must return Some"),
                             )
                         } else {
                             None // No filters found

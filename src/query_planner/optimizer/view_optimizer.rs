@@ -85,7 +85,8 @@ impl ViewOptimizer {
                 self.flatten_and_operands(&op.operands, &mut flattened_operands);
 
                 if flattened_operands.len() == 1 {
-                    flattened_operands.into_iter().next().unwrap()
+                    flattened_operands.into_iter().next()
+                        .expect("flattened_operands has len==1, next() must return Some")
                 } else if flattened_operands.len() != op.operands.len() {
                     LogicalExpr::OperatorApplicationExp(OperatorApplication {
                         operator: Operator::And,
