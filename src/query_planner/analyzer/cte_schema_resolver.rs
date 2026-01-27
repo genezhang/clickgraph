@@ -33,25 +33,6 @@ impl CteSchemaResolver {
         Self
     }
 
-    /// Generate CTE name for a WithClause based on its exported aliases
-    /// This matches the naming convention used by the renderer
-    fn generate_cte_name(with_clause: &WithClause, plan_ctx: &mut PlanCtx) -> String {
-        // Sort aliases to ensure consistent naming
-        let mut sorted_aliases = with_clause.exported_aliases.clone();
-        sorted_aliases.sort();
-
-        let cte_counter = plan_ctx.cte_counter;
-        plan_ctx.cte_counter += 1;
-
-        // Format: with_{aliases}_cte_{counter}
-        // Example: with_p_cte_1, with_a_b_cte_2
-        if sorted_aliases.is_empty() {
-            format!("with_cte_{}", cte_counter)
-        } else {
-            format!("with_{}_cte_{}", sorted_aliases.join("_"), cte_counter)
-        }
-    }
-
     /// Process a WithClause and register its schema
     fn register_with_clause_schema(with_clause: &WithClause, plan_ctx: &mut PlanCtx) -> String {
         // Generate CTE name using centralized utility

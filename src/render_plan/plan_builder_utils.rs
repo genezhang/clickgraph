@@ -40,7 +40,7 @@ use crate::render_plan::{
     SelectItems, SkipItem, Union, UnionItems,
 };
 use crate::render_plan::{FromTable, ViewTableRef};
-use crate::utils::cte_naming::generate_cte_name;
+use crate::utils::cte_naming::{generate_cte_name, is_generated_cte_name};
 use log::{self, debug};
 
 // Import ALL helper functions from the dedicated helpers module using glob import
@@ -4207,7 +4207,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
 
     // Check if FROM references a WITH CTE
     if let Some(from_ref) = &plan.from.0 {
-        if from_ref.name.starts_with("with_") && from_ref.name.contains("_cte_") {
+        if is_generated_cte_name(&from_ref.name) {
             // Extract the alias from the FROM clause or the CTE name
             // CTE names are like "with_u2_cte_1" - extract "u2"
             if let Some(alias) = &from_ref.alias {

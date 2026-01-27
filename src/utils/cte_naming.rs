@@ -73,6 +73,44 @@ pub fn generate_cte_base_name(aliases: &[impl AsRef<str>]) -> String {
     }
 }
 
+/// Check if a name is a generated CTE name (matches pattern `with_*_cte_*`).
+///
+/// # Examples
+/// ```
+/// use clickgraph::utils::cte_naming::is_generated_cte_name;
+///
+/// assert!(is_generated_cte_name("with_p_cte_1"));
+/// assert!(is_generated_cte_name("with_a_b_c_cte_5"));
+/// assert!(is_generated_cte_name("with_cte_1"));  // Empty aliases case
+/// assert!(!is_generated_cte_name("with_p_cte"));  // Missing counter
+/// assert!(!is_generated_cte_name("user_table"));
+/// ```
+pub fn is_generated_cte_name(name: &str) -> bool {
+    name.starts_with("with_") && name.contains("_cte_")
+}
+
+/// Extract the base CTE name without counter (e.g., "with_p_cte_1" → "with_p_cte").
+///
+/// Useful for matching across different counter values.
+///
+/// # Examples
+/// ```
+/// use clickgraph::utils::cte_naming::extract_cte_base_name;
+///
+/// assert_eq!(extract_cte_base_name("with_p_cte_1"), Some("with_p_cte".to_string()));
+/// assert_eq!(extract_cte_base_name("with_friends_p_cte_5"), Some("with_friends_p_cte".to_string()));
+/// assert_eq!(extract_cte_base_name("with_cte_1"), Some("with_cte".to_string()));
+/// assert_eq!(extract_cte_base_name("invalid"), None);
+/// ```
+pub fn extract_cte_base_name(name: &str) -> Option<String> {
+    if !is_generated_cte_name(name) {
+        return None;
+    }
+    // Format: with_..._cte_{counter}
+    // Find last occurrence of "_cte_" to strip counter
+    name.rfind("_cte_").map(|pos| name[..pos + 4].to_string())  // +4 for "_cte"
+}
+
 /// Extract aliases from a CTE name.
 ///
 /// Useful for reverse lookups and debugging.
@@ -181,5 +219,33 @@ mod tests {
         let mut sorted = aliases.clone();
         sorted.sort();
         assert_eq!(extracted, sorted);
+    }
+
+    #[test]
+    fn test_is_generated_cte_name() {
+        assert!(is_generated_cte_name("with_p_cte_1"));
+        assert!(is_generated_cte_name("with_a_b_c_cte_5"));
+        assert!(is_generated_cte_name("with_cte_1"));
+        assert!(!is_generated_cte_name("with_p_cte"));  // Missing counter
+        assert!(!is_generated_cte_name("user_table"));
+        assert!(!is_generated_cte_name("cte_1"));  // Missing "with_" prefix
+    }
+
+    #[test]
+    fn test_extract_cte_base_name() {
+        assert_eq!(
+            extract_cte_base_name("with_p_cte_1"),
+            Some("with_p_cte".to_string())
+        );
+        assert_eq!(
+            extract_cte_base_name("with_friends_p_cte_5"),
+            Some("with_friends_p_cte".to_string())
+        );
+        assert_eq!(
+            extract_cte_base_name("with_cte_1"),
+            Some("with_cte".to_string())
+        );
+        assert_eq!(extract_cte_base_name("invalid"), None);
+        assert_eq!(extract_cte_base_name("with_p_cte"), None);  // Missing counter
     }
 }

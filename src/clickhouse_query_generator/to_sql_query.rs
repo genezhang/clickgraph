@@ -16,6 +16,7 @@ use crate::{
         self, clear_all_render_contexts, get_cte_property_mapping, get_relationship_columns,
         is_multi_type_vlp_alias, set_all_render_contexts,
     },
+    utils::cte_naming::is_generated_cte_name,
 };
 use std::collections::HashMap;
 
@@ -218,7 +219,7 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
     // The WITH CTE has already transformed the columns, and the SELECT items reference
     // the WITH CTE columns, not the raw VLP CTE columns.
     if let Some(from_ref) = &plan.from.0 {
-        if from_ref.name.starts_with("with_") && from_ref.name.contains("_cte_") {
+        if is_generated_cte_name(&from_ref.name) {
             log::info!(
                 "🔧 VLP: FROM uses WITH CTE '{}' - skipping VLP SELECT rewriting",
                 from_ref.name
