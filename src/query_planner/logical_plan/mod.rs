@@ -1109,7 +1109,8 @@ impl<'a> From<CypherReturnItem<'a>> for ProjectionItem {
         };
 
         ProjectionItem {
-            expression: LogicalExpr::try_from(value.expression).unwrap(),
+            expression: LogicalExpr::try_from(value.expression)
+                .expect("Failed to convert RETURN expression - invalid Cypher syntax"),
             col_alias,
         }
     }

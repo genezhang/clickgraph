@@ -2821,8 +2821,10 @@ impl GraphJoinInference {
         let (left_label, right_label, rel_schema) =
             if left_label_opt.is_some() && right_label_opt.is_some() {
                 // Both labels provided - use them
-                let left = left_label_opt.unwrap();
-                let right = right_label_opt.unwrap();
+                let (left, right) = match (left_label_opt, right_label_opt) {
+                    (Some(l), Some(r)) => (l, r),
+                    _ => unreachable!("Already checked both are Some"),
+                };
                 let rel = graph_schema
                     .get_rel_schema_with_nodes(&rel_types[0], Some(&left), Some(&right))
                     .ok()?;
@@ -4526,7 +4528,7 @@ impl GraphJoinInference {
                                     .node_id
                                     .columns()
                                     .first()
-                                    .unwrap()
+                                    .expect("Node ID must have at least one column")
                                     .to_string(),
                             ),
                         }),
@@ -4543,7 +4545,7 @@ impl GraphJoinInference {
                         .node_id
                         .columns()
                         .first()
-                        .unwrap()
+                        .expect("Node ID must have at least one column")
                         .to_string(),
                 ),
                 to_id_column: Some("start_id".to_string()),
@@ -4695,7 +4697,7 @@ impl GraphJoinInference {
             // Fixed-length (*1, *2, *3) - continue to generate JOINs
             crate::debug_print!(
                 "    ⚡ Fixed-length pattern (*{}) detected - will generate inline JOINs",
-                spec.exact_hop_count().unwrap()
+                spec.exact_hop_count().expect("Fixed-length pattern must have exact hop count")
             );
             Some(false) // Don't skip, process normally
         }
@@ -4919,7 +4921,7 @@ impl GraphJoinInference {
 
                     // Combine with OR
                     if or_operands.len() == 1 {
-                        or_operands.into_iter().next().unwrap()
+                        or_operands.into_iter().next().expect("Vector with len==1 must have element")
                     } else {
                         LogicalExpr::OperatorApplicationExp(OperatorApplication {
                             operator: Operator::Or,
