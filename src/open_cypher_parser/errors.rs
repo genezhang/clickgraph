@@ -28,10 +28,6 @@ impl<'a> ContextError<&'a str> for OpenCypherParsingError<'a> {
 
 impl fmt::Display for OpenCypherParsingError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // if *&self.errors.last().is_some() {
-        //     let (input, ctx) = &self.errors.last().unwrap();
-        //     writeln!(f, "{}: {:}", ctx, input)?;
-        // }
         for (input, ctx) in &self.errors {
             writeln!(f, "{}: {:}", ctx, input)?;
         }
@@ -42,7 +38,6 @@ impl fmt::Display for OpenCypherParsingError<'_> {
 impl<'a> From<nom::error::Error<&'a str>> for OpenCypherParsingError<'a> {
     fn from(err: nom::error::Error<&'a str>) -> Self {
         OpenCypherParsingError {
-            // errors: vec![(err.input, "nom::error conversion")],
             errors: vec![(err.input, "Unable to parse")],
         }
     }

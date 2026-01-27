@@ -959,22 +959,6 @@ pub fn parse_parameter(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     }
 }
 
-/// Reserved for future use when order-specific expression parsing is needed
-#[allow(dead_code)]
-pub fn parse_parameter_property_access_literal_variable_expression(
-    input: &'_ str,
-) -> IResult<&'_ str, Expression<'_>> {
-    // println!("Input in parse_literal_variable_parameter_expression {:?}", input);
-
-    let (input, expression) = alt((
-        parse_parameter,
-        parse_property_access,
-        parse_literal_or_variable_expression,
-    ))
-    .parse(input)?;
-    Ok((input, expression))
-}
-
 /// Check if a string is a reserved Cypher keyword that cannot be used as a variable
 /// at the start of an expression. This catches cases like "WHERE AND ..." where AND
 /// is incorrectly treated as a variable name.

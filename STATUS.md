@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: January 25, 2026*
+*Updated: January 26, 2026*
 
 ## Current Version
 
@@ -8,6 +8,7 @@
 
 **Test Status**:
 - ✅ Unit tests: 787/787 passing (100%)
+- ✅ Parser tests: 184/184 passing (100%, 2 ignored)
 - ✅ Integration matrix tests: 233/273 passing (85%) ⬆️ **IMPROVED**
   - Fixed EXISTS subquery schema context issue (thread_local vs task_local)
   - Fixed WITH+aggregation scalar export handling
@@ -18,7 +19,9 @@
 - ✅ EXISTS subquery tests: 3/3 passing (100%) ✅ **ALL FIXED**
 - ✅ All `test_collect` tests passing (10/10)
 
-**Code Quality** (New - January 22, 2026):
+**Code Quality** (Updated - January 26, 2026):
+- ✅ Parser module: Grade A (comprehensive audit complete)
+- ✅ Recursion depth limits: MAX_RELATIONSHIP_CHAIN_DEPTH = 50 (DoS protection)
 - ✅ Comprehensive refactoring complete (5 phases)
 - ✅ 440+ boilerplate lines eliminated
 - ✅ 7 reusable components created (traits, structs, factories, helpers)
@@ -33,6 +36,25 @@
 - Business Intelligence: 4/20 (20%) - BI-5, BI-11, BI-12, BI-19 working
 
 **Recent Fixes**:
+
+0. **Jan 26, 2026 - Parser Security: Recursion Depth Limits** ✅ IMPLEMENTED:
+   - **Problem**: Unbounded recursion in `parse_consecutive_relationships()` vulnerable to stack overflow DoS
+     - Malicious query: `()-[]->()-[]->...` (50+ relationship hops) could crash parser
+   - **Solution**: Added `MAX_RELATIONSHIP_CHAIN_DEPTH = 50` constant
+     - Created `parse_consecutive_relationships_with_depth(input, depth)` wrapper function
+     - Returns `Err(nom::Err::Failure(ErrorKind::TooLarge))` when depth > 50
+     - Public API `parse_consecutive_relationships()` calls with depth=0
+   - **Test Coverage**: 4 comprehensive tests added
+     1. `test_reasonable_relationship_chain_depth` - 10 relationships ✅
+     2. `test_maximum_relationship_chain_depth` - 50 at limit ✅
+     3. `test_exceeds_maximum_relationship_chain_depth` - 51 relationships (error) ✅
+     4. `test_depth_limit_error_message_clarity` - 100 relationships (error) ✅
+   - **Impact**: Parser now protected against DoS attacks via deep recursion
+   - **Test Results**: 184/184 parser tests passing (2 ignored)
+   - **Files Modified**: 
+     - `src/open_cypher_parser/path_pattern.rs` (+60 lines: depth tracking + 4 tests)
+   - **Documentation**: 
+     - `docs/audits/PARSER_AUDIT_2026_01_26.md` (updated status)
 
 1. **Jan 25, 2026 - WITH Clause Object Passing & Property Renaming** ✅ FIXED:
    - **Problem**: Test `test_with_clause_property_renaming` failed with CTE name mismatch errors

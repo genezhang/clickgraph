@@ -90,6 +90,7 @@ archive/
 notes/
 docs/
 docs1/
+*.md
 
 # Keep only user-facing docs (negation patterns)
 !docs/getting-started.md
@@ -110,6 +111,13 @@ docs1/
 !docs/images/**
 !docs/features/
 !docs/features/**
+!README.md
+!ROADMAP.md
+!KNOWN_ISSUES.md
+!CHANGELOG.md
+!DEVELOPMENT_PROCESS.md
+!DEV_QUICK_START.md
+!TESTING.md
 
 # Development assistants
 .claude/
