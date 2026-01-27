@@ -34,15 +34,9 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompositeKeyError {
     /// Invalid number of parts in composite key
-    InvalidFormat {
-        key: String,
-        reason: String,
-    },
+    InvalidFormat { key: String, reason: String },
     /// Empty component in composite key
-    EmptyComponent {
-        key: String,
-        component: String,
-    },
+    EmptyComponent { key: String, component: String },
 }
 
 impl fmt::Display for CompositeKeyError {

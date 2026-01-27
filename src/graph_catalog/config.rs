@@ -11,7 +11,9 @@ use thiserror::Error;
 /// Error type for identifier operations
 #[derive(Debug, Clone, Error, PartialEq)]
 pub enum IdentifierError {
-    #[error("Cannot access single column: identifier is composite. Use columns() for safe access.")]
+    #[error(
+        "Cannot access single column: identifier is composite. Use columns() for safe access."
+    )]
     CompositeIdentifier,
 }
 
@@ -57,7 +59,7 @@ impl Identifier {
     }
 
     /// Get the single column name.
-    /// 
+    ///
     /// Returns error if called on composite identifier.
     /// For safe composite handling, use `columns()` or `to_sql_tuple()` instead.
     pub fn as_single(&self) -> Result<&str, IdentifierError> {
@@ -1168,7 +1170,9 @@ impl GraphSchemaConfig {
                     });
                 }
 
-                if node.label_value.is_none() || node.label_value.as_ref().map_or(true, |v| v.is_empty()) {
+                if node.label_value.is_none()
+                    || node.label_value.as_ref().map_or(true, |v| v.is_empty())
+                {
                     return Err(GraphSchemaError::InvalidConfig {
                         message: format!(
                             "Node '{}': label_column '{}' requires label_value to be specified. \
@@ -1190,7 +1194,9 @@ impl GraphSchemaConfig {
                     });
                 }
 
-                if node.label_column.is_none() || node.label_column.as_ref().map_or(true, |c| c.is_empty()) {
+                if node.label_column.is_none()
+                    || node.label_column.as_ref().map_or(true, |c| c.is_empty())
+                {
                     return Err(GraphSchemaError::InvalidConfig {
                         message: format!(
                             "Node '{}': label_value '{}' requires label_column to be specified. \

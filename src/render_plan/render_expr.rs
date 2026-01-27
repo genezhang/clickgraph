@@ -105,29 +105,29 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
                     let from_col = &rel_schema.from_id; // from_id is the FK column
 
                     // Get the start node's ID column from its label
-                    let start_id_sql =
-                        if let LogicalPlan::GraphNode(start_node) = graph_rel.left.as_ref() {
-                            if let Some(label) = &start_node.label {
-                                let node_schema =
-                                    schema.node_schema_opt(label).ok_or_else(|| {
-                                        RenderBuildError::NodeSchemaNotFound(label.clone())
-                                    })?;
-                                node_schema.node_id.sql_tuple(start_alias)
-                            } else {
-                                // No label - infer from relationship schema
-                                let node_type = &rel_schema.from_node;
-                                let node_schema =
-                                    schema.node_schema_opt(node_type).ok_or_else(|| {
-                                        RenderBuildError::NodeSchemaNotFound(node_type.clone())
-                                    })?;
-                                node_schema.node_id.sql_tuple(start_alias)
-                            }
+                    let start_id_sql = if let LogicalPlan::GraphNode(start_node) =
+                        graph_rel.left.as_ref()
+                    {
+                        if let Some(label) = &start_node.label {
+                            let node_schema = schema.node_schema_opt(label).ok_or_else(|| {
+                                RenderBuildError::NodeSchemaNotFound(label.clone())
+                            })?;
+                            node_schema.node_id.sql_tuple(start_alias)
                         } else {
-                            // Not a GraphNode - error, can't infer
-                            return Err(RenderBuildError::InvalidRenderPlan(
-                                "EXISTS pattern left side is not a GraphNode".to_string(),
-                            ));
-                        };
+                            // No label - infer from relationship schema
+                            let node_type = &rel_schema.from_node;
+                            let node_schema =
+                                schema.node_schema_opt(node_type).ok_or_else(|| {
+                                    RenderBuildError::NodeSchemaNotFound(node_type.clone())
+                                })?;
+                            node_schema.node_id.sql_tuple(start_alias)
+                        }
+                    } else {
+                        // Not a GraphNode - error, can't infer
+                        return Err(RenderBuildError::InvalidRenderPlan(
+                            "EXISTS pattern left side is not a GraphNode".to_string(),
+                        ));
+                    };
 
                     // Generate the EXISTS SQL
                     // EXISTS (SELECT 1 FROM database.edge_table WHERE edge_table.from_id = outer.node_id)
@@ -459,10 +459,9 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                     } else {
                         // No label in pattern - infer from relationship's from_node
                         let node_type = &rel_schema.from_node;
-                        let node_schema =
-                            schema.node_schema_opt(node_type).ok_or_else(|| {
-                                RenderBuildError::NodeSchemaNotFound(node_type.clone())
-                            })?;
+                        let node_schema = schema.node_schema_opt(node_type).ok_or_else(|| {
+                            RenderBuildError::NodeSchemaNotFound(node_type.clone())
+                        })?;
                         node_schema.node_id.sql_tuple(start_alias)
                     };
 
@@ -478,10 +477,9 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                     } else {
                         // No label in pattern - infer from relationship's to_node
                         let node_type = &rel_schema.to_node;
-                        let node_schema =
-                            schema.node_schema_opt(node_type).ok_or_else(|| {
-                                RenderBuildError::NodeSchemaNotFound(node_type.clone())
-                            })?;
+                        let node_schema = schema.node_schema_opt(node_type).ok_or_else(|| {
+                            RenderBuildError::NodeSchemaNotFound(node_type.clone())
+                        })?;
                         end_alias
                             .as_ref()
                             .map(|alias| node_schema.node_id.sql_tuple(alias))
@@ -625,10 +623,9 @@ fn generate_not_exists_from_path_pattern(
                     } else {
                         // Infer from relationship's from_node
                         let node_type = &rel_schema.from_node;
-                        let node_schema =
-                            schema.node_schema_opt(node_type).ok_or_else(|| {
-                                RenderBuildError::NodeSchemaNotFound(node_type.clone())
-                            })?;
+                        let node_schema = schema.node_schema_opt(node_type).ok_or_else(|| {
+                            RenderBuildError::NodeSchemaNotFound(node_type.clone())
+                        })?;
                         node_schema.node_id.sql_tuple(start_alias)
                     };
 
@@ -642,10 +639,9 @@ fn generate_not_exists_from_path_pattern(
                     } else {
                         // Infer from relationship's to_node
                         let node_type = &rel_schema.to_node;
-                        let node_schema =
-                            schema.node_schema_opt(node_type).ok_or_else(|| {
-                                RenderBuildError::NodeSchemaNotFound(node_type.clone())
-                            })?;
+                        let node_schema = schema.node_schema_opt(node_type).ok_or_else(|| {
+                            RenderBuildError::NodeSchemaNotFound(node_type.clone())
+                        })?;
                         end_alias
                             .map(|alias| node_schema.node_id.sql_tuple(alias))
                             .unwrap_or_default()

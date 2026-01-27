@@ -1198,9 +1198,9 @@ impl ProjectionTagging {
                                     let table_schema = graph_schema
                                         .node_schema(&table_label)
                                         .map_err(|e| AnalyzerError::GraphSchema {
-                                        pass: Pass::ProjectionTagging,
-                                        source: e,
-                                    })?;
+                                            pass: Pass::ProjectionTagging,
+                                            source: e,
+                                        })?;
                                     let table_node_id = table_schema
                                         .node_id
                                         .columns()

@@ -980,9 +980,7 @@ impl FilterTagging {
                                         }
                                     } else {
                                         // For regular (non-denormalized) nodes, use the node_id column directly
-                                        if let Ok(node_schema) =
-                                            graph_schema.node_schema(&label)
-                                        {
+                                        if let Ok(node_schema) = graph_schema.node_schema(&label) {
                                             Some(
                                                 node_schema
                                                     .node_id

@@ -353,7 +353,7 @@ impl NodeIdSchema {
     }
 
     /// Get the column name for single-column identifiers.
-    /// 
+    ///
     /// **Panics** if called on composite identifier.
     /// For composite-safe access, use `columns()` or `sql_tuple()`.
     pub fn column(&self) -> &str {
@@ -556,7 +556,10 @@ impl GraphSchema {
         for composite_key in relationships.keys() {
             let type_name = if composite_key.contains("::") {
                 // This is a composite key - extract the type name (before first ::)
-                composite_key.split("::").next().unwrap_or(composite_key.as_str())
+                composite_key
+                    .split("::")
+                    .next()
+                    .unwrap_or(composite_key.as_str())
             } else {
                 // This is a simple key - skip if we have composite keys for this type
                 if composite_types.contains(composite_key) {

@@ -52,9 +52,7 @@ use crate::graph_catalog::graph_schema::{NodeSchema, RelationshipSchema};
 /// }
 /// ```
 pub fn is_node_denormalized(node: &NodeSchema) -> bool {
-    node.is_denormalized
-        || node.from_properties.is_some()
-        || node.to_properties.is_some()
+    node.is_denormalized || node.from_properties.is_some() || node.to_properties.is_some()
 }
 
 /// Check if a node has denormalized properties when it appears as a specific side
@@ -114,7 +112,8 @@ pub fn rel_has_both_nodes_denormalized(rel: &RelationshipSchema) -> bool {
     rel.from_node_properties
         .as_ref()
         .map_or(false, |props| !props.is_empty())
-        && rel.to_node_properties
+        && rel
+            .to_node_properties
             .as_ref()
             .map_or(false, |props| !props.is_empty())
 }
@@ -130,7 +129,8 @@ pub fn rel_has_any_denormalized(rel: &RelationshipSchema) -> bool {
     rel.from_node_properties
         .as_ref()
         .map_or(false, |props| !props.is_empty())
-        || rel.to_node_properties
+        || rel
+            .to_node_properties
             .as_ref()
             .map_or(false, |props| !props.is_empty())
 }
