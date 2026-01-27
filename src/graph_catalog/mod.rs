@@ -30,7 +30,9 @@ pub use config::{GraphSchemaConfig, GraphSchemaDefinition};
 pub use engine_detection::{detect_table_engine, TableEngine};
 pub use filter_parser::SchemaFilter;
 pub use graph_schema::{
-    Direction, GraphSchema, GraphSchemaElement, NodeIdSchema, NodeSchema, RelationshipSchema,
+    classify_edge_table_pattern, edge_has_node_properties, is_fully_denormalized_edge_table,
+    is_node_denormalized_on_edge, Direction, EdgeTablePattern, GraphSchema, GraphSchemaElement,
+    NodeIdSchema, NodeSchema, RelationshipSchema,
 };
 pub use node_classification::{
     has_denormalized_properties_on_side, is_node_denormalized, rel_has_any_denormalized,
