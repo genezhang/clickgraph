@@ -73,20 +73,34 @@ pub fn generate_cte_base_name(aliases: &[impl AsRef<str>]) -> String {
     }
 }
 
-/// Check if a name is a generated CTE name (matches pattern `with_*_cte_*`).
+/// Check if a name is a generated CTE name (matches pattern `with_*_cte` or `with_*_cte_*`).
+///
+/// Accepts both:
+/// - Full names with counter: `with_p_cte_1` (from query planner with counter)
+/// - Base names without counter: `with_p_cte` (from render plan without counter access)
 ///
 /// # Examples
 /// ```
 /// use clickgraph::utils::cte_naming::is_generated_cte_name;
 ///
+/// // Full names with counter
 /// assert!(is_generated_cte_name("with_p_cte_1"));
 /// assert!(is_generated_cte_name("with_a_b_c_cte_5"));
 /// assert!(is_generated_cte_name("with_cte_1"));  // Empty aliases case
-/// assert!(!is_generated_cte_name("with_p_cte"));  // Missing counter
+///
+/// // Base names without counter (used in render plan)
+/// assert!(is_generated_cte_name("with_p_cte"));
+/// assert!(is_generated_cte_name("with_a_b_c_cte"));
+/// assert!(is_generated_cte_name("with_cte"));
+///
+/// // Not CTE names
 /// assert!(!is_generated_cte_name("user_table"));
+/// assert!(!is_generated_cte_name("with_p"));  // Missing _cte
+/// assert!(!is_generated_cte_name("cte_1"));  // Missing "with_" prefix
 /// ```
 pub fn is_generated_cte_name(name: &str) -> bool {
-    name.starts_with("with_") && name.contains("_cte_")
+    // Must start with "with_" and contain "_cte" (with or without counter)
+    name.starts_with("with_") && name.contains("_cte")
 }
 
 /// Extract the base CTE name without counter (e.g., "with_p_cte_1" → "with_p_cte").
@@ -223,11 +237,19 @@ mod tests {
 
     #[test]
     fn test_is_generated_cte_name() {
+        // Full names with counter
         assert!(is_generated_cte_name("with_p_cte_1"));
         assert!(is_generated_cte_name("with_a_b_c_cte_5"));
         assert!(is_generated_cte_name("with_cte_1"));
-        assert!(!is_generated_cte_name("with_p_cte")); // Missing counter
+        
+        // Base names without counter (used in render plan)
+        assert!(is_generated_cte_name("with_p_cte"));
+        assert!(is_generated_cte_name("with_a_b_c_cte"));
+        assert!(is_generated_cte_name("with_cte"));
+        
+        // Not CTE names
         assert!(!is_generated_cte_name("user_table"));
+        assert!(!is_generated_cte_name("with_p")); // Missing _cte
         assert!(!is_generated_cte_name("cte_1")); // Missing "with_" prefix
     }
 

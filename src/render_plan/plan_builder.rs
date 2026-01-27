@@ -1368,7 +1368,10 @@ impl RenderPlanBuilder for LogicalPlan {
                 });
 
                 // Generate CTE base name using centralized utility
-                // Note: to_render_plan doesn't have access to counter, so we use base name
+                // Note: to_render_plan doesn't have access to counter, so we use base name.
+                // This creates names like "with_p_cte" (without counter suffix).
+                // The counter is only added during query planning when available.
+                // This is safe because base names are still recognized by is_generated_cte_name().
                 let cte_name = generate_cte_base_name(&with.exported_aliases);
                 let cte = Cte::new(cte_name.clone(), cte_content, false);
                 let ctes = CteItems(vec![cte]);
