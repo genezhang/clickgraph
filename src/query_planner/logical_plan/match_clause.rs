@@ -108,10 +108,10 @@ fn infer_node_label_from_schema(
 /// - Schema: FLIGHT has from_node=Airport, to_node=Airport
 /// - Result: Both nodes inferred as Airport
 ///
-// REMOVED: Old parsing-time label inference (now handled by TypeInference analyzer pass)
-// The TypeInference pass runs after parsing and provides more robust inference
-// that works across WITH boundaries and handles both node labels and edge types.
-
+/// REMOVED: Old parsing-time label inference (now handled by TypeInference analyzer pass)
+/// The TypeInference pass runs after parsing and provides more robust inference
+/// that works across WITH boundaries and handles both node labels and edge types.
+///
 /// Infer relationship type from typed node labels when edge is untyped.
 ///
 /// Handles two cases:
