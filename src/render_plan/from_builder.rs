@@ -35,6 +35,7 @@
 
 use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
 use crate::query_planner::logical_plan::LogicalPlan;
+use crate::utils::cte_naming::{extract_cte_base_name, is_generated_cte_name};
 use log::debug;
 use std::sync::Arc;
 
@@ -611,7 +612,7 @@ impl LogicalPlan {
         fn is_cte_reference(plan: &LogicalPlan) -> bool {
             match plan {
                 LogicalPlan::WithClause(_) => true,
-                LogicalPlan::ViewScan(vs) => vs.source_table.starts_with("with_"),
+                LogicalPlan::ViewScan(vs) => is_generated_cte_name(&vs.source_table),
                 LogicalPlan::GraphNode(gn) => is_cte_reference(&gn.input),
                 LogicalPlan::Projection(p) => is_cte_reference(&p.input),
                 LogicalPlan::Filter(f) => is_cte_reference(&f.input),
@@ -863,10 +864,17 @@ impl LogicalPlan {
                 // This is the most recent WITH clause's output
                 let mut best_cte: Option<(&String, &String, usize)> = None;
                 for (alias, cte_name) in &graph_joins.cte_references {
-                    // Extract sequence number from CTE name
+                    // Extract sequence number from CTE name using centralized utility
                     // Format: "with_tag_cte_1" or "with_inValidPostCount_postCount_tag_cte_1"
-                    let seq_num = if let Some(pos) = cte_name.rfind("_cte_") {
-                        cte_name[pos + 5..].parse::<usize>().unwrap_or(0)
+                    // Or base name without counter: "with_tag_cte" or "with_inValidPostCount_postCount_tag_cte"
+                    let seq_num = if let Some(base_name) = extract_cte_base_name(cte_name) {
+                        // Counter is everything after base_name
+                        let counter_str = &cte_name[base_name.len()..];
+                        if counter_str.starts_with('_') {
+                            counter_str[1..].parse::<usize>().unwrap_or(0)
+                        } else {
+                            0 // Base name without counter
+                        }
                     } else {
                         0
                     };

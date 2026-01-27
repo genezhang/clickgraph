@@ -7,7 +7,7 @@ use crate::query_planner::logical_plan::{
     GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem, ViewScan,
 };
 use crate::query_planner::plan_ctx::PlanCtx;
-use crate::utils::cte_naming::generate_cte_name;
+use crate::utils::cte_naming::{generate_cte_base_name, generate_cte_name};
 use log::debug;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -1367,7 +1367,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
                 });
 
-                let cte_name = format!("with_{}_cte", with.exported_aliases.join("_"));
+                // Generate CTE base name using centralized utility
+                // Note: to_render_plan doesn't have access to counter, so we use base name.
+                // This creates names like "with_p_cte" (without counter suffix).
+                // The counter is only added during query planning when available.
+                // This is safe because base names are still recognized by is_generated_cte_name().
+                let cte_name = generate_cte_base_name(&with.exported_aliases);
                 let cte = Cte::new(cte_name.clone(), cte_content, false);
                 let ctes = CteItems(vec![cte]);
 
