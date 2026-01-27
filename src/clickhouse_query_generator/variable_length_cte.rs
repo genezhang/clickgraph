@@ -515,8 +515,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     if let Some(ref constraint_expr) = rel_schema.constraints {
                         // Get node schemas for from/to nodes
                         if let (Some(from_node_schema), Some(to_node_schema)) = (
-                            self.schema.get_node_schema_opt(&rel_schema.from_node),
-                            self.schema.get_node_schema_opt(&rel_schema.to_node),
+                            self.schema.node_schema_opt(&rel_schema.from_node),
+                            self.schema.node_schema_opt(&rel_schema.to_node),
                         ) {
                             // Use provided aliases or fall back to defaults
                             let actual_from_alias = from_alias.unwrap_or(&self.start_node_alias);
@@ -743,7 +743,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         );
 
         // For denormalized nodes, find the node schema that points to our relationship table
-        let node_schemas = self.schema.get_nodes_schemas();
+        let node_schemas = self.schema.all_node_schemas();
         eprintln!(
             "🔍 MAP:   Found {} node schemas in total",
             node_schemas.len()

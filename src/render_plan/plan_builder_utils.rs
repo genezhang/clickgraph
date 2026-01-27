@@ -3389,7 +3389,7 @@ pub fn get_node_id_column_for_alias_with_schema(
     let table_name = find_table_for_alias(plan, alias)?;
 
     // Look up the node schema
-    let node_schema = schema.get_node_schema(&table_name).ok()?;
+    let node_schema = schema.node_schema(&table_name).ok()?;
 
     // Return first ID column
     node_schema.node_id.columns().first().map(|s| s.to_string())
@@ -5203,7 +5203,7 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
             label,
             alias
         );
-        if let Some(node_schema) = schema.get_node_schema_opt(&label) {
+        if let Some(node_schema) = schema.node_schema_opt(&label) {
             // Handle both single and composite node_id
             if node_schema.node_id.is_composite() {
                 // For composite IDs, return multiple PropertyAccessExp (one per column)

@@ -2369,7 +2369,7 @@ mod group_membership_tests {
             .to_graph_schema()
             .expect("Failed to convert to GraphSchema");
 
-        println!("GraphSchema nodes: {}", schema.get_nodes_schemas().len());
+        println!("GraphSchema nodes: {}", schema.all_node_schemas().len());
         println!(
             "GraphSchema relationships: {}",
             schema.get_relationships_schemas().len()
@@ -2577,7 +2577,7 @@ graph_schema:
             .expect("Failed to convert composite schema to GraphSchema");
 
         let node_schema = schema
-            .get_node_schema_opt("Account")
+            .node_schema_opt("Account")
             .expect("Account node should exist");
 
         // Verify NodeIdSchema has composite ID

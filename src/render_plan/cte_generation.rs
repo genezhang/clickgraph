@@ -441,7 +441,7 @@ pub(crate) fn extract_var_len_properties(
                                     // TODO(schema-threading): Hardcoded "default" - should use context.schema
                                     if let Some(schema) = schemas.get("default") {
                                         if let Some(node_schema) =
-                                            schema.get_nodes_schemas().get(node_label)
+                                            schema.all_node_schemas().get(node_label)
                                         {
                                             // Create a property for each mapping
                                             for (prop_name, prop_value) in
@@ -716,7 +716,7 @@ pub fn map_property_to_column_with_relationship_context(
         // Log the schema that is being used (will help debug the root cause)
         schemas
             .values()
-            .find(|s| s.get_nodes_schemas().contains_key(node_label))
+            .find(|s| s.all_node_schemas().contains_key(node_label))
             .ok_or_else(|| {
                 let available_schemas: Vec<String> = schemas.keys().map(|s| s.clone()).collect();
                 let msg = format!(
@@ -737,9 +737,9 @@ pub fn map_property_to_column_with_relationship_context(
     };
 
     // Get the node schema first
-    let node_schema = schema.get_nodes_schemas().get(node_label).ok_or_else(|| {
+    let node_schema = schema.all_node_schemas().get(node_label).ok_or_else(|| {
         let available: Vec<String> = schema
-            .get_nodes_schemas()
+            .all_node_schemas()
             .keys()
             .map(|s| s.clone())
             .collect();
@@ -877,7 +877,7 @@ fn get_node_schema_by_table<'a>(
     schema: &'a GraphSchema,
     table_name: &str,
 ) -> Option<(&'a str, &'a crate::graph_catalog::graph_schema::NodeSchema)> {
-    for (label, node_schema) in schema.get_nodes_schemas() {
+    for (label, node_schema) in schema.all_node_schemas() {
         if node_schema.table_name == table_name {
             return Some((label.as_str(), node_schema));
         }

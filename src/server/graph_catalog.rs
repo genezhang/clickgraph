@@ -282,7 +282,7 @@ pub async fn initialize_global_schema(
             Ok(schema) => {
                 println!("✓ Successfully loaded schema from database");
 
-                let nodes_map = schema.get_nodes_schemas();
+                let nodes_map = schema.all_node_schemas();
                 let rels_map = schema.get_relationships_schemas();
 
                 if nodes_map.is_empty() && rels_map.is_empty() {
@@ -699,10 +699,10 @@ pub async fn validate_schema(graph_schema_element: &Vec<GraphSchemaElement>) -> 
                 .expect("Default schema not found");
 
             if !graph_schema_lock
-                .get_nodes_schemas()
+                .all_node_schemas()
                 .contains_key(&relationship_schema.from_node)
                 || !graph_schema_lock
-                    .get_nodes_schemas()
+                    .all_node_schemas()
                     .contains_key(&relationship_schema.to_node)
             {
                 return Err("From and To node tables must be present before creating a relationship between them".to_string());

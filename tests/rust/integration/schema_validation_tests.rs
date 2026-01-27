@@ -40,7 +40,7 @@ relationships:
         assert!(result.is_ok(), "Basic schema should validate successfully");
 
         let schema = result.unwrap();
-        assert!(schema.get_nodes_schemas().contains_key("User"));
+        assert!(schema.all_node_schemas().contains_key("User"));
         assert!(schema.get_relationship_schemas().contains_key("FOLLOWS"));
     }
 
@@ -108,11 +108,11 @@ nodes:
         let schema1 = result1.unwrap();
         let schema2 = result2.unwrap();
 
-        assert!(schema1.get_nodes_schemas().contains_key("User"));
-        assert!(!schema1.get_nodes_schemas().contains_key("Product"));
+        assert!(schema1.all_node_schemas().contains_key("User"));
+        assert!(!schema1.all_node_schemas().contains_key("Product"));
 
-        assert!(schema2.get_nodes_schemas().contains_key("Product"));
-        assert!(!schema2.get_nodes_schemas().contains_key("User"));
+        assert!(schema2.all_node_schemas().contains_key("Product"));
+        assert!(!schema2.all_node_schemas().contains_key("User"));
     }
 
     /// Test schema with view parameters
@@ -135,7 +135,7 @@ nodes:
         assert!(result.is_ok(), "Schema with view parameters should validate");
 
         let schema = result.unwrap();
-        let user_node = schema.get_nodes_schemas().get("TenantUser").unwrap();
+        let user_node = schema.all_node_schemas().get("TenantUser").unwrap();
         assert_eq!(user_node.view_parameters, Some(vec!["tenant_id".to_string()]));
     }
 

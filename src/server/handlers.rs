@@ -1065,7 +1065,7 @@ pub async fn list_schemas_handler(
 
     for name in schema_names {
         if let Ok(schema) = graph_catalog::get_graph_schema_by_name(&name).await {
-            let node_count = schema.get_nodes_schemas().len();
+            let node_count = schema.all_node_schemas().len();
             let relationship_count = schema.get_relationships_schemas().len();
             schemas_info.push(SchemaInfo {
                 name,
@@ -1120,14 +1120,14 @@ pub async fn get_schema_handler(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     match graph_catalog::get_graph_schema_by_name(&schema_name).await {
         Ok(schema) => {
-            let node_count = schema.get_nodes_schemas().len();
+            let node_count = schema.all_node_schemas().len();
             let relationship_count = schema.get_relationships_schemas().len();
 
             Ok(Json(serde_json::json!({
                 "schema_name": schema_name,
                 "node_types": node_count,
                 "relationship_types": relationship_count,
-                "nodes": schema.get_nodes_schemas().keys().collect::<Vec<_>>(),
+                "nodes": schema.all_node_schemas().keys().collect::<Vec<_>>(),
                 "relationships": schema.get_relationships_schemas().keys().collect::<Vec<_>>()
             })))
         }

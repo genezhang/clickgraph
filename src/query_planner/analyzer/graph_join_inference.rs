@@ -2871,11 +2871,11 @@ impl GraphJoinInference {
 
         // Try composite key first, fallback to label-only
         let left_node_schema = graph_schema
-            .get_node_schema_opt(&composite_left_key)
-            .or_else(|| graph_schema.get_node_schema_opt(&left_label))?;
+            .node_schema_opt(&composite_left_key)
+            .or_else(|| graph_schema.node_schema_opt(&left_label))?;
         let right_node_schema = graph_schema
-            .get_node_schema_opt(&composite_right_key)
-            .or_else(|| graph_schema.get_node_schema_opt(&right_label))?;
+            .node_schema_opt(&composite_right_key)
+            .or_else(|| graph_schema.node_schema_opt(&right_label))?;
 
         crate::debug_print!(
             "    🔍 Node schema lookup: left='{}' → '{}', right='{}' → '{}'",
@@ -5428,8 +5428,8 @@ impl GraphJoinInference {
         );
 
         let node_schema = graph_schema
-            .get_node_schema_opt(&composite_key)
-            .or_else(|| graph_schema.get_node_schema_opt(&node_label))
+            .node_schema_opt(&composite_key)
+            .or_else(|| graph_schema.node_schema_opt(&node_label))
             .ok_or_else(|| {
                 AnalyzerError::NodeLabelNotFound(format!(
                     "{} (composite: {})",

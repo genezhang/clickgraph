@@ -40,8 +40,8 @@ pub struct GraphContext<'a> {
 
 impl<'a> GraphContext<'a> {
     /// Get schema for a node table
-    pub fn get_node_schema(&self, table_name: &str) -> Option<&'a NodeSchema> {
-        self.schema.get_node_schema(table_name).ok()
+    pub fn node_schema(&self, table_name: &str) -> Option<&'a NodeSchema> {
+        self.schema.node_schema(table_name).ok()
     }
 
     /// Get schema for a relationship table
@@ -199,7 +199,7 @@ pub fn get_graph_context<'a>(
 
     let left_schema =
         graph_schema
-            .get_node_schema(&left_label)
+            .node_schema(&left_label)
             .map_err(|e| AnalyzerError::GraphSchema {
                 pass: pass.clone(),
                 source: e,
@@ -220,7 +220,7 @@ pub fn get_graph_context<'a>(
         left_schema
     } else {
         graph_schema
-            .get_node_schema(&right_label)
+            .node_schema(&right_label)
             .map_err(|e| AnalyzerError::GraphSchema {
                 pass: pass.clone(),
                 source: e,

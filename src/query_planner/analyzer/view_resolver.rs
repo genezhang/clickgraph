@@ -37,7 +37,7 @@ impl<'a> ViewResolver<'a> {
         }
 
         self.schema
-            .get_node_schema(label)
+            .node_schema(label)
             .map_err(|_| AnalyzerError::NodeLabelNotFound(label.to_string()))
     }
 
@@ -77,7 +77,7 @@ impl<'a> ViewResolver<'a> {
         // Try to get the node schema and look up the property mapping
         let node_schema = self
             .schema
-            .get_node_schema(label)
+            .node_schema(label)
             .map_err(|_| AnalyzerError::NodeLabelNotFound(label.to_string()))?;
 
         // Try explicit property_mappings first
