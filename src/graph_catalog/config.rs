@@ -6,6 +6,14 @@ use super::schema_validator::SchemaValidator;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use std::collections::HashMap;
+use thiserror::Error;
+
+/// Error type for identifier operations
+#[derive(Debug, Clone, Error, PartialEq)]
+pub enum IdentifierError {
+    #[error("Cannot access single column: identifier is composite. Use columns() for safe access.")]
+    CompositeIdentifier,
+}
 
 /// Multi-schema configuration wrapper
 /// Supports loading multiple schemas from a single YAML file
@@ -48,11 +56,14 @@ impl Identifier {
         matches!(self, Identifier::Composite(_))
     }
 
-    /// Get the single column name (panics if composite)
-    pub fn as_single(&self) -> &str {
+    /// Get the single column name.
+    /// 
+    /// Returns error if called on composite identifier.
+    /// For safe composite handling, use `columns()` or `to_sql_tuple()` instead.
+    pub fn as_single(&self) -> Result<&str, IdentifierError> {
         match self {
-            Identifier::Single(col) => col.as_str(),
-            Identifier::Composite(_) => panic!("Called as_single() on composite identifier"),
+            Identifier::Single(col) => Ok(col.as_str()),
+            Identifier::Composite(_) => Err(IdentifierError::CompositeIdentifier),
         }
     }
 
@@ -1099,6 +1110,9 @@ impl GraphSchemaConfig {
             });
         }
 
+        // Validate polymorphic node configurations (label_column + label_value consistency)
+        self.validate_polymorphic_nodes()?;
+
         // Check for duplicate node labels ON THE SAME TABLE
         // Same label on different tables is allowed (multi-table denormalization)
         let mut seen_table_labels = std::collections::HashSet::new();
@@ -1136,6 +1150,57 @@ impl GraphSchemaConfig {
 
         // Validate edge constraints
         self.validate_edge_constraints()?;
+
+        Ok(())
+    }
+
+    /// Validate polymorphic node configurations (label_column/label_value consistency)
+    fn validate_polymorphic_nodes(&self) -> Result<(), GraphSchemaError> {
+        for node in &self.graph_schema.nodes {
+            // If label_column is specified, label_value MUST also be specified
+            if let Some(ref label_col) = node.label_column {
+                if label_col.is_empty() {
+                    return Err(GraphSchemaError::InvalidConfig {
+                        message: format!(
+                            "Node '{}': label_column cannot be empty. Remove it or provide a valid column name.",
+                            node.label
+                        ),
+                    });
+                }
+
+                if node.label_value.is_none() || node.label_value.as_ref().map_or(true, |v| v.is_empty()) {
+                    return Err(GraphSchemaError::InvalidConfig {
+                        message: format!(
+                            "Node '{}': label_column '{}' requires label_value to be specified. \
+                            This value identifies which rows represent this node type.",
+                            node.label, label_col
+                        ),
+                    });
+                }
+            }
+
+            // If label_value is specified, label_column MUST also be specified
+            if let Some(ref label_val) = node.label_value {
+                if label_val.is_empty() {
+                    return Err(GraphSchemaError::InvalidConfig {
+                        message: format!(
+                            "Node '{}': label_value cannot be empty. Remove it or provide a valid discriminator value.",
+                            node.label
+                        ),
+                    });
+                }
+
+                if node.label_column.is_none() || node.label_column.as_ref().map_or(true, |c| c.is_empty()) {
+                    return Err(GraphSchemaError::InvalidConfig {
+                        message: format!(
+                            "Node '{}': label_value '{}' requires label_column to be specified. \
+                            This column contains the discriminator values.",
+                            node.label, label_val
+                        ),
+                    });
+                }
+            }
+        }
 
         Ok(())
     }

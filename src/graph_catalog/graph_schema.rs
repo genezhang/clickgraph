@@ -353,10 +353,25 @@ impl NodeIdSchema {
     }
 
     /// Get the column name for single-column identifiers.
-    /// **PANICS** if called on composite identifier.
+    /// 
+    /// **Panics** if called on composite identifier.
     /// For composite-safe access, use `columns()` or `sql_tuple()`.
     pub fn column(&self) -> &str {
-        self.id.as_single()
+        match self.id.as_single() {
+            Ok(col) => col,
+            Err(_) => panic!(
+                "Attempted to access single column on composite node identifier. \
+                This is a schema configuration error - composite node IDs should use \
+                columns() for safe access or sql_tuple() for SQL generation."
+            ),
+        }
+    }
+
+    /// Get the column name for single-column identifiers, with error handling.
+    ///
+    /// Preferred for new code over `column()` to handle composite identifiers gracefully.
+    pub fn column_or_error(&self) -> Result<&str, String> {
+        self.id.as_single().map_err(|e| e.to_string())
     }
 
     /// Check if this is a composite identifier
@@ -540,8 +555,8 @@ impl GraphSchema {
         // Second pass: build index, skipping simple keys when composite exists
         for composite_key in relationships.keys() {
             let type_name = if composite_key.contains("::") {
-                // This is a composite key - extract the type name
-                composite_key.split("::").next().unwrap_or(composite_key)
+                // This is a composite key - extract the type name (before first ::)
+                composite_key.split("::").next().unwrap_or(composite_key.as_str())
             } else {
                 // This is a simple key - skip if we have composite keys for this type
                 if composite_types.contains(composite_key) {
