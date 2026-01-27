@@ -1,6 +1,15 @@
 ## [Unreleased]
 
-### 🐛 Bug Fixes
+### � Security
+
+- **Parser Recursion Depth Limits** (Jan 26, 2026): Added MAX_RELATIONSHIP_CHAIN_DEPTH = 1000 to prevent DoS attacks
+  - **Problem**: Unbounded recursion in `parse_consecutive_relationships()` vulnerable to stack overflow on malicious inputs like `()-[]->()-[]->...` (1000+ hops)
+  - **Solution**: Created depth-tracking wrapper `parse_consecutive_relationships_with_depth(input, depth)` that returns `ErrorKind::TooLarge` when depth > 1000
+  - **Test Coverage**: 4 comprehensive tests for reasonable depth (100), max depth (1000), exceeds limit (1001), error clarity (1050)
+  - **Impact**: Parser now protected against DoS via deep recursion; all 184 parser tests passing
+  - **Files**: `src/open_cypher_parser/path_pattern.rs`
+
+### �🐛 Bug Fixes
 
 - **Nested WITH Filtered Exports** (Jan 26, 2026): Fixed infinite iteration loop in nested WITH clauses with filtered exports
   - **Problem**: Queries like `MATCH (u:User) WITH u AS person WITH person.name AS name RETURN name` hit 10-iteration safety limit and failed

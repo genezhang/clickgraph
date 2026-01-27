@@ -4,15 +4,21 @@ use crate::{
     open_cypher_parser::ast::WhereClause,
     query_planner::{
         logical_expr::LogicalExpr,
-        logical_plan::{Filter, LogicalPlan, Union},
+        logical_plan::{errors::LogicalPlanError, Filter, LogicalPlan, Union},
     },
 };
 
 pub fn evaluate_where_clause<'a>(
     where_clause: &WhereClause<'a>,
     plan: Arc<LogicalPlan>,
-) -> Arc<LogicalPlan> {
-    let predicates: LogicalExpr = LogicalExpr::try_from(where_clause.conditions.clone()).unwrap();
+) -> Result<Arc<LogicalPlan>, LogicalPlanError> {
+    let predicates: LogicalExpr =
+        LogicalExpr::try_from(where_clause.conditions.clone()).map_err(|e| {
+            LogicalPlanError::QueryPlanningError(format!(
+                "Failed to convert WHERE clause expression: {}",
+                e
+            ))
+        })?;
     log::debug!(
         "evaluate_where_clause: WHERE predicate after conversion: {:?}",
         predicates
@@ -32,14 +38,14 @@ pub fn evaluate_where_clause<'a>(
             })
             .collect();
 
-        return Arc::new(LogicalPlan::Union(Union {
+        return Ok(Arc::new(LogicalPlan::Union(Union {
             inputs: filtered_branches,
             union_type: union.union_type.clone(),
-        }));
+        })));
     }
 
-    Arc::new(LogicalPlan::Filter(Filter {
+    Ok(Arc::new(LogicalPlan::Filter(Filter {
         input: plan,
         predicate: predicates,
-    }))
+    })))
 }

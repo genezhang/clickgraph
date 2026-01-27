@@ -139,7 +139,7 @@ pub fn build_logical_plan(
             unwind_clause_ast.alias
         );
         logical_plan =
-            unwind_clause::evaluate_unwind_clause(unwind_clause_ast, logical_plan, &mut plan_ctx);
+            unwind_clause::evaluate_unwind_clause(unwind_clause_ast, logical_plan, &mut plan_ctx)?;
     }
 
     // Process WITH clause before WHERE to create intermediate projections
@@ -152,7 +152,7 @@ pub fn build_logical_plan(
     // Process WHERE clause after WITH so it can reference WITH projection aliases
     // For "WITH a, COUNT(b) as follows WHERE follows > 1", the WHERE can now reference "follows"
     if let Some(where_clause) = &query_ast.where_clause {
-        logical_plan = where_clause::evaluate_where_clause(where_clause, logical_plan);
+        logical_plan = where_clause::evaluate_where_clause(where_clause, logical_plan)?;
     }
 
     if let Some(return_clause) = &query_ast.return_clause {
@@ -161,7 +161,7 @@ pub fn build_logical_plan(
     }
 
     if let Some(order_clause) = &query_ast.order_by_clause {
-        logical_plan = order_by_clause::evaluate_order_by_clause(order_clause, logical_plan);
+        logical_plan = order_by_clause::evaluate_order_by_clause(order_clause, logical_plan)?;
     }
 
     if let Some(skip_clause) = &query_ast.skip_clause {
@@ -319,7 +319,7 @@ fn process_with_clause_chain<'a>(
     if let Some(subsequent_unwind) = &with_clause_ast.subsequent_unwind {
         log::debug!("process_with_clause_chain: Processing subsequent UNWIND clause after WITH");
         logical_plan =
-            unwind_clause::evaluate_unwind_clause(subsequent_unwind, logical_plan, &mut child_ctx);
+            unwind_clause::evaluate_unwind_clause(subsequent_unwind, logical_plan, &mut child_ctx)?;
     }
 
     // Process subsequent MATCH clause if present (e.g., WITH u MATCH (u)-[:FOLLOWS]->(f))

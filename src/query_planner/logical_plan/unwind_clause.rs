@@ -4,7 +4,7 @@ use crate::{
     open_cypher_parser::ast::UnwindClause,
     query_planner::{
         logical_expr::LogicalExpr,
-        logical_plan::{LogicalPlan, Unwind},
+        logical_plan::{errors::LogicalPlanError, LogicalPlan, Unwind},
         plan_ctx::{PlanCtx, TableCtx},
     },
 };
@@ -31,9 +31,11 @@ pub fn evaluate_unwind_clause(
     unwind_clause: &UnwindClause,
     plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
-) -> Arc<LogicalPlan> {
+) -> Result<Arc<LogicalPlan>, LogicalPlanError> {
     // Convert the Cypher expression to a LogicalExpr
-    let expression = LogicalExpr::try_from(unwind_clause.expression.clone()).unwrap();
+    let expression = LogicalExpr::try_from(unwind_clause.expression.clone()).map_err(|e| {
+        LogicalPlanError::QueryPlanningError(format!("Failed to convert UNWIND expression: {}", e))
+    })?;
 
     // Register the UNWIND alias as a projection alias
     // This allows subsequent clauses (WHERE, RETURN) to reference it
@@ -62,7 +64,7 @@ pub fn evaluate_unwind_clause(
         tuple_properties: None,
     };
 
-    Arc::new(LogicalPlan::Unwind(unwind))
+    Ok(Arc::new(LogicalPlan::Unwind(unwind)))
 }
 
 #[cfg(test)]
@@ -91,7 +93,8 @@ mod tests {
 
         let input_plan = Arc::new(LogicalPlan::Empty);
         let mut plan_ctx = create_test_plan_ctx();
-        let result = evaluate_unwind_clause(&unwind_clause, input_plan, &mut plan_ctx);
+        let result = evaluate_unwind_clause(&unwind_clause, input_plan, &mut plan_ctx)
+            .expect("Failed to evaluate unwind clause");
 
         match result.as_ref() {
             LogicalPlan::Unwind(unwind) => {
@@ -121,7 +124,8 @@ mod tests {
 
         let input_plan = Arc::new(LogicalPlan::Empty);
         let mut plan_ctx = create_test_plan_ctx();
-        let result = evaluate_unwind_clause(&unwind_clause, input_plan, &mut plan_ctx);
+        let result = evaluate_unwind_clause(&unwind_clause, input_plan, &mut plan_ctx)
+            .expect("Failed to evaluate unwind clause");
 
         match result.as_ref() {
             LogicalPlan::Unwind(unwind) => {

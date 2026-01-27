@@ -47,7 +47,15 @@ fn infer_node_label_from_schema(
 
     // Case 1: Single node type in schema - use it
     if node_schemas.len() == 1 {
-        let node_type = node_schemas.keys().next().unwrap().clone();
+        let node_type = node_schemas
+            .keys()
+            .next()
+            .ok_or_else(|| {
+                LogicalPlanError::QueryPlanningError(
+                    "Schema has exactly 1 node type but keys().next() returned None".to_string(),
+                )
+            })?
+            .clone();
         log::info!(
             "Node inference: Schema has only one node type '{}', using it",
             node_type
@@ -130,7 +138,16 @@ fn infer_relationship_type_from_nodes(
 
     // Case 1: Single relationship in schema - use it regardless of node types
     if rel_schemas.len() == 1 {
-        let rel_type = rel_schemas.keys().next().unwrap().clone();
+        let rel_type = rel_schemas
+            .keys()
+            .next()
+            .ok_or_else(|| {
+                LogicalPlanError::QueryPlanningError(
+                    "Schema has exactly 1 relationship type but keys().next() returned None"
+                        .to_string(),
+                )
+            })?
+            .clone();
         log::info!(
             "Relationship inference: Schema has only one relationship type '{}', using it",
             rel_type
@@ -1429,9 +1446,16 @@ fn traverse_connected_pattern_with_mode<'a>(
             .map(|props| {
                 props
                     .into_iter()
-                    .map(|p| Property::try_from(p).unwrap())
-                    .collect()
+                    .map(|p| Property::try_from(p))
+                    .collect::<Result<Vec<_>, _>>()
             })
+            .transpose()
+            .map_err(|e| {
+                LogicalPlanError::QueryPlanningError(format!(
+                    "Failed to convert start node property: {}",
+                    e
+                ))
+            })?
             .unwrap_or_else(Vec::new);
 
         // Extract end node info early - needed for filtering anonymous edge types
@@ -1567,9 +1591,16 @@ fn traverse_connected_pattern_with_mode<'a>(
             .map(|props| {
                 props
                     .into_iter()
-                    .map(|p| Property::try_from(p).unwrap())
-                    .collect()
+                    .map(|p| Property::try_from(p))
+                    .collect::<Result<Vec<_>, _>>()
             })
+            .transpose()
+            .map_err(|e| {
+                LogicalPlanError::QueryPlanningError(format!(
+                    "Failed to convert relationship property: {}",
+                    e
+                ))
+            })?
             .unwrap_or_else(Vec::new);
 
         crate::debug_print!(
@@ -1584,9 +1615,16 @@ fn traverse_connected_pattern_with_mode<'a>(
             .map(|props| {
                 props
                     .into_iter()
-                    .map(|p| Property::try_from(p).unwrap())
-                    .collect()
+                    .map(|p| Property::try_from(p))
+                    .collect::<Result<Vec<_>, _>>()
             })
+            .transpose()
+            .map_err(|e| {
+                LogicalPlanError::QueryPlanningError(format!(
+                    "Failed to convert end node property: {}",
+                    e
+                ))
+            })?
             .unwrap_or_else(Vec::new);
 
         // if start alias already present in ctx map, it means the current nested connected pattern's start node will be connecting at right side plan and end node will be at the left
@@ -1869,7 +1907,9 @@ fn traverse_connected_pattern_with_mode<'a>(
                 log::info!(
                     ">>> Updated '{}' with label: {}",
                     end_node_alias,
-                    end_node_label.as_ref().unwrap()
+                    end_node_label
+                        .as_ref()
+                        .expect("end_node_label was checked to be Some")
                 );
             } else {
                 log::warn!(
@@ -2324,7 +2364,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                                             operands: vec![acc, filter],
                                         })
                                     })
-                                    .unwrap(),
+                                    .expect("node_filters is non-empty, reduce() must return Some"),
                             )
                         } else {
                             None // No filters found
@@ -2652,7 +2692,7 @@ pub fn evaluate_match_clause_with_optional<'a>(
     // Apply WHERE clause if present (OpenCypher grammar allows WHERE per MATCH)
     if let Some(where_clause) = &match_clause.where_clause {
         use crate::query_planner::logical_plan::where_clause::evaluate_where_clause;
-        plan = evaluate_where_clause(where_clause, plan);
+        plan = evaluate_where_clause(where_clause, plan)?;
     }
 
     Ok(plan)

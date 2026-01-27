@@ -24,6 +24,12 @@ use super::common::ws;
 use super::expression::parse_parameter;
 use super::{common, expression};
 use nom::character::complete::digit1;
+
+/// Maximum depth for parsing consecutive relationships in a single path pattern.
+/// This prevents stack overflow on adversarial inputs like (a)-[]->(b)-[]->(c)...(repeated 50x)
+/// Real-world queries rarely exceed 10 hops; 50 is extremely generous while protecting against DoS.
+const MAX_RELATIONSHIP_CHAIN_DEPTH: usize = 50;
+
 /// Try to parse shortestPath() or allShortestPaths() wrapper
 fn parse_shortest_path_function(input: &'_ str) -> IResult<&'_ str, PathPattern<'_>> {
     use nom::combinator::map;
@@ -92,7 +98,7 @@ fn parse_path_pattern_inner(input: &'_ str) -> IResult<&'_ str, PathPattern<'_>>
 
                 // let mut last_end_node = end_node_pattern;
                 let (input, consecutive_relations_end_nodes_vec) =
-                    parse_consecutive_relationships(input)?;
+                    parse_consecutive_relationships_with_depth(input, 1)?;
 
                 for (consecutive_relationship, consecutive_end_node_pattern) in
                     consecutive_relations_end_nodes_vec
@@ -175,21 +181,46 @@ fn get_relation_node(
     }
 }
 
-fn parse_consecutive_relationships(
+/// Parse consecutive relationships with depth tracking to prevent stack overflow.
+///
+/// Depth limit protects against adversarial inputs like:
+/// `(a)-[]->(b)-[]->(c)-[]->...(repeated thousands of times)`
+///
+/// # Arguments
+/// * `input` - Input string to parse
+/// * `depth` - Current recursion depth (starts at 1 for first relationship after initial node)
+///
+/// # Returns
+/// Vector of (relationship, node) pairs representing the chain
+fn parse_consecutive_relationships_with_depth(
     input: &'_ str,
+    depth: usize,
 ) -> IResult<&'_ str, Vec<(RelationshipPattern<'_>, NodePattern<'_>)>> {
+    // Check depth limit before attempting to parse
+    if depth > MAX_RELATIONSHIP_CHAIN_DEPTH {
+        return Err(nom::Err::Failure(Error::new(input, ErrorKind::TooLarge)));
+    }
+
     let (input, maybe_relation_node) = get_relation_node(input)?;
 
     // If we got a relation-node, accumulate it and continue recursively.
     if let Some(relation_node) = maybe_relation_node {
         let mut result = vec![relation_node];
-        let (input, mut rest) = parse_consecutive_relationships(input)?;
+        let (input, mut rest) = parse_consecutive_relationships_with_depth(input, depth + 1)?;
         result.append(&mut rest);
         Ok((input, result))
     } else {
         // No more relation-nodes found, so return an empty vector.
         Ok((input, Vec::new()))
     }
+}
+
+/// Legacy wrapper for backward compatibility - delegates to depth-tracked version
+#[allow(dead_code)]
+fn parse_consecutive_relationships(
+    input: &'_ str,
+) -> IResult<&'_ str, Vec<(RelationshipPattern<'_>, NodePattern<'_>)>> {
+    parse_consecutive_relationships_with_depth(input, 1)
 }
 
 // {name: 'Oliver Stone', age: 52, tags: ['actor', 'director'], created: date('2024-01-01')}
@@ -259,8 +290,12 @@ fn parse_name_or_labels_with_properties(
     Ok((remainder, (node_labels, node_properties)))
 }
 
-// Parse relationship labels that can be multiple labels separated by |
-fn parse_relationship_labels(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'_ str>>> {
+/// Parse multiple labels/types separated by | (e.g., User|Person or FOLLOWS|LIKES)
+/// This is the common parser for both node labels and relationship types since
+/// they share identical syntax: `Label1|Label2|Label3`
+///
+/// Returns None if no labels are found, Some(vec![...]) otherwise
+fn parse_multi_labels_or_types(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'_ str>>> {
     let (remainder, first_label) =
         ws(opt(common::parse_alphanumeric_with_underscore)).parse(input)?;
 
@@ -287,32 +322,16 @@ fn parse_relationship_labels(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'_ 
     Ok((current_input, Some(labels)))
 }
 
-// Parse node labels that can be multiple labels separated by |
+/// Parse relationship types (e.g., :FOLLOWS, :FOLLOWS|LIKES)
+/// Thin wrapper around parse_multi_labels_or_types for semantic clarity
+fn parse_relationship_labels(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'_ str>>> {
+    parse_multi_labels_or_types(input)
+}
+
+/// Parse node labels (e.g., :User, :User|Person)
+/// Thin wrapper around parse_multi_labels_or_types for semantic clarity
 fn parse_node_labels(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'_ str>>> {
-    let (remainder, first_label) =
-        ws(opt(common::parse_alphanumeric_with_underscore)).parse(input)?;
-
-    if first_label.is_none() {
-        return Ok((remainder, None));
-    }
-
-    let mut labels = vec![first_label.unwrap()];
-
-    // Parse additional labels separated by |
-    let mut current_input = remainder;
-    loop {
-        let (new_input, pipe) = opt(ws(char('|'))).parse(current_input)?;
-        if pipe.is_none() {
-            break;
-        }
-
-        let (new_input, additional_label) =
-            ws(common::parse_alphanumeric_with_underscore).parse(new_input)?;
-        labels.push(additional_label);
-        current_input = new_input;
-    }
-
-    Ok((current_input, Some(labels)))
+    parse_multi_labels_or_types(input)
 }
 
 type NameOrLabelWithProperties<'a> = (Option<&'a str>, Option<Vec<Property<'a>>>);
@@ -380,13 +399,6 @@ fn parse_node_pattern(input: &'_ str) -> IResult<&'_ str, NodePattern<'_>> {
     alt((empty_node_parser, node_parser)).parse(input)
 }
 
-#[allow(dead_code)]
-fn parse_relationship_internals(
-    input: &'_ str,
-) -> IResult<&'_ str, (NameOrLabelWithProperties<'_>, NameOrLabelWithProperties<'_>)> {
-    delimited(ws(char('[')), parse_name_label, ws(char(']'))).parse(input)
-}
-
 // Parse relationship internals with support for multiple labels
 fn parse_relationship_internals_with_multiple_labels(
     input: &'_ str,
@@ -419,26 +431,6 @@ fn parse_relationship_internals_with_multiple_labels(
 
     let (input, _) = ws(char(']')).parse(input)?;
     Ok((input, (rel_name, rel_labels, rel_properties, var_len)))
-}
-
-// Parse relationship internals including variable-length spec
-// Returns: ((name, properties), (labels, properties), variable_length_spec)
-// Reserved for future use when more complex relationship parsing is needed
-#[allow(dead_code)]
-fn parse_relationship_internals_with_var_len(
-    input: &'_ str,
-) -> IResult<
-    &'_ str,
-    (
-        (NameOrLabelWithProperties<'_>, NameOrLabelWithProperties<'_>),
-        Option<VariableLengthSpec>,
-    ),
-> {
-    let (input, _) = ws(char('[')).parse(input)?;
-    let (input, name_label) = parse_name_label(input)?;
-    let (input, var_len) = parse_variable_length_spec(input)?;
-    let (input, _) = ws(char(']')).parse(input)?;
-    Ok((input, (name_label, var_len)))
 }
 
 // Parse variable-length specification: *, *2, *1..3, *..5
@@ -1427,5 +1419,94 @@ mod tests {
             }
             _ => panic!("Expected ConnectedPattern"),
         }
+    }
+
+    // ===== Depth Limit Tests =====
+
+    #[test]
+    fn test_reasonable_relationship_chain_depth() {
+        // Test a long but reasonable chain (10 relationships)
+        let mut query = String::from("(a)");
+        for i in 0..10 {
+            query.push_str(&format!("-[:REL{}]->(n{})", i, i));
+        }
+
+        let result = parse_path_pattern(&query);
+        assert!(
+            result.is_ok(),
+            "Should parse 10 consecutive relationships without hitting depth limit"
+        );
+
+        if let Ok((_, PathPattern::ConnectedPattern(connected))) = result {
+            assert_eq!(connected.len(), 10, "Should have 10 relationship patterns");
+        } else {
+            panic!("Expected ConnectedPattern");
+        }
+    }
+
+    #[test]
+    fn test_maximum_relationship_chain_depth() {
+        // Test exactly at the limit (50 relationships)
+        let mut query = String::from("(a)");
+        for i in 0..50 {
+            query.push_str(&format!("-[]->(n{})", i));
+        }
+
+        let result = parse_path_pattern(&query);
+        assert!(
+            result.is_ok(),
+            "Should parse exactly 50 consecutive relationships (at limit)"
+        );
+
+        if let Ok((_, PathPattern::ConnectedPattern(connected))) = result {
+            assert_eq!(
+                connected.len(),
+                50,
+                "Should have exactly 50 relationship patterns"
+            );
+        } else {
+            panic!("Expected ConnectedPattern");
+        }
+    }
+
+    #[test]
+    fn test_exceeds_maximum_relationship_chain_depth() {
+        // Test exceeding the limit (51 relationships)
+        let mut query = String::from("(a)");
+        for i in 0..51 {
+            query.push_str(&format!("-[]->(n{})", i));
+        }
+
+        let result = parse_path_pattern(&query);
+        match result {
+            Err(nom::Err::Failure(Error { code, .. })) => {
+                assert_eq!(
+                    code,
+                    ErrorKind::TooLarge,
+                    "Should fail with TooLarge error when exceeding depth limit"
+                );
+            }
+            Ok(_) => {
+                panic!("Should have failed with depth limit error for 51 relationships");
+            }
+            Err(e) => {
+                panic!("Expected Failure with TooLarge, got: {:?}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_depth_limit_error_message_clarity() {
+        // Verify error occurs at a predictable point
+        let mut query = String::from("(start)");
+        for i in 0..100 {
+            query.push_str(&format!("-[:T{}]->(n{})", i, i));
+        }
+
+        let result = parse_path_pattern(&query);
+        assert!(
+            result.is_err(),
+            "Should error on deeply nested relationship chains (100 > 50 limit)"
+        );
     }
 }

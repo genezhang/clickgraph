@@ -65,7 +65,12 @@ fn transform_bidirectional(
 
                 if branches.len() == 1 {
                     // Only one branch (shouldn't happen if undirected_count > 0, but handle it)
-                    return Ok(Transformed::Yes(branches.into_iter().next().unwrap()));
+                    return Ok(Transformed::Yes(
+                        branches
+                            .into_iter()
+                            .next()
+                            .expect("Vector with len==1 must have element"),
+                    ));
                 }
 
                 // Create Union of all branches
@@ -134,7 +139,12 @@ fn transform_bidirectional(
                     generate_direction_combinations(plan, undirected_count, graph_schema);
 
                 if branches.len() == 1 {
-                    return Ok(Transformed::Yes(branches.into_iter().next().unwrap()));
+                    return Ok(Transformed::Yes(
+                        branches
+                            .into_iter()
+                            .next()
+                            .expect("Vector with len==1 must have element"),
+                    ));
                 }
 
                 let union = Union {
