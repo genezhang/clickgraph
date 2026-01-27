@@ -4,8 +4,8 @@ use crate::{
         AggregateFnCall, ColumnAlias, LogicalExpr, PropertyAccess, TableAlias,
     },
     query_planner::logical_plan::{
-        optional_match_clause::evaluate_optional_match_clause, LogicalPlan, Projection,
-        ProjectionItem, Union, UnionType,
+        optional_match_clause::evaluate_optional_match_clause, LogicalPlan, LogicalPlanError,
+        Projection, ProjectionItem, Union, UnionType,
     },
     query_planner::plan_ctx::PlanCtx,
 };
@@ -389,7 +389,10 @@ pub fn evaluate_return_clause<'a>(
 
     let projection_items: Vec<ProjectionItem> = rewritten_return_items
         .iter()
-        .map(|item| item.clone().into())
+        .map(|item| {
+            ProjectionItem::try_from(item.clone())
+                .expect("Bug: Failed to convert RETURN expression to ProjectionItem")
+        })
         .collect();
 
     // If input is a Union, handle specially
