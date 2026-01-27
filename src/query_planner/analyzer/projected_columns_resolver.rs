@@ -161,10 +161,10 @@ impl ProjectedColumnsResolver {
                 Some(position),
             );
 
-            if projected_columns.is_some() {
+            if let Some(ref cols) = projected_columns {
                 log::debug!(
                     "🔧 ProjectedColumnsResolver: Computed {} columns for node '{}' ({:?} in rel '{}')",
-                    projected_columns.as_ref().unwrap().len(),
+                    cols.len(),
                     node.alias,
                     position,
                     rel_alias
@@ -218,10 +218,10 @@ impl AnalyzerPass for ProjectedColumnsResolver {
                     None,
                 );
 
-                if projected_columns.is_some() {
+                if let Some(ref cols) = projected_columns {
                     log::debug!(
                         "🔧 ProjectedColumnsResolver: Computed {} columns for node '{}'",
-                        projected_columns.as_ref().unwrap().len(),
+                        cols.len(),
                         node.alias
                     );
                 }

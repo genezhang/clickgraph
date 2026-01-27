@@ -1539,7 +1539,7 @@ impl FilterTagging {
                         op_app.operator,
                         op_app.operands[0]
                     );
-                    return Some(op_app.operands.into_iter().next().unwrap()); // unwrap is safe we are checking the len in condition
+                    return Some(op_app.operands.into_iter().next().expect("Vector with len==1 must have element"));
                 }
 
                 // if both operands has been extracted then remove the parent op

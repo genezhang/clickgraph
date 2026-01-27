@@ -1425,7 +1425,7 @@ impl GraphJoinInference {
             if predicates.is_empty() {
                 None
             } else if predicates.len() == 1 {
-                Some(predicates.into_iter().next().unwrap())
+                Some(predicates.into_iter().next().expect("Vector with len==1 must have element"))
             } else {
                 Some(LogicalExpr::OperatorApplicationExp(LogicalOpApp {
                     operator: Operator::And,
