@@ -68,7 +68,7 @@ pub fn evaluate_optional_match_clause<'a>(
         // For now, we'll add it as a regular filter
         // TODO: Properly handle WHERE clauses in OPTIONAL MATCH
         use crate::query_planner::logical_plan::where_clause::evaluate_where_clause;
-        plan = evaluate_where_clause(where_clause, plan);
+        plan = evaluate_where_clause(where_clause, plan)?;
     }
 
     Ok(plan)

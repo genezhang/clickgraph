@@ -47,7 +47,11 @@ fn infer_node_label_from_schema(
 
     // Case 1: Single node type in schema - use it
     if node_schemas.len() == 1 {
-        let node_type = node_schemas.keys().next().unwrap().clone();
+        let node_type = node_schemas.keys().next()
+            .ok_or_else(|| LogicalPlanError::QueryPlanningError(
+                "Schema has exactly 1 node type but keys().next() returned None".to_string()
+            ))?
+            .clone();
         log::info!(
             "Node inference: Schema has only one node type '{}', using it",
             node_type
@@ -130,7 +134,11 @@ fn infer_relationship_type_from_nodes(
 
     // Case 1: Single relationship in schema - use it regardless of node types
     if rel_schemas.len() == 1 {
-        let rel_type = rel_schemas.keys().next().unwrap().clone();
+        let rel_type = rel_schemas.keys().next()
+            .ok_or_else(|| LogicalPlanError::QueryPlanningError(
+                "Schema has exactly 1 relationship type but keys().next() returned None".to_string()
+            ))?
+            .clone();
         log::info!(
             "Relationship inference: Schema has only one relationship type '{}', using it",
             rel_type
@@ -2652,7 +2660,7 @@ pub fn evaluate_match_clause_with_optional<'a>(
     // Apply WHERE clause if present (OpenCypher grammar allows WHERE per MATCH)
     if let Some(where_clause) = &match_clause.where_clause {
         use crate::query_planner::logical_plan::where_clause::evaluate_where_clause;
-        plan = evaluate_where_clause(where_clause, plan);
+        plan = evaluate_where_clause(where_clause, plan)?;
     }
 
     Ok(plan)
