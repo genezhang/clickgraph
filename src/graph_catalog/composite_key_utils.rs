@@ -159,17 +159,6 @@ impl CompositeKey {
         })
     }
 
-    /// Convert to string representation
-    ///
-    /// # Example
-    /// ```ignore
-    /// let key = CompositeKey::new("FOLLOWS", "User", "User");
-    /// assert_eq!(key.to_string(), "FOLLOWS::User::User");
-    /// ```
-    pub fn to_string(&self) -> String {
-        format!("{}::{}::{}", self.rel_type, self.from_node, self.to_node)
-    }
-
     /// Check if this key matches the given relationship spec
     ///
     /// # Arguments
@@ -207,7 +196,7 @@ impl CompositeKey {
 
 impl fmt::Display for CompositeKey {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.to_string())
+        write!(f, "{}::{}::{}", self.rel_type, self.from_node, self.to_node)
     }
 }
 
