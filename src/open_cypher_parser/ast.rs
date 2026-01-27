@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{cell::RefCell, fmt, rc::Rc};
 
 /// Type of UNION operation
