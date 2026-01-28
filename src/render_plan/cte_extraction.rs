@@ -1263,10 +1263,10 @@ pub fn extract_relationship_columns_from_table_with_schema(
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
 ) -> RelationshipColumns {
     // Extract just the table name without database prefix for matching
-    let table_only = table_name.split('.').last().unwrap_or(table_name);
+    let table_only = table_name.rsplit('.').next().unwrap_or(table_name);
 
     // Find relationship schema by table name
-    for (_key, rel_schema) in schema.get_relationships_schemas() {
+    for rel_schema in schema.get_relationships_schemas().values() {
         // Match both with full name (db.table) or just table name
         if rel_schema.table_name == table_name
             || rel_schema.table_name == table_only
@@ -2645,11 +2645,11 @@ pub fn extract_ctes_with_context(
 
                         // Get node schema to extract all from_properties and to_properties
                         // Handle both "table" and "database.table" formats
-                        let rel_table_name = rel_table.split('.').last().unwrap_or(&rel_table);
+                        let rel_table_name = rel_table.rsplit('.').next().unwrap_or(&rel_table);
 
                         if let Some(node_schema) = schema.all_node_schemas().values().find(|n| {
                             let schema_table =
-                                n.table_name.split('.').last().unwrap_or(&n.table_name);
+                                n.table_name.rsplit('.').next().unwrap_or(&n.table_name);
                             schema_table == rel_table_name
                         }) {
                             log::debug!("🔧 CTE: Found node schema for table {}", rel_table);
@@ -2660,7 +2660,7 @@ pub fn extract_ctes_with_context(
                                     "🔧 CTE: Adding {} from_node properties",
                                     from_props.len()
                                 );
-                                for (logical_prop, _physical_col) in from_props {
+                                for logical_prop in from_props.keys() {
                                     if !all_denorm_properties.iter().any(|p| {
                                         p.cypher_alias == graph_rel.left_connection
                                             && p.alias == *logical_prop
@@ -2681,7 +2681,7 @@ pub fn extract_ctes_with_context(
                             // Add all to_node properties
                             if let Some(ref to_props) = node_schema.to_properties {
                                 log::debug!("🔧 CTE: Adding {} to_node properties", to_props.len());
-                                for (logical_prop, _physical_col) in to_props {
+                                for logical_prop in to_props.keys() {
                                     if !all_denorm_properties.iter().any(|p| {
                                         p.cypher_alias == graph_rel.right_connection
                                             && p.alias == *logical_prop

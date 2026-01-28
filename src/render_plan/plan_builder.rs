@@ -313,9 +313,9 @@ pub(crate) trait RenderPlanBuilder {
 /// 1. Find VLP CTEs it references (look for vlp_cte joins)
 /// 2. Get VLP metadata (cypher_start_alias → start_node mapping)
 /// 3. Rewrite SELECT items: a.property → start_node.property
-
-/// Extract VLP alias mappings from CTEs: Cypher alias → VLP table alias
-/// Also extracts relationship aliases for denormalized patterns
+///
+/// Extract VLP alias mappings from CTEs: Cypher alias → VLP table alias.
+/// Also extracts relationship aliases for denormalized patterns.
 
 // ============================================================================
 // ARCHITECTURAL NOTE: Multi-Type VLP Alias Mapping Evolution (Dec 27, 2025)

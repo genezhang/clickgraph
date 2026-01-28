@@ -2791,16 +2791,7 @@ pub fn remap_cte_names_in_render_plan(
     }
 }
 
-/// Rewrite expressions to use the FROM alias and CTE column names
-///
-/// Handles three cases:
-/// 1. PropertyAccess with WITH alias (e.g., "a.full_name") → rewrite to FROM alias + CTE column (e.g., "a_age.a_name")
-/// 2. PropertyAccess with CTE name (e.g., "with_a_age_cte_1.age") → rewrite to FROM alias (e.g., "a_age.age")
-/// 3. Other expressions → recursively rewrite nested expressions
-/// Rewrite expressions to use CTE context (alias and column names) with alias source resolution
-///
-/// This version uses plan_ctx to resolve alias sources from WITH clauses.
-/// When an alias has been renamed (e.g., "person" from "u"), this resolves the mapping.
+/// Rewrite expressions to use the FROM alias and CTE column names.\n///\n/// Handles three cases:\n///\n/// 1. PropertyAccess with WITH alias (e.g., \"a.full_name\") → rewrite to FROM alias + CTE column\n/// 2. PropertyAccess with CTE name (e.g., \"with_a_age_cte_1.age\") → rewrite to FROM alias\n/// 3. Other expressions → recursively rewrite nested expressions\n///\n/// This version uses plan_ctx to resolve alias sources from WITH clauses.\n/// When an alias has been renamed (e.g., \"person\" from \"u\"), this resolves the mapping.
 pub fn rewrite_cte_expression_with_alias_resolution(
     expr: crate::render_plan::render_expr::RenderExpr,
     cte_name: &str,
@@ -3215,17 +3206,12 @@ pub fn has_multi_type_vlp(
     }
 }
 
-/// Collect all aliases from the inner scope of a WITH clause (before aggregation)
-/// Used to identify which filters should be pushed inside the WITH's CTE
-/// Check if a RenderExpr references any alias in the given set
-/// Check if an OperatorApplication references any alias in the given set
-// ============================================================================
-
 // ============================================================================
 // Utility Functions - CTE Management
 // ============================================================================
 
 /// Hoist nested CTEs from a RenderPlan to a parent CTE list.
+///
 /// This is used to flatten CTE hierarchies.
 pub fn hoist_nested_ctes(from: &mut RenderPlan, to: &mut Vec<Cte>) {
     let nested_ctes = std::mem::take(&mut from.ctes.0);
@@ -6048,10 +6034,6 @@ fn expand_table_aliases_in_plan(
     }
 }
 
-/// Rewrite CTE column references from "alias.property" to "alias.alias_property"
-/// This is needed for VLP UNION queries where CTEs export columns like "friend_id"
-/// but logical expressions reference "friend.id"
-
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -6238,7 +6220,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
         ) {
             match plan {
                 LogicalPlan::WithClause(wc) => {
-                    for (_alias, cte_name) in &wc.cte_references {
+                    for cte_name in wc.cte_references.values() {
                         names.insert(cte_name.clone());
                     }
                     collect_analyzer_cte_names(&wc.input, names);
@@ -6839,7 +6821,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                         // Also register for each alias that appears in the UNION
                         // This allows direct alias lookups
-                        for (alias, _id_col) in &union_alias_to_id {
+                        for alias in union_alias_to_id.keys() {
                             cte_references_for_rendering
                                 .insert(alias.clone(), union_cte_name.to_string());
                             log::info!(
@@ -7439,7 +7421,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // Build alias_to_cte mapping: for each alias in intermediate_reverse_mapping, find its CTE
             // This tells us which CTE each Cypher alias should reference
             let mut alias_to_cte: HashMap<String, String> = HashMap::new();
-            for ((alias, _), _) in &intermediate_reverse_mapping {
+            for (alias, _) in intermediate_reverse_mapping.keys() {
                 // Find which CTE this alias belongs to by checking cte_schemas
                 for (cte_name_check, (items, _, _, _)) in &cte_schemas {
                     // Check if any column in this CTE has this alias prefix
@@ -9044,10 +9026,6 @@ pub(crate) fn build_with_aggregation_match_cte_plan(
     Ok(render_plan)
 }
 
-/// Check if an OperatorApplication references any alias in the given set
-
-/// Find a GroupBy subplan (WITH+aggregation) in the plan structure.
-/// Returns (group_by_plan, alias_name) if found.
 /// Replace a GroupBy subplan with a CTE reference (ViewScan pointing to CTE).
 pub(crate) fn replace_group_by_with_cte_reference(
     plan: &LogicalPlan,
@@ -9299,10 +9277,6 @@ pub(crate) fn replace_group_by_with_cte_reference(
     replace_recursive(plan, with_alias, cte_name)
 }
 
-/// Check if a join is for the inner scope (part of the pre-WITH pattern)
-/// This is determined by checking if the join references aliases that are
-/// NOT in the post-WITH scope (i.e., they're part of the CTE content).
-
 /// Find the INNERMOST WITH clause subplan in a nested plan structure.
 ///
 /// KEY INSIGHT: With chained WITH clauses (e.g., WITH a MATCH...WITH a,b MATCH...),
@@ -9313,8 +9287,9 @@ pub(crate) fn replace_group_by_with_cte_reference(
 /// whose input is "clean" (contains no nested WITH).
 ///
 /// Returns (with_clause_plan, alias_name) if found.
-
+///
 /// Find all WITH clauses in a plan grouped by their alias.
+///
 /// Returns HashMap where each alias maps to all WITH clause plans with that alias.
 /// This handles the case where Union branches each have their own WITH clause with the same alias.
 /// Returns owned (cloned) LogicalPlans to avoid lifetime issues with mutations.
@@ -9954,12 +9929,9 @@ pub(crate) fn prune_joins_covered_by_cte(
 /// // hoist_nested_ctes(&mut with_cte_render, &mut all_ctes);
 /// // all_ctes now contains any VLP CTEs that were nested in with_cte_render
 /// ```
-
-/// Helper function to find WithClause inside a plan structure.
-/// Returns a reference to the WithClause node if found.
-
-/// Check if a plan contains any WithClause anywhere in its tree
+///
 /// Replace the WITH clause subplan with a CTE reference (ViewScan pointing to CTE).
+///
 /// This transforms the plan so the WITH clause output comes from the CTE instead of
 /// recomputing it.
 ///
@@ -9968,6 +9940,7 @@ pub(crate) fn prune_joins_covered_by_cte(
 ///
 /// CRITICAL: We only replace a WithClause if its INPUT has NO nested WITH clauses.
 /// This ensures we replace the INNERMOST WITH first, then the next one, etc.
+///
 /// V2 of replace_with_clause_with_cte_reference that also filters out pre-WITH joins.
 ///
 /// When we replace a WITH clause with a CTE reference, the joins from before the WITH
@@ -9975,14 +9948,9 @@ pub(crate) fn prune_joins_covered_by_cte(
 ///
 /// `pre_with_aliases` contains the table aliases that were defined INSIDE the WITH clause
 /// (before the boundary). These should be filtered out from outer GraphJoins.
-
-/// Check if an OperatorApplication references any alias in the given set
-
-/// Find a GroupBy subplan (WITH+aggregation) in the plan structure.
-/// Returns (group_by_plan, alias_name) if found.
-/// Replace a GroupBy subplan with a CTE reference (ViewScan pointing to CTE).
-
+///
 /// Check if a join is for the inner scope (part of the pre-WITH pattern)
+///
 /// This is determined by checking if the join references aliases that are
 /// NOT in the post-WITH scope (i.e., they're part of the CTE content).
 

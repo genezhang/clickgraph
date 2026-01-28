@@ -330,9 +330,11 @@ pub struct RelationshipDefinition {
     #[serde(default = "default_naming_convention")]
     pub naming_convention: String,
     /// Optional: Composite edge ID for cycle prevention in variable-length paths
+    ///
     /// Examples:
     ///   - Single: "relationship_id" or ["relationship_id"]
     ///   - Composite: ["from_id", "to_id", "timestamp"]
+    ///
     /// Default: [from_id, to_id]
     #[serde(default)]
     pub edge_id: Option<Identifier>,
@@ -380,9 +382,11 @@ pub struct StandardEdgeDefinition {
     pub to_node: String,
 
     /// Optional: Composite edge ID
+    ///
     /// Examples:
     ///   - Single: "relationship_id" or ["relationship_id"]
     ///   - Composite: ["from_id", "to_id", "timestamp"]
+    ///
     /// Default: [from_id, to_id]
     #[serde(default)]
     pub edge_id: Option<Identifier>,

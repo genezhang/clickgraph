@@ -1210,9 +1210,11 @@ impl GraphSchema {
     /// Coupled edges exist in the same row (same event), so no JOIN is needed.
     ///
     /// Example (Zeek DNS log):
+    ///
     /// - REQUESTED: (IP)-[:REQUESTED]->(Domain)  from dns_log
     /// - RESOLVED_TO: (Domain)-[:RESOLVED_TO]->(ResolvedIP)  from dns_log
     /// These are coupled because:
+    ///
     /// - Same table: dns_log
     /// - Coupling node: Domain (REQUESTED.to_node == RESOLVED_TO.from_node)
     ///

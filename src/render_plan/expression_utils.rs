@@ -603,10 +603,9 @@ impl MutablePropertyColumnRewriter {
     }
 }
 
-/// Factory helpers for common PropertyAccess patterns
-/// These reduce boilerplate when constructing PropertyAccessExp expressions
-
-/// Create a PropertyAccess with a simple column name
+/// Factory helpers for common PropertyAccess patterns.
+///
+/// These reduce boilerplate when constructing PropertyAccessExp expressions.
 pub fn create_property_access(alias: &str, column: &str) -> PropertyAccess {
     PropertyAccess {
         table_alias: TableAlias(alias.to_string()),

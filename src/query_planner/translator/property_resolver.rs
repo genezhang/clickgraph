@@ -92,17 +92,7 @@ pub struct PropertyResolver {
     /// Key: graph alias (e.g., "a", "u", "f")
     view_scans: HashMap<String, ViewScan>,
 
-    /// Graph-to-SQL alias mapping
-    /// Key: (node_alias, edge_alias_opt) - composite key for denormalized multi-hop
-    /// Value: Vec<AliasMapping> to support multiple roles for same node
-    ///
-    /// Examples:
-    /// - Standard: "u" → [AliasMapping{sql_alias: "u1", ...}]
-    /// - Denormalized single-hop: "a" → [AliasMapping{sql_alias: "f", edge: Some("f"), ...}]
-    /// - Denormalized multi-hop: "b" → [
-    ///     AliasMapping{sql_alias: "f", edge: Some("f"), position: To, ...},
-    ///     AliasMapping{sql_alias: "g", edge: Some("g"), position: From, ...}
-    ///   ]
+    /// Graph-to-SQL alias mapping\n    ///\n    /// Key: (node_alias, edge_alias_opt) - composite key for denormalized multi-hop\n    /// Value: Vec<AliasMapping> to support multiple roles for same node\n    ///\n    /// Examples:\n    ///\n    /// - Standard: \"u\" → [AliasMapping{sql_alias: \"u1\", ...}]\n    /// - Denormalized single-hop: \"a\" → [AliasMapping{sql_alias: \"f\", edge: Some(\"f\"), ...}]\n    /// - Denormalized multi-hop: \"b\" → `[AliasMapping{sql_alias: \"f\", edge: Some(\"f\"), ...}, ...]`
     alias_mappings: HashMap<String, Vec<AliasMapping>>,
 }
 
