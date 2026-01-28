@@ -1,3 +1,21 @@
+//! Filter-to-GraphRel embedding optimization.
+//!
+//! Embeds filter predicates directly into [`GraphRel`] nodes, enabling
+//! more efficient join condition generation and predicate pushdown.
+//!
+//! # Optimization Strategy
+//!
+//! - Analyzes filter predicates to identify which GraphRel component they target
+//! - Embeds predicates as properties on left/center/right ViewScans
+//! - Enables earlier filtering during join execution
+//!
+//! # Example
+//!
+//! ```text
+//! Before: Filter(a.active=true, GraphRel(left=ViewScan(a), ...))
+//! After:  GraphRel(left=ViewScan(a, filter=active=true), ...)
+//! ```
+
 use std::sync::Arc;
 
 use crate::query_planner::{

@@ -1,3 +1,16 @@
+//! SKIP and LIMIT clause processing.
+//!
+//! Handles Cypher's pagination clauses for result set limiting.
+//!
+//! # SQL Translation
+//!
+//! ```text
+//! SKIP 10 LIMIT 20
+//! → OFFSET 10 LIMIT 20
+//! ```
+//!
+//! These clauses remain outside UNION operations, applying to combined results.
+
 use std::sync::Arc;
 
 use crate::{

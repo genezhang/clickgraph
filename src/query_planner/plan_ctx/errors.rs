@@ -1,3 +1,8 @@
+//! Error types for planning context operations.
+//!
+//! These errors occur when required context information is missing
+//! during logical plan construction or variable lookup.
+
 use thiserror::Error;
 
 #[derive(Debug, Clone, Error, PartialEq)]

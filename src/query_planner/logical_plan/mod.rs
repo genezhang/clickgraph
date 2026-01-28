@@ -1,3 +1,67 @@
+//! Logical Plan representation for Cypher queries.
+//!
+//! This module defines the core data structures representing a Cypher query
+//! as an intermediate representation (IR) between parsed AST and generated SQL.
+//!
+//! # Architecture Overview
+//!
+//! ```text
+//! Cypher Query → AST → LogicalPlan → SQL Query
+//!                       ^^^^^^^^^^^
+//!                       This module
+//! ```
+//!
+//! # Key Components
+//!
+//! ## Core Types
+//! - [`LogicalPlan`] - Main enum representing all query plan nodes
+//! - [`ViewScan`] - Table scan with optional predicate pushdown
+//! - [`GraphNode`] / [`GraphRel`] - Graph pattern nodes and relationships
+//! - [`Projection`] - SELECT clause items
+//! - [`Filter`] - WHERE clause conditions
+//! - [`GroupBy`] - Aggregation and grouping
+//! - [`Cte`] - Common Table Expression (WITH clause in SQL sense)
+//! - [`CartesianProduct`] - CROSS JOIN for disconnected patterns
+//! - [`Union`] - UNION/UNION ALL for combined result sets
+//!
+//! ## Clause Processing Submodules
+//! - `match_clause` - MATCH pattern to scan/join translation
+//! - `optional_match_clause` - OPTIONAL MATCH (LEFT JOIN) handling
+//! - `with_clause` - WITH clause scope/projection boundaries
+//! - `return_clause` - RETURN projection handling
+//! - `where_clause` - WHERE condition processing
+//! - `order_by_clause` - ORDER BY generation
+//! - `skip_n_limit_clause` - SKIP/LIMIT pagination
+//! - `unwind_clause` - UNWIND array expansion
+//!
+//! # Plan Building
+//!
+//! Plans are built via [`plan_builder::build_logical_plan`] which:
+//! 1. Processes Cypher clauses in order
+//! 2. Builds nodes from inner to outer (scans → joins → filters → projections)
+//! 3. Tracks planning context via [`PlanCtx`]
+//!
+//! # Example Plan Structure
+//!
+//! ```text
+//! MATCH (u:User)-[f:FOLLOWS]->(friend)
+//! WHERE u.active = true
+//! RETURN friend.name
+//!
+//! → Projection(friend.name)
+//!     └─ Filter(u.active = true)
+//!         └─ GraphRel(f:FOLLOWS)
+//!             ├─ left: ViewScan(users AS u)
+//!             ├─ center: ViewScan(follows AS f)
+//!             └─ right: ViewScan(users AS friend)
+//! ```
+//!
+//! # ID Generation
+//!
+//! For anonymous patterns, unique IDs are generated via:
+//! - [`generate_id`] - Simple incrementing aliases (t1, t2, t3...)
+//! - [`generate_cte_id`] - CTE names (cte1, cte2, cte3...)
+
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::{collections::HashMap, fmt, sync::Arc};

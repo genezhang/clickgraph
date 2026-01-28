@@ -1,3 +1,30 @@
+//! Query planning context.
+//!
+//! [`PlanCtx`] maintains state during logical plan construction, tracking:
+//! - Variable-to-table mappings
+//! - OPTIONAL MATCH handling
+//! - Projection aliases
+//! - Schema configuration
+//! - Multi-tenant parameters
+//!
+//! # Key Components
+//!
+//! - [`PlanCtx`] - Main planning context with scope support
+//! - [`TableCtx`] - Table/alias metadata for SQL generation
+//! - [`VariableRegistry`] - TypedVariable tracking for nodes, relationships, paths
+//!
+//! # Scope Chain
+//!
+//! WITH clauses create nested scopes:
+//! ```text
+//! MATCH (a) WITH a MATCH (b) WITH a, b MATCH (c)
+//! └─ scope3 ─────────────────────────────────────┘
+//!    └─ scope2 ───────────────────────┘
+//!       └─ scope1 ────────┘
+//! ```
+//!
+//! Variable lookup traverses the scope chain from current to root.
+
 pub mod builder;
 pub mod errors;
 mod table_ctx;

@@ -1,3 +1,15 @@
+//! ORDER BY clause processing.
+//!
+//! Converts Cypher ORDER BY clauses into [`OrderBy`] logical plan nodes.
+//! Supports ascending/descending sort direction and multiple sort keys.
+//!
+//! # SQL Translation
+//!
+//! ```text
+//! ORDER BY u.name DESC, u.age ASC
+//! → ORDER BY users.full_name DESC, users.age ASC
+//! ```
+
 use std::sync::Arc;
 
 use crate::{

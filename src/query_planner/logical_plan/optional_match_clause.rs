@@ -1,3 +1,23 @@
+//! OPTIONAL MATCH clause processing.
+//!
+//! Handles Cypher's OPTIONAL MATCH which provides LEFT JOIN semantics -
+//! all rows from the base pattern are preserved, with NULL values
+//! where optional patterns don't match.
+//!
+//! # SQL Translation
+//!
+//! ```text
+//! MATCH (a) OPTIONAL MATCH (a)-[:FOLLOWS]->(b)
+//! → SELECT ... FROM a LEFT JOIN follows ON ... LEFT JOIN b ON ...
+//! ```
+//!
+//! # Implementation
+//!
+//! 1. Sets optional mode flag in [`PlanCtx`]
+//! 2. Processes patterns via standard MATCH logic
+//! 3. Aliases are auto-marked as optional for JOIN generation
+//! 4. Restores normal mode after processing
+
 use std::sync::Arc;
 
 use crate::{
