@@ -1,7 +1,6 @@
 //! Common utilities for ClickHouse query generation
 
 use crate::clickhouse_query_generator::errors::ClickhouseQueryGeneratorError;
-use anyhow::Context as _;
 
 // ⚠️ NOTE: Literal rendering code appears in multiple places due to different Literal types:
 //

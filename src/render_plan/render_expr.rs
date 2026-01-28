@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
 
 use super::plan_builder::RenderPlanBuilder;
 use crate::graph_catalog::expression_parser::PropertyValue;

@@ -14,19 +14,15 @@
 //! - Manage collect() function expansion
 
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::graph_catalog::graph_schema::GraphSchema;
-use crate::query_planner::join_context::{JoinContext, VLP_CTE_FROM_ALIAS};
 use crate::query_planner::logical_expr::{
-    CteEntityRef as LogicalCteEntityRef, LogicalExpr, PropertyAccess as LogicalPropertyAccess,
-    TableAlias,
+    LogicalExpr, TableAlias,
 };
 use crate::query_planner::logical_plan::{LogicalPlan, ProjectionItem};
 use crate::query_planner::typed_variable::{TypedVariable, VariableSource};
-use crate::render_plan::cte_extraction::get_path_variable;
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::properties_builder::PropertiesBuilder;
 use crate::render_plan::render_expr::{
-    AggregateFnCall, Column, ColumnAlias, PropertyAccess, RenderExpr, ScalarFnCall,
+    Column, ColumnAlias, PropertyAccess, RenderExpr,
     TableAlias as RenderTableAlias,
 };
 use crate::render_plan::SelectItem;

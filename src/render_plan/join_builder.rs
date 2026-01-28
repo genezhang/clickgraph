@@ -16,7 +16,6 @@ use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::from_builder::FromBuilder;
-use crate::render_plan::plan_builder::RenderPlanBuilder;
 use crate::render_plan::plan_builder::RenderPlanBuilderResult;
 use crate::render_plan::render_expr::{
     Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,

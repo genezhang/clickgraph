@@ -22,7 +22,7 @@ use crate::{
         AggregateFnCall, ColumnAlias, LogicalExpr, PropertyAccess, TableAlias,
     },
     query_planner::logical_plan::{
-        optional_match_clause::evaluate_optional_match_clause, LogicalPlan, LogicalPlanError,
+        optional_match_clause::evaluate_optional_match_clause, LogicalPlan,
         Projection, ProjectionItem, Union, UnionType,
     },
     query_planner::plan_ctx::PlanCtx,

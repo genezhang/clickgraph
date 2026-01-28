@@ -7,7 +7,6 @@
 use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::errors::RenderBuildError;
-use crate::render_plan::plan_builder_helpers::*;
 use crate::render_plan::plan_builder_utils::extract_sorted_properties;
 
 /// Result type for properties builder operations

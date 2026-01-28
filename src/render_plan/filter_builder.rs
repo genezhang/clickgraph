@@ -11,7 +11,6 @@ use crate::render_plan::cte_extraction::{
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::filter_pipeline::categorize_filters;
 use crate::render_plan::plan_builder_helpers::*;
-use crate::render_plan::plan_builder_utils::*;
 use crate::render_plan::render_expr::{Operator, OperatorApplication, RenderExpr};
 
 /// Result type for filter builder operations
