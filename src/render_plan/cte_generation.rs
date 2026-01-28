@@ -16,7 +16,7 @@ use crate::render_plan::cte_extraction::extract_node_label_from_viewscan;
 use crate::render_plan::render_expr::RenderExpr;
 
 /// Context for CTE generation - holds property requirements and other metadata
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CteGenerationContext {
     /// Properties needed for variable-length paths, keyed by "left_alias-right_alias"
     variable_length_properties: HashMap<String, Vec<NodeProperty>>,
@@ -48,28 +48,6 @@ pub struct CteGenerationContext {
     pub end_node_label: Option<String>,
     /// Whether this VLP is optional (affects start node filter handling)
     pub is_optional: bool,
-}
-
-impl Default for CteGenerationContext {
-    fn default() -> Self {
-        Self {
-            variable_length_properties: HashMap::new(),
-            filter_expr: None,
-            start_cypher_alias: None,
-            end_cypher_alias: None,
-            schema: None,
-            fixed_length_joins: HashMap::new(),
-            spec: VariableLengthSpec::default(),
-            path_variable: None,
-            shortest_path_mode: None,
-            relationship_types: None,
-            edge_id: None,
-            relationship_cypher_alias: None,
-            start_node_label: None,
-            end_node_label: None,
-            is_optional: false,
-        }
-    }
 }
 
 impl CteGenerationContext {
