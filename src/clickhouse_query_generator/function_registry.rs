@@ -857,7 +857,8 @@ mod tests {
         assert!(get_function_mapping("TOUPPER").is_some()); // Case insensitive
         assert!(get_function_mapping("size").is_some());
 
-        let mapping = get_function_mapping("toUpper").unwrap();
+        let mapping = get_function_mapping("toUpper")
+            .expect("get_function_mapping failed for function in test");
         assert_eq!(mapping.clickhouse_name, "upper");
     }
 
@@ -866,7 +867,8 @@ mod tests {
         assert!(get_function_mapping("abs").is_some());
         assert!(get_function_mapping("sqrt").is_some());
 
-        let mapping = get_function_mapping("ceil").unwrap();
+        let mapping =
+            get_function_mapping("ceil").expect("get_function_mapping failed for function in test");
         assert_eq!(mapping.clickhouse_name, "ceil");
     }
 
@@ -875,17 +877,21 @@ mod tests {
         assert!(get_function_mapping("datetime").is_some());
         assert!(get_function_mapping("date").is_some());
 
-        let mapping = get_function_mapping("timestamp").unwrap();
+        let mapping = get_function_mapping("timestamp")
+            .expect("get_function_mapping failed for function in test");
         assert_eq!(mapping.clickhouse_name, "toUnixTimestamp");
     }
 
     #[test]
     fn test_arg_transformations() {
-        let mapping = get_function_mapping("split").unwrap();
+        let mapping = get_function_mapping("split")
+            .expect("get_function_mapping failed for function in test");
         assert!(mapping.arg_transform.is_some());
 
         // split(str, delim) -> splitByChar(delim, str)
-        let transform = mapping.arg_transform.unwrap();
+        let transform = mapping
+            .arg_transform
+            .expect("arg_transform should exist for this function");
         let args = vec!["'hello,world'".to_string(), "','".to_string()];
         let result = transform(&args);
         assert_eq!(result, vec!["','", "'hello,world'"]);
@@ -908,7 +914,8 @@ mod tests {
         assert!(get_function_mapping("atan2").is_some());
 
         // Verify 1:1 mappings
-        let mapping = get_function_mapping("sin").unwrap();
+        let mapping =
+            get_function_mapping("sin").expect("get_function_mapping failed for function in test");
         assert_eq!(mapping.clickhouse_name, "sin");
     }
 
@@ -921,7 +928,8 @@ mod tests {
         assert!(get_function_mapping("e").is_some());
         assert!(get_function_mapping("pow").is_some());
 
-        let mapping = get_function_mapping("exp").unwrap();
+        let mapping =
+            get_function_mapping("exp").expect("get_function_mapping failed for function in test");
         assert_eq!(mapping.clickhouse_name, "exp");
     }
 
@@ -930,10 +938,12 @@ mod tests {
         assert!(get_function_mapping("ltrim").is_some());
         assert!(get_function_mapping("rtrim").is_some());
 
-        let mapping = get_function_mapping("ltrim").unwrap();
+        let mapping = get_function_mapping("ltrim")
+            .expect("get_function_mapping failed for function in test");
         assert_eq!(mapping.clickhouse_name, "trimLeft");
 
-        let mapping = get_function_mapping("rtrim").unwrap();
+        let mapping = get_function_mapping("rtrim")
+            .expect("get_function_mapping failed for function in test");
         assert_eq!(mapping.clickhouse_name, "trimRight");
     }
 
@@ -944,10 +954,12 @@ mod tests {
         assert!(get_function_mapping("percentilecont").is_some());
         assert!(get_function_mapping("percentiledisc").is_some());
 
-        let mapping = get_function_mapping("stdev").unwrap();
+        let mapping = get_function_mapping("stdev")
+            .expect("get_function_mapping failed for function in test");
         assert_eq!(mapping.clickhouse_name, "stddevSamp");
 
-        let mapping = get_function_mapping("stdevp").unwrap();
+        let mapping = get_function_mapping("stdevp")
+            .expect("get_function_mapping failed for function in test");
         assert_eq!(mapping.clickhouse_name, "stddevPop");
     }
 
@@ -956,7 +968,8 @@ mod tests {
         assert!(get_function_mapping("coalesce").is_some());
         assert!(get_function_mapping("nullif").is_some());
 
-        let mapping = get_function_mapping("coalesce").unwrap();
+        let mapping = get_function_mapping("coalesce")
+            .expect("get_function_mapping failed for function in test");
         assert_eq!(mapping.clickhouse_name, "coalesce");
     }
 
@@ -969,9 +982,12 @@ mod tests {
         assert!(get_function_mapping("vector.similarity.cosine").is_some());
 
         // Test cosine similarity transformation
-        let mapping = get_function_mapping("gds.similarity.cosine").unwrap();
+        let mapping = get_function_mapping("gds.similarity.cosine")
+            .expect("get_function_mapping failed for function in test");
         assert!(mapping.arg_transform.is_some());
-        let transform = mapping.arg_transform.unwrap();
+        let transform = mapping
+            .arg_transform
+            .expect("arg_transform should exist for this function");
         let args = vec!["v1".to_string(), "v2".to_string()];
         let result = transform(&args);
         assert!(result[0].contains("1 - cosineDistance"));
@@ -991,7 +1007,8 @@ mod tests {
         assert!(get_function_mapping("quarter").is_some());
         assert!(get_function_mapping("week").is_some());
 
-        let mapping = get_function_mapping("year").unwrap();
+        let mapping =
+            get_function_mapping("year").expect("get_function_mapping failed for function in test");
         assert_eq!(mapping.clickhouse_name, "toYear");
     }
 
@@ -1003,7 +1020,8 @@ mod tests {
         assert!(get_function_mapping("normalize").is_some());
         assert!(get_function_mapping("valuetype").is_some());
 
-        let mapping = get_function_mapping("startswith").unwrap();
+        let mapping = get_function_mapping("startswith")
+            .expect("get_function_mapping failed for function in test");
         assert_eq!(mapping.clickhouse_name, "startsWith");
     }
 
@@ -1015,7 +1033,8 @@ mod tests {
         assert!(get_function_mapping("max").is_some());
         assert!(get_function_mapping("count").is_some());
 
-        let mapping = get_function_mapping("avg").unwrap();
+        let mapping =
+            get_function_mapping("avg").expect("get_function_mapping failed for function in test");
         assert_eq!(mapping.clickhouse_name, "avg");
     }
 
@@ -1027,7 +1046,8 @@ mod tests {
         assert!(get_function_mapping("single").is_some());
         assert!(get_function_mapping("isempty").is_some());
 
-        let mapping = get_function_mapping("any").unwrap();
+        let mapping =
+            get_function_mapping("any").expect("get_function_mapping failed for function in test");
         assert_eq!(mapping.clickhouse_name, "arrayExists");
     }
 

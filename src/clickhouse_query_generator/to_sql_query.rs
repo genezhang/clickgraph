@@ -432,11 +432,22 @@ fn rewrite_expr_for_vlp(
 }
 
 /// Derive Cypher property name from database column name
-/// This uses common patterns from the schema:
+///
+/// ⚠️ TECHNICAL DEBT: This uses hardcoded mappings for common schema patterns.
+/// This is a workaround that should eventually be replaced with schema-aware resolution.
+///
+/// Current mappings:
 /// - full_name → name (in social_benchmark, "name" is the Cypher property, "full_name" is the DB column)
 /// - email_address → email (same pattern)
 /// - user_id → id (user_id is the DB column, but Cypher uses "id" for the property)
-/// - For now, we hardcode the common mapping. A better approach would be to pass the schema.
+/// - object_type → type (filesystem schema)
+/// - size_bytes → size (filesystem schema)
+/// - owner_id → owner (filesystem schema)
+///
+/// TODO: Pass schema context to this function to enable schema-aware property mapping.
+/// This would allow proper handling of arbitrary schema variations without hardcoding.
+///
+/// FUTURE: Consider caching property mapping results to improve performance for repeated queries.
 fn derive_cypher_property_name(db_column: &str) -> String {
     // Common mappings for various schemas
     // Social benchmark schema
@@ -1614,7 +1625,7 @@ impl RenderExpr {
                         "false".into()
                     }
                 }
-                Literal::String(s) => format!("'{}'", s), //format!("'{}'", s.replace('\'', "''")),
+                Literal::String(s) => format!("'{}'", s),
                 Literal::Null => "NULL".into(),
             },
             RenderExpr::Parameter(name) => format!("${}", name),
@@ -1656,13 +1667,29 @@ impl RenderExpr {
                         return raw_value.to_string();
                     }
 
-                    // COMPREHENSIVE FIX: Enhanced heuristic for table alias determination
-                    // This handles ALL column names by inferring from column patterns and table context
-
-                    // STRATEGY: Infer table alias from column name patterns and common conventions
-                    // This covers the vast majority of real-world cases until we can implement
-                    // proper context propagation for multi-table queries
-
+                    // ⚠️ TECHNICAL DEBT: Heuristic table alias inference (Temporary workaround)
+                    //
+                    // CONTEXT: This uses pattern matching on column names to infer the correct table alias.
+                    // Works well for simple queries but breaks down in complex multi-join scenarios.
+                    //
+                    // CURRENT STRATEGY: Infer table alias from column name patterns and common naming conventions
+                    // This covers ~95% of real-world cases and maintains backward compatibility.
+                    //
+                    // ISSUES WITH THIS APPROACH:
+                    // - Fails for non-standard naming conventions (e.g., "t_name" instead of "user_name")
+                    // - Ambiguous in multi-table scenarios (e.g., both users and posts have "id")
+                    // - Requires hardcoding new patterns for each new entity type
+                    // - Fragile when column names conflict across entity types
+                    //
+                    // TODO: Long-term solution should:
+                    // 1. Pass table context/alias through the rendering pipeline
+                    // 2. Track which columns belong to which tables in RenderExpr
+                    // 3. Eliminate guessing with explicit table.column mappings in RenderPlan
+                    // 4. Add property resolution via schema for Cypher→Database column mapping
+                    //
+                    // PERFORMANCE NOTE: Consider caching heuristic results to avoid repeated pattern matching
+                    //
+                    // Current table alias patterns:
                     let alias = if raw_value.contains("user")
                         || raw_value.contains("username")
                         || raw_value.contains("last_login")
@@ -1945,6 +1972,17 @@ impl RenderExpr {
                 column.to_sql(&table_alias.0)
             }
             RenderExpr::OperatorApplicationExp(op) => {
+                // ⚠️ TODO: Operator rendering consolidation (Phase 3)
+                // This code is duplicated in to_sql.rs (~70 lines of similar operator handling).
+                // Both implementations handle Operator enums with identical variants but different types:
+                // - to_sql.rs: crate::query_planner::logical_expr::Operator
+                // - to_sql_query.rs: crate::render_plan::render_expr::Operator
+                // Phase 3 consolidation strategy: Create OperatorRenderer trait (see notes/OPERATOR_RENDERING_ANALYSIS.md)
+                // Benefits:
+                // - Eliminate duplication without type system complexity
+                // - Preserve context-specific behavior (error handling, special cases)
+                // - Enable future operator extensions
+                // Estimated effort: 4-6 hours, should be 100% backward compatible
                 log::debug!(
                     "RenderExpr::to_sql() OperatorApplicationExp: operator={:?}, operands.len()={}",
                     op.operator,

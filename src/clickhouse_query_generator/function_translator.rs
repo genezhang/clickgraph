@@ -382,16 +382,16 @@ fn translate_ch_passthrough(
 ) -> Result<String, ClickhouseQueryGeneratorError> {
     // Strip the ch. or chagg. prefix to get the raw ClickHouse function name
     let ch_fn_name = get_ch_function_name(&fn_call.name).ok_or_else(|| {
-        ClickhouseQueryGeneratorError::SchemaError(format!(
-            "Expected ch. or chagg. prefix in function name: {}",
-            fn_call.name
-        ))
+        ClickhouseQueryGeneratorError::schema_error_with_context(
+            "Expected ch. or chagg. prefix in function name",
+            format!("function name provided: {}", fn_call.name),
+        )
     })?;
 
     if ch_fn_name.is_empty() {
-        return Err(ClickhouseQueryGeneratorError::SchemaError(
-            "ch./chagg. prefix requires a function name (e.g., ch.cityHash64, chagg.myAgg)"
-                .to_string(),
+        return Err(ClickhouseQueryGeneratorError::schema_error_with_context(
+            "ch./chagg. prefix requires a function name (e.g., ch.cityHash64, chagg.myAgg)",
+            format!("in ClickHouse pass-through function: {}", fn_call.name),
         ));
     }
 
@@ -399,10 +399,14 @@ fn translate_ch_passthrough(
     let args_sql: Result<Vec<String>, _> = fn_call.args.iter().map(|e| e.to_sql()).collect();
 
     let args_sql = args_sql.map_err(|e| {
-        ClickhouseQueryGeneratorError::SchemaError(format!(
-            "Failed to convert {} arguments to SQL: {}",
-            fn_call.name, e
-        ))
+        ClickhouseQueryGeneratorError::schema_error_with_context(
+            format!("Failed to convert arguments to SQL: {}", e),
+            format!(
+                "in {} function with {} arguments",
+                fn_call.name,
+                fn_call.args.len()
+            ),
+        )
     })?;
 
     log::debug!(
