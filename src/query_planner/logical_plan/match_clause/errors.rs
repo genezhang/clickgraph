@@ -1,7 +1,8 @@
 //! Error types for MATCH clause processing.
 //!
-//! This module re-exports the main LogicalPlanError since match clause
-//! errors are part of the broader logical plan error hierarchy.
-
-pub use crate::query_planner::logical_plan::errors::LogicalPlanError;
-pub use crate::query_planner::logical_plan::plan_builder::LogicalPlanResult;
+//! This module serves as a placeholder for MATCH clause specific error types.
+//! Currently, match clause errors use the broader LogicalPlanError hierarchy
+//! directly via `crate::query_planner::logical_plan::errors::LogicalPlanError`.
+//!
+//! This module exists for future extensibility if match-clause-specific
+//! error variants are needed.

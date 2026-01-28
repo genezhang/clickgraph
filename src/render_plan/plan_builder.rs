@@ -2,7 +2,7 @@ use crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGen
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
-use crate::query_planner::logical_expr::{Direction, LogicalExpr};
+use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::{
     GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem, ViewScan,
 };

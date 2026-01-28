@@ -1,3 +1,8 @@
+//! Projection-ViewScan integration utilities.
+//!
+//! Provides helper methods for [`Projection`] nodes that operate on [`ViewScan`] inputs,
+//! enabling column mapping and projection pushdown optimizations.
+
 use std::sync::Arc;
 
 use super::{LogicalPlan, Projection, ProjectionItem, ViewScan};

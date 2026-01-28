@@ -1,3 +1,29 @@
+//! WITH clause processing.
+//!
+//! Handles Cypher's WITH clause which creates scope boundaries and
+//! intermediate projections between query segments.
+//!
+//! # Key Semantics
+//!
+//! - **Scope Boundary**: Only exported aliases visible downstream
+//! - **Materialization**: Maps to SQL CTE in rendering
+//! - **Aggregation**: When containing aggregates, transformed to GroupBy
+//! - **Modifiers**: Supports ORDER BY, SKIP, LIMIT, WHERE within WITH
+//!
+//! # SQL Translation
+//!
+//! ```text
+//! WITH a, count(b) AS follows ORDER BY follows DESC LIMIT 10
+//! -> WITH cte AS (SELECT a, count(b) AS follows ... GROUP BY a ORDER BY follows DESC LIMIT 10)
+//! ```
+//!
+//! # Difference from RETURN
+//!
+//! Unlike RETURN (final projection), WITH:
+//! - Bridges to continuation (next MATCH/RETURN)
+//! - Creates scope isolation
+//! - Has ORDER BY, SKIP, LIMIT, WHERE as part of its syntax
+
 use crate::{
     open_cypher_parser::ast::WithClause as AstWithClause,
     query_planner::{

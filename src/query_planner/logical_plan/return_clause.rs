@@ -1,3 +1,21 @@
+//! RETURN clause processing.
+//!
+//! Handles Cypher's RETURN clause which projects and optionally aggregates results.
+//! Creates [`Projection`] and [`GroupBy`] logical plan nodes.
+//!
+//! # Features
+//!
+//! - Simple projections: `RETURN u.name, u.email`
+//! - Aggregations: `RETURN count(*), avg(score)`
+//! - Aliasing: `RETURN u.name AS userName`
+//! - DISTINCT: `RETURN DISTINCT u.country`
+//! - Whole-entity: `RETURN u` (returns all properties as JSON)
+//!
+//! # Aggregation Handling
+//!
+//! When aggregates are detected, non-aggregate columns are automatically
+//! added to GROUP BY (ClickHouse requires explicit grouping).
+
 use crate::{
     open_cypher_parser::ast::{Expression, ReturnClause, ReturnItem},
     query_planner::logical_expr::{

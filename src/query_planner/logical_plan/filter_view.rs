@@ -1,3 +1,8 @@
+//! Filter-ViewScan integration utilities.
+//!
+//! Provides helper methods for [`Filter`] nodes that operate on [`ViewScan`] inputs,
+//! enabling predicate pushdown and filter composition optimizations.
+
 use std::sync::Arc;
 
 use super::{Filter, LogicalPlan, ViewScan};

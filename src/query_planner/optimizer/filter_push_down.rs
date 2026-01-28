@@ -1,3 +1,21 @@
+//! Filter pushdown optimization pass.
+//!
+//! Pushes [`Filter`] nodes down through the plan tree toward data sources,
+//! enabling earlier row elimination and better predicate pushdown to scans.
+//!
+//! # Optimization Strategy
+//!
+//! - Pushes filters through GraphNode, GraphRel, GroupBy, etc.
+//! - Merges adjacent filters with AND
+//! - Stops at boundaries that change filter semantics (aggregations, joins)
+//!
+//! # Example
+//!
+//! ```text
+//! Before: Filter(a.x > 10, GraphRel(...))
+//! After:  GraphRel(Filter(a.x > 10, left), center, right)
+//! ```
+
 use std::sync::Arc;
 
 use crate::query_planner::{

@@ -1,3 +1,33 @@
+//! Logical plan builder for Cypher queries.
+//!
+//! This module orchestrates the construction of [`LogicalPlan`] trees from
+//! parsed Cypher AST. It processes clauses in sequential order, building
+//! up the plan from innermost scans to outermost projections.
+//!
+//! # Clause Processing Order
+//!
+//! ```text
+//! 1. MATCH clauses      → ViewScan, GraphNode, GraphRel nodes
+//! 2. OPTIONAL MATCH     → CartesianProduct with is_optional=true
+//! 3. UNWIND clauses     → Unwind nodes (ARRAY JOIN)
+//! 4. WHERE clause       → Filter nodes
+//! 5. WITH clause        → WithClause (scope boundary + projection)
+//! 6. ORDER BY           → OrderBy nodes
+//! 7. SKIP/LIMIT         → Skip/Limit nodes
+//! 8. RETURN clause      → Projection nodes
+//! ```
+//!
+//! # Key Functions
+//!
+//! - [`build_logical_plan`] - Main entry point for plan construction
+//!
+//! # Error Handling
+//!
+//! Returns [`LogicalPlanResult`] wrapping [`LogicalPlanError`] for:
+//! - Schema validation failures
+//! - Unsupported syntax
+//! - Type inference errors
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

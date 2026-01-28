@@ -1,3 +1,21 @@
+//! UNWIND clause processing.
+//!
+//! Handles Cypher's UNWIND which expands arrays into individual rows.
+//! Maps to ClickHouse ARRAY JOIN for efficient array processing.
+//!
+//! # SQL Translation
+//!
+//! ```text
+//! UNWIND n.items AS item
+//! → ARRAY JOIN n.items AS item
+//! ```
+//!
+//! # Use Cases
+//!
+//! - Expanding multi-valued properties
+//! - Processing list comprehension results
+//! - Unnesting nested data structures
+
 use std::sync::Arc;
 
 use crate::{
