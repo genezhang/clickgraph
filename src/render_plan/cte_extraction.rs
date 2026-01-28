@@ -20,7 +20,6 @@ use crate::render_plan::cte_manager::CteManager;
 use crate::render_plan::expression_utils::{flatten_addition_operands, has_string_operand};
 use crate::utils::cte_naming::generate_cte_name;
 
-use super::cte_generation::map_property_to_column_with_schema;
 use super::errors::RenderBuildError;
 use super::filter_pipeline::{categorize_filters, CategorizedFilters};
 use super::plan_builder::RenderPlanBuilder;

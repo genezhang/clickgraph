@@ -55,11 +55,11 @@ impl GroupByBuilding {
             LogicalExpr::OperatorApplicationExp(op) => op
                 .operands
                 .iter()
-                .any(|operand| Self::contains_aggregate(operand)),
+                .any(Self::contains_aggregate),
             LogicalExpr::ScalarFnCall(func) => {
-                func.args.iter().any(|arg| Self::contains_aggregate(arg))
+                func.args.iter().any(Self::contains_aggregate)
             }
-            LogicalExpr::List(list) => list.iter().any(|item| Self::contains_aggregate(item)),
+            LogicalExpr::List(list) => list.iter().any(Self::contains_aggregate),
             LogicalExpr::Case(case_expr) => {
                 // Check if CASE expression contains aggregates in:
                 // 1. The optional simple CASE expression

@@ -510,7 +510,7 @@ fn parse_variable_length_spec(input: &'_ str) -> IResult<&'_ str, Option<Variabl
         fixed_length_parser,
         unbounded_parser,
     ))
-    .map(|spec| Some(spec))
+    .map(Some)
     .parse(input)?;
 
     // Validate the parsed specification

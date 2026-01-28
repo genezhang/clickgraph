@@ -182,7 +182,7 @@ pub fn categorize_filters(
             RenderExpr::OperatorApplicationExp(op) => op
                 .operands
                 .iter()
-                .any(|operand| contains_path_function(operand)),
+                .any(contains_path_function),
             _ => false,
         }
     }

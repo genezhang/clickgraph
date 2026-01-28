@@ -99,7 +99,7 @@ fn map_property_to_db_column(
         cypher_property,
         node_label,
     )
-    .map_err(|e| PropertyMappingError::MappingFailed(e))
+    .map_err(PropertyMappingError::MappingFailed)
 }
 
 /// Errors that can occur during property mapping

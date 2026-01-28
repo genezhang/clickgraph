@@ -19,7 +19,7 @@ use crate::render_plan::from_builder::FromBuilder;
 use crate::render_plan::plan_builder::RenderPlanBuilder;
 use crate::render_plan::plan_builder::RenderPlanBuilderResult;
 use crate::render_plan::render_expr::{
-    AggregateFnCall, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+    Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
 };
 use crate::render_plan::{ArrayJoin, Join, JoinType, RenderPlan};
 use std::sync::Arc;

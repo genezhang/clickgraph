@@ -48,7 +48,7 @@ fn contains_string_literal(expr: &RenderExpr) -> bool {
     match expr {
         RenderExpr::Literal(Literal::String(_)) => true,
         RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
-            op.operands.iter().any(|o| contains_string_literal(o))
+            op.operands.iter().any(contains_string_literal)
         }
         _ => false,
     }
@@ -56,7 +56,7 @@ fn contains_string_literal(expr: &RenderExpr) -> bool {
 
 /// Check if any operand in the expression contains a string
 fn has_string_operand(operands: &[RenderExpr]) -> bool {
-    operands.iter().any(|op| contains_string_literal(op))
+    operands.iter().any(contains_string_literal)
 }
 
 /// Flatten nested + operations into a list of operands for concat()
@@ -65,7 +65,7 @@ fn flatten_addition_operands(expr: &RenderExpr) -> Vec<String> {
         RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => op
             .operands
             .iter()
-            .flat_map(|o| flatten_addition_operands(o))
+            .flat_map(flatten_addition_operands)
             .collect(),
         _ => vec![expr.to_sql()],
     }
@@ -2098,7 +2098,7 @@ impl RenderExpr {
                     let flattened: Vec<String> = op
                         .operands
                         .iter()
-                        .flat_map(|o| flatten_addition_operands(o))
+                        .flat_map(flatten_addition_operands)
                         .collect();
                     return format!("concat({})", flattened.join(", "));
                 }
@@ -2506,7 +2506,7 @@ impl ToSql for OperatorApplication {
             let flattened: Vec<String> = self
                 .operands
                 .iter()
-                .flat_map(|o| flatten_addition_operands(o))
+                .flat_map(flatten_addition_operands)
                 .collect();
             return format!("concat({})", flattened.join(", "));
         }

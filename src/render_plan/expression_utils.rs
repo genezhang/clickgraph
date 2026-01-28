@@ -449,7 +449,7 @@ pub fn contains_string_literal(expr: &RenderExpr) -> bool {
     match expr {
         RenderExpr::Literal(Literal::String(_)) => true,
         RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
-            op.operands.iter().any(|o| contains_string_literal(o))
+            op.operands.iter().any(contains_string_literal)
         }
         _ => false,
     }
@@ -457,7 +457,7 @@ pub fn contains_string_literal(expr: &RenderExpr) -> bool {
 
 /// Check if any operand is a string literal (for string concatenation detection)
 pub fn has_string_operand(operands: &[RenderExpr]) -> bool {
-    operands.iter().any(|op| contains_string_literal(op))
+    operands.iter().any(contains_string_literal)
 }
 
 /// Flatten nested + operations into a list of operands for concat()

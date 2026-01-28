@@ -679,7 +679,7 @@ pub fn map_property_to_column_with_relationship_context(
     let schema = if let Some(sname) = resolved_schema_name {
         log::info!("  ✓ Using explicit schema: {}", sname);
         schemas.get(&sname).ok_or_else(|| {
-            let available_schemas: Vec<String> = schemas.keys().map(|s| s.clone()).collect();
+            let available_schemas: Vec<String> = schemas.keys().cloned().collect();
             let msg = format!(
                 "Schema '{}' not found. Available schemas: {}",
                 sname,

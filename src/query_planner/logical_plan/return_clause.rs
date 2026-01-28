@@ -37,9 +37,9 @@ fn contains_aggregate(expr: &LogicalExpr) -> bool {
         LogicalExpr::OperatorApplicationExp(op) => op
             .operands
             .iter()
-            .any(|operand| contains_aggregate(operand)),
-        LogicalExpr::ScalarFnCall(func) => func.args.iter().any(|arg| contains_aggregate(arg)),
-        LogicalExpr::List(list) => list.iter().any(|item| contains_aggregate(item)),
+            .any(contains_aggregate),
+        LogicalExpr::ScalarFnCall(func) => func.args.iter().any(contains_aggregate),
+        LogicalExpr::List(list) => list.iter().any(contains_aggregate),
         LogicalExpr::Case(case_expr) => {
             if let Some(expr) = &case_expr.expr {
                 if contains_aggregate(expr) {

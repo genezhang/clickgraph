@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::{
     open_cypher_parser::ast,
     query_planner::{
@@ -20,7 +19,7 @@ use crate::{
 };
 
 use crate::graph_catalog::graph_schema::GraphSchema;
-use crate::query_planner::logical_plan::{generate_id, ViewScan};
+use crate::query_planner::logical_plan::generate_id;
 use std::collections::HashMap;
 
 // Import from sibling modules
@@ -28,13 +27,11 @@ use super::helpers::{
     compute_connection_aliases, compute_rel_node_labels, compute_variable_length,
     convert_properties, convert_properties_to_operator_application, determine_optional_anchor,
     generate_denormalization_aware_scan, generate_scan, is_denormalized_scan,
-    is_label_denormalized, register_node_in_context, register_path_variable,
+    is_label_denormalized, register_node_in_context,
     register_relationship_in_context,
 };
 use super::type_inference::{infer_node_label_from_schema, infer_relationship_type_from_nodes};
-use super::view_scan::{
-    generate_relationship_center, try_generate_relationship_view_scan, try_generate_view_scan,
-};
+use super::view_scan::generate_relationship_center;
 
 // Wrapper for backwards compatibility
 // Reserved for future use when non-optional traversal needs explicit mode
@@ -159,7 +156,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             .map(|props| {
                 props
                     .into_iter()
-                    .map(|p| Property::try_from(p))
+                    .map(Property::try_from)
                     .collect::<Result<Vec<_>, _>>()
             })
             .transpose()
@@ -169,7 +166,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                     e
                 ))
             })?
-            .unwrap_or_else(Vec::new);
+            .unwrap_or_default();
 
         // Extract end node info early - needed for filtering anonymous edge types
         let end_node_ref = connected_pattern.end_node.borrow();
@@ -304,7 +301,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             .map(|props| {
                 props
                     .into_iter()
-                    .map(|p| Property::try_from(p))
+                    .map(Property::try_from)
                     .collect::<Result<Vec<_>, _>>()
             })
             .transpose()
@@ -314,7 +311,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                     e
                 ))
             })?
-            .unwrap_or_else(Vec::new);
+            .unwrap_or_default();
 
         crate::debug_print!(
             "│ End node: alias='{}', label={:?}",
@@ -328,7 +325,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             .map(|props| {
                 props
                     .into_iter()
-                    .map(|p| Property::try_from(p))
+                    .map(Property::try_from)
                     .collect::<Result<Vec<_>, _>>()
             })
             .transpose()
@@ -338,7 +335,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                     e
                 ))
             })?
-            .unwrap_or_else(Vec::new);
+            .unwrap_or_default();
 
         // if start alias already present in ctx map, it means the current nested connected pattern's start node will be connecting at right side plan and end node will be at the left
         if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&start_node_alias) {
@@ -948,7 +945,7 @@ pub(super) fn traverse_node_pattern(
         .map(|props| {
             props
                 .into_iter()
-                .map(|p| Property::try_from(p))
+                .map(Property::try_from)
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()?
