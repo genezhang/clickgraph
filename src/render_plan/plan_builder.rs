@@ -232,15 +232,7 @@ pub(crate) trait RenderPlanBuilder {
     fn find_id_column_with_cte_context(
         &self,
         alias: &str,
-        cte_schemas: &HashMap<
-            String,
-            (
-                Vec<SelectItem>,
-                Vec<String>,
-                HashMap<String, String>,
-                HashMap<(String, String), String>,
-            ),
-        >,
+        cte_schemas: &super::CteSchemas,
         cte_references: &HashMap<String, String>,
     ) -> RenderPlanBuilderResult<String>;
 
@@ -478,15 +470,7 @@ impl RenderPlanBuilder for LogicalPlan {
     fn find_id_column_with_cte_context(
         &self,
         alias: &str,
-        cte_schemas: &HashMap<
-            String,
-            (
-                Vec<SelectItem>,
-                Vec<String>,
-                HashMap<String, String>,
-                HashMap<(String, String), String>,
-            ),
-        >,
+        cte_schemas: &super::CteSchemas,
         cte_references: &HashMap<String, String>,
     ) -> RenderPlanBuilderResult<String> {
         // First, check if this alias comes from a CTE
@@ -612,7 +596,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // 🔧 FIX: Use the schema parameter instead of creating an empty schema
                 let render_cte = Cte::new(
                     strip_database_prefix(&logical_cte.name),
-                    super::CteContent::Structured(logical_cte.input.to_render_plan(schema)?),
+                    super::CteContent::Structured(Box::new(logical_cte.input.to_render_plan(schema)?)),
                     false, // is_recursive
                 );
                 Some(render_cte)
@@ -1345,7 +1329,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 let cte_skip = SkipItem(with.input.extract_skip());
                 let cte_limit = LimitItem(with.input.extract_limit());
 
-                let cte_content = CteContent::Structured(RenderPlan {
+                let cte_content = CteContent::Structured(Box::new(RenderPlan {
                     ctes: CteItems(vec![]),
                     select: SelectItems {
                         items: cte_select_items,
@@ -1363,7 +1347,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     union: UnionItems(None),
                     fixed_path_info: None,
                     // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
-                });
+                }));
 
                 // Generate CTE base name using centralized utility
                 // Note: to_render_plan doesn't have access to counter, so we use base name.

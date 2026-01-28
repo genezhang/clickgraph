@@ -738,15 +738,7 @@ fn rewrite_render_expr_for_cte(
     expr: &RenderExpr,
     cte_alias: &str,
     cte_references: &HashMap<String, String>,
-    cte_schemas: &std::collections::HashMap<
-        String,
-        (
-            Vec<SelectItem>,
-            Vec<String>,
-            HashMap<String, String>,
-            HashMap<(String, String), String>,
-        ),
-    >,
+    cte_schemas: &crate::render_plan::CteSchemas,
 ) -> RenderExpr {
     // Convert cte_schemas to simple HashMap<String, String> format expected by CTERewriteContext
     let schemas_map: std::collections::HashMap<String, String> =
@@ -806,15 +798,7 @@ fn extract_cte_join_condition_from_filter(
     cte_alias: &str,
     cte_aliases: &[String],
     cte_references: &HashMap<String, String>,
-    cte_schemas: &std::collections::HashMap<
-        String,
-        (
-            Vec<SelectItem>,
-            Vec<String>,
-            HashMap<String, String>,
-            HashMap<(String, String), String>,
-        ),
-    >,
+    cte_schemas: &crate::render_plan::CteSchemas,
 ) -> Option<OperatorApplication> {
     match filter_expr {
         RenderExpr::OperatorApplicationExp(op_app) => {
@@ -4674,15 +4658,7 @@ pub(crate) fn compute_cte_id_column_for_alias(alias: &str, plan: &LogicalPlan) -
 pub(crate) fn expand_table_alias_to_select_items(
     alias: &str,
     plan: &LogicalPlan,
-    cte_schemas: &HashMap<
-        String,
-        (
-            Vec<SelectItem>,
-            Vec<String>,
-            HashMap<String, String>,
-            HashMap<(String, String), String>,
-        ),
-    >,
+    cte_schemas: &crate::render_plan::CteSchemas,
     cte_references: &HashMap<String, String>,
     has_aggregation: bool,
     plan_ctx: Option<&PlanCtx>,
@@ -5063,15 +5039,7 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
     alias: &str,
     plan: &LogicalPlan,
     schema: &GraphSchema,
-    cte_schemas: &HashMap<
-        String,
-        (
-            Vec<SelectItem>,
-            Vec<String>,
-            HashMap<String, String>,
-            HashMap<(String, String), String>,
-        ),
-    >,
+    cte_schemas: &crate::render_plan::CteSchemas,
     cte_references: &HashMap<String, String>,
     // Optional VLP CTE metadata for deterministic lookups (Phase 3 CTE integration)
     vlp_cte_metadata: Option<&HashMap<String, (String, Vec<super::CteColumnMetadata>)>>,
@@ -5885,15 +5853,7 @@ pub(crate) fn update_graph_joins_cte_refs(
 /// The to_render_plan() method doesn't know about CTEs, so we expand here first.
 fn expand_table_aliases_in_plan(
     plan: LogicalPlan,
-    cte_schemas: &HashMap<
-        String,
-        (
-            Vec<SelectItem>,
-            Vec<String>,
-            HashMap<String, String>,
-            HashMap<(String, String), String>,
-        ),
-    >,
+    cte_schemas: &crate::render_plan::CteSchemas,
     cte_references: &HashMap<String, String>,
     schema: &GraphSchema,
 ) -> RenderPlanBuilderResult<LogicalPlan> {
@@ -7512,7 +7472,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // Create the CTE with column metadata
             let mut with_cte = Cte::new(
                 cte_name.clone(),
-                CteContent::Structured(with_cte_render.clone()),
+                CteContent::Structured(Box::new(with_cte_render.clone())),
                 false,
             );
             with_cte.columns = cte_columns;
@@ -8939,7 +8899,7 @@ pub(crate) fn build_with_aggregation_match_cte_plan(
     // Step 5: Create CTE from the GroupBy render plan
     let group_by_cte = Cte::new(
         cte_name.clone(),
-        CteContent::Structured(group_by_render),
+        CteContent::Structured(Box::new(group_by_render)),
         false,
     );
 
@@ -9760,15 +9720,7 @@ pub(crate) fn prune_joins_covered_by_cte(
     plan: &LogicalPlan,
     cte_name: &str,
     exported_aliases: &std::collections::HashSet<&str>,
-    _cte_schemas: &std::collections::HashMap<
-        String,
-        (
-            Vec<SelectItem>,
-            Vec<String>,
-            HashMap<String, String>,
-            HashMap<(String, String), String>,
-        ),
-    >,
+    _cte_schemas: &crate::render_plan::CteSchemas,
 ) -> RenderPlanBuilderResult<LogicalPlan> {
     use crate::query_planner::logical_plan::*;
     use std::sync::Arc;
@@ -9986,15 +9938,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
     with_alias: &str,
     cte_name: &str,
     pre_with_aliases: &std::collections::HashSet<String>,
-    cte_schemas: &std::collections::HashMap<
-        String,
-        (
-            Vec<SelectItem>,
-            Vec<String>,
-            HashMap<String, String>,
-            HashMap<(String, String), String>,
-        ),
-    >,
+    cte_schemas: &crate::render_plan::CteSchemas,
 ) -> RenderPlanBuilderResult<LogicalPlan> {
     use crate::query_planner::logical_plan::*;
     use std::collections::HashMap;
@@ -10237,15 +10181,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
     fn create_cte_reference(
         cte_name: &str,
         with_alias: &str,
-        cte_schemas: &std::collections::HashMap<
-            String,
-            (
-                Vec<SelectItem>,
-                Vec<String>,
-                HashMap<String, String>,
-                HashMap<(String, String), String>,
-            ),
-        >,
+        cte_schemas: &crate::render_plan::CteSchemas,
     ) -> LogicalPlan {
         use crate::graph_catalog::expression_parser::PropertyValue;
 

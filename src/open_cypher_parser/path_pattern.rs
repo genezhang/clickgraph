@@ -25,6 +25,17 @@ use super::expression::parse_parameter;
 use super::{common, expression};
 use nom::character::complete::digit1;
 
+/// Type alias for node label/property parsing result to reduce complexity
+type NodeLabelPropertyResult<'a> = (Option<Vec<&'a str>>, Option<Vec<Property<'a>>>);
+
+/// Type alias for relationship internals parsing result to reduce complexity
+type RelInternalsResult<'a> = (
+    Option<&'a str>,
+    Option<Vec<&'a str>>,
+    Option<Vec<Property<'a>>>,
+    Option<VariableLengthSpec>,
+);
+
 /// Maximum depth for parsing consecutive relationships in a single path pattern.
 /// This prevents stack overflow on adversarial inputs like (a)-[]->(b)-[]->(c)...(repeated 50x)
 /// Real-world queries rarely exceed 10 hops; 50 is extremely generous while protecting against DoS.
@@ -287,7 +298,7 @@ fn parse_name_or_label_with_properties(
 // Parse node name or labels (multi-label support) with properties
 fn parse_name_or_labels_with_properties(
     input: &'_ str,
-) -> IResult<&'_ str, (Option<Vec<&'_ str>>, Option<Vec<Property<'_>>>)> {
+) -> IResult<&'_ str, NodeLabelPropertyResult<'_>> {
     let (remainder, node_labels) = parse_node_labels(input)?;
     let (remainder, node_properties) = opt(parse_properties).parse(remainder)?;
     Ok((remainder, (node_labels, node_properties)))
@@ -406,15 +417,7 @@ fn parse_node_pattern(input: &'_ str) -> IResult<&'_ str, NodePattern<'_>> {
 // Parse relationship internals with support for multiple labels
 fn parse_relationship_internals_with_multiple_labels(
     input: &'_ str,
-) -> IResult<
-    &'_ str,
-    (
-        Option<&'_ str>,
-        Option<Vec<&'_ str>>,
-        Option<Vec<Property<'_>>>,
-        Option<VariableLengthSpec>,
-    ),
-> {
+) -> IResult<&'_ str, RelInternalsResult<'_>> {
     let (input, _) = ws(char('[')).parse(input)?;
     let (input, _) = multispace0(input)?;
 

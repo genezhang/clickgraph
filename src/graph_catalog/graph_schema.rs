@@ -306,8 +306,8 @@ impl fmt::Display for Direction {
 
 #[derive(Debug, Clone)]
 pub enum GraphSchemaElement {
-    Node(NodeSchema),
-    Rel(RelationshipSchema),
+    Node(Box<NodeSchema>),
+    Rel(Box<RelationshipSchema>),
 }
 
 /// Node identifier schema - supports both single and composite node IDs.

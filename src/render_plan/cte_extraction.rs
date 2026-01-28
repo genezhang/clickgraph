@@ -2975,7 +2975,7 @@ pub fn extract_ctes_with_context(
             // which led to node lookups failing in VLP queries
             Ok(vec![Cte::new(
                 logical_cte.name.clone(),
-                super::CteContent::Structured(logical_cte.input.to_render_plan(schema)?),
+                super::CteContent::Structured(Box::new(logical_cte.input.to_render_plan(schema)?)),
                 false,
             )])
         }
@@ -3303,7 +3303,7 @@ pub fn extract_ctes_with_context(
             // Create the CTE
             let with_cte = Cte::new(
                 cte_name.clone(),
-                CteContent::Structured(cte_render_plan),
+                CteContent::Structured(Box::new(cte_render_plan)),
                 false,
             );
 

@@ -28,6 +28,13 @@ use crate::{
     query_planner::plan_ctx::PlanCtx,
 };
 use std::collections::HashSet;
+
+/// Type alias for pattern comprehension tuple to reduce complexity
+type PatternComprehension<'a> = (
+    crate::open_cypher_parser::ast::PathPattern<'a>,
+    Option<Box<Expression<'a>>>,
+    Box<Expression<'a>>,
+);
 use std::sync::Arc;
 
 /// Check if an expression contains any aggregate function calls (recursively).
@@ -215,14 +222,7 @@ fn property_key(prop: &PropertyAccess) -> String {
 /// is a list of (pattern, where_clause, projection) tuples that need OPTIONAL MATCH nodes added.
 fn rewrite_expression_pattern_comprehensions<'a>(
     expr: Expression<'a>,
-) -> (
-    Expression<'a>,
-    Vec<(
-        crate::open_cypher_parser::ast::PathPattern<'a>,
-        Option<Box<Expression<'a>>>,
-        Box<Expression<'a>>,
-    )>,
-) {
+) -> (Expression<'a>, Vec<PatternComprehension<'a>>) {
     use crate::open_cypher_parser::ast::*;
 
     match expr {
