@@ -1,3 +1,32 @@
+//! Graph Join Inference Analyzer
+//!
+//! This module handles inferring SQL JOINs from Cypher graph patterns.
+//! It converts MATCH patterns like `(a)-[r:FOLLOWS]->(b)` into appropriate
+//! SQL JOIN conditions for ClickHouse.
+//!
+//! ## Architecture Overview
+//!
+//! The analyzer uses a phased approach:
+//!
+//! 1. **Pattern Metadata Construction** - Build a lightweight index over GraphRel trees
+//! 2. **PatternSchemaContext Integration** - Map patterns to schema-aware join strategies
+//! 3. **Join Generation** - Create SQL JOINs based on pattern type (standard, FK-edge, denormalized)
+//! 4. **Cross-Branch Detection** - Handle branching patterns like `(a)-[:R1]->(b), (a)-[:R2]->(c)`
+//!
+//! ## Key Types
+//!
+//! - [`GraphJoinInference`] - Main analyzer pass implementing [`AnalyzerPass`]
+//! - [`PatternGraphMetadata`] - Cached pattern information for efficient lookup
+//! - [`NodeAppearance`] - Tracks where node variables appear for cross-branch detection
+//!
+//! ## Supported Pattern Types
+//!
+//! - Standard edge tables with separate node/edge tables
+//! - FK-edge patterns (foreign key relationships)
+//! - Denormalized patterns (node properties embedded in edge table)
+//! - Variable-length paths (VLP) via CTE generation
+//! - Cross-branch shared nodes
+
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,

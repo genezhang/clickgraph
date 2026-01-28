@@ -64,7 +64,7 @@ fn format_parameter(value: &Value) -> Result<String, ParameterSubstitutionError>
         Value::Bool(b) => Ok(if *b { "1".to_string() } else { "0".to_string() }),
 
         Value::Array(arr) => {
-            let items: Result<Vec<String>, _> = arr.iter().map(|v| format_parameter(v)).collect();
+            let items: Result<Vec<String>, _> = arr.iter().map(format_parameter).collect();
             Ok(format!("[{}]", items?.join(", ")))
         }
 

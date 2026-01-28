@@ -2,6 +2,13 @@
 //!
 //! This module provides common utilities for working with RenderExpr trees, including
 //! a visitor trait for implementing expression transformations.
+//!
+//! # Technical Debt
+//!
+//! Several structs and functions are currently unused but may be needed for
+//! planned features. Allow dead code temporarily.
+
+#![allow(dead_code)]
 
 use super::render_expr::{Literal, Operator, PropertyAccess, RenderExpr, TableAlias};
 use crate::graph_catalog::expression_parser::PropertyValue;

@@ -62,8 +62,8 @@ pub struct QueryPerformanceMetrics {
     pub result_rows: Option<usize>,
 }
 
-impl QueryPerformanceMetrics {
-    pub fn new() -> Self {
+impl Default for QueryPerformanceMetrics {
+    fn default() -> Self {
         Self {
             total_time: 0.0,
             parse_time: 0.0,
@@ -75,6 +75,12 @@ impl QueryPerformanceMetrics {
             sql_queries_count: 0,
             result_rows: None,
         }
+    }
+}
+
+impl QueryPerformanceMetrics {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn log_performance(&self, query: &str) {

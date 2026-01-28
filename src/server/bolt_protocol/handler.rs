@@ -164,7 +164,7 @@ impl BoltHandler {
                 );
             }
 
-            let auth_token = message.extract_auth_token().unwrap_or_else(HashMap::new);
+            let auth_token = message.extract_auth_token().unwrap_or_default();
 
             // Extract database selection (Neo4j 4.0+ multi-database support)
             let database = message.extract_database();
@@ -444,7 +444,7 @@ impl BoltHandler {
             .extract_query()
             .ok_or_else(|| BoltError::invalid_message("RUN message missing query"))?;
 
-        let parameters = message.extract_parameters().unwrap_or_else(HashMap::new);
+        let parameters = message.extract_parameters().unwrap_or_default();
 
         // Get selected schema from context, or from RUN message metadata
         let (schema_name, tenant_id, role, view_parameters) = {

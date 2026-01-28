@@ -298,8 +298,8 @@ pub async fn run_with_config(config: ServerConfig) {
     println!("  HTTP API: http://{}", http_bind_address);
     if config.bolt_enabled {
         println!(
-            "  Bolt Protocol: bolt://{}",
-            format!("{}:{}", config.bolt_host, config.bolt_port)
+            "  Bolt Protocol: bolt://{}:{}",
+            config.bolt_host, config.bolt_port
         );
     }
 

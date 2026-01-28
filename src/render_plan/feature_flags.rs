@@ -3,6 +3,12 @@
 //! This module provides runtime feature flags to control the gradual rollout
 //! of plan_builder.rs extractions. Each flag corresponds to a module extraction
 //! and allows for safe rollback if issues are discovered.
+//!
+//! # Status
+//! These feature flags were used during the plan_builder refactoring and are
+//! retained for potential future rollback. Currently all extractions are complete.
+
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::env;

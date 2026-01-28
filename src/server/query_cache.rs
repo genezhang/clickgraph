@@ -64,20 +64,15 @@ macro_rules! lock_cache {
 }
 
 /// Cache control strategy from CYPHER replan option
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ReplanOption {
     /// Normal cache behavior - use cache if available, regenerate if needed
+    #[default]
     Default,
     /// Force regeneration even if cached - useful for debugging or cache warming
     Force,
     /// Always use cache - error if not cached - useful to prevent planning latency spikes
     Skip,
-}
-
-impl Default for ReplanOption {
-    fn default() -> Self {
-        ReplanOption::Default
-    }
 }
 
 impl ReplanOption {

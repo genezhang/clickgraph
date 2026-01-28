@@ -1,3 +1,42 @@
+//! # Graph Traversal Planning Pass
+//!
+//! This analyzer pass handles advanced graph traversal patterns that require
+//! special SQL generation strategies beyond simple JOINs.
+//!
+//! ## Primary Responsibilities
+//!
+//! 1. **Multi-Hop Path Planning**: Plans traversals that span multiple edges
+//!    and may require recursive CTEs or chained JOINs
+//!
+//! 2. **Alternative Relationship Handling**: Plans queries with `[:TYPE1|TYPE2]`
+//!    patterns that need UNION operations
+//!
+//! 3. **Bidirectional Traversal**: Handles undirected relationship patterns
+//!    `()-[]-()` that need to search both directions
+//!
+//! 4. **CTE Construction**: Creates Common Table Expressions for complex
+//!    traversal patterns that can't be expressed as simple JOINs
+//!
+//! ## What This Pass Does NOT Handle
+//!
+//! - **Variable-Length Paths** (`*1..3`): Handled by `graph_join_inference.rs`
+//!   and the SQL generator's CTE system
+//! - **Simple Relationships**: Direct `(a)-[r]->(b)` patterns use standard JOINs
+//!
+//! ## Processing Flow
+//!
+//! ```text
+//! GraphRel with multi-hop    →    CTE + InSubquery pattern
+//! GraphRel with alternates   →    UNION of individual types
+//! Simple GraphRel            →    Pass through (handled by join inference)
+//! ```
+//!
+//! ## Key Functions
+//!
+//! - `analyze_with_graph_schema`: Entry point, dispatches by plan type
+//! - `create_traversal_cte`: Builds CTEs for multi-hop patterns
+//! - `build_union_for_alternates`: Creates UNIONs for `[:A|B]` patterns
+
 use std::sync::Arc;
 
 use crate::{
