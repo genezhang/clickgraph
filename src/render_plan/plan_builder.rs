@@ -303,20 +303,20 @@ pub(crate) trait RenderPlanBuilder {
 // VLP Union Branch Alias Rewriting
 // ============================================================================
 
-/// Rewrite SELECT aliases in Union branches that reference VLP CTEs.
-///
-/// Problem: Undirected shortestPath creates Union with 2 branches (forward/backward).
-/// Each branch uses Cypher aliases (a, b) but JOINs to VLP tables (start_node, end_node).
-/// SELECT items reference non-existent aliases causing "Unknown expression identifier".
-///
-/// Solution: For each Union branch:
-/// 1. Find VLP CTEs it references (look for vlp_cte joins)
-/// 2. Get VLP metadata (cypher_start_alias → start_node mapping)
-/// 3. Rewrite SELECT items: a.property → start_node.property
-///
-/// Extract VLP alias mappings from CTEs: Cypher alias → VLP table alias.
-/// Also extracts relationship aliases for denormalized patterns.
-
+// ============================================================================
+// Rewrite SELECT aliases in Union branches that reference VLP CTEs.
+//
+// Problem: Undirected shortestPath creates Union with 2 branches (forward/backward).
+// Each branch uses Cypher aliases (a, b) but JOINs to VLP tables (start_node, end_node).
+// SELECT items reference non-existent aliases causing "Unknown expression identifier".
+//
+// Solution: For each Union branch:
+// 1. Find VLP CTEs it references (look for vlp_cte joins)
+// 2. Get VLP metadata (cypher_start_alias → start_node mapping)
+// 3. Rewrite SELECT items: a.property → start_node.property
+//
+// Extract VLP alias mappings from CTEs: Cypher alias → VLP table alias.
+// Also extracts relationship aliases for denormalized patterns.
 // ============================================================================
 // ARCHITECTURAL NOTE: Multi-Type VLP Alias Mapping Evolution (Dec 27, 2025)
 // ============================================================================
@@ -352,7 +352,7 @@ pub(crate) trait RenderPlanBuilder {
 // Git history preserves the complex rewriting implementation for reference.
 // ============================================================================
 
-/// Recursively rewrite RenderExpr to use VLP table aliases
+// Recursively rewrite RenderExpr to use VLP table aliases
 
 // ============================================================================
 // WITH Clause Helper Functions (Code Deduplication)

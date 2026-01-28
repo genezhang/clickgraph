@@ -445,7 +445,7 @@ async fn query_handler_inner(
                     use crate::clickhouse_query_generator::pagerank::PageRankGenerator;
 
                     let config = PageRankConfig {
-                        iterations: pagerank.iterations as usize,
+                        iterations: pagerank.iterations,
                         damping_factor: pagerank.damping_factor,
                         convergence_threshold: None,
                     };

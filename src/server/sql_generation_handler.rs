@@ -216,7 +216,7 @@ pub async fn sql_generation_handler(
                 };
 
                 let config = PageRankConfig {
-                    iterations: pagerank.iterations as usize,
+                    iterations: pagerank.iterations,
                     damping_factor: pagerank.damping_factor,
                     convergence_threshold: None,
                 };

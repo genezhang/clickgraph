@@ -3229,7 +3229,6 @@ pub fn hoist_nested_ctes(from: &mut RenderPlan, to: &mut Vec<Cte>) {
 /// This is used to find the anchor alias for a CTE reference. For example, if we have:
 ///   GraphNode { alias: "a_b", input: ViewScan { source_table: "with_a_b_cte2", ... } }
 /// And cte_name is "with_a_b_cte2", this returns Some("a_b").
-
 /// Collect all aliases from a logical plan (GraphNode, GraphRel, GraphJoins).
 /// Rewrite operator application expressions with reverse alias mapping.
 pub fn rewrite_operator_application(
@@ -6492,7 +6491,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             //
                             // Solution: Map all exported aliases of the skipped WITH to the existing CTE.
                             // ALSO: Extract the analyzer's CTE name for this WITH to collapse it properly.
-                            let mut analyzer_cte_name_for_collapse: Option<String> = None;
                             for alias in &wc.exported_aliases {
                                 log::info!(
                                     "🔧 build_chained_with_match_cte_plan: Mapping skipped alias '{}' → existing CTE '{}'",
@@ -6522,8 +6520,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                             analyzer_cte_name.clone(),
                                             existing_cte.clone(),
                                         );
-                                        analyzer_cte_name_for_collapse =
-                                            Some(analyzer_cte_name.clone());
                                     }
                                 }
                             }
@@ -8204,14 +8200,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     for (cypher_prop, prop_value) in &vs.property_mapping {
                         if let PropertyValue::Column(_db_col) = prop_value {
                             // Check if this is a CTE column (has alias prefix)
-                            let mut found_alias = None;
                             for with_alias in &with_aliases {
                                 let prefix = format!("{}_", with_alias);
                                 if cypher_prop.starts_with(&prefix) {
                                     // This is a CTE column like "a_name"
                                     // Extract the property: "a_name" → "name"
                                     if let Some(_prop) = cypher_prop.strip_prefix(&prefix) {
-                                        found_alias = Some(with_alias.clone());
                                         // Store: (alias, cypher_property) → db_column
                                         // But we need to get the DB column from the base table...
                                         // For now, skip CTE columns
@@ -8824,7 +8818,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
     }
 
     // Add all CTEs (innermost first, which is correct order for SQL)
-    all_ctes.extend(render_plan.ctes.0.into_iter());
+    all_ctes.extend(render_plan.ctes.0);
     render_plan.ctes = CteItems(all_ctes);
 
     // Skip validation - CTEs are hoisted progressively through recursion
@@ -9012,7 +9006,7 @@ pub(crate) fn build_with_aggregation_match_cte_plan(
 
     // Step 9: Prepend the GroupBy CTE
     let mut all_ctes = vec![group_by_cte];
-    all_ctes.extend(render_plan.ctes.0.into_iter());
+    all_ctes.extend(render_plan.ctes.0);
     render_plan.ctes = CteItems(all_ctes);
 
     log::info!(
@@ -9950,7 +9944,6 @@ pub(crate) fn prune_joins_covered_by_cte(
 ///
 /// This is determined by checking if the join references aliases that are
 /// NOT in the post-WITH scope (i.e., they're part of the CTE content).
-
 /// Find the INNERMOST WITH clause subplan in a nested plan structure.
 ///
 /// KEY INSIGHT: With chained WITH clauses (e.g., WITH a MATCH...WITH a,b MATCH...),
@@ -9961,12 +9954,10 @@ pub(crate) fn prune_joins_covered_by_cte(
 /// whose input is "clean" (contains no nested WITH).
 ///
 /// Returns (with_clause_plan, alias_name) if found.
-
 /// Find all WITH clauses in a plan grouped by their alias.
 /// Returns HashMap where each alias maps to all WITH clause plans with that alias.
 /// This handles the case where Union branches each have their own WITH clause with the same alias.
 /// Returns owned (cloned) LogicalPlans to avoid lifetime issues with mutations.
-
 /// Prune joins from GraphJoins that are already covered by a CTE.
 ///
 /// Collapse a passthrough WITH clause by replacing it with its input.
@@ -9976,7 +9967,6 @@ pub(crate) fn prune_joins_covered_by_cte(
 ///
 /// This function finds the passthrough WITH for the given alias and replaces it with its input.
 /// Uses the analyzer's CTE name to distinguish between multiple consecutive WITHs with same alias.
-
 /// When we have a query like:
 ///   WITH a MATCH (a)-[:F]->(b) WITH a,b MATCH (b)-[:F]->(c)
 ///
