@@ -1,3 +1,8 @@
+//! Error types for optimizer passes.
+//!
+//! Defines errors that can occur during logical plan optimization,
+//! including filter combination failures and plan context errors.
+
 use std::fmt::Display;
 
 use thiserror::Error;

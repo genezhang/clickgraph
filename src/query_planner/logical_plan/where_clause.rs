@@ -1,3 +1,20 @@
+//! WHERE clause processing.
+//!
+//! Converts Cypher WHERE conditions into [`Filter`] logical plan nodes.
+//! Handles filter pushdown into UNION branches for optimized execution.
+//!
+//! # SQL Translation
+//!
+//! ```text
+//! WHERE u.active = true AND u.age > 18
+//! → WHERE users.is_active = 1 AND users.age > 18
+//! ```
+//!
+//! # Union Handling
+//!
+//! When the input plan is a UNION, the filter is pushed into each branch
+//! individually, allowing branch-specific column mapping.
+
 use std::sync::Arc;
 
 use crate::{

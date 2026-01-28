@@ -1,3 +1,39 @@
+//! Query optimizer for logical plans.
+//!
+//! This module provides optimization passes that transform [`LogicalPlan`] trees
+//! to improve query execution efficiency before SQL generation.
+//!
+//! # Optimization Passes
+//!
+//! | Pass | Purpose |
+//! |------|---------|
+//! | [`CartesianJoinExtraction`] | Extract CROSS JOINs from disconnected patterns |
+//! | [`FilterIntoGraphRel`] | Embed filters into GraphRel nodes |
+//! | [`ProjectionPushDown`] | Eliminate unused columns early |
+//! | [`CleanupViewScanFilters`] | Remove redundant filters on ViewScans |
+//! | [`FilterPushDown`] | Push filters closer to scans |
+//! | [`ViewOptimizer`] | Schema-aware view optimizations |
+//! | [`TrivialWithElimination`] | Remove unnecessary WITH clauses |
+//! | [`CollectUnwindElimination`] | Optimize collect/unwind sequences |
+//!
+//! # Execution Order
+//!
+//! Passes are applied in a specific order for correctness across
+//! [`initial_optimization`] and [`final_optimization`]:
+//! 1. [`CartesianJoinExtraction`]
+//! 2. [`FilterIntoGraphRel`]
+//! 3. [`ProjectionPushDown`]
+//! 4. [`CleanupViewScanFilters`]
+//! 5. [`FilterPushDown`]
+//! 6. [`ViewOptimizer`]
+//!
+//! # Usage
+//!
+//! The query planner calls [`initial_optimization`] followed by
+//! [`final_optimization`] to perform full optimization of a [`LogicalPlan`].
+//! You can also invoke these functions directly if you need to run only part
+//! of the optimization pipeline.
+
 use std::sync::Arc;
 
 use crate::query_planner::{

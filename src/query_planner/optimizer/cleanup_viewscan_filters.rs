@@ -1,3 +1,27 @@
+//! ViewScan filter cleanup optimization.
+//!
+//! Removes redundant `view_filter` fields from [`ViewScan`] nodes after
+//! filters have been consolidated into parent [`GraphRel`] nodes.
+//!
+//! # When Filters Are Cleared
+//!
+//! - ViewScans **inside** GraphRel: filters cleared (use GraphRel.where_predicate)
+//! - ViewScans **outside** GraphRel: filters preserved (node-only queries)
+//!
+//! # Execution Order
+//!
+//! Must run **after** `FilterIntoGraphRel` which consolidates filters.
+//!
+//! # Example
+//!
+//! ```text
+//! Before (after FilterIntoGraphRel):
+//!   GraphRel(where=a.active, left=ViewScan(a, filter=a.active))
+//!
+//! After (this pass):
+//!   GraphRel(where=a.active, left=ViewScan(a, filter=None))
+//! ```
+
 use std::sync::Arc;
 
 use crate::query_planner::{

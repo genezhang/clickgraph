@@ -1,3 +1,21 @@
+//! Projection pushdown optimization pass.
+//!
+//! Eliminates unused columns early in the plan by pushing projection
+//! requirements down toward data sources. This reduces I/O and memory usage.
+//!
+//! # Optimization Strategy
+//!
+//! - Tracks required columns through the plan
+//! - Eliminates unreferenced columns at scan level
+//! - Preserves columns needed for filters, joins, and output
+//!
+//! # Example
+//!
+//! ```text
+//! Before: Projection([a.x], ViewScan(a, columns=[x, y, z]))
+//! After:  Projection([a.x], ViewScan(a, columns=[x]))
+//! ```
+
 use std::sync::Arc;
 
 use crate::query_planner::{

@@ -1,5 +1,14 @@
+//! Error types for logical plan construction.
+//!
+//! These errors arise during the translation of Cypher AST to LogicalPlan,
+//! covering schema validation, pattern matching, and type inference issues.
+
 use thiserror::Error;
 
+/// Errors that can occur during logical plan construction.
+///
+/// These errors are typically unrecoverable and indicate problems with
+/// the query structure or schema configuration that prevent plan building.
 #[derive(Debug, Clone, Error, PartialEq)]
 pub enum LogicalPlanError {
     #[error(
