@@ -431,7 +431,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             // - Single-type *1: (a)-[:TYPE*1]->(b) → simplify to regular relationship
             // - Multi-type *1: (a)-[:TYPE1|TYPE2*1]->(b) → keep VLP for polymorphic nodes
             // - Multi-type no VLP: (a)-[:TYPE1|TYPE2]->(b) → ADD implicit *1 for polymorphic handling
-            let is_multi_type = rel_labels.as_ref().map_or(false, |labels| labels.len() > 1);
+            let is_multi_type = rel_labels.as_ref().is_some_and(|labels| labels.len() > 1);
 
             let variable_length = if let Some(vlp) = rel.variable_length.clone() {
                 // Has explicit VLP spec

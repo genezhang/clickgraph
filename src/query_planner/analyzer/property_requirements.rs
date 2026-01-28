@@ -100,7 +100,7 @@ impl PropertyRequirements {
 
         self.required_properties
             .entry(alias.to_string())
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(property.to_string());
     }
 
@@ -224,7 +224,7 @@ impl PropertyRequirements {
             let self_props = self
                 .required_properties
                 .entry(alias.clone())
-                .or_insert_with(HashSet::new);
+                .or_default();
 
             for prop in props {
                 self_props.insert(prop.clone());

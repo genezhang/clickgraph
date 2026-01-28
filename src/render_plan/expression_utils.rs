@@ -320,7 +320,7 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
                 || case_expr
                     .else_expr
                     .as_ref()
-                    .map_or(false, |else_expr| references_alias(else_expr, alias))
+                    .is_some_and(|else_expr| references_alias(else_expr, alias))
         }
         RenderExpr::InSubquery(subquery) => references_alias(&subquery.expr, alias),
         // EXISTS subqueries don't reference aliases in the outer scope directly
@@ -350,8 +350,8 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
         // ArraySlicing may contain aliases in array, from, and to
         RenderExpr::ArraySlicing { array, from, to } => {
             references_alias(array, alias)
-                || from.as_ref().map_or(false, |f| references_alias(f, alias))
-                || to.as_ref().map_or(false, |t| references_alias(t, alias))
+                || from.as_ref().is_some_and(|f| references_alias(f, alias))
+                || to.as_ref().is_some_and(|t| references_alias(t, alias))
         }
         // CteEntityRef doesn't reference aliases directly - it references CTE columns
         RenderExpr::CteEntityRef(_) => false,

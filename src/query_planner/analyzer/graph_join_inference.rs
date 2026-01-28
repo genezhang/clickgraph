@@ -5049,12 +5049,12 @@ impl GraphJoinInference {
                 if edge.from_node == *node_alias {
                     from_edges
                         .entry(rel_schema.table_name.clone())
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(*edge);
                 } else if edge.to_node == *node_alias {
                     to_edges
                         .entry(rel_schema.table_name.clone())
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(*edge);
                 }
             }
@@ -5365,7 +5365,7 @@ impl GraphJoinInference {
         // Record this appearance for future checks
         node_appearances
             .entry(node_alias.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(current_appearance);
 
         Ok(())

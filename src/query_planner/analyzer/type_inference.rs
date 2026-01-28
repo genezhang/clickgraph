@@ -164,7 +164,7 @@ impl TypeInference {
                 // relationship types, which means the end node can be of multiple types.
                 let inferred_multi_labels = if right_label.is_none()
                     && rel.variable_length.is_some()
-                    && edge_types.as_ref().map_or(false, |types| types.len() > 1)
+                    && edge_types.as_ref().is_some_and(|types| types.len() > 1)
                 {
                     log::debug!(
                         "🎯 TypeInference: Multi-type VLP candidate detected for '{}': VLP={:?}, edge_types={:?}",

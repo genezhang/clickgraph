@@ -151,7 +151,7 @@ impl PropertyResolver {
     pub fn register_alias(&mut self, graph_alias: String, mapping: AliasMapping) {
         self.alias_mappings
             .entry(graph_alias)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(mapping);
     }
 

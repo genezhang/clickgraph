@@ -1171,7 +1171,7 @@ impl GraphSchemaConfig {
                 }
 
                 if node.label_value.is_none()
-                    || node.label_value.as_ref().map_or(true, |v| v.is_empty())
+                    || node.label_value.as_ref().is_none_or(|v| v.is_empty())
                 {
                     return Err(GraphSchemaError::InvalidConfig {
                         message: format!(
@@ -1195,7 +1195,7 @@ impl GraphSchemaConfig {
                 }
 
                 if node.label_column.is_none()
-                    || node.label_column.as_ref().map_or(true, |c| c.is_empty())
+                    || node.label_column.as_ref().is_none_or(|c| c.is_empty())
                 {
                     return Err(GraphSchemaError::InvalidConfig {
                         message: format!(
@@ -1299,11 +1299,11 @@ impl GraphSchemaConfig {
                 let has_from_label = poly_edge
                     .from_label_column
                     .as_ref()
-                    .map_or(false, |s| !s.is_empty());
+                    .is_some_and(|s| !s.is_empty());
                 let has_from_node = poly_edge
                     .from_node
                     .as_ref()
-                    .map_or(false, |s| !s.is_empty());
+                    .is_some_and(|s| !s.is_empty());
 
                 if has_from_label && has_from_node {
                     return Err(GraphSchemaError::InvalidConfig {
@@ -1324,8 +1324,8 @@ impl GraphSchemaConfig {
                 let has_to_label = poly_edge
                     .to_label_column
                     .as_ref()
-                    .map_or(false, |s| !s.is_empty());
-                let has_to_node = poly_edge.to_node.as_ref().map_or(false, |s| !s.is_empty());
+                    .is_some_and(|s| !s.is_empty());
+                let has_to_node = poly_edge.to_node.as_ref().is_some_and(|s| !s.is_empty());
 
                 if has_to_label && has_to_node {
                     return Err(GraphSchemaError::InvalidConfig {
@@ -1344,7 +1344,7 @@ impl GraphSchemaConfig {
                 let has_type_column = poly_edge
                     .type_column
                     .as_ref()
-                    .map_or(false, |s| !s.is_empty());
+                    .is_some_and(|s| !s.is_empty());
                 if poly_edge.type_values.len() > 1 && !has_type_column {
                     return Err(GraphSchemaError::InvalidConfig {
                         message: "Polymorphic edge with multiple type_values requires type_column"

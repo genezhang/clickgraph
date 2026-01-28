@@ -203,7 +203,7 @@ impl AnalyzerPass for GroupByBuilding {
                                         && item
                                             .col_alias
                                             .as_ref()
-                                            .map_or(false, |col| col.0 == alias.0)
+                                            .is_some_and(|col| col.0 == alias.0)
                                 } else {
                                     false
                                 }

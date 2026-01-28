@@ -91,7 +91,7 @@ impl AnalyzerPass for GraphTRaversalPlanning {
                     || graph_rel
                         .labels
                         .as_ref()
-                        .map_or(true, |labels| labels.len() <= 1);
+                        .is_none_or(|labels| labels.len() <= 1);
                 if should_skip {
                     return Ok(Transformed::No(logical_plan));
                 }

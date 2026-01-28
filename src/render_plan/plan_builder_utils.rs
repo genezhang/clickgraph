@@ -3283,7 +3283,7 @@ pub fn has_with_clause_in_tree(plan: &LogicalPlan) -> bool {
         LogicalPlan::ViewScan(vs) => vs
             .input
             .as_ref()
-            .map_or(false, |p| has_with_clause_in_tree(p)),
+            .is_some_and(|p| has_with_clause_in_tree(p)),
         LogicalPlan::GraphNode(gn) => has_with_clause_in_tree(&gn.input),
         LogicalPlan::GraphRel(gr) => {
             has_with_clause_in_tree(&gr.left)
@@ -8016,7 +8016,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
             for (alias, cte_name) in &cte_references {
                 cte_join_needed
                     .entry(cte_name.clone())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(alias.clone());
             }
 

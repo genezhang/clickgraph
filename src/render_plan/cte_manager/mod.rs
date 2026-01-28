@@ -925,7 +925,7 @@ impl TraditionalCteStrategy {
         let base_case = self.generate_base_case_sql(context, properties, filters)?;
 
         // Generate recursive case if needed
-        let needs_recursion = max_hops.map_or(true, |max| max > min_hops);
+        let needs_recursion = max_hops.is_none_or(|max| max > min_hops);
         let recursive_case = if needs_recursion {
             format!(
                 "\n    UNION ALL\n{}",
@@ -1369,7 +1369,7 @@ impl DenormalizedCteStrategy {
         let base_case = self.generate_base_case_sql(context, properties, filters)?;
 
         // Generate recursive case if needed
-        let needs_recursion = max_hops.map_or(true, |max| max > min_hops);
+        let needs_recursion = max_hops.is_none_or(|max| max > min_hops);
         let recursive_case = if needs_recursion {
             format!(
                 "\n    UNION ALL\n{}",
@@ -1645,7 +1645,7 @@ impl MixedAccessCteStrategy {
         let base_case = self.generate_base_case_sql(context, properties, filters)?;
 
         // Generate recursive case if needed
-        let needs_recursion = max_hops.map_or(true, |max| max > min_hops);
+        let needs_recursion = max_hops.is_none_or(|max| max > min_hops);
         let recursive_case = if needs_recursion {
             format!(
                 "\n    UNION ALL\n{}",
@@ -2059,7 +2059,7 @@ impl EdgeToEdgeCteStrategy {
         let base_case = self.generate_base_case_sql(context, properties, filters)?;
 
         // Generate recursive case if needed
-        let needs_recursion = max_hops.map_or(true, |max| max > min_hops);
+        let needs_recursion = max_hops.is_none_or(|max| max > min_hops);
         let recursive_case = if needs_recursion {
             format!(
                 "\n    UNION ALL\n{}",

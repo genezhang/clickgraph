@@ -624,7 +624,7 @@ impl PlanCtx {
     pub fn register_cte_column(&mut self, cte_name: &str, schema_column: &str, cte_column: &str) {
         self.cte_columns
             .entry(cte_name.to_string())
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(schema_column.to_string(), cte_column.to_string());
     }
 
