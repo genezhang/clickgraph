@@ -1262,16 +1262,14 @@ impl RenderPlanBuilder for LogicalPlan {
                             ));
                         }
                         cte_having = Some(render_where);
+                    } else if let Some(existing) = cte_filters {
+                        cte_filters =
+                            Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                operator: Operator::And,
+                                operands: vec![existing, render_where],
+                            }));
                     } else {
-                        if let Some(existing) = cte_filters {
-                            cte_filters =
-                                Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                                    operator: Operator::And,
-                                    operands: vec![existing, render_where],
-                                }));
-                        } else {
-                            cte_filters = Some(render_where);
-                        }
+                        cte_filters = Some(render_where);
                     }
                 }
 

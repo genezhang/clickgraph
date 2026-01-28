@@ -353,32 +353,30 @@ impl SelectBuilder for LogicalPlan {
 
                             // For denormalized nodes in edges, we need to get the actual table alias
                             // Try to get properties with actual table alias
-                            if let Ok((_properties, actual_table_alias_opt)) =
+                            if let Ok((_properties, Some(actual_table_alias))) =
                                 self.get_properties_with_table_alias(cypher_alias)
                             {
-                                if let Some(actual_table_alias) = actual_table_alias_opt {
-                                    // Hack for VLP denormalized: if col_name contains "Origin" or "Dest", use "t"
-                                    let table_alias_to_use = if col_name.contains("Origin")
-                                        || col_name.contains("Dest")
-                                    {
-                                        "t"
-                                    } else {
-                                        &actual_table_alias
-                                    };
-                                    select_items.push(SelectItem {
-                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: RenderTableAlias(
-                                                table_alias_to_use.to_string(),
-                                            ),
-                                            column: PropertyValue::Column(col_name.to_string()),
-                                        }),
-                                        col_alias: item
-                                            .col_alias
-                                            .as_ref()
-                                            .map(|ca| ColumnAlias(ca.0.clone())),
-                                    });
-                                    continue;
-                                }
+                                // Hack for VLP denormalized: if col_name contains "Origin" or "Dest", use "t"
+                                let table_alias_to_use = if col_name.contains("Origin")
+                                    || col_name.contains("Dest")
+                                {
+                                    "t"
+                                } else {
+                                    &actual_table_alias
+                                };
+                                select_items.push(SelectItem {
+                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: RenderTableAlias(
+                                            table_alias_to_use.to_string(),
+                                        ),
+                                        column: PropertyValue::Column(col_name.to_string()),
+                                    }),
+                                    col_alias: item
+                                        .col_alias
+                                        .as_ref()
+                                        .map(|ca| ColumnAlias(ca.0.clone())),
+                                });
+                                continue;
                             }
 
                             // Default handling: pass through the PropertyAccessExp as-is

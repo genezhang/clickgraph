@@ -532,11 +532,10 @@ fn find_path_function_argument(expr: &RenderExpr) -> Option<String> {
             if matches!(
                 func.name.to_lowercase().as_str(),
                 "length" | "nodes" | "relationships"
-            ) {
-                if func.args.len() == 1 {
-                    if let RenderExpr::TableAlias(alias) = &func.args[0] {
-                        return Some(alias.0.clone());
-                    }
+            ) && func.args.len() == 1
+            {
+                if let RenderExpr::TableAlias(alias) = &func.args[0] {
+                    return Some(alias.0.clone());
                 }
             }
 
@@ -2069,15 +2068,17 @@ impl RenderExpr {
 
                 // Special handling for IN/NOT IN with array columns
                 // Cypher: x IN array_property → ClickHouse: has(array, x)
-                if op.operator == Operator::In && rendered.len() == 2 {
-                    if matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_)) {
-                        return format!("has({}, {})", &rendered[1], &rendered[0]);
-                    }
+                if op.operator == Operator::In
+                    && rendered.len() == 2
+                    && matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_))
+                {
+                    return format!("has({}, {})", &rendered[1], &rendered[0]);
                 }
-                if op.operator == Operator::NotIn && rendered.len() == 2 {
-                    if matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_)) {
-                        return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
-                    }
+                if op.operator == Operator::NotIn
+                    && rendered.len() == 2
+                    && matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_))
+                {
+                    return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
                 }
 
                 // Special handling for string predicates - ClickHouse uses functions
@@ -2342,15 +2343,17 @@ impl RenderExpr {
                 }
 
                 // Special handling for IN/NOT IN with array columns
-                if op.operator == Operator::In && rendered.len() == 2 {
-                    if matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_)) {
-                        return format!("has({}, {})", &rendered[1], &rendered[0]);
-                    }
+                if op.operator == Operator::In
+                    && rendered.len() == 2
+                    && matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_))
+                {
+                    return format!("has({}, {})", &rendered[1], &rendered[0]);
                 }
-                if op.operator == Operator::NotIn && rendered.len() == 2 {
-                    if matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_)) {
-                        return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
-                    }
+                if op.operator == Operator::NotIn
+                    && rendered.len() == 2
+                    && matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_))
+                {
+                    return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
                 }
 
                 // Special handling for string predicates - ClickHouse uses functions
@@ -2477,15 +2480,17 @@ impl ToSql for OperatorApplication {
         }
 
         // Special handling for IN/NOT IN with array columns
-        if self.operator == Operator::In && rendered.len() == 2 {
-            if matches!(&self.operands[1], RenderExpr::PropertyAccessExp(_)) {
-                return format!("has({}, {})", &rendered[1], &rendered[0]);
-            }
+        if self.operator == Operator::In
+            && rendered.len() == 2
+            && matches!(&self.operands[1], RenderExpr::PropertyAccessExp(_))
+        {
+            return format!("has({}, {})", &rendered[1], &rendered[0]);
         }
-        if self.operator == Operator::NotIn && rendered.len() == 2 {
-            if matches!(&self.operands[1], RenderExpr::PropertyAccessExp(_)) {
-                return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
-            }
+        if self.operator == Operator::NotIn
+            && rendered.len() == 2
+            && matches!(&self.operands[1], RenderExpr::PropertyAccessExp(_))
+        {
+            return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
         }
 
         // Special handling for string predicates - ClickHouse uses functions

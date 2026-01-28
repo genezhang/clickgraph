@@ -3105,12 +3105,11 @@ pub(super) fn references_union_cte_in_join(
     cte_name: &str,
 ) -> bool {
     for op_app in joining_on {
-        if op_app.operands.len() >= 2 {
-            if references_union_cte_in_operand(&op_app.operands[0], cte_name)
-                || references_union_cte_in_operand(&op_app.operands[1], cte_name)
-            {
-                return true;
-            }
+        if op_app.operands.len() >= 2
+            && (references_union_cte_in_operand(&op_app.operands[0], cte_name)
+                || references_union_cte_in_operand(&op_app.operands[1], cte_name))
+        {
+            return true;
         }
     }
     false

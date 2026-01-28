@@ -1360,13 +1360,11 @@ impl GraphSchemaConfig {
                 }
 
                 // Validate edge_id if present
-                if let Some(ref edge_id) = poly_edge.edge_id {
-                    if let Identifier::Composite(cols) = edge_id {
-                        if cols.is_empty() {
-                            return Err(GraphSchemaError::InvalidConfig {
-                                message: "Composite edge_id cannot be empty array".to_string(),
-                            });
-                        }
+                if let Some(Identifier::Composite(cols)) = &poly_edge.edge_id {
+                    if cols.is_empty() {
+                        return Err(GraphSchemaError::InvalidConfig {
+                            message: "Composite edge_id cannot be empty array".to_string(),
+                        });
                     }
                 }
             }

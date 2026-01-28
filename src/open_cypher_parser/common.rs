@@ -62,18 +62,16 @@ pub fn strip_comments(input: &str) -> String {
         // Now handle comments (only when NOT in a string/identifier)
 
         // Check for line comment (-- or //)
-        if ch == '-' {
-            if chars.peek() == Some(&'-') {
-                chars.next(); // consume second '-'
-                              // Skip until newline
-                while let Some(c) = chars.next() {
-                    if c == '\n' {
-                        result.push('\n'); // preserve newline
-                        break;
-                    }
+        if ch == '-' && chars.peek() == Some(&'-') {
+            chars.next(); // consume second '-'
+                          // Skip until newline
+            while let Some(c) = chars.next() {
+                if c == '\n' {
+                    result.push('\n'); // preserve newline
+                    break;
                 }
-                continue;
             }
+            continue;
         }
 
         // Check for block comment or line comment

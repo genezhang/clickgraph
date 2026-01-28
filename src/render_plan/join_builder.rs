@@ -2012,16 +2012,10 @@ impl JoinBuilder for LogicalPlan {
                                     // This is the correlation predicate (e.g., a.user_id = c.user_id)
                                     let join_conditions =
                                         if let Some(ref join_cond) = cp.join_condition {
-                                            if let Ok(render_expr) =
+                                            if let Ok(RenderExpr::OperatorApplicationExp(op)) =
                                                 RenderExpr::try_from(join_cond.clone())
                                             {
-                                                if let RenderExpr::OperatorApplicationExp(op) =
-                                                    render_expr
-                                                {
-                                                    vec![op]
-                                                } else {
-                                                    vec![]
-                                                }
+                                                vec![op]
                                             } else {
                                                 vec![]
                                             }

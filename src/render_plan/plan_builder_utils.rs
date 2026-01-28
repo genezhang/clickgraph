@@ -8051,20 +8051,18 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 // If we found correlation predicates, convert them to JOIN ON conditions
                 for pred in &original_correlation_predicates {
                     // Convert LogicalExpr predicate to RenderExpr and then extract OperatorApplication
-                    if let Ok(render_expr) = RenderExpr::try_from(pred.clone()) {
-                        if let RenderExpr::OperatorApplicationExp(op_app) = render_expr {
-                            // Rewrite the operands to use CTE column names
-                            let rewritten = rewrite_operator_application_for_cte_join(
-                                &op_app,
-                                &cte_alias,
-                                &cte_references,
-                            );
-                            log::warn!(
-                                "🔧 build_chained_with_match_cte_plan: Added JOIN condition from correlation predicate: {:?}",
-                                rewritten
-                            );
-                            join_conditions.push(rewritten);
-                        }
+                    if let Ok(RenderExpr::OperatorApplicationExp(op_app)) = RenderExpr::try_from(pred.clone()) {
+                        // Rewrite the operands to use CTE column names
+                        let rewritten = rewrite_operator_application_for_cte_join(
+                            &op_app,
+                            &cte_alias,
+                            &cte_references,
+                        );
+                        log::warn!(
+                            "🔧 build_chained_with_match_cte_plan: Added JOIN condition from correlation predicate: {:?}",
+                            rewritten
+                        );
+                        join_conditions.push(rewritten);
                     }
                 }
 
