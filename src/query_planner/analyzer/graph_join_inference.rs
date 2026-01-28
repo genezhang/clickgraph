@@ -5795,7 +5795,7 @@ mod tests {
     }
 
     fn setup_plan_ctx_with_graph_entities() -> PlanCtx {
-        let mut plan_ctx = PlanCtx::default();
+        let mut plan_ctx = PlanCtx::new_empty();
 
         // Add person nodes
         plan_ctx.insert_table_ctx(

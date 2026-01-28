@@ -25,7 +25,7 @@ pub enum AuthScheme {
 
 impl AuthScheme {
     /// Parse authentication scheme from string
-    pub fn from_str(scheme: &str) -> Self {
+    pub fn parse_from_str(scheme: &str) -> Self {
         match scheme.to_lowercase().as_str() {
             "none" => AuthScheme::None,
             "basic" => AuthScheme::Basic,
@@ -91,7 +91,7 @@ impl AuthToken {
             .and_then(|v| v.as_str())
             .unwrap_or("none");
 
-        let scheme = AuthScheme::from_str(scheme_str);
+        let scheme = AuthScheme::parse_from_str(scheme_str);
 
         let principal = auth_map
             .get("principal")
@@ -313,11 +313,11 @@ mod tests {
 
     #[test]
     fn test_auth_scheme_parsing() {
-        assert_eq!(AuthScheme::from_str("basic"), AuthScheme::Basic);
-        assert_eq!(AuthScheme::from_str("BASIC"), AuthScheme::Basic);
-        assert_eq!(AuthScheme::from_str("none"), AuthScheme::None);
+        assert_eq!(AuthScheme::parse_from_str("basic"), AuthScheme::Basic);
+        assert_eq!(AuthScheme::parse_from_str("BASIC"), AuthScheme::Basic);
+        assert_eq!(AuthScheme::parse_from_str("none"), AuthScheme::None);
         assert_eq!(
-            AuthScheme::from_str("custom"),
+            AuthScheme::parse_from_str("custom"),
             AuthScheme::Custom("custom".to_string())
         );
     }

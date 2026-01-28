@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn test_complex_nested_plan_with_duplicates() {
         let analyzer = DuplicateScansRemoving::new();
-        let mut plan_ctx = PlanCtx::default();
+        let mut plan_ctx = PlanCtx::new_empty();
 
         // Create a complex plan: Projection -> Filter -> GraphRel with duplicate detection
 
@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn test_traversed_set_tracking() {
         let analyzer = DuplicateScansRemoving::new();
-        let mut plan_ctx = PlanCtx::default();
+        let mut plan_ctx = PlanCtx::new_empty();
 
         // Create a plan that will exercise the traversed set logic
         // Structure: (userA)-[rel1]->(userB)-[rel2]->(userA)

@@ -458,6 +458,7 @@ fn parse_primary(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     parse_postfix_expression.parse(input)
 }
 
+#[cfg(test)]
 pub fn parse_operator_symbols(input: &str) -> IResult<&str, Operator> {
     alt((
         map(tag_no_case(">="), |_| Operator::GreaterThanEqual),
@@ -643,9 +644,9 @@ fn parse_not_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     .parse(input)
 }
 
-// Deprecated: now use parse_comparison_expression instead
+// Deprecated: test helper that redirects to parse_comparison_expression
+#[cfg(test)]
 fn parse_binary_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    // Redirect to comparison expression for backward compatibility
     parse_comparison_expression(input)
 }
 

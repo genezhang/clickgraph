@@ -168,7 +168,7 @@ fn test_traverse_node_pattern_new_node() {
 
 #[test]
 fn test_traverse_node_pattern_existing_node() {
-    let mut plan_ctx = PlanCtx::default();
+    let mut plan_ctx = PlanCtx::new_empty();
     let initial_plan = Arc::new(LogicalPlan::Empty);
 
     // Pre-populate plan context with existing node
@@ -205,7 +205,7 @@ fn test_traverse_node_pattern_existing_node() {
 
 #[test]
 fn test_traverse_node_pattern_empty_node_error() {
-    let mut plan_ctx = PlanCtx::default();
+    let mut plan_ctx = PlanCtx::new_empty();
     let initial_plan = Arc::new(LogicalPlan::Empty);
 
     let node_pattern = ast::NodePattern {
@@ -444,7 +444,7 @@ fn test_evaluate_match_clause_with_node_and_connected_pattern() {
 
 #[test]
 fn test_convert_properties_to_operator_application() {
-    let mut plan_ctx = PlanCtx::default();
+    let mut plan_ctx = PlanCtx::new_empty();
 
     // Add table context with properties
     let properties = vec![Property::PropertyKV(PropertyKVPair {

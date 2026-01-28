@@ -352,19 +352,6 @@ fn parse_node_labels(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'_ str>>> {
 type NameOrLabelWithProperties<'a> = (Option<&'a str>, Option<Vec<Property<'a>>>);
 type NameOrLabelsWithProperties<'a> = (Option<Vec<&'a str>>, Option<Vec<Property<'a>>>);
 
-fn parse_name_label(
-    input: &'_ str,
-) -> IResult<&'_ str, (NameOrLabelWithProperties<'_>, NameOrLabelWithProperties<'_>)> {
-    let (input, _) = multispace0(input)?;
-
-    separated_pair(
-        parse_name_or_label_with_properties,
-        opt(char(':')),
-        parse_name_or_label_with_properties,
-    )
-    .parse(input)
-}
-
 // Parse node name and labels (with multi-label support)
 fn parse_name_labels(
     input: &'_ str,

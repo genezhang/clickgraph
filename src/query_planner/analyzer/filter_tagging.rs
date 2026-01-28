@@ -2210,7 +2210,7 @@ mod tests {
     }
 
     fn setup_plan_ctx_with_tables() -> PlanCtx {
-        let mut plan_ctx = PlanCtx::default();
+        let mut plan_ctx = PlanCtx::new_empty();
 
         // Add user table (node)
         plan_ctx.insert_table_ctx(
@@ -2775,7 +2775,7 @@ mod tests {
     #[test]
     fn test_orphan_alias_error() {
         let analyzer = FilterTagging::new();
-        let mut plan_ctx = PlanCtx::default(); // Empty plan context
+        let mut plan_ctx = PlanCtx::new_empty(); // Empty plan context
 
         // Test filter referencing non-existent table
         let filter_expr = create_simple_filter("nonexistent", "column", 42);

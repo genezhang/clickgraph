@@ -494,7 +494,7 @@ impl PlanCtx {
     }
 
     /// Create an empty PlanCtx with an empty schema (for tests only)
-    pub fn default() -> Self {
+    pub fn new_empty() -> Self {
         use crate::graph_catalog::graph_schema::GraphSchema;
         let empty_schema =
             GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());

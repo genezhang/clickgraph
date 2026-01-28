@@ -973,7 +973,7 @@ mod tests {
         };
 
         let plan = Arc::new(LogicalPlan::GraphRel(graph_rel));
-        let mut plan_ctx = PlanCtx::default();
+        let mut plan_ctx = PlanCtx::new_empty();
         let graph_schema =
             GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
 

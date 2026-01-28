@@ -1613,26 +1613,6 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 }
 
-// Helper function to check if an expression contains aggregation functions
-fn contains_aggregation_function(expr: &RenderExpr) -> bool {
-    match expr {
-        RenderExpr::AggregateFnCall(_) => true,
-        RenderExpr::OperatorApplicationExp(op) => {
-            op.operands.iter().any(contains_aggregation_function)
-        }
-        RenderExpr::ScalarFnCall(fn_call) => fn_call.args.iter().any(contains_aggregation_function),
-        RenderExpr::Case(case) => {
-            case.when_then.iter().any(|(cond, val)| {
-                contains_aggregation_function(cond) || contains_aggregation_function(val)
-            }) || case
-                .else_expr
-                .as_ref()
-                .is_some_and(|e| contains_aggregation_function(e))
-        }
-        _ => false,
-    }
-}
-
 /// Extract join condition as OperatorApplication format for JOIN ON clauses
 /// Converts LogicalExpr equality/and conditions to RenderExpr OperatorApplications
 fn extract_join_condition_ops(expr: &LogicalExpr) -> Option<Vec<OperatorApplication>> {
