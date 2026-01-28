@@ -1,7 +1,5 @@
 //! Common utilities for ClickHouse query generation
 
-use crate::clickhouse_query_generator::errors::ClickhouseQueryGeneratorError;
-
 // ⚠️ NOTE: Literal rendering code appears in multiple places due to different Literal types:
 //
 // - crate::query_planner::logical_expr::Literal (used in to_sql.rs)

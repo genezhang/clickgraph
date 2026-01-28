@@ -13,7 +13,7 @@ use crate::{
         },
     },
     server::query_context::{
-        self, clear_all_render_contexts, get_cte_property_mapping, get_relationship_columns,
+        clear_all_render_contexts, get_cte_property_mapping, get_relationship_columns,
         is_multi_type_vlp_alias, set_all_render_contexts,
     },
     utils::cte_naming::is_generated_cte_name,

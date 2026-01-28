@@ -1,51 +1,34 @@
-use crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGenerator;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
 use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::{
-    GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem, ViewScan,
+    LogicalPlan, ProjectionItem,
 };
 use crate::query_planner::plan_ctx::PlanCtx;
-use crate::utils::cte_naming::{generate_cte_base_name, generate_cte_name};
-use log::debug;
-use std::collections::{HashMap, HashSet};
+use crate::utils::cte_naming::generate_cte_base_name;
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::cte_generation::{analyze_property_requirements, extract_var_len_properties};
+
 use super::errors::RenderBuildError;
-use super::expression_utils::{references_alias as expr_references_alias, rewrite_aliases};
+
 use super::filter_builder::FilterBuilder;
-use super::filter_pipeline::{
-    categorize_filters, clean_last_node_filters, rewrite_expr_for_mixed_denormalized_cte,
-    rewrite_expr_for_var_len_cte, rewrite_labels_subscript_for_multi_type_vlp,
-    rewrite_vlp_internal_to_cypher_alias,
-};
 use super::from_builder::FromBuilder;
 use super::group_by_builder::GroupByBuilder;
 use super::join_builder::JoinBuilder;
 use super::properties_builder::PropertiesBuilder;
-use super::render_expr::RenderCase;
 use super::render_expr::{
-    AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess,
-    RenderExpr, ScalarFnCall, TableAlias,
+    AggregateFnCall, Column, ColumnAlias, Operator, OperatorApplication, PropertyAccess,
+    RenderExpr, TableAlias,
 };
 use super::select_builder::SelectBuilder;
 use super::{
-    view_table_ref::{from_table_to_view_ref, view_ref_to_from_table},
-    ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTable, FromTableItem,
+    ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem,
     GroupByExpressions, Join, JoinItems, JoinType, LimitItem, OrderByItem, OrderByItems,
-    OrderByOrder, RenderPlan, SelectItem, SelectItems, SkipItem, Union, UnionItems, ViewTableRef,
+    RenderPlan, SelectItem, SelectItems, SkipItem, Union, UnionItems, ViewTableRef,
 };
 use crate::render_plan::cte_extraction::extract_ctes_with_context;
-use crate::render_plan::cte_extraction::{
-    build_vlp_context, expand_fixed_length_joins_with_context, extract_node_label_from_viewscan,
-    extract_relationship_columns, get_fixed_path_info, get_path_variable, get_shortest_path_mode,
-    get_variable_length_aliases, get_variable_length_denorm_info, get_variable_length_rel_info,
-    get_variable_length_spec, has_variable_length_rel, is_variable_length_denormalized,
-    is_variable_length_optional, label_to_table_name, rel_type_to_table_name,
-    rel_types_to_table_names, table_to_id_column, RelationshipColumns, VlpSchemaType,
-};
 
 // Import ALL helper functions from the dedicated helpers module using glob import
 // This allows existing code to call helpers without changes (e.g., extract_table_name())
@@ -53,47 +36,7 @@ use crate::render_plan::cte_extraction::{
 #[allow(unused_imports)]
 use super::plan_builder_helpers::*;
 use super::plan_builder_utils::{
-    build_chained_with_match_cte_plan,
-    build_with_aggregation_match_cte_plan,
-    collapse_passthrough_with,
-    collect_aliases_from_render_expr,
-    // Import all extracted utility functions to avoid duplicates
-    convert_correlation_predicates_to_joins,
-    // New extracted functions
-    count_with_cte_refs,
-    expand_table_alias_to_group_by_id_only,
-    expand_table_alias_to_select_items,
-    extract_correlation_predicates,
-    extract_cte_conditions_recursive,
-    extract_cte_join_conditions,
-    extract_cte_references,
-    extract_join_from_equality,
-    extract_join_from_logical_equality,
-    extract_sorted_properties,
-    extract_vlp_alias_mappings,
-    find_all_with_clauses_grouped,
-    find_group_by_subplan,
-    generate_swapped_joins_for_optional_match,
-    has_multi_type_vlp,
-    has_with_clause_in_tree,
-    hoist_nested_ctes,
-    is_join_for_inner_scope,
-    plan_contains_with_clause,
-    prune_joins_covered_by_cte,
-    remap_cte_names_in_expr,
-    remap_cte_names_in_render_plan,
-    replace_group_by_with_cte_reference,
-    replace_wildcards_with_group_by_columns,
-    replace_with_clause_with_cte_reference_v2,
-    rewrite_cte_column_references,
-    rewrite_cte_expression,
-    rewrite_expression_with_cte_alias,
-    rewrite_operator_application,
-    rewrite_operator_application_with_cte_alias,
-    rewrite_render_expr_for_vlp,
-    rewrite_render_plan_expressions,
     rewrite_vlp_union_branch_aliases,
-    update_graph_joins_cte_refs,
 };
 use super::utils::alias_utils::*;
 use super::CteGenerationContext;

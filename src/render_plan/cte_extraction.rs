@@ -4277,7 +4277,7 @@ pub fn expand_fixed_length_joins(
     end_alias: &str,
 ) -> Vec<Join> {
     use super::render_expr::{
-        Column, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+        Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
     };
 
     let mut joins = Vec::new();
@@ -4376,7 +4376,7 @@ pub fn expand_fixed_length_joins(
 /// (from_table, from_alias, joins) - The FROM table info and JOIN clauses
 pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, String, Vec<Join>) {
     use super::render_expr::{
-        Column, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+        Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
     };
 
     let exact_hops = ctx.exact_hops.unwrap_or(1);
@@ -4671,7 +4671,7 @@ pub fn generate_cycle_prevention_filters_composite(
     end_alias: &str,
 ) -> Option<RenderExpr> {
     use super::render_expr::{
-        Column, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+        Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
     };
 
     if exact_hops == 0 {

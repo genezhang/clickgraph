@@ -43,7 +43,7 @@ use crate::{
     query_planner::{
         analyzer::property_requirements::PropertyRequirements,
         join_context::VlpEndpointInfo,
-        logical_expr::{LogicalExpr, Property},
+        logical_expr::LogicalExpr,
         logical_plan::ProjectionItem,
         plan_ctx::errors::PlanCtxError,
         typed_variable::{CollectionElementType, TypedVariable, VariableRegistry, VariableSource},
