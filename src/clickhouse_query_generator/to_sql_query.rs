@@ -106,13 +106,6 @@ fn build_relationship_columns_from_plan(plan: &RenderPlan) -> HashMap<String, (S
     map
 }
 
-/// Pre-populate the relationship columns mapping from a RenderPlan
-/// This builds the mapping and sets it in the query context
-fn populate_relationship_columns_from_plan(plan: &RenderPlan) {
-    let map = build_relationship_columns_from_plan(plan);
-    query_context::set_relationship_columns(map);
-}
-
 /// Build CTE property mappings from RenderPlan CTEs (for collecting data)
 /// Returns mapping of CTE alias → (property → column name)
 fn build_cte_property_mappings(plan: &RenderPlan) -> HashMap<String, HashMap<String, String>> {
@@ -199,16 +192,6 @@ fn build_multi_type_vlp_aliases(plan: &RenderPlan) -> HashMap<String, String> {
     }
 
     aliases
-}
-
-/// Populate CTE property mappings from RenderPlan CTEs
-/// Extracts column aliases from CTE SELECT items to build property → column name mappings
-fn populate_cte_property_mappings(plan: &RenderPlan) {
-    let cte_mappings = build_cte_property_mappings(plan);
-    let multi_type_aliases = build_multi_type_vlp_aliases(plan);
-
-    query_context::set_cte_property_mappings(cte_mappings);
-    query_context::set_multi_type_vlp_aliases(multi_type_aliases);
 }
 
 /// Rewrite property access in SELECT, GROUP BY items for VLP queries
