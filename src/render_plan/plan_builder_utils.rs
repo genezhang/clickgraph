@@ -17,7 +17,6 @@
 //! 2. Consolidate duplicate functionality
 //! 3. Extract reusable patterns into focused submodules
 //!
-//! See: https://github.com/your-repo/clickgraph/issues/XXX (TODO: create tracking issue)
 
 // TODO(tech-debt): This module has ~47 dead functions that need cleanup.
 // Temporarily allowing dead code to focus on higher-priority features.
