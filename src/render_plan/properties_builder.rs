@@ -48,9 +48,7 @@ impl PropertiesBuilder for LogicalPlan {
                             // Extract unqualified column: "p.first_name" -> "first_name"
                             // 🔧 FIX: Handle column names with multiple dots like "n.id.orig_h" -> "id.orig_h"
                             // Use splitn(2) to split only on the FIRST dot, keeping the rest intact
-                            let unqualified = qualified_col
-                                .splitn(2, '.')
-                                .nth(1)
+                            let unqualified = qualified_col.split_once('.').map(|x| x.1)
                                 .unwrap_or(qualified_col)
                                 .to_string();
                             (prop_name.clone(), unqualified)

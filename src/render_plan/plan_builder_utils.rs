@@ -9509,14 +9509,15 @@ pub(crate) fn find_all_with_clauses_grouped(
                 let first_key = branch_with_keys.first().and_then(|k| k.clone());
                 let all_same = branch_with_keys.iter().all(|k| k == &first_key);
 
-                if all_same && first_key.is_some() {
-                    // All branches have the same WITH key - this is a bidirectional pattern
-                    // Collect from just the first branch to avoid duplicates
-                    // The Union structure will be preserved when we render the parent GraphRel
-                    log::warn!("🔍 find_all_with_clauses_impl: Union has matching WITH key '{}' in all branches, collecting from first only",
-                               first_key.as_ref().unwrap());
-                    if let Some(first_input) = union.inputs.first() {
-                        find_all_with_clauses_impl(first_input, results);
+                if all_same {
+                    if let Some(key) = first_key.as_ref() {
+                        // All branches have the same WITH key - this is a bidirectional pattern
+                        // Collect from just the first branch to avoid duplicates
+                        // The Union structure will be preserved when we render the parent GraphRel
+                        log::warn!("🔍 find_all_with_clauses_impl: Union has matching WITH key '{}' in all branches, collecting from first only", key);
+                        if let Some(first_input) = union.inputs.first() {
+                            find_all_with_clauses_impl(first_input, results);
+                        }
                     }
                 } else {
                     // Branches have different WITH structures - recurse into each

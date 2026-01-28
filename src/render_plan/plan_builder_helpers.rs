@@ -3120,7 +3120,7 @@ fn references_union_cte_in_operand(operand: &RenderExpr, cte_name: &str) -> bool
             prop_access.column.raw() == "from_id" || prop_access.column.raw() == "to_id"
         }
         RenderExpr::OperatorApplicationExp(op_app) => {
-            references_union_cte_in_join(&[op_app.clone()], cte_name)
+            references_union_cte_in_join(std::slice::from_ref(op_app), cte_name)
         }
         _ => false,
     }

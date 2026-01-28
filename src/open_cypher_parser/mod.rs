@@ -99,7 +99,7 @@ pub fn parse_statement(
 }
 
 /// Parse either a MATCH or OPTIONAL MATCH clause
-fn parse_reading_clause(input: &str) -> IResult<&str, ReadingClause, OpenCypherParsingError> {
+fn parse_reading_clause(input: &str) -> IResult<&str, ReadingClause<'_>, OpenCypherParsingError<'_>> {
     // Try OPTIONAL MATCH first (since it starts with a longer keyword)
     if let Ok((remaining, optional_match)) =
         optional_match_clause::parse_optional_match_clause(input)

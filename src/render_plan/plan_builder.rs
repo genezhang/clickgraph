@@ -783,7 +783,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 let mut context = super::cte_generation::CteGenerationContext::new();
                 let ctes = CteItems(extract_ctes_with_context(
                     &gj.input,
-                    &"".to_string(),
+                    "",
                     &mut context,
                     schema,
                 )?);

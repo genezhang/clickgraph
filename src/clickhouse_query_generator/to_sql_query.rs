@@ -635,7 +635,7 @@ fn rewrite_expr_for_fixed_path(
         RenderExpr::ScalarFnCall(func) => {
             if func.args.len() == 1 {
                 if let RenderExpr::TableAlias(alias) = &func.args[0] {
-                    if &alias.0 == path_variable {
+                    if alias.0 == *path_variable {
                         match func.name.to_lowercase().as_str() {
                             "length" => {
                                 log::info!(
@@ -814,7 +814,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
             } else if !plan.select.items.is_empty() {
                 sql.push_str(&plan.select.to_sql());
             } else {
-                sql.push_str("*");
+                sql.push('*');
             }
 
             sql.push_str(" FROM (\n");
@@ -1058,14 +1058,8 @@ impl SelectItems {
             // (already handled above for matching TableAlias case)
             if let Some(alias) = &item.col_alias {
                 if let RenderExpr::TableAlias(TableAlias(expr_alias)) = &item.expression {
-                    if expr_alias != &alias.0 {
-                        sql.push_str(" AS \"");
-                        sql.push_str(&alias.0);
-                        sql.push('"');
-                    }
-                    // For UNWIND aliases that match, we still need the AS clause
-                    // since we're rendering just the alias without `.*`
-                    else if unwind_aliases.contains(expr_alias) {
+                    // For UNWIND aliases that match OR for aliases that differ, we need the AS clause
+                    if expr_alias != &alias.0 || unwind_aliases.contains(expr_alias) {
                         sql.push_str(" AS \"");
                         sql.push_str(&alias.0);
                         sql.push('"');

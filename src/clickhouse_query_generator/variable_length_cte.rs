@@ -974,7 +974,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             // or the application should enforce this constraint before loading data.
             query_body.push_str("\n    UNION ALL\n");
 
-            let default_depth = if max_hops.is_none() {
+            let default_depth = max_hops.unwrap_or_else(|| {
                 // Unbounded case: use conservative default to prevent memory exhaustion
                 // In dense graphs, each hop can multiply rows exponentially
                 // Users who need longer paths should specify explicit bounds
@@ -989,9 +989,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     // Reduced from 10 to 5 to prevent row explosion in dense graphs
                     5
                 }
-            } else {
-                max_hops.unwrap()
-            };
+            });
 
             query_body.push_str(
                 &self.generate_recursive_case_with_cte_name(default_depth, &recursive_cte_name),

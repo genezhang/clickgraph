@@ -1016,10 +1016,7 @@ pub(super) fn traverse_node_pattern(
 
         // Check if we need to create a CartesianProduct
         // For comma patterns like (a:User), (b:User), we need CROSS JOIN
-        let has_existing_plan = match plan.as_ref() {
-            LogicalPlan::Empty => false,
-            _ => true,
-        };
+        let has_existing_plan = !matches!(plan.as_ref(), LogicalPlan::Empty);
 
         if has_existing_plan {
             // CRITICAL FIX: When existing plan is OPTIONAL and new node is from REQUIRED MATCH,

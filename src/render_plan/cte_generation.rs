@@ -645,7 +645,7 @@ pub fn map_property_to_column_with_relationship_context(
     // Priority: explicit schema_name > task-local QUERY_SCHEMA_NAME > search all schemas (fallback)
     let resolved_schema_name = schema_name
         .map(|s| s.to_string())
-        .or_else(|| super::render_expr::get_current_schema_name());
+        .or_else(super::render_expr::get_current_schema_name);
 
     log::info!(
         "🔍 map_property_to_column_with_relationship_context: property='{}', node_label='{}', resolved_schema_name={:?}",

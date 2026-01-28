@@ -646,9 +646,9 @@ impl FilterTagging {
                 let is_multi_type_vlp = if let Some(labels) = table_ctx.get_labels() {
                     // Case 1: Labels already set by TypeInference
                     labels.len() > 1
-                } else if plan.is_some() {
+                } else if let Some(plan_arc) = plan.as_ref() {
                     // Case 2: Check if this is endpoint of multi-type VLP GraphRel
-                    Self::is_multi_type_vlp_endpoint(plan.unwrap(), &property_access.table_alias.0)
+                    Self::is_multi_type_vlp_endpoint(plan_arc, &property_access.table_alias.0)
                 } else {
                     false
                 };

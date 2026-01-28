@@ -249,11 +249,8 @@ impl TypeInference {
                     rel.right_connection,
                     left_label,
                     right_label,
-                    if inferred_multi_labels.is_some() {
-                        format!(
-                            " [multi-type VLP inferred: {:?}]",
-                            inferred_multi_labels.as_ref().unwrap()
-                        )
+                    if let Some(labels) = &inferred_multi_labels {
+                        format!(" [multi-type VLP inferred: {:?}]", labels)
                     } else {
                         String::new()
                     }

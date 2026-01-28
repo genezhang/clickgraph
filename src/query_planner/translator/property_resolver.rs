@@ -153,7 +153,7 @@ impl PropertyResolver {
     /// * `graph_alias` - Graph alias (e.g., "a", "u", "f")
     /// * `property` - Property name (e.g., "city", "name", "distance")
     /// * `edge_context` - Optional edge alias for denormalized multi-hop resolution
-    ///                    Required when same node appears in multiple edges
+    ///   Required when same node appears in multiple edges
     ///
     /// # Returns
     /// PropertyResolution with:
