@@ -17,7 +17,6 @@ use serde::{Deserialize, Serialize};
 use std::{fmt, sync::Arc};
 
 // Import serde_arc module for serialization
-#[path = "../../utils/serde_arc.rs"]
 use crate::utils::serde_arc;
 
 // =============================================================================

@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 // Import serde_arc module for serialization
-#[path = "../utils/serde_arc.rs"]
 use crate::utils::serde_arc;
 
 /// Represents a reference to a view or table in a render plan
