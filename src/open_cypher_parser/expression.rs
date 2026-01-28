@@ -66,7 +66,8 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
             char('['),
             multispace0,
             char('('),
-        ).parse(input);
+        )
+            .parse(input);
 
         if looks_like_pattern_comp.is_ok() {
             // This looks like pattern comprehension [(...)], not a subscript - stop parsing postfix
@@ -87,7 +88,8 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
             nom::combinator::opt(parse_expression),
             multispace0,
             char(']'),
-        ).parse(input);
+        )
+            .parse(input);
 
         if let Ok((new_input, (_, _, _, from_expr, _, _, _, to_expr, _, _))) = slicing_attempt {
             // Successfully parsed slicing [from..to]
@@ -108,7 +110,8 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
             parse_expression,
             multispace0,
             char(']'),
-        ).parse(input);
+        )
+            .parse(input);
 
         if let Ok((new_input, (_, _, _, index_expr, _, _))) = subscript_attempt {
             // Successfully parsed [index]

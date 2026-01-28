@@ -237,8 +237,7 @@ pub mod utils {
 
             // Heuristic: If bolt5_major is 5-8 and bolt5_minor is reasonable (0-8),
             // interpret as Bolt 5.x. Otherwise, use Bolt 4.x format.
-            let (client_major, client_minor) = if (5..=8).contains(&bolt5_major)
-                && bolt5_minor <= 8
+            let (client_major, client_minor) = if (5..=8).contains(&bolt5_major) && bolt5_minor <= 8
             {
                 log::debug!(
                     "  Checking client version 0x{:08X}: Bolt 5.x format → major={}, minor={}, range={}",

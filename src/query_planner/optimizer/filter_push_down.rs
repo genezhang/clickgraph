@@ -21,9 +21,7 @@ use std::sync::Arc;
 use crate::query_planner::{
     logical_expr::{LogicalExpr, Operator, OperatorApplication},
     logical_plan::LogicalPlan,
-    optimizer::{
-        optimizer_pass::{OptimizerPass, OptimizerResult},
-    },
+    optimizer::optimizer_pass::{OptimizerPass, OptimizerResult},
     plan_ctx::PlanCtx,
     transformed::Transformed,
 };

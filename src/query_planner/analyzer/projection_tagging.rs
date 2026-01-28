@@ -488,7 +488,13 @@ impl ProjectionTagging {
                 let node_strategy_opt = plan_ctx
                     .get_node_strategy(&property_access.table_alias.0, None)
                     .cloned();
-                let pattern_ctx_for_strategy = if let Some(crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. }) = node_strategy_opt.as_ref() {
+                let pattern_ctx_for_strategy = if let Some(
+                    crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge {
+                        edge_alias,
+                        ..
+                    },
+                ) = node_strategy_opt.as_ref()
+                {
                     plan_ctx.get_pattern_context(edge_alias).cloned()
                 } else {
                     None

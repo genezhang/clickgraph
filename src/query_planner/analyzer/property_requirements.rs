@@ -221,10 +221,7 @@ impl PropertyRequirements {
             }
 
             // Otherwise, union the properties
-            let self_props = self
-                .required_properties
-                .entry(alias.clone())
-                .or_default();
+            let self_props = self.required_properties.entry(alias.clone()).or_default();
 
             for prop in props {
                 self_props.insert(prop.clone());

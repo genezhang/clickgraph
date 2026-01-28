@@ -3,9 +3,7 @@ use std::sync::Arc;
 use crate::{
     open_cypher_parser::ast,
     query_planner::{
-        logical_expr::{
-            LogicalExpr, Property,
-        },
+        logical_expr::{LogicalExpr, Property},
         logical_plan::{
             errors::LogicalPlanError,
             plan_builder::LogicalPlanResult,
@@ -26,8 +24,7 @@ use super::helpers::{
     compute_connection_aliases, compute_rel_node_labels, compute_variable_length,
     convert_properties, convert_properties_to_operator_application, determine_optional_anchor,
     generate_denormalization_aware_scan, generate_scan, is_denormalized_scan,
-    is_label_denormalized, register_node_in_context,
-    register_relationship_in_context,
+    is_label_denormalized, register_node_in_context, register_relationship_in_context,
 };
 use super::type_inference::{infer_node_label_from_schema, infer_relationship_type_from_nodes};
 use super::view_scan::generate_relationship_center;
@@ -267,13 +264,9 @@ fn traverse_connected_pattern_with_mode<'a>(
         log::debug!(
             "Pattern processing: start='{}' ({}), end='{}' ({})",
             start_node_alias,
-            start_node_label
-                .as_deref()
-                .unwrap_or("None"),
+            start_node_label.as_deref().unwrap_or("None"),
             end_node_alias,
-            end_node_label
-                .as_deref()
-                .unwrap_or("None")
+            end_node_label.as_deref().unwrap_or("None")
         );
 
         // Polymorphic inference removed - TypeInference pass handles this

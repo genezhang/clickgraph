@@ -22,8 +22,8 @@ use crate::{
         AggregateFnCall, ColumnAlias, LogicalExpr, PropertyAccess, TableAlias,
     },
     query_planner::logical_plan::{
-        optional_match_clause::evaluate_optional_match_clause, LogicalPlan,
-        Projection, ProjectionItem, Union, UnionType,
+        optional_match_clause::evaluate_optional_match_clause, LogicalPlan, Projection,
+        ProjectionItem, Union, UnionType,
     },
     query_planner::plan_ctx::PlanCtx,
 };
@@ -41,10 +41,7 @@ use std::sync::Arc;
 fn contains_aggregate(expr: &LogicalExpr) -> bool {
     match expr {
         LogicalExpr::AggregateFnCall(_) => true,
-        LogicalExpr::OperatorApplicationExp(op) => op
-            .operands
-            .iter()
-            .any(contains_aggregate),
+        LogicalExpr::OperatorApplicationExp(op) => op.operands.iter().any(contains_aggregate),
         LogicalExpr::ScalarFnCall(func) => func.args.iter().any(contains_aggregate),
         LogicalExpr::List(list) => list.iter().any(contains_aggregate),
         LogicalExpr::Case(case_expr) => {
@@ -407,9 +404,7 @@ pub fn evaluate_return_clause<'a>(
 
     let projection_items: Vec<ProjectionItem> = rewritten_return_items
         .iter()
-        .map(|item| {
-            ProjectionItem::from(item.clone())
-        })
+        .map(|item| ProjectionItem::from(item.clone()))
         .collect();
 
     // If input is a Union, handle specially

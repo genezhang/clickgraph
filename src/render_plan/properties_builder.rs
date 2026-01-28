@@ -47,7 +47,9 @@ impl PropertiesBuilder for LogicalPlan {
                             // Extract unqualified column: "p.first_name" -> "first_name"
                             // 🔧 FIX: Handle column names with multiple dots like "n.id.orig_h" -> "id.orig_h"
                             // Use splitn(2) to split only on the FIRST dot, keeping the rest intact
-                            let unqualified = qualified_col.split_once('.').map(|x| x.1)
+                            let unqualified = qualified_col
+                                .split_once('.')
+                                .map(|x| x.1)
                                 .unwrap_or(qualified_col)
                                 .to_string();
                             (prop_name.clone(), unqualified)
@@ -267,27 +269,13 @@ impl PropertiesBuilder for LogicalPlan {
                 );
                 Ok((vec![], None))
             }
-            LogicalPlan::Projection(proj) => {
-                proj.input.get_properties_with_table_alias(alias)
-            }
-            LogicalPlan::Filter(filter) => {
-                filter.input.get_properties_with_table_alias(alias)
-            }
-            LogicalPlan::GroupBy(gb) => {
-                gb.input.get_properties_with_table_alias(alias)
-            }
-            LogicalPlan::GraphJoins(joins) => {
-                joins.input.get_properties_with_table_alias(alias)
-            }
-            LogicalPlan::OrderBy(order) => {
-                order.input.get_properties_with_table_alias(alias)
-            }
-            LogicalPlan::Skip(skip) => {
-                skip.input.get_properties_with_table_alias(alias)
-            }
-            LogicalPlan::Limit(limit) => {
-                limit.input.get_properties_with_table_alias(alias)
-            }
+            LogicalPlan::Projection(proj) => proj.input.get_properties_with_table_alias(alias),
+            LogicalPlan::Filter(filter) => filter.input.get_properties_with_table_alias(alias),
+            LogicalPlan::GroupBy(gb) => gb.input.get_properties_with_table_alias(alias),
+            LogicalPlan::GraphJoins(joins) => joins.input.get_properties_with_table_alias(alias),
+            LogicalPlan::OrderBy(order) => order.input.get_properties_with_table_alias(alias),
+            LogicalPlan::Skip(skip) => skip.input.get_properties_with_table_alias(alias),
+            LogicalPlan::Limit(limit) => limit.input.get_properties_with_table_alias(alias),
             LogicalPlan::Union(union) => {
                 // For UNION, check all branches and return the first successful result.
                 // All branches should have the same schema, so any match is valid, even if it

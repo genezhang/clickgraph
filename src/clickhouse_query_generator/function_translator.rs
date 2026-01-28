@@ -274,7 +274,8 @@ pub fn is_ch_passthrough_aggregate(fn_name: &str) -> bool {
 /// Get the raw ClickHouse function name from a ch. or chagg. prefixed name
 /// Returns None if not a ch./chagg. prefixed function
 pub fn get_ch_function_name(fn_name: &str) -> Option<&str> {
-    fn_name.strip_prefix(CH_AGG_PREFIX)
+    fn_name
+        .strip_prefix(CH_AGG_PREFIX)
         .or_else(|| fn_name.strip_prefix(CH_PASSTHROUGH_PREFIX))
 }
 

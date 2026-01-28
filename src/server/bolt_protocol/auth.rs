@@ -38,12 +38,16 @@ impl AuthScheme {
 
 impl fmt::Display for AuthScheme {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", match self {
-            AuthScheme::None => "none",
-            AuthScheme::Basic => "basic",
-            AuthScheme::Kerberos => "kerberos",
-            AuthScheme::Custom(scheme) => scheme.as_str(),
-        })
+        write!(
+            f,
+            "{}",
+            match self {
+                AuthScheme::None => "none",
+                AuthScheme::Basic => "basic",
+                AuthScheme::Kerberos => "kerberos",
+                AuthScheme::Custom(scheme) => scheme.as_str(),
+            }
+        )
     }
 }
 

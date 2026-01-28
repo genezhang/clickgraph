@@ -2843,10 +2843,7 @@ impl GraphJoinInference {
         let right_label_opt = right_ctx.get_label_str().ok();
 
         // 2. Get relationship type(s) from labels
-        let rel_types: Vec<String> = graph_rel
-            .labels
-            .clone()
-            .unwrap_or_default();
+        let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
 
         if rel_types.is_empty() {
             crate::debug_print!("    ⚠️ compute_pattern_context: no relationship types found");
@@ -5425,10 +5422,7 @@ impl GraphJoinInference {
             .and_then(|ctx| ctx.get_label_str().ok());
 
         // 3. Get relationship schema using composite key (rel_type::from_label::to_label)
-        let rel_types: Vec<String> = graph_rel
-            .labels
-            .clone()
-            .unwrap_or_default();
+        let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
 
         if rel_types.is_empty() {
             return Err(AnalyzerError::SchemaNotFound(format!(

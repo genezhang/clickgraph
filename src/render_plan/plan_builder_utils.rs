@@ -7970,7 +7970,9 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 // If we found correlation predicates, convert them to JOIN ON conditions
                 for pred in &original_correlation_predicates {
                     // Convert LogicalExpr predicate to RenderExpr and then extract OperatorApplication
-                    if let Ok(RenderExpr::OperatorApplicationExp(op_app)) = RenderExpr::try_from(pred.clone()) {
+                    if let Ok(RenderExpr::OperatorApplicationExp(op_app)) =
+                        RenderExpr::try_from(pred.clone())
+                    {
                         // Rewrite the operands to use CTE column names
                         let rewritten = rewrite_operator_application_for_cte_join(
                             &op_app,
@@ -8111,10 +8113,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
             if let Some(_mapping) = property_mapping {
                 // Rewrite SELECT items to use FROM alias and CTE column names
                 // The FROM alias (e.g., "a_age") must be used, not the original aliases ("a") or CTE name
-                let from_alias = from_ref
-                    .alias
-                    .as_deref()
-                    .unwrap_or(&from_ref.name);
+                let from_alias = from_ref.alias.as_deref().unwrap_or(&from_ref.name);
                 log::warn!("🔧 build_chained_with_match_cte_plan: Rewriting SELECT items to use FROM alias '{}'", from_alias);
 
                 // Extract all WITH aliases from CTE name for rewriting
@@ -8252,7 +8251,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     // Also extract database column names from the property mapping in graph schema
                     // The property_mapping might use Cypher property names, but we also need to map
                     // the actual database column names (which may differ, like full_name vs name)
-                    if let Some((_, _, _, _property_mapping_extra)) = cte_schemas.get(&from_ref.name)
+                    if let Some((_, _, _, _property_mapping_extra)) =
+                        cte_schemas.get(&from_ref.name)
                     {
                         for item in select_items {
                             if let Some(col_alias) = &item.col_alias {
@@ -9978,20 +9978,20 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
         // - Single item that's just a TableAlias
         // - No DISTINCT (already applied in inner CTE)
         // - No ORDER BY, SKIP, LIMIT modifiers
-    wc.items.len() == 1
-        && wc.order_by.is_none()
-        && wc.skip.is_none()
-        && wc.limit.is_none()
-        && !wc.distinct
-        && wc.where_clause.is_none()
-        && matches!(
-            &wc.items[0].expression,
-            crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
-        )
-}
+        wc.items.len() == 1
+            && wc.order_by.is_none()
+            && wc.skip.is_none()
+            && wc.limit.is_none()
+            && !wc.distinct
+            && wc.where_clause.is_none()
+            && matches!(
+                &wc.items[0].expression,
+                crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
+            )
+    }
 
-// Helper to generate a key for a WithClause (matches the key generation in find_all_with_clauses_grouped)
-fn get_with_clause_key(wc: &crate::query_planner::logical_plan::WithClause) -> String {
+    // Helper to generate a key for a WithClause (matches the key generation in find_all_with_clauses_grouped)
+    fn get_with_clause_key(wc: &crate::query_planner::logical_plan::WithClause) -> String {
         if !wc.exported_aliases.is_empty() {
             let mut aliases = wc.exported_aliases.clone();
             aliases.sort();

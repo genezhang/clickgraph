@@ -1421,10 +1421,8 @@ impl JoinBuilder for LogicalPlan {
 
                 // Generate polymorphic edge filter (type_column IN ('TYPE1', 'TYPE2') AND from_label = 'X' AND to_label = 'Y')
                 // This applies regardless of whether the JOIN is optional or required
-                let rel_types_for_filter: Vec<String> = graph_rel
-                    .labels
-                    .clone()
-                    .unwrap_or_default();
+                let rel_types_for_filter: Vec<String> =
+                    graph_rel.labels.clone().unwrap_or_default();
                 let polymorphic_filter = get_polymorphic_edge_filter_for_join(
                     &graph_rel.center,
                     &graph_rel.alias,

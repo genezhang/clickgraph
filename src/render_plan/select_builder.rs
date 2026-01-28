@@ -14,16 +14,13 @@
 //! - Manage collect() function expansion
 
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::query_planner::logical_expr::{
-    LogicalExpr, TableAlias,
-};
+use crate::query_planner::logical_expr::{LogicalExpr, TableAlias};
 use crate::query_planner::logical_plan::{LogicalPlan, ProjectionItem};
 use crate::query_planner::typed_variable::{TypedVariable, VariableSource};
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::properties_builder::PropertiesBuilder;
 use crate::render_plan::render_expr::{
-    Column, ColumnAlias, PropertyAccess, RenderExpr,
-    TableAlias as RenderTableAlias,
+    Column, ColumnAlias, PropertyAccess, RenderExpr, TableAlias as RenderTableAlias,
 };
 use crate::render_plan::SelectItem;
 
@@ -353,13 +350,12 @@ impl SelectBuilder for LogicalPlan {
                                 self.get_properties_with_table_alias(cypher_alias)
                             {
                                 // Hack for VLP denormalized: if col_name contains "Origin" or "Dest", use "t"
-                                let table_alias_to_use = if col_name.contains("Origin")
-                                    || col_name.contains("Dest")
-                                {
-                                    "t"
-                                } else {
-                                    &actual_table_alias
-                                };
+                                let table_alias_to_use =
+                                    if col_name.contains("Origin") || col_name.contains("Dest") {
+                                        "t"
+                                    } else {
+                                        &actual_table_alias
+                                    };
                                 select_items.push(SelectItem {
                                     expression: RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: RenderTableAlias(

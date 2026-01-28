@@ -23,9 +23,7 @@ use crate::utils::cte_naming::generate_cte_name;
 use super::errors::RenderBuildError;
 use super::filter_pipeline::{categorize_filters, CategorizedFilters};
 use super::plan_builder::RenderPlanBuilder;
-use super::render_expr::{
-    Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr,
-};
+use super::render_expr::{Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr};
 use super::{Cte, CteContent, Join, JoinType};
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
@@ -50,7 +48,7 @@ fn recreate_pattern_schema_context(
         .and_then(|labels| labels.first().cloned())
         .ok_or_else(|| {
             RenderBuildError::MissingTableInfo(
-                "Could not extract left node label for relationship pattern".to_string()
+                "Could not extract left node label for relationship pattern".to_string(),
             )
         })?;
 
@@ -58,7 +56,7 @@ fn recreate_pattern_schema_context(
         .and_then(|labels| labels.first().cloned())
         .ok_or_else(|| {
             RenderBuildError::MissingTableInfo(
-                "Could not extract right node label for relationship pattern".to_string()
+                "Could not extract right node label for relationship pattern".to_string(),
             )
         })?;
 

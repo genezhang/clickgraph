@@ -175,10 +175,9 @@ pub fn categorize_filters(
                     "length" | "nodes" | "relationships"
                 )
             }
-            RenderExpr::OperatorApplicationExp(op) => op
-                .operands
-                .iter()
-                .any(contains_path_function),
+            RenderExpr::OperatorApplicationExp(op) => {
+                op.operands.iter().any(contains_path_function)
+            }
             _ => false,
         }
     }

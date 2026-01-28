@@ -1304,10 +1304,7 @@ impl GraphSchemaConfig {
                     .from_label_column
                     .as_ref()
                     .is_some_and(|s| !s.is_empty());
-                let has_from_node = poly_edge
-                    .from_node
-                    .as_ref()
-                    .is_some_and(|s| !s.is_empty());
+                let has_from_node = poly_edge.from_node.as_ref().is_some_and(|s| !s.is_empty());
 
                 if has_from_label && has_from_node {
                     return Err(GraphSchemaError::InvalidConfig {

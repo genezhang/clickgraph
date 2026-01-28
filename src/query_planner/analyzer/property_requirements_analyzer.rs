@@ -216,9 +216,8 @@ impl PropertyRequirementsAnalyzer {
                 let is_wildcard = requirements.requires_all(&unwind.alias);
 
                 // Clone the specific properties to avoid borrow checker issues
-                let specific_props: Option<HashSet<String>> = requirements
-                    .get_requirements(&unwind.alias)
-                    .cloned();
+                let specific_props: Option<HashSet<String>> =
+                    requirements.get_requirements(&unwind.alias).cloned();
 
                 if is_wildcard {
                     log::info!(

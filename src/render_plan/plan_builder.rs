@@ -2,14 +2,11 @@ use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
 use crate::query_planner::logical_expr::LogicalExpr;
-use crate::query_planner::logical_plan::{
-    LogicalPlan, ProjectionItem,
-};
+use crate::query_planner::logical_plan::{LogicalPlan, ProjectionItem};
 use crate::query_planner::plan_ctx::PlanCtx;
 use crate::utils::cte_naming::generate_cte_base_name;
 use std::collections::HashMap;
 use std::sync::Arc;
-
 
 use super::errors::RenderBuildError;
 
@@ -24,9 +21,9 @@ use super::render_expr::{
 };
 use super::select_builder::SelectBuilder;
 use super::{
-    ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem,
-    GroupByExpressions, Join, JoinItems, JoinType, LimitItem, OrderByItem, OrderByItems,
-    RenderPlan, SelectItem, SelectItems, SkipItem, Union, UnionItems, ViewTableRef,
+    ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem, GroupByExpressions, Join,
+    JoinItems, JoinType, LimitItem, OrderByItem, OrderByItems, RenderPlan, SelectItem, SelectItems,
+    SkipItem, Union, UnionItems, ViewTableRef,
 };
 use crate::render_plan::cte_extraction::extract_ctes_with_context;
 
@@ -35,9 +32,7 @@ use crate::render_plan::cte_extraction::extract_ctes_with_context;
 // The compiler will use the module functions when available
 #[allow(unused_imports)]
 use super::plan_builder_helpers::*;
-use super::plan_builder_utils::{
-    rewrite_vlp_union_branch_aliases,
-};
+use super::plan_builder_utils::rewrite_vlp_union_branch_aliases;
 use super::utils::alias_utils::*;
 use super::CteGenerationContext;
 
@@ -539,7 +534,9 @@ impl RenderPlanBuilder for LogicalPlan {
                 // 🔧 FIX: Use the schema parameter instead of creating an empty schema
                 let render_cte = Cte::new(
                     strip_database_prefix(&logical_cte.name),
-                    super::CteContent::Structured(Box::new(logical_cte.input.to_render_plan(schema)?)),
+                    super::CteContent::Structured(Box::new(
+                        logical_cte.input.to_render_plan(schema)?,
+                    )),
                     false, // is_recursive
                 );
                 Some(render_cte)

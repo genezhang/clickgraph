@@ -1987,13 +1987,19 @@ impl FilterTagging {
                     if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
                         // Check from_node_properties first
                         if let Some(from_props) = &scan.from_node_properties {
-                            if let Some(crate::graph_catalog::expression_parser::PropertyValue::Column(col)) = from_props.get(property) {
+                            if let Some(
+                                crate::graph_catalog::expression_parser::PropertyValue::Column(col),
+                            ) = from_props.get(property)
+                            {
                                 return Some(col.clone());
                             }
                         }
                         // Then check to_node_properties
                         if let Some(to_props) = &scan.to_node_properties {
-                            if let Some(crate::graph_catalog::expression_parser::PropertyValue::Column(col)) = to_props.get(property) {
+                            if let Some(
+                                crate::graph_catalog::expression_parser::PropertyValue::Column(col),
+                            ) = to_props.get(property)
+                            {
                                 return Some(col.clone());
                             }
                         }
@@ -2023,7 +2029,10 @@ impl FilterTagging {
                     // Check if alias is the left (from) node of THIS relationship
                     if rel.left_connection == alias {
                         if let Some(from_props) = &scan.from_node_properties {
-                            if let Some(crate::graph_catalog::expression_parser::PropertyValue::Column(col)) = from_props.get(property) {
+                            if let Some(
+                                crate::graph_catalog::expression_parser::PropertyValue::Column(col),
+                            ) = from_props.get(property)
+                            {
                                 println!("FilterTagging: find_property_in_viewscan - found '{}' in from_node_properties -> '{}'", property, col);
                                 return Some(col.clone());
                             }
@@ -2032,7 +2041,10 @@ impl FilterTagging {
                     // Check if alias is the right (to) node of THIS relationship
                     if rel.right_connection == alias {
                         if let Some(to_props) = &scan.to_node_properties {
-                            if let Some(crate::graph_catalog::expression_parser::PropertyValue::Column(col)) = to_props.get(property) {
+                            if let Some(
+                                crate::graph_catalog::expression_parser::PropertyValue::Column(col),
+                            ) = to_props.get(property)
+                            {
                                 println!("FilterTagging: find_property_in_viewscan - found '{}' in to_node_properties -> '{}'", property, col);
                                 return Some(col.clone());
                             }

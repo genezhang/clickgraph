@@ -716,11 +716,7 @@ pub fn map_property_to_column_with_relationship_context(
 
     // Get the node schema first
     let node_schema = schema.all_node_schemas().get(node_label).ok_or_else(|| {
-        let available: Vec<String> = schema
-            .all_node_schemas()
-            .keys()
-            .cloned()
-            .collect();
+        let available: Vec<String> = schema.all_node_schemas().keys().cloned().collect();
         let msg = format!(
             "Node label '{}' not found in schema. Available labels: {}",
             node_label,
@@ -826,11 +822,7 @@ pub fn map_property_to_column_with_relationship_context(
     // Fall back to traditional node property mapping
 
     let column = node_schema.property_mappings.get(property).ok_or_else(|| {
-        let available: Vec<String> = node_schema
-            .property_mappings
-            .keys()
-            .cloned()
-            .collect();
+        let available: Vec<String> = node_schema.property_mappings.keys().cloned().collect();
         let msg = format!(
             "Property '{}' not found for node label '{}'. Available properties: {}",
             property,

@@ -32,7 +32,12 @@ pub use view_table_ref::ViewTableRef;
 
 /// Type alias for CTE schema metadata to reduce type complexity.
 /// Tuple contains: (SelectItems, column names, column mappings, property mappings)
-pub type CteSchemaMetadata = (Vec<SelectItem>, Vec<String>, HashMap<String, String>, HashMap<(String, String), String>);
+pub type CteSchemaMetadata = (
+    Vec<SelectItem>,
+    Vec<String>,
+    HashMap<String, String>,
+    HashMap<(String, String), String>,
+);
 pub type CteSchemas = HashMap<String, CteSchemaMetadata>;
 
 use std::collections::HashMap;
