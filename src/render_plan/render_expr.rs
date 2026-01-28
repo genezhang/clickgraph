@@ -8,7 +8,7 @@ use crate::query_planner::logical_expr::LogicalExpr;
 
 use crate::query_planner::logical_expr::{
     AggregateFnCall as LogicalAggregateFnCall, Column as LogicalColumn,
-    ColumnAlias as LogicalColumnAlias, ConnectedPattern, CteEntityRef as LogicalCteEntityRef,
+    ColumnAlias as LogicalColumnAlias, ConnectedPattern,
     Direction, EntityType, ExistsSubquery as LogicalExistsSubquery,
     InSubquery as LogicalInSubquery, Literal as LogicalLiteral, LogicalCase,
     Operator as LogicalOperator, OperatorApplication as LogicalOperatorApplication, PathPattern,

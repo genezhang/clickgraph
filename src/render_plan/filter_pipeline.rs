@@ -8,14 +8,10 @@
 
 use super::expression_utils::property_access_expr;
 use super::render_expr::{
-    AggregateFnCall, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall,
-    TableAlias,
+    AggregateFnCall, Operator, OperatorApplication, RenderExpr, ScalarFnCall,
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
-use crate::query_planner::join_context::{
-    VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
-};
 
 /// Represents categorized filters for different parts of a query
 ///
