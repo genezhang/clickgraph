@@ -7,27 +7,32 @@
 //!
 //! | Pass | Purpose |
 //! |------|---------|
-//! | [`FilterPushDown`] | Push filters closer to scans |
+//! | [`CartesianJoinExtraction`] | Extract CROSS JOINs from disconnected patterns |
 //! | [`FilterIntoGraphRel`] | Embed filters into GraphRel nodes |
 //! | [`ProjectionPushDown`] | Eliminate unused columns early |
-//! | [`ViewOptimizer`] | Schema-aware view optimizations |
-//! | [`CartesianJoinExtraction`] | Extract CROSS JOINs from disconnected patterns |
 //! | [`CleanupViewScanFilters`] | Remove redundant filters on ViewScans |
+//! | [`FilterPushDown`] | Push filters closer to scans |
+//! | [`ViewOptimizer`] | Schema-aware view optimizations |
 //! | [`TrivialWithElimination`] | Remove unnecessary WITH clauses |
 //! | [`CollectUnwindElimination`] | Optimize collect/unwind sequences |
 //!
 //! # Execution Order
 //!
-//! Passes are applied in a specific order for correctness:
-//! 1. View optimizations (schema-aware rewrites)
-//! 2. Filter pushdown (move filters toward data)
-//! 3. Filter-to-GraphRel embedding
-//! 4. Projection pushdown
-//! 5. Cleanup passes
+//! Passes are applied in a specific order for correctness across
+//! [`initial_optimization`] and [`final_optimization`]:
+//! 1. [`CartesianJoinExtraction`]
+//! 2. [`FilterIntoGraphRel`]
+//! 3. [`ProjectionPushDown`]
+//! 4. [`CleanupViewScanFilters`]
+//! 5. [`FilterPushDown`]
+//! 6. [`ViewOptimizer`]
 //!
 //! # Usage
 //!
-//! Use [`optimize`] as the main entry point for full optimization.
+//! The query planner calls [`initial_optimization`] followed by
+//! [`final_optimization`] to perform full optimization of a [`LogicalPlan`].
+//! You can also invoke these functions directly if you need to run only part
+//! of the optimization pipeline.
 
 use std::sync::Arc;
 
