@@ -24,7 +24,7 @@ use super::errors::RenderBuildError;
 use super::filter_pipeline::{categorize_filters, CategorizedFilters};
 use super::plan_builder::RenderPlanBuilder;
 use super::render_expr::{
-    ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr,
+    Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr,
 };
 use super::{Cte, CteContent, Join, JoinType};
 

@@ -4,7 +4,7 @@ use crate::{
     open_cypher_parser::ast,
     query_planner::{
         logical_expr::{
-            LogicalExpr, Operator, OperatorApplication, Property, PropertyAccess, TableAlias,
+            LogicalExpr, Property,
         },
         logical_plan::{
             errors::LogicalPlanError,
@@ -14,11 +14,10 @@ use crate::{
                 VariableLengthSpec,
             },
         },
-        plan_ctx::{PlanCtx, TableCtx},
+        plan_ctx::PlanCtx,
     },
 };
 
-use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_plan::generate_id;
 use std::collections::HashMap;
 
