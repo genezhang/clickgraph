@@ -65,7 +65,7 @@ pub fn strip_comments(input: &str) -> String {
         if ch == '-' && chars.peek() == Some(&'-') {
             chars.next(); // consume second '-'
                           // Skip until newline
-            while let Some(c) = chars.next() {
+            for c in chars.by_ref() {
                 if c == '\n' {
                     result.push('\n'); // preserve newline
                     break;
@@ -98,7 +98,7 @@ pub fn strip_comments(input: &str) -> String {
                     // Line comment //
                     chars.next(); // consume second '/'
                                   // Skip until newline
-                    while let Some(c) = chars.next() {
+                    for c in chars.by_ref() {
                         if c == '\n' {
                             result.push('\n'); // preserve newline
                             break;

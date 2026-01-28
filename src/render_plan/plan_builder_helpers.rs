@@ -583,9 +583,8 @@ pub(super) fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) 
             // Check if the target is a relationship alias (e.g., "f1" for denormalized edges)
             if rel.alias == target_alias {
                 // The relationship alias matches - get table from its center ViewScan
-                match &*rel.center {
-                    LogicalPlan::ViewScan(scan) => return Some(scan.source_table.clone()),
-                    _ => {}
+                if let LogicalPlan::ViewScan(scan) = &*rel.center {
+                    return Some(scan.source_table.clone());
                 }
             }
             // Search in both left and right branches

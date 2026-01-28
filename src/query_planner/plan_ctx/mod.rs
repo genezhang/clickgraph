@@ -538,9 +538,7 @@ impl PlanCtx {
         // Merge alias-to-table mappings
         for (alias, table_ctx) in other.alias_table_ctx_map {
             // Only insert if not already present to avoid conflicts
-            if !self.alias_table_ctx_map.contains_key(&alias) {
-                self.alias_table_ctx_map.insert(alias, table_ctx);
-            }
+            self.alias_table_ctx_map.entry(alias).or_insert(table_ctx);
         }
 
         // Merge optional aliases
@@ -550,16 +548,12 @@ impl PlanCtx {
 
         // Merge projection aliases
         for (alias, expr) in other.projection_aliases {
-            if !self.projection_aliases.contains_key(&alias) {
-                self.projection_aliases.insert(alias, expr);
-            }
+            self.projection_aliases.entry(alias).or_insert(expr);
         }
 
         // Merge denormalized node edges
         for (alias, info) in other.denormalized_node_edges {
-            if !self.denormalized_node_edges.contains_key(&alias) {
-                self.denormalized_node_edges.insert(alias, info);
-            }
+            self.denormalized_node_edges.entry(alias).or_insert(info);
         }
     }
 

@@ -588,7 +588,7 @@ fn rewrite_fixed_path_functions(mut plan: RenderPlan) -> RenderPlan {
         log::info!("🔧 SELECT has {} items", plan.select.items.len());
 
         // Rewrite each SELECT item's expressions
-        for (idx, item) in plan.select.items.iter_mut().enumerate() {
+        for item in plan.select.items.iter_mut() {
             let before = format!("{:?}", item.expression);
             item.expression = rewrite_expr_for_fixed_path(&item.expression, &path_var, hop_count);
             let after = format!("{:?}", item.expression);
@@ -768,7 +768,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
             // For UNION with ordering/limiting, wrap in subquery and apply ORDER BY/LIMIT to outer query
             sql.push_str("SELECT ");
 
-            if let Some(union) = &plan.union.0 {
+            if let Some(_union) = &plan.union.0 {
                 // For UNION queries with aggregations, we need to select all columns from the subquery
                 // and apply the aggregation in the outer SELECT.
                 // For UNION queries without aggregations, select column aliases.

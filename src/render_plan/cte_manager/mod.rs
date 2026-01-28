@@ -1762,7 +1762,7 @@ impl MixedAccessCteStrategy {
         );
 
         // Determine which node is embedded vs joined
-        let (embedded_node_alias, joined_node_alias) = match self.joined_node {
+        let (embedded_node_alias, _joined_node_alias) = match self.joined_node {
             NodePosition::Left => (
                 self.pattern_ctx.right_node_alias.as_str(),
                 self.pattern_ctx.left_node_alias.as_str(),
@@ -2132,7 +2132,7 @@ impl EdgeToEdgeCteStrategy {
         &self,
         context: &CteGenerationContext,
         properties: &[NodeProperty],
-        filters: &CategorizedFilters,
+        _filters: &CategorizedFilters,
     ) -> Result<String, CteError> {
         // Build SELECT clause for recursive case
         let mut select_items = vec![
@@ -2484,7 +2484,7 @@ impl VariableLengthCteStrategy {
             NodeAccessStrategy::OwnTable {
                 table, id_column, ..
             } => Ok((table.clone(), id_column.clone(), false)),
-            NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => {
+            NodeAccessStrategy::EmbeddedInEdge { edge_alias: _, .. } => {
                 // For embedded nodes, get the edge table and use from_id/to_id based on position
                 let (edge_table, from_col, to_col) = match edge {
                     EdgeAccessStrategy::SeparateTable {

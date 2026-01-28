@@ -466,7 +466,7 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                     };
 
                     // Get end node's ID column
-                    let end_id_sql = if let Some(label) = &conn.end_node.label {
+                    let _end_id_sql = if let Some(label) = &conn.end_node.label {
                         let node_schema = schema
                             .node_schema_opt(label)
                             .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
@@ -684,7 +684,7 @@ fn generate_not_exists_from_path_pattern(
                                 start_id_sql
                             )
                         }
-                        (Some(end), true) => {
+                        (Some(_end), true) => {
                             // Named end node, undirected: check both directions
                             format!(
                                 "NOT EXISTS (SELECT 1 FROM {} WHERE ({}.{} = {} AND {}.{} = {}) OR ({}.{} = {} AND {}.{} = {}))",
@@ -697,7 +697,7 @@ fn generate_not_exists_from_path_pattern(
                                 table_name, to_col, start_id_sql
                             )
                         }
-                        (Some(end), false) => {
+                        (Some(_end), false) => {
                             // Named end node, directed: check single direction
                             let (from_match_sql, to_match_sql) = match conn.relationship.direction {
                                 Direction::Outgoing => (start_id_sql.clone(), end_id_sql.clone()),

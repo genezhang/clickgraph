@@ -391,7 +391,7 @@ impl CollectUnwindElimination {
     /// Returns: (modified_plan, alias_mapping)
     fn try_eliminate_collect_unwind(
         unwind: &Unwind,
-        unwind_plan: Arc<LogicalPlan>,
+        _unwind_plan: Arc<LogicalPlan>,
     ) -> OptimizerResult<(Arc<LogicalPlan>, HashMap<String, String>)> {
         log::info!(
             "🔥 CollectUnwindElimination: Examining UNWIND node, alias='{}', expression={:?}",

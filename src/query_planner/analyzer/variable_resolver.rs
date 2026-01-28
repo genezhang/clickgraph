@@ -494,7 +494,7 @@ impl VariableResolver {
                         let mut current = &*cp.left;
                         loop {
                             match current {
-                                LogicalPlan::WithClause(wc) => {
+                                LogicalPlan::WithClause(_wc) => {
                                     with_clause_opt = Some(current);
                                     break;
                                 }
@@ -1123,7 +1123,7 @@ impl VariableResolver {
                 }
             }
 
-            LogicalExpr::PropertyAccessExp(prop) => {
+            LogicalExpr::PropertyAccessExp(_prop) => {
                 // Property access like friend.firstName
                 // The table_alias might need resolution (though usually it doesn't)
                 // For now, leave unchanged - property mapping happens in FilterTagging

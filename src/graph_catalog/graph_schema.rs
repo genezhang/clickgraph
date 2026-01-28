@@ -1008,7 +1008,7 @@ impl GraphSchema {
                 // If rel_node_type table != query_label table, but query has label_column,
                 // check if rel_node_type could be a valid type value
 
-                if let Some(rel_node_schema) = self.nodes.get(rel_node_type) {
+                if let Some(_rel_node_schema) = self.nodes.get(rel_node_type) {
                     // If the polymorphic node's table is different from the concrete node's table,
                     // they're not compatible (Message table vs Post table)
                     // UNLESS the polymorphic node is a view that unions multiple tables
@@ -1213,6 +1213,7 @@ impl GraphSchema {
     ///
     /// - REQUESTED: (IP)-[:REQUESTED]->(Domain)  from dns_log
     /// - RESOLVED_TO: (Domain)-[:RESOLVED_TO]->(ResolvedIP)  from dns_log
+    ///
     /// These are coupled because:
     ///
     /// - Same table: dns_log

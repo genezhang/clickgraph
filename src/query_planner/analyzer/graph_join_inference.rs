@@ -656,9 +656,11 @@ impl GraphJoinInference {
     }
 
     /// Deduplicate joins by table_alias
+    ///
     /// When there are multiple joins for the same alias, prefer the one that:
     /// 1. References TableAlias (WITH clause alias like client_ip) over PropertyAccessExp (like src2.ip)
     /// 2. Has fewer PropertyAccessExp operands (simpler join condition)
+    ///
     /// This handles the case where both infer_graph_join and cross-table extraction create joins
     /// for the same fully denormalized table.
     fn deduplicate_joins(joins: Vec<Join>) -> Vec<Join> {
@@ -2084,8 +2086,8 @@ impl GraphJoinInference {
                         for shared_node in &shared_nodes {
                             // Extract table info from both sides using existing helper
                             if let (
-                                Some((left_table, left_alias)),
-                                Some((right_table, right_alias)),
+                                Some((_left_table, _left_alias)),
+                                Some((_right_table, _right_alias)),
                             ) = (
                                 Self::extract_right_table_from_plan(&cp.left, graph_schema),
                                 Self::extract_right_table_from_plan(&cp.right, graph_schema),
@@ -4233,7 +4235,7 @@ impl GraphJoinInference {
     fn infer_graph_join(
         &self,
         graph_rel: &GraphRel,
-        root_plan: Arc<LogicalPlan>,
+        _root_plan: Arc<LogicalPlan>,
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
         collected_graph_joins: &mut Vec<Join>,
@@ -4336,11 +4338,11 @@ impl GraphJoinInference {
             left_alias_str,
             rel_alias_str,
             right_alias_str,
-            left_node_id_column,
-            right_node_id_column,
+            _left_node_id_column,
+            _right_node_id_column,
             left_label,
             right_label,
-            rel_labels,
+            _rel_labels,
             left_node_schema,
             right_node_schema,
             rel_schema,
@@ -4432,7 +4434,7 @@ impl GraphJoinInference {
         // In the duplicate scan removing pass, we remove the already scanned nodes. We do this from bottom to up.
         // So there could be a graph_rel who has LogicalPlan::Empty as left. In such case just join the relationship but on both nodes columns.
         // In case of f3, both of its nodes a and b are already joined. So just join f3 on both a and b's joining keys.
-        let is_standalone_rel: bool = matches!(graph_rel.left.as_ref(), LogicalPlan::Empty);
+        let _is_standalone_rel: bool = matches!(graph_rel.left.as_ref(), LogicalPlan::Empty);
 
         crate::debug_print!("    📋 Creating joins for relationship...");
         let joins_before = collected_graph_joins.len();
@@ -4996,7 +4998,7 @@ impl GraphJoinInference {
     fn generate_cross_branch_joins_from_metadata(
         &self,
         pattern_metadata: &PatternGraphMetadata,
-        plan_ctx: &PlanCtx,
+        _plan_ctx: &PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Vec<Join>> {
         let mut joins = Vec::new();

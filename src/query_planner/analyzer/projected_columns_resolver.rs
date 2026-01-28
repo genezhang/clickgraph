@@ -110,7 +110,7 @@ impl ProjectedColumnsResolver {
     /// the role from `rel_alias`, but it is kept for API consistency and potential future use.
     fn compute_denormalized_properties(
         alias: &str,
-        scan: &ViewScan,
+        _scan: &ViewScan,
         plan_ctx: &PlanCtx,
         rel_alias: Option<&str>,
         _position: Option<NodePosition>,

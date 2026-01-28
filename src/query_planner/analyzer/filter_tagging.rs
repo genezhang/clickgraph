@@ -727,7 +727,7 @@ impl FilterTagging {
                 })?;
 
                 // Check if this node uses EmbeddedInEdge strategy (denormalized access)
-                let (is_embedded_in_edge, owning_edge_info) = if let Some(plan) = plan {
+                let (is_embedded_in_edge, _owning_edge_info) = if let Some(plan) = plan {
                     // Also check by traversing the plan to find which edge owns this node
                     let edge_info =
                         Self::find_owning_edge_for_node(plan, &property_access.table_alias.0);

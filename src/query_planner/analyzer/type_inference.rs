@@ -906,7 +906,7 @@ impl TypeInference {
         current_types: &Option<Vec<String>>,
         left_connection: &str,
         right_connection: &str,
-        direction: &Direction,
+        _direction: &Direction,
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Option<Vec<String>>> {

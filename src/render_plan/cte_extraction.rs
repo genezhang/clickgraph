@@ -1708,7 +1708,7 @@ pub fn extract_ctes_with_context(
                 };
                 log::info!("🔍 VLP: Left plan = {}", left_plan_desc);
                 // 🔧 PARAMETERIZED VIEW FIX: Use extract_parameterized_table_name for parameterized view support
-                let start_table =
+                let _start_table =
                     extract_parameterized_table_name(&graph_rel.left).ok_or_else(|| {
                         RenderBuildError::MissingTableInfo("start node in VLP".to_string())
                     })?;
@@ -1718,7 +1718,7 @@ pub fn extract_ctes_with_context(
                 let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
                 let is_multi_type_vlp = should_use_join_expansion(graph_rel, &rel_types, schema);
 
-                let end_table = if is_multi_type_vlp {
+                let _end_table = if is_multi_type_vlp {
                     // For multi-type VLP, end_table isn't in the plan (it's polymorphic)
                     // We'll determine end types from schema later
                     log::info!(
@@ -2592,9 +2592,9 @@ pub fn extract_ctes_with_context(
                     } else {
                         None
                     };
-                    let type_column = pattern_ctx.edge.type_column();
-                    let from_label_column = pattern_ctx.edge.from_label_column();
-                    let to_label_column = pattern_ctx.edge.to_label_column();
+                    let _type_column = pattern_ctx.edge.type_column();
+                    let _from_label_column = pattern_ctx.edge.from_label_column();
+                    let _to_label_column = pattern_ctx.edge.to_label_column();
 
                     // 🎯 Extract schema filters from start and end nodes
                     // Schema filters are defined in YAML and should be applied to CTE base/recursive cases
@@ -3174,7 +3174,7 @@ pub fn extract_ctes_with_context(
                     // Only wrap TableAlias, not aggregate functions
                     if let LogicalExpr::TableAlias(ref alias) = item.expression {
                         // Find the ID column for this alias
-                        if let Ok(id_col) = wc.input.find_id_column_for_alias(&alias.0) {
+                        if let Ok(_id_col) = wc.input.find_id_column_for_alias(&alias.0) {
                             log::info!("🔧 CTE Extraction: Wrapping non-ID columns of '{}' with anyLast()", alias.0);
 
                             // Expand TableAlias to all properties and wrap non-ID with anyLast()

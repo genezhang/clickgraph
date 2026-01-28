@@ -203,7 +203,7 @@ impl PropertiesBuilder for LogicalPlan {
                     } else {
                         scan.to_node_properties.is_some()
                     };
-                    let both_nodes_denormalized = left_props_exist && right_props_exist;
+                    let _both_nodes_denormalized = left_props_exist && right_props_exist;
 
                     // Check if alias matches left_connection
                     if alias == rel.left_connection {

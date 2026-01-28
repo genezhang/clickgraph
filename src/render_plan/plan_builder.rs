@@ -117,7 +117,7 @@ pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>
 fn apply_anylast_wrapping_for_group_by(
     select_items: Vec<SelectItem>,
     group_by_exprs: &[RenderExpr],
-    plan: &LogicalPlan,
+    _plan: &LogicalPlan,
 ) -> RenderPlanBuilderResult<Vec<SelectItem>> {
     // If no GROUP BY, return items as-is
     if group_by_exprs.is_empty() {
@@ -153,7 +153,7 @@ fn apply_anylast_wrapping_for_group_by(
             }
 
             // Only wrap PropertyAccess expressions
-            if let RenderExpr::PropertyAccessExp(ref prop_access) = item.expression {
+            if let RenderExpr::PropertyAccessExp(ref _prop_access) = item.expression {
                 // Check if this is an ID column (ID columns are in GROUP BY, shouldn't be wrapped)
                 // ID columns typically end with "_id" or ".id" in the alias
                 let is_id_column = if let Some(ref col_alias) = item.col_alias {
@@ -718,7 +718,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     LogicalPlan::GraphNode(gn) => current = gn.input.as_ref(),
                     LogicalPlan::Projection(proj) => current = proj.input.as_ref(),
                     LogicalPlan::GroupBy(gb) => current = gb.input.as_ref(),
-                    LogicalPlan::Union(union) => {
+                    LogicalPlan::Union(_union) => {
                         // Found Union nested deep, convert it to render plan
                         log::debug!("extract_union: found nested Union, converting to render");
                         let union_render_plan = current.to_render_plan(schema)?;
@@ -1716,7 +1716,7 @@ fn logical_to_render_expr(expr: &LogicalExpr) -> Option<RenderExpr> {
 /// Returns a HashMap mapping source_alias -> output_alias (e.g., "u" -> "person")
 fn build_with_alias_mapping(
     items: &[ProjectionItem],
-    exported_aliases: &[String],
+    _exported_aliases: &[String],
 ) -> std::collections::HashMap<String, String> {
     let mut mapping = std::collections::HashMap::new();
 

@@ -80,7 +80,7 @@ fn traverse_connected_pattern_with_mode<'a>(
     for connected_pattern in connected_patterns.iter() {
         // Check start_node - use address as key
         let start_ptr = connected_pattern.start_node.as_ptr() as usize;
-        if !node_alias_map.contains_key(&start_ptr) {
+        node_alias_map.entry(start_ptr).or_insert_with(|| {
             let start_node_ref = connected_pattern.start_node.borrow();
             let alias = if let Some(name) = start_node_ref.name {
                 name.to_string()
@@ -88,12 +88,12 @@ fn traverse_connected_pattern_with_mode<'a>(
                 generate_id()
             };
             drop(start_node_ref);
-            node_alias_map.insert(start_ptr, alias);
-        }
+            alias
+        });
 
         // Check end_node - use address as key
         let end_ptr = connected_pattern.end_node.as_ptr() as usize;
-        if !node_alias_map.contains_key(&end_ptr) {
+        node_alias_map.entry(end_ptr).or_insert_with(|| {
             let end_node_ref = connected_pattern.end_node.borrow();
             let alias = if let Some(name) = end_node_ref.name {
                 name.to_string()
@@ -101,8 +101,8 @@ fn traverse_connected_pattern_with_mode<'a>(
                 generate_id()
             };
             drop(end_node_ref);
-            node_alias_map.insert(end_ptr, alias);
-        }
+            alias
+        });
     }
 
     crate::debug_print!(

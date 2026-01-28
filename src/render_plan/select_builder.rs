@@ -485,7 +485,7 @@ impl LogicalPlan {
         log::info!("✅ Expanding base table entity '{}' to properties", alias);
 
         // Get labels from TypedVariable
-        let labels = match typed_var {
+        let _labels = match typed_var {
             TypedVariable::Node(node) => &node.labels,
             TypedVariable::Relationship(rel) => &rel.rel_types,
             _ => return, // Should not happen

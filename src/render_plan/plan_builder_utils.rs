@@ -203,7 +203,7 @@ pub fn rewrite_render_expr_for_vlp_with_from_alias(
                     col_name_str
                 );
                 // Replace Column with PropertyAccessExp using VLP FROM alias
-                let new_prop_access = PropertyAccess {
+                let _new_prop_access = PropertyAccess {
                     table_alias: TableAlias(VLP_CTE_FROM_ALIAS.to_string()),
                     column: PropertyValue::Column(col_name_str.clone()),
                 };
@@ -2476,7 +2476,7 @@ pub fn extract_group_by(plan: &LogicalPlan) -> RenderPlanBuilderResult<Vec<Rende
                         seen_group_by_aliases.insert(table_alias_to_use.clone());
 
                         // Better approach: try to find node properties for this rel alias
-                        if let Some((node_props, table_alias)) = find_node_properties_for_rel_alias(
+                        if let Some((_node_props, table_alias)) = find_node_properties_for_rel_alias(
                             &group_by.input,
                             &prop_access.table_alias.0,
                         ) {
@@ -3399,7 +3399,7 @@ pub fn get_node_id_column_for_alias_with_schema(
 /// Find table name for a given alias by traversing the logical plan
 pub fn find_table_for_alias(plan: &LogicalPlan, target_alias: &str) -> Option<String> {
     match plan {
-        LogicalPlan::ViewScan(vs) => {
+        LogicalPlan::ViewScan(_vs) => {
             // ViewScan doesn't have alias - this shouldn't match directly
             None
         }
@@ -3697,7 +3697,7 @@ pub fn rewrite_expression_simple(
 /// part of the first MATCH (before WITH).
 pub fn is_join_for_inner_scope(
     _plan: &LogicalPlan,
-    join: &crate::query_planner::logical_plan::Join,
+    _join: &crate::query_planner::logical_plan::Join,
     _with_alias: &str,
 ) -> bool {
     // For WITH+aggregation patterns, joins with aliases p, t1 are for the inner scope
@@ -3755,37 +3755,34 @@ pub fn extract_cte_conditions_recursive(
 ) {
     use crate::render_plan::render_expr::*;
 
-    match expr {
-        RenderExpr::OperatorApplicationExp(op_app) => {
-            // Look for Equal operator
-            if matches!(op_app.operator, Operator::Equal) && op_app.operands.len() == 2 {
-                let left = &op_app.operands[0];
-                let right = &op_app.operands[1];
+    if let RenderExpr::OperatorApplicationExp(op_app) = expr {
+        // Look for Equal operator
+        if matches!(op_app.operator, Operator::Equal) && op_app.operands.len() == 2 {
+            let left = &op_app.operands[0];
+            let right = &op_app.operands[1];
 
-                // Check if one side is a CTE column and the other is a table column
-                if let Some(cond) = extract_join_from_equality(left, right, cte_references) {
-                    log::info!(
-                        "🔧 Found CTE join condition: CTE {}. {} = {}.{}",
-                        cond.0,
-                        cond.1,
-                        cond.2,
-                        cond.3
-                    );
-                    conditions.push(cond);
-                } else if let Some(cond) = extract_join_from_equality(right, left, cte_references) {
-                    // Try reversed order
-                    conditions.push(cond);
-                }
-            }
-
-            // Check for AND/OR - recurse into operands
-            if matches!(op_app.operator, Operator::And | Operator::Or) {
-                for operand in &op_app.operands {
-                    extract_cte_conditions_recursive(operand, cte_references, conditions);
-                }
+            // Check if one side is a CTE column and the other is a table column
+            if let Some(cond) = extract_join_from_equality(left, right, cte_references) {
+                log::info!(
+                    "🔧 Found CTE join condition: CTE {}. {} = {}.{}",
+                    cond.0,
+                    cond.1,
+                    cond.2,
+                    cond.3
+                );
+                conditions.push(cond);
+            } else if let Some(cond) = extract_join_from_equality(right, left, cte_references) {
+                // Try reversed order
+                conditions.push(cond);
             }
         }
-        _ => {}
+
+        // Check for AND/OR - recurse into operands
+        if matches!(op_app.operator, Operator::And | Operator::Or) {
+            for operand in &op_app.operands {
+                extract_cte_conditions_recursive(operand, cte_references, conditions);
+            }
+        }
     }
 }
 
@@ -3969,7 +3966,7 @@ pub(crate) fn generate_swapped_joins_for_optional_match(
     // CRITICAL FIX: Use extract_parameterized_table_ref for ViewScan to handle parameterized views
     let start_table = extract_parameterized_table_ref(&graph_rel.left)
         .ok_or_else(|| RenderBuildError::MissingTableInfo("left node".to_string()))?;
-    let end_table = extract_parameterized_table_ref(&graph_rel.right)
+    let _end_table = extract_parameterized_table_ref(&graph_rel.right)
         .ok_or_else(|| RenderBuildError::MissingTableInfo("right node".to_string()))?;
 
     // For ID column lookup, we need the plain table name (without parameterized syntax)
@@ -4123,7 +4120,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
     // Extract VLP column metadata for property name resolution
     // This maps (cypher_alias, property_name) → cte_column_name
     // E.g., (a, email_address) → start_email (or start_email_address depending on CTE)
-    let cte_column_mapping: HashMap<(String, String), String> = HashMap::new();
+    let _cte_column_mapping: HashMap<(String, String), String> = HashMap::new();
     log::warn!("🔧 VLP: Total CTEs in plan: {}", plan.ctes.0.len());
 
     // ✨ NEW APPROACH: Build metadata-based lookup mapping
@@ -4690,7 +4687,7 @@ pub(crate) fn expand_table_alias_to_select_items(
     cte_references: &HashMap<String, String>,
     has_aggregation: bool,
     plan_ctx: Option<&PlanCtx>,
-    vlp_cte_metadata: Option<
+    _vlp_cte_metadata: Option<
         &HashMap<String, (String, Vec<crate::render_plan::CteColumnMetadata>)>,
     >,
 ) -> Vec<SelectItem> {
@@ -5417,7 +5414,7 @@ pub(crate) fn rewrite_expression_with_cte_alias(
                 expr.clone()
             }
         }
-        RenderExpr::ColumnAlias(col_alias) => {
+        RenderExpr::ColumnAlias(_col_alias) => {
             // For bare column aliases, no table alias to change
             expr.clone()
         }
@@ -6553,7 +6550,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     with_skip,
                     with_limit,
                     with_where_clause,
-                    with_cte_refs,
+                    _with_cte_refs,
                 ) = match with_plan {
                     LogicalPlan::WithClause(wc) => {
                         log::warn!("� DEBUG: Unwrapping WithClause for alias '{}'", with_alias);
@@ -8155,7 +8152,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 None
             };
 
-            if let Some(mapping) = property_mapping {
+            if let Some(_mapping) = property_mapping {
                 // Rewrite SELECT items to use FROM alias and CTE column names
                 // The FROM alias (e.g., "a_age") must be used, not the original aliases ("a") or CTE name
                 let from_alias = from_ref
@@ -8205,7 +8202,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     // But for CTEs, it might have "a_name" → Column("a_name") (identity mapping)
                     // We need to extract the original DB column from the base tables
                     for (cypher_prop, prop_value) in &vs.property_mapping {
-                        if let PropertyValue::Column(db_col) = prop_value {
+                        if let PropertyValue::Column(_db_col) = prop_value {
                             // Check if this is a CTE column (has alias prefix)
                             let mut found_alias = None;
                             for with_alias in &with_aliases {
@@ -8213,7 +8210,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 if cypher_prop.starts_with(&prefix) {
                                     // This is a CTE column like "a_name"
                                     // Extract the property: "a_name" → "name"
-                                    if let Some(prop) = cypher_prop.strip_prefix(&prefix) {
+                                    if let Some(_prop) = cypher_prop.strip_prefix(&prefix) {
                                         found_alias = Some(with_alias.clone());
                                         // Store: (alias, cypher_property) → db_column
                                         // But we need to get the DB column from the base table...
@@ -8301,7 +8298,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     // Also extract database column names from the property mapping in graph schema
                     // The property_mapping might use Cypher property names, but we also need to map
                     // the actual database column names (which may differ, like full_name vs name)
-                    if let Some((_, _, _, property_mapping_extra)) = cte_schemas.get(&from_ref.name)
+                    if let Some((_, _, _, _property_mapping_extra)) = cte_schemas.get(&from_ref.name)
                     {
                         for item in select_items {
                             if let Some(col_alias) = &item.col_alias {
@@ -10269,9 +10266,9 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
 
         // Build property_mapping using CYPHER PROPERTY NAMES ONLY
         // Store the ViewScan's DB mapping separately so we can reverse-resolve DB columns
-        let (property_mapping, db_to_cypher_mapping) = if let Some((
+        let (property_mapping, _db_to_cypher_mapping) = if let Some((
             select_items,
-            property_names,
+            _property_names,
             _,
             stored_property_mapping, // <-- USE THIS to get correct DB column mappings
         )) = cte_schemas.get(cte_name)
@@ -10615,7 +10612,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                 if let LogicalPlan::GraphNode(gn) = &new_input {
                     if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
                         // Rebuild db_to_cypher mapping from cte_schemas
-                        let db_to_cypher = if let Some((select_items, _, _, property_mapping)) =
+                        let db_to_cypher = if let Some((select_items, _, _, _property_mapping)) =
                             cte_schemas.get(&vs.source_table)
                         {
                             let mut mapping = HashMap::new();
