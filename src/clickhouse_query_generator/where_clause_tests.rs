@@ -47,7 +47,10 @@ mod where_clause_tests {
         let cte = generator.generate_cte();
         let sql = match &cte.content {
             crate::render_plan::CteContent::RawSql(s) => s,
-            _ => panic!("Expected RawSql"),
+            other => panic!(
+                "Expected RawSql content in test_start_node_filter_in_base_case, got: {:?}",
+                other
+            ),
         };
 
         // Verify start filter is in base case
@@ -89,7 +92,10 @@ mod where_clause_tests {
         let cte = generator.generate_cte();
         let sql = match &cte.content {
             crate::render_plan::CteContent::RawSql(s) => s,
-            _ => panic!("Expected RawSql"),
+            other => panic!(
+                "Expected RawSql content in test_end_node_filter_in_tiered_case, got: {:?}",
+                other
+            ),
         };
 
         // Verify 3-tier structure
@@ -137,7 +143,10 @@ mod where_clause_tests {
         let cte = generator.generate_cte();
         let sql = match &cte.content {
             crate::render_plan::CteContent::RawSql(s) => s,
-            _ => panic!("Expected RawSql"),
+            other => panic!(
+                "Expected RawSql content in test_multiple_filters, got: {:?}",
+                other
+            ),
         };
 
         println!("\n=== Generated SQL with both filters ===\n{}\n", sql);
@@ -191,7 +200,10 @@ mod where_clause_tests {
         let cte = generator.generate_cte();
         let sql = match &cte.content {
             crate::render_plan::CteContent::RawSql(s) => s,
-            _ => panic!("Expected RawSql"),
+            other => panic!(
+                "Expected RawSql content in test_both_start_and_end_filters, got: {:?}",
+                other
+            ),
         };
 
         // Verify simple structure (no _inner, _to_target) when min_hops <= 1

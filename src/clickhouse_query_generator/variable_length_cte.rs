@@ -4,6 +4,14 @@ use crate::query_planner::join_context::VLP_END_ID_COLUMN;
 use crate::query_planner::logical_plan::VariableLengthSpec;
 use crate::render_plan::Cte;
 
+// ===== VLP Performance and Safety Constants =====
+
+/// Default maximum hops when unspecified in VLP queries.
+/// Used as fallback when VariableLengthSpec.max_hops is None.
+/// This prevents unbounded recursion in dense graphs.
+/// Original value: 10, reduced to 5 for memory safety in dense graphs.
+const DEFAULT_MAX_HOPS: u32 = 5;
+
 /// Property to include in the CTE (column name and which node it belongs to)
 #[derive(Debug, Clone)]
 pub struct NodeProperty {
@@ -1158,7 +1166,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             .expect("intermediate_node_label must be set");
 
         let min_hops = self.spec.effective_min_hops();
-        let max_hops = self.spec.max_hops.unwrap_or(10);
+        let max_hops = self.spec.max_hops.unwrap_or(DEFAULT_MAX_HOPS);
 
         crate::debug_print!("    🔸 Generating heterogeneous polymorphic SQL (two-phase):");
         crate::debug_print!(
@@ -2817,7 +2825,7 @@ mod tests {
 
         // Should contain recursive case
         assert!(sql.contains("UNION ALL"));
-        assert!(sql.contains("hop_count < 5")); // Default max (reduced from 10 for memory safety)
+        assert!(sql.contains("hop_count < 5")); // DEFAULT_MAX_HOPS = 5 (reduced from 10 for memory safety)
     }
     #[test]
     fn test_fixed_length_spec() {

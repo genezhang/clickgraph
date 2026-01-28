@@ -118,6 +118,16 @@ impl ToSql for LogicalExpr {
                 Ok(prop.column.to_sql(&prop.table_alias.0))
             }
             LogicalExpr::OperatorApplicationExp(op) => {
+                // ⚠️ TODO: Operator rendering consolidation (Phase 3)
+                // This code is duplicated in to_sql_query.rs with very similar operator handling.
+                // Root cause: Two different Operator types (logical_expr::Operator vs render_expr::Operator)
+                // prevent simple consolidation. Phase 3 strategy:
+                // 1. Create OperatorRenderer trait with operator_symbol() and render_special_cases()
+                // 2. Implement trait for LogicalExpr operators (in this module)
+                // 3. Implement trait for RenderExpr operators (in to_sql_query.rs)
+                // 4. Create unified render_operator() function in common.rs
+                // See notes/OPERATOR_RENDERING_ANALYSIS.md for detailed analysis.
+                // Estimated effort: 4-6 hours for full consolidation
                 let operands_sql: Vec<String> = op
                     .operands
                     .iter()
