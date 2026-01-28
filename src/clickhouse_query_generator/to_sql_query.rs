@@ -1258,8 +1258,8 @@ impl ToSql for CteItems {
 
                 // Extract all trailing non-recursive CTEs from this group
                 let mut non_recursive_start = 1; // Start after the recursive CTE
-                for i in 1..group.len() {
-                    if group[i].is_recursive {
+                for (i, cte) in group.iter().enumerate().skip(1) {
+                    if cte.is_recursive {
                         non_recursive_start = i + 1;
                     }
                 }
