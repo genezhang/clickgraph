@@ -9977,22 +9977,20 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
         // - Single item that's just a TableAlias
         // - No DISTINCT (already applied in inner CTE)
         // - No ORDER BY, SKIP, LIMIT modifiers
-        let is_passthrough = wc.items.len() == 1
-            && wc.order_by.is_none()
-            && wc.skip.is_none()
-            && wc.limit.is_none()
-            && !wc.distinct
-            && wc.where_clause.is_none()
-            && matches!(
-                &wc.items[0].expression,
-                crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
-            );
+    wc.items.len() == 1
+        && wc.order_by.is_none()
+        && wc.skip.is_none()
+        && wc.limit.is_none()
+        && !wc.distinct
+        && wc.where_clause.is_none()
+        && matches!(
+            &wc.items[0].expression,
+            crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
+        )
+}
 
-        is_passthrough
-    }
-
-    // Helper to generate a key for a WithClause (matches the key generation in find_all_with_clauses_grouped)
-    fn get_with_clause_key(wc: &crate::query_planner::logical_plan::WithClause) -> String {
+// Helper to generate a key for a WithClause (matches the key generation in find_all_with_clauses_grouped)
+fn get_with_clause_key(wc: &crate::query_planner::logical_plan::WithClause) -> String {
         if !wc.exported_aliases.is_empty() {
             let mut aliases = wc.exported_aliases.clone();
             aliases.sort();

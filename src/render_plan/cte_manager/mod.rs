@@ -1563,7 +1563,7 @@ impl MixedAccessCteStrategy {
                 join_col,
             } => Ok(Self {
                 pattern_ctx: pattern_ctx.clone(),
-                joined_node: joined_node.clone(),
+                joined_node: *joined_node,
                 join_col: join_col.clone(),
             }),
             _ => Err(CteError::InvalidStrategy(

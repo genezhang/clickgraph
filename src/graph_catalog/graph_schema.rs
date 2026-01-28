@@ -1244,12 +1244,10 @@ impl GraphSchema {
         }
 
         // Must share at least one node
-        let shared_node = edge1.to_node == edge2.from_node ||  // edge1 -> shared -> edge2
+        edge1.to_node == edge2.from_node ||  // edge1 -> shared -> edge2
             edge1.from_node == edge2.to_node ||  // edge2 -> shared -> edge1
             edge1.to_node == edge2.to_node ||    // both point to same node
-            edge1.from_node == edge2.from_node; // both originate from same node
-
-        shared_node
+            edge1.from_node == edge2.from_node // both originate from same node
     }
 
     /// Get coupling info for two consecutive edges in a path pattern

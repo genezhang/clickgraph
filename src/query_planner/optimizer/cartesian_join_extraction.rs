@@ -463,7 +463,7 @@ impl Default for CartesianJoinExtraction {
 
 impl CartesianJoinExtraction {
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 }
 

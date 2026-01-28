@@ -826,13 +826,12 @@ fn traverse_connected_pattern_with_mode<'a>(
                                     operands: vec![acc, filter],
                                 })
                             })
-                            .map(|combined| {
+                            .inspect(|_combined| {
                                 log::info!(
                                     "🔧 VLP: Merged {} bound node filters into where_predicate for rel '{}'",
                                     "multiple",
                                     rel_alias
                                 );
-                                combined
                             })
                     } else {
                         None // Will be populated by filter pushdown optimization for regular patterns

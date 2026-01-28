@@ -227,7 +227,7 @@ impl<'a> NodePattern<'a> {
     pub fn has_label(&self, label: &str) -> bool {
         self.labels
             .as_ref()
-            .map(|labels| labels.iter().any(|l| *l == label))
+            .map(|labels| labels.contains(&label))
             .unwrap_or(false)
     }
 }

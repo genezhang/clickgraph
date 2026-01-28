@@ -146,7 +146,7 @@ impl CleanupViewScanFilters {
                                 path_variable: graph_rel.path_variable.clone(),
                                 where_predicate: graph_rel.where_predicate.clone(),
                                 labels: graph_rel.labels.clone(),
-                                is_optional: graph_rel.is_optional.clone(),
+                                is_optional: graph_rel.is_optional,
                                 anchor_connection: graph_rel.anchor_connection.clone(),
                                 cte_references: graph_rel.cte_references.clone(),
                             },

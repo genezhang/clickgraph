@@ -1100,7 +1100,7 @@ impl VariableResolver {
                         Ok(LogicalExpr::CteEntityRef(CteEntityRef {
                             cte_name: cte_name.clone(),
                             alias: original_alias.clone(),
-                            entity_type: entity_type.clone(),
+                            entity_type: *entity_type,
                             columns: vec![], // Columns determined by renderer from schema
                         }))
                     }

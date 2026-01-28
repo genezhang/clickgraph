@@ -408,8 +408,7 @@ pub fn evaluate_return_clause<'a>(
     let projection_items: Vec<ProjectionItem> = rewritten_return_items
         .iter()
         .map(|item| {
-            ProjectionItem::try_from(item.clone())
-                .expect("Bug: Failed to convert RETURN expression to ProjectionItem")
+            ProjectionItem::from(item.clone())
         })
         .collect();
 
