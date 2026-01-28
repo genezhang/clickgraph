@@ -429,16 +429,16 @@ pub async fn refresh_global_schema(clickhouse_client: Client) -> Result<(), Stri
     Ok(())
 }
 
-pub async fn get_graph_schema() -> GraphSchema {
+pub async fn get_graph_schema() -> Result<GraphSchema, String> {
     let schemas_guard = GLOBAL_SCHEMAS
         .get()
-        .expect("Global schemas not initialized")
+        .ok_or("Global schemas not initialized. Server may not have completed startup. Check server logs for initialization errors.".to_string())?
         .read()
         .await;
     schemas_guard
         .get("default")
-        .expect("Default schema not found")
-        .clone()
+        .cloned()
+        .ok_or("Default schema not found. No schema was loaded during initialization. Please load a schema via /schemas/load endpoint.".to_string())
 }
 
 pub async fn get_view_config() -> Option<GraphSchemaConfig> {
@@ -690,13 +690,13 @@ pub async fn validate_schema(graph_schema_element: &Vec<GraphSchemaElement>) -> 
 
             let schemas_lock = GLOBAL_SCHEMAS
                 .get()
-                .expect("Schema registry not initialized")
+                .ok_or("Schema registry not initialized during validate_schema. Server initialization may have failed.".to_string())?
                 .read()
                 .await;
 
             let graph_schema_lock = schemas_lock
                 .get("default")
-                .expect("Default schema not found");
+                .ok_or("Default schema not found during validation. Ensure a schema has been loaded before validating relationships.".to_string())?;
 
             if !graph_schema_lock
                 .all_node_schemas()

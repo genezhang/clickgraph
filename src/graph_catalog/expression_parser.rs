@@ -16,7 +16,7 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, take_until},
     character::complete::{alphanumeric1, char, digit1, multispace0, one_of},
-    combinator::{map, opt, recognize},
+    combinator::{map, map_res, opt, recognize},
     multi::{many0, separated_list0},
     sequence::{delimited, preceded},
     IResult, Parser,
@@ -322,7 +322,10 @@ fn is_simple_column(s: &str) -> bool {
         return false;
     }
 
-    let first = s.chars().next().unwrap();
+    let first = s
+        .chars()
+        .next()
+        .expect("String is not empty (checked above), chars().next() must return Some");
     if !first.is_alphabetic() && first != '_' {
         return false;
     }
@@ -595,11 +598,15 @@ fn parse_literal_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
             |s: &str| ClickHouseExpr::Literal(Literal::String(s.to_string())),
         ),
         // Numeric literal
-        map(recognize_number, |s: &str| {
+        map_res(recognize_number, |s: &str| {
             if s.contains('.') {
-                ClickHouseExpr::Literal(Literal::Float(s.parse().unwrap()))
+                s.parse::<f64>()
+                    .map(|f| ClickHouseExpr::Literal(Literal::Float(f)))
+                    .map_err(|e| format!("Failed to parse float '{}': {}", s, e))
             } else {
-                ClickHouseExpr::Literal(Literal::Integer(s.parse().unwrap()))
+                s.parse::<i64>()
+                    .map(|i| ClickHouseExpr::Literal(Literal::Integer(i)))
+                    .map_err(|e| format!("Failed to parse integer '{}': {}", s, e))
             }
         }),
     ))

@@ -1249,13 +1249,11 @@ impl GraphSchemaConfig {
                 if let Some(from_node_def) = from_node_def {
                     if !is_fk_edge {
                         // Denormalized pattern - must have from_node_properties
-                        if from_node_def.from_node_properties.is_none()
-                            || from_node_def
-                                .from_node_properties
-                                .as_ref()
-                                .unwrap()
-                                .is_empty()
-                        {
+                        let has_from_props = matches!(
+                            &from_node_def.from_node_properties,
+                            Some(props) if !props.is_empty()
+                        );
+                        if !has_from_props {
                             return Err(GraphSchemaError::InvalidConfig {
                                 message: format!(
                                     "Node '{}' is denormalized in edge '{}' (shares table '{}') but missing from_node_properties on node definition",
@@ -1271,9 +1269,11 @@ impl GraphSchemaConfig {
                 if let Some(to_node_def) = to_node_def {
                     if !is_fk_edge {
                         // Denormalized pattern - must have to_node_properties
-                        if to_node_def.to_node_properties.is_none()
-                            || to_node_def.to_node_properties.as_ref().unwrap().is_empty()
-                        {
+                        let has_to_props = matches!(
+                            &to_node_def.to_node_properties,
+                            Some(props) if !props.is_empty()
+                        );
+                        if !has_to_props {
                             return Err(GraphSchemaError::InvalidConfig {
                                 message: format!(
                                     "Node '{}' is denormalized in edge '{}' (shares table '{}') but missing to_node_properties on node definition",

@@ -103,7 +103,10 @@ fn parse_path_pattern_inner(input: &'_ str) -> IResult<&'_ str, PathPattern<'_>>
                 for (consecutive_relationship, consecutive_end_node_pattern) in
                     consecutive_relations_end_nodes_vec
                 {
-                    let last_pushed = connected_nodes_pattern.last().unwrap();
+                    // Safe: connected_nodes_pattern is guaranteed to have at least one element
+                    let last_pushed = connected_nodes_pattern
+                        .last()
+                        .expect("connected_nodes_pattern must not be empty at this point");
                     let connected_pattern = ConnectedPattern {
                         start_node: last_pushed.end_node.clone(),
                         relationship: consecutive_relationship,
@@ -303,7 +306,8 @@ fn parse_multi_labels_or_types(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'
         return Ok((remainder, None));
     }
 
-    let mut labels = vec![first_label.unwrap()];
+    // Safe: first_label is guaranteed to be Some at this point (checked above)
+    let mut labels = vec![first_label.expect("first_label must be Some after is_none check")];
 
     // Parse additional labels separated by |
     let mut current_input = remainder;

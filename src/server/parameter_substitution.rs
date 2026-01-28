@@ -45,12 +45,27 @@ fn format_parameter(value: &Value) -> Result<String, ParameterSubstitutionError>
     match value {
         Value::String(s) => Ok(format!("'{}'", escape_string(s))),
 
-        Value::Number(n) if n.is_i64() => Ok(n.as_i64().unwrap().to_string()),
+        Value::Number(n) if n.is_i64() => n.as_i64().map(|num| num.to_string()).ok_or_else(|| {
+            ParameterSubstitutionError::UnsupportedType(format!(
+                "Failed to convert JSON number to i64: {}",
+                n
+            ))
+        }),
 
-        Value::Number(n) if n.is_u64() => Ok(n.as_u64().unwrap().to_string()),
+        Value::Number(n) if n.is_u64() => n.as_u64().map(|num| num.to_string()).ok_or_else(|| {
+            ParameterSubstitutionError::UnsupportedType(format!(
+                "Failed to convert JSON number to u64: {}",
+                n
+            ))
+        }),
 
         Value::Number(n) if n.is_f64() => {
-            let f = n.as_f64().unwrap();
+            let f = n.as_f64().ok_or_else(|| {
+                ParameterSubstitutionError::UnsupportedType(format!(
+                    "Failed to convert JSON number to f64: {}",
+                    n
+                ))
+            })?;
             if f.is_finite() {
                 Ok(f.to_string())
             } else {
