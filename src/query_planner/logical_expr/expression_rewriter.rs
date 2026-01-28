@@ -249,7 +249,7 @@ pub fn rewrite_expression_with_property_mapping(
                 .collect();
 
             LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: rewritten_operands,
             })
         }

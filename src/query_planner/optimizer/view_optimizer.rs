@@ -108,7 +108,7 @@ impl ViewOptimizer {
                     .collect();
 
                 LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                    operator: op.operator.clone(),
+                    operator: op.operator,
                     operands: optimized_operands,
                 })
             }

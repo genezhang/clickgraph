@@ -855,7 +855,7 @@ fn swap_expr_columns(expr: &LogicalExpr, column_swaps: &ColumnSwapMap) -> Logica
         }
         LogicalExpr::OperatorApplicationExp(op) => LogicalExpr::OperatorApplicationExp(
             crate::query_planner::logical_expr::OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: op
                     .operands
                     .iter()

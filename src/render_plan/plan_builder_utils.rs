@@ -691,7 +691,7 @@ fn rewrite_operator_application_for_cte_join(
         .collect();
 
     OperatorApplication {
-        operator: op_app.operator.clone(),
+        operator: op_app.operator,
         operands: rewritten_operands,
     }
 }
@@ -5455,7 +5455,7 @@ pub(crate) fn rewrite_expression_with_cte_alias(
                 })
                 .collect();
             RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: new_operands,
             })
         }

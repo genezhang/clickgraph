@@ -722,7 +722,7 @@ impl ProjectionTagging {
 
                 // Update the item's expression with transformed operands
                 item.expression = LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                    operator: operator_application.operator.clone(),
+                    operator: operator_application.operator,
                     operands: transformed_operands,
                 });
                 Ok(())

@@ -1233,7 +1233,7 @@ pub(super) fn rewrite_fixed_path_functions_with_info(
                 .collect();
 
             RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: rewritten_operands,
             })
         }
@@ -1363,7 +1363,7 @@ pub(super) fn rewrite_logical_path_functions(
 
             LogicalExpr::OperatorApplicationExp(
                 crate::query_planner::logical_expr::OperatorApplication {
-                    operator: op.operator.clone(),
+                    operator: op.operator,
                     operands: rewritten_operands,
                 },
             )

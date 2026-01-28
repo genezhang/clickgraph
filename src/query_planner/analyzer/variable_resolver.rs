@@ -1146,7 +1146,7 @@ impl VariableResolver {
                 if changed {
                     use crate::query_planner::logical_expr::OperatorApplication;
                     Ok(LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                        operator: op.operator.clone(),
+                        operator: op.operator,
                         operands: resolved_operands,
                     }))
                 } else {

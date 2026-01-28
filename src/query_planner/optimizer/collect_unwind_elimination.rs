@@ -151,7 +151,7 @@ fn rewrite_aliases_in_expr(expr: &LogicalExpr, alias_map: &HashMap<String, Strin
                 .collect();
             LogicalExpr::OperatorApplicationExp(
                 crate::query_planner::logical_expr::OperatorApplication {
-                    operator: op.operator.clone(),
+                    operator: op.operator,
                     operands: new_operands,
                 },
             )

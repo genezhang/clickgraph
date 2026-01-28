@@ -215,7 +215,7 @@ pub trait ExprVisitor {
         operands: Vec<RenderExpr>,
     ) -> RenderExpr {
         RenderExpr::OperatorApplicationExp(super::render_expr::OperatorApplication {
-            operator: operator.clone(),
+            operator: *operator,
             operands,
         })
     }

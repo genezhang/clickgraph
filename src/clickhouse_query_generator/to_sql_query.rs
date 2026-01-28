@@ -408,7 +408,7 @@ fn rewrite_expr_for_vlp(
         // Recursively rewrite operands in operator applications
         RenderExpr::OperatorApplicationExp(op) => {
             RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: op
                     .operands
                     .iter()
@@ -682,7 +682,7 @@ fn rewrite_expr_for_fixed_path(
         // Recursively rewrite operands in operator applications
         RenderExpr::OperatorApplicationExp(op) => {
             RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: op
                     .operands
                     .iter()

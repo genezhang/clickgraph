@@ -672,7 +672,7 @@ fn rewrite_to_column_alias(expr: &LogicalExpr) -> LogicalExpr {
         LogicalExpr::OperatorApplicationExp(op) => {
             use crate::query_planner::logical_expr::OperatorApplication;
             LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: op.operands.iter().map(rewrite_to_column_alias).collect(),
             })
         }

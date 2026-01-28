@@ -556,7 +556,7 @@ pub fn rewrite_labels_subscript_for_multi_type_vlp(expr: &RenderExpr) -> RenderE
                 .map(rewrite_labels_subscript_for_multi_type_vlp)
                 .collect();
             RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: rewritten_operands,
             })
         }

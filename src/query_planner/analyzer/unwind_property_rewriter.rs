@@ -242,7 +242,7 @@ fn rewrite_expr(expr: &LogicalExpr, plan: &Arc<LogicalPlan>) -> LogicalExpr {
                 .collect();
 
             LogicalExpr::Operator(crate::query_planner::logical_expr::OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: new_operands,
             })
         }
