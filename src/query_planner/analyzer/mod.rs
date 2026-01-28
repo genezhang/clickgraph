@@ -1,3 +1,45 @@
+//! # Query Analyzer
+//!
+//! The analyzer module transforms parsed Cypher AST into an optimized logical
+//! plan ready for SQL generation. It runs a configurable pipeline of analysis
+//! and optimization passes.
+//!
+//! ## Pass Pipeline Overview
+//!
+//! The analyzer executes passes in a specific order, with each pass having
+//! dependencies on previous passes:
+//!
+//! ```text
+//! 1. PlanSanitization     - Basic plan cleanup and validation
+//! 2. SchemaInference      - Resolve labels to tables, create ViewScans
+//! 3. DuplicateScansRemove - Deduplicate repeated alias scans
+//! 4. ProjectionTagging    - Expand RETURN *, tag columns
+//! 5. TypeInference        - Infer types for untyped variables
+//! 6. VariableResolver     - Resolve property accesses to columns
+//! 7. FilterTagging        - Push filters down, tag extractable filters
+//! 8. GroupByBuilding      - Create GROUP BY from aggregations
+//! 9. GraphJoinInference   - Generate JOINs from graph patterns
+//! 10. CteColumnResolver   - Resolve CTE column references
+//! 11. VlpTransitivityCheck - Validate variable-length path patterns
+//! ```
+//!
+//! ## Key Responsibilities
+//!
+//! - **Schema Integration**: Maps Cypher labels/types to ClickHouse tables
+//! - **Type Resolution**: Infers and validates variable types
+//! - **Filter Optimization**: Pushes WHERE conditions to optimal positions
+//! - **Join Planning**: Converts graph patterns to efficient JOIN trees
+//! - **CTE Management**: Handles WITH clauses and subqueries
+//!
+//! ## Module Organization
+//!
+//! - `analyzer_pass.rs`: Pass trait and infrastructure
+//! - `graph_join_inference.rs`: Core JOIN generation logic (largest module)
+//! - `filter_tagging.rs`: Filter pushdown and extraction
+//! - `schema_inference.rs`: Label-to-table resolution
+//! - `type_inference.rs`: Variable type inference
+//! - `variable_resolver.rs`: Property-to-column resolution
+
 use std::sync::Arc;
 
 use analyzer_pass::AnalyzerResult;

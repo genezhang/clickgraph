@@ -1,5 +1,23 @@
 //! Filter tagging pass for optimizing filter placement
 //!
+//! This analyzer pass handles the tagging and placement of filter predicates
+//! to enable optimal SQL WHERE clause generation.
+//!
+//! ## Key Responsibilities
+//!
+//! - **Filter Extraction**: Move single-table conditions closer to their source tables
+//! - **Property Mapping**: Convert Cypher properties to database column names
+//! - **Edge-list Tagging**: Mark filters that apply to relationships
+//! - **Projection Alias Detection**: Handle aggregation results and HAVING clauses
+//!
+//! ## Architecture
+//!
+//! The pass traverses the logical plan tree and:
+//! 1. Identifies filter predicates that reference single tables
+//! 2. Tags filters with their owning table for later optimization
+//! 3. Handles denormalized patterns where node data is in edge tables
+//! 4. Preserves multi-table conditions for proper JOIN ordering
+//!
 //! Some methods in this module are reserved for future filter optimization passes.
 #![allow(dead_code)]
 
@@ -388,10 +406,18 @@ impl AnalyzerPass for FilterTagging {
     }
 }
 
+// ============================================================================
+// FilterTagging Implementation
+// ============================================================================
+
 impl FilterTagging {
     pub fn new() -> Self {
         FilterTagging
     }
+
+    // ========================================================================
+    // VLP and CTE Detection Helpers
+    // ========================================================================
 
     /// Check if an alias is exported from a WITH clause in the plan tree.
     /// This helps detect CTE-sourced variables during FilterTagging.
@@ -512,6 +538,10 @@ impl FilterTagging {
             _ => self.analyze_with_graph_schema(plan, plan_ctx, graph_schema),
         }
     }
+
+    // ========================================================================
+    // Property Mapping
+    // ========================================================================
 
     /// Apply property mapping to a LogicalExpr, converting Cypher property names to database column names
     pub fn apply_property_mapping(
@@ -1179,6 +1209,10 @@ impl FilterTagging {
         }
     }
 
+    // ========================================================================
+    // Filter Extraction
+    // ========================================================================
+
     // If there is any filter on relationship then use edgelist of that relation.
     pub fn extract_filters(
         &self,
@@ -1656,6 +1690,16 @@ impl FilterTagging {
         }
     }
 
+    // ========================================================================
+    // Graph Structure Helpers
+    // ========================================================================
+    // These helper functions examine the logical plan structure to support
+    // filter placement decisions:
+    // - `references_projection_alias`: Check if filter belongs in HAVING clause
+    // - `find_owning_edge_for_node`: Find denormalized edge for node properties
+    // - `has_cartesian_product_descendant`: Detect cross-table joins
+    // - `is_node_denormalized`: Check if node is embedded in edge table
+
     /// Check if an expression references any projection aliases
     /// Used to determine if a filter should become a HAVING clause
     fn references_projection_alias(expr: &LogicalExpr, plan_ctx: &PlanCtx) -> bool {
@@ -1766,6 +1810,13 @@ impl FilterTagging {
             Some(crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { .. })
         )
     }
+
+    // ========================================================================
+    // ViewScan Property Resolution
+    // ========================================================================
+    // These functions search the logical plan tree to find property column
+    // mappings from ViewScan nodes. Essential for denormalized schemas where
+    // node properties may be stored in edge tables.
 
     /// Find a property mapping from a specific edge's ViewScan
     /// This is used for multi-hop denormalized patterns where we know which edge owns the node
@@ -2136,6 +2187,10 @@ impl FilterTagging {
         }
     }
 }
+
+// ============================================================================
+// UNIT TESTS
+// ============================================================================
 
 #[cfg(test)]
 mod tests {

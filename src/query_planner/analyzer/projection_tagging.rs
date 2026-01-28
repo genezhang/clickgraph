@@ -1,3 +1,40 @@
+//! # Projection Tagging Pass
+//!
+//! This analyzer pass transforms RETURN clause projections by:
+//!
+//! 1. **Star Expansion** (`RETURN *`): Converts `RETURN *` to explicit column
+//!    projections for all aliases in scope (e.g., `RETURN u, c, p`)
+//!
+//! 2. **Table Alias Resolution**: Converts bare table aliases (e.g., `RETURN u`)
+//!    into expanded column projections (e.g., `u.id, u.name, ...`)
+//!
+//! 3. **Property Access Tagging**: Adds table alias context to property accesses
+//!    so that the SQL generator knows which table each column comes from
+//!
+//! 4. **Path Variable Expansion**: Expands path variables from VLP queries into
+//!    their constituent columns (path data, nodes, relationships)
+//!
+//! ## Processing Flow
+//!
+//! ```text
+//! Input:  RETURN u, p.title
+//! Output: RETURN u.id, u.name, ..., p.title AS title
+//! ```
+//!
+//! ## Key Functions
+//!
+//! - `analyze_with_graph_schema`: Main entry point, processes Projection nodes
+//! - `tag_projection`: Core logic for expanding and tagging projection items
+//! - `select_all_present`: Detects `RETURN *` patterns
+//! - `get_explicit_aliases`: Collects aliases in scope for star expansion
+//!
+//! ## Schema Considerations
+//!
+//! This pass uses the graph schema to determine:
+//! - Which properties are available on each node/relationship type
+//! - How to expand VLP (variable-length path) results
+//! - Column names for denormalized edge tables
+
 use std::sync::Arc;
 
 use crate::{

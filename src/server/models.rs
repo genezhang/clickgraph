@@ -46,10 +46,11 @@ pub enum OutputFormat {
 /// SQL dialect for query generation
 /// Currently only ClickHouse is supported, but this enum lays the foundation
 /// for future multi-database support (PostgreSQL, DuckDB, MySQL, etc.)
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum SqlDialect {
     #[serde(rename = "clickhouse")]
+    #[default]
     ClickHouse,
 
     // Future supported databases (not yet implemented - will return UnsupportedDialectError)
@@ -64,12 +65,6 @@ pub enum SqlDialect {
 
     #[serde(rename = "sqlite")]
     SQLite,
-}
-
-impl Default for SqlDialect {
-    fn default() -> Self {
-        SqlDialect::ClickHouse
-    }
 }
 
 impl SqlDialect {

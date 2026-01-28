@@ -1,3 +1,11 @@
+//! Filter pipeline utilities for categorizing and processing filters
+//!
+//! # Technical Debt
+//! Several VLP rewriting functions are unused after CTE refactoring.
+//! Allow dead code until cleanup.
+
+#![allow(dead_code)]
+
 use super::expression_utils::property_access_expr;
 use super::render_expr::{
     AggregateFnCall, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall,

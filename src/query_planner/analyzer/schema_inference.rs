@@ -1,3 +1,46 @@
+//! # Schema Inference Pass
+//!
+//! This analyzer pass infers type information and resolves table names from
+//! the graph schema based on query context. It bridges the gap between Cypher's
+//! flexible typing and ClickHouse's strict table structure.
+//!
+//! ## Primary Responsibilities
+//!
+//! 1. **Label Inference**: When a node has no explicit label, infers it from
+//!    context (e.g., relationship endpoints, property access patterns)
+//!
+//! 2. **Table Resolution**: Converts graph labels/types to actual ClickHouse
+//!    table names using the YAML schema configuration
+//!
+//! 3. **ViewScan Creation**: Transforms GraphNode/GraphRel placeholders into
+//!    concrete ViewScan operations with resolved table names
+//!
+//! 4. **Multi-Table Handling**: Supports schemas where a label maps to multiple
+//!    tables (polymorphic labels) by creating appropriate UNION plans
+//!
+//! ## Processing Flow
+//!
+//! ```text
+//! GraphNode("u", label=None)        GraphNode("u")
+//!        ↓                    →          ↓
+//! SchemaInference                   ViewScan(table="users")
+//!        ↓
+//! Uses: context, relationships, property accesses
+//! ```
+//!
+//! ## Key Functions
+//!
+//! - `infer_schema`: Main inference logic, walks the plan tree
+//! - `push_inferred_table_names_to_scan`: Creates ViewScan from inferred info
+//! - `infer_from_relationship`: Uses relationship endpoints for inference
+//!
+//! ## Schema Variations Handled
+//!
+//! - Standard tables with explicit labels
+//! - Polymorphic labels (one label → multiple tables)
+//! - Denormalized edges (node properties in edge tables)
+//! - FK-edge patterns (foreign key relationships)
+
 use std::sync::Arc;
 
 use crate::{

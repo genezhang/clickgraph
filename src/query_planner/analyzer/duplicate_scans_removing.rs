@@ -1,3 +1,34 @@
+//! # Duplicate Scans Removing Pass
+//!
+//! This optimizer pass removes redundant table scans from the logical plan,
+//! particularly when the same alias appears multiple times in a query pattern.
+//!
+//! ## Problem Addressed
+//!
+//! In Cypher queries like `MATCH (a)-[r]->(b), (a)-[s]->(c)`, the node `a`
+//! is referenced twice. Without optimization, this could result in scanning
+//! the underlying table twice and then joining. This pass ensures each
+//! alias is only scanned once.
+//!
+//! ## Processing Strategy
+//!
+//! 1. Tracks all aliases seen during plan traversal
+//! 2. When encountering a ViewScan/GraphNode for an already-seen alias,
+//!    replaces it with a reference to the existing scan
+//! 3. Preserves the first occurrence's scan, removes subsequent duplicates
+//!
+//! ## Key Consideration
+//!
+//! This pass must run AFTER schema inference (so ViewScans exist) but BEFORE
+//! join inference (which expects deduplicated scans).
+//!
+//! ## Example
+//!
+//! ```text
+//! Before: Scan(users AS a) → Scan(users AS a) → Join
+//! After:  Scan(users AS a) → Reference(a) → Join
+//! ```
+
 use std::{collections::HashSet, sync::Arc};
 
 use crate::query_planner::{

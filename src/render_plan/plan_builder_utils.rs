@@ -7,6 +7,21 @@
 //! - Pure (no side effects)
 //! - Independent of LogicalPlan structure
 //! - Reusable across different builder modules
+//!
+//! # Technical Debt
+//!
+//! This module has accumulated significant dead code (~47 functions) from various
+//! refactoring efforts. Many functions were superseded by newer implementations
+//! but not cleaned up. A dedicated cleanup pass should:
+//! 1. Identify and remove truly dead functions
+//! 2. Consolidate duplicate functionality
+//! 3. Extract reusable patterns into focused submodules
+//!
+
+// TODO(tech-debt): This module has ~47 dead functions that need cleanup.
+// Temporarily allowing dead code to focus on higher-priority features.
+// Target: Clean up before v0.7.0 release.
+#![allow(dead_code)]
 
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::GraphSchema;
