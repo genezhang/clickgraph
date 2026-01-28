@@ -357,7 +357,7 @@ impl PropertiesBuilder for LogicalPlan {
                 }
 
                 // If not found in WITH, delegate to input
-                return wc.input.get_properties_with_table_alias(alias);
+                wc.input.get_properties_with_table_alias(alias)
             }
             _ => Ok((vec![], None)), // No properties found
         }

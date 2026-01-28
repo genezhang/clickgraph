@@ -7,6 +7,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fmt;
 
 use super::errors::{BoltError, BoltResult};
 
@@ -33,15 +34,16 @@ impl AuthScheme {
             custom => AuthScheme::Custom(custom.to_string()),
         }
     }
+}
 
-    /// Convert to string representation
-    pub fn to_string(&self) -> String {
-        match self {
-            AuthScheme::None => "none".to_string(),
-            AuthScheme::Basic => "basic".to_string(),
-            AuthScheme::Kerberos => "kerberos".to_string(),
-            AuthScheme::Custom(scheme) => scheme.clone(),
-        }
+impl fmt::Display for AuthScheme {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", match self {
+            AuthScheme::None => "none",
+            AuthScheme::Basic => "basic",
+            AuthScheme::Kerberos => "kerberos",
+            AuthScheme::Custom(scheme) => scheme.as_str(),
+        })
     }
 }
 
