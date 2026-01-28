@@ -30,7 +30,6 @@ pub mod errors;
 pub mod expression_rewriter;
 pub mod visitors;
 
-
 /// Type of graph entity (node or relationship).
 /// Used in CteEntityRef to indicate what kind of entity is being referenced.
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
@@ -437,7 +436,6 @@ pub struct RelationshipPattern {
     pub labels: Option<Vec<String>>, // Support multiple labels: [:TYPE1|TYPE2]
     pub properties: Option<Vec<Property>>,
 }
-
 
 // =============================================================================
 // Display Implementations
@@ -920,7 +918,7 @@ impl LogicalExpr {
 #[test]
 fn test_pattern_comprehension_error_instead_of_panic() {
     use crate::open_cypher_parser;
-    
+
     // Test that PatternComprehension now returns an error instead of panicking
     let pattern_comprehension = open_cypher_parser::ast::Expression::PatternComprehension(
         open_cypher_parser::ast::PatternComprehension {

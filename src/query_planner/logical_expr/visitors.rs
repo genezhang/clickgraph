@@ -251,7 +251,9 @@ impl ExpressionVisitor for PropertyAccessCollector {
     fn visit_property_access(&mut self, prop: &PropertyAccess) {
         let property_name = match &prop.column {
             crate::graph_catalog::expression_parser::PropertyValue::Column(col) => col.clone(),
-            crate::graph_catalog::expression_parser::PropertyValue::Expression(expr) => expr.clone(),
+            crate::graph_catalog::expression_parser::PropertyValue::Expression(expr) => {
+                expr.clone()
+            }
         };
         self.properties
             .push((prop.table_alias.0.clone(), property_name));

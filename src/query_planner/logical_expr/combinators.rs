@@ -73,13 +73,11 @@ pub fn is_comparison(expr: &LogicalExpr) -> bool {
 /// `(a AND (b AND c))` → `[a, b, c]`
 pub fn flatten_boolean_op(expr: &LogicalExpr, op: Operator) -> Vec<LogicalExpr> {
     match expr {
-        LogicalExpr::OperatorApplicationExp(op_app) if op_app.operator == op => {
-            op_app
-                .operands
-                .iter()
-                .flat_map(|operand| flatten_boolean_op(operand, op))
-                .collect()
-        }
+        LogicalExpr::OperatorApplicationExp(op_app) if op_app.operator == op => op_app
+            .operands
+            .iter()
+            .flat_map(|operand| flatten_boolean_op(operand, op))
+            .collect(),
         other => vec![other.clone()],
     }
 }

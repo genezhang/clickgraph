@@ -204,16 +204,12 @@ impl<'a> TryFrom<open_cypher_parser::ast::PathPattern<'a>> for PathPattern {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(PathPattern::ConnectedPattern(connected_patterns))
             }
-            open_cypher_parser::ast::PathPattern::ShortestPath(inner) => {
-                Ok(PathPattern::ShortestPath(Box::new(PathPattern::try_from(
-                    *inner,
-                )?)))
-            }
-            open_cypher_parser::ast::PathPattern::AllShortestPaths(inner) => {
-                Ok(PathPattern::AllShortestPaths(Box::new(
-                    PathPattern::try_from(*inner)?,
-                )))
-            }
+            open_cypher_parser::ast::PathPattern::ShortestPath(inner) => Ok(
+                PathPattern::ShortestPath(Box::new(PathPattern::try_from(*inner)?)),
+            ),
+            open_cypher_parser::ast::PathPattern::AllShortestPaths(inner) => Ok(
+                PathPattern::AllShortestPaths(Box::new(PathPattern::try_from(*inner)?)),
+            ),
         }
     }
 }
@@ -477,11 +473,9 @@ impl<'a> std::convert::TryFrom<open_cypher_parser::ast::Expression<'a>> for Logi
             )),
             Expression::PathPattern(pp) => Ok(LogicalExpr::PathPattern(PathPattern::try_from(pp)?)),
             Expression::Case(case) => Ok(LogicalExpr::Case(LogicalCase::try_from(case)?)),
-            Expression::ExistsExpression(exists) => {
-                Ok(LogicalExpr::ExistsSubquery(ExistsSubquery::try_from(
-                    *exists,
-                )?))
-            }
+            Expression::ExistsExpression(exists) => Ok(LogicalExpr::ExistsSubquery(
+                ExistsSubquery::try_from(*exists)?,
+            )),
             Expression::ReduceExp(reduce) => Ok(LogicalExpr::ReduceExpr(ReduceExpr {
                 accumulator: reduce.accumulator.to_string(),
                 initial_value: Box::new(Self::try_from(*reduce.initial_value)?),
