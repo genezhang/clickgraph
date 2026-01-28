@@ -2775,7 +2775,15 @@ pub fn remap_cte_names_in_render_plan(
     }
 }
 
-/// Rewrite expressions to use the FROM alias and CTE column names.\n///\n/// Handles three cases:\n///\n/// 1. PropertyAccess with WITH alias (e.g., \"a.full_name\") → rewrite to FROM alias + CTE column\n/// 2. PropertyAccess with CTE name (e.g., \"with_a_age_cte_1.age\") → rewrite to FROM alias\n/// 3. Other expressions → recursively rewrite nested expressions\n///\n/// This version uses plan_ctx to resolve alias sources from WITH clauses.\n/// When an alias has been renamed (e.g., \"person\" from \"u\"), this resolves the mapping.
+/// Rewrite expressions to use the FROM alias and CTE column names.
+///
+/// Handles three cases:
+///  1. PropertyAccess with WITH alias (e.g., \"a.full_name\") → rewrite to FROM alias + CTE column
+///  2. PropertyAccess with CTE name (e.g., \"with_a_age_cte_1.age\") → rewrite to FROM alias
+///  3. Other expressions → recursively rewrite nested expressions
+///
+/// This version uses plan_ctx to resolve alias sources from WITH clauses.
+/// When an alias has been renamed (e.g., \"person\" from \"u\"), this resolves the mapping.
 pub fn rewrite_cte_expression_with_alias_resolution(
     expr: crate::render_plan::render_expr::RenderExpr,
     cte_name: &str,
