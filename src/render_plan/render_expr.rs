@@ -722,10 +722,10 @@ fn generate_not_exists_from_path_pattern(
             }
 
             // NO FALLBACK - schema is required!
-            return Err(RenderBuildError::InvalidRenderPlan(format!(
+            Err(RenderBuildError::InvalidRenderPlan(format!(
                 "INTERNAL ERROR: Relationship type '{}' not found in schema for EXISTS pattern. This should have been caught during query planning.",
                 rel_type
-            )));
+            )))
         }
         PathPattern::Node(_) => Err(RenderBuildError::InvalidRenderPlan(
             "NOT pattern with single node is not supported".to_string(),

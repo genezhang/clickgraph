@@ -271,25 +271,25 @@ impl PropertiesBuilder for LogicalPlan {
                 Ok((vec![], None))
             }
             LogicalPlan::Projection(proj) => {
-                return proj.input.get_properties_with_table_alias(alias);
+                proj.input.get_properties_with_table_alias(alias)
             }
             LogicalPlan::Filter(filter) => {
-                return filter.input.get_properties_with_table_alias(alias);
+                filter.input.get_properties_with_table_alias(alias)
             }
             LogicalPlan::GroupBy(gb) => {
-                return gb.input.get_properties_with_table_alias(alias);
+                gb.input.get_properties_with_table_alias(alias)
             }
             LogicalPlan::GraphJoins(joins) => {
-                return joins.input.get_properties_with_table_alias(alias);
+                joins.input.get_properties_with_table_alias(alias)
             }
             LogicalPlan::OrderBy(order) => {
-                return order.input.get_properties_with_table_alias(alias);
+                order.input.get_properties_with_table_alias(alias)
             }
             LogicalPlan::Skip(skip) => {
-                return skip.input.get_properties_with_table_alias(alias);
+                skip.input.get_properties_with_table_alias(alias)
             }
             LogicalPlan::Limit(limit) => {
-                return limit.input.get_properties_with_table_alias(alias);
+                limit.input.get_properties_with_table_alias(alias)
             }
             LogicalPlan::Union(union) => {
                 // For UNION, check all branches and return the first successful result.
@@ -334,7 +334,7 @@ impl PropertiesBuilder for LogicalPlan {
                 // NOTE: Additional handling for tuple-valued properties produced by
                 // the UNWIND expression can be added here if needed, but this
                 // preserves the recursive behavior from the previous implementation.
-                return unwind.input.get_properties_with_table_alias(alias);
+                unwind.input.get_properties_with_table_alias(alias)
             }
             LogicalPlan::WithClause(wc) => {
                 // ✅ FIX (Phase 6): Handle WITH clauses for variable renaming

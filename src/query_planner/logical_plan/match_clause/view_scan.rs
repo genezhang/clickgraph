@@ -863,12 +863,12 @@ pub fn generate_relationship_center(
                     "✓ Successfully created Relationship ViewScan for type '{}'",
                     unique_labels[0]
                 );
-                return Ok(view_scan);
+                Ok(view_scan)
             } else {
                 // ViewScan creation failed - this is an error
-                return Err(LogicalPlanError::RelationshipNotFound(
+                Err(LogicalPlanError::RelationshipNotFound(
                     unique_labels[0].clone(),
-                ));
+                ))
             }
         } else {
             log::debug!(
@@ -878,13 +878,13 @@ pub fn generate_relationship_center(
             // For multiple relationships, use Empty plan
             // The actual UNION ALL CTE generation happens in render phase using GraphRel.labels
             // No need for "rel_*" placeholder - it was never actually looked up
-            return Ok(Arc::new(LogicalPlan::Empty));
+            Ok(Arc::new(LogicalPlan::Empty))
         }
     } else {
         log::debug!("No relationship labels specified, using Empty plan");
         // For relationships without labels, use Empty
         // Type inference pass will fill in the relationship type
-        return Ok(Arc::new(LogicalPlan::Empty));
+        Ok(Arc::new(LogicalPlan::Empty))
     }
 }
 

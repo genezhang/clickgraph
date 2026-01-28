@@ -220,7 +220,7 @@ impl CollectUnwindElimination {
 
             // Recursively optimize all child nodes and accumulate alias mappings
             LogicalPlan::Projection(proj) => {
-                let (optimized_input, mut alias_map) = Self::optimize_node(proj.input.clone())?;
+                let (optimized_input, alias_map) = Self::optimize_node(proj.input.clone())?;
 
                 // Apply alias rewriting to projection items if we have mappings
                 let new_items: Vec<ProjectionItem> = if alias_map.is_empty() {

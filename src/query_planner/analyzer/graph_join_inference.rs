@@ -5072,7 +5072,7 @@ impl GraphJoinInference {
                 );
 
                 // Generate JOIN between first two edges from different tables
-                let mut table_edges: Vec<_> = from_edges.values().collect();
+                let table_edges: Vec<_> = from_edges.values().collect();
                 let edge1 = table_edges[0][0];
                 let edge2 = table_edges[1][0];
 
@@ -5093,7 +5093,7 @@ impl GraphJoinInference {
                 );
 
                 // Generate JOIN between first two edges from different tables
-                let mut table_edges: Vec<_> = to_edges.values().collect();
+                let table_edges: Vec<_> = to_edges.values().collect();
                 let edge1 = table_edges[0][0];
                 let edge2 = table_edges[1][0];
 

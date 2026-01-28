@@ -867,7 +867,7 @@ pub fn parse_property_access(input: &'_ str) -> IResult<&'_ str, Expression<'_>>
         _ => return Err(nom::Err::Error(Error::new(input, ErrorKind::Float))),
     };
 
-    let mut current_expr = if first_key == "*" {
+    let current_expr = if first_key == "*" {
         Expression::PropertyAccessExp(PropertyAccess {
             base: base_expr,
             key: "*",
