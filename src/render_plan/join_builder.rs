@@ -203,7 +203,7 @@ impl JoinBuilder for LogicalPlan {
                 .find(|j| {
                     j.table_alias != rel_alias
                         && !j.joining_on.is_empty()
-                        && j.table_alias != from_alias.as_ref().map(|s| s.as_str()).unwrap_or("")
+                        && j.table_alias != from_alias.as_deref().unwrap_or("")
                 })
                 .map(|j| j.table_alias.clone());
 
@@ -1424,8 +1424,7 @@ impl JoinBuilder for LogicalPlan {
                 // This applies regardless of whether the JOIN is optional or required
                 let rel_types_for_filter: Vec<String> = graph_rel
                     .labels
-                    .as_ref()
-                    .map(|labels: &Vec<String>| labels.clone())
+                    .clone()
                     .unwrap_or_default();
                 let polymorphic_filter = get_polymorphic_edge_filter_for_join(
                     &graph_rel.center,

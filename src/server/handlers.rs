@@ -626,9 +626,7 @@ async fn query_handler_inner(
             // DDL operations not supported - ClickGraph is read-only
             return Err((
                 StatusCode::BAD_REQUEST,
-                format!(
-                    "DDL operations (CREATE/SET/DELETE) not supported. ClickGraph is a read-only query engine. Use YAML schemas to define graph views."
-                ),
+                "DDL operations (CREATE/SET/DELETE) not supported. ClickGraph is a read-only query engine. Use YAML schemas to define graph views.".to_string(),
             ));
         }
     };

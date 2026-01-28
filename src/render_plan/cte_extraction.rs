@@ -49,17 +49,17 @@ fn recreate_pattern_schema_context(
     let left_label = extract_node_labels(&graph_rel.left)
         .and_then(|labels| labels.first().cloned())
         .ok_or_else(|| {
-            RenderBuildError::MissingTableInfo(format!(
-                "Could not extract left node label for relationship pattern"
-            ))
+            RenderBuildError::MissingTableInfo(
+                "Could not extract left node label for relationship pattern".to_string()
+            )
         })?;
 
     let right_label = extract_node_labels(&graph_rel.right)
         .and_then(|labels| labels.first().cloned())
         .ok_or_else(|| {
-            RenderBuildError::MissingTableInfo(format!(
-                "Could not extract right node label for relationship pattern"
-            ))
+            RenderBuildError::MissingTableInfo(
+                "Could not extract right node label for relationship pattern".to_string()
+            )
         })?;
 
     // Get relationship types
@@ -2894,7 +2894,7 @@ pub fn extract_ctes_with_context(
             // IMPORTANT: Recurse into left and right branches to collect CTEs from nested GraphRels
             // This is needed for multi-hop polymorphic patterns like (u)-[r1]->(m)-[r2]->(t)
             // where both r1 and r2 are wildcard edges needing their own CTEs
-            let mut left_ctes =
+            let left_ctes =
                 extract_ctes_with_context(&graph_rel.left, last_node_alias, context, schema)?;
             let mut right_ctes =
                 extract_ctes_with_context(&graph_rel.right, last_node_alias, context, schema)?;
@@ -3168,7 +3168,7 @@ pub fn extract_ctes_with_context(
 
             let final_items = if has_aggregation {
                 // Wrap non-ID columns of TableAlias with anyLast()
-                expanded_items.into_iter().map(|mut item| {
+                expanded_items.into_iter().map(|item| {
                     use crate::query_planner::logical_expr::LogicalExpr;
 
                     // Only wrap TableAlias, not aggregate functions

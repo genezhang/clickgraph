@@ -4137,7 +4137,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
     // Extract VLP column metadata for property name resolution
     // This maps (cypher_alias, property_name) → cte_column_name
     // E.g., (a, email_address) → start_email (or start_email_address depending on CTE)
-    let mut cte_column_mapping: HashMap<(String, String), String> = HashMap::new();
+    let cte_column_mapping: HashMap<(String, String), String> = HashMap::new();
     log::warn!("🔧 VLP: Total CTEs in plan: {}", plan.ctes.0.len());
 
     // ✨ NEW APPROACH: Build metadata-based lookup mapping
@@ -4360,7 +4360,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
             .0
             .as_ref()
             .and_then(|from_ref| from_ref.alias.as_ref())
-            .map(|s| s.clone())
+            .cloned()
             .unwrap_or_else(|| "t".to_string()); // Default to 't' if no alias found
 
         log::warn!("🔧 VLP: FROM alias extracted: '{}'", vlp_from_alias);
@@ -5894,22 +5894,6 @@ pub(crate) fn update_graph_joins_cte_refs(
                 count: skip.count,
             }))
         }
-        LogicalPlan::WithClause(wc) => {
-            log::warn!("🔧 update_graph_joins_cte_refs: Updating WithClause input (recursively)");
-            let new_input = update_graph_joins_cte_refs(&wc.input, cte_references)?;
-            Ok(LogicalPlan::WithClause(WithClause {
-                cte_name: wc.cte_name.clone(),
-                input: Arc::new(new_input),
-                items: wc.items.clone(),
-                order_by: wc.order_by.clone(),
-                skip: wc.skip,
-                limit: wc.limit,
-                where_clause: wc.where_clause.clone(),
-                distinct: wc.distinct,
-                exported_aliases: wc.exported_aliases.clone(),
-                cte_references: cte_references.clone(),
-            }))
-        }
         other => Ok(other.clone()),
     }
 }
@@ -6917,7 +6901,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         // Performance optimization: Wrap non-ID columns with ANY() when aggregating
                         // This allows GROUP BY to only include ID column (more efficient)
 
-                        let mut select_items: Vec<SelectItem> = items.iter()
+                        let select_items: Vec<SelectItem> = items.iter()
                                     .flat_map(|item| {
                                         // Check if this is a TableAlias that needs expansion to ALL columns
                                         match &item.expression {
@@ -8194,8 +8178,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 // The FROM alias (e.g., "a_age") must be used, not the original aliases ("a") or CTE name
                 let from_alias = from_ref
                     .alias
-                    .as_ref()
-                    .map(|a| a.as_str())
+                    .as_deref()
                     .unwrap_or(&from_ref.name);
                 log::warn!("🔧 build_chained_with_match_cte_plan: Rewriting SELECT items to use FROM alias '{}'", from_alias);
 
@@ -8234,7 +8217,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                 // First, try to get DB column mappings from the FROM ViewScan's property_mapping
                 // This tells us: Cypher property → DB column (e.g., "name" → "full_name")
-                let mut cypher_to_db: HashMap<(String, String), String> = HashMap::new();
+                let _cypher_to_db: HashMap<(String, String), String> = HashMap::new();
                 if let LogicalPlan::ViewScan(vs) = from_ref.source.as_ref() {
                     // The ViewScan property_mapping has entries like "name" → Column("full_name")
                     // But for CTEs, it might have "a_name" → Column("a_name") (identity mapping)
@@ -9889,7 +9872,7 @@ pub(crate) fn prune_joins_covered_by_cte(
 
             // If we removed joins, update the anchor_table to use the GraphNode alias that references the CTE
             // The anchor should be the alias of the GraphNode whose ViewScan.source_table matches cte_name
-            let new_anchor = if removed_joins.len() > 0 {
+            let new_anchor = if !removed_joins.is_empty() {
                 // Find the GraphNode that references this CTE
                 if let Some(cte_ref_alias) = find_cte_reference_alias(&gj.input, cte_name) {
                     log::warn!("🔧 prune_joins_covered_by_cte: Updating anchor from '{:?}' to CTE reference alias '{}'",

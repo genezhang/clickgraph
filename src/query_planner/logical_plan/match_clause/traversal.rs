@@ -269,13 +269,11 @@ fn traverse_connected_pattern_with_mode<'a>(
             "Pattern processing: start='{}' ({}), end='{}' ({})",
             start_node_alias,
             start_node_label
-                .as_ref()
-                .map(|s| s.as_str())
+                .as_deref()
                 .unwrap_or("None"),
             end_node_alias,
             end_node_label
-                .as_ref()
-                .map(|s| s.as_str())
+                .as_deref()
                 .unwrap_or("None")
         );
 

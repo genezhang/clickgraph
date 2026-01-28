@@ -951,10 +951,6 @@ impl OptimizerPass for FilterIntoGraphRel {
                 // (e.g., relationship center ViewScans), which shouldn't get node property filters
                 Transformed::No(logical_plan.clone())
             }
-            LogicalPlan::Union(union) => {
-                log::debug!("FilterIntoGraphRel: No filters found for ViewScan");
-                Transformed::No(logical_plan.clone())
-            }
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
                 let child_tf = self.optimize(graph_joins.input.clone(), plan_ctx)?;

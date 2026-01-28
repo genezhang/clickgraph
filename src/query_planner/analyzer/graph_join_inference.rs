@@ -2843,8 +2843,7 @@ impl GraphJoinInference {
         // 2. Get relationship type(s) from labels
         let rel_types: Vec<String> = graph_rel
             .labels
-            .as_ref()
-            .map(|labels| labels.clone())
+            .clone()
             .unwrap_or_default();
 
         if rel_types.is_empty() {
@@ -5426,8 +5425,7 @@ impl GraphJoinInference {
         // 3. Get relationship schema using composite key (rel_type::from_label::to_label)
         let rel_types: Vec<String> = graph_rel
             .labels
-            .as_ref()
-            .map(|labels| labels.clone())
+            .clone()
             .unwrap_or_default();
 
         if rel_types.is_empty() {

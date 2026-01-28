@@ -870,8 +870,8 @@ impl LogicalPlan {
                     let seq_num = if let Some(base_name) = extract_cte_base_name(cte_name) {
                         // Counter is everything after base_name
                         let counter_str = &cte_name[base_name.len()..];
-                        if counter_str.starts_with('_') {
-                            counter_str[1..].parse::<usize>().unwrap_or(0)
+                        if let Some(num_str) = counter_str.strip_prefix('_') {
+                            num_str.parse::<usize>().unwrap_or(0)
                         } else {
                             0 // Base name without counter
                         }

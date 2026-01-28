@@ -59,7 +59,6 @@ impl AnalyzerPass for FilterTagging {
         );
         let variant_name = match &*logical_plan {
             LogicalPlan::Empty => "Empty",
-            LogicalPlan::Empty => "Empty",
             LogicalPlan::ViewScan(_) => "ViewScan",
             LogicalPlan::GraphNode(_) => "GraphNode",
             LogicalPlan::GraphRel(_) => "GraphRel",

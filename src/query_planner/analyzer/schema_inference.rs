@@ -932,7 +932,7 @@ impl SchemaInference {
 
             // NEW: Handle polymorphic edges with $any wildcard target
             // For MATCH (u:User)-[r]->(target), we use the first polymorphic relationship found
-            if relations_found.len() >= 1 {
+            if !relations_found.is_empty() {
                 for relation_schema in &relations_found {
                     // Check if this relationship uses $any wildcard (polymorphic)
                     let is_from_any = relation_schema.from_node == "$any";
@@ -1041,7 +1041,7 @@ impl SchemaInference {
 
             // NEW: Handle polymorphic edges with $any wildcard source
             // For MATCH (source)-[r]->(p:Post), we use the first polymorphic relationship found
-            if relations_found.len() >= 1 {
+            if !relations_found.is_empty() {
                 for relation_schema in &relations_found {
                     // Check if this relationship uses $any wildcard (polymorphic)
                     let is_from_any = relation_schema.from_node == "$any";

@@ -265,8 +265,7 @@ pub fn is_ch_passthrough_aggregate(fn_name: &str) -> bool {
         return true;
     }
     // ch. prefix - check registry
-    if fn_name.starts_with(CH_PASSTHROUGH_PREFIX) {
-        let ch_fn_name = &fn_name[CH_PASSTHROUGH_PREFIX.len()..];
+    if let Some(ch_fn_name) = fn_name.strip_prefix(CH_PASSTHROUGH_PREFIX) {
         return is_ch_aggregate_function(ch_fn_name);
     }
     false
@@ -275,13 +274,8 @@ pub fn is_ch_passthrough_aggregate(fn_name: &str) -> bool {
 /// Get the raw ClickHouse function name from a ch. or chagg. prefixed name
 /// Returns None if not a ch./chagg. prefixed function
 pub fn get_ch_function_name(fn_name: &str) -> Option<&str> {
-    if fn_name.starts_with(CH_AGG_PREFIX) {
-        Some(&fn_name[CH_AGG_PREFIX.len()..])
-    } else if fn_name.starts_with(CH_PASSTHROUGH_PREFIX) {
-        Some(&fn_name[CH_PASSTHROUGH_PREFIX.len()..])
-    } else {
-        None
-    }
+    fn_name.strip_prefix(CH_AGG_PREFIX)
+        .or_else(|| fn_name.strip_prefix(CH_PASSTHROUGH_PREFIX))
 }
 
 /// Translate a Neo4j scalar function call to ClickHouse SQL

@@ -718,7 +718,7 @@ pub fn map_property_to_column_with_relationship_context(
             .values()
             .find(|s| s.all_node_schemas().contains_key(node_label))
             .ok_or_else(|| {
-                let available_schemas: Vec<String> = schemas.keys().map(|s| s.clone()).collect();
+                let available_schemas: Vec<String> = schemas.keys().cloned().collect();
                 let msg = format!(
                     "CRITICAL: Node label '{}' not found. Schema context was missing (no explicit schema_name and QUERY_SCHEMA_NAME task_local not set). Available schemas: {}. This is a bug in schema context propagation.",
                     node_label,
@@ -741,7 +741,7 @@ pub fn map_property_to_column_with_relationship_context(
         let available: Vec<String> = schema
             .all_node_schemas()
             .keys()
-            .map(|s| s.clone())
+            .cloned()
             .collect();
         let msg = format!(
             "Node label '{}' not found in schema. Available labels: {}",
@@ -851,7 +851,7 @@ pub fn map_property_to_column_with_relationship_context(
         let available: Vec<String> = node_schema
             .property_mappings
             .keys()
-            .map(|s| s.clone())
+            .cloned()
             .collect();
         let msg = format!(
             "Property '{}' not found for node label '{}'. Available properties: {}",

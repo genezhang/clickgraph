@@ -900,7 +900,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     let joins = JoinItems(vec![vlp_join]);
 
                     // Extract select items WITHOUT CTE registry (properties come from base table)
-                    let mut select_items = SelectItems {
+                    let select_items = SelectItems {
                         items: <LogicalPlan as SelectBuilder>::extract_select_items(self, None)?,
                         distinct: FilterBuilder::extract_distinct(self),
                     };
@@ -917,7 +917,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     let limit = LimitItem(self.extract_limit());
                     let union = UnionItems(self.extract_union(schema)?);
 
-                    let mut render_plan = RenderPlan {
+                    let render_plan = RenderPlan {
                         ctes,
                         select: select_items,
                         from,
@@ -947,7 +947,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     )?);
 
                     // Create temporary render plan to populate CTE registry
-                    let mut temp_render_plan = RenderPlan {
+                    let _temp_render_plan = RenderPlan {
                         ctes: ctes.clone(),
                         select: SelectItems {
                             items: vec![],
@@ -1008,7 +1008,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     let limit = LimitItem(self.extract_limit());
                     let union = UnionItems(self.extract_union(schema)?);
 
-                    let mut render_plan = RenderPlan {
+                    let render_plan = RenderPlan {
                         ctes,
                         select: select_items,
                         from,
@@ -1059,7 +1059,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         distinct: p.distinct,
                     };
                 } else {
-                    let mut select_items =
+                    let select_items =
                         <LogicalPlan as SelectBuilder>::extract_select_items(self, None)?;
 
                     // Check if this Projection is over an optional VLP GraphRel

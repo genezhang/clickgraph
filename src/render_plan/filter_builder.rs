@@ -335,7 +335,6 @@ impl FilterBuilder for LogicalPlan {
             LogicalPlan::Skip(skip) => skip.input.extract_filters()?,
             LogicalPlan::Limit(limit) => limit.input.extract_filters()?,
             LogicalPlan::Cte(cte) => cte.input.extract_filters()?,
-            LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_filters()?,
             LogicalPlan::Union(_) => None,
             LogicalPlan::PageRank(_) => None,
             LogicalPlan::Unwind(u) => u.input.extract_filters()?,
