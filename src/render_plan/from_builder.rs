@@ -433,7 +433,7 @@ impl LogicalPlan {
                 } else {
                     // If right doesn't have FROM, we need to determine which node should be the anchor
                     // Use find_anchor_node logic to choose the correct anchor
-                    let all_connections = get_all_relationship_connections(&self);
+                    let all_connections = get_all_relationship_connections(self);
                     let optional_aliases = std::collections::HashSet::new();
                     let denormalized_aliases = std::collections::HashSet::new();
 
@@ -870,8 +870,8 @@ impl LogicalPlan {
                     let seq_num = if let Some(base_name) = extract_cte_base_name(cte_name) {
                         // Counter is everything after base_name
                         let counter_str = &cte_name[base_name.len()..];
-                        if counter_str.starts_with('_') {
-                            counter_str[1..].parse::<usize>().unwrap_or(0)
+                        if let Some(num_str) = counter_str.strip_prefix('_') {
+                            num_str.parse::<usize>().unwrap_or(0)
                         } else {
                             0 // Base name without counter
                         }

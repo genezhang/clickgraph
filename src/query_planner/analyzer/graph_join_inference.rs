@@ -656,9 +656,11 @@ impl GraphJoinInference {
     }
 
     /// Deduplicate joins by table_alias
+    ///
     /// When there are multiple joins for the same alias, prefer the one that:
     /// 1. References TableAlias (WITH clause alias like client_ip) over PropertyAccessExp (like src2.ip)
     /// 2. Has fewer PropertyAccessExp operands (simpler join condition)
+    ///
     /// This handles the case where both infer_graph_join and cross-table extraction create joins
     /// for the same fully denormalized table.
     fn deduplicate_joins(joins: Vec<Join>) -> Vec<Join> {
@@ -2084,8 +2086,8 @@ impl GraphJoinInference {
                         for shared_node in &shared_nodes {
                             // Extract table info from both sides using existing helper
                             if let (
-                                Some((left_table, left_alias)),
-                                Some((right_table, right_alias)),
+                                Some((_left_table, _left_alias)),
+                                Some((_right_table, _right_alias)),
                             ) = (
                                 Self::extract_right_table_from_plan(&cp.left, graph_schema),
                                 Self::extract_right_table_from_plan(&cp.right, graph_schema),
@@ -2841,11 +2843,7 @@ impl GraphJoinInference {
         let right_label_opt = right_ctx.get_label_str().ok();
 
         // 2. Get relationship type(s) from labels
-        let rel_types: Vec<String> = graph_rel
-            .labels
-            .as_ref()
-            .map(|labels| labels.clone())
-            .unwrap_or_default();
+        let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
 
         if rel_types.is_empty() {
             crate::debug_print!("    ⚠️ compute_pattern_context: no relationship types found");
@@ -4234,7 +4232,7 @@ impl GraphJoinInference {
     fn infer_graph_join(
         &self,
         graph_rel: &GraphRel,
-        root_plan: Arc<LogicalPlan>,
+        _root_plan: Arc<LogicalPlan>,
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
         collected_graph_joins: &mut Vec<Join>,
@@ -4337,11 +4335,11 @@ impl GraphJoinInference {
             left_alias_str,
             rel_alias_str,
             right_alias_str,
-            left_node_id_column,
-            right_node_id_column,
+            _left_node_id_column,
+            _right_node_id_column,
             left_label,
             right_label,
-            rel_labels,
+            _rel_labels,
             left_node_schema,
             right_node_schema,
             rel_schema,
@@ -4433,7 +4431,7 @@ impl GraphJoinInference {
         // In the duplicate scan removing pass, we remove the already scanned nodes. We do this from bottom to up.
         // So there could be a graph_rel who has LogicalPlan::Empty as left. In such case just join the relationship but on both nodes columns.
         // In case of f3, both of its nodes a and b are already joined. So just join f3 on both a and b's joining keys.
-        let is_standalone_rel: bool = matches!(graph_rel.left.as_ref(), LogicalPlan::Empty);
+        let _is_standalone_rel: bool = matches!(graph_rel.left.as_ref(), LogicalPlan::Empty);
 
         crate::debug_print!("    📋 Creating joins for relationship...");
         let joins_before = collected_graph_joins.len();
@@ -4997,7 +4995,7 @@ impl GraphJoinInference {
     fn generate_cross_branch_joins_from_metadata(
         &self,
         pattern_metadata: &PatternGraphMetadata,
-        plan_ctx: &PlanCtx,
+        _plan_ctx: &PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Vec<Join>> {
         let mut joins = Vec::new();
@@ -5049,12 +5047,12 @@ impl GraphJoinInference {
                 if edge.from_node == *node_alias {
                     from_edges
                         .entry(rel_schema.table_name.clone())
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(*edge);
                 } else if edge.to_node == *node_alias {
                     to_edges
                         .entry(rel_schema.table_name.clone())
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(*edge);
                 }
             }
@@ -5072,7 +5070,7 @@ impl GraphJoinInference {
                 );
 
                 // Generate JOIN between first two edges from different tables
-                let mut table_edges: Vec<_> = from_edges.values().collect();
+                let table_edges: Vec<_> = from_edges.values().collect();
                 let edge1 = table_edges[0][0];
                 let edge2 = table_edges[1][0];
 
@@ -5093,7 +5091,7 @@ impl GraphJoinInference {
                 );
 
                 // Generate JOIN between first two edges from different tables
-                let mut table_edges: Vec<_> = to_edges.values().collect();
+                let table_edges: Vec<_> = to_edges.values().collect();
                 let edge1 = table_edges[0][0];
                 let edge2 = table_edges[1][0];
 
@@ -5365,7 +5363,7 @@ impl GraphJoinInference {
         // Record this appearance for future checks
         node_appearances
             .entry(node_alias.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(current_appearance);
 
         Ok(())
@@ -5424,11 +5422,7 @@ impl GraphJoinInference {
             .and_then(|ctx| ctx.get_label_str().ok());
 
         // 3. Get relationship schema using composite key (rel_type::from_label::to_label)
-        let rel_types: Vec<String> = graph_rel
-            .labels
-            .as_ref()
-            .map(|labels| labels.clone())
-            .unwrap_or_default();
+        let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
 
         if rel_types.is_empty() {
             return Err(AnalyzerError::SchemaNotFound(format!(
@@ -5795,7 +5789,7 @@ mod tests {
     }
 
     fn setup_plan_ctx_with_graph_entities() -> PlanCtx {
-        let mut plan_ctx = PlanCtx::default();
+        let mut plan_ctx = PlanCtx::new_empty();
 
         // Add person nodes
         plan_ctx.insert_table_ctx(

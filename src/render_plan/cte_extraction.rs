@@ -20,13 +20,10 @@ use crate::render_plan::cte_manager::CteManager;
 use crate::render_plan::expression_utils::{flatten_addition_operands, has_string_operand};
 use crate::utils::cte_naming::generate_cte_name;
 
-use super::cte_generation::map_property_to_column_with_schema;
 use super::errors::RenderBuildError;
 use super::filter_pipeline::{categorize_filters, CategorizedFilters};
 use super::plan_builder::RenderPlanBuilder;
-use super::render_expr::{
-    ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr,
-};
+use super::render_expr::{Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr};
 use super::{Cte, CteContent, Join, JoinType};
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
@@ -50,17 +47,17 @@ fn recreate_pattern_schema_context(
     let left_label = extract_node_labels(&graph_rel.left)
         .and_then(|labels| labels.first().cloned())
         .ok_or_else(|| {
-            RenderBuildError::MissingTableInfo(format!(
-                "Could not extract left node label for relationship pattern"
-            ))
+            RenderBuildError::MissingTableInfo(
+                "Could not extract left node label for relationship pattern".to_string(),
+            )
         })?;
 
     let right_label = extract_node_labels(&graph_rel.right)
         .and_then(|labels| labels.first().cloned())
         .ok_or_else(|| {
-            RenderBuildError::MissingTableInfo(format!(
-                "Could not extract right node label for relationship pattern"
-            ))
+            RenderBuildError::MissingTableInfo(
+                "Could not extract right node label for relationship pattern".to_string(),
+            )
         })?;
 
     // Get relationship types
@@ -1264,10 +1261,10 @@ pub fn extract_relationship_columns_from_table_with_schema(
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
 ) -> RelationshipColumns {
     // Extract just the table name without database prefix for matching
-    let table_only = table_name.split('.').last().unwrap_or(table_name);
+    let table_only = table_name.rsplit('.').next().unwrap_or(table_name);
 
     // Find relationship schema by table name
-    for (_key, rel_schema) in schema.get_relationships_schemas() {
+    for rel_schema in schema.get_relationships_schemas().values() {
         // Match both with full name (db.table) or just table name
         if rel_schema.table_name == table_name
             || rel_schema.table_name == table_only
@@ -1447,7 +1444,7 @@ fn apply_property_mapping_to_expr_with_context(
                 // Map the property to the correct column with relationship context
                 let mapped_column =
                     crate::render_plan::cte_generation::map_property_to_column_with_relationship_context(
-                        &prop.column.raw(),
+                        prop.column.raw(),
                         &node_label,
                         relationship_type,
                         node_role,
@@ -1458,7 +1455,7 @@ fn apply_property_mapping_to_expr_with_context(
         }
         RenderExpr::Column(col) => {
             // Check if this column name is actually an alias
-            if let Some(node_label) = get_node_label_for_alias(&col.raw(), plan) {
+            if let Some(node_label) = get_node_label_for_alias(col.raw(), plan) {
                 // Convert Column(alias) to PropertyAccess(alias, "id")
                 let id_column = table_to_id_column(&label_to_table_name(&node_label));
                 *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
@@ -1709,7 +1706,7 @@ pub fn extract_ctes_with_context(
                 };
                 log::info!("🔍 VLP: Left plan = {}", left_plan_desc);
                 // 🔧 PARAMETERIZED VIEW FIX: Use extract_parameterized_table_name for parameterized view support
-                let start_table =
+                let _start_table =
                     extract_parameterized_table_name(&graph_rel.left).ok_or_else(|| {
                         RenderBuildError::MissingTableInfo("start node in VLP".to_string())
                     })?;
@@ -1717,9 +1714,9 @@ pub fn extract_ctes_with_context(
                 // 🎯 CHECK: Is this multi-type VLP? (end node has unknown type)
                 // If so, end_table will be determined by schema expansion, not from the plan
                 let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
-                let is_multi_type_vlp = should_use_join_expansion(&graph_rel, &rel_types, schema);
+                let is_multi_type_vlp = should_use_join_expansion(graph_rel, &rel_types, schema);
 
-                let end_table = if is_multi_type_vlp {
+                let _end_table = if is_multi_type_vlp {
                     // For multi-type VLP, end_table isn't in the plan (it's polymorphic)
                     // We'll determine end types from schema later
                     log::info!(
@@ -2303,7 +2300,7 @@ pub fn extract_ctes_with_context(
                 // 🎯 DECISION POINT: CTE or inline JOINs?
                 // BUT FIRST: Check if this is multi-type VLP (requires UNION ALL, not chained JOINs)
                 let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
-                let is_multi_type = should_use_join_expansion(&graph_rel, &rel_types, schema);
+                let is_multi_type = should_use_join_expansion(graph_rel, &rel_types, schema);
 
                 let use_chained_join = spec.exact_hop_count().is_some()
                     && graph_rel.shortest_path_mode.is_none()
@@ -2363,13 +2360,13 @@ pub fn extract_ctes_with_context(
                     log::info!("🔍 VLP: rel_types={:?}", rel_types);
 
                     let is_multi_type_check =
-                        should_use_join_expansion(&graph_rel, &rel_types, schema);
+                        should_use_join_expansion(graph_rel, &rel_types, schema);
                     log::info!(
                         "🔍 VLP: should_use_join_expansion returned: {}",
                         is_multi_type_check
                     );
 
-                    if should_use_join_expansion(&graph_rel, &rel_types, schema) {
+                    if should_use_join_expansion(graph_rel, &rel_types, schema) {
                         // Multi-type VLP: Use JOIN expansion with UNION ALL
                         log::info!("🎯 CTE: Using JOIN expansion for multi-type VLP");
 
@@ -2530,7 +2527,7 @@ pub fn extract_ctes_with_context(
 
                     // ✨ PHASE 2 REFACTORING: Use PatternSchemaContext instead of scattered is_denormalized checks
                     // Recreate the pattern schema context to determine JOIN strategy and node access patterns
-                    let pattern_ctx = match recreate_pattern_schema_context(&graph_rel, schema) {
+                    let pattern_ctx = match recreate_pattern_schema_context(graph_rel, schema) {
                         Ok(ctx) => ctx,
                         Err(e) => {
                             log::warn!("⚠️ Failed to recreate PatternSchemaContext, falling back to denormalized flag checks: {}", e);
@@ -2593,9 +2590,9 @@ pub fn extract_ctes_with_context(
                     } else {
                         None
                     };
-                    let type_column = pattern_ctx.edge.type_column();
-                    let from_label_column = pattern_ctx.edge.from_label_column();
-                    let to_label_column = pattern_ctx.edge.to_label_column();
+                    let _type_column = pattern_ctx.edge.type_column();
+                    let _from_label_column = pattern_ctx.edge.from_label_column();
+                    let _to_label_column = pattern_ctx.edge.to_label_column();
 
                     // 🎯 Extract schema filters from start and end nodes
                     // Schema filters are defined in YAML and should be applied to CTE base/recursive cases
@@ -2646,11 +2643,11 @@ pub fn extract_ctes_with_context(
 
                         // Get node schema to extract all from_properties and to_properties
                         // Handle both "table" and "database.table" formats
-                        let rel_table_name = rel_table.split('.').last().unwrap_or(&rel_table);
+                        let rel_table_name = rel_table.rsplit('.').next().unwrap_or(&rel_table);
 
                         if let Some(node_schema) = schema.all_node_schemas().values().find(|n| {
                             let schema_table =
-                                n.table_name.split('.').last().unwrap_or(&n.table_name);
+                                n.table_name.rsplit('.').next().unwrap_or(&n.table_name);
                             schema_table == rel_table_name
                         }) {
                             log::debug!("🔧 CTE: Found node schema for table {}", rel_table);
@@ -2661,7 +2658,7 @@ pub fn extract_ctes_with_context(
                                     "🔧 CTE: Adding {} from_node properties",
                                     from_props.len()
                                 );
-                                for (logical_prop, _physical_col) in from_props {
+                                for logical_prop in from_props.keys() {
                                     if !all_denorm_properties.iter().any(|p| {
                                         p.cypher_alias == graph_rel.left_connection
                                             && p.alias == *logical_prop
@@ -2682,7 +2679,7 @@ pub fn extract_ctes_with_context(
                             // Add all to_node properties
                             if let Some(ref to_props) = node_schema.to_properties {
                                 log::debug!("🔧 CTE: Adding {} to_node properties", to_props.len());
-                                for (logical_prop, _physical_col) in to_props {
+                                for logical_prop in to_props.keys() {
                                     if !all_denorm_properties.iter().any(|p| {
                                         p.cypher_alias == graph_rel.right_connection
                                             && p.alias == *logical_prop
@@ -2895,7 +2892,7 @@ pub fn extract_ctes_with_context(
             // IMPORTANT: Recurse into left and right branches to collect CTEs from nested GraphRels
             // This is needed for multi-hop polymorphic patterns like (u)-[r1]->(m)-[r2]->(t)
             // where both r1 and r2 are wildcard edges needing their own CTEs
-            let mut left_ctes =
+            let left_ctes =
                 extract_ctes_with_context(&graph_rel.left, last_node_alias, context, schema)?;
             let mut right_ctes =
                 extract_ctes_with_context(&graph_rel.right, last_node_alias, context, schema)?;
@@ -2976,7 +2973,7 @@ pub fn extract_ctes_with_context(
             // which led to node lookups failing in VLP queries
             Ok(vec![Cte::new(
                 logical_cte.name.clone(),
-                super::CteContent::Structured(logical_cte.input.to_render_plan(schema)?),
+                super::CteContent::Structured(Box::new(logical_cte.input.to_render_plan(schema)?)),
                 false,
             )])
         }
@@ -3169,13 +3166,13 @@ pub fn extract_ctes_with_context(
 
             let final_items = if has_aggregation {
                 // Wrap non-ID columns of TableAlias with anyLast()
-                expanded_items.into_iter().map(|mut item| {
+                expanded_items.into_iter().map(|item| {
                     use crate::query_planner::logical_expr::LogicalExpr;
 
                     // Only wrap TableAlias, not aggregate functions
                     if let LogicalExpr::TableAlias(ref alias) = item.expression {
                         // Find the ID column for this alias
-                        if let Ok(id_col) = wc.input.find_id_column_for_alias(&alias.0) {
+                        if let Ok(_id_col) = wc.input.find_id_column_for_alias(&alias.0) {
                             log::info!("🔧 CTE Extraction: Wrapping non-ID columns of '{}' with anyLast()", alias.0);
 
                             // Expand TableAlias to all properties and wrap non-ID with anyLast()
@@ -3304,7 +3301,7 @@ pub fn extract_ctes_with_context(
             // Create the CTE
             let with_cte = Cte::new(
                 cte_name.clone(),
-                CteContent::Structured(cte_render_plan),
+                CteContent::Structured(Box::new(cte_render_plan)),
                 false,
             );
 
@@ -4278,7 +4275,7 @@ pub fn expand_fixed_length_joins(
     end_alias: &str,
 ) -> Vec<Join> {
     use super::render_expr::{
-        Column, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+        Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
     };
 
     let mut joins = Vec::new();
@@ -4377,7 +4374,7 @@ pub fn expand_fixed_length_joins(
 /// (from_table, from_alias, joins) - The FROM table info and JOIN clauses
 pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, String, Vec<Join>) {
     use super::render_expr::{
-        Column, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+        Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
     };
 
     let exact_hops = ctx.exact_hops.unwrap_or(1);
@@ -4672,7 +4669,7 @@ pub fn generate_cycle_prevention_filters_composite(
     end_alias: &str,
 ) -> Option<RenderExpr> {
     use super::render_expr::{
-        Column, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+        Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
     };
 
     if exact_hops == 0 {

@@ -1,16 +1,17 @@
+//! Analyzer pass that rewrites property access expressions to use tuple indices
+//! when the property access references an UNWIND variable backed by tuple_properties.
+//!
+//! Example:
+//! ```cypher
+//! UNWIND users as user RETURN user.name
+//! ```
+//!
+//! Before: `user.name` → PropertyAccess { table_alias: "user", column: "full_name" }
+//! After: `user.name` → PropertyAccess { table_alias: "user", column: "5" }
+//!
+//! This enables tuple index access after ARRAY JOIN: `user.5` instead of `user.full_name`
+
 use crate::graph_catalog::expression_parser::PropertyValue;
-///! Analyzer pass that rewrites property access expressions to use tuple indices
-///! when the property access references an UNWIND variable backed by tuple_properties.
-///!
-///! Example:
-///! ```cypher
-///! UNWIND users as user RETURN user.name
-///! ```
-///!
-///! Before: `user.name` → PropertyAccess { table_alias: "user", column: "full_name" }
-///! After: `user.name` → PropertyAccess { table_alias: "user", column: "5" }
-///!
-///! This enables tuple index access after ARRAY JOIN: `user.5` instead of `user.full_name`
 use crate::query_planner::{logical_expr::LogicalExpr, logical_plan::LogicalPlan};
 use std::sync::Arc;
 
@@ -242,7 +243,7 @@ fn rewrite_expr(expr: &LogicalExpr, plan: &Arc<LogicalPlan>) -> LogicalExpr {
                 .collect();
 
             LogicalExpr::Operator(crate::query_planner::logical_expr::OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: new_operands,
             })
         }

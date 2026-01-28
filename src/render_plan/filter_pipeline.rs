@@ -8,14 +8,10 @@
 
 use super::expression_utils::property_access_expr;
 use super::render_expr::{
-    AggregateFnCall, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall,
-    TableAlias,
+    AggregateFnCall, Operator, OperatorApplication, RenderExpr, ScalarFnCall,
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
-use crate::query_planner::join_context::{
-    VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
-};
 
 /// Represents categorized filters for different parts of a query
 ///
@@ -179,10 +175,9 @@ pub fn categorize_filters(
                     "length" | "nodes" | "relationships"
                 )
             }
-            RenderExpr::OperatorApplicationExp(op) => op
-                .operands
-                .iter()
-                .any(|operand| contains_path_function(operand)),
+            RenderExpr::OperatorApplicationExp(op) => {
+                op.operands.iter().any(contains_path_function)
+            }
             _ => false,
         }
     }
@@ -556,7 +551,7 @@ pub fn rewrite_labels_subscript_for_multi_type_vlp(expr: &RenderExpr) -> RenderE
                 .map(rewrite_labels_subscript_for_multi_type_vlp)
                 .collect();
             RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: rewritten_operands,
             })
         }

@@ -455,9 +455,15 @@ impl OptimizerPass for CartesianJoinExtraction {
     }
 }
 
+impl Default for CartesianJoinExtraction {
+    fn default() -> Self {
+        CartesianJoinExtraction
+    }
+}
+
 impl CartesianJoinExtraction {
     pub fn new() -> Self {
-        CartesianJoinExtraction
+        Self
     }
 }
 

@@ -228,8 +228,8 @@ pub fn get_graph_context<'a>(
     };
 
     // Use SQL tuple expressions for node IDs (handles both single and composite)
-    let left_node_id_sql = left_schema.node_id.sql_tuple(&left_alias);
-    let right_node_id_sql = right_schema.node_id.sql_tuple(&right_alias);
+    let left_node_id_sql = left_schema.node_id.sql_tuple(left_alias);
+    let right_node_id_sql = right_schema.node_id.sql_tuple(right_alias);
 
     // Use fully qualified table names from schema for CTEs/JOINs
     // For nodes whose properties are available from the edge table (via from_node_properties/to_node_properties),

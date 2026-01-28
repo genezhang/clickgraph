@@ -7,6 +7,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fmt;
 
 use super::errors::{BoltError, BoltResult};
 
@@ -25,7 +26,7 @@ pub enum AuthScheme {
 
 impl AuthScheme {
     /// Parse authentication scheme from string
-    pub fn from_str(scheme: &str) -> Self {
+    pub fn parse_from_str(scheme: &str) -> Self {
         match scheme.to_lowercase().as_str() {
             "none" => AuthScheme::None,
             "basic" => AuthScheme::Basic,
@@ -33,15 +34,20 @@ impl AuthScheme {
             custom => AuthScheme::Custom(custom.to_string()),
         }
     }
+}
 
-    /// Convert to string representation
-    pub fn to_string(&self) -> String {
-        match self {
-            AuthScheme::None => "none".to_string(),
-            AuthScheme::Basic => "basic".to_string(),
-            AuthScheme::Kerberos => "kerberos".to_string(),
-            AuthScheme::Custom(scheme) => scheme.clone(),
-        }
+impl fmt::Display for AuthScheme {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                AuthScheme::None => "none",
+                AuthScheme::Basic => "basic",
+                AuthScheme::Kerberos => "kerberos",
+                AuthScheme::Custom(scheme) => scheme.as_str(),
+            }
+        )
     }
 }
 
@@ -91,7 +97,7 @@ impl AuthToken {
             .and_then(|v| v.as_str())
             .unwrap_or("none");
 
-        let scheme = AuthScheme::from_str(scheme_str);
+        let scheme = AuthScheme::parse_from_str(scheme_str);
 
         let principal = auth_map
             .get("principal")
@@ -292,7 +298,7 @@ impl Authenticator {
         let mut hasher = Sha256::new();
         hasher.update(password.as_bytes());
         let result = hasher.finalize();
-        BASE64.encode(&result)
+        BASE64.encode(result)
     }
 
     /// Get list of users (for debugging)
@@ -313,11 +319,11 @@ mod tests {
 
     #[test]
     fn test_auth_scheme_parsing() {
-        assert_eq!(AuthScheme::from_str("basic"), AuthScheme::Basic);
-        assert_eq!(AuthScheme::from_str("BASIC"), AuthScheme::Basic);
-        assert_eq!(AuthScheme::from_str("none"), AuthScheme::None);
+        assert_eq!(AuthScheme::parse_from_str("basic"), AuthScheme::Basic);
+        assert_eq!(AuthScheme::parse_from_str("BASIC"), AuthScheme::Basic);
+        assert_eq!(AuthScheme::parse_from_str("none"), AuthScheme::None);
         assert_eq!(
-            AuthScheme::from_str("custom"),
+            AuthScheme::parse_from_str("custom"),
             AuthScheme::Custom("custom".to_string())
         );
     }

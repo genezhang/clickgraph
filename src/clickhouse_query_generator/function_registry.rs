@@ -478,7 +478,7 @@ lazy_static::lazy_static! {
             arg_transform: Some(|args| {
                 // percentileCont(expr, 0.5) -> median(expr)
                 // For other percentiles, user needs to use quantile directly
-                if args.len() >= 1 {
+                if !args.is_empty() {
                     vec![args[0].clone()]
                 } else {
                     args.to_vec()
@@ -491,7 +491,7 @@ lazy_static::lazy_static! {
             neo4j_name: "percentileDisc",
             clickhouse_name: "median",
             arg_transform: Some(|args| {
-                if args.len() >= 1 {
+                if !args.is_empty() {
                     vec![args[0].clone()]
                 } else {
                     args.to_vec()

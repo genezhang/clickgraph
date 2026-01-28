@@ -1,12 +1,9 @@
 use std::sync::Arc;
 
-use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::{
     open_cypher_parser::ast,
     query_planner::{
-        logical_expr::{
-            LogicalExpr, Operator, OperatorApplication, Property, PropertyAccess, TableAlias,
-        },
+        logical_expr::{LogicalExpr, Property},
         logical_plan::{
             errors::LogicalPlanError,
             plan_builder::LogicalPlanResult,
@@ -15,12 +12,11 @@ use crate::{
                 VariableLengthSpec,
             },
         },
-        plan_ctx::{PlanCtx, TableCtx},
+        plan_ctx::PlanCtx,
     },
 };
 
-use crate::graph_catalog::graph_schema::GraphSchema;
-use crate::query_planner::logical_plan::{generate_id, ViewScan};
+use crate::query_planner::logical_plan::generate_id;
 use std::collections::HashMap;
 
 // Import from sibling modules
@@ -28,13 +24,10 @@ use super::helpers::{
     compute_connection_aliases, compute_rel_node_labels, compute_variable_length,
     convert_properties, convert_properties_to_operator_application, determine_optional_anchor,
     generate_denormalization_aware_scan, generate_scan, is_denormalized_scan,
-    is_label_denormalized, register_node_in_context, register_path_variable,
-    register_relationship_in_context,
+    is_label_denormalized, register_node_in_context, register_relationship_in_context,
 };
 use super::type_inference::{infer_node_label_from_schema, infer_relationship_type_from_nodes};
-use super::view_scan::{
-    generate_relationship_center, try_generate_relationship_view_scan, try_generate_view_scan,
-};
+use super::view_scan::generate_relationship_center;
 
 // Wrapper for backwards compatibility
 // Reserved for future use when non-optional traversal needs explicit mode
@@ -83,7 +76,7 @@ fn traverse_connected_pattern_with_mode<'a>(
     for connected_pattern in connected_patterns.iter() {
         // Check start_node - use address as key
         let start_ptr = connected_pattern.start_node.as_ptr() as usize;
-        if !node_alias_map.contains_key(&start_ptr) {
+        node_alias_map.entry(start_ptr).or_insert_with(|| {
             let start_node_ref = connected_pattern.start_node.borrow();
             let alias = if let Some(name) = start_node_ref.name {
                 name.to_string()
@@ -91,12 +84,12 @@ fn traverse_connected_pattern_with_mode<'a>(
                 generate_id()
             };
             drop(start_node_ref);
-            node_alias_map.insert(start_ptr, alias);
-        }
+            alias
+        });
 
         // Check end_node - use address as key
         let end_ptr = connected_pattern.end_node.as_ptr() as usize;
-        if !node_alias_map.contains_key(&end_ptr) {
+        node_alias_map.entry(end_ptr).or_insert_with(|| {
             let end_node_ref = connected_pattern.end_node.borrow();
             let alias = if let Some(name) = end_node_ref.name {
                 name.to_string()
@@ -104,8 +97,8 @@ fn traverse_connected_pattern_with_mode<'a>(
                 generate_id()
             };
             drop(end_node_ref);
-            node_alias_map.insert(end_ptr, alias);
-        }
+            alias
+        });
     }
 
     crate::debug_print!(
@@ -159,7 +152,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             .map(|props| {
                 props
                     .into_iter()
-                    .map(|p| Property::try_from(p))
+                    .map(Property::try_from)
                     .collect::<Result<Vec<_>, _>>()
             })
             .transpose()
@@ -169,7 +162,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                     e
                 ))
             })?
-            .unwrap_or_else(Vec::new);
+            .unwrap_or_default();
 
         // Extract end node info early - needed for filtering anonymous edge types
         let end_node_ref = connected_pattern.end_node.borrow();
@@ -271,15 +264,9 @@ fn traverse_connected_pattern_with_mode<'a>(
         log::debug!(
             "Pattern processing: start='{}' ({}), end='{}' ({})",
             start_node_alias,
-            start_node_label
-                .as_ref()
-                .map(|s| s.as_str())
-                .unwrap_or("None"),
+            start_node_label.as_deref().unwrap_or("None"),
             end_node_alias,
-            end_node_label
-                .as_ref()
-                .map(|s| s.as_str())
-                .unwrap_or("None")
+            end_node_label.as_deref().unwrap_or("None")
         );
 
         // Polymorphic inference removed - TypeInference pass handles this
@@ -304,7 +291,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             .map(|props| {
                 props
                     .into_iter()
-                    .map(|p| Property::try_from(p))
+                    .map(Property::try_from)
                     .collect::<Result<Vec<_>, _>>()
             })
             .transpose()
@@ -314,7 +301,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                     e
                 ))
             })?
-            .unwrap_or_else(Vec::new);
+            .unwrap_or_default();
 
         crate::debug_print!(
             "│ End node: alias='{}', label={:?}",
@@ -328,7 +315,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             .map(|props| {
                 props
                     .into_iter()
-                    .map(|p| Property::try_from(p))
+                    .map(Property::try_from)
                     .collect::<Result<Vec<_>, _>>()
             })
             .transpose()
@@ -338,7 +325,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                     e
                 ))
             })?
-            .unwrap_or_else(Vec::new);
+            .unwrap_or_default();
 
         // if start alias already present in ctx map, it means the current nested connected pattern's start node will be connecting at right side plan and end node will be at the left
         if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&start_node_alias) {
@@ -434,7 +421,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             // - Single-type *1: (a)-[:TYPE*1]->(b) → simplify to regular relationship
             // - Multi-type *1: (a)-[:TYPE1|TYPE2*1]->(b) → keep VLP for polymorphic nodes
             // - Multi-type no VLP: (a)-[:TYPE1|TYPE2]->(b) → ADD implicit *1 for polymorphic handling
-            let is_multi_type = rel_labels.as_ref().map_or(false, |labels| labels.len() > 1);
+            let is_multi_type = rel_labels.as_ref().is_some_and(|labels| labels.len() > 1);
 
             let variable_length = if let Some(vlp) = rel.variable_length.clone() {
                 // Has explicit VLP spec
@@ -831,13 +818,12 @@ fn traverse_connected_pattern_with_mode<'a>(
                                     operands: vec![acc, filter],
                                 })
                             })
-                            .map(|combined| {
+                            .inspect(|_combined| {
                                 log::info!(
                                     "🔧 VLP: Merged {} bound node filters into where_predicate for rel '{}'",
                                     "multiple",
                                     rel_alias
                                 );
-                                combined
                             })
                     } else {
                         None // Will be populated by filter pushdown optimization for regular patterns
@@ -948,7 +934,7 @@ pub(super) fn traverse_node_pattern(
         .map(|props| {
             props
                 .into_iter()
-                .map(|p| Property::try_from(p))
+                .map(Property::try_from)
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()?
@@ -1022,10 +1008,7 @@ pub(super) fn traverse_node_pattern(
 
         // Check if we need to create a CartesianProduct
         // For comma patterns like (a:User), (b:User), we need CROSS JOIN
-        let has_existing_plan = match plan.as_ref() {
-            LogicalPlan::Empty => false,
-            _ => true,
-        };
+        let has_existing_plan = !matches!(plan.as_ref(), LogicalPlan::Empty);
 
         if has_existing_plan {
             // CRITICAL FIX: When existing plan is OPTIONAL and new node is from REQUIRED MATCH,

@@ -30,6 +30,18 @@ pub use filter_pipeline::CategorizedFilters;
 pub use from_table::FromTable;
 pub use view_table_ref::ViewTableRef;
 
+/// Type alias for CTE schema metadata to reduce type complexity.
+/// Tuple contains: (SelectItems, column names, column mappings, property mappings)
+pub type CteSchemaMetadata = (
+    Vec<SelectItem>,
+    Vec<String>,
+    HashMap<String, String>,
+    HashMap<(String, String), String>,
+);
+pub type CteSchemas = HashMap<String, CteSchemaMetadata>;
+
+use std::collections::HashMap;
+
 // Re-export denormalized alias accessors from unified query context
 // See server/query_context.rs for the task_local! implementation with .scope() support
 pub use crate::server::query_context::{
@@ -254,7 +266,7 @@ pub struct CteItems(pub Vec<Cte>);
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum CteContent {
-    Structured(RenderPlan),
+    Structured(Box<RenderPlan>),
     RawSql(String),
 }
 

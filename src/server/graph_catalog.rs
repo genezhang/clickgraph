@@ -728,11 +728,13 @@ pub async fn add_to_schema(
 
     for element in graph_schema_elements {
         match element {
-            GraphSchemaElement::Node(node_schema) => {
+            GraphSchemaElement::Node(boxed_schema) => {
+                let node_schema = *boxed_schema;
                 graph_schema.insert_node_schema(node_schema.table_name.to_string(), node_schema);
                 graph_schema.increment_version();
             }
-            GraphSchemaElement::Rel(relationship_schema) => {
+            GraphSchemaElement::Rel(boxed_schema) => {
+                let relationship_schema = *boxed_schema;
                 graph_schema.insert_rel_schema(
                     relationship_schema.table_name.to_string(),
                     relationship_schema,

@@ -61,12 +61,13 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
         // First, peek to see if this looks like a subscript vs pattern comprehension
         // Pattern comprehension starts with [(node) or [(path)
         // Subscript has a simple expression like [0] or [i] or ["key"]
-        let looks_like_pattern_comp: IResult<_, _, nom::error::Error<_>> = nom::sequence::tuple((
+        let looks_like_pattern_comp: IResult<_, _, nom::error::Error<_>> = (
             multispace0::<_, nom::error::Error<_>>,
             char('['),
             multispace0,
             char('('),
-        ))(input);
+        )
+            .parse(input);
 
         if looks_like_pattern_comp.is_ok() {
             // This looks like pattern comprehension [(...)], not a subscript - stop parsing postfix
@@ -74,7 +75,7 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
         }
 
         // Try to parse slicing first: [from..to], [..to], [from..], or [..]
-        let slicing_attempt = nom::sequence::tuple((
+        let slicing_attempt = (
             multispace0,
             char('['),
             multispace0,
@@ -87,7 +88,8 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
             nom::combinator::opt(parse_expression),
             multispace0,
             char(']'),
-        ))(input);
+        )
+            .parse(input);
 
         if let Ok((new_input, (_, _, _, from_expr, _, _, _, to_expr, _, _))) = slicing_attempt {
             // Successfully parsed slicing [from..to]
@@ -101,14 +103,15 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
         }
 
         // Try to parse array subscript: expr[index]
-        let subscript_attempt = nom::sequence::tuple((
+        let subscript_attempt = (
             multispace0,
             char('['),
             multispace0,
             parse_expression,
             multispace0,
             char(']'),
-        ))(input);
+        )
+            .parse(input);
 
         if let Ok((new_input, (_, _, _, index_expr, _, _))) = subscript_attempt {
             // Successfully parsed [index]
@@ -458,6 +461,7 @@ fn parse_primary(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     parse_postfix_expression.parse(input)
 }
 
+#[cfg(test)]
 pub fn parse_operator_symbols(input: &str) -> IResult<&str, Operator> {
     alt((
         map(tag_no_case(">="), |_| Operator::GreaterThanEqual),
@@ -643,9 +647,9 @@ fn parse_not_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     .parse(input)
 }
 
-// Deprecated: now use parse_comparison_expression instead
+// Deprecated: test helper that redirects to parse_comparison_expression
+#[cfg(test)]
 fn parse_binary_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    // Redirect to comparison expression for backward compatibility
     parse_comparison_expression(input)
 }
 
@@ -867,7 +871,7 @@ pub fn parse_property_access(input: &'_ str) -> IResult<&'_ str, Expression<'_>>
         _ => return Err(nom::Err::Error(Error::new(input, ErrorKind::Float))),
     };
 
-    let mut current_expr = if first_key == "*" {
+    let current_expr = if first_key == "*" {
         Expression::PropertyAccessExp(PropertyAccess {
             base: base_expr,
             key: "*",

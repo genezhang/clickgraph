@@ -68,11 +68,11 @@ pub fn has_denormalized_properties_on_side(node: &NodeSchema, side: &str) -> boo
         "from" => node
             .from_properties
             .as_ref()
-            .map_or(false, |props| !props.is_empty()),
+            .is_some_and(|props| !props.is_empty()),
         "to" => node
             .to_properties
             .as_ref()
-            .map_or(false, |props| !props.is_empty()),
+            .is_some_and(|props| !props.is_empty()),
         _ => false,
     }
 }
@@ -90,11 +90,11 @@ pub fn rel_has_denormalized_properties(rel: &RelationshipSchema, side: &str) -> 
         "from" => rel
             .from_node_properties
             .as_ref()
-            .map_or(false, |props| !props.is_empty()),
+            .is_some_and(|props| !props.is_empty()),
         "to" => rel
             .to_node_properties
             .as_ref()
-            .map_or(false, |props| !props.is_empty()),
+            .is_some_and(|props| !props.is_empty()),
         _ => false,
     }
 }
@@ -111,11 +111,11 @@ pub fn rel_has_denormalized_properties(rel: &RelationshipSchema, side: &str) -> 
 pub fn rel_has_both_nodes_denormalized(rel: &RelationshipSchema) -> bool {
     rel.from_node_properties
         .as_ref()
-        .map_or(false, |props| !props.is_empty())
+        .is_some_and(|props| !props.is_empty())
         && rel
             .to_node_properties
             .as_ref()
-            .map_or(false, |props| !props.is_empty())
+            .is_some_and(|props| !props.is_empty())
 }
 
 /// Check if a relationship has denormalized properties on either side
@@ -128,11 +128,11 @@ pub fn rel_has_both_nodes_denormalized(rel: &RelationshipSchema) -> bool {
 pub fn rel_has_any_denormalized(rel: &RelationshipSchema) -> bool {
     rel.from_node_properties
         .as_ref()
-        .map_or(false, |props| !props.is_empty())
+        .is_some_and(|props| !props.is_empty())
         || rel
             .to_node_properties
             .as_ref()
-            .map_or(false, |props| !props.is_empty())
+            .is_some_and(|props| !props.is_empty())
 }
 
 #[cfg(test)]

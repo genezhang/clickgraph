@@ -583,9 +583,8 @@ pub(super) fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) 
             // Check if the target is a relationship alias (e.g., "f1" for denormalized edges)
             if rel.alias == target_alias {
                 // The relationship alias matches - get table from its center ViewScan
-                match &*rel.center {
-                    LogicalPlan::ViewScan(scan) => return Some(scan.source_table.clone()),
-                    _ => {}
+                if let LogicalPlan::ViewScan(scan) = &*rel.center {
+                    return Some(scan.source_table.clone());
                 }
             }
             // Search in both left and right branches
@@ -809,7 +808,7 @@ pub(super) fn is_standalone_expression(expr: &RenderExpr) -> bool {
             let else_standalone = case_expr
                 .else_expr
                 .as_ref()
-                .map_or(true, |e| is_standalone_expression(e));
+                .is_none_or(|e| is_standalone_expression(e));
             when_then_standalone && else_standalone
         }
         RenderExpr::List(list) => {
@@ -838,8 +837,8 @@ pub(super) fn is_standalone_expression(expr: &RenderExpr) -> bool {
         RenderExpr::ArraySlicing { array, from, to } => {
             // ArraySlicing is standalone if array and optional bounds are standalone
             is_standalone_expression(array)
-                && from.as_ref().map_or(true, |f| is_standalone_expression(f))
-                && to.as_ref().map_or(true, |t| is_standalone_expression(t))
+                && from.as_ref().is_none_or(|f| is_standalone_expression(f))
+                && to.as_ref().is_none_or(|t| is_standalone_expression(t))
         }
         RenderExpr::MapLiteral(entries) => {
             // MapLiteral is standalone if all values are standalone
@@ -1233,7 +1232,7 @@ pub(super) fn rewrite_fixed_path_functions_with_info(
                 .collect();
 
             RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: rewritten_operands,
             })
         }
@@ -1363,7 +1362,7 @@ pub(super) fn rewrite_logical_path_functions(
 
             LogicalExpr::OperatorApplicationExp(
                 crate::query_planner::logical_expr::OperatorApplication {
-                    operator: op.operator.clone(),
+                    operator: op.operator,
                     operands: rewritten_operands,
                 },
             )
@@ -2672,7 +2671,7 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
     fn contains_actual_with_clause(plan: &LogicalPlan) -> bool {
         match plan {
             // New WithClause type takes precedence
-            LogicalPlan::WithClause(wc) => {
+            LogicalPlan::WithClause(_wc) => {
                 log::info!("🔍 contains_actual_with_clause: Found WithClause node");
                 true
             }
@@ -2698,7 +2697,7 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
 
     match plan {
         // NEW: Direct WithClause at any level in the plan
-        LogicalPlan::WithClause(wc) => {
+        LogicalPlan::WithClause(_wc) => {
             log::info!("🔍 has_with_clause_in_graph_rel: Found WithClause at plan root");
             true
         }
@@ -2708,7 +2707,7 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
             // was wrapped in Union (for undirected patterns) or GraphJoins
             let right_has_nested_pattern = match graph_rel.right.as_ref() {
                 // NEW: Direct WithClause in GraphRel.right
-                LogicalPlan::WithClause(wc) => {
+                LogicalPlan::WithClause(_wc) => {
                     log::info!(
                         "🔍 has_with_clause_in_graph_rel: Found WithClause in GraphRel.right"
                     );
@@ -2744,7 +2743,7 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
             // Also check left side (for incoming patterns)
             let left_has_nested_pattern = match graph_rel.left.as_ref() {
                 // NEW: Direct WithClause in GraphRel.left
-                LogicalPlan::WithClause(wc) => {
+                LogicalPlan::WithClause(_wc) => {
                     log::info!(
                         "🔍 has_with_clause_in_graph_rel: Found WithClause in GraphRel.left"
                     );
@@ -3105,12 +3104,11 @@ pub(super) fn references_union_cte_in_join(
     cte_name: &str,
 ) -> bool {
     for op_app in joining_on {
-        if op_app.operands.len() >= 2 {
-            if references_union_cte_in_operand(&op_app.operands[0], cte_name)
-                || references_union_cte_in_operand(&op_app.operands[1], cte_name)
-            {
-                return true;
-            }
+        if op_app.operands.len() >= 2
+            && (references_union_cte_in_operand(&op_app.operands[0], cte_name)
+                || references_union_cte_in_operand(&op_app.operands[1], cte_name))
+        {
+            return true;
         }
     }
     false
@@ -3122,7 +3120,7 @@ fn references_union_cte_in_operand(operand: &RenderExpr, cte_name: &str) -> bool
             prop_access.column.raw() == "from_id" || prop_access.column.raw() == "to_id"
         }
         RenderExpr::OperatorApplicationExp(op_app) => {
-            references_union_cte_in_join(&[op_app.clone()], cte_name)
+            references_union_cte_in_join(std::slice::from_ref(op_app), cte_name)
         }
         _ => false,
     }

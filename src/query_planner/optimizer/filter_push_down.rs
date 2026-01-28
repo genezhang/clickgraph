@@ -20,11 +20,8 @@ use std::sync::Arc;
 
 use crate::query_planner::{
     logical_expr::{LogicalExpr, Operator, OperatorApplication},
-    logical_plan::{Filter, LogicalPlan},
-    optimizer::{
-        errors::{OptimizerError, Pass},
-        optimizer_pass::{OptimizerPass, OptimizerResult},
-    },
+    logical_plan::LogicalPlan,
+    optimizer::optimizer_pass::{OptimizerPass, OptimizerResult},
     plan_ctx::PlanCtx,
     transformed::Transformed,
 };

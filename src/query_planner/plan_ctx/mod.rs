@@ -43,7 +43,7 @@ use crate::{
     query_planner::{
         analyzer::property_requirements::PropertyRequirements,
         join_context::VlpEndpointInfo,
-        logical_expr::{LogicalExpr, Property},
+        logical_expr::LogicalExpr,
         logical_plan::ProjectionItem,
         plan_ctx::errors::PlanCtxError,
         typed_variable::{CollectionElementType, TypedVariable, VariableRegistry, VariableSource},
@@ -494,7 +494,7 @@ impl PlanCtx {
     }
 
     /// Create an empty PlanCtx with an empty schema (for tests only)
-    pub fn default() -> Self {
+    pub fn new_empty() -> Self {
         use crate::graph_catalog::graph_schema::GraphSchema;
         let empty_schema =
             GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
@@ -538,9 +538,7 @@ impl PlanCtx {
         // Merge alias-to-table mappings
         for (alias, table_ctx) in other.alias_table_ctx_map {
             // Only insert if not already present to avoid conflicts
-            if !self.alias_table_ctx_map.contains_key(&alias) {
-                self.alias_table_ctx_map.insert(alias, table_ctx);
-            }
+            self.alias_table_ctx_map.entry(alias).or_insert(table_ctx);
         }
 
         // Merge optional aliases
@@ -550,16 +548,12 @@ impl PlanCtx {
 
         // Merge projection aliases
         for (alias, expr) in other.projection_aliases {
-            if !self.projection_aliases.contains_key(&alias) {
-                self.projection_aliases.insert(alias, expr);
-            }
+            self.projection_aliases.entry(alias).or_insert(expr);
         }
 
         // Merge denormalized node edges
         for (alias, info) in other.denormalized_node_edges {
-            if !self.denormalized_node_edges.contains_key(&alias) {
-                self.denormalized_node_edges.insert(alias, info);
-            }
+            self.denormalized_node_edges.entry(alias).or_insert(info);
         }
     }
 
@@ -624,7 +618,7 @@ impl PlanCtx {
     pub fn register_cte_column(&mut self, cte_name: &str, schema_column: &str, cte_column: &str) {
         self.cte_columns
             .entry(cte_name.to_string())
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(schema_column.to_string(), cte_column.to_string());
     }
 

@@ -215,7 +215,7 @@ pub trait ExprVisitor {
         operands: Vec<RenderExpr>,
     ) -> RenderExpr {
         RenderExpr::OperatorApplicationExp(super::render_expr::OperatorApplication {
-            operator: operator.clone(),
+            operator: *operator,
             operands,
         })
     }
@@ -320,7 +320,7 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
                 || case_expr
                     .else_expr
                     .as_ref()
-                    .map_or(false, |else_expr| references_alias(else_expr, alias))
+                    .is_some_and(|else_expr| references_alias(else_expr, alias))
         }
         RenderExpr::InSubquery(subquery) => references_alias(&subquery.expr, alias),
         // EXISTS subqueries don't reference aliases in the outer scope directly
@@ -350,8 +350,8 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
         // ArraySlicing may contain aliases in array, from, and to
         RenderExpr::ArraySlicing { array, from, to } => {
             references_alias(array, alias)
-                || from.as_ref().map_or(false, |f| references_alias(f, alias))
-                || to.as_ref().map_or(false, |t| references_alias(t, alias))
+                || from.as_ref().is_some_and(|f| references_alias(f, alias))
+                || to.as_ref().is_some_and(|t| references_alias(t, alias))
         }
         // CteEntityRef doesn't reference aliases directly - it references CTE columns
         RenderExpr::CteEntityRef(_) => false,
@@ -449,7 +449,7 @@ pub fn contains_string_literal(expr: &RenderExpr) -> bool {
     match expr {
         RenderExpr::Literal(Literal::String(_)) => true,
         RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
-            op.operands.iter().any(|o| contains_string_literal(o))
+            op.operands.iter().any(contains_string_literal)
         }
         _ => false,
     }
@@ -457,7 +457,7 @@ pub fn contains_string_literal(expr: &RenderExpr) -> bool {
 
 /// Check if any operand is a string literal (for string concatenation detection)
 pub fn has_string_operand(operands: &[RenderExpr]) -> bool {
-    operands.iter().any(|op| contains_string_literal(op))
+    operands.iter().any(contains_string_literal)
 }
 
 /// Flatten nested + operations into a list of operands for concat()
@@ -603,10 +603,9 @@ impl MutablePropertyColumnRewriter {
     }
 }
 
-/// Factory helpers for common PropertyAccess patterns
-/// These reduce boilerplate when constructing PropertyAccessExp expressions
-
-/// Create a PropertyAccess with a simple column name
+/// Factory helpers for common PropertyAccess patterns.
+///
+/// These reduce boilerplate when constructing PropertyAccessExp expressions.
 pub fn create_property_access(alias: &str, column: &str) -> PropertyAccess {
     PropertyAccess {
         table_alias: TableAlias(alias.to_string()),

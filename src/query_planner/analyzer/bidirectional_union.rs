@@ -855,7 +855,7 @@ fn swap_expr_columns(expr: &LogicalExpr, column_swaps: &ColumnSwapMap) -> Logica
         }
         LogicalExpr::OperatorApplicationExp(op) => LogicalExpr::OperatorApplicationExp(
             crate::query_planner::logical_expr::OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: op
                     .operands
                     .iter()
@@ -973,7 +973,7 @@ mod tests {
         };
 
         let plan = Arc::new(LogicalPlan::GraphRel(graph_rel));
-        let mut plan_ctx = PlanCtx::default();
+        let mut plan_ctx = PlanCtx::new_empty();
         let graph_schema =
             GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
 

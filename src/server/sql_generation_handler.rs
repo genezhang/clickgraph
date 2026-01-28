@@ -131,7 +131,7 @@ pub async fn sql_generation_handler(
                         position: None,
                         line: None,
                         column: None,
-                        hint: Some(format!("Available schemas can be listed via GET /schemas")),
+                        hint: Some("Available schemas can be listed via GET /schemas".to_string()),
                     }),
                 }),
             ));
@@ -216,7 +216,7 @@ pub async fn sql_generation_handler(
                 };
 
                 let config = PageRankConfig {
-                    iterations: pagerank.iterations as usize,
+                    iterations: pagerank.iterations,
                     damping_factor: pagerank.damping_factor,
                     convergence_threshold: None,
                 };

@@ -19,11 +19,8 @@
 use std::sync::Arc;
 
 use crate::query_planner::{
-    logical_plan::{LogicalPlan, Projection},
-    optimizer::{
-        errors::{OptimizerError, Pass},
-        optimizer_pass::{OptimizerPass, OptimizerResult},
-    },
+    logical_plan::LogicalPlan,
+    optimizer::optimizer_pass::{OptimizerPass, OptimizerResult},
     plan_ctx::PlanCtx,
     transformed::Transformed,
 };

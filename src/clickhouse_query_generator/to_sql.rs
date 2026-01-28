@@ -9,19 +9,16 @@ use std::sync::Arc;
 fn contains_string_literal_logical(expr: &LogicalExpr) -> bool {
     match expr {
         LogicalExpr::Literal(Literal::String(_)) => true,
-        LogicalExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => op
-            .operands
-            .iter()
-            .any(|o| contains_string_literal_logical(o)),
+        LogicalExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
+            op.operands.iter().any(contains_string_literal_logical)
+        }
         _ => false,
     }
 }
 
 /// Check if any operand in the expression is a string literal
 fn has_string_operand_logical(operands: &[LogicalExpr]) -> bool {
-    operands
-        .iter()
-        .any(|op| contains_string_literal_logical(op))
+    operands.iter().any(contains_string_literal_logical)
 }
 
 /// Flatten nested + operations into a list of SQL strings for concat()
@@ -141,7 +138,7 @@ impl ToSql for LogicalExpr {
                             let flattened: Vec<String> = op
                                 .operands
                                 .iter()
-                                .map(|o| flatten_addition_operands_logical(o))
+                                .map(flatten_addition_operands_logical)
                                 .collect::<Result<Vec<Vec<String>>, _>>()?
                                 .into_iter()
                                 .flatten()

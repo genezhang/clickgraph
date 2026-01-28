@@ -138,7 +138,7 @@ pub fn cond_references_alias(expr: &RenderExpr, alias: &str) -> bool {
             }) || case_expr
                 .else_expr
                 .as_ref()
-                .map_or(false, |else_expr| cond_references_alias(else_expr, alias))
+                .is_some_and(|else_expr| cond_references_alias(else_expr, alias))
         }
         // Other expression types don't reference aliases
         RenderExpr::ColumnAlias(_)

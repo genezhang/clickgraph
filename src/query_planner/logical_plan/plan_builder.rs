@@ -423,7 +423,7 @@ fn extract_source_alias_from_expr(
                 op_app
                     .operands
                     .first()
-                    .and_then(|inner| extract_source_alias_from_expr(inner))
+                    .and_then(extract_source_alias_from_expr)
             } else {
                 None
             }

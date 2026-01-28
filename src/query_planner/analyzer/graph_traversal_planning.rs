@@ -91,7 +91,7 @@ impl AnalyzerPass for GraphTRaversalPlanning {
                     || graph_rel
                         .labels
                         .as_ref()
-                        .map_or(true, |labels| labels.len() <= 1);
+                        .is_none_or(|labels| labels.len() <= 1);
                 if should_skip {
                     return Ok(Transformed::No(logical_plan));
                 }
@@ -601,7 +601,7 @@ impl GraphTRaversalPlanning {
             .any(|item| item.expression == LogicalExpr::Star);
 
         // Extract the fully qualified table name from the ViewScan
-        let rel_table_name = if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
+        let _rel_table_name = if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
             scan.source_table.clone()
         } else {
             // Fallback to fully qualified schema table name if not a ViewScan
@@ -819,7 +819,7 @@ impl GraphTRaversalPlanning {
         })
     }
 
-    fn get_subplan(&self, table_name: String, table_column: String) -> Arc<LogicalPlan> {
+    fn get_subplan(&self, _table_name: String, table_column: String) -> Arc<LogicalPlan> {
         // Use consistent alias 't' for subquery table references
         let table_alias = "t".to_string();
 

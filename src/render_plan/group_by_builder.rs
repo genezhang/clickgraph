@@ -140,15 +140,15 @@ fn process_group_by_expressions(group_by: &GroupBy) -> GroupByBuilderResult<Vec<
         if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(prop_access) =
             expr
         {
-            if prop_access.column.raw() == "*" {
-                if handle_wildcard_group_by(
+            if prop_access.column.raw() == "*"
+                && handle_wildcard_group_by(
                     &group_by.input,
                     prop_access,
                     &mut result,
                     &mut seen_group_by_aliases,
-                )? {
-                    continue; // Successfully handled
-                }
+                )?
+            {
+                continue; // Successfully handled
             }
         }
 

@@ -93,16 +93,14 @@ pub struct PropertyResolver {
     view_scans: HashMap<String, ViewScan>,
 
     /// Graph-to-SQL alias mapping
+    ///
     /// Key: (node_alias, edge_alias_opt) - composite key for denormalized multi-hop
     /// Value: Vec<AliasMapping> to support multiple roles for same node
-    ///
     /// Examples:
+    ///
     /// - Standard: "u" → [AliasMapping{sql_alias: "u1", ...}]
     /// - Denormalized single-hop: "a" → [AliasMapping{sql_alias: "f", edge: Some("f"), ...}]
-    /// - Denormalized multi-hop: "b" → [
-    ///     AliasMapping{sql_alias: "f", edge: Some("f"), position: To, ...},
-    ///     AliasMapping{sql_alias: "g", edge: Some("g"), position: From, ...}
-    ///   ]
+    /// - Denormalized multi-hop: "b" → `[AliasMapping{sql_alias: "f", edge: Some("f"), ...}, ...]`
     alias_mappings: HashMap<String, Vec<AliasMapping>>,
 }
 
@@ -151,7 +149,7 @@ impl PropertyResolver {
     pub fn register_alias(&mut self, graph_alias: String, mapping: AliasMapping) {
         self.alias_mappings
             .entry(graph_alias)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(mapping);
     }
 
@@ -163,7 +161,7 @@ impl PropertyResolver {
     /// * `graph_alias` - Graph alias (e.g., "a", "u", "f")
     /// * `property` - Property name (e.g., "city", "name", "distance")
     /// * `edge_context` - Optional edge alias for denormalized multi-hop resolution
-    ///                    Required when same node appears in multiple edges
+    ///   Required when same node appears in multiple edges
     ///
     /// # Returns
     /// PropertyResolution with:

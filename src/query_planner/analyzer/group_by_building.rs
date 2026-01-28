@@ -52,14 +52,11 @@ impl GroupByBuilding {
     fn contains_aggregate(expr: &LogicalExpr) -> bool {
         match expr {
             LogicalExpr::AggregateFnCall(_) => true,
-            LogicalExpr::OperatorApplicationExp(op) => op
-                .operands
-                .iter()
-                .any(|operand| Self::contains_aggregate(operand)),
-            LogicalExpr::ScalarFnCall(func) => {
-                func.args.iter().any(|arg| Self::contains_aggregate(arg))
+            LogicalExpr::OperatorApplicationExp(op) => {
+                op.operands.iter().any(Self::contains_aggregate)
             }
-            LogicalExpr::List(list) => list.iter().any(|item| Self::contains_aggregate(item)),
+            LogicalExpr::ScalarFnCall(func) => func.args.iter().any(Self::contains_aggregate),
+            LogicalExpr::List(list) => list.iter().any(Self::contains_aggregate),
             LogicalExpr::Case(case_expr) => {
                 // Check if CASE expression contains aggregates in:
                 // 1. The optional simple CASE expression
@@ -203,7 +200,7 @@ impl AnalyzerPass for GroupByBuilding {
                                         && item
                                             .col_alias
                                             .as_ref()
-                                            .map_or(false, |col| col.0 == alias.0)
+                                            .is_some_and(|col| col.0 == alias.0)
                                 } else {
                                     false
                                 }
@@ -412,7 +409,7 @@ mod tests {
     #[test]
     fn test_projection_with_mixed_aggregate_and_non_aggregate() {
         let analyzer = GroupByBuilding::new();
-        let mut plan_ctx = PlanCtx::default();
+        let mut plan_ctx = PlanCtx::new_empty();
 
         // Test projection: SELECT user.name, COUNT(order.id) FROM ...
         let scan = create_scan(Some("user".to_string()), Some("users".to_string()));
@@ -461,7 +458,7 @@ mod tests {
     #[test]
     fn test_projection_with_only_aggregates_no_groupby() {
         let analyzer = GroupByBuilding::new();
-        let mut plan_ctx = PlanCtx::default();
+        let mut plan_ctx = PlanCtx::new_empty();
 
         // Test projection: SELECT COUNT(order.id), SUM(order.amount) FROM ...
         let scan = create_scan(Some("order".to_string()), Some("orders".to_string()));
@@ -494,7 +491,7 @@ mod tests {
     #[test]
     fn test_projection_with_only_non_aggregates_no_groupby() {
         let analyzer = GroupByBuilding::new();
-        let mut plan_ctx = PlanCtx::default();
+        let mut plan_ctx = PlanCtx::new_empty();
 
         // Test projection: SELECT user.name, user.email FROM ...
         let scan = create_scan(Some("user".to_string()), Some("users".to_string()));
@@ -527,7 +524,7 @@ mod tests {
     #[test]
     fn test_projection_with_multiple_non_aggregates_and_aggregate() {
         let analyzer = GroupByBuilding::new();
-        let mut plan_ctx = PlanCtx::default();
+        let mut plan_ctx = PlanCtx::new_empty();
 
         // Test projection: SELECT user.name, user.city, COUNT(order.id) FROM ...
         let scan = create_scan(Some("user".to_string()), Some("users".to_string()));
@@ -585,7 +582,7 @@ mod tests {
     #[test]
     fn test_empty_projection_no_groupby() {
         let analyzer = GroupByBuilding::new();
-        let mut plan_ctx = PlanCtx::default();
+        let mut plan_ctx = PlanCtx::new_empty();
 
         // Test empty projection
         let scan = create_scan(Some("user".to_string()), Some("users".to_string()));

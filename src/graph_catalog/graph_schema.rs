@@ -306,8 +306,8 @@ impl fmt::Display for Direction {
 
 #[derive(Debug, Clone)]
 pub enum GraphSchemaElement {
-    Node(NodeSchema),
-    Rel(RelationshipSchema),
+    Node(Box<NodeSchema>),
+    Rel(Box<RelationshipSchema>),
 }
 
 /// Node identifier schema - supports both single and composite node IDs.
@@ -455,7 +455,7 @@ impl ProcessedNodeMetadata {
     pub fn add_property_source(&mut self, property: String, source: PropertySource) {
         self.property_sources
             .entry(property)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(source);
     }
 
@@ -463,7 +463,7 @@ impl ProcessedNodeMetadata {
     pub fn add_id_source(&mut self, rel_type: String, side: String, id_column: String) {
         self.id_sources
             .entry(rel_type)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push((side, id_column));
     }
 
@@ -574,7 +574,7 @@ impl GraphSchema {
 
             index
                 .entry(type_name.to_string())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(composite_key.clone());
         }
 
@@ -902,10 +902,10 @@ impl GraphSchema {
             if let Some(schema) = self.relationships.get(composite_key) {
                 // Match against table names, not labels
                 // If table name not found (label doesn't exist), fall back to direct label match
-                let from_ok = from_label.map_or(true, |f| {
+                let from_ok = from_label.is_none_or(|f| {
                     from_table_name.map_or(schema.from_node == f, |table| schema.from_node == table)
                 });
-                let to_ok = to_label.map_or(true, |t| {
+                let to_ok = to_label.is_none_or(|t| {
                     to_table_name.map_or(schema.to_node == t, |table| schema.to_node == table)
                 });
 
@@ -1008,7 +1008,7 @@ impl GraphSchema {
                 // If rel_node_type table != query_label table, but query has label_column,
                 // check if rel_node_type could be a valid type value
 
-                if let Some(rel_node_schema) = self.nodes.get(rel_node_type) {
+                if let Some(_rel_node_schema) = self.nodes.get(rel_node_type) {
                     // If the polymorphic node's table is different from the concrete node's table,
                     // they're not compatible (Message table vs Post table)
                     // UNLESS the polymorphic node is a view that unions multiple tables
@@ -1210,9 +1210,12 @@ impl GraphSchema {
     /// Coupled edges exist in the same row (same event), so no JOIN is needed.
     ///
     /// Example (Zeek DNS log):
+    ///
     /// - REQUESTED: (IP)-[:REQUESTED]->(Domain)  from dns_log
     /// - RESOLVED_TO: (Domain)-[:RESOLVED_TO]->(ResolvedIP)  from dns_log
+    ///
     /// These are coupled because:
+    ///
     /// - Same table: dns_log
     /// - Coupling node: Domain (REQUESTED.to_node == RESOLVED_TO.from_node)
     ///
@@ -1241,12 +1244,10 @@ impl GraphSchema {
         }
 
         // Must share at least one node
-        let shared_node = edge1.to_node == edge2.from_node ||  // edge1 -> shared -> edge2
+        edge1.to_node == edge2.from_node ||  // edge1 -> shared -> edge2
             edge1.from_node == edge2.to_node ||  // edge2 -> shared -> edge1
             edge1.to_node == edge2.to_node ||    // both point to same node
-            edge1.from_node == edge2.from_node; // both originate from same node
-
-        shared_node
+            edge1.from_node == edge2.from_node // both originate from same node
     }
 
     /// Get coupling info for two consecutive edges in a path pattern
@@ -1400,11 +1401,11 @@ pub fn edge_has_node_properties(edge: &RelationshipSchema, is_from_node: bool) -
     if is_from_node {
         edge.from_node_properties
             .as_ref()
-            .map_or(false, |p| !p.is_empty())
+            .is_some_and(|p| !p.is_empty())
     } else {
         edge.to_node_properties
             .as_ref()
-            .map_or(false, |p| !p.is_empty())
+            .is_some_and(|p| !p.is_empty())
     }
 }
 

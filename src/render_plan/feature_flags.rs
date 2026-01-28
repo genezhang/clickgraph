@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::env;
 
 /// Feature flags for plan_builder.rs refactoring phases
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PlanBuilderFeatureFlags {
     /// Enable extraction of pure utilities to plan_builder_utils.rs
     pub extract_utilities: bool,
@@ -39,21 +39,6 @@ pub struct PlanBuilderFeatureFlags {
 
     /// Enable extraction of UNION logic to union_builder.rs
     pub extract_union_builder: bool,
-}
-
-impl Default for PlanBuilderFeatureFlags {
-    fn default() -> Self {
-        Self {
-            extract_utilities: false,
-            extract_join_builder: false,
-            extract_select_builder: false,
-            extract_from_builder: false,
-            extract_filter_builder: false,
-            extract_group_by_builder: false,
-            extract_order_by_builder: false,
-            extract_union_builder: false,
-        }
-    }
 }
 
 impl PlanBuilderFeatureFlags {

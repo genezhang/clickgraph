@@ -925,7 +925,7 @@ impl TraditionalCteStrategy {
         let base_case = self.generate_base_case_sql(context, properties, filters)?;
 
         // Generate recursive case if needed
-        let needs_recursion = max_hops.map_or(true, |max| max > min_hops);
+        let needs_recursion = max_hops.is_none_or(|max| max > min_hops);
         let recursive_case = if needs_recursion {
             format!(
                 "\n    UNION ALL\n{}",
@@ -1369,7 +1369,7 @@ impl DenormalizedCteStrategy {
         let base_case = self.generate_base_case_sql(context, properties, filters)?;
 
         // Generate recursive case if needed
-        let needs_recursion = max_hops.map_or(true, |max| max > min_hops);
+        let needs_recursion = max_hops.is_none_or(|max| max > min_hops);
         let recursive_case = if needs_recursion {
             format!(
                 "\n    UNION ALL\n{}",
@@ -1563,7 +1563,7 @@ impl MixedAccessCteStrategy {
                 join_col,
             } => Ok(Self {
                 pattern_ctx: pattern_ctx.clone(),
-                joined_node: joined_node.clone(),
+                joined_node: *joined_node,
                 join_col: join_col.clone(),
             }),
             _ => Err(CteError::InvalidStrategy(
@@ -1645,7 +1645,7 @@ impl MixedAccessCteStrategy {
         let base_case = self.generate_base_case_sql(context, properties, filters)?;
 
         // Generate recursive case if needed
-        let needs_recursion = max_hops.map_or(true, |max| max > min_hops);
+        let needs_recursion = max_hops.is_none_or(|max| max > min_hops);
         let recursive_case = if needs_recursion {
             format!(
                 "\n    UNION ALL\n{}",
@@ -1762,7 +1762,7 @@ impl MixedAccessCteStrategy {
         );
 
         // Determine which node is embedded vs joined
-        let (embedded_node_alias, joined_node_alias) = match self.joined_node {
+        let (embedded_node_alias, _joined_node_alias) = match self.joined_node {
             NodePosition::Left => (
                 self.pattern_ctx.right_node_alias.as_str(),
                 self.pattern_ctx.left_node_alias.as_str(),
@@ -2059,7 +2059,7 @@ impl EdgeToEdgeCteStrategy {
         let base_case = self.generate_base_case_sql(context, properties, filters)?;
 
         // Generate recursive case if needed
-        let needs_recursion = max_hops.map_or(true, |max| max > min_hops);
+        let needs_recursion = max_hops.is_none_or(|max| max > min_hops);
         let recursive_case = if needs_recursion {
             format!(
                 "\n    UNION ALL\n{}",
@@ -2132,7 +2132,7 @@ impl EdgeToEdgeCteStrategy {
         &self,
         context: &CteGenerationContext,
         properties: &[NodeProperty],
-        filters: &CategorizedFilters,
+        _filters: &CategorizedFilters,
     ) -> Result<String, CteError> {
         // Build SELECT clause for recursive case
         let mut select_items = vec![
@@ -2484,7 +2484,7 @@ impl VariableLengthCteStrategy {
             NodeAccessStrategy::OwnTable {
                 table, id_column, ..
             } => Ok((table.clone(), id_column.clone(), false)),
-            NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => {
+            NodeAccessStrategy::EmbeddedInEdge { edge_alias: _, .. } => {
                 // For embedded nodes, get the edge table and use from_id/to_id based on position
                 let (edge_table, from_col, to_col) = match edge {
                     EdgeAccessStrategy::SeparateTable {

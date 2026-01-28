@@ -67,10 +67,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::{collections::HashMap, fmt, sync::Arc};
 
 // Import serde_arc modules for serialization
-#[path = "../../utils/serde_arc.rs"]
-mod serde_arc;
-#[path = "../../utils/serde_arc_vec.rs"]
-mod serde_arc_vec;
+use crate::utils::serde_arc;
+use crate::utils::serde_arc_vec;
 
 use crate::{
     graph_catalog::graph_schema::GraphSchema,
@@ -493,7 +491,7 @@ impl WithClause {
                     op_app
                         .operands
                         .first()
-                        .and_then(|inner| Self::extract_alias_from_expr(inner))
+                        .and_then(Self::extract_alias_from_expr)
                 } else {
                     None
                 }

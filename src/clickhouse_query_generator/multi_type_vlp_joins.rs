@@ -146,7 +146,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
     /// Generate complete SQL with UNION ALL of all valid paths
     ///
     /// Returns CTE SQL that can be referenced in outer query
-    pub fn generate_cte_sql(&self, cte_name: &str) -> Result<String, String> {
+    pub fn generate_cte_sql(&self, _cte_name: &str) -> Result<String, String> {
         // Step 1: Enumerate all valid path combinations
         let paths = enumerate_vlp_paths(
             &self.start_labels,
@@ -201,7 +201,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
     fn generate_path_branch_sql(
         &self,
         path: &PathEnumeration,
-        branch_idx: usize,
+        _branch_idx: usize,
     ) -> Result<String, String> {
         let hops = &path.hops;
         if hops.is_empty() {

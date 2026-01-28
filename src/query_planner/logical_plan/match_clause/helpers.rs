@@ -202,7 +202,7 @@ pub fn compute_variable_length(
     rel: &ast::RelationshipPattern,
     rel_labels: &Option<Vec<String>>,
 ) -> Option<VariableLengthSpec> {
-    let is_multi_type = rel_labels.as_ref().map_or(false, |labels| labels.len() > 1);
+    let is_multi_type = rel_labels.as_ref().is_some_and(|labels| labels.len() > 1);
 
     if let Some(vlp) = rel.variable_length.clone() {
         let spec: VariableLengthSpec = vlp.into();

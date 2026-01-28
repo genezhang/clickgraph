@@ -89,7 +89,7 @@ impl CteColumnResolver {
                     .map(|operand| Self::resolve_expr(operand, plan_ctx))
                     .collect();
                 LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                    operator: op_app.operator.clone(),
+                    operator: op_app.operator,
                     operands: resolved_operands,
                 })
             }

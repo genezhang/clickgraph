@@ -134,7 +134,7 @@ impl TableCtx {
     ///
     /// Path variables have no label and are not relationships.
     pub fn is_path_variable(&self) -> bool {
-        !self.is_rel && self.labels.as_ref().map_or(true, |v| v.is_empty())
+        !self.is_rel && self.labels.as_ref().is_none_or(|v| v.is_empty())
     }
 
     // ========================================================================

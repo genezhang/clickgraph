@@ -337,7 +337,7 @@ where
 
             signatures::RUN => {
                 // RUN has 2-3 fields: query string, parameters map, optional extra map
-                if field_count < 2 || field_count > 3 {
+                if !(2..=3).contains(&field_count) {
                     return Err(BoltError::invalid_message(format!(
                         "RUN expects 2-3 fields, got {}",
                         field_count

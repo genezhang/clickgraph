@@ -7,7 +7,6 @@
 use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::errors::RenderBuildError;
-use crate::render_plan::plan_builder_helpers::*;
 use crate::render_plan::plan_builder_utils::extract_sorted_properties;
 
 /// Result type for properties builder operations
@@ -49,8 +48,8 @@ impl PropertiesBuilder for LogicalPlan {
                             // 🔧 FIX: Handle column names with multiple dots like "n.id.orig_h" -> "id.orig_h"
                             // Use splitn(2) to split only on the FIRST dot, keeping the rest intact
                             let unqualified = qualified_col
-                                .splitn(2, '.')
-                                .nth(1)
+                                .split_once('.')
+                                .map(|x| x.1)
                                 .unwrap_or(qualified_col)
                                 .to_string();
                             (prop_name.clone(), unqualified)
@@ -203,7 +202,7 @@ impl PropertiesBuilder for LogicalPlan {
                     } else {
                         scan.to_node_properties.is_some()
                     };
-                    let both_nodes_denormalized = left_props_exist && right_props_exist;
+                    let _both_nodes_denormalized = left_props_exist && right_props_exist;
 
                     // Check if alias matches left_connection
                     if alias == rel.left_connection {
@@ -270,27 +269,13 @@ impl PropertiesBuilder for LogicalPlan {
                 );
                 Ok((vec![], None))
             }
-            LogicalPlan::Projection(proj) => {
-                return proj.input.get_properties_with_table_alias(alias);
-            }
-            LogicalPlan::Filter(filter) => {
-                return filter.input.get_properties_with_table_alias(alias);
-            }
-            LogicalPlan::GroupBy(gb) => {
-                return gb.input.get_properties_with_table_alias(alias);
-            }
-            LogicalPlan::GraphJoins(joins) => {
-                return joins.input.get_properties_with_table_alias(alias);
-            }
-            LogicalPlan::OrderBy(order) => {
-                return order.input.get_properties_with_table_alias(alias);
-            }
-            LogicalPlan::Skip(skip) => {
-                return skip.input.get_properties_with_table_alias(alias);
-            }
-            LogicalPlan::Limit(limit) => {
-                return limit.input.get_properties_with_table_alias(alias);
-            }
+            LogicalPlan::Projection(proj) => proj.input.get_properties_with_table_alias(alias),
+            LogicalPlan::Filter(filter) => filter.input.get_properties_with_table_alias(alias),
+            LogicalPlan::GroupBy(gb) => gb.input.get_properties_with_table_alias(alias),
+            LogicalPlan::GraphJoins(joins) => joins.input.get_properties_with_table_alias(alias),
+            LogicalPlan::OrderBy(order) => order.input.get_properties_with_table_alias(alias),
+            LogicalPlan::Skip(skip) => skip.input.get_properties_with_table_alias(alias),
+            LogicalPlan::Limit(limit) => limit.input.get_properties_with_table_alias(alias),
             LogicalPlan::Union(union) => {
                 // For UNION, check all branches and return the first successful result.
                 // All branches should have the same schema, so any match is valid, even if it
@@ -334,7 +319,7 @@ impl PropertiesBuilder for LogicalPlan {
                 // NOTE: Additional handling for tuple-valued properties produced by
                 // the UNWIND expression can be added here if needed, but this
                 // preserves the recursive behavior from the previous implementation.
-                return unwind.input.get_properties_with_table_alias(alias);
+                unwind.input.get_properties_with_table_alias(alias)
             }
             LogicalPlan::WithClause(wc) => {
                 // ✅ FIX (Phase 6): Handle WITH clauses for variable renaming
@@ -360,7 +345,7 @@ impl PropertiesBuilder for LogicalPlan {
                 }
 
                 // If not found in WITH, delegate to input
-                return wc.input.get_properties_with_table_alias(alias);
+                wc.input.get_properties_with_table_alias(alias)
             }
             _ => Ok((vec![], None)), // No properties found
         }

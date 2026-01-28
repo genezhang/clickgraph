@@ -292,9 +292,9 @@ ORDER BY pagerank DESC
                     .columns()
                     .first()
                     .ok_or_else(|| {
-                        ClickhouseQueryGeneratorError::SchemaError(format!(
-                            "Node schema has no ID columns defined"
-                        ))
+                        ClickhouseQueryGeneratorError::SchemaError(
+                            "Node schema has no ID columns defined".to_string(),
+                        )
                     })?
                     .to_string(),
             ))

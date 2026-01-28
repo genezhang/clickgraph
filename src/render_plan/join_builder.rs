@@ -16,10 +16,9 @@ use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::from_builder::FromBuilder;
-use crate::render_plan::plan_builder::RenderPlanBuilder;
 use crate::render_plan::plan_builder::RenderPlanBuilderResult;
 use crate::render_plan::render_expr::{
-    AggregateFnCall, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+    Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
 };
 use crate::render_plan::{ArrayJoin, Join, JoinType, RenderPlan};
 use std::sync::Arc;
@@ -203,7 +202,7 @@ impl JoinBuilder for LogicalPlan {
                 .find(|j| {
                     j.table_alias != rel_alias
                         && !j.joining_on.is_empty()
-                        && j.table_alias != from_alias.as_ref().map(|s| s.as_str()).unwrap_or("")
+                        && j.table_alias != from_alias.as_deref().unwrap_or("")
                 })
                 .map(|j| j.table_alias.clone());
 
@@ -1422,11 +1421,8 @@ impl JoinBuilder for LogicalPlan {
 
                 // Generate polymorphic edge filter (type_column IN ('TYPE1', 'TYPE2') AND from_label = 'X' AND to_label = 'Y')
                 // This applies regardless of whether the JOIN is optional or required
-                let rel_types_for_filter: Vec<String> = graph_rel
-                    .labels
-                    .as_ref()
-                    .map(|labels: &Vec<String>| labels.clone())
-                    .unwrap_or_default();
+                let rel_types_for_filter: Vec<String> =
+                    graph_rel.labels.clone().unwrap_or_default();
                 let polymorphic_filter = get_polymorphic_edge_filter_for_join(
                     &graph_rel.center,
                     &graph_rel.alias,
@@ -2012,16 +2008,10 @@ impl JoinBuilder for LogicalPlan {
                                     // This is the correlation predicate (e.g., a.user_id = c.user_id)
                                     let join_conditions =
                                         if let Some(ref join_cond) = cp.join_condition {
-                                            if let Ok(render_expr) =
+                                            if let Ok(RenderExpr::OperatorApplicationExp(op)) =
                                                 RenderExpr::try_from(join_cond.clone())
                                             {
-                                                if let RenderExpr::OperatorApplicationExp(op) =
-                                                    render_expr
-                                                {
-                                                    vec![op]
-                                                } else {
-                                                    vec![]
-                                                }
+                                                vec![op]
                                             } else {
                                                 vec![]
                                             }

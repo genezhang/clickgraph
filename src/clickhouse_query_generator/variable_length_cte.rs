@@ -505,6 +505,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// Constraints are added to:
     /// - Base case: WHERE clause (after node JOINs)
     /// - Recursive case: WHERE clause (validates each hop)
+    ///
     /// Generate edge constraint filter with dynamic alias support
     ///
     /// For recursive cases, pass the actual aliases used in that SQL block.
@@ -760,8 +761,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // ✅ FIX: Strip database prefix for comparison (handles both "flights" and "db.flights")
         let rel_table_name = self
             .relationship_table
-            .split('.')
-            .last()
+            .rsplit('.')
+            .next()
             .unwrap_or(&self.relationship_table);
         eprintln!(
             "🔍 MAP:   Comparing against table name: '{}'",
@@ -771,8 +772,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
         for (label, schema) in node_schemas.iter() {
             let schema_table = schema
                 .table_name
-                .split('.')
-                .last()
+                .rsplit('.')
+                .next()
                 .unwrap_or(&schema.table_name);
             eprintln!(
                 "🔍 MAP:     - '{}' -> table '{}' (stripped: '{}')",
@@ -783,7 +784,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let node_schema = node_schemas
             .values()
             .find(|n| {
-                let schema_table = n.table_name.split('.').last().unwrap_or(&n.table_name);
+                let schema_table = n.table_name.rsplit('.').next().unwrap_or(&n.table_name);
                 schema_table == rel_table_name // ✅ Compare without database prefix
             })
             .ok_or_else(|| {
@@ -973,7 +974,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             // or the application should enforce this constraint before loading data.
             query_body.push_str("\n    UNION ALL\n");
 
-            let default_depth = if max_hops.is_none() {
+            let default_depth = max_hops.unwrap_or_else(|| {
                 // Unbounded case: use conservative default to prevent memory exhaustion
                 // In dense graphs, each hop can multiply rows exponentially
                 // Users who need longer paths should specify explicit bounds
@@ -988,9 +989,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     // Reduced from 10 to 5 to prevent row explosion in dense graphs
                     5
                 }
-            } else {
-                max_hops.unwrap()
-            };
+            });
 
             query_body.push_str(
                 &self.generate_recursive_case_with_cte_name(default_depth, &recursive_cte_name),

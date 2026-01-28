@@ -7,6 +7,7 @@
 //! - Some sorted aliases, some didn't
 //! - Some added sequence numbers, some didn't
 //! - Some handled empty aliases differently
+//!
 //! This led to bugs where a CTE was created with one name but referenced with another.
 //!
 //! ## The Solution

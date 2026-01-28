@@ -108,7 +108,7 @@ impl ViewOptimizer {
                     .collect();
 
                 LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                    operator: op.operator.clone(),
+                    operator: op.operator,
                     operands: optimized_operands,
                 })
             }
@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn test_view_scan_optimization() {
         let optimizer = ViewOptimizer::new();
-        let mut plan_ctx = PlanCtx::default();
+        let mut plan_ctx = PlanCtx::new_empty();
 
         // Create a test ViewScan
         let view_scan = ViewScan::new(

@@ -16,7 +16,7 @@ use crate::render_plan::cte_extraction::extract_node_label_from_viewscan;
 use crate::render_plan::render_expr::RenderExpr;
 
 /// Context for CTE generation - holds property requirements and other metadata
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CteGenerationContext {
     /// Properties needed for variable-length paths, keyed by "left_alias-right_alias"
     variable_length_properties: HashMap<String, Vec<NodeProperty>>,
@@ -48,28 +48,6 @@ pub struct CteGenerationContext {
     pub end_node_label: Option<String>,
     /// Whether this VLP is optional (affects start node filter handling)
     pub is_optional: bool,
-}
-
-impl Default for CteGenerationContext {
-    fn default() -> Self {
-        Self {
-            variable_length_properties: HashMap::new(),
-            filter_expr: None,
-            start_cypher_alias: None,
-            end_cypher_alias: None,
-            schema: None,
-            fixed_length_joins: HashMap::new(),
-            spec: VariableLengthSpec::default(),
-            path_variable: None,
-            shortest_path_mode: None,
-            relationship_types: None,
-            edge_id: None,
-            relationship_cypher_alias: None,
-            start_node_label: None,
-            end_node_label: None,
-            is_optional: false,
-        }
-    }
 }
 
 impl CteGenerationContext {
@@ -667,7 +645,7 @@ pub fn map_property_to_column_with_relationship_context(
     // Priority: explicit schema_name > task-local QUERY_SCHEMA_NAME > search all schemas (fallback)
     let resolved_schema_name = schema_name
         .map(|s| s.to_string())
-        .or_else(|| super::render_expr::get_current_schema_name());
+        .or_else(super::render_expr::get_current_schema_name);
 
     log::info!(
         "🔍 map_property_to_column_with_relationship_context: property='{}', node_label='{}', resolved_schema_name={:?}",
@@ -679,7 +657,7 @@ pub fn map_property_to_column_with_relationship_context(
     let schema = if let Some(sname) = resolved_schema_name {
         log::info!("  ✓ Using explicit schema: {}", sname);
         schemas.get(&sname).ok_or_else(|| {
-            let available_schemas: Vec<String> = schemas.keys().map(|s| s.clone()).collect();
+            let available_schemas: Vec<String> = schemas.keys().cloned().collect();
             let msg = format!(
                 "Schema '{}' not found. Available schemas: {}",
                 sname,
@@ -718,7 +696,7 @@ pub fn map_property_to_column_with_relationship_context(
             .values()
             .find(|s| s.all_node_schemas().contains_key(node_label))
             .ok_or_else(|| {
-                let available_schemas: Vec<String> = schemas.keys().map(|s| s.clone()).collect();
+                let available_schemas: Vec<String> = schemas.keys().cloned().collect();
                 let msg = format!(
                     "CRITICAL: Node label '{}' not found. Schema context was missing (no explicit schema_name and QUERY_SCHEMA_NAME task_local not set). Available schemas: {}. This is a bug in schema context propagation.",
                     node_label,
@@ -738,11 +716,7 @@ pub fn map_property_to_column_with_relationship_context(
 
     // Get the node schema first
     let node_schema = schema.all_node_schemas().get(node_label).ok_or_else(|| {
-        let available: Vec<String> = schema
-            .all_node_schemas()
-            .keys()
-            .map(|s| s.clone())
-            .collect();
+        let available: Vec<String> = schema.all_node_schemas().keys().cloned().collect();
         let msg = format!(
             "Node label '{}' not found in schema. Available labels: {}",
             node_label,
@@ -848,11 +822,7 @@ pub fn map_property_to_column_with_relationship_context(
     // Fall back to traditional node property mapping
 
     let column = node_schema.property_mappings.get(property).ok_or_else(|| {
-        let available: Vec<String> = node_schema
-            .property_mappings
-            .keys()
-            .map(|s| s.clone())
-            .collect();
+        let available: Vec<String> = node_schema.property_mappings.keys().cloned().collect();
         let msg = format!(
             "Property '{}' not found for node label '{}'. Available properties: {}",
             property,

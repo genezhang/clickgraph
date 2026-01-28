@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
 
 use super::plan_builder::RenderPlanBuilder;
 use crate::graph_catalog::expression_parser::PropertyValue;
@@ -9,10 +8,10 @@ use crate::query_planner::logical_expr::LogicalExpr;
 
 use crate::query_planner::logical_expr::{
     AggregateFnCall as LogicalAggregateFnCall, Column as LogicalColumn,
-    ColumnAlias as LogicalColumnAlias, ConnectedPattern, CteEntityRef as LogicalCteEntityRef,
-    Direction, EntityType, ExistsSubquery as LogicalExistsSubquery,
-    InSubquery as LogicalInSubquery, Literal as LogicalLiteral, LogicalCase,
-    Operator as LogicalOperator, OperatorApplication as LogicalOperatorApplication, PathPattern,
+    ColumnAlias as LogicalColumnAlias, ConnectedPattern, Direction, EntityType,
+    ExistsSubquery as LogicalExistsSubquery, InSubquery as LogicalInSubquery,
+    Literal as LogicalLiteral, LogicalCase, Operator as LogicalOperator,
+    OperatorApplication as LogicalOperatorApplication, PathPattern,
     PropertyAccess as LogicalPropertyAccess, ScalarFnCall as LogicalScalarFnCall,
     TableAlias as LogicalTableAlias,
 };
@@ -466,7 +465,7 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                     };
 
                     // Get end node's ID column
-                    let end_id_sql = if let Some(label) = &conn.end_node.label {
+                    let _end_id_sql = if let Some(label) = &conn.end_node.label {
                         let node_schema = schema
                             .node_schema_opt(label)
                             .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
@@ -684,7 +683,7 @@ fn generate_not_exists_from_path_pattern(
                                 start_id_sql
                             )
                         }
-                        (Some(end), true) => {
+                        (Some(_end), true) => {
                             // Named end node, undirected: check both directions
                             format!(
                                 "NOT EXISTS (SELECT 1 FROM {} WHERE ({}.{} = {} AND {}.{} = {}) OR ({}.{} = {} AND {}.{} = {}))",
@@ -697,7 +696,7 @@ fn generate_not_exists_from_path_pattern(
                                 table_name, to_col, start_id_sql
                             )
                         }
-                        (Some(end), false) => {
+                        (Some(_end), false) => {
                             // Named end node, directed: check single direction
                             let (from_match_sql, to_match_sql) = match conn.relationship.direction {
                                 Direction::Outgoing => (start_id_sql.clone(), end_id_sql.clone()),
@@ -722,10 +721,10 @@ fn generate_not_exists_from_path_pattern(
             }
 
             // NO FALLBACK - schema is required!
-            return Err(RenderBuildError::InvalidRenderPlan(format!(
+            Err(RenderBuildError::InvalidRenderPlan(format!(
                 "INTERNAL ERROR: Relationship type '{}' not found in schema for EXISTS pattern. This should have been caught during query planning.",
                 rel_type
-            )));
+            )))
         }
         PathPattern::Node(_) => Err(RenderBuildError::InvalidRenderPlan(
             "NOT pattern with single node is not supported".to_string(),

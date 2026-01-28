@@ -326,7 +326,7 @@ impl ProjectionTagging {
         &self,
         expr: &LogicalExpr,
         plan_ctx: &PlanCtx,
-        graph_schema: &GraphSchema,
+        _graph_schema: &GraphSchema,
     ) -> AnalyzerResult<LogicalExpr> {
         match expr {
             LogicalExpr::PropertyAccessExp(property_access) => {
@@ -336,7 +336,7 @@ impl ProjectionTagging {
                     Err(_) => return Ok(expr.clone()),
                 };
 
-                let label = table_ctx.get_label_opt().unwrap_or_default();
+                let _label = table_ctx.get_label_opt().unwrap_or_default();
 
                 // Check if this is a denormalized node using NodeAccessStrategy
                 if let Some(node_strategy) =
@@ -345,7 +345,7 @@ impl ProjectionTagging {
                     match node_strategy {
                         crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => {
                             // PRIMARY: Try PatternSchemaContext - has explicit role information
-                            if let Some(pattern_ctx) = plan_ctx.get_pattern_context(&edge_alias) {
+                            if let Some(pattern_ctx) = plan_ctx.get_pattern_context(edge_alias) {
                                 if let Some(mapped_column) = pattern_ctx.get_node_property(
                                     &property_access.table_alias.0,
                                     property_access.column.raw(),
@@ -480,7 +480,7 @@ impl ProjectionTagging {
                 // don't apply schema mapping because CTE columns are already mapped.
                 let denorm_info =
                     plan_ctx.get_denormalized_alias_info(&property_access.table_alias.0);
-                let pattern_ctx_opt = denorm_info.as_ref().and_then(|(owning_edge, _, _, _)| {
+                let _pattern_ctx_opt = denorm_info.as_ref().and_then(|(owning_edge, _, _, _)| {
                     plan_ctx.get_pattern_context(owning_edge).cloned()
                 });
 
@@ -488,12 +488,14 @@ impl ProjectionTagging {
                 let node_strategy_opt = plan_ctx
                     .get_node_strategy(&property_access.table_alias.0, None)
                     .cloned();
-                let pattern_ctx_for_strategy = if let Some(ref strategy) = node_strategy_opt {
-                    if let crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } = strategy {
-                        plan_ctx.get_pattern_context(edge_alias).cloned()
-                    } else {
-                        None
-                    }
+                let pattern_ctx_for_strategy = if let Some(
+                    crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge {
+                        edge_alias,
+                        ..
+                    },
+                ) = node_strategy_opt.as_ref()
+                {
+                    plan_ctx.get_pattern_context(edge_alias).cloned()
                 } else {
                     None
                 };
@@ -616,7 +618,7 @@ impl ProjectionTagging {
                             // Check if this node is denormalized using NodeAccessStrategy
                             if let Some(node_strategy) = node_strategy_opt {
                                 match node_strategy {
-                                    crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => {
+                                    crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { edge_alias: _, .. } => {
                                         // PRIMARY: Try PatternSchemaContext - has explicit role information
                                         if let Some(pattern_ctx) = &pattern_ctx_for_strategy {
                                             if let Some(column) = pattern_ctx.get_node_property(
@@ -722,7 +724,7 @@ impl ProjectionTagging {
 
                 // Update the item's expression with transformed operands
                 item.expression = LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                    operator: operator_application.operator.clone(),
+                    operator: operator_application.operator,
                     operands: transformed_operands,
                 });
                 Ok(())

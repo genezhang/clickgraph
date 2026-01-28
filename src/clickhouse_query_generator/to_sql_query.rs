@@ -13,7 +13,7 @@ use crate::{
         },
     },
     server::query_context::{
-        self, clear_all_render_contexts, get_cte_property_mapping, get_relationship_columns,
+        clear_all_render_contexts, get_cte_property_mapping, get_relationship_columns,
         is_multi_type_vlp_alias, set_all_render_contexts,
     },
     utils::cte_naming::is_generated_cte_name,
@@ -48,7 +48,7 @@ fn contains_string_literal(expr: &RenderExpr) -> bool {
     match expr {
         RenderExpr::Literal(Literal::String(_)) => true,
         RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
-            op.operands.iter().any(|o| contains_string_literal(o))
+            op.operands.iter().any(contains_string_literal)
         }
         _ => false,
     }
@@ -56,7 +56,7 @@ fn contains_string_literal(expr: &RenderExpr) -> bool {
 
 /// Check if any operand in the expression contains a string
 fn has_string_operand(operands: &[RenderExpr]) -> bool {
-    operands.iter().any(|op| contains_string_literal(op))
+    operands.iter().any(contains_string_literal)
 }
 
 /// Flatten nested + operations into a list of operands for concat()
@@ -65,7 +65,7 @@ fn flatten_addition_operands(expr: &RenderExpr) -> Vec<String> {
         RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => op
             .operands
             .iter()
-            .flat_map(|o| flatten_addition_operands(o))
+            .flat_map(flatten_addition_operands)
             .collect(),
         _ => vec![expr.to_sql()],
     }
@@ -104,13 +104,6 @@ fn build_relationship_columns_from_plan(plan: &RenderPlan) -> HashMap<String, (S
     }
 
     map
-}
-
-/// Pre-populate the relationship columns mapping from a RenderPlan
-/// This builds the mapping and sets it in the query context
-fn populate_relationship_columns_from_plan(plan: &RenderPlan) {
-    let map = build_relationship_columns_from_plan(plan);
-    query_context::set_relationship_columns(map);
 }
 
 /// Build CTE property mappings from RenderPlan CTEs (for collecting data)
@@ -199,16 +192,6 @@ fn build_multi_type_vlp_aliases(plan: &RenderPlan) -> HashMap<String, String> {
     }
 
     aliases
-}
-
-/// Populate CTE property mappings from RenderPlan CTEs
-/// Extracts column aliases from CTE SELECT items to build property → column name mappings
-fn populate_cte_property_mappings(plan: &RenderPlan) {
-    let cte_mappings = build_cte_property_mappings(plan);
-    let multi_type_aliases = build_multi_type_vlp_aliases(plan);
-
-    query_context::set_cte_property_mappings(cte_mappings);
-    query_context::set_multi_type_vlp_aliases(multi_type_aliases);
 }
 
 /// Rewrite property access in SELECT, GROUP BY items for VLP queries
@@ -382,7 +365,7 @@ fn rewrite_expr_for_vlp(
                     // This is accessing start node property
                     // Create Column with the full table.column format to prevent heuristic inference
                     // The FROM clause has the CTE aliased as 't', so use t.start_xxx
-                    let prop_name = derive_cypher_property_name(&prop.column.raw());
+                    let prop_name = derive_cypher_property_name(prop.column.raw());
                     return RenderExpr::Column(Column(PropertyValue::Column(format!(
                         "t.start_{}",
                         prop_name
@@ -393,7 +376,7 @@ fn rewrite_expr_for_vlp(
             if let Some(end) = end_alias {
                 if &prop.table_alias.0 == end {
                     // This is accessing end node property
-                    let prop_name = derive_cypher_property_name(&prop.column.raw());
+                    let prop_name = derive_cypher_property_name(prop.column.raw());
                     return RenderExpr::Column(Column(PropertyValue::Column(format!(
                         "t.end_{}",
                         prop_name
@@ -408,7 +391,7 @@ fn rewrite_expr_for_vlp(
         // Recursively rewrite operands in operator applications
         RenderExpr::OperatorApplicationExp(op) => {
             RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: op
                     .operands
                     .iter()
@@ -532,11 +515,10 @@ fn find_path_function_argument(expr: &RenderExpr) -> Option<String> {
             if matches!(
                 func.name.to_lowercase().as_str(),
                 "length" | "nodes" | "relationships"
-            ) {
-                if func.args.len() == 1 {
-                    if let RenderExpr::TableAlias(alias) = &func.args[0] {
-                        return Some(alias.0.clone());
-                    }
+            ) && func.args.len() == 1
+            {
+                if let RenderExpr::TableAlias(alias) = &func.args[0] {
+                    return Some(alias.0.clone());
                 }
             }
 
@@ -589,7 +571,7 @@ fn rewrite_fixed_path_functions(mut plan: RenderPlan) -> RenderPlan {
         log::info!("🔧 SELECT has {} items", plan.select.items.len());
 
         // Rewrite each SELECT item's expressions
-        for (idx, item) in plan.select.items.iter_mut().enumerate() {
+        for item in plan.select.items.iter_mut() {
             let before = format!("{:?}", item.expression);
             item.expression = rewrite_expr_for_fixed_path(&item.expression, &path_var, hop_count);
             let after = format!("{:?}", item.expression);
@@ -636,7 +618,7 @@ fn rewrite_expr_for_fixed_path(
         RenderExpr::ScalarFnCall(func) => {
             if func.args.len() == 1 {
                 if let RenderExpr::TableAlias(alias) = &func.args[0] {
-                    if &alias.0 == path_variable {
+                    if alias.0 == *path_variable {
                         match func.name.to_lowercase().as_str() {
                             "length" => {
                                 log::info!(
@@ -682,7 +664,7 @@ fn rewrite_expr_for_fixed_path(
         // Recursively rewrite operands in operator applications
         RenderExpr::OperatorApplicationExp(op) => {
             RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: op
                     .operands
                     .iter()
@@ -769,7 +751,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
             // For UNION with ordering/limiting, wrap in subquery and apply ORDER BY/LIMIT to outer query
             sql.push_str("SELECT ");
 
-            if let Some(union) = &plan.union.0 {
+            if let Some(_union) = &plan.union.0 {
                 // For UNION queries with aggregations, we need to select all columns from the subquery
                 // and apply the aggregation in the outer SELECT.
                 // For UNION queries without aggregations, select column aliases.
@@ -815,7 +797,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
             } else if !plan.select.items.is_empty() {
                 sql.push_str(&plan.select.to_sql());
             } else {
-                sql.push_str("*");
+                sql.push('*');
             }
 
             sql.push_str(" FROM (\n");
@@ -1059,14 +1041,8 @@ impl SelectItems {
             // (already handled above for matching TableAlias case)
             if let Some(alias) = &item.col_alias {
                 if let RenderExpr::TableAlias(TableAlias(expr_alias)) = &item.expression {
-                    if expr_alias != &alias.0 {
-                        sql.push_str(" AS \"");
-                        sql.push_str(&alias.0);
-                        sql.push('"');
-                    }
-                    // For UNWIND aliases that match, we still need the AS clause
-                    // since we're rendering just the alias without `.*`
-                    else if unwind_aliases.contains(expr_alias) {
+                    // For UNWIND aliases that match OR for aliases that differ, we need the AS clause
+                    if expr_alias != &alias.0 || unwind_aliases.contains(expr_alias) {
                         sql.push_str(" AS \"");
                         sql.push_str(&alias.0);
                         sql.push('"');
@@ -1265,8 +1241,8 @@ impl ToSql for CteItems {
 
                 // Extract all trailing non-recursive CTEs from this group
                 let mut non_recursive_start = 1; // Start after the recursive CTE
-                for i in 1..group.len() {
-                    if group[i].is_recursive {
+                for (i, cte) in group.iter().enumerate().skip(1) {
+                    if cte.is_recursive {
                         non_recursive_start = i + 1;
                     }
                 }
@@ -2069,15 +2045,17 @@ impl RenderExpr {
 
                 // Special handling for IN/NOT IN with array columns
                 // Cypher: x IN array_property → ClickHouse: has(array, x)
-                if op.operator == Operator::In && rendered.len() == 2 {
-                    if matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_)) {
-                        return format!("has({}, {})", &rendered[1], &rendered[0]);
-                    }
+                if op.operator == Operator::In
+                    && rendered.len() == 2
+                    && matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_))
+                {
+                    return format!("has({}, {})", &rendered[1], &rendered[0]);
                 }
-                if op.operator == Operator::NotIn && rendered.len() == 2 {
-                    if matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_)) {
-                        return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
-                    }
+                if op.operator == Operator::NotIn
+                    && rendered.len() == 2
+                    && matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_))
+                {
+                    return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
                 }
 
                 // Special handling for string predicates - ClickHouse uses functions
@@ -2098,7 +2076,7 @@ impl RenderExpr {
                     let flattened: Vec<String> = op
                         .operands
                         .iter()
-                        .flat_map(|o| flatten_addition_operands(o))
+                        .flat_map(flatten_addition_operands)
                         .collect();
                     return format!("concat({})", flattened.join(", "));
                 }
@@ -2342,15 +2320,17 @@ impl RenderExpr {
                 }
 
                 // Special handling for IN/NOT IN with array columns
-                if op.operator == Operator::In && rendered.len() == 2 {
-                    if matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_)) {
-                        return format!("has({}, {})", &rendered[1], &rendered[0]);
-                    }
+                if op.operator == Operator::In
+                    && rendered.len() == 2
+                    && matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_))
+                {
+                    return format!("has({}, {})", &rendered[1], &rendered[0]);
                 }
-                if op.operator == Operator::NotIn && rendered.len() == 2 {
-                    if matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_)) {
-                        return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
-                    }
+                if op.operator == Operator::NotIn
+                    && rendered.len() == 2
+                    && matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_))
+                {
+                    return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
                 }
 
                 // Special handling for string predicates - ClickHouse uses functions
@@ -2477,15 +2457,17 @@ impl ToSql for OperatorApplication {
         }
 
         // Special handling for IN/NOT IN with array columns
-        if self.operator == Operator::In && rendered.len() == 2 {
-            if matches!(&self.operands[1], RenderExpr::PropertyAccessExp(_)) {
-                return format!("has({}, {})", &rendered[1], &rendered[0]);
-            }
+        if self.operator == Operator::In
+            && rendered.len() == 2
+            && matches!(&self.operands[1], RenderExpr::PropertyAccessExp(_))
+        {
+            return format!("has({}, {})", &rendered[1], &rendered[0]);
         }
-        if self.operator == Operator::NotIn && rendered.len() == 2 {
-            if matches!(&self.operands[1], RenderExpr::PropertyAccessExp(_)) {
-                return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
-            }
+        if self.operator == Operator::NotIn
+            && rendered.len() == 2
+            && matches!(&self.operands[1], RenderExpr::PropertyAccessExp(_))
+        {
+            return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
         }
 
         // Special handling for string predicates - ClickHouse uses functions
@@ -2506,7 +2488,7 @@ impl ToSql for OperatorApplication {
             let flattened: Vec<String> = self
                 .operands
                 .iter()
-                .flat_map(|o| flatten_addition_operands(o))
+                .flat_map(flatten_addition_operands)
                 .collect();
             return format!("concat({})", flattened.join(", "));
         }

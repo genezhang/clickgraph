@@ -1,100 +1,38 @@
-use crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGenerator;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
 use crate::query_planner::logical_expr::LogicalExpr;
-use crate::query_planner::logical_plan::{
-    GraphRel, GroupBy, LogicalPlan, Projection, ProjectionItem, ViewScan,
-};
+use crate::query_planner::logical_plan::{LogicalPlan, ProjectionItem};
 use crate::query_planner::plan_ctx::PlanCtx;
-use crate::utils::cte_naming::{generate_cte_base_name, generate_cte_name};
-use log::debug;
-use std::collections::{HashMap, HashSet};
+use crate::utils::cte_naming::generate_cte_base_name;
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::cte_generation::{analyze_property_requirements, extract_var_len_properties};
 use super::errors::RenderBuildError;
-use super::expression_utils::{references_alias as expr_references_alias, rewrite_aliases};
+
 use super::filter_builder::FilterBuilder;
-use super::filter_pipeline::{
-    categorize_filters, clean_last_node_filters, rewrite_expr_for_mixed_denormalized_cte,
-    rewrite_expr_for_var_len_cte, rewrite_labels_subscript_for_multi_type_vlp,
-    rewrite_vlp_internal_to_cypher_alias,
-};
 use super::from_builder::FromBuilder;
 use super::group_by_builder::GroupByBuilder;
 use super::join_builder::JoinBuilder;
 use super::properties_builder::PropertiesBuilder;
-use super::render_expr::RenderCase;
 use super::render_expr::{
-    AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess,
-    RenderExpr, ScalarFnCall, TableAlias,
+    AggregateFnCall, Column, ColumnAlias, Operator, OperatorApplication, PropertyAccess,
+    RenderExpr, TableAlias,
 };
 use super::select_builder::SelectBuilder;
 use super::{
-    view_table_ref::{from_table_to_view_ref, view_ref_to_from_table},
-    ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTable, FromTableItem,
-    GroupByExpressions, Join, JoinItems, JoinType, LimitItem, OrderByItem, OrderByItems,
-    OrderByOrder, RenderPlan, SelectItem, SelectItems, SkipItem, Union, UnionItems, ViewTableRef,
+    ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem, GroupByExpressions, Join,
+    JoinItems, JoinType, LimitItem, OrderByItem, OrderByItems, RenderPlan, SelectItem, SelectItems,
+    SkipItem, Union, UnionItems, ViewTableRef,
 };
 use crate::render_plan::cte_extraction::extract_ctes_with_context;
-use crate::render_plan::cte_extraction::{
-    build_vlp_context, expand_fixed_length_joins_with_context, extract_node_label_from_viewscan,
-    extract_relationship_columns, get_fixed_path_info, get_path_variable, get_shortest_path_mode,
-    get_variable_length_aliases, get_variable_length_denorm_info, get_variable_length_rel_info,
-    get_variable_length_spec, has_variable_length_rel, is_variable_length_denormalized,
-    is_variable_length_optional, label_to_table_name, rel_type_to_table_name,
-    rel_types_to_table_names, table_to_id_column, RelationshipColumns, VlpSchemaType,
-};
 
 // Import ALL helper functions from the dedicated helpers module using glob import
 // This allows existing code to call helpers without changes (e.g., extract_table_name())
 // The compiler will use the module functions when available
 #[allow(unused_imports)]
 use super::plan_builder_helpers::*;
-use super::plan_builder_utils::{
-    build_chained_with_match_cte_plan,
-    build_with_aggregation_match_cte_plan,
-    collapse_passthrough_with,
-    collect_aliases_from_render_expr,
-    // Import all extracted utility functions to avoid duplicates
-    convert_correlation_predicates_to_joins,
-    // New extracted functions
-    count_with_cte_refs,
-    expand_table_alias_to_group_by_id_only,
-    expand_table_alias_to_select_items,
-    extract_correlation_predicates,
-    extract_cte_conditions_recursive,
-    extract_cte_join_conditions,
-    extract_cte_references,
-    extract_join_from_equality,
-    extract_join_from_logical_equality,
-    extract_sorted_properties,
-    extract_vlp_alias_mappings,
-    find_all_with_clauses_grouped,
-    find_group_by_subplan,
-    generate_swapped_joins_for_optional_match,
-    has_multi_type_vlp,
-    has_with_clause_in_tree,
-    hoist_nested_ctes,
-    is_join_for_inner_scope,
-    plan_contains_with_clause,
-    prune_joins_covered_by_cte,
-    remap_cte_names_in_expr,
-    remap_cte_names_in_render_plan,
-    replace_group_by_with_cte_reference,
-    replace_wildcards_with_group_by_columns,
-    replace_with_clause_with_cte_reference_v2,
-    rewrite_cte_column_references,
-    rewrite_cte_expression,
-    rewrite_expression_with_cte_alias,
-    rewrite_operator_application,
-    rewrite_operator_application_with_cte_alias,
-    rewrite_render_expr_for_vlp,
-    rewrite_render_plan_expressions,
-    rewrite_vlp_union_branch_aliases,
-    update_graph_joins_cte_refs,
-};
+use super::plan_builder_utils::rewrite_vlp_union_branch_aliases;
 use super::utils::alias_utils::*;
 use super::CteGenerationContext;
 
@@ -117,7 +55,7 @@ pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>
 fn apply_anylast_wrapping_for_group_by(
     select_items: Vec<SelectItem>,
     group_by_exprs: &[RenderExpr],
-    plan: &LogicalPlan,
+    _plan: &LogicalPlan,
 ) -> RenderPlanBuilderResult<Vec<SelectItem>> {
     // If no GROUP BY, return items as-is
     if group_by_exprs.is_empty() {
@@ -153,7 +91,7 @@ fn apply_anylast_wrapping_for_group_by(
             }
 
             // Only wrap PropertyAccess expressions
-            if let RenderExpr::PropertyAccessExp(ref prop_access) = item.expression {
+            if let RenderExpr::PropertyAccessExp(ref _prop_access) = item.expression {
                 // Check if this is an ID column (ID columns are in GROUP BY, shouldn't be wrapped)
                 // ID columns typically end with "_id" or ".id" in the alias
                 let is_id_column = if let Some(ref col_alias) = item.col_alias {
@@ -232,15 +170,7 @@ pub(crate) trait RenderPlanBuilder {
     fn find_id_column_with_cte_context(
         &self,
         alias: &str,
-        cte_schemas: &HashMap<
-            String,
-            (
-                Vec<SelectItem>,
-                Vec<String>,
-                HashMap<String, String>,
-                HashMap<(String, String), String>,
-            ),
-        >,
+        cte_schemas: &super::CteSchemas,
         cte_references: &HashMap<String, String>,
     ) -> RenderPlanBuilderResult<String>;
 
@@ -303,20 +233,20 @@ pub(crate) trait RenderPlanBuilder {
 // VLP Union Branch Alias Rewriting
 // ============================================================================
 
-/// Rewrite SELECT aliases in Union branches that reference VLP CTEs.
-///
-/// Problem: Undirected shortestPath creates Union with 2 branches (forward/backward).
-/// Each branch uses Cypher aliases (a, b) but JOINs to VLP tables (start_node, end_node).
-/// SELECT items reference non-existent aliases causing "Unknown expression identifier".
-///
-/// Solution: For each Union branch:
-/// 1. Find VLP CTEs it references (look for vlp_cte joins)
-/// 2. Get VLP metadata (cypher_start_alias → start_node mapping)
-/// 3. Rewrite SELECT items: a.property → start_node.property
-
-/// Extract VLP alias mappings from CTEs: Cypher alias → VLP table alias
-/// Also extracts relationship aliases for denormalized patterns
-
+// ============================================================================
+// Rewrite SELECT aliases in Union branches that reference VLP CTEs.
+//
+// Problem: Undirected shortestPath creates Union with 2 branches (forward/backward).
+// Each branch uses Cypher aliases (a, b) but JOINs to VLP tables (start_node, end_node).
+// SELECT items reference non-existent aliases causing "Unknown expression identifier".
+//
+// Solution: For each Union branch:
+// 1. Find VLP CTEs it references (look for vlp_cte joins)
+// 2. Get VLP metadata (cypher_start_alias → start_node mapping)
+// 3. Rewrite SELECT items: a.property → start_node.property
+//
+// Extract VLP alias mappings from CTEs: Cypher alias → VLP table alias.
+// Also extracts relationship aliases for denormalized patterns.
 // ============================================================================
 // ARCHITECTURAL NOTE: Multi-Type VLP Alias Mapping Evolution (Dec 27, 2025)
 // ============================================================================
@@ -352,7 +282,7 @@ pub(crate) trait RenderPlanBuilder {
 // Git history preserves the complex rewriting implementation for reference.
 // ============================================================================
 
-/// Recursively rewrite RenderExpr to use VLP table aliases
+// Recursively rewrite RenderExpr to use VLP table aliases
 
 // ============================================================================
 // WITH Clause Helper Functions (Code Deduplication)
@@ -478,15 +408,7 @@ impl RenderPlanBuilder for LogicalPlan {
     fn find_id_column_with_cte_context(
         &self,
         alias: &str,
-        cte_schemas: &HashMap<
-            String,
-            (
-                Vec<SelectItem>,
-                Vec<String>,
-                HashMap<String, String>,
-                HashMap<(String, String), String>,
-            ),
-        >,
+        cte_schemas: &super::CteSchemas,
         cte_references: &HashMap<String, String>,
     ) -> RenderPlanBuilderResult<String> {
         // First, check if this alias comes from a CTE
@@ -612,7 +534,9 @@ impl RenderPlanBuilder for LogicalPlan {
                 // 🔧 FIX: Use the schema parameter instead of creating an empty schema
                 let render_cte = Cte::new(
                     strip_database_prefix(&logical_cte.name),
-                    super::CteContent::Structured(logical_cte.input.to_render_plan(schema)?),
+                    super::CteContent::Structured(Box::new(
+                        logical_cte.input.to_render_plan(schema)?,
+                    )),
                     false, // is_recursive
                 );
                 Some(render_cte)
@@ -718,7 +642,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     LogicalPlan::GraphNode(gn) => current = gn.input.as_ref(),
                     LogicalPlan::Projection(proj) => current = proj.input.as_ref(),
                     LogicalPlan::GroupBy(gb) => current = gb.input.as_ref(),
-                    LogicalPlan::Union(union) => {
+                    LogicalPlan::Union(_union) => {
                         // Found Union nested deep, convert it to render plan
                         log::debug!("extract_union: found nested Union, converting to render");
                         let union_render_plan = current.to_render_plan(schema)?;
@@ -799,7 +723,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 let mut context = super::cte_generation::CteGenerationContext::new();
                 let ctes = CteItems(extract_ctes_with_context(
                     &gj.input,
-                    &"".to_string(),
+                    "",
                     &mut context,
                     schema,
                 )?);
@@ -900,7 +824,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     let joins = JoinItems(vec![vlp_join]);
 
                     // Extract select items WITHOUT CTE registry (properties come from base table)
-                    let mut select_items = SelectItems {
+                    let select_items = SelectItems {
                         items: <LogicalPlan as SelectBuilder>::extract_select_items(self, None)?,
                         distinct: FilterBuilder::extract_distinct(self),
                     };
@@ -917,7 +841,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     let limit = LimitItem(self.extract_limit());
                     let union = UnionItems(self.extract_union(schema)?);
 
-                    let mut render_plan = RenderPlan {
+                    let render_plan = RenderPlan {
                         ctes,
                         select: select_items,
                         from,
@@ -947,7 +871,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     )?);
 
                     // Create temporary render plan to populate CTE registry
-                    let mut temp_render_plan = RenderPlan {
+                    let _temp_render_plan = RenderPlan {
                         ctes: ctes.clone(),
                         select: SelectItems {
                             items: vec![],
@@ -1008,7 +932,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     let limit = LimitItem(self.extract_limit());
                     let union = UnionItems(self.extract_union(schema)?);
 
-                    let mut render_plan = RenderPlan {
+                    let render_plan = RenderPlan {
                         ctes,
                         select: select_items,
                         from,
@@ -1059,7 +983,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         distinct: p.distinct,
                     };
                 } else {
-                    let mut select_items =
+                    let select_items =
                         <LogicalPlan as SelectBuilder>::extract_select_items(self, None)?;
 
                     // Check if this Projection is over an optional VLP GraphRel
@@ -1262,16 +1186,14 @@ impl RenderPlanBuilder for LogicalPlan {
                             ));
                         }
                         cte_having = Some(render_where);
+                    } else if let Some(existing) = cte_filters {
+                        cte_filters =
+                            Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                operator: Operator::And,
+                                operands: vec![existing, render_where],
+                            }));
                     } else {
-                        if let Some(existing) = cte_filters {
-                            cte_filters =
-                                Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                                    operator: Operator::And,
-                                    operands: vec![existing, render_where],
-                                }));
-                        } else {
-                            cte_filters = Some(render_where);
-                        }
+                        cte_filters = Some(render_where);
                     }
                 }
 
@@ -1347,7 +1269,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 let cte_skip = SkipItem(with.input.extract_skip());
                 let cte_limit = LimitItem(with.input.extract_limit());
 
-                let cte_content = CteContent::Structured(RenderPlan {
+                let cte_content = CteContent::Structured(Box::new(RenderPlan {
                     ctes: CteItems(vec![]),
                     select: SelectItems {
                         items: cte_select_items,
@@ -1365,7 +1287,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     union: UnionItems(None),
                     fixed_path_info: None,
                     // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
-                });
+                }));
 
                 // Generate CTE base name using centralized utility
                 // Note: to_render_plan doesn't have access to counter, so we use base name.
@@ -1631,26 +1553,6 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 }
 
-// Helper function to check if an expression contains aggregation functions
-fn contains_aggregation_function(expr: &RenderExpr) -> bool {
-    match expr {
-        RenderExpr::AggregateFnCall(_) => true,
-        RenderExpr::OperatorApplicationExp(op) => {
-            op.operands.iter().any(contains_aggregation_function)
-        }
-        RenderExpr::ScalarFnCall(fn_call) => fn_call.args.iter().any(contains_aggregation_function),
-        RenderExpr::Case(case) => {
-            case.when_then.iter().any(|(cond, val)| {
-                contains_aggregation_function(cond) || contains_aggregation_function(val)
-            }) || case
-                .else_expr
-                .as_ref()
-                .is_some_and(|e| contains_aggregation_function(e))
-        }
-        _ => false,
-    }
-}
-
 /// Extract join condition as OperatorApplication format for JOIN ON clauses
 /// Converts LogicalExpr equality/and conditions to RenderExpr OperatorApplications
 fn extract_join_condition_ops(expr: &LogicalExpr) -> Option<Vec<OperatorApplication>> {
@@ -1718,7 +1620,7 @@ fn logical_to_render_expr(expr: &LogicalExpr) -> Option<RenderExpr> {
 /// Returns a HashMap mapping source_alias -> output_alias (e.g., "u" -> "person")
 fn build_with_alias_mapping(
     items: &[ProjectionItem],
-    exported_aliases: &[String],
+    _exported_aliases: &[String],
 ) -> std::collections::HashMap<String, String> {
     let mut mapping = std::collections::HashMap::new();
 

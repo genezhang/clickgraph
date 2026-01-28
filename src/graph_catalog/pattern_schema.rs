@@ -699,8 +699,7 @@ impl PatternSchemaContext {
             let left_label_opt = left_ctx.and_then(|c| c.get_label_str().ok());
             let right_label_opt = right_ctx.and_then(|c| c.get_label_str().ok());
 
-            let rel_types_from_graph: Vec<String> =
-                labels.as_ref().map(|l| l.clone()).unwrap_or_default();
+            let rel_types_from_graph: Vec<String> = labels.clone().unwrap_or_default();
 
             if rel_types_from_graph.is_empty() {
                 return Err("No relationship types found".to_string());
@@ -783,7 +782,7 @@ impl PatternSchemaContext {
             .node_id
             .columns()
             .first()
-            .ok_or_else(|| format!("Node schema has no ID columns defined"))?
+            .ok_or_else(|| "Node schema has no ID columns defined".to_string())?
             .to_string();
 
         // Try to resolve through from_properties or to_properties (for denormalized edges)

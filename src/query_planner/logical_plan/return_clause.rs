@@ -22,24 +22,28 @@ use crate::{
         AggregateFnCall, ColumnAlias, LogicalExpr, PropertyAccess, TableAlias,
     },
     query_planner::logical_plan::{
-        optional_match_clause::evaluate_optional_match_clause, LogicalPlan, LogicalPlanError,
-        Projection, ProjectionItem, Union, UnionType,
+        optional_match_clause::evaluate_optional_match_clause, LogicalPlan, Projection,
+        ProjectionItem, Union, UnionType,
     },
     query_planner::plan_ctx::PlanCtx,
 };
 use std::collections::HashSet;
+
+/// Type alias for pattern comprehension tuple to reduce complexity
+type PatternComprehension<'a> = (
+    crate::open_cypher_parser::ast::PathPattern<'a>,
+    Option<Box<Expression<'a>>>,
+    Box<Expression<'a>>,
+);
 use std::sync::Arc;
 
 /// Check if an expression contains any aggregate function calls (recursively).
 fn contains_aggregate(expr: &LogicalExpr) -> bool {
     match expr {
         LogicalExpr::AggregateFnCall(_) => true,
-        LogicalExpr::OperatorApplicationExp(op) => op
-            .operands
-            .iter()
-            .any(|operand| contains_aggregate(operand)),
-        LogicalExpr::ScalarFnCall(func) => func.args.iter().any(|arg| contains_aggregate(arg)),
-        LogicalExpr::List(list) => list.iter().any(|item| contains_aggregate(item)),
+        LogicalExpr::OperatorApplicationExp(op) => op.operands.iter().any(contains_aggregate),
+        LogicalExpr::ScalarFnCall(func) => func.args.iter().any(contains_aggregate),
+        LogicalExpr::List(list) => list.iter().any(contains_aggregate),
         LogicalExpr::Case(case_expr) => {
             if let Some(expr) = &case_expr.expr {
                 if contains_aggregate(expr) {
@@ -215,14 +219,7 @@ fn property_key(prop: &PropertyAccess) -> String {
 /// is a list of (pattern, where_clause, projection) tuples that need OPTIONAL MATCH nodes added.
 fn rewrite_expression_pattern_comprehensions<'a>(
     expr: Expression<'a>,
-) -> (
-    Expression<'a>,
-    Vec<(
-        crate::open_cypher_parser::ast::PathPattern<'a>,
-        Option<Box<Expression<'a>>>,
-        Box<Expression<'a>>,
-    )>,
-) {
+) -> (Expression<'a>, Vec<PatternComprehension<'a>>) {
     use crate::open_cypher_parser::ast::*;
 
     match expr {
@@ -407,10 +404,7 @@ pub fn evaluate_return_clause<'a>(
 
     let projection_items: Vec<ProjectionItem> = rewritten_return_items
         .iter()
-        .map(|item| {
-            ProjectionItem::try_from(item.clone())
-                .expect("Bug: Failed to convert RETURN expression to ProjectionItem")
-        })
+        .map(|item| ProjectionItem::from(item.clone()))
         .collect();
 
     // If input is a Union, handle specially
@@ -672,7 +666,7 @@ fn rewrite_to_column_alias(expr: &LogicalExpr) -> LogicalExpr {
         LogicalExpr::OperatorApplicationExp(op) => {
             use crate::query_planner::logical_expr::OperatorApplication;
             LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: op.operands.iter().map(rewrite_to_column_alias).collect(),
             })
         }

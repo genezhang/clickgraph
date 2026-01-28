@@ -203,7 +203,7 @@ pub fn rewrite_render_expr_for_vlp_with_from_alias(
                     col_name_str
                 );
                 // Replace Column with PropertyAccessExp using VLP FROM alias
-                let new_prop_access = PropertyAccess {
+                let _new_prop_access = PropertyAccess {
                     table_alias: TableAlias(VLP_CTE_FROM_ALIAS.to_string()),
                     column: PropertyValue::Column(col_name_str.clone()),
                 };
@@ -691,7 +691,7 @@ fn rewrite_operator_application_for_cte_join(
         .collect();
 
     OperatorApplication {
-        operator: op_app.operator.clone(),
+        operator: op_app.operator,
         operands: rewritten_operands,
     }
 }
@@ -738,15 +738,7 @@ fn rewrite_render_expr_for_cte(
     expr: &RenderExpr,
     cte_alias: &str,
     cte_references: &HashMap<String, String>,
-    cte_schemas: &std::collections::HashMap<
-        String,
-        (
-            Vec<SelectItem>,
-            Vec<String>,
-            HashMap<String, String>,
-            HashMap<(String, String), String>,
-        ),
-    >,
+    cte_schemas: &crate::render_plan::CteSchemas,
 ) -> RenderExpr {
     // Convert cte_schemas to simple HashMap<String, String> format expected by CTERewriteContext
     let schemas_map: std::collections::HashMap<String, String> =
@@ -806,15 +798,7 @@ fn extract_cte_join_condition_from_filter(
     cte_alias: &str,
     cte_aliases: &[String],
     cte_references: &HashMap<String, String>,
-    cte_schemas: &std::collections::HashMap<
-        String,
-        (
-            Vec<SelectItem>,
-            Vec<String>,
-            HashMap<String, String>,
-            HashMap<(String, String), String>,
-        ),
-    >,
+    cte_schemas: &crate::render_plan::CteSchemas,
 ) -> Option<OperatorApplication> {
     match filter_expr {
         RenderExpr::OperatorApplicationExp(op_app) => {
@@ -2476,7 +2460,7 @@ pub fn extract_group_by(plan: &LogicalPlan) -> RenderPlanBuilderResult<Vec<Rende
                         seen_group_by_aliases.insert(table_alias_to_use.clone());
 
                         // Better approach: try to find node properties for this rel alias
-                        if let Some((node_props, table_alias)) = find_node_properties_for_rel_alias(
+                        if let Some((_node_props, table_alias)) = find_node_properties_for_rel_alias(
                             &group_by.input,
                             &prop_access.table_alias.0,
                         ) {
@@ -2791,16 +2775,15 @@ pub fn remap_cte_names_in_render_plan(
     }
 }
 
-/// Rewrite expressions to use the FROM alias and CTE column names
+/// Rewrite expressions to use the FROM alias and CTE column names.
 ///
 /// Handles three cases:
-/// 1. PropertyAccess with WITH alias (e.g., "a.full_name") → rewrite to FROM alias + CTE column (e.g., "a_age.a_name")
-/// 2. PropertyAccess with CTE name (e.g., "with_a_age_cte_1.age") → rewrite to FROM alias (e.g., "a_age.age")
-/// 3. Other expressions → recursively rewrite nested expressions
-/// Rewrite expressions to use CTE context (alias and column names) with alias source resolution
+///  1. PropertyAccess with WITH alias (e.g., \"a.full_name\") → rewrite to FROM alias + CTE column
+///  2. PropertyAccess with CTE name (e.g., \"with_a_age_cte_1.age\") → rewrite to FROM alias
+///  3. Other expressions → recursively rewrite nested expressions
 ///
 /// This version uses plan_ctx to resolve alias sources from WITH clauses.
-/// When an alias has been renamed (e.g., "person" from "u"), this resolves the mapping.
+/// When an alias has been renamed (e.g., \"person\" from \"u\"), this resolves the mapping.
 pub fn rewrite_cte_expression_with_alias_resolution(
     expr: crate::render_plan::render_expr::RenderExpr,
     cte_name: &str,
@@ -3215,17 +3198,12 @@ pub fn has_multi_type_vlp(
     }
 }
 
-/// Collect all aliases from the inner scope of a WITH clause (before aggregation)
-/// Used to identify which filters should be pushed inside the WITH's CTE
-/// Check if a RenderExpr references any alias in the given set
-/// Check if an OperatorApplication references any alias in the given set
-// ============================================================================
-
 // ============================================================================
 // Utility Functions - CTE Management
 // ============================================================================
 
 /// Hoist nested CTEs from a RenderPlan to a parent CTE list.
+///
 /// This is used to flatten CTE hierarchies.
 pub fn hoist_nested_ctes(from: &mut RenderPlan, to: &mut Vec<Cte>) {
     let nested_ctes = std::mem::take(&mut from.ctes.0);
@@ -3243,7 +3221,6 @@ pub fn hoist_nested_ctes(from: &mut RenderPlan, to: &mut Vec<Cte>) {
 /// This is used to find the anchor alias for a CTE reference. For example, if we have:
 ///   GraphNode { alias: "a_b", input: ViewScan { source_table: "with_a_b_cte2", ... } }
 /// And cte_name is "with_a_b_cte2", this returns Some("a_b").
-
 /// Collect all aliases from a logical plan (GraphNode, GraphRel, GraphJoins).
 /// Rewrite operator application expressions with reverse alias mapping.
 pub fn rewrite_operator_application(
@@ -3283,7 +3260,7 @@ pub fn has_with_clause_in_tree(plan: &LogicalPlan) -> bool {
         LogicalPlan::ViewScan(vs) => vs
             .input
             .as_ref()
-            .map_or(false, |p| has_with_clause_in_tree(p)),
+            .is_some_and(|p| has_with_clause_in_tree(p)),
         LogicalPlan::GraphNode(gn) => has_with_clause_in_tree(&gn.input),
         LogicalPlan::GraphRel(gr) => {
             has_with_clause_in_tree(&gr.left)
@@ -3413,7 +3390,7 @@ pub fn get_node_id_column_for_alias_with_schema(
 /// Find table name for a given alias by traversing the logical plan
 pub fn find_table_for_alias(plan: &LogicalPlan, target_alias: &str) -> Option<String> {
     match plan {
-        LogicalPlan::ViewScan(vs) => {
+        LogicalPlan::ViewScan(_vs) => {
             // ViewScan doesn't have alias - this shouldn't match directly
             None
         }
@@ -3711,7 +3688,7 @@ pub fn rewrite_expression_simple(
 /// part of the first MATCH (before WITH).
 pub fn is_join_for_inner_scope(
     _plan: &LogicalPlan,
-    join: &crate::query_planner::logical_plan::Join,
+    _join: &crate::query_planner::logical_plan::Join,
     _with_alias: &str,
 ) -> bool {
     // For WITH+aggregation patterns, joins with aliases p, t1 are for the inner scope
@@ -3769,37 +3746,34 @@ pub fn extract_cte_conditions_recursive(
 ) {
     use crate::render_plan::render_expr::*;
 
-    match expr {
-        RenderExpr::OperatorApplicationExp(op_app) => {
-            // Look for Equal operator
-            if matches!(op_app.operator, Operator::Equal) && op_app.operands.len() == 2 {
-                let left = &op_app.operands[0];
-                let right = &op_app.operands[1];
+    if let RenderExpr::OperatorApplicationExp(op_app) = expr {
+        // Look for Equal operator
+        if matches!(op_app.operator, Operator::Equal) && op_app.operands.len() == 2 {
+            let left = &op_app.operands[0];
+            let right = &op_app.operands[1];
 
-                // Check if one side is a CTE column and the other is a table column
-                if let Some(cond) = extract_join_from_equality(left, right, cte_references) {
-                    log::info!(
-                        "🔧 Found CTE join condition: CTE {}. {} = {}.{}",
-                        cond.0,
-                        cond.1,
-                        cond.2,
-                        cond.3
-                    );
-                    conditions.push(cond);
-                } else if let Some(cond) = extract_join_from_equality(right, left, cte_references) {
-                    // Try reversed order
-                    conditions.push(cond);
-                }
-            }
-
-            // Check for AND/OR - recurse into operands
-            if matches!(op_app.operator, Operator::And | Operator::Or) {
-                for operand in &op_app.operands {
-                    extract_cte_conditions_recursive(operand, cte_references, conditions);
-                }
+            // Check if one side is a CTE column and the other is a table column
+            if let Some(cond) = extract_join_from_equality(left, right, cte_references) {
+                log::info!(
+                    "🔧 Found CTE join condition: CTE {}. {} = {}.{}",
+                    cond.0,
+                    cond.1,
+                    cond.2,
+                    cond.3
+                );
+                conditions.push(cond);
+            } else if let Some(cond) = extract_join_from_equality(right, left, cte_references) {
+                // Try reversed order
+                conditions.push(cond);
             }
         }
-        _ => {}
+
+        // Check for AND/OR - recurse into operands
+        if matches!(op_app.operator, Operator::And | Operator::Or) {
+            for operand in &op_app.operands {
+                extract_cte_conditions_recursive(operand, cte_references, conditions);
+            }
+        }
     }
 }
 
@@ -3983,7 +3957,7 @@ pub(crate) fn generate_swapped_joins_for_optional_match(
     // CRITICAL FIX: Use extract_parameterized_table_ref for ViewScan to handle parameterized views
     let start_table = extract_parameterized_table_ref(&graph_rel.left)
         .ok_or_else(|| RenderBuildError::MissingTableInfo("left node".to_string()))?;
-    let end_table = extract_parameterized_table_ref(&graph_rel.right)
+    let _end_table = extract_parameterized_table_ref(&graph_rel.right)
         .ok_or_else(|| RenderBuildError::MissingTableInfo("right node".to_string()))?;
 
     // For ID column lookup, we need the plain table name (without parameterized syntax)
@@ -4137,7 +4111,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
     // Extract VLP column metadata for property name resolution
     // This maps (cypher_alias, property_name) → cte_column_name
     // E.g., (a, email_address) → start_email (or start_email_address depending on CTE)
-    let mut cte_column_mapping: HashMap<(String, String), String> = HashMap::new();
+    let _cte_column_mapping: HashMap<(String, String), String> = HashMap::new();
     log::warn!("🔧 VLP: Total CTEs in plan: {}", plan.ctes.0.len());
 
     // ✨ NEW APPROACH: Build metadata-based lookup mapping
@@ -4360,7 +4334,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
             .0
             .as_ref()
             .and_then(|from_ref| from_ref.alias.as_ref())
-            .map(|s| s.clone())
+            .cloned()
             .unwrap_or_else(|| "t".to_string()); // Default to 't' if no alias found
 
         log::warn!("🔧 VLP: FROM alias extracted: '{}'", vlp_from_alias);
@@ -4692,19 +4666,11 @@ pub(crate) fn compute_cte_id_column_for_alias(alias: &str, plan: &LogicalPlan) -
 pub(crate) fn expand_table_alias_to_select_items(
     alias: &str,
     plan: &LogicalPlan,
-    cte_schemas: &HashMap<
-        String,
-        (
-            Vec<SelectItem>,
-            Vec<String>,
-            HashMap<String, String>,
-            HashMap<(String, String), String>,
-        ),
-    >,
+    cte_schemas: &crate::render_plan::CteSchemas,
     cte_references: &HashMap<String, String>,
     has_aggregation: bool,
     plan_ctx: Option<&PlanCtx>,
-    vlp_cte_metadata: Option<
+    _vlp_cte_metadata: Option<
         &HashMap<String, (String, Vec<crate::render_plan::CteColumnMetadata>)>,
     >,
 ) -> Vec<SelectItem> {
@@ -4957,7 +4923,7 @@ pub(crate) fn expand_table_alias_to_select_items(
                     }
 
                     // Check property requirements for pruning
-                    if let Some(ref reqs) = property_requirements {
+                    if let Some(reqs) = property_requirements {
                         // If not wildcard and has specific requirements, check if property is needed
                         if !reqs.requires_all(alias) {
                             if let Some(props_needed) = reqs.get_requirements(alias) {
@@ -5081,15 +5047,7 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
     alias: &str,
     plan: &LogicalPlan,
     schema: &GraphSchema,
-    cte_schemas: &HashMap<
-        String,
-        (
-            Vec<SelectItem>,
-            Vec<String>,
-            HashMap<String, String>,
-            HashMap<(String, String), String>,
-        ),
-    >,
+    cte_schemas: &crate::render_plan::CteSchemas,
     cte_references: &HashMap<String, String>,
     // Optional VLP CTE metadata for deterministic lookups (Phase 3 CTE integration)
     vlp_cte_metadata: Option<&HashMap<String, (String, Vec<super::CteColumnMetadata>)>>,
@@ -5431,7 +5389,7 @@ pub(crate) fn rewrite_expression_with_cte_alias(
                 expr.clone()
             }
         }
-        RenderExpr::ColumnAlias(col_alias) => {
+        RenderExpr::ColumnAlias(_col_alias) => {
             // For bare column aliases, no table alias to change
             expr.clone()
         }
@@ -5455,7 +5413,7 @@ pub(crate) fn rewrite_expression_with_cte_alias(
                 })
                 .collect();
             RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: new_operands,
             })
         }
@@ -5894,22 +5852,6 @@ pub(crate) fn update_graph_joins_cte_refs(
                 count: skip.count,
             }))
         }
-        LogicalPlan::WithClause(wc) => {
-            log::warn!("🔧 update_graph_joins_cte_refs: Updating WithClause input (recursively)");
-            let new_input = update_graph_joins_cte_refs(&wc.input, cte_references)?;
-            Ok(LogicalPlan::WithClause(WithClause {
-                cte_name: wc.cte_name.clone(),
-                input: Arc::new(new_input),
-                items: wc.items.clone(),
-                order_by: wc.order_by.clone(),
-                skip: wc.skip,
-                limit: wc.limit,
-                where_clause: wc.where_clause.clone(),
-                distinct: wc.distinct,
-                exported_aliases: wc.exported_aliases.clone(),
-                cte_references: cte_references.clone(),
-            }))
-        }
         other => Ok(other.clone()),
     }
 }
@@ -5919,15 +5861,7 @@ pub(crate) fn update_graph_joins_cte_refs(
 /// The to_render_plan() method doesn't know about CTEs, so we expand here first.
 fn expand_table_aliases_in_plan(
     plan: LogicalPlan,
-    cte_schemas: &HashMap<
-        String,
-        (
-            Vec<SelectItem>,
-            Vec<String>,
-            HashMap<String, String>,
-            HashMap<(String, String), String>,
-        ),
-    >,
+    cte_schemas: &crate::render_plan::CteSchemas,
     cte_references: &HashMap<String, String>,
     schema: &GraphSchema,
 ) -> RenderPlanBuilderResult<LogicalPlan> {
@@ -6063,10 +5997,6 @@ fn expand_table_aliases_in_plan(
         other => Ok(other),
     }
 }
-
-/// Rewrite CTE column references from "alias.property" to "alias.alias_property"
-/// This is needed for VLP UNION queries where CTEs export columns like "friend_id"
-/// but logical expressions reference "friend.id"
 
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
@@ -6254,7 +6184,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
         ) {
             match plan {
                 LogicalPlan::WithClause(wc) => {
-                    for (_alias, cte_name) in &wc.cte_references {
+                    for cte_name in wc.cte_references.values() {
                         names.insert(cte_name.clone());
                     }
                     collect_analyzer_cte_names(&wc.input, names);
@@ -6529,7 +6459,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             //
                             // Solution: Map all exported aliases of the skipped WITH to the existing CTE.
                             // ALSO: Extract the analyzer's CTE name for this WITH to collapse it properly.
-                            let mut analyzer_cte_name_for_collapse: Option<String> = None;
                             for alias in &wc.exported_aliases {
                                 log::info!(
                                     "🔧 build_chained_with_match_cte_plan: Mapping skipped alias '{}' → existing CTE '{}'",
@@ -6559,8 +6488,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                             analyzer_cte_name.clone(),
                                             existing_cte.clone(),
                                         );
-                                        analyzer_cte_name_for_collapse =
-                                            Some(analyzer_cte_name.clone());
                                     }
                                 }
                             }
@@ -6587,7 +6514,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     with_skip,
                     with_limit,
                     with_where_clause,
-                    with_cte_refs,
+                    _with_cte_refs,
                 ) = match with_plan {
                     LogicalPlan::WithClause(wc) => {
                         log::warn!("� DEBUG: Unwrapping WithClause for alias '{}'", with_alias);
@@ -6834,7 +6761,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                         // Build explicit property mapping for UNION (VLP results)
                         let union_property_mapping =
-                            build_property_mapping_from_columns(&union_select_items);
+                            build_property_mapping_from_columns(union_select_items);
 
                         // Register the UNION schema as a pseudo-CTE for alias lookups
                         // This allows WITH clauses to reference VLP results
@@ -6855,7 +6782,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                         // Also register for each alias that appears in the UNION
                         // This allows direct alias lookups
-                        for (alias, _id_col) in &union_alias_to_id {
+                        for alias in union_alias_to_id.keys() {
                             cte_references_for_rendering
                                 .insert(alias.clone(), union_cte_name.to_string());
                             log::info!(
@@ -6917,7 +6844,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         // Performance optimization: Wrap non-ID columns with ANY() when aggregating
                         // This allows GROUP BY to only include ID column (more efficient)
 
-                        let mut select_items: Vec<SelectItem> = items.iter()
+                        let select_items: Vec<SelectItem> = items.iter()
                                     .flat_map(|item| {
                                         // Check if this is a TableAlias that needs expansion to ALL columns
                                         match &item.expression {
@@ -7455,7 +7382,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // Build alias_to_cte mapping: for each alias in intermediate_reverse_mapping, find its CTE
             // This tells us which CTE each Cypher alias should reference
             let mut alias_to_cte: HashMap<String, String> = HashMap::new();
-            for ((alias, _), _) in &intermediate_reverse_mapping {
+            for (alias, _) in intermediate_reverse_mapping.keys() {
                 // Find which CTE this alias belongs to by checking cte_schemas
                 for (cte_name_check, (items, _, _, _)) in &cte_schemas {
                     // Check if any column in this CTE has this alias prefix
@@ -7553,7 +7480,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // Create the CTE with column metadata
             let mut with_cte = Cte::new(
                 cte_name.clone(),
-                CteContent::Structured(with_cte_render.clone()),
+                CteContent::Structured(Box::new(with_cte_render.clone())),
                 false,
             );
             with_cte.columns = cte_columns;
@@ -8016,7 +7943,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
             for (alias, cte_name) in &cte_references {
                 cte_join_needed
                     .entry(cte_name.clone())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(alias.clone());
             }
 
@@ -8051,20 +7978,20 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 // If we found correlation predicates, convert them to JOIN ON conditions
                 for pred in &original_correlation_predicates {
                     // Convert LogicalExpr predicate to RenderExpr and then extract OperatorApplication
-                    if let Ok(render_expr) = RenderExpr::try_from(pred.clone()) {
-                        if let RenderExpr::OperatorApplicationExp(op_app) = render_expr {
-                            // Rewrite the operands to use CTE column names
-                            let rewritten = rewrite_operator_application_for_cte_join(
-                                &op_app,
-                                &cte_alias,
-                                &cte_references,
-                            );
-                            log::warn!(
-                                "🔧 build_chained_with_match_cte_plan: Added JOIN condition from correlation predicate: {:?}",
-                                rewritten
-                            );
-                            join_conditions.push(rewritten);
-                        }
+                    if let Ok(RenderExpr::OperatorApplicationExp(op_app)) =
+                        RenderExpr::try_from(pred.clone())
+                    {
+                        // Rewrite the operands to use CTE column names
+                        let rewritten = rewrite_operator_application_for_cte_join(
+                            &op_app,
+                            &cte_alias,
+                            &cte_references,
+                        );
+                        log::warn!(
+                            "🔧 build_chained_with_match_cte_plan: Added JOIN condition from correlation predicate: {:?}",
+                            rewritten
+                        );
+                        join_conditions.push(rewritten);
                     }
                 }
 
@@ -8191,14 +8118,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 None
             };
 
-            if let Some(mapping) = property_mapping {
+            if let Some(_mapping) = property_mapping {
                 // Rewrite SELECT items to use FROM alias and CTE column names
                 // The FROM alias (e.g., "a_age") must be used, not the original aliases ("a") or CTE name
-                let from_alias = from_ref
-                    .alias
-                    .as_ref()
-                    .map(|a| a.as_str())
-                    .unwrap_or(&from_ref.name);
+                let from_alias = from_ref.alias.as_deref().unwrap_or(&from_ref.name);
                 log::warn!("🔧 build_chained_with_match_cte_plan: Rewriting SELECT items to use FROM alias '{}'", from_alias);
 
                 // Extract all WITH aliases from CTE name for rewriting
@@ -8236,22 +8159,20 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                 // First, try to get DB column mappings from the FROM ViewScan's property_mapping
                 // This tells us: Cypher property → DB column (e.g., "name" → "full_name")
-                let mut cypher_to_db: HashMap<(String, String), String> = HashMap::new();
+                let _cypher_to_db: HashMap<(String, String), String> = HashMap::new();
                 if let LogicalPlan::ViewScan(vs) = from_ref.source.as_ref() {
                     // The ViewScan property_mapping has entries like "name" → Column("full_name")
                     // But for CTEs, it might have "a_name" → Column("a_name") (identity mapping)
                     // We need to extract the original DB column from the base tables
                     for (cypher_prop, prop_value) in &vs.property_mapping {
-                        if let PropertyValue::Column(db_col) = prop_value {
+                        if let PropertyValue::Column(_db_col) = prop_value {
                             // Check if this is a CTE column (has alias prefix)
-                            let mut found_alias = None;
                             for with_alias in &with_aliases {
                                 let prefix = format!("{}_", with_alias);
                                 if cypher_prop.starts_with(&prefix) {
                                     // This is a CTE column like "a_name"
                                     // Extract the property: "a_name" → "name"
-                                    if let Some(prop) = cypher_prop.strip_prefix(&prefix) {
-                                        found_alias = Some(with_alias.clone());
+                                    if let Some(_prop) = cypher_prop.strip_prefix(&prefix) {
                                         // Store: (alias, cypher_property) → db_column
                                         // But we need to get the DB column from the base table...
                                         // For now, skip CTE columns
@@ -8338,7 +8259,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     // Also extract database column names from the property mapping in graph schema
                     // The property_mapping might use Cypher property names, but we also need to map
                     // the actual database column names (which may differ, like full_name vs name)
-                    if let Some((_, _, _, property_mapping_extra)) = cte_schemas.get(&from_ref.name)
+                    if let Some((_, _, _, _property_mapping_extra)) =
+                        cte_schemas.get(&from_ref.name)
                     {
                         for item in select_items {
                             if let Some(col_alias) = &item.col_alias {
@@ -8864,7 +8786,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
     }
 
     // Add all CTEs (innermost first, which is correct order for SQL)
-    all_ctes.extend(render_plan.ctes.0.into_iter());
+    all_ctes.extend(render_plan.ctes.0);
     render_plan.ctes = CteItems(all_ctes);
 
     // Skip validation - CTEs are hoisted progressively through recursion
@@ -8985,7 +8907,7 @@ pub(crate) fn build_with_aggregation_match_cte_plan(
     // Step 5: Create CTE from the GroupBy render plan
     let group_by_cte = Cte::new(
         cte_name.clone(),
-        CteContent::Structured(group_by_render),
+        CteContent::Structured(Box::new(group_by_render)),
         false,
     );
 
@@ -9052,7 +8974,7 @@ pub(crate) fn build_with_aggregation_match_cte_plan(
 
     // Step 9: Prepend the GroupBy CTE
     let mut all_ctes = vec![group_by_cte];
-    all_ctes.extend(render_plan.ctes.0.into_iter());
+    all_ctes.extend(render_plan.ctes.0);
     render_plan.ctes = CteItems(all_ctes);
 
     log::info!(
@@ -9063,10 +8985,6 @@ pub(crate) fn build_with_aggregation_match_cte_plan(
     Ok(render_plan)
 }
 
-/// Check if an OperatorApplication references any alias in the given set
-
-/// Find a GroupBy subplan (WITH+aggregation) in the plan structure.
-/// Returns (group_by_plan, alias_name) if found.
 /// Replace a GroupBy subplan with a CTE reference (ViewScan pointing to CTE).
 pub(crate) fn replace_group_by_with_cte_reference(
     plan: &LogicalPlan,
@@ -9318,10 +9236,6 @@ pub(crate) fn replace_group_by_with_cte_reference(
     replace_recursive(plan, with_alias, cte_name)
 }
 
-/// Check if a join is for the inner scope (part of the pre-WITH pattern)
-/// This is determined by checking if the join references aliases that are
-/// NOT in the post-WITH scope (i.e., they're part of the CTE content).
-
 /// Find the INNERMOST WITH clause subplan in a nested plan structure.
 ///
 /// KEY INSIGHT: With chained WITH clauses (e.g., WITH a MATCH...WITH a,b MATCH...),
@@ -9332,8 +9246,9 @@ pub(crate) fn replace_group_by_with_cte_reference(
 /// whose input is "clean" (contains no nested WITH).
 ///
 /// Returns (with_clause_plan, alias_name) if found.
-
+///
 /// Find all WITH clauses in a plan grouped by their alias.
+///
 /// Returns HashMap where each alias maps to all WITH clause plans with that alias.
 /// This handles the case where Union branches each have their own WITH clause with the same alias.
 /// Returns owned (cloned) LogicalPlans to avoid lifetime issues with mutations.
@@ -9602,14 +9517,15 @@ pub(crate) fn find_all_with_clauses_grouped(
                 let first_key = branch_with_keys.first().and_then(|k| k.clone());
                 let all_same = branch_with_keys.iter().all(|k| k == &first_key);
 
-                if all_same && first_key.is_some() {
-                    // All branches have the same WITH key - this is a bidirectional pattern
-                    // Collect from just the first branch to avoid duplicates
-                    // The Union structure will be preserved when we render the parent GraphRel
-                    log::warn!("🔍 find_all_with_clauses_impl: Union has matching WITH key '{}' in all branches, collecting from first only",
-                               first_key.as_ref().unwrap());
-                    if let Some(first_input) = union.inputs.first() {
-                        find_all_with_clauses_impl(first_input, results);
+                if all_same {
+                    if let Some(key) = first_key.as_ref() {
+                        // All branches have the same WITH key - this is a bidirectional pattern
+                        // Collect from just the first branch to avoid duplicates
+                        // The Union structure will be preserved when we render the parent GraphRel
+                        log::warn!("🔍 find_all_with_clauses_impl: Union has matching WITH key '{}' in all branches, collecting from first only", key);
+                        if let Some(first_input) = union.inputs.first() {
+                            find_all_with_clauses_impl(first_input, results);
+                        }
                     }
                 } else {
                     // Branches have different WITH structures - recurse into each
@@ -9813,15 +9729,7 @@ pub(crate) fn prune_joins_covered_by_cte(
     plan: &LogicalPlan,
     cte_name: &str,
     exported_aliases: &std::collections::HashSet<&str>,
-    _cte_schemas: &std::collections::HashMap<
-        String,
-        (
-            Vec<SelectItem>,
-            Vec<String>,
-            HashMap<String, String>,
-            HashMap<(String, String), String>,
-        ),
-    >,
+    _cte_schemas: &crate::render_plan::CteSchemas,
 ) -> RenderPlanBuilderResult<LogicalPlan> {
     use crate::query_planner::logical_plan::*;
     use std::sync::Arc;
@@ -9891,7 +9799,7 @@ pub(crate) fn prune_joins_covered_by_cte(
 
             // If we removed joins, update the anchor_table to use the GraphNode alias that references the CTE
             // The anchor should be the alias of the GraphNode whose ViewScan.source_table matches cte_name
-            let new_anchor = if removed_joins.len() > 0 {
+            let new_anchor = if !removed_joins.is_empty() {
                 // Find the GraphNode that references this CTE
                 if let Some(cte_ref_alias) = find_cte_reference_alias(&gj.input, cte_name) {
                     log::warn!("🔧 prune_joins_covered_by_cte: Updating anchor from '{:?}' to CTE reference alias '{}'",
@@ -9973,12 +9881,9 @@ pub(crate) fn prune_joins_covered_by_cte(
 /// // hoist_nested_ctes(&mut with_cte_render, &mut all_ctes);
 /// // all_ctes now contains any VLP CTEs that were nested in with_cte_render
 /// ```
-
-/// Helper function to find WithClause inside a plan structure.
-/// Returns a reference to the WithClause node if found.
-
-/// Check if a plan contains any WithClause anywhere in its tree
+///
 /// Replace the WITH clause subplan with a CTE reference (ViewScan pointing to CTE).
+///
 /// This transforms the plan so the WITH clause output comes from the CTE instead of
 /// recomputing it.
 ///
@@ -9987,6 +9892,7 @@ pub(crate) fn prune_joins_covered_by_cte(
 ///
 /// CRITICAL: We only replace a WithClause if its INPUT has NO nested WITH clauses.
 /// This ensures we replace the INNERMOST WITH first, then the next one, etc.
+///
 /// V2 of replace_with_clause_with_cte_reference that also filters out pre-WITH joins.
 ///
 /// When we replace a WITH clause with a CTE reference, the joins from before the WITH
@@ -9994,17 +9900,11 @@ pub(crate) fn prune_joins_covered_by_cte(
 ///
 /// `pre_with_aliases` contains the table aliases that were defined INSIDE the WITH clause
 /// (before the boundary). These should be filtered out from outer GraphJoins.
-
-/// Check if an OperatorApplication references any alias in the given set
-
-/// Find a GroupBy subplan (WITH+aggregation) in the plan structure.
-/// Returns (group_by_plan, alias_name) if found.
-/// Replace a GroupBy subplan with a CTE reference (ViewScan pointing to CTE).
-
+///
 /// Check if a join is for the inner scope (part of the pre-WITH pattern)
+///
 /// This is determined by checking if the join references aliases that are
 /// NOT in the post-WITH scope (i.e., they're part of the CTE content).
-
 /// Find the INNERMOST WITH clause subplan in a nested plan structure.
 ///
 /// KEY INSIGHT: With chained WITH clauses (e.g., WITH a MATCH...WITH a,b MATCH...),
@@ -10015,12 +9915,10 @@ pub(crate) fn prune_joins_covered_by_cte(
 /// whose input is "clean" (contains no nested WITH).
 ///
 /// Returns (with_clause_plan, alias_name) if found.
-
 /// Find all WITH clauses in a plan grouped by their alias.
 /// Returns HashMap where each alias maps to all WITH clause plans with that alias.
 /// This handles the case where Union branches each have their own WITH clause with the same alias.
 /// Returns owned (cloned) LogicalPlans to avoid lifetime issues with mutations.
-
 /// Prune joins from GraphJoins that are already covered by a CTE.
 ///
 /// Collapse a passthrough WITH clause by replacing it with its input.
@@ -10030,7 +9928,6 @@ pub(crate) fn prune_joins_covered_by_cte(
 ///
 /// This function finds the passthrough WITH for the given alias and replaces it with its input.
 /// Uses the analyzer's CTE name to distinguish between multiple consecutive WITHs with same alias.
-
 /// When we have a query like:
 ///   WITH a MATCH (a)-[:F]->(b) WITH a,b MATCH (b)-[:F]->(c)
 ///
@@ -10050,15 +9947,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
     with_alias: &str,
     cte_name: &str,
     pre_with_aliases: &std::collections::HashSet<String>,
-    cte_schemas: &std::collections::HashMap<
-        String,
-        (
-            Vec<SelectItem>,
-            Vec<String>,
-            HashMap<String, String>,
-            HashMap<(String, String), String>,
-        ),
-    >,
+    cte_schemas: &crate::render_plan::CteSchemas,
 ) -> RenderPlanBuilderResult<LogicalPlan> {
     use crate::query_planner::logical_plan::*;
     use std::collections::HashMap;
@@ -10097,7 +9986,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
         // - Single item that's just a TableAlias
         // - No DISTINCT (already applied in inner CTE)
         // - No ORDER BY, SKIP, LIMIT modifiers
-        let is_passthrough = wc.items.len() == 1
+        wc.items.len() == 1
             && wc.order_by.is_none()
             && wc.skip.is_none()
             && wc.limit.is_none()
@@ -10106,9 +9995,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
             && matches!(
                 &wc.items[0].expression,
                 crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
-            );
-
-        is_passthrough
+            )
     }
 
     // Helper to generate a key for a WithClause (matches the key generation in find_all_with_clauses_grouped)
@@ -10301,15 +10188,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
     fn create_cte_reference(
         cte_name: &str,
         with_alias: &str,
-        cte_schemas: &std::collections::HashMap<
-            String,
-            (
-                Vec<SelectItem>,
-                Vec<String>,
-                HashMap<String, String>,
-                HashMap<(String, String), String>,
-            ),
-        >,
+        cte_schemas: &crate::render_plan::CteSchemas,
     ) -> LogicalPlan {
         use crate::graph_catalog::expression_parser::PropertyValue;
 
@@ -10320,9 +10199,9 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
 
         // Build property_mapping using CYPHER PROPERTY NAMES ONLY
         // Store the ViewScan's DB mapping separately so we can reverse-resolve DB columns
-        let (property_mapping, db_to_cypher_mapping) = if let Some((
+        let (property_mapping, _db_to_cypher_mapping) = if let Some((
             select_items,
-            property_names,
+            _property_names,
             _,
             stored_property_mapping, // <-- USE THIS to get correct DB column mappings
         )) = cte_schemas.get(cte_name)
@@ -10666,7 +10545,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                 if let LogicalPlan::GraphNode(gn) = &new_input {
                     if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
                         // Rebuild db_to_cypher mapping from cte_schemas
-                        let db_to_cypher = if let Some((select_items, _, _, property_mapping)) =
+                        let db_to_cypher = if let Some((select_items, _, _, _property_mapping)) =
                             cte_schemas.get(&vs.source_table)
                         {
                             let mut mapping = HashMap::new();

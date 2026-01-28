@@ -41,12 +41,9 @@ impl ToSql for PlanViewScan {
 
         // Add join for relationship queries
         if let Some(input) = &self.input {
-            match &**input {
-                LogicalPlan::ViewScan(inner) => {
-                    sql.push_str(&format!(" INNER JOIN ({}) AS input", inner.to_sql()?));
-                    sql.push_str(&format!(" ON {}.id = input.id", self.source_table));
-                }
-                _ => {}
+            if let LogicalPlan::ViewScan(inner) = &**input {
+                sql.push_str(&format!(" INNER JOIN ({}) AS input", inner.to_sql()?));
+                sql.push_str(&format!(" ON {}.id = input.id", self.source_table));
             }
         }
 

@@ -30,95 +30,6 @@ use std::{collections::HashMap, sync::Arc};
 
 pub struct CollectUnwindElimination;
 
-/// Helper to rewrite alias references throughout the query tree
-/// Maps old_alias -> new_alias for all TableAlias and PropertyAccess expressions
-fn rewrite_aliases_in_plan(
-    plan: Arc<LogicalPlan>,
-    alias_map: &HashMap<String, String>,
-) -> Arc<LogicalPlan> {
-    if alias_map.is_empty() {
-        return plan;
-    }
-
-    match plan.as_ref() {
-        LogicalPlan::Projection(proj) => {
-            let new_input = rewrite_aliases_in_plan(proj.input.clone(), alias_map);
-            let new_items: Vec<ProjectionItem> = proj
-                .items
-                .iter()
-                .map(|item| ProjectionItem {
-                    expression: rewrite_aliases_in_expr(&item.expression, alias_map),
-                    col_alias: item.col_alias.clone(),
-                })
-                .collect();
-
-            Arc::new(LogicalPlan::Projection(
-                crate::query_planner::logical_plan::Projection {
-                    input: new_input,
-                    items: new_items,
-                    distinct: proj.distinct,
-                },
-            ))
-        }
-
-        LogicalPlan::Filter(filter) => {
-            let new_input = rewrite_aliases_in_plan(filter.input.clone(), alias_map);
-            let new_predicate = rewrite_aliases_in_expr(&filter.predicate, alias_map);
-
-            Arc::new(LogicalPlan::Filter(
-                crate::query_planner::logical_plan::Filter {
-                    input: new_input,
-                    predicate: new_predicate,
-                },
-            ))
-        }
-
-        LogicalPlan::OrderBy(ob) => {
-            let new_input = rewrite_aliases_in_plan(ob.input.clone(), alias_map);
-            let new_items: Vec<_> = ob
-                .items
-                .iter()
-                .map(|item| crate::query_planner::logical_plan::OrderByItem {
-                    expression: rewrite_aliases_in_expr(&item.expression, alias_map),
-                    order: item.order.clone(),
-                })
-                .collect();
-
-            Arc::new(LogicalPlan::OrderBy(
-                crate::query_planner::logical_plan::OrderBy {
-                    input: new_input,
-                    items: new_items,
-                },
-            ))
-        }
-
-        LogicalPlan::GroupBy(gb) => {
-            let new_input = rewrite_aliases_in_plan(gb.input.clone(), alias_map);
-            let new_expressions: Vec<_> = gb
-                .expressions
-                .iter()
-                .map(|expr| rewrite_aliases_in_expr(expr, alias_map))
-                .collect();
-            let new_having = gb
-                .having_clause
-                .as_ref()
-                .map(|h| rewrite_aliases_in_expr(h, alias_map));
-
-            Arc::new(LogicalPlan::GroupBy(
-                crate::query_planner::logical_plan::GroupBy {
-                    input: new_input,
-                    expressions: new_expressions,
-                    having_clause: new_having,
-                    ..gb.clone()
-                },
-            ))
-        }
-
-        // For all other node types, just recurse into children
-        _ => plan,
-    }
-}
-
 /// Rewrite alias references in a single expression
 fn rewrite_aliases_in_expr(expr: &LogicalExpr, alias_map: &HashMap<String, String>) -> LogicalExpr {
     match expr {
@@ -151,7 +62,7 @@ fn rewrite_aliases_in_expr(expr: &LogicalExpr, alias_map: &HashMap<String, Strin
                 .collect();
             LogicalExpr::OperatorApplicationExp(
                 crate::query_planner::logical_expr::OperatorApplication {
-                    operator: op.operator.clone(),
+                    operator: op.operator,
                     operands: new_operands,
                 },
             )
@@ -220,7 +131,7 @@ impl CollectUnwindElimination {
 
             // Recursively optimize all child nodes and accumulate alias mappings
             LogicalPlan::Projection(proj) => {
-                let (optimized_input, mut alias_map) = Self::optimize_node(proj.input.clone())?;
+                let (optimized_input, alias_map) = Self::optimize_node(proj.input.clone())?;
 
                 // Apply alias rewriting to projection items if we have mappings
                 let new_items: Vec<ProjectionItem> = if alias_map.is_empty() {
@@ -391,7 +302,7 @@ impl CollectUnwindElimination {
     /// Returns: (modified_plan, alias_mapping)
     fn try_eliminate_collect_unwind(
         unwind: &Unwind,
-        unwind_plan: Arc<LogicalPlan>,
+        _unwind_plan: Arc<LogicalPlan>,
     ) -> OptimizerResult<(Arc<LogicalPlan>, HashMap<String, String>)> {
         log::info!(
             "🔥 CollectUnwindElimination: Examining UNWIND node, alias='{}', expression={:?}",
@@ -587,7 +498,7 @@ mod tests {
         }));
 
         let optimizer = CollectUnwindElimination;
-        let mut plan_ctx = PlanCtx::default();
+        let mut plan_ctx = PlanCtx::new_empty();
         let result = optimizer.optimize(unwind_plan, &mut plan_ctx).unwrap();
 
         // Should be optimized to Empty (the base)
@@ -637,7 +548,7 @@ mod tests {
         }));
 
         let optimizer = CollectUnwindElimination;
-        let mut plan_ctx = PlanCtx::default();
+        let mut plan_ctx = PlanCtx::new_empty();
         let result = optimizer.optimize(unwind_plan, &mut plan_ctx).unwrap();
 
         // Should be a WITH with only 'u'

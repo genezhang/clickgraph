@@ -14,20 +14,13 @@
 //! - Manage collect() function expansion
 
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::graph_catalog::graph_schema::GraphSchema;
-use crate::query_planner::join_context::{JoinContext, VLP_CTE_FROM_ALIAS};
-use crate::query_planner::logical_expr::{
-    CteEntityRef as LogicalCteEntityRef, LogicalExpr, PropertyAccess as LogicalPropertyAccess,
-    TableAlias,
-};
+use crate::query_planner::logical_expr::{LogicalExpr, TableAlias};
 use crate::query_planner::logical_plan::{LogicalPlan, ProjectionItem};
 use crate::query_planner::typed_variable::{TypedVariable, VariableSource};
-use crate::render_plan::cte_extraction::get_path_variable;
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::properties_builder::PropertiesBuilder;
 use crate::render_plan::render_expr::{
-    AggregateFnCall, Column, ColumnAlias, PropertyAccess, RenderExpr, ScalarFnCall,
-    TableAlias as RenderTableAlias,
+    Column, ColumnAlias, PropertyAccess, RenderExpr, TableAlias as RenderTableAlias,
 };
 use crate::render_plan::SelectItem;
 
@@ -199,7 +192,7 @@ impl SelectBuilder for LogicalPlan {
                                         // Unknown variable or path/collection - fallback to old logic
                                         log::warn!("⚠️ Variable '{}' not found in TypedVariable registry, using fallback logic", table_alias.0);
                                         self.fallback_table_alias_expansion(
-                                            &table_alias,
+                                            table_alias,
                                             item,
                                             &mut select_items,
                                         );
@@ -212,7 +205,7 @@ impl SelectBuilder for LogicalPlan {
                                     table_alias.0
                                 );
                                 self.fallback_table_alias_expansion(
-                                    &table_alias,
+                                    table_alias,
                                     item,
                                     &mut select_items,
                                 );
@@ -353,32 +346,29 @@ impl SelectBuilder for LogicalPlan {
 
                             // For denormalized nodes in edges, we need to get the actual table alias
                             // Try to get properties with actual table alias
-                            if let Ok((_properties, actual_table_alias_opt)) =
+                            if let Ok((_properties, Some(actual_table_alias))) =
                                 self.get_properties_with_table_alias(cypher_alias)
                             {
-                                if let Some(actual_table_alias) = actual_table_alias_opt {
-                                    // Hack for VLP denormalized: if col_name contains "Origin" or "Dest", use "t"
-                                    let table_alias_to_use = if col_name.contains("Origin")
-                                        || col_name.contains("Dest")
-                                    {
+                                // Hack for VLP denormalized: if col_name contains "Origin" or "Dest", use "t"
+                                let table_alias_to_use =
+                                    if col_name.contains("Origin") || col_name.contains("Dest") {
                                         "t"
                                     } else {
                                         &actual_table_alias
                                     };
-                                    select_items.push(SelectItem {
-                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: RenderTableAlias(
-                                                table_alias_to_use.to_string(),
-                                            ),
-                                            column: PropertyValue::Column(col_name.to_string()),
-                                        }),
-                                        col_alias: item
-                                            .col_alias
-                                            .as_ref()
-                                            .map(|ca| ColumnAlias(ca.0.clone())),
-                                    });
-                                    continue;
-                                }
+                                select_items.push(SelectItem {
+                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: RenderTableAlias(
+                                            table_alias_to_use.to_string(),
+                                        ),
+                                        column: PropertyValue::Column(col_name.to_string()),
+                                    }),
+                                    col_alias: item
+                                        .col_alias
+                                        .as_ref()
+                                        .map(|ca| ColumnAlias(ca.0.clone())),
+                                });
+                                continue;
                             }
 
                             // Default handling: pass through the PropertyAccessExp as-is
@@ -487,7 +477,7 @@ impl LogicalPlan {
         log::info!("✅ Expanding base table entity '{}' to properties", alias);
 
         // Get labels from TypedVariable
-        let labels = match typed_var {
+        let _labels = match typed_var {
             TypedVariable::Node(node) => &node.labels,
             TypedVariable::Relationship(rel) => &rel.rel_types,
             _ => return, // Should not happen

@@ -1,8 +1,5 @@
 //! Common utilities for ClickHouse query generation
 
-use crate::clickhouse_query_generator::errors::ClickhouseQueryGeneratorError;
-use anyhow::Context as _;
-
 // ⚠️ NOTE: Literal rendering code appears in multiple places due to different Literal types:
 //
 // - crate::query_planner::logical_expr::Literal (used in to_sql.rs)
@@ -15,45 +12,3 @@ use anyhow::Context as _;
 //
 // Future Improvement: Create a unified Literal trait that both types implement,
 // enabling a single render_literal() function in this module.
-
-/// Helper for creating errors with context
-///
-/// # Example
-/// ```ignore
-/// use crate::clickhouse_query_generator::common::error_with_context;
-///
-/// return Err(ClickhouseQueryGeneratorError::schema_error_with_context(
-///     "Node table not found for label: User",
-///     "while expanding relationship 'FOLLOWS' at hop 2"
-/// ));
-/// ```
-pub fn error_with_context(
-    error: ClickhouseQueryGeneratorError,
-    context: impl Into<String>,
-) -> ClickhouseQueryGeneratorError {
-    let ctx = context.into();
-    match error {
-        ClickhouseQueryGeneratorError::SchemaError(msg) => {
-            ClickhouseQueryGeneratorError::SchemaError(format!("{}\n  Context: {}", msg, ctx))
-        }
-        ClickhouseQueryGeneratorError::ColumnNotFound(col) => {
-            ClickhouseQueryGeneratorError::ColumnNotFound(format!("{} ({})", col, ctx))
-        }
-        other => other,
-    }
-}
-
-/// Macro for adding context to error results
-///
-/// # Example
-/// ```ignore
-/// validate_column(col_name).map_err(|e| {
-///     map_err_context!(e, "while validating column in table 'Users'")
-/// })?;
-/// ```
-#[macro_export]
-macro_rules! map_err_context {
-    ($err:expr, $ctx:expr) => {
-        $crate::clickhouse_query_generator::common::error_with_context($err, $ctx)
-    };
-}

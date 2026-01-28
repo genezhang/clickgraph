@@ -376,7 +376,7 @@ impl SchemaInference {
                 // NOTE: We DON'T skip when both nodes are anonymous because we CAN infer
                 // their labels from the relationship type. The infer_missing_labels function
                 // has specific logic for this case at line ~650.
-                let left_has_table = match graph_rel.left.as_ref() {
+                let _left_has_table = match graph_rel.left.as_ref() {
                     LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
                         LogicalPlan::Empty => false,
                         LogicalPlan::ViewScan(_) => true,
@@ -385,7 +385,7 @@ impl SchemaInference {
                     _ => true,
                 };
 
-                let right_has_table = match graph_rel.right.as_ref() {
+                let _right_has_table = match graph_rel.right.as_ref() {
                     LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
                         LogicalPlan::Empty => false,
                         LogicalPlan::ViewScan(_) => true,
@@ -932,7 +932,7 @@ impl SchemaInference {
 
             // NEW: Handle polymorphic edges with $any wildcard target
             // For MATCH (u:User)-[r]->(target), we use the first polymorphic relationship found
-            if relations_found.len() >= 1 {
+            if !relations_found.is_empty() {
                 for relation_schema in &relations_found {
                     // Check if this relationship uses $any wildcard (polymorphic)
                     let is_from_any = relation_schema.from_node == "$any";
@@ -1041,7 +1041,7 @@ impl SchemaInference {
 
             // NEW: Handle polymorphic edges with $any wildcard source
             // For MATCH (source)-[r]->(p:Post), we use the first polymorphic relationship found
-            if relations_found.len() >= 1 {
+            if !relations_found.is_empty() {
                 for relation_schema in &relations_found {
                     // Check if this relationship uses $any wildcard (polymorphic)
                     let is_from_any = relation_schema.from_node == "$any";
