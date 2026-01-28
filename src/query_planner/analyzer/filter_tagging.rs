@@ -793,7 +793,7 @@ impl FilterTagging {
                                 plan,
                                 &property_access.table_alias.0,
                                 property_access.column.raw(),
-                                &edge_alias,
+                                edge_alias,
                                 *is_from_node,
                                 plan_ctx,
                             ) {
@@ -828,7 +828,7 @@ impl FilterTagging {
                                     let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
                                     view_resolver.resolve_node_property_with_role(
                                         &label,
-                                        &property_access.column.raw(),
+                                        property_access.column.raw(),
                                         role,
                                     )?
                                 }
@@ -859,7 +859,7 @@ impl FilterTagging {
                                 let view_resolver = crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(graph_schema);
                                 view_resolver.resolve_node_property_with_role(
                                     &label,
-                                    &property_access.column.raw(),
+                                    property_access.column.raw(),
                                     None, // No role for standalone nodes
                                 )?
                             }
@@ -889,7 +889,7 @@ impl FilterTagging {
                         let to_node = table_ctx.get_to_node_label().map(|s| s.as_str());
                         let result = view_resolver.resolve_relationship_property(
                             &label,
-                            &property_access.column.raw(),
+                            property_access.column.raw(),
                             from_node,
                             to_node,
                         );
@@ -900,7 +900,7 @@ impl FilterTagging {
                         result?
                     } else {
                         let result = view_resolver
-                            .resolve_node_property(&label, &property_access.column.raw());
+                            .resolve_node_property(&label, property_access.column.raw());
                         println!("FilterTagging: resolve_node_property result: {:?}", result);
                         result?
                     }

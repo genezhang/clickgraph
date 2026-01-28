@@ -345,7 +345,7 @@ impl ProjectionTagging {
                     match node_strategy {
                         crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => {
                             // PRIMARY: Try PatternSchemaContext - has explicit role information
-                            if let Some(pattern_ctx) = plan_ctx.get_pattern_context(&edge_alias) {
+                            if let Some(pattern_ctx) = plan_ctx.get_pattern_context(edge_alias) {
                                 if let Some(mapped_column) = pattern_ctx.get_node_property(
                                     &property_access.table_alias.0,
                                     property_access.column.raw(),

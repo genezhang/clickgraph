@@ -199,7 +199,7 @@ impl SelectBuilder for LogicalPlan {
                                         // Unknown variable or path/collection - fallback to old logic
                                         log::warn!("⚠️ Variable '{}' not found in TypedVariable registry, using fallback logic", table_alias.0);
                                         self.fallback_table_alias_expansion(
-                                            &table_alias,
+                                            table_alias,
                                             item,
                                             &mut select_items,
                                         );
@@ -212,7 +212,7 @@ impl SelectBuilder for LogicalPlan {
                                     table_alias.0
                                 );
                                 self.fallback_table_alias_expansion(
-                                    &table_alias,
+                                    table_alias,
                                     item,
                                     &mut select_items,
                                 );

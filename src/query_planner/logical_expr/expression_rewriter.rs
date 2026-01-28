@@ -165,7 +165,7 @@ pub fn rewrite_expression_with_property_mapping(
             match ctx.find_label_for_alias(alias) {
                 Some(label) => {
                     // Map the property to DB column
-                    match map_property_to_db_column(&cypher_property, &label) {
+                    match map_property_to_db_column(cypher_property, &label) {
                         Ok(db_column) => {
                             // IDEMPOTENCY CHECK: If the mapped column is the same as the input,
                             // the property is already a DB column name. Return as-is.

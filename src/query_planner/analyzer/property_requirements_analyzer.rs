@@ -320,7 +320,7 @@ impl PropertyRequirementsAnalyzer {
                 } else {
                     let property = prop.column.raw();
                     log::info!("🔍 Found property reference: {}.{}", alias, property);
-                    requirements.require_property(alias, &property);
+                    requirements.require_property(alias, property);
                 }
             }
 

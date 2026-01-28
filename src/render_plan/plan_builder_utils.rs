@@ -4957,7 +4957,7 @@ pub(crate) fn expand_table_alias_to_select_items(
                     }
 
                     // Check property requirements for pruning
-                    if let Some(ref reqs) = property_requirements {
+                    if let Some(reqs) = property_requirements {
                         // If not wildcard and has specific requirements, check if property is needed
                         if !reqs.requires_all(alias) {
                             if let Some(props_needed) = reqs.get_requirements(alias) {
@@ -6834,7 +6834,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                         // Build explicit property mapping for UNION (VLP results)
                         let union_property_mapping =
-                            build_property_mapping_from_columns(&union_select_items);
+                            build_property_mapping_from_columns(union_select_items);
 
                         // Register the UNION schema as a pseudo-CTE for alias lookups
                         // This allows WITH clauses to reference VLP results

@@ -292,7 +292,7 @@ impl Authenticator {
         let mut hasher = Sha256::new();
         hasher.update(password.as_bytes());
         let result = hasher.finalize();
-        BASE64.encode(&result)
+        BASE64.encode(result)
     }
 
     /// Get list of users (for debugging)

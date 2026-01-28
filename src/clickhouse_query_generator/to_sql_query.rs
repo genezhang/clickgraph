@@ -382,7 +382,7 @@ fn rewrite_expr_for_vlp(
                     // This is accessing start node property
                     // Create Column with the full table.column format to prevent heuristic inference
                     // The FROM clause has the CTE aliased as 't', so use t.start_xxx
-                    let prop_name = derive_cypher_property_name(&prop.column.raw());
+                    let prop_name = derive_cypher_property_name(prop.column.raw());
                     return RenderExpr::Column(Column(PropertyValue::Column(format!(
                         "t.start_{}",
                         prop_name
@@ -393,7 +393,7 @@ fn rewrite_expr_for_vlp(
             if let Some(end) = end_alias {
                 if &prop.table_alias.0 == end {
                     // This is accessing end node property
-                    let prop_name = derive_cypher_property_name(&prop.column.raw());
+                    let prop_name = derive_cypher_property_name(prop.column.raw());
                     return RenderExpr::Column(Column(PropertyValue::Column(format!(
                         "t.end_{}",
                         prop_name

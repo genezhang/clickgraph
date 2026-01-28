@@ -1446,7 +1446,7 @@ fn apply_property_mapping_to_expr_with_context(
                 // Map the property to the correct column with relationship context
                 let mapped_column =
                     crate::render_plan::cte_generation::map_property_to_column_with_relationship_context(
-                        &prop.column.raw(),
+                        prop.column.raw(),
                         &node_label,
                         relationship_type,
                         node_role,
@@ -1457,7 +1457,7 @@ fn apply_property_mapping_to_expr_with_context(
         }
         RenderExpr::Column(col) => {
             // Check if this column name is actually an alias
-            if let Some(node_label) = get_node_label_for_alias(&col.raw(), plan) {
+            if let Some(node_label) = get_node_label_for_alias(col.raw(), plan) {
                 // Convert Column(alias) to PropertyAccess(alias, "id")
                 let id_column = table_to_id_column(&label_to_table_name(&node_label));
                 *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
@@ -1716,7 +1716,7 @@ pub fn extract_ctes_with_context(
                 // 🎯 CHECK: Is this multi-type VLP? (end node has unknown type)
                 // If so, end_table will be determined by schema expansion, not from the plan
                 let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
-                let is_multi_type_vlp = should_use_join_expansion(&graph_rel, &rel_types, schema);
+                let is_multi_type_vlp = should_use_join_expansion(graph_rel, &rel_types, schema);
 
                 let end_table = if is_multi_type_vlp {
                     // For multi-type VLP, end_table isn't in the plan (it's polymorphic)
@@ -2302,7 +2302,7 @@ pub fn extract_ctes_with_context(
                 // 🎯 DECISION POINT: CTE or inline JOINs?
                 // BUT FIRST: Check if this is multi-type VLP (requires UNION ALL, not chained JOINs)
                 let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
-                let is_multi_type = should_use_join_expansion(&graph_rel, &rel_types, schema);
+                let is_multi_type = should_use_join_expansion(graph_rel, &rel_types, schema);
 
                 let use_chained_join = spec.exact_hop_count().is_some()
                     && graph_rel.shortest_path_mode.is_none()
@@ -2362,13 +2362,13 @@ pub fn extract_ctes_with_context(
                     log::info!("🔍 VLP: rel_types={:?}", rel_types);
 
                     let is_multi_type_check =
-                        should_use_join_expansion(&graph_rel, &rel_types, schema);
+                        should_use_join_expansion(graph_rel, &rel_types, schema);
                     log::info!(
                         "🔍 VLP: should_use_join_expansion returned: {}",
                         is_multi_type_check
                     );
 
-                    if should_use_join_expansion(&graph_rel, &rel_types, schema) {
+                    if should_use_join_expansion(graph_rel, &rel_types, schema) {
                         // Multi-type VLP: Use JOIN expansion with UNION ALL
                         log::info!("🎯 CTE: Using JOIN expansion for multi-type VLP");
 
@@ -2529,7 +2529,7 @@ pub fn extract_ctes_with_context(
 
                     // ✨ PHASE 2 REFACTORING: Use PatternSchemaContext instead of scattered is_denormalized checks
                     // Recreate the pattern schema context to determine JOIN strategy and node access patterns
-                    let pattern_ctx = match recreate_pattern_schema_context(&graph_rel, schema) {
+                    let pattern_ctx = match recreate_pattern_schema_context(graph_rel, schema) {
                         Ok(ctx) => ctx,
                         Err(e) => {
                             log::warn!("⚠️ Failed to recreate PatternSchemaContext, falling back to denormalized flag checks: {}", e);

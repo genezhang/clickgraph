@@ -433,7 +433,7 @@ impl LogicalPlan {
                 } else {
                     // If right doesn't have FROM, we need to determine which node should be the anchor
                     // Use find_anchor_node logic to choose the correct anchor
-                    let all_connections = get_all_relationship_connections(&self);
+                    let all_connections = get_all_relationship_connections(self);
                     let optional_aliases = std::collections::HashSet::new();
                     let denormalized_aliases = std::collections::HashSet::new();
 
