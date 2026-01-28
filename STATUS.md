@@ -7,7 +7,7 @@
 **v0.6.2** - Production-ready graph query engine for ClickHouse (In development)
 
 **Test Status**:
-- ✅ Unit tests: 787/787 passing (100%)
+- ✅ Unit tests: 832/832 passing (100%) ⬆️ **IMPROVED** (Jan 26 Phase 2)
 - ✅ Parser tests: 184/184 passing (100%, 2 ignored)
 - ✅ Integration matrix tests: 233/273 passing (85%) ⬆️ **IMPROVED**
   - Fixed EXISTS subquery schema context issue (thread_local vs task_local)
@@ -39,7 +39,93 @@
 
 **Recent Fixes**:
 
-0. **Jan 26, 2026 - Query Planner: Production Panic Elimination** ✅ COMPLETED:
+0. **Jan 27, 2026 - Error Propagation: Phase 2B + Phase 3 Implementation** ✅ COMPLETED:
+   - **Phase 2B (Error Context Infrastructure)** - 1 hour:
+     - Added helper methods: `schema_error_with_context()`, `column_not_found_with_context()`
+     - Created `error_with_context()` function in common.rs for generic error wrapping
+     - Added `map_err_context!()` macro for convenient error context
+     - Enables structured error creation with contextual information
+   
+   - **Phase 3 (Error Chaining Foundation)** - 1.5 hours:
+     - Added anyhow crate to dependencies (1.0)
+     - Prepared error context infrastructure for future error chaining
+     - Updated 5 high-impact error sites with structured context:
+       1. function_translator.rs: Function argument conversion error
+       2. function_translator.rs: ClickHouse function name validation
+       3. function_translator.rs: Function prefix validation
+       4. pagerank.rs: PageRank node labels validation
+       5. pagerank.rs: PageRank relationship tables validation
+   
+   - **Results**:
+     - Improved error diagnostics with contextual information
+     - Backward compatible (no breaking changes)
+     - Test pass rate: 832/832 (100%)
+     - Error messages now include operation context
+     - Foundation ready for Phase 4 full error chaining
+   
+   - **Example Error Enhancement**:
+     ```
+     Before: Schema error: Failed to convert arguments to SQL: column not found
+     After: Schema error: Failed to convert arguments to SQL: column not found
+            Context: in pagerank function with 2 arguments
+     ```
+   
+   - **Files Modified**:
+     - `src/clickhouse_query_generator/errors.rs` (+30 lines)
+     - `src/clickhouse_query_generator/common.rs` (+50 lines)
+     - `src/clickhouse_query_generator/function_translator.rs` (+5 net)
+     - `src/clickhouse_query_generator/pagerank.rs` (+5 net)
+     - `Cargo.toml` (+1 line: anyhow dependency)
+   
+   - **Phase Summary**: notes/PHASE_2B_AND_3_IMPLEMENTATION.md
+
+1. **Jan 26, 2026 - Code Quality: Phase 2 Consolidation & Analysis** ✅ COMPLETED:
+   - **Objective**: Analyze clickhouse_query_generator for consolidation opportunities and technical debt
+   - **Work Completed**:
+     1. **Literal Rendering Duplication Analysis**:
+        - Identified duplicate literal rendering code in to_sql.rs and to_sql_query.rs
+        - Root cause: Two different Literal types (logical_expr vs render_expr) prevent simple consolidation
+        - Decision: Defer to Phase 3 with trait-based solution sketch
+        - Documentation: Added to common.rs and analysis files
+     
+     2. **Operator Rendering Consolidation Study**:
+        - Identified ~70 lines operator rendering duplication across 2 files
+        - Analyzed consolidation blockers (type system, error handling, special cases)
+        - Created detailed roadmap for Phase 3 (OperatorRenderer trait, estimated 4-6 hours)
+        - Added TODO comments to source files with strategy
+        - Output: notes/OPERATOR_RENDERING_ANALYSIS.md (270 lines)
+     
+     3. **Dead Code Inventory**:
+        - Analyzed build_view_scan() (45 lines) - Reserved for future use
+        - Analyzed generate_recursive_case() (4 lines) - Backward compatibility
+        - Decision: Keep all dead code (documented purpose outweighs cleanup benefit)
+        - Output: notes/DEAD_CODE_ANALYSIS.md (200 lines)
+     
+     4. **Error Propagation Improvement Plan**:
+        - Analyzed current error handling (21 variants with good coverage)
+        - Identified gaps: No structured context, no error chaining, no recovery suggestions
+        - Created 3-phase improvement roadmap:
+          - Phase 2B (1 hour): Add context fields infrastructure
+          - Phase 3 (5 hours): Implement error chaining with anyhow
+          - Phase 4 (7 hours): Add recovery suggestions engine
+        - Output: notes/ERROR_PROPAGATION_ANALYSIS.md (290 lines)
+   
+   - **Quality Metrics**:
+     - Unit tests: 832/832 passing (100%) - no regressions
+     - New compiler errors: 0
+     - New compiler warnings: 0
+     - Backward compatibility: 100% maintained
+   
+   - **Deliverables**:
+     - 3 comprehensive analysis documents (760+ lines)
+     - 2 TODO comments added to source (27 lines)
+     - 1 architectural decision documented in common.rs
+     - Complete Phase 3 roadmap (19-25 hours identified)
+   
+   - **Impact**: Module assessed, technical debt documented, Phase 3 roadmap clear
+   - **Phase 2 Summary**: notes/PHASE_2_COMPLETION_SUMMARY.md
+
+1. **Jan 26, 2026 - Query Planner: Production Panic Elimination** ✅ COMPLETED:
    - **Problem**: 35 `unwrap()` calls in production code could panic on unexpected input
      - Empty collections, None values, failed conversions could crash request processing
    - **Solution**: Systematic replacement with safe error handling:

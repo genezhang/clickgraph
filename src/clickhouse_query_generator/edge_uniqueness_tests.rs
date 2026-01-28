@@ -40,7 +40,10 @@ mod edge_uniqueness_tests {
         let cte = generator.generate_cte();
         let sql = match &cte.content {
             crate::render_plan::CteContent::RawSql(s) => s,
-            _ => panic!("Expected RawSql"),
+            other => panic!(
+                "Expected RawSql content in test_default_tuple_edge_id, got: {:?}",
+                other
+            ),
         };
 
         // Check for path_edges (for edge uniqueness)
@@ -110,7 +113,10 @@ mod edge_uniqueness_tests {
         let cte = generator.generate_cte();
         let sql = match &cte.content {
             crate::render_plan::CteContent::RawSql(s) => s,
-            _ => panic!("Expected RawSql"),
+            other => panic!(
+                "Expected RawSql content in test_custom_edge_id_tuple_construction, got: {:?}",
+                other
+            ),
         };
 
         // Check for path_edges
@@ -169,7 +175,10 @@ mod edge_uniqueness_tests {
         let cte = generator.generate_cte();
         let sql = match &cte.content {
             crate::render_plan::CteContent::RawSql(s) => s,
-            _ => panic!("Expected RawSql"),
+            other => panic!(
+                "Expected RawSql content in test_custom_edge_id_column, got: {:?}",
+                other
+            ),
         };
 
         // Check for path_edges

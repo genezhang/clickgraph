@@ -199,8 +199,9 @@ ORDER BY pagerank DESC
         // If specific node labels are provided, use them
         if let Some(ref labels) = self.node_labels {
             if labels.is_empty() {
-                return Err(ClickhouseQueryGeneratorError::SchemaError(
-                    "nodeLabels parameter cannot be empty".to_string(),
+                return Err(ClickhouseQueryGeneratorError::schema_error_with_context(
+                    "nodeLabels parameter cannot be empty",
+                    "in PageRank algorithm node label specification",
                 ));
             }
 
@@ -316,8 +317,9 @@ ORDER BY pagerank DESC
         }
 
         if tables.is_empty() {
-            return Err(ClickhouseQueryGeneratorError::SchemaError(
-                "No relationship tables found in schema matching the specified types".to_string(),
+            return Err(ClickhouseQueryGeneratorError::schema_error_with_context(
+                "No relationship tables found in schema matching the specified types",
+                format!("relationship types: {:?}", self.relationship_types),
             ));
         }
 
