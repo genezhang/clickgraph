@@ -75,6 +75,7 @@ server_error.log
 clickgraph_server.log
 debug_server.log
 server*.log
+*.txt
 
 # Temporary scripts and files
 cleanup_*.ps1
@@ -140,3 +141,4 @@ tests/private/*.bak
 # PR description drafts
 PR_*.md
 /WITH_CLAUSE_BUG_FIX.md
+notes/
