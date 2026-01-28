@@ -322,7 +322,10 @@ fn is_simple_column(s: &str) -> bool {
         return false;
     }
 
-    let first = s.chars().next().unwrap();
+    let first = s
+        .chars()
+        .next()
+        .expect("String is not empty (checked above), chars().next() must return Some");
     if !first.is_alphabetic() && first != '_' {
         return false;
     }
@@ -597,9 +600,17 @@ fn parse_literal_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
         // Numeric literal
         map(recognize_number, |s: &str| {
             if s.contains('.') {
-                ClickHouseExpr::Literal(Literal::Float(s.parse().unwrap()))
+                let parsed = s.parse::<f64>().expect(&format!(
+                    "Failed to parse float literal '{}' (validated by recognize_number parser)",
+                    s
+                ));
+                ClickHouseExpr::Literal(Literal::Float(parsed))
             } else {
-                ClickHouseExpr::Literal(Literal::Integer(s.parse().unwrap()))
+                let parsed = s.parse::<i64>().expect(&format!(
+                    "Failed to parse integer literal '{}' (validated by recognize_number parser)",
+                    s
+                ));
+                ClickHouseExpr::Literal(Literal::Integer(parsed))
             }
         }),
     ))

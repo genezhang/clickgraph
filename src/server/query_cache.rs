@@ -428,7 +428,7 @@ impl CacheMetrics {
 fn current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .expect("System time should not go backwards")
         .as_millis() as u64
 }
 

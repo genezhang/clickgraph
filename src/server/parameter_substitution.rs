@@ -45,12 +45,25 @@ fn format_parameter(value: &Value) -> Result<String, ParameterSubstitutionError>
     match value {
         Value::String(s) => Ok(format!("'{}'", escape_string(s))),
 
-        Value::Number(n) if n.is_i64() => Ok(n.as_i64().unwrap().to_string()),
+        Value::Number(n) if n.is_i64() => {
+            // Safe: guard ensures n.is_i64() is true
+            Ok(n.as_i64()
+                .expect("Expected i64 number (guard check passed)")
+                .to_string())
+        }
 
-        Value::Number(n) if n.is_u64() => Ok(n.as_u64().unwrap().to_string()),
+        Value::Number(n) if n.is_u64() => {
+            // Safe: guard ensures n.is_u64() is true
+            Ok(n.as_u64()
+                .expect("Expected u64 number (guard check passed)")
+                .to_string())
+        }
 
         Value::Number(n) if n.is_f64() => {
-            let f = n.as_f64().unwrap();
+            // Safe: guard ensures n.is_f64() is true
+            let f = n
+                .as_f64()
+                .expect("Expected f64 number (guard check passed)");
             if f.is_finite() {
                 Ok(f.to_string())
             } else {

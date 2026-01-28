@@ -107,16 +107,21 @@ pub async fn run_with_config(config: ServerConfig) {
     let connection_pool = match connection_pool::RoleConnectionPool::new() {
         Ok(pool) => Arc::new(pool),
         Err(e) => {
-            log::error!(
-                "Warning: Failed to create connection pool: {}. Using default client.",
-                e
-            );
-            // Create a minimal pool for YAML-only mode
-            Arc::new(
-                connection_pool::RoleConnectionPool::new().unwrap_or_else(|_| {
-                    panic!("Failed to create connection pool even with defaults")
-                }),
-            )
+            log::error!("Failed to create primary connection pool: {}", e);
+            // Try to create a minimal pool as fallback
+            match connection_pool::RoleConnectionPool::new() {
+                Ok(pool) => {
+                    log::warn!("Created fallback connection pool");
+                    Arc::new(pool)
+                }
+                Err(fallback_err) => {
+                    log::error!("✗ FATAL: Connection pool initialization failed completely");
+                    log::error!("  Primary error: {}", e);
+                    log::error!("  Fallback error: {}", fallback_err);
+                    log::error!("  Resolution: Ensure ClickHouse environment variables are set (CLICKHOUSE_URL, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)");
+                    std::process::exit(1);
+                }
+            }
         }
     };
 
