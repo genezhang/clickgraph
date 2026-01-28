@@ -2672,7 +2672,7 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
     fn contains_actual_with_clause(plan: &LogicalPlan) -> bool {
         match plan {
             // New WithClause type takes precedence
-            LogicalPlan::WithClause(wc) => {
+            LogicalPlan::WithClause(_wc) => {
                 log::info!("🔍 contains_actual_with_clause: Found WithClause node");
                 true
             }
@@ -2698,7 +2698,7 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
 
     match plan {
         // NEW: Direct WithClause at any level in the plan
-        LogicalPlan::WithClause(wc) => {
+        LogicalPlan::WithClause(_wc) => {
             log::info!("🔍 has_with_clause_in_graph_rel: Found WithClause at plan root");
             true
         }
@@ -2708,7 +2708,7 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
             // was wrapped in Union (for undirected patterns) or GraphJoins
             let right_has_nested_pattern = match graph_rel.right.as_ref() {
                 // NEW: Direct WithClause in GraphRel.right
-                LogicalPlan::WithClause(wc) => {
+                LogicalPlan::WithClause(_wc) => {
                     log::info!(
                         "🔍 has_with_clause_in_graph_rel: Found WithClause in GraphRel.right"
                     );
@@ -2744,7 +2744,7 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
             // Also check left side (for incoming patterns)
             let left_has_nested_pattern = match graph_rel.left.as_ref() {
                 // NEW: Direct WithClause in GraphRel.left
-                LogicalPlan::WithClause(wc) => {
+                LogicalPlan::WithClause(_wc) => {
                     log::info!(
                         "🔍 has_with_clause_in_graph_rel: Found WithClause in GraphRel.left"
                     );
