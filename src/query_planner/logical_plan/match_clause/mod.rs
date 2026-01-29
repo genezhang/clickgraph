@@ -12,15 +12,16 @@
 //! The module is organized into focused submodules:
 //! - `traversal.rs` - Core MATCH clause evaluation and pattern traversal
 //! - `view_scan.rs` - ViewScan generation for nodes and relationships
-//! - `type_inference.rs` - Node label and relationship type inference
 //! - `helpers.rs` - Utility functions (property conversion, scan helpers, etc.)
 //! - `errors.rs` - Error types for match clause processing
 //! - `tests.rs` - Unit tests for match clause processing
+//!
+//! **Note**: Type inference has been moved to `query_planner::analyzer::match_type_inference`
+//! to maintain proper separation between logical plan construction (here) and analysis (analyzer).
 
 mod errors;
 mod helpers;
 mod traversal;
-mod type_inference;
 mod view_scan;
 
 #[cfg(test)]
@@ -28,9 +29,6 @@ mod tests;
 
 // Re-export all public items from traversal module
 pub use traversal::*;
-
-// Re-export type inference functions
-pub use type_inference::{infer_node_label_from_schema, infer_relationship_type_from_nodes};
 
 // Re-export ViewScan generation functions
 pub use view_scan::{

@@ -21,11 +21,13 @@ use crate::query_planner::logical_expr::{
 use crate::query_planner::logical_plan::{errors::LogicalPlanError, generate_id, LogicalPlan};
 use crate::query_planner::plan_ctx::{PlanCtx, TableCtx};
 
-// Import from parent module (match_clause)
-use super::{
-    convert_properties, convert_properties_to_operator_application, generate_scan,
+// Import type inference functions from analyzer
+use crate::query_planner::analyzer::match_type_inference::{
     infer_node_label_from_schema, infer_relationship_type_from_nodes,
 };
+
+// Import from parent module (match_clause)
+use super::{convert_properties, convert_properties_to_operator_application, generate_scan};
 
 // Import internal functions from traversal module
 use super::traversal::{evaluate_match_clause, traverse_connected_pattern, traverse_node_pattern};
