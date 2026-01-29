@@ -94,6 +94,7 @@ pub mod graph_join;
 pub use graph_join as graph_join_inference;
 mod graph_traversal_planning;
 mod group_by_building;
+pub mod match_type_inference;
 mod plan_sanitization;
 mod projected_columns_resolver;
 mod projection_tagging;
