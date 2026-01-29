@@ -2370,34 +2370,6 @@ pub(super) fn plan_to_string(plan: &LogicalPlan, depth: usize) -> String {
     }
 }
 
-/// Check if a LogicalPlan contains any ViewScan nodes
-#[allow(dead_code)]
-pub(super) fn plan_contains_view_scan(plan: &LogicalPlan) -> bool {
-    match plan {
-        LogicalPlan::ViewScan(_) => true,
-        LogicalPlan::GraphNode(node) => plan_contains_view_scan(&node.input),
-        LogicalPlan::GraphRel(rel) => {
-            plan_contains_view_scan(&rel.left)
-                || plan_contains_view_scan(&rel.right)
-                || plan_contains_view_scan(&rel.center)
-        }
-        LogicalPlan::Filter(filter) => plan_contains_view_scan(&filter.input),
-        LogicalPlan::Projection(proj) => plan_contains_view_scan(&proj.input),
-        LogicalPlan::GraphJoins(joins) => plan_contains_view_scan(&joins.input),
-        LogicalPlan::GroupBy(group_by) => plan_contains_view_scan(&group_by.input),
-        LogicalPlan::OrderBy(order_by) => plan_contains_view_scan(&order_by.input),
-        LogicalPlan::Skip(skip) => plan_contains_view_scan(&skip.input),
-        LogicalPlan::Limit(limit) => plan_contains_view_scan(&limit.input),
-        LogicalPlan::Cte(cte) => plan_contains_view_scan(&cte.input),
-        LogicalPlan::Unwind(u) => plan_contains_view_scan(&u.input),
-        LogicalPlan::Union(union) => union
-            .inputs
-            .iter()
-            .any(|i| plan_contains_view_scan(i.as_ref())),
-        _ => false,
-    }
-}
-
 /// Apply property mapping to an expression
 ///
 /// Main purpose: Convert TableAlias expressions to PropertyAccess for denormalized schemas.
@@ -3073,30 +3045,6 @@ pub(super) fn extract_outer_aggregation_info(
         .collect();
 
     Some((outer_select, outer_group_by))
-}
-
-/// Convert an ORDER BY expression for use in a UNION query
-#[allow(dead_code)]
-pub(super) fn convert_order_by_expr_for_union(
-    expr: &crate::query_planner::logical_expr::LogicalExpr,
-) -> RenderExpr {
-    use crate::query_planner::logical_expr::LogicalExpr;
-
-    match expr {
-        LogicalExpr::PropertyAccessExp(prop_access) => {
-            let alias = format!(
-                "\"{}.{}\"",
-                prop_access.table_alias.0,
-                prop_access.column.raw()
-            );
-            RenderExpr::Raw(alias)
-        }
-        LogicalExpr::ColumnAlias(col_alias) => RenderExpr::Raw(format!("\"{}\"", col_alias.0)),
-        _ => expr
-            .clone()
-            .try_into()
-            .unwrap_or_else(|_| RenderExpr::Raw("1".to_string())),
-    }
 }
 
 /// Check if joining_on references a UNION CTE
