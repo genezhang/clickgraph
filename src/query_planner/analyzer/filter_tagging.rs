@@ -1246,31 +1246,6 @@ impl FilterTagging {
                 "FilterTagging: Extracted filter for table alias: '{}'",
                 table_alias
             );
-            // let mut table_alias = "";
-            // for operand in &extracted_filter.operands {
-            //     match operand {
-            //         LogicalExpr::PropertyAccessExp(property_access) => {
-            //             table_alias = &property_access.table_alias.0;
-            //         },
-            //         // in case of fn, we check for any argument is of type prop access
-            //         LogicalExpr::ScalarFnCall(scalar_fn_call) => {
-            //             for arg in &scalar_fn_call.args {
-            //                 if let LogicalExpr::PropertyAccessExp(property_access) = arg {
-            //                     table_alias = &property_access.table_alias.0;
-            //                 }
-            //             }
-            //         },
-            //         // in case of fn, we check for any argument is of type prop access
-            //         LogicalExpr::AggregateFnCall(aggregate_fn_call) => {
-            //             for arg in &aggregate_fn_call.args {
-            //                 if let LogicalExpr::PropertyAccessExp(property_access) = arg {
-            //                     table_alias = &property_access.table_alias.0;
-            //                 }
-            //             }
-            //         },
-            //         _ => ()
-            //     }
-            // }
 
             if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&table_alias) {
                 // FIXED: Keep PropertyAccessExp with table_alias instead of converting to Column
@@ -1441,11 +1416,10 @@ impl FilterTagging {
                 );
                 op_app.operands = new_operands;
 
-                // TODO ALl aggregated functions will be evaluated in final where clause. We have to check what kind of fns we can put here.
-                // because if we put aggregated fns like count() then it will mess up the final result because we want the count of all joined entries in the set,
-                // in case of anchor node this could lead incorrect answers.
+                // TODO: All aggregated functions will be evaluated in final where clause. We have to check what kind of fns we can put here.
+                // Note: We are not extracting aggregated fns because they mess up the final result.
+                // We want the count of all joined entries in the set; for anchor nodes this could lead to incorrect answers.
 
-                // let mut should_extract: bool = false;
                 let mut temp_prop_acc: Vec<PropertyAccess> = vec![];
                 let mut condition_belongs_to: HashSet<&str> = HashSet::new();
                 let mut agg_operand_found = false;
