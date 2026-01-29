@@ -2336,40 +2336,6 @@ pub(super) fn plan_type_name(plan: &LogicalPlan) -> &'static str {
     }
 }
 
-/// Format a LogicalPlan as a debug string for logging
-#[allow(dead_code)]
-pub(super) fn plan_to_string(plan: &LogicalPlan, depth: usize) -> String {
-    let indent = "  ".repeat(depth);
-    match plan {
-        LogicalPlan::GraphNode(node) => format!(
-            "{}GraphNode(alias='{}', input={})",
-            indent,
-            node.alias,
-            plan_to_string(&node.input, depth + 1)
-        ),
-        LogicalPlan::GraphRel(rel) => format!(
-            "{}GraphRel(alias='{}', left={}, center={}, right={})",
-            indent,
-            rel.alias,
-            plan_to_string(&rel.left, depth + 1),
-            plan_to_string(&rel.center, depth + 1),
-            plan_to_string(&rel.right, depth + 1)
-        ),
-        LogicalPlan::Filter(filter) => format!(
-            "{}Filter(input={})",
-            indent,
-            plan_to_string(&filter.input, depth + 1)
-        ),
-        LogicalPlan::Projection(proj) => format!(
-            "{}Projection(input={})",
-            indent,
-            plan_to_string(&proj.input, depth + 1)
-        ),
-        LogicalPlan::ViewScan(scan) => format!("{}ViewScan(table='{}')", indent, scan.source_table),
-        _ => format!("{}Other({})", indent, plan_type_name(plan)),
-    }
-}
-
 /// Apply property mapping to an expression
 ///
 /// Main purpose: Convert TableAlias expressions to PropertyAccess for denormalized schemas.
