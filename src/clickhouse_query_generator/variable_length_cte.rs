@@ -889,29 +889,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         rewritten
     }
 
-    /// Extract simple equality filter for early termination optimization
-    /// Converts "end_node.id = 123" to "end_id = 123" for use in EXISTS clause
-    /// Returns None if filter is complex (AND/OR) or not a simple equality
-    fn extract_simple_equality_filter(&self, filter: &str) -> Option<String> {
-        // Skip complex filters with AND/OR
-        if filter.contains(" AND ") || filter.contains(" OR ") {
-            return None;
-        }
-
-        // Rewrite end_node references to end_id format (uses VLP_END_ID_COLUMN constant)
-        // Replace end_node.{id_column} with end_id
-        let rewritten = filter.replace(
-            &format!("{}.{}", self.end_node_alias, self.end_node_id_column),
-            VLP_END_ID_COLUMN,
-        );
-
-        // Only return if it looks like a simple equality (contains '=')
-        if rewritten.contains('=') && !rewritten.contains("!=") {
-            Some(rewritten.trim().to_string())
-        } else {
-            None
-        }
-    }
+    // Note: extract_simple_equality_filter was removed as dead code (never called)
 
     /// Generate the actual recursive SQL string
     fn generate_recursive_sql(&self) -> String {

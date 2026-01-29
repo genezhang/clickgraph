@@ -23,7 +23,7 @@ use crate::{
     graph_catalog::{graph_schema::GraphSchema, pattern_schema::PatternSchemaContext},
     query_planner::{
         analyzer::property_requirements::PropertyRequirements, join_context::VlpEndpointInfo,
-        logical_plan::ProjectionItem, typed_variable::VariableRegistry,
+        typed_variable::VariableRegistry,
     },
 };
 

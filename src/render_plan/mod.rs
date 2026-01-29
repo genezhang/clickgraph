@@ -20,7 +20,6 @@ mod view_table_ref;
 
 use errors::RenderBuildError;
 use render_expr::{ColumnAlias, OperatorApplication, RenderExpr};
-use std::cell::RefCell;
 
 pub use cte_generation::CteGenerationContext;
 pub use cte_manager::{

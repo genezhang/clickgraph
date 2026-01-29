@@ -22,8 +22,6 @@
 //! 2. Single source of truth for expansion logic
 //! 3. Consistent behavior across RETURN, WITH, GroupBy, collect()
 
-use std::collections::HashMap;
-
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::{
     analyzer::property_requirements::PropertyRequirements,
@@ -34,7 +32,7 @@ use crate::query_planner::{
 };
 
 use super::render_expr::{
-    AggregateFnCall as RenderAggregateFnCall, Column, ColumnAlias as RenderColumnAlias,
+    AggregateFnCall as RenderAggregateFnCall, ColumnAlias as RenderColumnAlias,
     PropertyAccess as RenderPropertyAccess, RenderExpr, TableAlias as RenderTableAlias,
 };
 use super::SelectItem;

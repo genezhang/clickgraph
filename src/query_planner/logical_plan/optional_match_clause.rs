@@ -21,7 +21,6 @@
 use std::sync::Arc;
 
 use crate::{
-    graph_catalog::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema},
     open_cypher_parser::ast,
     query_planner::{
         logical_plan::{plan_builder::LogicalPlanResult, LogicalPlan},
@@ -94,99 +93,100 @@ pub fn evaluate_optional_match_clause<'a>(
     Ok(plan)
 }
 
-/// Create a test graph schema with User nodes and FOLLOWS relationships
-fn setup_test_graph_schema() -> GraphSchema {
-    use crate::graph_catalog::expression_parser::PropertyValue;
-    use std::collections::HashMap;
-
-    let mut nodes = HashMap::new();
-    let mut relationships = HashMap::new();
-
-    // Create User node schema
-    let user_node = NodeSchema {
-        database: "test_db".to_string(),
-        table_name: "users".to_string(),
-        column_names: vec![
-            "id".to_string(),
-            "name".to_string(),
-            "age".to_string(),
-            "status".to_string(),
-            "user_id".to_string(),
-        ],
-        primary_keys: "id".to_string(),
-        node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
-        property_mappings: [
-            (
-                "name".to_string(),
-                PropertyValue::Column("name".to_string()),
-            ),
-            ("age".to_string(), PropertyValue::Column("age".to_string())),
-            (
-                "status".to_string(),
-                PropertyValue::Column("status".to_string()),
-            ),
-            (
-                "user_id".to_string(),
-                PropertyValue::Column("user_id".to_string()),
-            ),
-            (
-                "full_name".to_string(),
-                PropertyValue::Column("name".to_string()),
-            ),
-        ]
-        .into_iter()
-        .collect(),
-        view_parameters: None,
-        engine: None,
-        use_final: None,
-        filter: None,
-        is_denormalized: false,
-        from_properties: None,
-        to_properties: None,
-        denormalized_source_table: None,
-        label_column: None,
-        label_value: None,
-    };
-    nodes.insert("User".to_string(), user_node);
-
-    // Create FOLLOWS relationship schema
-    let follows_rel = RelationshipSchema {
-        database: "test_db".to_string(),
-        table_name: "follows".to_string(),
-        column_names: vec!["from_id".to_string(), "to_id".to_string()],
-        from_node: "User".to_string(),
-        to_node: "User".to_string(),
-        from_node_table: "users".to_string(),
-        to_node_table: "users".to_string(),
-        from_id: "from_id".to_string(),
-        to_id: "to_id".to_string(),
-        from_node_id_dtype: "UInt64".to_string(),
-        to_node_id_dtype: "UInt64".to_string(),
-        property_mappings: HashMap::new(),
-        view_parameters: None,
-        engine: None,
-        use_final: None,
-        filter: None,
-        edge_id: None,
-        type_column: None,
-        from_label_column: None,
-        to_label_column: None,
-        from_label_values: None,
-        to_label_values: None,
-        from_node_properties: None,
-        to_node_properties: None,
-        is_fk_edge: false,
-        constraints: None,
-    };
-    relationships.insert("FOLLOWS".to_string(), follows_rel);
-
-    GraphSchema::build(1, "test_db".to_string(), nodes, relationships)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph_catalog::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema};
     use crate::open_cypher_parser::ast;
+
+    /// Create a test graph schema with User nodes and FOLLOWS relationships
+    fn setup_test_graph_schema() -> GraphSchema {
+        use crate::graph_catalog::expression_parser::PropertyValue;
+        use std::collections::HashMap;
+
+        let mut nodes = HashMap::new();
+        let mut relationships = HashMap::new();
+
+        // Create User node schema
+        let user_node = NodeSchema {
+            database: "test_db".to_string(),
+            table_name: "users".to_string(),
+            column_names: vec![
+                "id".to_string(),
+                "name".to_string(),
+                "age".to_string(),
+                "status".to_string(),
+                "user_id".to_string(),
+            ],
+            primary_keys: "id".to_string(),
+            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            property_mappings: [
+                (
+                    "name".to_string(),
+                    PropertyValue::Column("name".to_string()),
+                ),
+                ("age".to_string(), PropertyValue::Column("age".to_string())),
+                (
+                    "status".to_string(),
+                    PropertyValue::Column("status".to_string()),
+                ),
+                (
+                    "user_id".to_string(),
+                    PropertyValue::Column("user_id".to_string()),
+                ),
+                (
+                    "full_name".to_string(),
+                    PropertyValue::Column("name".to_string()),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
+        };
+        nodes.insert("User".to_string(), user_node);
+
+        // Create FOLLOWS relationship schema
+        let follows_rel = RelationshipSchema {
+            database: "test_db".to_string(),
+            table_name: "follows".to_string(),
+            column_names: vec!["from_id".to_string(), "to_id".to_string()],
+            from_node: "User".to_string(),
+            to_node: "User".to_string(),
+            from_node_table: "users".to_string(),
+            to_node_table: "users".to_string(),
+            from_id: "from_id".to_string(),
+            to_id: "to_id".to_string(),
+            from_node_id_dtype: "UInt64".to_string(),
+            to_node_id_dtype: "UInt64".to_string(),
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_label_values: None,
+            to_label_values: None,
+            from_node_properties: None,
+            to_node_properties: None,
+            is_fk_edge: false,
+            constraints: None,
+        };
+        relationships.insert("FOLLOWS".to_string(), follows_rel);
+
+        GraphSchema::build(1, "test_db".to_string(), nodes, relationships)
+    }
 
     #[test]
     fn test_evaluate_optional_match_simple_node() {

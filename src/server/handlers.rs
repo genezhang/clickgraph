@@ -364,14 +364,15 @@ async fn query_handler_inner(
         let graph_schema = match graph_catalog::get_graph_schema_by_name(&schema_name).await {
             Ok(schema) => schema,
             Err(e) => {
+                let available = graph_catalog::list_available_schemas().await;
                 log::error!(
                     "Schema '{}' not found. Available schemas: {:?}",
                     schema_name,
-                    graph_catalog::list_available_schemas().await
+                    available
                 );
                 return Err((
                     StatusCode::BAD_REQUEST,
-                    format!("Schema '{}' not found. {}", schema_name, e),
+                    format!("{} Available schemas: {:?}", e, available),
                 ));
             }
         };
@@ -384,19 +385,8 @@ async fn query_handler_inner(
             Err(e) => {
                 metrics.parse_time = parse_start.elapsed().as_secs_f64();
                 log::error!("Query parse failed: {:?}", e);
-                if sql_only {
-                    let error_response = SqlOnlyResponse {
-                        cypher_query: payload.query.clone(),
-                        generated_sql: format!("PARSE_ERROR: {}", e),
-                        execution_mode: "sql_only_with_parse_error".to_string(),
-                    };
-                    return Ok(Json(error_response).into_response());
-                } else {
-                    return Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("ClickGraph Error: {}", e),
-                    ));
-                }
+                // Return 400 for parse errors (both sql_only and normal mode)
+                return Err((StatusCode::BAD_REQUEST, format!("Parse error: {}", e)));
             }
         };
         metrics.parse_time = parse_start.elapsed().as_secs_f64();
@@ -420,19 +410,11 @@ async fn query_handler_inner(
                 match query_planner::evaluate_call_query(cypher_statement.query, &graph_schema) {
                     Ok(plan) => plan,
                     Err(e) => {
-                        if sql_only {
-                            let error_response = SqlOnlyResponse {
-                                cypher_query: payload.query.clone(),
-                                generated_sql: format!("CALL_PLANNING_ERROR: {}", e),
-                                execution_mode: "sql_only_with_call_error".to_string(),
-                            };
-                            return Ok(Json(error_response).into_response());
-                        } else {
-                            return Err((
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                format!("ClickGraph Error: {}", e),
-                            ));
-                        }
+                        // Return 400 for call planning errors (both sql_only and normal mode)
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            format!("CALL planning error: {}", e),
+                        ));
                     }
                 };
 
@@ -460,37 +442,20 @@ async fn query_handler_inner(
                     match generator.generate_pagerank_sql() {
                         Ok(sql) => sql,
                         Err(e) => {
-                            if sql_only {
-                                let error_response = SqlOnlyResponse {
-                                    cypher_query: payload.query.clone(),
-                                    generated_sql: format!("PAGERANK_SQL_ERROR: {}", e),
-                                    execution_mode: "sql_only_with_pagerank_error".to_string(),
-                                };
-                                return Ok(Json(error_response).into_response());
-                            } else {
-                                return Err((
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    format!("ClickGraph Error: {}", e),
-                                ));
-                            }
+                            // Return 500 for PageRank SQL generation errors
+                            return Err((
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("PageRank SQL generation error: {}", e),
+                            ));
                         }
                     }
                 }
                 _ => {
                     // For other CALL queries (not implemented yet)
-                    if sql_only {
-                        let error_response = SqlOnlyResponse {
-                            cypher_query: payload.query.clone(),
-                            generated_sql: "UNSUPPORTED_CALL_QUERY".to_string(),
-                            execution_mode: "sql_only_unsupported_call".to_string(),
-                        };
-                        return Ok(Json(error_response).into_response());
-                    } else {
-                        return Err((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "Unsupported CALL query type".to_string(),
-                        ));
-                    }
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "Unsupported CALL query type".to_string(),
+                    ));
                 }
             };
 
@@ -544,19 +509,8 @@ async fn query_handler_inner(
                 Ok(result) => result,
                 Err(e) => {
                     metrics.planning_time = planning_start.elapsed().as_secs_f64();
-                    if sql_only {
-                        let error_response = SqlOnlyResponse {
-                            cypher_query: payload.query.clone(),
-                            generated_sql: format!("PLANNING_ERROR: {}", e),
-                            execution_mode: "sql_only_with_planning_error".to_string(),
-                        };
-                        return Ok(Json(error_response).into_response());
-                    } else {
-                        return Err((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("ClickGraph Error: {}", e),
-                        ));
-                    }
+                    // Return 400 for planning errors (both sql_only and normal mode)
+                    return Err((StatusCode::BAD_REQUEST, format!("Planning error: {}", e)));
                 }
             };
             metrics.planning_time = planning_start.elapsed().as_secs_f64();
@@ -571,19 +525,11 @@ async fn query_handler_inner(
                     Ok(plan) => plan,
                     Err(e) => {
                         metrics.render_time = render_start.elapsed().as_secs_f64();
-                        if sql_only {
-                            let error_response = SqlOnlyResponse {
-                                cypher_query: payload.query.clone(),
-                                generated_sql: format!("RENDER_ERROR: {}", e),
-                                execution_mode: "sql_only_with_render_error".to_string(),
-                            };
-                            return Ok(Json(error_response).into_response());
-                        } else {
-                            return Err((
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                format!("ClickGraph Error: {}", e),
-                            ));
-                        }
+                        // Return 500 for render errors (internal error)
+                        return Err((
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Render error: {}", e),
+                        ));
                     }
                 };
             metrics.render_time = render_start.elapsed().as_secs_f64();

@@ -19,7 +19,6 @@
 use std::sync::Arc;
 
 use crate::query_planner::{
-    logical_expr::{LogicalExpr, Operator, OperatorApplication},
     logical_plan::LogicalPlan,
     optimizer::optimizer_pass::{OptimizerPass, OptimizerResult},
     plan_ctx::PlanCtx,
@@ -164,19 +163,5 @@ impl OptimizerPass for FilterPushDown {
 impl FilterPushDown {
     pub fn new() -> Self {
         FilterPushDown
-    }
-
-    pub fn get_combined_predicate(&self, filter_items: Vec<LogicalExpr>) -> Option<LogicalExpr> {
-        let mut iter = filter_items.into_iter();
-        let first = iter.next();
-
-        first.map(|first_expr| {
-            iter.fold(first_expr, |acc, expr| {
-                LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                    operator: Operator::And,
-                    operands: vec![acc, expr],
-                })
-            })
-        })
     }
 }

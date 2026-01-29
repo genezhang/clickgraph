@@ -100,6 +100,56 @@ pub fn eq(lhs: LogicalExpr, rhs: LogicalExpr) -> LogicalExpr {
     })
 }
 
+/// Create a column equality condition: left_alias.left_col = right_alias.right_col
+///
+/// Convenience function that combines PropertyAccess creation with eq().
+///
+/// # Example
+/// ```ignore
+/// let condition = col_eq("u", "id", "r", "user_id");
+/// // Equivalent to: u.id = r.user_id
+/// ```
+pub fn col_eq(
+    left_alias: impl Into<String>,
+    left_col: impl Into<String>,
+    right_alias: impl Into<String>,
+    right_col: impl Into<String>,
+) -> OperatorApplication {
+    use super::{PropertyAccess, TableAlias};
+    use crate::graph_catalog::expression_parser::PropertyValue;
+
+    OperatorApplication {
+        operator: Operator::Equal,
+        operands: vec![
+            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(left_alias.into()),
+                column: PropertyValue::Column(left_col.into()),
+            }),
+            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(right_alias.into()),
+                column: PropertyValue::Column(right_col.into()),
+            }),
+        ],
+    }
+}
+
+/// Create a PropertyAccess expression: alias.column
+///
+/// # Example
+/// ```ignore
+/// let expr = prop("u", "name");
+/// // Equivalent to: u.name
+/// ```
+pub fn prop(alias: impl Into<String>, col: impl Into<String>) -> LogicalExpr {
+    use super::{PropertyAccess, TableAlias};
+    use crate::graph_catalog::expression_parser::PropertyValue;
+
+    LogicalExpr::PropertyAccessExp(PropertyAccess {
+        table_alias: TableAlias(alias.into()),
+        column: PropertyValue::Column(col.into()),
+    })
+}
+
 /// Create a not-equal comparison: lhs <> rhs
 pub fn neq(lhs: LogicalExpr, rhs: LogicalExpr) -> LogicalExpr {
     LogicalExpr::OperatorApplicationExp(OperatorApplication {
