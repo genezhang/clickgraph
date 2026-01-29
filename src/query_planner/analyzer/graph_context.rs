@@ -1,6 +1,7 @@
 //! Graph context structures for query analysis
 //!
 //! Some fields are reserved for future schema-aware optimization features.
+// Note: PatternContext fields like node_labels and rel_labels are kept for future optimization passes
 #![allow(dead_code)]
 
 use crate::{
