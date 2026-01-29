@@ -20,6 +20,7 @@ use super::render_expr::{
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
+use crate::render_plan::cte_extraction::get_node_label_for_alias;
 use crate::render_plan::expression_utils::{
     flatten_addition_operands, has_string_operand, ExprVisitor,
 };
@@ -3158,40 +3159,6 @@ fn update_operand_for_union_cte(operand: &mut RenderExpr, table_alias: &str) {
             update_join_expression_for_union_cte(inner_op_app, table_alias);
         }
         _ => {}
-    }
-}
-
-/// Get the node label for a given Cypher alias by searching the plan
-#[allow(dead_code)]
-pub(super) fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
-    use crate::render_plan::cte_extraction::extract_node_label_from_viewscan;
-
-    match plan {
-        LogicalPlan::GraphNode(node) if node.alias == alias => {
-            extract_node_label_from_viewscan(&node.input)
-        }
-        LogicalPlan::GraphNode(node) => get_node_label_for_alias(alias, &node.input),
-        LogicalPlan::GraphRel(rel) => get_node_label_for_alias(alias, &rel.left)
-            .or_else(|| get_node_label_for_alias(alias, &rel.center))
-            .or_else(|| get_node_label_for_alias(alias, &rel.right)),
-        LogicalPlan::Filter(filter) => get_node_label_for_alias(alias, &filter.input),
-        LogicalPlan::Projection(proj) => get_node_label_for_alias(alias, &proj.input),
-        LogicalPlan::GraphJoins(joins) => get_node_label_for_alias(alias, &joins.input),
-        LogicalPlan::OrderBy(order_by) => get_node_label_for_alias(alias, &order_by.input),
-        LogicalPlan::Skip(skip) => get_node_label_for_alias(alias, &skip.input),
-        LogicalPlan::Limit(limit) => get_node_label_for_alias(alias, &limit.input),
-        LogicalPlan::GroupBy(group_by) => get_node_label_for_alias(alias, &group_by.input),
-        LogicalPlan::Cte(cte) => get_node_label_for_alias(alias, &cte.input),
-        LogicalPlan::Unwind(u) => get_node_label_for_alias(alias, &u.input),
-        LogicalPlan::Union(union) => {
-            for input in &union.inputs {
-                if let Some(label) = get_node_label_for_alias(alias, input) {
-                    return Some(label);
-                }
-            }
-            None
-        }
-        _ => None,
     }
 }
 
