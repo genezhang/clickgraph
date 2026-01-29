@@ -2447,7 +2447,6 @@ pub fn extract_ctes_with_context(
                             start_filters_sql.clone(),
                             end_filters_sql.clone(),
                             rel_filters_sql.clone(),
-                            graph_rel.path_variable.clone(),
                             view_parameter_values,
                         );
 

@@ -68,9 +68,6 @@ pub struct MultiTypeVlpJoinGenerator<'a> {
     // Property projections (properties to return)
     properties: Vec<PropertyProjection>,
 
-    // Path variable (if specified, e.g., "p" in "MATCH p = ...")
-    path_variable: Option<String>,
-
     // 🔧 PARAMETERIZED VIEW FIX: View parameter values for multi-tenant queries
     // Maps parameter name -> parameter value (e.g., "tenant_id" -> "tenant_a")
     view_parameter_values: HashMap<String, String>,
@@ -90,7 +87,6 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
     /// * `start_filters` - Optional WHERE filters for start node
     /// * `end_filters` - Optional WHERE filters for end node
     /// * `rel_filters` - Optional WHERE filters for relationships
-    /// * `path_variable` - Optional path variable name (e.g., "p" in "MATCH p = ...")
     /// * `view_parameter_values` - View parameters for parameterized views (e.g., {"tenant_id": "tenant_a"})
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -104,7 +100,6 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         start_filters: Option<String>,
         end_filters: Option<String>,
         rel_filters: Option<String>,
-        path_variable: Option<String>,
         view_parameter_values: HashMap<String, String>,
     ) -> Self {
         let min_hops = spec.min_hops.unwrap_or(1) as usize;
@@ -126,7 +121,6 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             end_filters,
             rel_filters,
             properties: vec![],
-            path_variable,
             view_parameter_values,
         }
     }
@@ -508,16 +502,6 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
 
         items
     }
-
-    /// Get table name for a node type
-    fn get_node_table(&self, node_type: &str) -> Result<String, String> {
-        self.schema
-            .all_node_schemas()
-            .get(node_type)
-            .map(|n| n.table_name.clone())
-            .ok_or_else(|| format!("Node table not found for type '{}'", node_type))
-    }
-
     /// Get table name with database prefix for a node type
     /// 🔧 PARAMETERIZED VIEW FIX: Applies view parameters if the node schema has view_parameters defined
     fn get_node_table_with_db(&self, node_type: &str) -> Result<String, String> {
@@ -535,25 +519,6 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 self.apply_view_parameters(&base_table, &n.view_parameters)
             })
             .ok_or_else(|| format!("Node table not found for type '{}'", node_type))
-    }
-
-    /// Get table name for a relationship type with node context
-    /// Uses composite key lookup for schemas that use TYPE::FROM::TO keys
-    fn get_rel_table(
-        &self,
-        rel_type: &str,
-        from_node: &str,
-        to_node: &str,
-    ) -> Result<String, String> {
-        self.schema
-            .get_rel_schema_with_nodes(rel_type, Some(from_node), Some(to_node))
-            .map(|r| r.table_name.clone())
-            .map_err(|e| {
-                format!(
-                    "Relationship table not found for type '{}' ({}->{}): {}",
-                    rel_type, from_node, to_node, e
-                )
-            })
     }
 
     /// Get table name with database prefix for a relationship type with node context

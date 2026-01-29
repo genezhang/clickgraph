@@ -161,9 +161,20 @@ fn init_test_schema(schema: GraphSchema) {
     // Initialize GLOBAL_SCHEMAS
     // For tests, check if already initialized
     if let Some(schemas_lock) = GLOBAL_SCHEMAS.get() {
-        // Update existing
-        if let Ok(mut schemas_guard) = schemas_lock.try_write() {
-            *schemas_guard = schemas;
+        // Update existing - use bounded try_write loop since tests are #[serial(global_schema)]
+        // Timeout prevents indefinite hang if a test forgets the serial group annotation
+        let mut attempts = 0;
+        const MAX_ATTEMPTS: u32 = 1000; // 1 second max
+        loop {
+            if let Ok(mut schemas_guard) = schemas_lock.try_write() {
+                *schemas_guard = schemas;
+                break;
+            }
+            attempts += 1;
+            if attempts >= MAX_ATTEMPTS {
+                panic!("Failed to acquire GLOBAL_SCHEMAS write lock after {}ms. Ensure test uses #[serial(global_schema)]", MAX_ATTEMPTS);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     } else {
         // Initialize for the first time
@@ -172,7 +183,7 @@ fn init_test_schema(schema: GraphSchema) {
 }
 
 #[test]
-#[serial]
+#[serial(global_schema)]
 fn test_denormalized_from_node_property() {
     let schema = setup_denormalized_schema();
     init_test_schema(schema);
@@ -195,7 +206,7 @@ fn test_denormalized_from_node_property() {
 }
 
 #[test]
-#[serial]
+#[serial(global_schema)]
 fn test_denormalized_to_node_property() {
     let schema = setup_denormalized_schema();
     init_test_schema(schema.clone());
@@ -219,7 +230,7 @@ fn test_denormalized_to_node_property() {
 }
 
 #[test]
-#[serial]
+#[serial(global_schema)]
 fn test_fallback_to_node_property() {
     let schema = setup_denormalized_schema();
     init_test_schema(schema);
@@ -242,7 +253,7 @@ fn test_fallback_to_node_property() {
 }
 
 #[test]
-#[serial]
+#[serial(global_schema)]
 fn test_no_relationship_context() {
     let schema = setup_denormalized_schema();
     init_test_schema(schema);
@@ -276,7 +287,7 @@ fn test_no_relationship_context() {
 }
 
 #[test]
-#[serial]
+#[serial(global_schema)]
 fn test_relationship_property() {
     let schema = setup_denormalized_schema();
     init_test_schema(schema);
@@ -299,7 +310,7 @@ fn test_relationship_property() {
 }
 
 #[test]
-#[serial]
+#[serial(global_schema)]
 fn test_multiple_relationships_same_node() {
     let mut schema = setup_denormalized_schema();
 
@@ -401,7 +412,7 @@ fn test_multiple_relationships_same_node() {
 }
 
 #[test]
-#[serial]
+#[serial(global_schema)]
 fn test_denormalized_edge_table_same_table_for_node_and_edge() {
     // Test the true denormalized edge table pattern:
     // - Node and edge use the SAME table (e.g., flights table for both Airport nodes and FLIGHT edges)
@@ -567,7 +578,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
 /// This test uses ViewScan nodes with from_node_properties/to_node_properties
 /// to match the real query execution path for denormalized edge schemas.
 #[test]
-#[serial]
+#[serial(global_schema)]
 fn test_analyzer_denormalized_property_integration() {
     use crate::query_planner::analyzer;
     use crate::query_planner::logical_expr::{
@@ -838,7 +849,7 @@ fn test_analyzer_denormalized_property_integration() {
 /// The bug was that get_properties_with_table_alias looked at empty property_mapping
 /// instead of from_node_properties/to_node_properties.
 #[test]
-#[serial]
+#[serial(global_schema)]
 fn test_denormalized_standalone_node_return_all_properties() {
     use crate::graph_catalog::expression_parser::PropertyValue;
     use crate::query_planner::logical_expr::{LogicalExpr, TableAlias};
@@ -940,7 +951,7 @@ fn test_denormalized_standalone_node_return_all_properties() {
 /// This tests the case where a denormalized node has both from_node_properties AND to_node_properties
 /// which results in a UNION ALL structure.
 #[test]
-#[serial]
+#[serial(global_schema)]
 fn test_denormalized_standalone_node_both_positions() {
     use crate::graph_catalog::expression_parser::PropertyValue;
     use crate::query_planner::logical_expr::{LogicalExpr, TableAlias};

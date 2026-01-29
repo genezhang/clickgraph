@@ -9,7 +9,6 @@ use crate::render_plan::cte_extraction::{
     extract_relationship_columns, table_to_id_column, RelationshipColumns,
 };
 use crate::render_plan::errors::RenderBuildError;
-use crate::render_plan::filter_pipeline::categorize_filters;
 use crate::render_plan::plan_builder_helpers::*;
 use crate::render_plan::render_expr::{Operator, OperatorApplication, RenderExpr};
 
@@ -20,9 +19,6 @@ pub type FilterBuilderResult<T> = Result<T, RenderBuildError>;
 pub trait FilterBuilder {
     /// Extract filters from WHERE clauses and other filter conditions
     fn extract_filters(&self) -> FilterBuilderResult<Option<RenderExpr>>;
-
-    /// Extract final filters that should be applied at the end of query execution
-    fn extract_final_filters(&self) -> FilterBuilderResult<Option<RenderExpr>>;
 
     /// Extract DISTINCT flag from projection nodes
     fn extract_distinct(&self) -> bool;
@@ -370,98 +366,6 @@ impl FilterBuilder for LogicalPlan {
             LogicalPlan::WithClause(wc) => wc.input.extract_filters()?,
         };
         Ok(filters)
-    }
-
-    fn extract_final_filters(&self) -> FilterBuilderResult<Option<RenderExpr>> {
-        let final_filters = match &self {
-            LogicalPlan::Limit(limit) => limit.input.extract_final_filters()?,
-            LogicalPlan::Skip(skip) => skip.input.extract_final_filters()?,
-            LogicalPlan::OrderBy(order_by) => order_by.input.extract_final_filters()?,
-            LogicalPlan::GroupBy(group_by) => group_by.input.extract_final_filters()?,
-            LogicalPlan::GraphJoins(graph_joins) => graph_joins.input.extract_final_filters()?,
-            LogicalPlan::Projection(projection) => projection.input.extract_final_filters()?,
-            LogicalPlan::Filter(filter) => {
-                // 🔧 BUG #10 FIX: For VLP/shortest path queries, filters on start/end nodes
-                // are already pushed into the CTE during extraction. Don't duplicate them
-                // as final filters in the outer SELECT.
-
-                // Check if the input contains a VLP or shortest path pattern
-                let has_vlp_or_shortest_path = has_variable_length_or_shortest_path(&filter.input);
-
-                if has_vlp_or_shortest_path {
-                    log::info!(
-                        "🔧 BUG #10: Skipping Filter extraction for VLP/shortest path - already in CTE"
-                    );
-                    // Don't extract this filter - it's already in the CTE
-                    // Recurse to check for other filters deeper in the plan
-                    filter.input.extract_final_filters()?
-                } else {
-                    // Normal filter extraction
-                    let mut expr: RenderExpr = filter.predicate.clone().try_into()?;
-                    // Apply property mapping to the filter expression
-                    apply_property_mapping_to_expr(&mut expr, &filter.input);
-                    Some(expr)
-                }
-            }
-            LogicalPlan::GraphRel(graph_rel) => {
-                // For GraphRel, extract path function filters that should be applied to the final query
-                if let Some(logical_expr) = &graph_rel.where_predicate {
-                    let mut filter_expr: RenderExpr = logical_expr.clone().try_into()?;
-                    // Apply property mapping to the where predicate
-                    apply_property_mapping_to_expr(
-                        &mut filter_expr,
-                        &LogicalPlan::GraphRel(graph_rel.clone()),
-                    );
-                    let start_alias = graph_rel.left_connection.clone();
-                    let end_alias = graph_rel.right_connection.clone();
-
-                    // For extract_final_filters, we only need to categorize path function filters
-                    // Schema-aware categorization is not needed here since this is just for
-                    // separating path functions from other filters. Use a dummy categorization.
-                    let rel_labels = graph_rel.labels.clone().unwrap_or_default();
-
-                    // Try to get schema for proper categorization
-                    use crate::server::GLOBAL_SCHEMAS;
-                    let schemas_lock = GLOBAL_SCHEMAS.get().expect("Schemas not initialized");
-                    let schemas = schemas_lock
-                        .try_read()
-                        .expect("Failed to acquire schema lock");
-
-                    // Try to find a schema that has this relationship type
-                    let schema_for_categorization = if !rel_labels.is_empty() {
-                        schemas.values().find(|s| {
-                            rel_labels
-                                .iter()
-                                .any(|label| s.get_rel_schema(label).is_ok())
-                        })
-                    } else {
-                        None
-                    };
-
-                    let schema_ref = schema_for_categorization.unwrap_or_else(|| {
-                        schemas
-                            .values()
-                            .next()
-                            .expect("At least one schema must be loaded")
-                    });
-
-                    let categorized = categorize_filters(
-                        Some(&filter_expr),
-                        &start_alias,
-                        &end_alias,
-                        &graph_rel.alias,
-                        schema_ref,
-                        &rel_labels,
-                    );
-
-                    categorized.path_function_filters
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
-        Ok(final_filters)
     }
 
     fn extract_distinct(&self) -> bool {

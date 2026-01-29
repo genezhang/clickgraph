@@ -409,6 +409,72 @@ fn rewrite_expr_for_vlp(
                 .collect(),
         }),
 
+        // Handle bare path variable: p → tuple(t.path_nodes, t.path_edges, t.path_relationships, t.hop_count)
+        // When RETURN p is used for a path variable, expand it to a tuple of path components
+        RenderExpr::TableAlias(alias)
+            if path_variable.as_ref().map_or(false, |pv| &alias.0 == pv) =>
+        {
+            log::info!(
+                "🔧 VLP path variable expansion: {} → tuple({}.path_nodes, {}.path_edges, ...)",
+                alias.0,
+                VLP_CTE_FROM_ALIAS,
+                VLP_CTE_FROM_ALIAS
+            );
+            // Expand to tuple of path components using VLP_CTE_FROM_ALIAS constant
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: "tuple".to_string(),
+                args: vec![
+                    RenderExpr::Column(Column(PropertyValue::Column(format!(
+                        "{}.path_nodes",
+                        VLP_CTE_FROM_ALIAS
+                    )))),
+                    RenderExpr::Column(Column(PropertyValue::Column(format!(
+                        "{}.path_edges",
+                        VLP_CTE_FROM_ALIAS
+                    )))),
+                    RenderExpr::Column(Column(PropertyValue::Column(format!(
+                        "{}.path_relationships",
+                        VLP_CTE_FROM_ALIAS
+                    )))),
+                    RenderExpr::Column(Column(PropertyValue::Column(format!(
+                        "{}.hop_count",
+                        VLP_CTE_FROM_ALIAS
+                    )))),
+                ],
+            })
+        }
+
+        RenderExpr::ColumnAlias(ColumnAlias(alias_str))
+            if path_variable.as_ref().map_or(false, |pv| alias_str == pv) =>
+        {
+            log::info!(
+                "🔧 VLP path variable expansion (ColumnAlias): {} → tuple({}.path_nodes, {}.path_edges, ...)",
+                alias_str, VLP_CTE_FROM_ALIAS, VLP_CTE_FROM_ALIAS
+            );
+            // Expand to tuple of path components using VLP_CTE_FROM_ALIAS constant
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: "tuple".to_string(),
+                args: vec![
+                    RenderExpr::Column(Column(PropertyValue::Column(format!(
+                        "{}.path_nodes",
+                        VLP_CTE_FROM_ALIAS
+                    )))),
+                    RenderExpr::Column(Column(PropertyValue::Column(format!(
+                        "{}.path_edges",
+                        VLP_CTE_FROM_ALIAS
+                    )))),
+                    RenderExpr::Column(Column(PropertyValue::Column(format!(
+                        "{}.path_relationships",
+                        VLP_CTE_FROM_ALIAS
+                    )))),
+                    RenderExpr::Column(Column(PropertyValue::Column(format!(
+                        "{}.hop_count",
+                        VLP_CTE_FROM_ALIAS
+                    )))),
+                ],
+            })
+        }
+
         // Leave other expressions unchanged
         other => other.clone(),
     }

@@ -21,7 +21,7 @@ use super::render_expr::{
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
 use crate::render_plan::expression_utils::{
-    contains_string_literal, flatten_addition_operands, has_string_operand, ExprVisitor,
+    flatten_addition_operands, has_string_operand, ExprVisitor,
 };
 // Note: Direction import commented out until Issue #1 (Undirected Multi-Hop SQL) is fixed
 // use crate::query_planner::logical_expr::Direction;

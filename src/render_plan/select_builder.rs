@@ -20,7 +20,7 @@ use crate::query_planner::typed_variable::{TypedVariable, VariableSource};
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::properties_builder::PropertiesBuilder;
 use crate::render_plan::render_expr::{
-    Column, ColumnAlias, PropertyAccess, RenderExpr, TableAlias as RenderTableAlias,
+    Column, ColumnAlias, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias as RenderTableAlias,
 };
 use crate::render_plan::SelectItem;
 
@@ -187,6 +187,18 @@ impl SelectBuilder for LogicalPlan {
                                                 });
                                             }
                                         }
+                                    }
+                                    Some(typed_var) if typed_var.is_path() => {
+                                        // Path variable - expand to tuple of path components
+                                        // Path variables come from VLP CTEs with columns: path_nodes, path_edges, path_relationships, hop_count
+                                        log::info!(
+                                            "🔍 Expanding path variable '{}' to path components",
+                                            table_alias.0
+                                        );
+                                        self.expand_path_variable(
+                                            &table_alias.0,
+                                            &mut select_items,
+                                        );
                                     }
                                     _ => {
                                         // Unknown variable or path/collection - fallback to old logic
@@ -638,5 +650,43 @@ impl LogicalPlan {
     fn compute_from_alias_from_cte_name(&self, cte_name: &str) -> String {
         // The FROM alias is simply the CTE name itself
         cte_name.to_string()
+    }
+
+    /// Expand a path variable to its constituent components
+    ///
+    /// Path variables from VLP queries contain: path_nodes, path_edges, path_relationships, hop_count
+    /// We wrap these in a tuple() for clean output: tuple(path_nodes, path_edges, path_relationships, hop_count) AS "p"
+    fn expand_path_variable(&self, path_alias: &str, select_items: &mut Vec<SelectItem>) {
+        use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
+        // The VLP CTE uses alias defined in join_context for the final SELECT from the CTE
+        // Path components are columns in the CTE result
+        let cte_alias = VLP_CTE_FROM_ALIAS;
+
+        // Create a tuple expression wrapping all path components
+        // tuple(t.path_nodes, t.path_edges, t.path_relationships, t.hop_count)
+        select_items.push(SelectItem {
+            expression: RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: "tuple".to_string(),
+                args: vec![
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: RenderTableAlias(cte_alias.to_string()),
+                        column: PropertyValue::Column("path_nodes".to_string()),
+                    }),
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: RenderTableAlias(cte_alias.to_string()),
+                        column: PropertyValue::Column("path_edges".to_string()),
+                    }),
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: RenderTableAlias(cte_alias.to_string()),
+                        column: PropertyValue::Column("path_relationships".to_string()),
+                    }),
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: RenderTableAlias(cte_alias.to_string()),
+                        column: PropertyValue::Column("hop_count".to_string()),
+                    }),
+                ],
+            }),
+            col_alias: Some(ColumnAlias(path_alias.to_string())),
+        });
     }
 }

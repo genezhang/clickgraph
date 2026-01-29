@@ -26,7 +26,7 @@
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::GraphSchema;
 use crate::query_planner::join_context::{
-    JoinContext, VlpPosition, VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
+    VlpPosition, VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
 };
 use crate::query_planner::logical_expr::{Direction, LogicalExpr};
 use crate::query_planner::logical_plan::{GraphNode, GraphRel, LogicalPlan};
@@ -40,7 +40,6 @@ use crate::render_plan::cte_extraction::{
     RelationshipColumns,
 };
 use crate::render_plan::errors::RenderBuildError;
-use crate::render_plan::filter_pipeline::categorize_filters;
 use crate::render_plan::render_expr::{
     AggregateFnCall, Column, ColumnAlias, InSubquery, Operator, OperatorApplication,
     PropertyAccess, RenderCase, RenderExpr, ScalarFnCall, TableAlias,
@@ -50,9 +49,9 @@ use crate::render_plan::JoinType;
 use crate::render_plan::OrderByItem;
 use crate::render_plan::SelectItem;
 use crate::render_plan::{
-    ArrayJoin, ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem,
-    GroupByExpressions, Join, JoinItems, LimitItem, OrderByItems, OrderByOrder, RenderPlan,
-    SelectItems, SkipItem, Union, UnionItems,
+    ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem, GroupByExpressions, Join,
+    JoinItems, LimitItem, OrderByItems, OrderByOrder, RenderPlan, SelectItems, SkipItem, Union,
+    UnionItems,
 };
 use crate::render_plan::{FromTable, ViewTableRef};
 use crate::utils::cte_naming::{generate_cte_name, is_generated_cte_name};
@@ -519,7 +518,6 @@ pub fn extract_cte_references(plan: &LogicalPlan) -> HashMap<String, String> {
 pub fn extract_correlation_predicates(
     plan: &LogicalPlan,
 ) -> Vec<crate::query_planner::logical_expr::LogicalExpr> {
-    use crate::query_planner::logical_expr::LogicalExpr;
     let mut predicates = vec![];
 
     match plan {
@@ -1459,86 +1457,6 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
         LogicalPlan::WithClause(wc) => extract_filters(&wc.input)?,
     };
     Ok(filters)
-}
-
-/// Extract final filters from a LogicalPlan.
-///
-/// This function extracts filters that should be applied to the final query,
-/// specifically focusing on path function filters from GraphRel nodes.
-/// Unlike extract_filters, this only extracts specific filter types for final application.
-pub fn extract_final_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<RenderExpr>> {
-    let final_filters = match plan {
-        LogicalPlan::Limit(limit) => extract_final_filters(&limit.input)?,
-        LogicalPlan::Skip(skip) => extract_final_filters(&skip.input)?,
-        LogicalPlan::OrderBy(order_by) => extract_final_filters(&order_by.input)?,
-        LogicalPlan::GroupBy(group_by) => extract_final_filters(&group_by.input)?,
-        LogicalPlan::GraphJoins(graph_joins) => extract_final_filters(&graph_joins.input)?,
-        LogicalPlan::Projection(projection) => extract_final_filters(&projection.input)?,
-        LogicalPlan::Filter(filter) => {
-            let mut expr: RenderExpr = filter.predicate.clone().try_into()?;
-            // Apply property mapping to the filter expression
-            apply_property_mapping_to_expr(&mut expr, &filter.input);
-            Some(expr)
-        }
-        LogicalPlan::GraphRel(graph_rel) => {
-            // For GraphRel, extract path function filters that should be applied to the final query
-            if let Some(logical_expr) = &graph_rel.where_predicate {
-                let mut filter_expr: RenderExpr = logical_expr.clone().try_into()?;
-                // Apply property mapping to the where predicate
-                apply_property_mapping_to_expr(
-                    &mut filter_expr,
-                    &LogicalPlan::GraphRel(graph_rel.clone()),
-                );
-                let start_alias = graph_rel.left_connection.clone();
-                let end_alias = graph_rel.right_connection.clone();
-
-                // For extract_final_filters, we only need to categorize path function filters
-                // Schema-aware categorization is not needed here since this is just for
-                // separating path functions from other filters. Use a dummy categorization.
-                let rel_labels = graph_rel.labels.clone().unwrap_or_default();
-
-                // Try to get schema for proper categorization
-                use crate::server::GLOBAL_SCHEMAS;
-                let schemas_lock = GLOBAL_SCHEMAS.get().expect("Schemas not initialized");
-                let schemas = schemas_lock
-                    .try_read()
-                    .expect("Failed to acquire schema lock");
-
-                // Try to find a schema that has this relationship type
-                let schema_for_categorization = if !rel_labels.is_empty() {
-                    schemas.values().find(|s| {
-                        rel_labels
-                            .iter()
-                            .any(|label| s.get_rel_schema(label).is_ok())
-                    })
-                } else {
-                    None
-                };
-
-                let schema_ref = schema_for_categorization.unwrap_or_else(|| {
-                    schemas
-                        .values()
-                        .next()
-                        .expect("At least one schema must be loaded")
-                });
-
-                let categorized = categorize_filters(
-                    Some(&filter_expr),
-                    &start_alias,
-                    &end_alias,
-                    &graph_rel.alias,
-                    schema_ref,
-                    &rel_labels,
-                );
-
-                categorized.path_function_filters
-            } else {
-                None
-            }
-        }
-        _ => None,
-    };
-    Ok(final_filters)
 }
 
 /// Extract FROM clause from a LogicalPlan
@@ -8470,13 +8388,17 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         // was converted to PropertyAccessExp by earlier phases. Handle two cases:
                         // 1. PropertyAccessExp(a, "a") - col equals table_alias, indicating full node
                         // 2. PropertyAccessExp(with_a_b_cte_0, "b") - col is a WITH alias being accessed from CTE
+                        //    Note: The CTE name in PropertyAccessExp may be stale (e.g., "with_a_b_cte_0" when
+                        //    actual CTE is "with_a_b_cte_1"). We use is_generated_cte_name to reliably detect CTEs.
                         else if let RenderExpr::PropertyAccessExp(ref pa) = item.expression {
                             if let PropertyValue::Column(ref col) = pa.column {
                                 // Check if this is a full node reference:
                                 // Case 1: column name equals table alias AND table alias is a WITH alias
                                 let case1 = col == &pa.table_alias.0 && with_aliases.contains(&pa.table_alias.0);
-                                // Case 2: column is a WITH alias AND we're accessing from the CTE name
-                                let case2 = with_aliases.contains(col) && pa.table_alias.0 == from_ref.name;
+                                // Case 2: column is a WITH alias AND we're accessing from a generated CTE
+                                // Use is_generated_cte_name() for reliable CTE detection (avoids false positives\n                                // from user aliases that happen to match the with_*_cte pattern)
+                                let is_cte_ref = is_generated_cte_name(&pa.table_alias.0);
+                                let case2 = with_aliases.contains(col) && is_cte_ref;
 
                                 if case1 || case2 {
                                     log::warn!("🔧 build_chained_with_match_cte_plan: Found PropertyAccessExp({}, {}) - treating as full node (case1={}, case2={})", pa.table_alias.0, col, case1, case2);

@@ -239,9 +239,20 @@ fn init_test_schema(schema: GraphSchema) {
 
     // Initialize GLOBAL_SCHEMAS
     if let Some(schemas_lock) = GLOBAL_SCHEMAS.get() {
-        // Update existing
-        if let Ok(mut schemas_guard) = schemas_lock.try_write() {
-            *schemas_guard = schemas;
+        // Update existing - use bounded try_write loop since tests are #[serial(global_schema)]
+        // Timeout prevents indefinite hang if a test forgets the serial group annotation
+        let mut attempts = 0;
+        const MAX_ATTEMPTS: u32 = 1000; // 1 second max
+        loop {
+            if let Ok(mut schemas_guard) = schemas_lock.try_write() {
+                *schemas_guard = schemas;
+                break;
+            }
+            attempts += 1;
+            if attempts >= MAX_ATTEMPTS {
+                panic!("Failed to acquire GLOBAL_SCHEMAS write lock after {}ms. Ensure test uses #[serial(global_schema)]", MAX_ATTEMPTS);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     } else {
         // Initialize for the first time
@@ -250,7 +261,7 @@ fn init_test_schema(schema: GraphSchema) {
 }
 
 #[test]
-#[serial]
+#[serial(global_schema)]
 fn test_polymorphic_filter_follows_user_to_user() {
     let schema = setup_polymorphic_schema();
     init_test_schema(schema);
@@ -300,7 +311,7 @@ fn test_polymorphic_filter_follows_user_to_user() {
 }
 
 #[test]
-#[serial]
+#[serial(global_schema)]
 fn test_polymorphic_filter_likes_user_to_post() {
     let schema = setup_polymorphic_schema();
     init_test_schema(schema);
@@ -323,7 +334,7 @@ fn test_polymorphic_filter_likes_user_to_post() {
 }
 
 #[test]
-#[serial]
+#[serial(global_schema)]
 fn test_polymorphic_filter_authored_user_to_post() {
     let schema = setup_polymorphic_schema();
     init_test_schema(schema);
@@ -346,7 +357,7 @@ fn test_polymorphic_filter_authored_user_to_post() {
 }
 
 #[test]
-#[serial]
+#[serial(global_schema)]
 fn test_non_polymorphic_relationship() {
     // For this test, we need a schema with a non-polymorphic relationship
     let mut nodes = HashMap::new();
@@ -421,7 +432,7 @@ fn test_non_polymorphic_relationship() {
 }
 
 #[test]
-#[serial]
+#[serial(global_schema)]
 fn test_polymorphic_filter_with_different_alias() {
     let schema = setup_polymorphic_schema();
     init_test_schema(schema);
@@ -437,7 +448,7 @@ fn test_polymorphic_filter_with_different_alias() {
 }
 
 #[test]
-#[serial]
+#[serial(global_schema)]
 fn test_fixed_endpoint_polymorphic_edge() {
     // Test the fixed-endpoint pattern: from_node is fixed, to_label_column is polymorphic
     // This is like Group -[PARENT_OF]-> User|Group

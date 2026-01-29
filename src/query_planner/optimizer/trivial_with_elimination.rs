@@ -24,7 +24,7 @@
 
 use crate::query_planner::{
     logical_expr::LogicalExpr,
-    logical_plan::{LogicalPlan, ProjectionItem, WithClause},
+    logical_plan::{LogicalPlan, WithClause},
     optimizer::optimizer_pass::{OptimizerPass, OptimizerResult},
     plan_ctx::PlanCtx,
     transformed::Transformed,
@@ -212,6 +212,7 @@ impl TrivialWithElimination {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::query_planner::logical_plan::ProjectionItem;
 
     #[test]
     fn test_identifies_trivial_with() {

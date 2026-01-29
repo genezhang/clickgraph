@@ -154,8 +154,6 @@ pub(crate) trait RenderPlanBuilder {
         schema: &crate::graph_catalog::graph_schema::GraphSchema,
     ) -> RenderPlanBuilderResult<Option<Cte>>;
 
-    fn extract_final_filters(&self) -> RenderPlanBuilderResult<Option<RenderExpr>>;
-
     fn extract_ctes_with_context(
         &self,
         last_node_alias: &str,
@@ -211,11 +209,6 @@ pub(crate) trait RenderPlanBuilder {
 
     /// Extract UNWIND clause as ARRAY JOIN items
     fn extract_array_join(&self) -> RenderPlanBuilderResult<Vec<super::ArrayJoin>>;
-
-    fn try_build_join_based_plan(
-        &self,
-        schema: &GraphSchema,
-    ) -> RenderPlanBuilderResult<RenderPlan>;
 
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan>;
 
@@ -589,11 +582,6 @@ impl RenderPlanBuilder for LogicalPlan {
         <LogicalPlan as FilterBuilder>::extract_filters(self)
     }
 
-    fn extract_final_filters(&self) -> RenderPlanBuilderResult<Option<RenderExpr>> {
-        // Delegate to the FilterBuilder trait implementation
-        <LogicalPlan as FilterBuilder>::extract_final_filters(self)
-    }
-
     fn extract_joins(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<Vec<Join>> {
         // Delegate to the JoinBuilder trait implementation
         <LogicalPlan as JoinBuilder>::extract_joins(self, schema)
@@ -656,14 +644,6 @@ impl RenderPlanBuilder for LogicalPlan {
         // Note: UNION is handled by LogicalPlan::Union nodes in to_render_plan().
         // This method returns None for other node types.
         Ok(None)
-    }
-
-    fn try_build_join_based_plan(
-        &self,
-        schema: &GraphSchema,
-    ) -> RenderPlanBuilderResult<RenderPlan> {
-        // Delegate to JoinBuilder
-        <LogicalPlan as JoinBuilder>::try_build_join_based_plan(self, schema)
     }
 
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan> {

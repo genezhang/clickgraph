@@ -20,7 +20,7 @@ use crate::render_plan::plan_builder::RenderPlanBuilderResult;
 use crate::render_plan::render_expr::{
     Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
 };
-use crate::render_plan::{ArrayJoin, Join, JoinType, RenderPlan};
+use crate::render_plan::{ArrayJoin, Join, JoinType};
 use std::sync::Arc;
 
 // Helper function imports from plan_builder_helpers
@@ -48,12 +48,6 @@ pub trait JoinBuilder {
 
     /// Extract UNWIND clauses as ARRAY JOIN items
     fn extract_array_join(&self) -> RenderPlanBuilderResult<Vec<ArrayJoin>>;
-
-    /// Try to build a JOIN-based render plan for simple queries
-    fn try_build_join_based_plan(
-        &self,
-        schema: &GraphSchema,
-    ) -> RenderPlanBuilderResult<RenderPlan>;
 }
 
 /// Default implementation of JoinBuilder for LogicalPlan
@@ -2114,17 +2108,5 @@ impl JoinBuilder for LogicalPlan {
             _ => vec![],
         };
         Ok(joins)
-    }
-
-    fn try_build_join_based_plan(
-        &self,
-        _schema: &GraphSchema,
-    ) -> RenderPlanBuilderResult<RenderPlan> {
-        // For the join_builder module, we focus on extracting joins rather than building complete plans
-        // Complex plan building is handled by the main plan_builder module
-        Err(RenderBuildError::InvalidRenderPlan(
-            "JoinBuilder does not support complex plan building - use main plan_builder"
-                .to_string(),
-        ))
     }
 }

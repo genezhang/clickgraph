@@ -307,10 +307,21 @@ fn setup_test_schema() {
 
     let schema = GraphSchema::build(1, "test_db".to_string(), nodes, relationships);
 
-    // Try to set the schema in registry, ignore if already set
+    // Try to set the schema in registry - use bounded try_write loop since tests are #[serial(global_schema)]
+    // Timeout prevents indefinite hang if a test forgets the serial group annotation
     if let Some(schemas_lock) = GLOBAL_SCHEMAS.get() {
-        if let Ok(mut schemas) = schemas_lock.try_write() {
-            schemas.insert(SCHEMA_NAME.to_string(), schema);
+        let mut attempts = 0;
+        const MAX_ATTEMPTS: u32 = 1000; // 1 second max
+        loop {
+            if let Ok(mut schemas) = schemas_lock.try_write() {
+                schemas.insert(SCHEMA_NAME.to_string(), schema);
+                break;
+            }
+            attempts += 1;
+            if attempts >= MAX_ATTEMPTS {
+                panic!("Failed to acquire GLOBAL_SCHEMAS write lock after {}ms. Ensure test uses #[serial(global_schema)]", MAX_ATTEMPTS);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     } else {
         // Initialize the registry if not set
@@ -325,7 +336,7 @@ mod multiple_relationship_tests {
     use super::*;
 
     #[test]
-    #[serial]
+    #[serial(global_schema)]
     #[ignore = "Multi-rel now routes through VLP JOIN expansion, not rel_* CTEs - architectural change"]
     fn test_multiple_relationship_types_union() {
         // Setup test schema
@@ -397,7 +408,7 @@ mod multiple_relationship_tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(global_schema)]
     #[ignore = "Multi-rel now routes through VLP JOIN expansion, not rel_* CTEs - architectural change"]
     fn test_three_relationship_types_union() {
         // Setup test schema
@@ -491,7 +502,7 @@ mod multiple_relationship_tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(global_schema)]
     fn test_single_relationship_type_no_union() {
         // Setup test schema
         setup_test_schema();
@@ -540,7 +551,7 @@ mod multiple_relationship_tests {
     // Multi-hop functionality is verified in integration tests instead.
 
     #[test]
-    #[serial]
+    #[serial(global_schema)]
     #[ignore = "Requires complete schema setup - verified in integration tests"]
     fn test_two_hop_traversal_has_all_on_clauses() {
         // Setup test schema
@@ -631,7 +642,7 @@ mod multiple_relationship_tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(global_schema)]
     #[ignore = "Requires complete schema setup - verified in integration tests"]
     fn test_three_hop_traversal_has_all_on_clauses() {
         // Setup test schema
@@ -693,7 +704,7 @@ mod multiple_relationship_tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(global_schema)]
     fn test_multi_hop_intermediate_nodes_referenced() {
         // Setup test schema
         setup_test_schema();
@@ -746,7 +757,7 @@ mod multiple_relationship_tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(global_schema)]
     fn test_multi_hop_mixed_directions() {
         // Setup test schema
         setup_test_schema();
@@ -792,7 +803,7 @@ mod multiple_relationship_tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(global_schema)]
     fn test_multi_hop_with_where_clause() {
         // Setup test schema
         setup_test_schema();
@@ -844,7 +855,7 @@ mod multiple_relationship_tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(global_schema)]
     #[ignore = "Requires complete schema setup - verified in integration tests"]
     fn test_multi_hop_different_relationship_types() {
         // Setup test schema

@@ -63,9 +63,7 @@ use crate::{
     graph_catalog::expression_parser::PropertyValue,
     query_planner::{
         analyzer::{analyzer_pass::AnalyzerPass, errors::AnalyzerError},
-        logical_expr::{
-            ColumnAlias, CteEntityRef, EntityType, LogicalExpr, PropertyAccess, TableAlias,
-        },
+        logical_expr::{CteEntityRef, EntityType, LogicalExpr, PropertyAccess, TableAlias},
         logical_plan::{LogicalPlan, ProjectionItem, WithClause},
         plan_ctx::PlanCtx,
         transformed::Transformed,
@@ -88,12 +86,8 @@ pub enum VarSource {
 
     /// Variable is a schema entity from current scope MATCH
     /// Example: `MATCH (a:Person)` → a maps to SchemaEntity
-    SchemaEntity {
-        /// Alias in the query (e.g., "a")
-        alias: String,
-        /// Whether it's a node or relationship
-        entity_type: EntityType,
-    },
+    /// Note: We only need to distinguish this variant - fields not needed
+    SchemaEntity,
 
     /// Variable is a node/relationship exported through a CTE
     /// Example: `WITH a, count(b) as cnt` → a maps to CteEntity (NOT a single column!)
@@ -106,10 +100,6 @@ pub enum VarSource {
         /// Entity type (Node or Relationship)
         entity_type: EntityType,
     },
-
-    /// Variable is a query parameter
-    /// Example: `$userId`
-    Parameter { name: String },
 }
 
 /// Scope context for variable resolution
@@ -126,10 +116,6 @@ pub struct ScopeContext {
     /// Parent scope (for nested WITH)
     /// None for root scope
     pub parent: Option<Box<ScopeContext>>,
-
-    /// Current CTE name (if we're inside a WITH scope)
-    /// Used to generate qualified column references
-    pub current_cte_name: Option<String>,
 }
 
 impl ScopeContext {
@@ -138,16 +124,14 @@ impl ScopeContext {
         ScopeContext {
             visible_vars: HashMap::new(),
             parent: None,
-            current_cte_name: None,
         }
     }
 
     /// Create child scope inheriting from parent
-    pub fn with_parent(parent: ScopeContext, cte_name: Option<String>) -> Self {
+    pub fn with_parent(parent: ScopeContext, _cte_name: Option<String>) -> Self {
         ScopeContext {
             visible_vars: HashMap::new(),
             parent: Some(Box::new(parent)),
-            current_cte_name: cte_name,
         }
     }
 
@@ -563,13 +547,7 @@ impl VariableResolver {
                         entity_alias,
                         entity_type
                     );
-                    projection_scope.add_variable(
-                        entity_alias.clone(),
-                        VarSource::SchemaEntity {
-                            alias: entity_alias,
-                            entity_type,
-                        },
-                    );
+                    projection_scope.add_variable(entity_alias.clone(), VarSource::SchemaEntity);
                 }
 
                 // Resolve projection items using the appropriate scope
@@ -723,15 +701,7 @@ impl VariableResolver {
                 // The unwound variable is visible downstream as a schema entity
                 // This allows: UNWIND friends AS friend ... RETURN friend.name
                 let mut new_scope = scope.clone();
-                new_scope.add_variable(
-                    unwind.alias.clone(),
-                    VarSource::SchemaEntity {
-                        alias: unwind.alias.clone(),
-                        // Treat unwound elements as nodes (could be nodes or relationships)
-                        // The type system will handle proper resolution later
-                        entity_type: EntityType::Node,
-                    },
-                );
+                new_scope.add_variable(unwind.alias.clone(), VarSource::SchemaEntity);
 
                 log::info!(
                     "🔍 VariableResolver: Added UNWIND alias '{}' to scope as SchemaEntity",
@@ -762,13 +732,7 @@ impl VariableResolver {
                 // This populates the scope with schema entities from MATCH
                 // We need to do this in a new scope that includes this node
                 let mut new_scope = scope.clone();
-                new_scope.add_variable(
-                    gn.alias.clone(),
-                    VarSource::SchemaEntity {
-                        alias: gn.alias.clone(),
-                        entity_type: EntityType::Node,
-                    },
-                );
+                new_scope.add_variable(gn.alias.clone(), VarSource::SchemaEntity);
 
                 // Recurse into input with updated scope
                 let input_resolved = self.resolve(gn.input.clone(), &new_scope, plan_ctx)?;
@@ -793,13 +757,7 @@ impl VariableResolver {
 
                 // Add relationship to scope
                 let mut new_scope = scope.clone();
-                new_scope.add_variable(
-                    rel.alias.clone(),
-                    VarSource::SchemaEntity {
-                        alias: rel.alias.clone(),
-                        entity_type: EntityType::Relationship,
-                    },
-                );
+                new_scope.add_variable(rel.alias.clone(), VarSource::SchemaEntity);
 
                 // Check if left_connection or right_connection refer to CTE variables
                 // If so, we need to track them in cte_references
@@ -917,13 +875,7 @@ impl VariableResolver {
                 // Build scope with all table aliases from joins
                 let mut new_scope = scope.clone();
                 for join in &gj.joins {
-                    new_scope.add_variable(
-                        join.table_alias.clone(),
-                        VarSource::SchemaEntity {
-                            alias: join.table_alias.clone(),
-                            entity_type: EntityType::Node, // Assume node for now
-                        },
-                    );
+                    new_scope.add_variable(join.table_alias.clone(), VarSource::SchemaEntity);
                 }
 
                 // Recurse into input with updated scope
@@ -1075,7 +1027,7 @@ impl VariableResolver {
                         }))
                     }
 
-                    Some(VarSource::SchemaEntity { .. }) => {
+                    Some(VarSource::SchemaEntity) => {
                         // This is a schema entity (node/rel from MATCH)
                         // Leave as TableAlias - it will be expanded by renderer
                         log::debug!(
@@ -1103,12 +1055,6 @@ impl VariableResolver {
                             entity_type: *entity_type,
                             columns: vec![], // Columns determined by renderer from schema
                         }))
-                    }
-
-                    Some(VarSource::Parameter { .. }) => {
-                        // Parameter reference
-                        log::debug!("🔍 VariableResolver: '{}' is parameter", alias.0);
-                        Ok(expr.clone())
                     }
 
                     None => {
@@ -1358,13 +1304,7 @@ mod tests {
     #[test]
     fn test_scope_context_lookup() {
         let mut root = ScopeContext::root();
-        root.add_variable(
-            "a".to_string(),
-            VarSource::SchemaEntity {
-                alias: "a".to_string(),
-                entity_type: EntityType::Node,
-            },
-        );
+        root.add_variable("a".to_string(), VarSource::SchemaEntity);
 
         // Lookup in root scope
         assert!(root.lookup("a").is_some());

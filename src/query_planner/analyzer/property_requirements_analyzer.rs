@@ -52,8 +52,8 @@ use crate::query_planner::{
         analyzer_pass::{AnalyzerPass, AnalyzerResult},
         property_requirements::PropertyRequirements,
     },
-    logical_expr::{LogicalExpr, PropertyAccess, TableAlias},
-    logical_plan::{LogicalPlan, ProjectionItem},
+    logical_expr::LogicalExpr,
+    logical_plan::LogicalPlan,
     plan_ctx::PlanCtx,
     transformed::Transformed,
 };
@@ -466,7 +466,7 @@ mod tests {
     use crate::graph_catalog::expression_parser::PropertyValue;
     use crate::query_planner::logical_expr::{
         AggregateFnCall, ColumnAlias, Literal, LogicalCase, Operator, OperatorApplication,
-        PropertyAccess, ScalarFnCall,
+        PropertyAccess, ScalarFnCall, TableAlias,
     };
     use crate::query_planner::logical_plan::{
         Filter, OrderBy, OrderByItem, OrderByOrder, Projection, ProjectionItem, Unwind,

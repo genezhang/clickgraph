@@ -3,16 +3,14 @@
 //! This module provides a strategy-pattern based approach to CTE generation
 //! that handles all ClickGraph schema variations through unified interfaces.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::clickhouse_query_generator::variable_length_cte::{
-    NodeProperty, ShortestPathMode, VariableLengthCteGenerator,
+    NodeProperty, VariableLengthCteGenerator,
 };
 use crate::graph_catalog::{
-    config::Identifier,
-    graph_schema::{GraphSchema, NodeIdSchema, NodeSchema},
-    EdgeAccessStrategy, JoinStrategy, NodeAccessStrategy, NodePosition, PatternSchemaContext,
+    config::Identifier, graph_schema::GraphSchema, EdgeAccessStrategy, JoinStrategy,
+    NodeAccessStrategy, NodePosition, PatternSchemaContext,
 };
 use crate::query_planner::join_context::{
     VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
@@ -1146,12 +1144,6 @@ impl TraditionalCteStrategy {
                 label
             ))),
         }
-    }
-
-    /// Get the ID column for the start node
-    fn get_start_id_column(&self) -> Result<String, CteError> {
-        let (_table, id_col) = self.get_node_table_info(&self.pattern_ctx.left_node_alias)?;
-        Ok(id_col)
     }
 
     /// Get relationship table info (table, from_col, to_col)
@@ -2788,6 +2780,8 @@ impl VariableLengthCteStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema};
+    use std::collections::HashMap;
 
     #[test]
     fn test_traditional_cte_strategy_basic() {
