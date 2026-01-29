@@ -17,9 +17,6 @@
 //! 2. Tags filters with their owning table for later optimization
 //! 3. Handles denormalized patterns where node data is in edge tables
 //! 4. Preserves multi-table conditions for proper JOIN ordering
-//!
-//! Some methods in this module are reserved for future filter optimization passes.
-#![allow(dead_code)]
 
 use std::{collections::HashSet, sync::Arc};
 
@@ -31,8 +28,7 @@ use crate::{
             errors::{AnalyzerError, Pass},
         },
         logical_expr::{
-            AggregateFnCall, Column, LogicalExpr, Operator, OperatorApplication, PropertyAccess,
-            ScalarFnCall, TableAlias,
+            LogicalExpr, Operator, OperatorApplication, PropertyAccess, ScalarFnCall, TableAlias,
         },
         logical_plan::{Filter, GroupBy, LogicalPlan, ProjectionItem},
         plan_ctx::PlanCtx,
@@ -1250,31 +1246,6 @@ impl FilterTagging {
                 "FilterTagging: Extracted filter for table alias: '{}'",
                 table_alias
             );
-            // let mut table_alias = "";
-            // for operand in &extracted_filter.operands {
-            //     match operand {
-            //         LogicalExpr::PropertyAccessExp(property_access) => {
-            //             table_alias = &property_access.table_alias.0;
-            //         },
-            //         // in case of fn, we check for any argument is of type prop access
-            //         LogicalExpr::ScalarFnCall(scalar_fn_call) => {
-            //             for arg in &scalar_fn_call.args {
-            //                 if let LogicalExpr::PropertyAccessExp(property_access) = arg {
-            //                     table_alias = &property_access.table_alias.0;
-            //                 }
-            //             }
-            //         },
-            //         // in case of fn, we check for any argument is of type prop access
-            //         LogicalExpr::AggregateFnCall(aggregate_fn_call) => {
-            //             for arg in &aggregate_fn_call.args {
-            //                 if let LogicalExpr::PropertyAccessExp(property_access) = arg {
-            //                     table_alias = &property_access.table_alias.0;
-            //                 }
-            //             }
-            //         },
-            //         _ => ()
-            //     }
-            // }
 
             if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&table_alias) {
                 // FIXED: Keep PropertyAccessExp with table_alias instead of converting to Column
@@ -1306,57 +1277,6 @@ impl FilterTagging {
         }
 
         Ok(remaining)
-    }
-
-    fn convert_prop_acc_to_column(expr: LogicalExpr) -> LogicalExpr {
-        match expr {
-            LogicalExpr::PropertyAccessExp(property_access) => {
-                LogicalExpr::Column(Column(property_access.column.raw().to_string()))
-            }
-            LogicalExpr::OperatorApplicationExp(op_app) => {
-                let mut new_operands: Vec<LogicalExpr> = vec![];
-                for operand in op_app.operands {
-                    let new_operand = Self::convert_prop_acc_to_column(operand);
-                    new_operands.push(new_operand);
-                }
-                LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                    operator: op_app.operator,
-                    operands: new_operands,
-                })
-            }
-            LogicalExpr::List(exprs) => {
-                let mut new_exprs = Vec::new();
-                for sub_expr in exprs {
-                    let new_expr = Self::convert_prop_acc_to_column(sub_expr);
-                    new_exprs.push(new_expr);
-                }
-                LogicalExpr::List(new_exprs)
-            }
-            LogicalExpr::ScalarFnCall(fc) => {
-                let mut new_args = Vec::new();
-                for arg in fc.args {
-                    let new_arg = Self::convert_prop_acc_to_column(arg);
-                    new_args.push(new_arg);
-                }
-                LogicalExpr::ScalarFnCall(ScalarFnCall {
-                    name: fc.name,
-                    args: new_args,
-                })
-            }
-
-            LogicalExpr::AggregateFnCall(fc) => {
-                let mut new_args = Vec::new();
-                for arg in fc.args {
-                    let new_arg = Self::convert_prop_acc_to_column(arg);
-                    new_args.push(new_arg);
-                }
-                LogicalExpr::AggregateFnCall(AggregateFnCall {
-                    name: fc.name,
-                    args: new_args,
-                })
-            }
-            other => other,
-        }
     }
 
     /// Recursively collect all PropertyAccess expressions from an expression tree
@@ -1496,11 +1416,10 @@ impl FilterTagging {
                 );
                 op_app.operands = new_operands;
 
-                // TODO ALl aggregated functions will be evaluated in final where clause. We have to check what kind of fns we can put here.
-                // because if we put aggregated fns like count() then it will mess up the final result because we want the count of all joined entries in the set,
-                // in case of anchor node this could lead incorrect answers.
+                // TODO: All aggregated functions will be evaluated in final where clause. We have to check what kind of fns we can put here.
+                // Note: We are not extracting aggregated fns because they mess up the final result.
+                // We want the count of all joined entries in the set; for anchor nodes this could lead to incorrect answers.
 
-                // let mut should_extract: bool = false;
                 let mut temp_prop_acc: Vec<PropertyAccess> = vec![];
                 let mut condition_belongs_to: HashSet<&str> = HashSet::new();
                 let mut agg_operand_found = false;
@@ -1697,7 +1616,6 @@ impl FilterTagging {
     // - `references_projection_alias`: Check if filter belongs in HAVING clause
     // - `find_owning_edge_for_node`: Find denormalized edge for node properties
     // - `has_cartesian_product_descendant`: Detect cross-table joins
-    // - `is_node_denormalized`: Check if node is embedded in edge table
 
     /// Check if an expression references any projection aliases
     /// Used to determine if a filter should become a HAVING clause
@@ -1799,15 +1717,6 @@ impl FilterTagging {
             LogicalPlan::GraphJoins(joins) => Self::has_cartesian_product_descendant(&joins.input),
             _ => false,
         }
-    }
-
-    /// Check if a node is denormalized by using PatternSchemaContext
-    fn is_node_denormalized(plan_ctx: &PlanCtx, alias: &str) -> bool {
-        // Use PatternSchemaContext to determine if node is embedded in an edge
-        matches!(
-            plan_ctx.get_node_strategy(alias, None),
-            Some(crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { .. })
-        )
     }
 
     // ========================================================================
@@ -2092,103 +2001,6 @@ impl FilterTagging {
             _ => None,
         }
     }
-
-    /// Find denormalized context: relationship type and node role
-    /// Returns (relationship_type, node_role) if the alias is a denormalized node in a GraphRel
-    fn find_denormalized_context(
-        plan: &LogicalPlan,
-        alias: &str,
-        _label: &str,
-    ) -> Option<(
-        Option<String>,
-        crate::render_plan::cte_generation::NodeRole,
-        String,
-    )> {
-        use crate::render_plan::cte_generation::NodeRole;
-
-        match plan {
-            LogicalPlan::GraphRel(rel) => {
-                // Check if this alias is the left or right connection of this relationship
-                let is_left = rel.left_connection == alias;
-                let is_right = rel.right_connection == alias;
-
-                if is_left || is_right {
-                    // Check if the node is actually denormalized
-                    let node_plan = if is_left { &rel.left } else { &rel.right };
-                    if let LogicalPlan::GraphNode(node) = node_plan.as_ref() {
-                        if node.is_denormalized {
-                            let rel_type = rel
-                                .labels
-                                .as_ref()
-                                .and_then(|labels| labels.first().cloned());
-                            let role = if is_left {
-                                NodeRole::From
-                            } else {
-                                NodeRole::To
-                            };
-                            println!("find_denormalized_context: Returning rel_alias='{}' for node alias='{}'", rel.alias, alias);
-                            return Some((rel_type, role, rel.alias.clone()));
-                        }
-                    }
-                }
-
-                // Recursively search in child plans
-                if let Some(result) = Self::find_denormalized_context(&rel.left, alias, _label) {
-                    return Some(result);
-                }
-                if let Some(result) = Self::find_denormalized_context(&rel.right, alias, _label) {
-                    return Some(result);
-                }
-                None
-            }
-            LogicalPlan::GraphNode(node) => {
-                // For node-only queries with denormalized nodes, check ViewScan directly
-                if node.is_denormalized && node.alias == alias {
-                    if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
-                        // Determine role based on which properties are available
-                        if scan.from_node_properties.is_some() && scan.to_node_properties.is_none()
-                        {
-                            println!(
-                                "find_denormalized_context: Node-only FROM for alias='{}'",
-                                alias
-                            );
-                            return Some((None, NodeRole::From, alias.to_string()));
-                        } else if scan.to_node_properties.is_some()
-                            && scan.from_node_properties.is_none()
-                        {
-                            println!(
-                                "find_denormalized_context: Node-only TO for alias='{}'",
-                                alias
-                            );
-                            return Some((None, NodeRole::To, alias.to_string()));
-                        }
-                    }
-                }
-                Self::find_denormalized_context(&node.input, alias, _label)
-            }
-            LogicalPlan::Filter(filter) => {
-                Self::find_denormalized_context(&filter.input, alias, _label)
-            }
-            LogicalPlan::Projection(proj) => {
-                Self::find_denormalized_context(&proj.input, alias, _label)
-            }
-            LogicalPlan::GroupBy(gb) => Self::find_denormalized_context(&gb.input, alias, _label),
-            LogicalPlan::OrderBy(ob) => Self::find_denormalized_context(&ob.input, alias, _label),
-            LogicalPlan::Skip(skip) => Self::find_denormalized_context(&skip.input, alias, _label),
-            LogicalPlan::Limit(limit) => {
-                Self::find_denormalized_context(&limit.input, alias, _label)
-            }
-            LogicalPlan::Cte(cte) => Self::find_denormalized_context(&cte.input, alias, _label),
-            LogicalPlan::CartesianProduct(cp) => {
-                // Search both branches of the CartesianProduct
-                if let Some(result) = Self::find_denormalized_context(&cp.left, alias, _label) {
-                    return Some(result);
-                }
-                Self::find_denormalized_context(&cp.right, alias, _label)
-            }
-            _ => None,
-        }
-    }
 }
 
 // ============================================================================
@@ -2198,7 +2010,7 @@ impl FilterTagging {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query_planner::logical_expr::{Literal, PropertyAccess, TableAlias};
+    use crate::query_planner::logical_expr::{AggregateFnCall, Literal, PropertyAccess, TableAlias};
     use crate::query_planner::logical_plan::{Filter, GraphNode, LogicalPlan};
     use crate::query_planner::plan_ctx::TableCtx;
 

@@ -627,9 +627,6 @@ impl GraphTRaversalPlanning {
             let outgoing_alias = logical_plan::generate_id();
             let incoming_alias = logical_plan::generate_id();
 
-            // let outgoing_label = format!("{}_{}", graph_context.rel.label, Direction::Outgoing);
-            // let incoming_label = format!("{}_{}", graph_context.rel.label, Direction::Incoming);
-
             let rel_plan: Arc<LogicalPlan> = Arc::new(LogicalPlan::Union(Union {
                 inputs: vec![Arc::new(LogicalPlan::Empty), Arc::new(LogicalPlan::Empty)],
                 union_type: UnionType::Distinct,

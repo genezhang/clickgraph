@@ -1,6 +1,7 @@
 //! CTE generation utilities for variable-length path queries
 //!
 //! Some structures and methods in this module are reserved for future use.
+// Note: NodeRole enum and some helper methods are intentionally kept for future CTE enhancements
 #![allow(dead_code)]
 
 use std::collections::HashMap;

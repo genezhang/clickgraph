@@ -13,7 +13,6 @@ mod tests {
         query_planner::{
             analyzer::{analyzer_pass::AnalyzerPass, type_inference::TypeInference},
             logical_plan::{evaluate_query, reset_alias_counter},
-            plan_ctx::PlanCtx,
         },
     };
     use std::collections::HashMap;

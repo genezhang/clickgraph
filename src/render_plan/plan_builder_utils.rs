@@ -18,8 +18,15 @@
 //! 3. Extract reusable patterns into focused submodules
 //!
 
-// TODO(tech-debt): This module has ~47 dead functions that need cleanup.
-// Temporarily allowing dead code to focus on higher-priority features.
+// TODO(tech-debt): This module has 44 dead functions that need cleanup.
+// Dead code identified on 2026-01-29:
+// - rewrite_render_expr_for_vlp_with_endpoint_info_legacy (line 458)
+// - extract_cte_references (line 468)
+// - convert_correlation_predicates_to_joins (line 592)
+// - extract_join_from_logical_equality (line 635)
+// - Many extract_* functions (lines 1062-1128)
+// - Many rewrite_* functions throughout
+// See: cargo build with allow(dead_code) disabled for full list
 // Target: Clean up before v0.7.0 release.
 #![allow(dead_code)]
 

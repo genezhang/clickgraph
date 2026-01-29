@@ -1,8 +1,7 @@
 use ast::{
-    CallClause, CreateClause, CypherStatement, DeleteClause, LimitClause, MatchClause,
-    OpenCypherQueryAst, OptionalMatchClause, OrderByClause, ReadingClause, RemoveClause,
-    ReturnClause, SetClause, SkipClause, UnionClause, UnionType, UnwindClause, UseClause,
-    WhereClause, WithClause,
+    CallClause, CreateClause, CypherStatement, DeleteClause, MatchClause, OpenCypherQueryAst,
+    OptionalMatchClause, ReadingClause, RemoveClause, ReturnClause, SetClause, UnionClause,
+    UnionType, UnwindClause, UseClause, WhereClause, WithClause,
 };
 pub use common::strip_comments;
 use common::ws;
@@ -241,9 +240,10 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     use crate::open_cypher_parser::ast::{
-        ConnectedPattern, Direction, Expression, FunctionCall, Literal, NodePattern, Operator,
-        OperatorApplication, OrderByItem, OrerByOrder, PathPattern, Property, PropertyAccess,
-        PropertyKVPair, RelationshipPattern, ReturnItem, WithItem,
+        ConnectedPattern, Direction, Expression, FunctionCall, LimitClause, Literal, NodePattern,
+        Operator, OperatorApplication, OrderByClause, OrderByItem, OrerByOrder, PathPattern,
+        Property, PropertyAccess, PropertyKVPair, RelationshipPattern, ReturnItem, SkipClause,
+        WithItem,
     };
 
     use super::*;

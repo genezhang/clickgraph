@@ -223,12 +223,6 @@ pub fn generate_cte_id() -> String {
     format!("cte{}", n)
 }
 
-/// Reset the CTE counter (useful for testing to get predictable CTE names)
-#[allow(dead_code)]
-pub fn reset_cte_counter() {
-    CTE_COUNTER.store(1, Ordering::SeqCst);
-}
-
 /// Helper function for the common rebuild_or_clone pattern used across LogicalPlan variants.
 ///
 /// This consolidates the duplicated logic that appears in 14+ rebuild_or_clone() methods:

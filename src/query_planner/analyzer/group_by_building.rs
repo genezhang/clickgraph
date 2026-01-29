@@ -402,7 +402,7 @@ mod tests {
         })
     }
 
-    fn create_scan(alias: Option<String>, table_name: Option<String>) -> Arc<LogicalPlan> {
+    fn create_scan(_alias: Option<String>, _table_name: Option<String>) -> Arc<LogicalPlan> {
         Arc::new(LogicalPlan::Empty)
     }
 

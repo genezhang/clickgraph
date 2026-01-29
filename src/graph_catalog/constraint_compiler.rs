@@ -153,7 +153,6 @@ fn resolve_property_to_column(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph_catalog::engine_detection::TableEngine;
     use crate::graph_catalog::graph_schema::NodeIdSchema;
     use std::collections::HashMap;
 

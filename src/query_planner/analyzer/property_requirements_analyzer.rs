@@ -465,12 +465,10 @@ mod tests {
     use super::*;
     use crate::graph_catalog::expression_parser::PropertyValue;
     use crate::query_planner::logical_expr::{
-        AggregateFnCall, ColumnAlias, Literal, LogicalCase, Operator, OperatorApplication,
-        PropertyAccess, ScalarFnCall, TableAlias,
+        AggregateFnCall, Literal, LogicalCase, Operator, OperatorApplication, PropertyAccess,
+        ScalarFnCall, TableAlias,
     };
-    use crate::query_planner::logical_plan::{
-        Filter, OrderBy, OrderByItem, OrderByOrder, Projection, ProjectionItem, Unwind,
-    };
+    use crate::query_planner::logical_plan::{Projection, ProjectionItem, Unwind};
 
     #[test]
     fn test_analyze_property_access() {

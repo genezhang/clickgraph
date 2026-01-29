@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn test_identifies_non_trivial_with_distinct() {
-        let mut with = WithClause {
+        let with = WithClause {
             cte_name: None,
             input: Arc::new(LogicalPlan::Empty),
             items: vec![],

@@ -1,6 +1,7 @@
 //! CTE extraction utilities for variable-length path handling
 //!
 //! Some functions in this module are reserved for future use or used only in specific code paths.
+// Note: Helper functions for VLP CTE generation are kept for complex path patterns
 #![allow(dead_code)]
 
 use crate::clickhouse_query_generator::variable_length_cte::NodeProperty;

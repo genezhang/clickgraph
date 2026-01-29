@@ -148,6 +148,9 @@ fn expressions_match(expr1: &RenderExpr, expr2: &RenderExpr) -> bool {
     }
 }
 
+// Methods are used internally via recursive calls within the impl block.
+// The dead_code warning is a false positive since Rust can't see the recursive usage.
+#[allow(dead_code)]
 pub(crate) trait RenderPlanBuilder {
     fn extract_last_node_cte(
         &self,
