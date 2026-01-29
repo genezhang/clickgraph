@@ -264,7 +264,7 @@ mod tests {
     };
 
     // helper functions
-    fn create_scan(alias: Option<String>, table_name: Option<String>) -> Arc<LogicalPlan> {
+    fn create_scan(_alias: Option<String>, _table_name: Option<String>) -> Arc<LogicalPlan> {
         // Use Empty since Scan is removed
         Arc::new(LogicalPlan::Empty)
     }

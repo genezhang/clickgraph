@@ -12,7 +12,7 @@ use clickgraph::{
     open_cypher_parser::parse_query,
     query_planner::{
         evaluate_read_query,
-        logical_plan::{plan_builder::build_logical_plan, LogicalPlan},
+        logical_plan::plan_builder::build_logical_plan,
     },
     render_plan::{logical_plan_to_render_plan, ToSql},
 };

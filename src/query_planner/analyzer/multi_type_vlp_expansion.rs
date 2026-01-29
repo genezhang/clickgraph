@@ -247,7 +247,6 @@ fn find_edges_from_node<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph_catalog::config::Identifier;
     use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema};
     use std::collections::HashMap;
 

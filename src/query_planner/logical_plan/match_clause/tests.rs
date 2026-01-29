@@ -18,9 +18,7 @@ use crate::open_cypher_parser::ast;
 use crate::query_planner::logical_expr::{
     Direction, Literal, LogicalExpr, Operator, Property, PropertyKVPair,
 };
-use crate::query_planner::logical_plan::{
-    errors::LogicalPlanError, generate_id, GraphNode, GraphRel, LogicalPlan, ViewScan,
-};
+use crate::query_planner::logical_plan::{errors::LogicalPlanError, generate_id, LogicalPlan};
 use crate::query_planner::plan_ctx::{PlanCtx, TableCtx};
 
 // Import from parent module (match_clause)
