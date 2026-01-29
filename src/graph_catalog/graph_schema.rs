@@ -1,6 +1,10 @@
 //! Graph schema definitions and operations
 //!
 //! Some methods are reserved for future online validation and runtime checks.
+//!
+//! Note: The following functions are intentionally unused (reserved for future):
+//! - `validate_table_exists`, `validate_column_exists`, `get_column_type`: For runtime schema validation
+//! - `is_relationship_compatible`, `is_node_type_compatible`: For polymorphic node type matching
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
