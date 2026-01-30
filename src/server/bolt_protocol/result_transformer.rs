@@ -34,7 +34,7 @@
 
 use crate::{
     graph_catalog::{
-        element_id::generate_node_element_id,
+        element_id::{generate_node_element_id, generate_relationship_element_id},
         graph_schema::GraphSchema,
     },
     query_planner::{
@@ -43,7 +43,7 @@ use crate::{
         plan_ctx::PlanCtx,
         typed_variable::TypedVariable,
     },
-    server::bolt_protocol::graph_objects::Node,
+    server::bolt_protocol::graph_objects::{Node, Relationship},
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -241,9 +241,23 @@ pub fn transform_row(
                 node_props.insert("__labels".to_string(), serde_json::to_value(&node.labels).unwrap());
                 result.push(Value::Object(node_props.into_iter().collect()));
             }
-            ReturnItemType::Relationship { .. } => {
-                // TODO: Relationship transformation in Iteration 2
-                result.push(Value::Null);
+            ReturnItemType::Relationship { rel_types, from_label, to_label } => {
+                let rel = transform_to_relationship(
+                    &row, 
+                    &meta.field_name, 
+                    rel_types, 
+                    from_label.as_deref(),
+                    to_label.as_deref(),
+                    schema
+                )?;
+                // TODO: Wrap in packstream Value in future iteration
+                // For now, serialize as JSON with special fields
+                let mut rel_props = rel.properties.clone();
+                rel_props.insert("__element_id".to_string(), Value::String(rel.element_id.clone()));
+                rel_props.insert("__type".to_string(), Value::String(rel.rel_type.clone()));
+                rel_props.insert("__start_node_element_id".to_string(), Value::String(rel.start_node_element_id.clone()));
+                rel_props.insert("__end_node_element_id".to_string(), Value::String(rel.end_node_element_id.clone()));
+                result.push(Value::Object(rel_props.into_iter().collect()));
             }
             ReturnItemType::Path => {
                 // TODO: Path transformation in Iteration 3
@@ -317,6 +331,93 @@ fn transform_to_node(
     })
 }
 
+/// Transform raw result row fields into a Relationship struct
+///
+/// Extracts relationship properties, from/to node IDs, and generates elementIds
+/// for the relationship and connected nodes.
+///
+/// # Arguments
+///
+/// * `row` - Raw result row (column_name → value)
+/// * `var_name` - Relationship variable name (e.g., "r")
+/// * `rel_types` - Relationship types (e.g., ["FOLLOWS"])
+/// * `from_label` - Optional from node label (for polymorphic)
+/// * `to_label` - Optional to node label (for polymorphic)
+/// * `schema` - Graph schema for ID column lookup
+///
+/// # Returns
+///
+/// Relationship struct with properties and generated elementIds
+fn transform_to_relationship(
+    row: &HashMap<String, Value>,
+    var_name: &str,
+    rel_types: &[String],
+    from_label: Option<&str>,
+    to_label: Option<&str>,
+    schema: &GraphSchema,
+) -> Result<Relationship, String> {
+    // Extract properties for this relationship variable
+    // Columns like "r.follow_date", "r.weight" → properties
+    let prefix = format!("{}.", var_name);
+    let mut properties = HashMap::new();
+
+    for (key, value) in row.iter() {
+        if let Some(prop_name) = key.strip_prefix(&prefix) {
+            properties.insert(prop_name.to_string(), value.clone());
+        }
+    }
+
+    // Get primary relationship type
+    let rel_type = rel_types
+        .first()
+        .ok_or_else(|| format!("No relationship type for variable: {}", var_name))?;
+
+    // Get relationship schema
+    let rel_schema = schema
+        .get_relationships_schema_opt(rel_type)
+        .ok_or_else(|| format!("Relationship schema not found for type: {}", rel_type))?;
+
+    // Extract from_id and to_id from properties
+    // The SQL might use generic names "from_id" and "to_id" or actual column names
+    let from_id_col = &rel_schema.from_id;
+    let to_id_col = &rel_schema.to_id;
+
+    let from_id_value = properties
+        .get(from_id_col)
+        .or_else(|| properties.get("from_id")) // Fallback to generic name
+        .and_then(value_to_string)
+        .ok_or_else(|| format!("Missing from_id column '{}' (or 'from_id') for relationship '{}'", from_id_col, var_name))?;
+
+    let to_id_value = properties
+        .get(to_id_col)
+        .or_else(|| properties.get("to_id")) // Fallback to generic name
+        .and_then(value_to_string)
+        .ok_or_else(|| format!("Missing to_id column '{}' (or 'to_id') for relationship '{}'", to_id_col, var_name))?;
+
+    // Generate relationship elementId: "FOLLOWS:1->2"
+    let element_id = generate_relationship_element_id(rel_type, &from_id_value, &to_id_value);
+
+    // Generate node elementIds for start and end nodes
+    // Use provided labels if available, otherwise use from schema
+    let from_node_label = from_label.unwrap_or(&rel_schema.from_node);
+    let to_node_label = to_label.unwrap_or(&rel_schema.to_node);
+
+    let start_node_element_id = generate_node_element_id(from_node_label, &[&from_id_value]);
+    let end_node_element_id = generate_node_element_id(to_node_label, &[&to_id_value]);
+
+    // Create Relationship struct
+    Ok(Relationship {
+        id: 0, // Legacy ID (unused in Neo4j 5.x)
+        start_node_id: 0, // Legacy ID
+        end_node_id: 0,   // Legacy ID
+        rel_type: rel_type.to_string(),
+        properties,
+        element_id,
+        start_node_element_id,
+        end_node_element_id,
+    })
+}
+
 /// Convert a JSON Value to a String for elementId generation
 ///
 /// Handles String, Number, Boolean types. Returns None for complex types.
@@ -383,6 +484,82 @@ mod tests {
         };
 
         assert_eq!(get_field_name(&proj_item), "user");
+    }
+
+    #[test]
+    fn test_transform_to_relationship_basic() {
+        use crate::graph_catalog::{
+            config::Identifier,
+            expression_parser::PropertyValue,
+            graph_schema::{NodeIdSchema, NodeSchema, RelationshipSchema},
+        };
+        use std::collections::HashMap;
+
+        // Create a minimal schema
+        let mut schema = GraphSchema::build(
+            1,
+            "test".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+        );
+        
+        // Add relationship schema for FOLLOWS
+        schema.insert_relationship_schema(
+            "FOLLOWS".to_string(),
+            RelationshipSchema {
+                database: "test".to_string(),
+                table_name: "follows".to_string(),
+                column_names: vec!["follower_id".to_string(), "followed_id".to_string(), "follow_date".to_string()],
+                from_node: "User".to_string(),
+                to_node: "User".to_string(),
+                from_node_table: "users".to_string(),
+                to_node_table: "users".to_string(),
+                from_id: "follower_id".to_string(),
+                to_id: "followed_id".to_string(),
+                from_node_id_dtype: "UInt64".to_string(),
+                to_node_id_dtype: "UInt64".to_string(),
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                edge_id: None,
+                type_column: None,
+                from_label_column: None,
+                to_label_column: None,
+                from_label_values: None,
+                to_label_values: None,
+                from_node_properties: None,
+                to_node_properties: None,
+                is_fk_edge: false,
+                constraints: None,
+                edge_id_types: None,
+            },
+        );
+
+        // Create test row data
+        let mut row = HashMap::new();
+        row.insert("r.follower_id".to_string(), Value::Number(1.into()));
+        row.insert("r.followed_id".to_string(), Value::Number(2.into()));
+        row.insert("r.follow_date".to_string(), Value::String("2024-01-15".to_string()));
+
+        // Transform
+        let result = transform_to_relationship(
+            &row,
+            "r",
+            &["FOLLOWS".to_string()],
+            Some("User"),
+            Some("User"),
+            &schema,
+        );
+
+        assert!(result.is_ok());
+        let rel = result.unwrap();
+        assert_eq!(rel.rel_type, "FOLLOWS");
+        assert_eq!(rel.element_id, "FOLLOWS:1->2");
+        assert_eq!(rel.start_node_element_id, "User:1");
+        assert_eq!(rel.end_node_element_id, "User:2");
+        assert_eq!(rel.properties.get("follow_date").unwrap(), &Value::String("2024-01-15".to_string()));
     }
 
     // Integration-style test (requires more setup)

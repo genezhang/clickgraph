@@ -868,6 +868,9 @@ impl BoltHandler {
 
         // Transform results if we have graph objects (nodes, relationships, paths)
         if has_graph_objects {
+            log::info!("Transforming graph objects. Original field_names: {:?}, metadata items: {}", 
+                field_names, return_metadata.len());
+            
             let mut transformed_rows = Vec::new();
             for row in &rows {
                 // Convert row Vec back to HashMap for transformation
@@ -883,7 +886,10 @@ impl BoltHandler {
                     &return_metadata,
                     &graph_schema,
                 ) {
-                    Ok(transformed) => transformed_rows.push(transformed),
+                    Ok(transformed) => {
+                        log::debug!("Transformed row: {} fields → {} items", field_names.len(), transformed.len());
+                        transformed_rows.push(transformed);
+                    }
                     Err(e) => {
                         log::warn!("Failed to transform row to graph objects: {}", e);
                         // Fall back to original row on error
@@ -898,6 +904,8 @@ impl BoltHandler {
                 .iter()
                 .map(|m| m.field_name.clone())
                 .collect();
+            
+            log::info!("After transformation: field_names: {:?}", field_names);
         }
 
         // Cache the results for streaming in PULL
