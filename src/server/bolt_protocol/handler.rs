@@ -134,6 +134,17 @@ impl BoltHandler {
             // Bolt 5.1+: HELLO just initializes connection, auth happens in LOGON
             log::info!("HELLO received (Bolt 5.1+), awaiting LOGON for authentication");
 
+            // Extract database from HELLO extra field (routing context)
+            let database = message.extract_database();
+            log::debug!("Extracted database from HELLO: {:?}", database);
+            
+            // Store database selection in context for later use in LOGON
+            if let Some(ref db_name) = database {
+                let mut context = lock_context!(self.context);
+                context.schema_name = Some(db_name.clone());
+                log::info!("Database/schema specified in HELLO: {}", db_name);
+            }
+
             // Update context to AUTHENTICATION state
             {
                 let mut context = lock_context!(self.context);
@@ -303,7 +314,16 @@ impl BoltHandler {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                // If no database specified, use the first loaded schema (if any)
+                // If no database in LOGON, check if it was set in HELLO (Bolt 5.1+)
+                if database.is_none() {
+                    let context = lock_context!(self.context);
+                    database = context.schema_name.clone();
+                    if database.is_some() {
+                        log::debug!("Using database from HELLO: {:?}", database);
+                    }
+                }
+
+                // If still no database specified, use the first loaded schema (if any)
                 if database.is_none() {
                     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
                         let schemas = schemas_lock.read().await;
