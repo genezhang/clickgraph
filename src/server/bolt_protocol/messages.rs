@@ -38,18 +38,42 @@ pub mod signatures {
     pub const FAILURE: u8 = 0x7F;
 }
 
+/// Value types that can be sent in Bolt messages
+///
+/// BoltValue allows mixing regular JSON values with pre-encoded packstream
+/// bytes for graph objects (Node, Relationship) that need special encoding.
+#[derive(Debug, Clone)]
+pub enum BoltValue {
+    /// Regular JSON value (serialized via packstream)
+    Json(Value),
+    /// Pre-encoded packstream bytes for a Node structure
+    PackstreamBytes(Vec<u8>),
+}
+
+impl BoltValue {
+    /// Create a BoltValue from a JSON value
+    pub fn from_json(value: Value) -> Self {
+        BoltValue::Json(value)
+    }
+
+    /// Create a BoltValue from pre-encoded packstream bytes
+    pub fn from_packstream(bytes: Vec<u8>) -> Self {
+        BoltValue::PackstreamBytes(bytes)
+    }
+}
+
 /// Bolt message structure
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct BoltMessage {
     /// Message signature (type)
     pub signature: u8,
     /// Message fields
-    pub fields: Vec<Value>,
+    pub fields: Vec<BoltValue>,
 }
 
 impl BoltMessage {
     /// Create a new Bolt message
-    pub fn new(signature: u8, fields: Vec<Value>) -> Self {
+    pub fn new(signature: u8, fields: Vec<BoltValue>) -> Self {
         BoltMessage { signature, fields }
     }
 
@@ -58,11 +82,11 @@ impl BoltMessage {
         BoltMessage::new(
             signatures::HELLO,
             vec![
-                Value::Object(serde_json::Map::from_iter([(
+                BoltValue::Json(Value::Object(serde_json::Map::from_iter([(
                     "user_agent".to_string(),
                     Value::String(user_agent),
-                )])),
-                Value::Object(serde_json::Map::from_iter(auth_token)),
+                )]))),
+                BoltValue::Json(Value::Object(serde_json::Map::from_iter(auth_token))),
             ],
         )
     }
@@ -84,12 +108,12 @@ impl BoltMessage {
         extra: Option<HashMap<String, Value>>,
     ) -> Self {
         let mut fields = vec![
-            Value::String(query),
-            Value::Object(serde_json::Map::from_iter(parameters)),
+            BoltValue::Json(Value::String(query)),
+            BoltValue::Json(Value::Object(serde_json::Map::from_iter(parameters))),
         ];
 
         if let Some(extra_map) = extra {
-            fields.push(Value::Object(serde_json::Map::from_iter(extra_map)));
+            fields.push(BoltValue::Json(Value::Object(serde_json::Map::from_iter(extra_map))));
         }
 
         BoltMessage::new(signatures::RUN, fields)
@@ -104,7 +128,7 @@ impl BoltMessage {
             extra.insert("qid".to_string(), Value::Number(qid.into()));
         }
 
-        BoltMessage::new(signatures::PULL, vec![Value::Object(extra)])
+        BoltMessage::new(signatures::PULL, vec![BoltValue::Json(Value::Object(extra))])
     }
 
     /// Create a DISCARD message
@@ -116,15 +140,15 @@ impl BoltMessage {
             extra.insert("qid".to_string(), Value::Number(qid.into()));
         }
 
-        BoltMessage::new(signatures::DISCARD, vec![Value::Object(extra)])
+        BoltMessage::new(signatures::DISCARD, vec![BoltValue::Json(Value::Object(extra))])
     }
 
     /// Create a BEGIN message
     pub fn begin(extra: Option<HashMap<String, Value>>) -> Self {
         let fields = if let Some(extra_map) = extra {
-            vec![Value::Object(serde_json::Map::from_iter(extra_map))]
+            vec![BoltValue::Json(Value::Object(serde_json::Map::from_iter(extra_map)))]
         } else {
-            vec![Value::Object(serde_json::Map::new())]
+            vec![BoltValue::Json(Value::Object(serde_json::Map::new()))]
         };
 
         BoltMessage::new(signatures::BEGIN, fields)
@@ -144,13 +168,22 @@ impl BoltMessage {
     pub fn success(metadata: HashMap<String, Value>) -> Self {
         BoltMessage::new(
             signatures::SUCCESS,
-            vec![Value::Object(serde_json::Map::from_iter(metadata))],
+            vec![BoltValue::Json(Value::Object(serde_json::Map::from_iter(metadata)))],
         )
     }
 
     /// Create a RECORD response message
-    pub fn record(fields: Vec<Value>) -> Self {
-        BoltMessage::new(signatures::RECORD, vec![Value::Array(fields)])
+    /// Takes a vector of BoltValues that form the record fields
+    pub fn record(fields: Vec<BoltValue>) -> Self {
+        // RECORD message has structure: RECORD [field1, field2, ...]
+        // where the array is a single packstream LIST field
+        
+        // We'll create a special marker to indicate this is a record array
+        // The serializer will handle encoding it as a proper packstream LIST
+        BoltMessage {
+            signature: signatures::RECORD,
+            fields,  // Store fields directly - serializer will wrap in LIST
+        }
     }
 
     /// Create a FAILURE response message
@@ -162,7 +195,7 @@ impl BoltMessage {
 
         BoltMessage::new(
             signatures::FAILURE,
-            vec![Value::Object(serde_json::Map::from_iter(metadata))],
+            vec![BoltValue::Json(Value::Object(serde_json::Map::from_iter(metadata)))],
         )
     }
 
@@ -229,7 +262,7 @@ impl BoltMessage {
         if self.signature == signatures::HELLO {
             if self.fields.len() >= 2 {
                 // Two-field format: field[1] is auth
-                if let Value::Object(auth_map) = &self.fields[1] {
+                if let BoltValue::Json(Value::Object(auth_map)) = &self.fields[1] {
                     return Some(
                         auth_map
                             .iter()
@@ -239,7 +272,7 @@ impl BoltMessage {
                 }
             } else if self.fields.len() == 1 {
                 // Single-field format: field[0] contains auth (and maybe metadata)
-                if let Value::Object(auth_map) = &self.fields[0] {
+                if let BoltValue::Json(Value::Object(auth_map)) = &self.fields[0] {
                     return Some(
                         auth_map
                             .iter()
@@ -259,7 +292,7 @@ impl BoltMessage {
     /// - 2 fields: metadata in field[0], auth in field[1]
     pub fn extract_database(&self) -> Option<String> {
         if self.signature == signatures::HELLO && !self.fields.is_empty() {
-            if let Value::Object(extra_map) = &self.fields[0] {
+            if let BoltValue::Json(Value::Object(extra_map)) = &self.fields[0] {
                 // Check for "db" field (primary)
                 if let Some(Value::String(db)) = extra_map.get("db") {
                     return Some(db.clone());
@@ -276,7 +309,7 @@ impl BoltMessage {
     /// Extract query from RUN message
     pub fn extract_query(&self) -> Option<&str> {
         if self.signature == signatures::RUN && !self.fields.is_empty() {
-            if let Value::String(query) = &self.fields[0] {
+            if let BoltValue::Json(Value::String(query)) = &self.fields[0] {
                 return Some(query);
             }
         }
@@ -286,7 +319,7 @@ impl BoltMessage {
     /// Extract parameters from RUN message
     pub fn extract_parameters(&self) -> Option<HashMap<String, Value>> {
         if self.signature == signatures::RUN && self.fields.len() >= 2 {
-            if let Value::Object(params_map) = &self.fields[1] {
+            if let BoltValue::Json(Value::Object(params_map)) = &self.fields[1] {
                 return Some(
                     params_map
                         .iter()
@@ -303,7 +336,7 @@ impl BoltMessage {
     /// where extra_metadata may contain {"db": "database_name"}
     pub fn extract_run_database(&self) -> Option<String> {
         if self.signature == signatures::RUN && self.fields.len() >= 3 {
-            if let Value::Object(extra_map) = &self.fields[2] {
+            if let BoltValue::Json(Value::Object(extra_map)) = &self.fields[2] {
                 // Check for "db" field
                 if let Some(Value::String(db)) = extra_map.get("db") {
                     return Some(db.clone());
@@ -322,7 +355,7 @@ impl BoltMessage {
     /// where extra_metadata may contain {"tenant_id": "acme-corp"}
     pub fn extract_run_tenant_id(&self) -> Option<String> {
         if self.signature == signatures::RUN && self.fields.len() >= 3 {
-            if let Value::Object(extra_map) = &self.fields[2] {
+            if let BoltValue::Json(Value::Object(extra_map)) = &self.fields[2] {
                 if let Some(Value::String(tenant)) = extra_map.get("tenant_id") {
                     return Some(tenant.clone());
                 }
@@ -335,7 +368,7 @@ impl BoltMessage {
     /// Example: RUN "MATCH (n) RETURN n" {} {"db": "brahmand", "role": "admin_role"}
     pub fn extract_run_role(&self) -> Option<String> {
         if self.signature == signatures::RUN && self.fields.len() >= 3 {
-            if let Value::Object(extra_map) = &self.fields[2] {
+            if let BoltValue::Json(Value::Object(extra_map)) = &self.fields[2] {
                 if let Some(Value::String(role)) = extra_map.get("role") {
                     return Some(role.clone());
                 }
@@ -348,7 +381,7 @@ impl BoltMessage {
     /// Example: RUN "MATCH (n) RETURN n" {} {"db": "brahmand", "view_parameters": {"tenant_id": "acme", "region": "US"}}
     pub fn extract_run_view_parameters(&self) -> Option<HashMap<String, String>> {
         if self.signature == signatures::RUN && self.fields.len() >= 3 {
-            if let Value::Object(extra_map) = &self.fields[2] {
+            if let BoltValue::Json(Value::Object(extra_map)) = &self.fields[2] {
                 if let Some(Value::Object(view_params)) = extra_map.get("view_parameters") {
                     // Convert HashMap<String, Value> to HashMap<String, String>
                     let converted: HashMap<String, String> = view_params
@@ -374,7 +407,7 @@ impl BoltMessage {
     /// LOGON message has a single field: auth::Dictionary(scheme::String, ...)
     pub fn extract_logon_auth(&self) -> Option<HashMap<String, Value>> {
         if self.signature == signatures::LOGON && !self.fields.is_empty() {
-            if let Value::Object(auth_map) = &self.fields[0] {
+            if let BoltValue::Json(Value::Object(auth_map)) = &self.fields[0] {
                 return Some(
                     auth_map
                         .iter()
@@ -390,7 +423,7 @@ impl BoltMessage {
     /// BEGIN message: BEGIN {extra::Dictionary(bookmarks, tx_timeout, tx_metadata, mode, db, ...)}
     pub fn extract_begin_database(&self) -> Option<String> {
         if self.signature == signatures::BEGIN && !self.fields.is_empty() {
-            if let Value::Object(extra_map) = &self.fields[0] {
+            if let BoltValue::Json(Value::Object(extra_map)) = &self.fields[0] {
                 // Check for "db" field
                 if let Some(Value::String(db)) = extra_map.get("db") {
                     return Some(db.clone());

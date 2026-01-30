@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use super::auth::{AuthToken, AuthenticatedUser, Authenticator};
 use super::errors::{BoltError, BoltResult};
-use super::messages::{signatures, BoltMessage};
+use super::messages::{signatures, BoltMessage, BoltValue};
 use super::result_transformer::extract_return_metadata;
 use super::{BoltConfig, BoltContext, ConnectionState};
 
@@ -29,6 +29,14 @@ macro_rules! lock_context {
             BoltError::mutex_poisoned(format!("Connection state synchronization failed: {}", e))
         })?
     };
+}
+
+/// Helper function to format BoltValue for logging
+fn bolt_value_to_string(value: &BoltValue) -> String {
+    match value {
+        BoltValue::Json(v) => serde_json::to_string(v).unwrap_or_else(|_| format!("{:?}", v)),
+        BoltValue::PackstreamBytes(bytes) => format!("<packstream: {} bytes>", bytes.len()),
+    }
 }
 
 /// Bolt protocol message handler
@@ -118,7 +126,7 @@ impl BoltHandler {
             log::debug!(
                 "  HELLO Field[{}]: {}",
                 i,
-                serde_json::to_string(field).unwrap_or_else(|_| "?".to_string())
+                bolt_value_to_string(field)
             );
         }
 
@@ -161,7 +169,7 @@ impl BoltHandler {
                 log::debug!(
                     "  Field[{}]: {}",
                     i,
-                    serde_json::to_string(field).unwrap_or_else(|_| "ERROR".to_string())
+                    bolt_value_to_string(field)
                 );
             }
 
@@ -260,7 +268,7 @@ impl BoltHandler {
             log::debug!(
                 "  Field[{}]: {}",
                 i,
-                serde_json::to_string(field).unwrap_or_else(|_| "ERROR".to_string())
+                bolt_value_to_string(field)
             );
         }
 
@@ -457,7 +465,7 @@ impl BoltHandler {
                 log::debug!(
                     "  Field[{}]: {}",
                     i,
-                    serde_json::to_string(field).unwrap_or_else(|_| "<<unparseable>>".to_string())
+                    bolt_value_to_string(field)
                 );
             }
 
@@ -561,7 +569,11 @@ impl BoltHandler {
 
             // Send each row as a RECORD message
             for row in rows {
-                messages.push(BoltMessage::record(row));
+                // Convert Vec<Value> to Vec<BoltValue>
+                let bolt_values: Vec<BoltValue> = row.into_iter()
+                    .map(BoltValue::Json)
+                    .collect();
+                messages.push(BoltMessage::record(bolt_values));
             }
         }
 
