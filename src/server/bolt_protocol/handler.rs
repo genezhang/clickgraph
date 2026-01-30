@@ -892,6 +892,12 @@ impl BoltHandler {
                 }
             }
             rows = transformed_rows;
+            
+            // Update field names to match transformed structure
+            field_names = return_metadata
+                .iter()
+                .map(|m| m.field_name.clone())
+                .collect();
         }
 
         // Cache the results for streaming in PULL
