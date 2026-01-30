@@ -16,6 +16,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 pub mod auth;
 pub mod connection;
 pub mod errors;
+pub mod graph_objects;
 pub mod handler;
 pub mod messages;
 
