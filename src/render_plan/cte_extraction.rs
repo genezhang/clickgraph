@@ -1529,8 +1529,14 @@ fn apply_property_mapping_to_expr_with_context(
     }
 }
 
-/// Get the node label for a given Cypher alias by searching the plan
-fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
+/// Get the node label for a given Cypher alias by searching the logical plan tree.
+///
+/// This function traverses the plan tree recursively to find a GraphNode with the specified alias,
+/// then extracts its label. For denormalized schemas, it first checks node.label; for normal schemas,
+/// it extracts from ViewScan.
+///
+/// Used by property resolution logic in both cte_extraction and plan_builder_helpers.
+pub(crate) fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
     match plan {
         LogicalPlan::GraphNode(node) if node.alias == alias => {
             // For denormalized nodes, the label is stored directly on GraphNode

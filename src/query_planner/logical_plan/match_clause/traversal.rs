@@ -26,8 +26,10 @@ use super::helpers::{
     generate_denormalization_aware_scan, generate_scan, is_denormalized_scan,
     is_label_denormalized, register_node_in_context, register_relationship_in_context,
 };
-use crate::query_planner::analyzer::match_type_inference::{infer_node_label_from_schema, infer_relationship_type_from_nodes};
 use super::view_scan::generate_relationship_center;
+use crate::query_planner::analyzer::match_type_inference::{
+    infer_node_label_from_schema, infer_relationship_type_from_nodes,
+};
 
 // Wrapper for backwards compatibility
 // Reserved for future use when non-optional traversal needs explicit mode

@@ -20,6 +20,7 @@ use super::render_expr::{
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
+use crate::render_plan::cte_extraction::get_node_label_for_alias;
 use crate::render_plan::expression_utils::{
     flatten_addition_operands, has_string_operand, ExprVisitor,
 };
@@ -2335,68 +2336,6 @@ pub(super) fn plan_type_name(plan: &LogicalPlan) -> &'static str {
     }
 }
 
-/// Format a LogicalPlan as a debug string for logging
-#[allow(dead_code)]
-pub(super) fn plan_to_string(plan: &LogicalPlan, depth: usize) -> String {
-    let indent = "  ".repeat(depth);
-    match plan {
-        LogicalPlan::GraphNode(node) => format!(
-            "{}GraphNode(alias='{}', input={})",
-            indent,
-            node.alias,
-            plan_to_string(&node.input, depth + 1)
-        ),
-        LogicalPlan::GraphRel(rel) => format!(
-            "{}GraphRel(alias='{}', left={}, center={}, right={})",
-            indent,
-            rel.alias,
-            plan_to_string(&rel.left, depth + 1),
-            plan_to_string(&rel.center, depth + 1),
-            plan_to_string(&rel.right, depth + 1)
-        ),
-        LogicalPlan::Filter(filter) => format!(
-            "{}Filter(input={})",
-            indent,
-            plan_to_string(&filter.input, depth + 1)
-        ),
-        LogicalPlan::Projection(proj) => format!(
-            "{}Projection(input={})",
-            indent,
-            plan_to_string(&proj.input, depth + 1)
-        ),
-        LogicalPlan::ViewScan(scan) => format!("{}ViewScan(table='{}')", indent, scan.source_table),
-        _ => format!("{}Other({})", indent, plan_type_name(plan)),
-    }
-}
-
-/// Check if a LogicalPlan contains any ViewScan nodes
-#[allow(dead_code)]
-pub(super) fn plan_contains_view_scan(plan: &LogicalPlan) -> bool {
-    match plan {
-        LogicalPlan::ViewScan(_) => true,
-        LogicalPlan::GraphNode(node) => plan_contains_view_scan(&node.input),
-        LogicalPlan::GraphRel(rel) => {
-            plan_contains_view_scan(&rel.left)
-                || plan_contains_view_scan(&rel.right)
-                || plan_contains_view_scan(&rel.center)
-        }
-        LogicalPlan::Filter(filter) => plan_contains_view_scan(&filter.input),
-        LogicalPlan::Projection(proj) => plan_contains_view_scan(&proj.input),
-        LogicalPlan::GraphJoins(joins) => plan_contains_view_scan(&joins.input),
-        LogicalPlan::GroupBy(group_by) => plan_contains_view_scan(&group_by.input),
-        LogicalPlan::OrderBy(order_by) => plan_contains_view_scan(&order_by.input),
-        LogicalPlan::Skip(skip) => plan_contains_view_scan(&skip.input),
-        LogicalPlan::Limit(limit) => plan_contains_view_scan(&limit.input),
-        LogicalPlan::Cte(cte) => plan_contains_view_scan(&cte.input),
-        LogicalPlan::Unwind(u) => plan_contains_view_scan(&u.input),
-        LogicalPlan::Union(union) => union
-            .inputs
-            .iter()
-            .any(|i| plan_contains_view_scan(i.as_ref())),
-        _ => false,
-    }
-}
-
 /// Apply property mapping to an expression
 ///
 /// Main purpose: Convert TableAlias expressions to PropertyAccess for denormalized schemas.
@@ -3074,30 +3013,6 @@ pub(super) fn extract_outer_aggregation_info(
     Some((outer_select, outer_group_by))
 }
 
-/// Convert an ORDER BY expression for use in a UNION query
-#[allow(dead_code)]
-pub(super) fn convert_order_by_expr_for_union(
-    expr: &crate::query_planner::logical_expr::LogicalExpr,
-) -> RenderExpr {
-    use crate::query_planner::logical_expr::LogicalExpr;
-
-    match expr {
-        LogicalExpr::PropertyAccessExp(prop_access) => {
-            let alias = format!(
-                "\"{}.{}\"",
-                prop_access.table_alias.0,
-                prop_access.column.raw()
-            );
-            RenderExpr::Raw(alias)
-        }
-        LogicalExpr::ColumnAlias(col_alias) => RenderExpr::Raw(format!("\"{}\"", col_alias.0)),
-        _ => expr
-            .clone()
-            .try_into()
-            .unwrap_or_else(|_| RenderExpr::Raw("1".to_string())),
-    }
-}
-
 /// Check if joining_on references a UNION CTE
 pub(super) fn references_union_cte_in_join(
     joining_on: &[OperatorApplication],
@@ -3158,40 +3073,6 @@ fn update_operand_for_union_cte(operand: &mut RenderExpr, table_alias: &str) {
             update_join_expression_for_union_cte(inner_op_app, table_alias);
         }
         _ => {}
-    }
-}
-
-/// Get the node label for a given Cypher alias by searching the plan
-#[allow(dead_code)]
-pub(super) fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
-    use crate::render_plan::cte_extraction::extract_node_label_from_viewscan;
-
-    match plan {
-        LogicalPlan::GraphNode(node) if node.alias == alias => {
-            extract_node_label_from_viewscan(&node.input)
-        }
-        LogicalPlan::GraphNode(node) => get_node_label_for_alias(alias, &node.input),
-        LogicalPlan::GraphRel(rel) => get_node_label_for_alias(alias, &rel.left)
-            .or_else(|| get_node_label_for_alias(alias, &rel.center))
-            .or_else(|| get_node_label_for_alias(alias, &rel.right)),
-        LogicalPlan::Filter(filter) => get_node_label_for_alias(alias, &filter.input),
-        LogicalPlan::Projection(proj) => get_node_label_for_alias(alias, &proj.input),
-        LogicalPlan::GraphJoins(joins) => get_node_label_for_alias(alias, &joins.input),
-        LogicalPlan::OrderBy(order_by) => get_node_label_for_alias(alias, &order_by.input),
-        LogicalPlan::Skip(skip) => get_node_label_for_alias(alias, &skip.input),
-        LogicalPlan::Limit(limit) => get_node_label_for_alias(alias, &limit.input),
-        LogicalPlan::GroupBy(group_by) => get_node_label_for_alias(alias, &group_by.input),
-        LogicalPlan::Cte(cte) => get_node_label_for_alias(alias, &cte.input),
-        LogicalPlan::Unwind(u) => get_node_label_for_alias(alias, &u.input),
-        LogicalPlan::Union(union) => {
-            for input in &union.inputs {
-                if let Some(label) = get_node_label_for_alias(alias, input) {
-                    return Some(label);
-                }
-            }
-            None
-        }
-        _ => None,
     }
 }
 

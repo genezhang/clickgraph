@@ -2010,7 +2010,9 @@ impl FilterTagging {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query_planner::logical_expr::{AggregateFnCall, Literal, PropertyAccess, TableAlias};
+    use crate::query_planner::logical_expr::{
+        AggregateFnCall, Literal, PropertyAccess, TableAlias,
+    };
     use crate::query_planner::logical_plan::{Filter, GraphNode, LogicalPlan};
     use crate::query_planner::plan_ctx::TableCtx;
 
