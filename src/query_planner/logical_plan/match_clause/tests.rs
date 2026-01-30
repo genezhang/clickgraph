@@ -516,6 +516,7 @@ fn test_generate_scan() {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -571,6 +572,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
     nodes.insert(
@@ -592,6 +594,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
     nodes.insert(
@@ -613,6 +616,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -646,6 +650,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             to_node_properties: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
     rels.insert(
@@ -677,6 +682,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             to_node_properties: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
     rels.insert(
@@ -708,6 +714,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             to_node_properties: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 
@@ -731,6 +738,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
     nodes.insert(
@@ -752,6 +760,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
     nodes.insert(
@@ -773,6 +782,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
     nodes.insert(
@@ -794,6 +804,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
     nodes.insert(
@@ -815,6 +826,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -848,6 +860,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             to_node_properties: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
     rels.insert(
@@ -879,6 +892,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             to_node_properties: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
     rels.insert(
@@ -910,6 +924,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             to_node_properties: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 
@@ -940,6 +955,7 @@ fn create_single_relationship_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -973,6 +989,7 @@ fn create_single_relationship_schema() -> GraphSchema {
             to_node_properties: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 
@@ -1206,6 +1223,7 @@ fn test_infer_relationship_type_too_many_matches_error() {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -1241,6 +1259,7 @@ fn test_infer_relationship_type_too_many_matches_error() {
                 to_node_properties: None,
                 is_fk_edge: false,
                 constraints: None,
+                edge_id_types: None,
             },
         );
     }
@@ -1299,6 +1318,7 @@ fn create_single_node_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -1333,6 +1353,7 @@ fn create_multi_node_schema() -> GraphSchema {
                 denormalized_source_table: None,
                 label_column: None,
                 label_value: None,
+                node_id_types: None,
             },
         );
     }
@@ -1413,6 +1434,7 @@ fn test_infer_node_label_many_nodes_no_error() {
                 denormalized_source_table: None,
                 label_column: None,
                 label_value: None,
+                node_id_types: None,
             },
         );
     }
@@ -1461,6 +1483,7 @@ fn test_infer_node_label_denormalized_single_node() {
             denormalized_source_table: Some("test_db.flights".to_string()),
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -1499,6 +1522,7 @@ fn test_infer_relationship_type_polymorphic_edge() {
                 denormalized_source_table: None,
                 label_column: None,
                 label_value: None,
+                node_id_types: None,
             },
         );
     }
@@ -1534,6 +1558,7 @@ fn test_infer_relationship_type_polymorphic_edge() {
             to_node_properties: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 

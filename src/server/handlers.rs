@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Instant};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use axum::{
     extract::State,
@@ -475,10 +475,10 @@ async fn query_handler_inner(
             let planning_start = Instant::now();
 
             // Convert view_parameters from Option<HashMap<String, Value>> to Option<HashMap<String, String>>
-            let view_parameter_values = payload.view_parameters.as_ref().map(|params| {
+            let view_parameter_values: Option<HashMap<String, String>> = payload.view_parameters.as_ref().map(|params: &HashMap<String, serde_json::Value>| {
                 params
                     .iter()
-                    .map(|(k, v)| {
+                    .map(|(k, v): (&String, &serde_json::Value)| {
                         let string_value = match v {
                             serde_json::Value::String(s) => s.clone(),
                             serde_json::Value::Number(n) => n.to_string(),

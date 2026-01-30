@@ -2968,6 +2968,7 @@ mod tests {
                 denormalized_source_table: None,
                 label_column: None,
                 label_value: None,
+                node_id_types: None,
             },
         );
 

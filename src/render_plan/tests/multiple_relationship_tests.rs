@@ -74,6 +74,7 @@ fn setup_test_schema() {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 
@@ -107,6 +108,7 @@ fn setup_test_schema() {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 
@@ -140,6 +142,7 @@ fn setup_test_schema() {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 
@@ -173,6 +176,7 @@ fn setup_test_schema() {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 
@@ -206,6 +210,7 @@ fn setup_test_schema() {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 
@@ -233,6 +238,7 @@ fn setup_test_schema() {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -256,6 +262,7 @@ fn setup_test_schema() {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -279,6 +286,7 @@ fn setup_test_schema() {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -302,6 +310,7 @@ fn setup_test_schema() {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 

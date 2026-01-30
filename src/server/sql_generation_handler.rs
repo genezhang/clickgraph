@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Instant};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use axum::{extract::State, http::StatusCode, response::Json};
 
@@ -188,7 +188,7 @@ pub async fn sql_generation_handler(
     let is_read = query_type == QueryType::Read;
     let is_call = query_type == QueryType::Call;
 
-    let (ch_query, logical_plan_str, planning_time, sql_gen_time) = if is_call {
+    let (ch_query, logical_plan_str, planning_time, sql_gen_time): (String, Option<String>, f64, f64) = if is_call {
         // Handle CALL queries (like PageRank)
         let planning_start = Instant::now();
         let logical_plan = match query_planner::evaluate_call_query(cypher_ast, &graph_schema) {
@@ -269,10 +269,10 @@ pub async fn sql_generation_handler(
         let planning_start = Instant::now();
 
         // Convert view_parameters from Option<HashMap<String, Value>> to Option<HashMap<String, String>>
-        let view_parameter_values = payload.view_parameters.as_ref().map(|params| {
+        let view_parameter_values: Option<HashMap<String, String>> = payload.view_parameters.as_ref().map(|params: &HashMap<String, serde_json::Value>| {
             params
                 .iter()
-                .map(|(k, v)| {
+                .map(|(k, v): (&String, &serde_json::Value)| {
                     let string_value = match v {
                         serde_json::Value::String(s) => s.clone(),
                         serde_json::Value::Number(n) => n.to_string(),
@@ -325,7 +325,7 @@ pub async fn sql_generation_handler(
         };
 
         // Phase 4: SQL generation
-        let ch_query =
+        let ch_query: String =
             clickhouse_query_generator::generate_sql(render_plan, app_state.config.max_cte_depth);
         let sql_gen_time = render_start.elapsed().as_secs_f64() * 1000.0;
 

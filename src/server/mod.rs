@@ -26,7 +26,7 @@ mod clickhouse_client;
 pub mod connection_pool;
 pub mod graph_catalog;
 pub mod handlers;
-mod models;
+pub mod models;
 mod parameter_substitution;
 mod query_cache;
 pub mod query_context;

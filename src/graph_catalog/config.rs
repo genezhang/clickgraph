@@ -2,6 +2,7 @@ use super::errors::GraphSchemaError;
 use super::expression_parser::{parse_property_value, PropertyValue};
 use super::filter_parser::SchemaFilter;
 use super::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema};
+use super::schema_types::SchemaType;
 use super::schema_validator::SchemaValidator;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
@@ -275,6 +276,21 @@ pub struct NodeDefinition {
     /// Example: "is_active = 1 AND created_at >= now() - INTERVAL 30 DAY"
     #[serde(default)]
     pub filter: Option<String>,
+
+    // ===== Neo4j elementId support =====
+    /// Optional: Type for single node_id column
+    /// Required for Neo4j compatibility (elementId function support)
+    /// Example: "integer", "string", "uuid"
+    /// Aliases supported: "int", "text", etc. (case-insensitive)
+    #[serde(default, alias = "dtype")]
+    pub r#type: Option<String>,
+
+    /// Optional: Types for composite node_id columns
+    /// Required when node_id is composite (e.g., [tenant_id, user_id])
+    /// Example: ["string", "integer"]
+    /// Must have same length as node_id columns
+    #[serde(default)]
+    pub types: Option<Vec<String>>,
 }
 
 fn default_naming_convention() -> String {
@@ -349,6 +365,19 @@ pub struct RelationshipDefinition {
     /// Example: "from.timestamp <= to.timestamp" or "from.context = to.context AND from.timestamp < to.timestamp"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub constraints: Option<String>,
+
+    // ===== Neo4j elementId support =====
+    /// Optional: Type for single edge_id column
+    /// Required for Neo4j compatibility (elementId function support)
+    /// Example: "integer", "string", "uuid"
+    #[serde(default, rename = "id_type")]
+    pub id_type: Option<String>,
+
+    /// Optional: Types for composite edge_id columns
+    /// Required when edge_id is composite
+    /// Example: ["string", "integer"]
+    #[serde(default, rename = "id_types")]
+    pub id_types: Option<Vec<String>>,
 }
 
 /// Edge definition - supporting both standard and polymorphic patterns
@@ -429,6 +458,19 @@ pub struct StandardEdgeDefinition {
     /// Example: "from.timestamp <= to.timestamp" or "from.context = to.context AND from.timestamp < to.timestamp"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub constraints: Option<String>,
+
+    // ===== Neo4j elementId support =====
+    /// Optional: Type for single edge_id column
+    /// Required for Neo4j compatibility (elementId function support)
+    /// Example: "integer", "string", "uuid"
+    #[serde(default, rename = "id_type")]
+    pub id_type: Option<String>,
+
+    /// Optional: Types for composite edge_id columns
+    /// Required when edge_id is composite
+    /// Example: ["string", "integer"]
+    #[serde(default, rename = "id_types")]
+    pub id_types: Option<Vec<String>>,
 }
 
 /// Polymorphic edge definition (one config → many edge types from explicit list)
@@ -678,6 +720,170 @@ fn determine_use_final(
     Some(engine.as_ref().map(|e| e.supports_final()).unwrap_or(false))
 }
 
+/// Parse node_id types from YAML configuration
+///
+/// Validates that types are specified correctly for single vs composite IDs
+/// and parses them into SchemaType enums.
+fn parse_node_id_types(
+    node_def: &NodeDefinition,
+    label: &str,
+) -> Result<Option<Vec<SchemaType>>, GraphSchemaError> {
+    match (&node_def.r#type, &node_def.types, &node_def.node_id) {
+        // Single ID with type specified
+        (Some(type_str), None, Identifier::Single(_)) => {
+            let schema_type = SchemaType::from_str(type_str).map_err(|e| {
+                GraphSchemaError::ConfigReadError {
+                    error: format!("Invalid type for node '{}': {}", label, e),
+                }
+            })?;
+            Ok(Some(vec![schema_type]))
+        }
+
+        // Composite ID with types specified
+        (None, Some(type_strs), Identifier::Composite(ref cols)) => {
+            if type_strs.len() != cols.len() {
+                return Err(GraphSchemaError::ConfigReadError {
+                    error: format!(
+                        "Node '{}': types array length ({}) must match node_id columns length ({})",
+                        label,
+                        type_strs.len(),
+                        cols.len()
+                    ),
+                });
+            }
+
+            let schema_types: Result<Vec<SchemaType>, _> = type_strs
+                .iter()
+                .enumerate()
+                .map(|(i, type_str)| {
+                    SchemaType::from_str(type_str).map_err(|e| {
+                        GraphSchemaError::ConfigReadError {
+                            error: format!(
+                                "Invalid type for node '{}' column '{}': {}",
+                                label, cols[i], e
+                            ),
+                        }
+                    })
+                })
+                .collect();
+
+            Ok(Some(schema_types?))
+        }
+
+        // Both type and types specified (error)
+        (Some(_), Some(_), _) => Err(GraphSchemaError::ConfigReadError {
+            error: format!(
+                "Node '{}': Cannot specify both 'type' and 'types'. Use 'type' for single ID, 'types' for composite ID",
+                label
+            ),
+        }),
+
+        // Composite ID with single type (error)
+        (Some(_), None, Identifier::Composite(_)) => Err(GraphSchemaError::ConfigReadError {
+            error: format!(
+                "Node '{}': Composite node_id requires 'types' array, not 'type'",
+                label
+            ),
+        }),
+
+        // Single ID with types array (error)
+        (None, Some(_), Identifier::Single(_)) => Err(GraphSchemaError::ConfigReadError {
+            error: format!(
+                "Node '{}': Single node_id requires 'type', not 'types' array",
+                label
+            ),
+        }),
+
+        // No types specified (OK - will be auto-detected or not available)
+        (None, None, _) => Ok(None),
+    }
+}
+
+/// Parse edge_id types from YAML configuration
+///
+/// Similar to parse_node_id_types but for edge definitions
+fn parse_edge_id_types(
+    type_opt: &Option<String>,
+    types_opt: &Option<Vec<String>>,
+    edge_id_opt: &Option<Identifier>,
+    type_name: &str,
+) -> Result<Option<Vec<SchemaType>>, GraphSchemaError> {
+    // If no edge_id specified, no types needed
+    let Some(edge_id) = edge_id_opt else {
+        return Ok(None);
+    };
+
+    match (type_opt, types_opt, edge_id) {
+        // Single ID with type specified
+        (Some(type_str), None, Identifier::Single(_)) => {
+            let schema_type = SchemaType::from_str(type_str).map_err(|e| {
+                GraphSchemaError::ConfigReadError {
+                    error: format!("Invalid type for edge '{}': {}", type_name, e),
+                }
+            })?;
+            Ok(Some(vec![schema_type]))
+        }
+
+        // Composite ID with types specified
+        (None, Some(type_strs), Identifier::Composite(ref cols)) => {
+            if type_strs.len() != cols.len() {
+                return Err(GraphSchemaError::ConfigReadError {
+                    error: format!(
+                        "Edge '{}': types array length ({}) must match edge_id columns length ({})",
+                        type_name,
+                        type_strs.len(),
+                        cols.len()
+                    ),
+                });
+            }
+
+            let schema_types: Result<Vec<SchemaType>, _> = type_strs
+                .iter()
+                .enumerate()
+                .map(|(i, type_str)| {
+                    SchemaType::from_str(type_str).map_err(|e| {
+                        GraphSchemaError::ConfigReadError {
+                            error: format!(
+                                "Invalid type for edge '{}' column '{}': {}",
+                                type_name, cols[i], e
+                            ),
+                        }
+                    })
+                })
+                .collect();
+
+            Ok(Some(schema_types?))
+        }
+
+        // Both type and types specified (error)
+        (Some(_), Some(_), _) => Err(GraphSchemaError::ConfigReadError {
+            error: format!(
+                "Edge '{}': Cannot specify both 'type' and 'types'. Use 'type' for single ID, 'types' for composite ID",
+                type_name
+            ),
+        }),
+
+        // Composite ID with single type (error)
+        (Some(_), None, Identifier::Composite(_)) => Err(GraphSchemaError::ConfigReadError {
+            error: format!(
+                "Edge '{}': Composite edge_id requires 'types' array, not 'type'",
+                type_name
+            ),
+        }),
+
+        // Single ID with types array (error)
+        (None, Some(_), Identifier::Single(_)) => Err(GraphSchemaError::ConfigReadError {
+            error: format!(
+                "Edge '{}': Single edge_id requires 'type', not 'types' array",
+                type_name
+            ),
+        }),
+
+        // No types specified (OK - will be auto-detected or not available)
+        (None, None, _) => Ok(None),
+    }
+}
+
 /// Build a NodeSchema from a NodeDefinition with optional discovery data
 fn build_node_schema(
     node_def: &NodeDefinition,
@@ -722,6 +928,9 @@ fn build_node_schema(
         None
     };
 
+    // Parse node_id types from YAML (if provided)
+    let node_id_types = parse_node_id_types(node_def, &node_def.label)?;
+
     Ok(NodeSchema {
         database: node_def.database.clone(),
         table_name: node_def.table.clone(),
@@ -749,6 +958,7 @@ fn build_node_schema(
         },
         label_column: node_def.label_column.clone(),
         label_value: node_def.label_value.clone(),
+        node_id_types,
     })
 }
 
@@ -855,6 +1065,14 @@ fn build_relationship_schema(
         && (from_node_fq_table.as_ref() == Some(&edge_table)
             || to_node_fq_table.as_ref() == Some(&edge_table));
 
+    // Parse edge_id types from YAML (if provided)
+    let edge_id_types = parse_edge_id_types(
+        &rel_def.id_type,
+        &rel_def.id_types,
+        &rel_def.edge_id,
+        &rel_def.type_name,
+    )?;
+
     Ok(RelationshipSchema {
         database: rel_def.database.clone(),
         table_name: rel_def.table.clone(),
@@ -885,6 +1103,7 @@ fn build_relationship_schema(
         to_node_properties: to_node_props,
         is_fk_edge,
         constraints: rel_def.constraints.clone(),
+        edge_id_types,
     })
 }
 
@@ -982,6 +1201,14 @@ fn build_standard_edge_schema(
         && (from_node_fq_table.as_ref() == Some(&edge_table)
             || to_node_fq_table.as_ref() == Some(&edge_table));
 
+    // Parse edge_id types from YAML (if provided)
+    let edge_id_types = parse_edge_id_types(
+        &std_edge.id_type,
+        &std_edge.id_types,
+        &std_edge.edge_id,
+        &std_edge.type_name,
+    )?;
+
     Ok(RelationshipSchema {
         database: std_edge.database.clone(),
         table_name: std_edge.table.clone(),
@@ -1012,6 +1239,7 @@ fn build_standard_edge_schema(
         to_node_properties: to_node_props,
         is_fk_edge,
         constraints: std_edge.constraints.clone(),
+        edge_id_types,
     })
 }
 
@@ -1083,6 +1311,7 @@ fn build_polymorphic_edge_schemas(
             to_node_properties: None,
             is_fk_edge: false, // Polymorphic edges are never FK-edge pattern
             constraints: poly_edge.constraints.clone(),
+            edge_id_types: None,
         };
         results.push((type_val.clone(), rel_schema));
     }
@@ -1846,6 +2075,8 @@ graph_schema:
                         props.insert("state".to_string(), "DestState".to_string());
                         props
                     }),
+                    r#type: None,
+                    types: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Standard(StandardEdgeDefinition {
@@ -1871,6 +2102,8 @@ graph_schema:
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
                     constraints: None,
+                    id_type: None,
+                    id_types: None,
                 })],
             },
         };
@@ -1905,6 +2138,8 @@ graph_schema:
                         props.insert("city".to_string(), "DestCityName".to_string());
                         props
                     }),
+                    r#type: None,
+                    types: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Standard(StandardEdgeDefinition {
@@ -1924,6 +2159,8 @@ graph_schema:
                     exclude_columns: vec![],
                     naming_convention: "snake_case".to_string(),
                     constraints: None,
+                    id_type: None,
+                    id_types: None,
                 })],
             },
         };
@@ -1958,6 +2195,8 @@ graph_schema:
                     naming_convention: "snake_case".to_string(),
                     from_node_properties: None,
                     to_node_properties: None,
+                    r#type: None,
+                    types: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
@@ -2014,6 +2253,8 @@ graph_schema:
                     naming_convention: "snake_case".to_string(),
                     from_node_properties: None,
                     to_node_properties: None,
+                    r#type: None,
+                    types: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
@@ -2072,6 +2313,8 @@ graph_schema:
                         naming_convention: "snake_case".to_string(),
                         from_node_properties: None,
                         to_node_properties: None,
+                        r#type: None,
+                        types: None,
                     },
                     NodeDefinition {
                         label: "User".to_string(),
@@ -2089,6 +2332,8 @@ graph_schema:
                         naming_convention: "snake_case".to_string(),
                         from_node_properties: None,
                         to_node_properties: None,
+                        r#type: None,
+                        types: None,
                     },
                 ],
                 relationships: vec![],
@@ -2150,6 +2395,8 @@ graph_schema:
                     naming_convention: "snake_case".to_string(),
                     from_node_properties: None,
                     to_node_properties: None,
+                    r#type: None,
+                    types: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
@@ -2212,6 +2459,8 @@ graph_schema:
                     naming_convention: "snake_case".to_string(),
                     from_node_properties: None,
                     to_node_properties: None,
+                    r#type: None,
+                    types: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
@@ -2416,6 +2665,8 @@ mod node_id_identity_mapping_tests {
             naming_convention: "snake_case".to_string(),
             from_node_properties: None,
             to_node_properties: None,
+            r#type: None,
+            types: None,
         };
 
         let discovery = TableDiscovery {
@@ -2466,6 +2717,8 @@ mod node_id_identity_mapping_tests {
             naming_convention: "snake_case".to_string(),
             from_node_properties: None,
             to_node_properties: None,
+            r#type: None,
+            types: None,
         };
 
         let discovery = TableDiscovery {
@@ -2517,6 +2770,8 @@ mod node_id_identity_mapping_tests {
             naming_convention: "snake_case".to_string(),
             from_node_properties: None,
             to_node_properties: None,
+            r#type: None,
+            types: None,
         };
 
         let discovery = TableDiscovery {
