@@ -1529,7 +1529,6 @@ fn apply_property_mapping_to_expr_with_context(
     }
 }
 
-/// Get the node label for a given Cypher alias by searching the plan
 /// Get the node label for a given Cypher alias by searching the logical plan tree.
 ///
 /// This function traverses the plan tree recursively to find a GraphNode with the specified alias,
