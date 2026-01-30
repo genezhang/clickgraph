@@ -411,9 +411,7 @@ fn rewrite_expr_for_vlp(
 
         // Handle bare path variable: p → tuple(t.path_nodes, t.path_edges, t.path_relationships, t.hop_count)
         // When RETURN p is used for a path variable, expand it to a tuple of path components
-        RenderExpr::TableAlias(alias)
-            if path_variable.as_ref() == Some(&alias.0) =>
-        {
+        RenderExpr::TableAlias(alias) if path_variable.as_ref() == Some(&alias.0) => {
             log::info!(
                 "🔧 VLP path variable expansion: {} → tuple({}.path_nodes, {}.path_edges, ...)",
                 alias.0,

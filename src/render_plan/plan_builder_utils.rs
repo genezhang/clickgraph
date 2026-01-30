@@ -17,7 +17,7 @@
 //! during the render_plan architecture cleanup. The split improved overall code organization:
 //!
 //! **Before**: Single 16K line file with mixed concerns
-//! **After**: 
+//! **After**:
 //! - `plan_builder.rs` (1,675 lines) - Core building logic
 //! - `plan_builder_utils.rs` (10,807 lines) - 69 utility functions
 //! - `plan_builder_helpers.rs` (4,051 lines) - Helper functions
