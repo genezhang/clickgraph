@@ -249,8 +249,12 @@ where
 
     /// Send a Bolt message to the client
     async fn send_message(&mut self, message: BoltMessage) -> BoltResult<()> {
+        log::debug!("Sending Bolt message: {}", message.type_name());
+        
         // Serialize message to bytes
         let message_bytes = self.serialize_message(message)?;
+        
+        log::debug!("Serialized message size: {} bytes", message_bytes.len());
 
         // Split into chunks if necessary
         let chunks = self.create_chunks(message_bytes);

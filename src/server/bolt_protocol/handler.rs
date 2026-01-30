@@ -539,10 +539,17 @@ impl BoltHandler {
                 Ok(vec![BoltMessage::success(result_metadata)])
             }
             Err(query_error) => {
+                let error_code = query_error.error_code().to_string();
+                let error_message = query_error.to_string();
                 log::error!("Query execution failed: {}", query_error);
+                log::error!("Sending FAILURE: code='{}', message='{}'", error_code, error_message);
+                
+                // Don't update state - let client send RESET to recover
+                // Setting to Failed would close the connection
+                
                 Ok(vec![BoltMessage::failure(
-                    query_error.error_code().to_string(),
-                    query_error.to_string(),
+                    error_code,
+                    error_message,
                 )])
             }
         }
@@ -554,10 +561,10 @@ impl BoltHandler {
         {
             let context = lock_context!(self.context);
             if !matches!(context.state, ConnectionState::Streaming) {
-                return Ok(vec![BoltMessage::failure(
-                    "Neo.ClientError.Request.Invalid".to_string(),
-                    "PULL message received in invalid state".to_string(),
-                )]);
+                // If we're not streaming, a FAILURE was likely already sent
+                // Return IGNORED instead of sending another FAILURE
+                log::debug!("PULL received in non-streaming state, returning IGNORED");
+                return Ok(vec![BoltMessage::ignored()]);
             }
         }
 
@@ -850,27 +857,42 @@ impl BoltHandler {
 
         let mut lines = result_reader.lines();
 
-        while let Ok(Some(line)) = lines.next_line().await {
-            if line.trim().is_empty() {
-                continue;
-            }
-
-            match serde_json::from_str::<serde_json::Value>(&line) {
-                Ok(Value::Object(obj)) => {
-                    // Extract field names from first row
-                    if field_names.is_empty() {
-                        field_names = obj.keys().cloned().collect();
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    if line.trim().is_empty() {
+                        continue;
                     }
 
-                    // Extract field values in consistent order
-                    let mut row_fields = Vec::new();
-                    for field_name in &field_names {
-                        row_fields.push(obj.get(field_name).cloned().unwrap_or(Value::Null));
+                    match serde_json::from_str::<serde_json::Value>(&line) {
+                        Ok(Value::Object(obj)) => {
+                            // Extract field names from first row
+                            if field_names.is_empty() {
+                                field_names = obj.keys().cloned().collect();
+                            }
+
+                            // Extract field values in consistent order
+                            let mut row_fields = Vec::new();
+                            for field_name in &field_names {
+                                row_fields.push(obj.get(field_name).cloned().unwrap_or(Value::Null));
+                            }
+                            rows.push(row_fields);
+                        }
+                        _ => {
+                            log::warn!("Unexpected JSON format in result row: {}", line);
+                        }
                     }
-                    rows.push(row_fields);
                 }
-                _ => {
-                    log::warn!("Unexpected JSON format in result row: {}", line);
+                Ok(None) => {
+                    // End of stream - normal completion
+                    break;
+                }
+                Err(e) => {
+                    // ClickHouse error during result streaming (e.g., unknown column)
+                    return Err(BoltError::query_error(format!(
+                        "ClickHouse error while reading results: {}",
+                        e
+                    )));
                 }
             }
         }
