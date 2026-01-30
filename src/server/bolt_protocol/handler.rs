@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use super::auth::{AuthToken, AuthenticatedUser, Authenticator};
 use super::errors::{BoltError, BoltResult};
 use super::messages::{signatures, BoltMessage};
+use super::result_transformer::extract_return_metadata;
 use super::{BoltConfig, BoltContext, ConnectionState};
 
 use crate::clickhouse_query_generator;
@@ -762,6 +763,23 @@ impl BoltHandler {
         };
         // parsed_query is now dropped - no more Rc<RefCell<>> held!
 
+        // Extract return metadata for result transformation
+        let return_metadata = match extract_return_metadata(&logical_plan, &plan_ctx) {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                log::warn!("Failed to extract return metadata: {}", e);
+                Vec::new() // Fall back to no transformation
+            }
+        };
+        let has_graph_objects = return_metadata.iter().any(|m| {
+            matches!(
+                m.item_type,
+                super::result_transformer::ReturnItemType::Node { .. }
+                    | super::result_transformer::ReturnItemType::Relationship { .. }
+                    | super::result_transformer::ReturnItemType::Path
+            )
+        });
+
         // Generate render plan - use _with_ctx to pass VLP endpoint information
         let render_plan = match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx))
         {
@@ -846,6 +864,34 @@ impl BoltHandler {
                     log::warn!("Unexpected JSON format in result row: {}", line);
                 }
             }
+        }
+
+        // Transform results if we have graph objects (nodes, relationships, paths)
+        if has_graph_objects {
+            let mut transformed_rows = Vec::new();
+            for row in &rows {
+                // Convert row Vec back to HashMap for transformation
+                let mut row_map = HashMap::new();
+                for (i, field_name) in field_names.iter().enumerate() {
+                    if let Some(value) = row.get(i) {
+                        row_map.insert(field_name.clone(), value.clone());
+                    }
+                }
+
+                match super::result_transformer::transform_row(
+                    row_map,
+                    &return_metadata,
+                    &graph_schema,
+                ) {
+                    Ok(transformed) => transformed_rows.push(transformed),
+                    Err(e) => {
+                        log::warn!("Failed to transform row to graph objects: {}", e);
+                        // Fall back to original row on error
+                        transformed_rows.push(row.clone());
+                    }
+                }
+            }
+            rows = transformed_rows;
         }
 
         // Cache the results for streaming in PULL

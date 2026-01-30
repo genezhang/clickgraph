@@ -117,6 +117,9 @@ pub fn extract_return_metadata(
     for proj_item in &projection.items {
         let field_name = get_field_name(proj_item);
 
+        // Debug: log what we're seeing
+        log::debug!("Projection item: field_name={}, expr={:?}", field_name, proj_item.expression);
+
         // Check if expression is a simple variable reference
         let item_type = match &proj_item.expression {
             LogicalExpr::TableAlias(table_alias) => {
@@ -154,13 +157,14 @@ pub fn extract_return_metadata(
 
 /// Find the final Projection node in the logical plan
 ///
-/// Traverses through OrderBy, Limit, Skip wrappers to find the underlying Projection
+/// Traverses through OrderBy, Limit, Skip, GraphJoins wrappers to find the underlying Projection
 fn find_final_projection(plan: &LogicalPlan) -> Result<&Projection, String> {
     match plan {
         LogicalPlan::Projection(proj) => Ok(proj),
         LogicalPlan::OrderBy(order_by) => find_final_projection(&order_by.input),
         LogicalPlan::Limit(limit) => find_final_projection(&limit.input),
         LogicalPlan::Skip(skip) => find_final_projection(&skip.input),
+        LogicalPlan::GraphJoins(joins) => find_final_projection(&joins.input),
         _ => Err(format!(
             "No projection found in plan, got: {:?}",
             std::mem::discriminant(plan)
