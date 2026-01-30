@@ -40,7 +40,8 @@ fn create_test_schema() -> GraphSchema {
         to_properties: None,
         denormalized_source_table: None,
         label_column: None,
-        label_value: None,
+        label_value: None,,
+            node_id_types: None
     };
 
     nodes.insert("Node".to_string(), node_schema);

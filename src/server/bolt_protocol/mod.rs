@@ -19,6 +19,7 @@ pub mod errors;
 pub mod graph_objects;
 pub mod handler;
 pub mod messages;
+pub mod result_transformer;
 
 use errors::BoltError;
 
