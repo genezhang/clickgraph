@@ -43,7 +43,10 @@ use crate::{
         plan_ctx::PlanCtx,
         typed_variable::TypedVariable,
     },
-    server::bolt_protocol::graph_objects::{Node, Relationship},
+    server::bolt_protocol::{
+        graph_objects::{Node, Relationship},
+        messages::BoltValue,
+    },
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -227,19 +230,16 @@ pub fn transform_row(
     row: HashMap<String, Value>,
     metadata: &[ReturnItemMetadata],
     schema: &GraphSchema,
-) -> Result<Vec<Value>, String> {
+) -> Result<Vec<BoltValue>, String> {
     let mut result = Vec::new();
 
     for meta in metadata {
         match &meta.item_type {
             ReturnItemType::Node { labels } => {
                 let node = transform_to_node(&row, &meta.field_name, labels, schema)?;
-                // TODO: Wrap in packstream Value in next iteration
-                // For now, just serialize properties as JSON
-                let mut node_props = node.properties.clone();
-                node_props.insert("__element_id".to_string(), Value::String(node.element_id.clone()));
-                node_props.insert("__labels".to_string(), serde_json::to_value(&node.labels).unwrap());
-                result.push(Value::Object(node_props.into_iter().collect()));
+                // Use the Node's packstream encoding
+                let packstream_bytes = node.to_packstream();
+                result.push(BoltValue::PackstreamBytes(packstream_bytes));
             }
             ReturnItemType::Relationship { rel_types, from_label, to_label } => {
                 let rel = transform_to_relationship(
@@ -250,23 +250,18 @@ pub fn transform_row(
                     to_label.as_deref(),
                     schema
                 )?;
-                // TODO: Wrap in packstream Value in future iteration
-                // For now, serialize as JSON with special fields
-                let mut rel_props = rel.properties.clone();
-                rel_props.insert("__element_id".to_string(), Value::String(rel.element_id.clone()));
-                rel_props.insert("__type".to_string(), Value::String(rel.rel_type.clone()));
-                rel_props.insert("__start_node_element_id".to_string(), Value::String(rel.start_node_element_id.clone()));
-                rel_props.insert("__end_node_element_id".to_string(), Value::String(rel.end_node_element_id.clone()));
-                result.push(Value::Object(rel_props.into_iter().collect()));
+                // Use the Relationship's packstream encoding
+                let packstream_bytes = rel.to_packstream();
+                result.push(BoltValue::PackstreamBytes(packstream_bytes));
             }
             ReturnItemType::Path => {
-                // TODO: Path transformation in Iteration 3
-                result.push(Value::Null);
+                // TODO: Path transformation requires path variable support in query planner
+                result.push(BoltValue::Json(Value::Null));
             }
             ReturnItemType::Scalar => {
-                // For scalars, just extract the value directly
+                // For scalars, just extract the value and wrap in BoltValue::Json
                 let value = row.get(&meta.field_name).cloned().unwrap_or(Value::Null);
-                result.push(value);
+                result.push(BoltValue::Json(value));
             }
         }
     }

@@ -52,7 +52,7 @@ pub struct BoltHandler {
     /// ClickHouse client for query execution
     clickhouse_client: Client,
     /// Cached query results for streaming
-    cached_results: Option<Vec<Vec<Value>>>,
+    cached_results: Option<Vec<Vec<BoltValue>>>,
 }
 
 impl BoltHandler {
@@ -569,11 +569,8 @@ impl BoltHandler {
 
             // Send each row as a RECORD message
             for row in rows {
-                // Convert Vec<Value> to Vec<BoltValue>
-                let bolt_values: Vec<BoltValue> = row.into_iter()
-                    .map(BoltValue::Json)
-                    .collect();
-                messages.push(BoltMessage::record(bolt_values));
+                // Row is already Vec<BoltValue> - pass directly
+                messages.push(BoltMessage::record(row));
             }
         }
 
@@ -883,7 +880,7 @@ impl BoltHandler {
             log::info!("Transforming graph objects. Original field_names: {:?}, metadata items: {}", 
                 field_names, return_metadata.len());
             
-            let mut transformed_rows = Vec::new();
+            let mut transformed_rows: Vec<Vec<BoltValue>> = Vec::new();
             for row in &rows {
                 // Convert row Vec back to HashMap for transformation
                 let mut row_map = HashMap::new();
@@ -904,12 +901,15 @@ impl BoltHandler {
                     }
                     Err(e) => {
                         log::warn!("Failed to transform row to graph objects: {}", e);
-                        // Fall back to original row on error
-                        transformed_rows.push(row.clone());
+                        // Fall back to original row wrapped in BoltValue::Json on error
+                        let fallback: Vec<BoltValue> = row.iter().map(|v| BoltValue::Json(v.clone())).collect();
+                        transformed_rows.push(fallback);
                     }
                 }
             }
-            rows = transformed_rows;
+            
+            // Cache the transformed results
+            self.cached_results = Some(transformed_rows);
             
             // Update field names to match transformed structure
             field_names = return_metadata
@@ -918,10 +918,14 @@ impl BoltHandler {
                 .collect();
             
             log::info!("After transformation: field_names: {:?}", field_names);
+        } else {
+            // No graph objects - wrap rows in BoltValue::Json and cache
+            let wrapped_rows: Vec<Vec<BoltValue>> = rows
+                .into_iter()
+                .map(|row| row.into_iter().map(BoltValue::Json).collect())
+                .collect();
+            self.cached_results = Some(wrapped_rows);
         }
-
-        // Cache the results for streaming in PULL
-        self.cached_results = Some(rows);
 
         // Return SUCCESS with metadata
         let mut metadata = HashMap::new();
