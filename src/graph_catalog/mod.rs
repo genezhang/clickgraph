@@ -10,6 +10,7 @@ pub mod graph_schema;
 pub mod node_classification;
 pub mod pattern_schema;
 pub mod schema_types;
+pub mod element_id;
 pub mod schema_validator;
 
 #[cfg(test)]
