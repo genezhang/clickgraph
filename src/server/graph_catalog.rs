@@ -621,7 +621,7 @@ pub async fn load_schema_from_content(
 
 pub async fn get_graph_catalog(clickhouse_client: Client) -> Result<GraphSchema, String> {
     let graph_catalog_query = "SELECT id, schema_json FROM graph_catalog FINAL";
-    let graph_catalog_result = clickhouse_client
+    let graph_catalog_result: Result<GraphCatalog, clickhouse::error::Error> = clickhouse_client
         .query(graph_catalog_query)
         .fetch_one::<GraphCatalog>()
         .await;
@@ -636,7 +636,7 @@ pub async fn get_graph_catalog(clickhouse_client: Client) -> Result<GraphSchema,
         Err(err) => {
             // if it is a connection error then send error to the client from server
             // if the graph catalog table is not present then create a one.
-            let err_msg = err.to_string();
+            let err_msg: String = err.to_string();
             // println!("err_msg -> {:?}", err_msg);
 
             if err_msg.contains("UNKNOWN_TABLE") {

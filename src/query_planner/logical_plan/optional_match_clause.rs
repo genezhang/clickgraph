@@ -151,6 +151,7 @@ mod tests {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         };
         nodes.insert("User".to_string(), user_node);
 
@@ -182,6 +183,7 @@ mod tests {
             to_node_properties: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         };
         relationships.insert("FOLLOWS".to_string(), follows_rel);
 

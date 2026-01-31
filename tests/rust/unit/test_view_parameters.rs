@@ -165,6 +165,8 @@ property_mappings:
             naming_convention: "snake_case".to_string(),
             from_node_properties: None,
             to_node_properties: None,
+            r#type: Some("string".to_string()),
+            types: None,
         };
 
         // Serialize to YAML

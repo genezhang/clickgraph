@@ -26,7 +26,7 @@ mod clickhouse_client;
 pub mod connection_pool;
 pub mod graph_catalog;
 pub mod handlers;
-mod models;
+pub mod models;
 mod parameter_substitution;
 mod query_cache;
 pub mod query_context;
@@ -238,6 +238,8 @@ pub async fn run_with_config(config: ServerConfig) {
             enable_auth: false,
             default_user: Some("neo4j".to_string()),
             server_agent: format!("ClickGraph/{}", env!("CARGO_PKG_VERSION")),
+            host: config.bolt_host.clone(),
+            port: config.bolt_port,
         };
 
         // Clone the ClickHouse client from app_state for Bolt server
