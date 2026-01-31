@@ -562,6 +562,80 @@ impl<'a> VariableLengthCteGenerator<'a> {
         None
     }
 
+    /// Generate edge constraint filter for recursive case
+    ///
+    /// In the recursive case, we don't have a `current_node` join (removed for performance).
+    /// Instead, the "from" node properties come from the CTE (vp.end_<alias>) and
+    /// the "to" node properties come from the joined end_node table.
+    ///
+    /// Maps:
+    /// - `from.property` → `vp.end_<property_alias>` (from CTE columns)
+    /// - `to.property` → `end_node.<column_name>` (from joined table)
+    fn generate_edge_constraint_filter_recursive(&self) -> Option<String> {
+        // Get the first relationship type (multi-type not supported for constraints)
+        let rel_types = self.relationship_types.as_ref()?;
+        let rel_type = rel_types.first()?;
+        
+        // Look up relationship schema
+        let rel_schema = self.schema.get_relationships_schema_opt(rel_type)?;
+        
+        // Check if constraints are defined
+        let constraint_expr = rel_schema.constraints.as_ref()?;
+        
+        // Get node schemas for property resolution
+        let from_node_schema = self.schema.node_schema_opt(&rel_schema.from_node)?;
+        let to_node_schema = self.schema.node_schema_opt(&rel_schema.to_node)?;
+        
+        // Build the constraint by replacing property references
+        // Pattern: from.property -> vp.end_<alias>, to.property -> end_node.<column>
+        let mut compiled = constraint_expr.clone();
+        
+        // Replace from.property references with vp.end_<property_alias>
+        // We need to find the property alias from self.properties
+        for (property_name, mapping) in &from_node_schema.property_mappings {
+            let from_pattern = format!("from.{}", property_name);
+            if compiled.contains(&from_pattern) {
+                // Find the corresponding property alias in self.properties
+                // The property alias is based on the cypher property name, not column name
+                let column_name = match mapping {
+                    crate::graph_catalog::expression_parser::PropertyValue::Column(col) => col.clone(),
+                    crate::graph_catalog::expression_parser::PropertyValue::Expression(_) => continue,
+                };
+                
+                // Find the alias used in CTE for this column
+                // Properties in CTE are stored as end_<alias> where alias is the property's output name
+                let cte_alias = self.properties.iter()
+                    .find(|p| p.column_name == column_name && p.cypher_alias == self.end_cypher_alias)
+                    .map(|p| p.alias.clone())
+                    .unwrap_or_else(|| property_name.clone());
+                
+                let replacement = format!("vp.end_{}", cte_alias);
+                compiled = compiled.replace(&from_pattern, &replacement);
+            }
+        }
+        
+        // Replace to.property references with end_node.<column_name>
+        for (property_name, mapping) in &to_node_schema.property_mappings {
+            let to_pattern = format!("to.{}", property_name);
+            if compiled.contains(&to_pattern) {
+                let column_name = match mapping {
+                    crate::graph_catalog::expression_parser::PropertyValue::Column(col) => col.clone(),
+                    crate::graph_catalog::expression_parser::PropertyValue::Expression(_) => continue,
+                };
+                
+                let replacement = format!("{}.{}", self.end_node_alias, column_name);
+                compiled = compiled.replace(&to_pattern, &replacement);
+            }
+        }
+        
+        log::debug!(
+            "✅ Compiled VLP edge constraint for recursive case: {} → {}",
+            constraint_expr, compiled
+        );
+        
+        Some(compiled)
+    }
+
     /// Generate relationship type expression for a given hop
     fn generate_relationship_type_for_hop(&self, _hop_count: u32) -> String {
         // For now, return the first relationship type if available, otherwise a placeholder
@@ -1067,12 +1141,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     // But for denormalized, CTE columns use physical names (e.g., "Dest" not "end_node.code")
                     // The filter was already rewritten during categorization, so it should use the rel alias
                     // which maps to the CTE alias in the wrapper
+                    // 🔧 FIX: Rewrite end_node filter for denormalized VLP with prefixed columns
+                    // Replace "end_node.property" with "vlp_inner.end_property" (prefixed columns)
                     let rewritten_filter =
-                        end_filters.replace("end_node.", &format!("{}_inner.", self.cte_name));
-                    // Also handle rel alias replacement (e.g., "rel.Dest" -> "vlp_inner.Dest")
+                        end_filters.replace("end_node.", &format!("{}_inner.end_", self.cte_name));
+                    // Also handle rel alias replacement (e.g., "rel.Dest" -> "vlp_inner.end_Dest")
+                    // For denormalized schemas, the end node ID is in the "end_" prefixed column
                     let rewritten_filter = rewritten_filter.replace(
                         &format!("{}.", self.relationship_alias),
-                        &format!("{}_inner.", self.cte_name),
+                        &format!("{}_inner.end_", self.cte_name),
                     );
 
                     let min_hops_filter = if min_hops > 1 {
@@ -1630,15 +1707,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
 
         // Add edge constraints if defined in schema
-        // NOTE: Edge constraints in recursive case are temporarily disabled because we removed
-        // the redundant current_node JOIN for performance. The constraint would need to
-        // reference vp.end_* columns instead of current_node.* columns.
-        // TODO: Re-enable edge constraints by mapping from_alias to vp.end_* columns
-        // if let Some(constraint_filter) =
-        //     self.generate_edge_constraint_filter(Some("current_node"), None)
-        // {
-        //     where_conditions.push(constraint_filter);
-        // }
+        // Uses vp.end_* columns for the "from" node (previous end node) and
+        // end_node.* columns for the "to" node (newly joined node)
+        if let Some(constraint_filter) = self.generate_edge_constraint_filter_recursive() {
+            where_conditions.push(constraint_filter);
+        }
 
         // Note: We no longer skip zero-hop rows in recursion.
         // The recursion can now start from zero-hop base case and expand from there.
@@ -2226,10 +2299,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
                             i, physical_col
                         );
                         let sql_fragment = format!(
-                            "{}.{} as {}",
+                            "{}.{} as start_{}",
                             self.relationship_alias,
                             physical_col,
-                            physical_col // Use physical column name as alias
+                            physical_col // 🔧 FIX: Add start_ prefix for VLP property rewrite
                         );
                         eprintln!(
                             "🔧 BASE_CASE:   [{}] Adding to select: '{}'",
@@ -2253,10 +2326,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
                             i, physical_col
                         );
                         let sql_fragment = format!(
-                            "{}.{} as {}",
+                            "{}.{} as end_{}",
                             self.relationship_alias,
                             physical_col,
-                            physical_col // Use physical column name as alias
+                            physical_col // 🔧 FIX: Add end_ prefix for VLP property rewrite
                         );
                         eprintln!(
                             "🔧 BASE_CASE:   [{}] Adding to select: '{}'",
@@ -2379,17 +2452,19 @@ impl<'a> VariableLengthCteGenerator<'a> {
             if prop.cypher_alias == self.start_cypher_alias {
                 // Start properties: carry forward from CTE (physical column names)
                 if let Ok(physical_col) = self.map_denormalized_property(&prop.alias, true) {
-                    select_items.push(format!("vp.{} as {}", physical_col, physical_col));
+                    // 🔧 FIX: Carry forward with start_ prefix (base case has start_X, recursive needs to preserve it)
+                    select_items.push(format!("vp.start_{} as start_{}", physical_col, physical_col));
                 }
             }
             if prop.cypher_alias == self.end_cypher_alias {
                 // End properties: get from new edge's to_node columns
                 if let Ok(physical_col) = self.map_denormalized_property(&prop.alias, false) {
+                    // 🔧 FIX: Add end_ prefix for VLP property rewrite
                     select_items.push(format!(
-                        "{}.{} as {}",
+                        "{}.{} as end_{}",
                         self.relationship_alias,
                         physical_col,
-                        physical_col // Use physical column name
+                        physical_col // Use prefixed column name for VLP rewrite
                     ));
                 } else {
                     log::warn!(

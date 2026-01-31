@@ -123,10 +123,28 @@ impl FilterBuilder for LogicalPlan {
                 //   - "a.name = 'Alice'" is inside VLP → stays in CTE
                 //   - "c.status = 'active'" is outside VLP → should be in outer SELECT
                 //
-                // For now, we skip ALL VLP filters. This is a known limitation that should be fixed
-                // by implementing filter splitting logic that separates VLP-internal from external filters.
-                // TODO: Implement filter splitting for VLP queries
+                // 🔧 FIX (Jan 31, 2026): For OPTIONAL VLP, start node filters are removed from CTE
+                // and should be applied to the outer query WHERE clause.
                 if graph_rel.variable_length.is_some() || graph_rel.shortest_path_mode.is_some() {
+                    // Check if this is OPTIONAL VLP - start filters need to be in outer query
+                    if graph_rel.is_optional.unwrap_or(false) {
+                        log::info!(
+                            "🔧 OPTIONAL VLP: Extracting start node filters for outer WHERE clause"
+                        );
+                        // For OPTIONAL VLP, extract the where_predicate (start node filter)
+                        // The CTE extraction intentionally removes these from the CTE
+                        if let Some(ref predicate) = graph_rel.where_predicate {
+                            if let Ok(expr) = RenderExpr::try_from(predicate.clone()) {
+                                log::info!(
+                                    "🔧 OPTIONAL VLP: Found start filter: {:?}",
+                                    expr
+                                );
+                                return Ok(Some(expr));
+                            }
+                        }
+                        return Ok(None);
+                    }
+                    
                     log::info!(
                         "🔧 BUG #10: Skipping GraphRel filter extraction for VLP/shortest path - already in CTE"
                     );
