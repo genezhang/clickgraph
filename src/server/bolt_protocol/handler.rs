@@ -481,9 +481,9 @@ impl BoltHandler {
             let context = lock_context!(self.context);
 
             // Debug: log RUN message fields
-            log::debug!("RUN message has {} fields", message.fields.len());
+            log::info!("🔍 RUN message has {} fields", message.fields.len());
             for (i, field) in message.fields.iter().enumerate() {
-                log::debug!(
+                log::info!(
                     "  Field[{}]: {}",
                     i,
                     bolt_value_to_string(field)
@@ -502,8 +502,8 @@ impl BoltHandler {
                 }
                 Some(run_db)
             } else {
-                log::debug!(
-                    "RUN message does NOT contain database field, using context schema: {:?}",
+                log::info!(
+                    "⚠️  RUN message does NOT contain database field, using context schema: {:?}",
                     context.schema_name
                 );
                 context.schema_name.clone()
