@@ -54,7 +54,7 @@ schemas:
     graph_schema:
       nodes:
         - label: TestUser
-          database: brahmand
+          database: test_integration
           table: users
           node_id: user_id
           property_mappings:
@@ -62,7 +62,7 @@ schemas:
             name: name
             email: email
         - label: TestProduct
-          database: brahmand
+          database: test_integration
           table: products
           node_id: product_id
           property_mappings:
@@ -70,7 +70,7 @@ schemas:
             name: name
             price: price
         - label: TestGroup
-          database: brahmand
+          database: test_integration
           table: groups
           node_id: group_id
           property_mappings:
@@ -78,7 +78,7 @@ schemas:
             name: name
       edges:
         - type: TEST_PURCHASED
-          database: brahmand
+          database: test_integration
           table: purchases
           from_id: user_id
           to_id: product_id
@@ -88,7 +88,7 @@ schemas:
             purchase_date: purchase_date
             quantity: quantity
         - type: TEST_FRIENDS_WITH
-          database: brahmand
+          database: test_integration
           table: friendships
           from_id: user_id_1
           to_id: user_id_2
@@ -97,7 +97,7 @@ schemas:
           property_mappings:
             since: since
         - type: TEST_FOLLOWS
-          database: brahmand
+          database: test_integration
           table: follows
           from_id: follower_id
           to_id: followed_id
@@ -106,7 +106,7 @@ schemas:
           property_mappings:
             since: since
         - type: MEMBER_OF
-          database: brahmand
+          database: test_integration
           table: memberships
           from_id: user_id
           to_id: group_id
@@ -116,7 +116,7 @@ schemas:
             joined_date: joined_date
             role: role
         - type: RATED
-          database: brahmand
+          database: test_integration
           table: ratings
           from_id: user_id
           to_id: product_id
@@ -222,27 +222,46 @@ schemas:
   - name: denormalized_flights
     graph_schema:
       nodes:
+        # Airport is a virtual node - all data comes from the flights table
         - label: Airport
-          database: travel
-          table: flights_denorm
-          node_id: origin_code  # FIXED: Actual column name
-          property_mappings:
-            code: origin_code  # FIXED: Actual column name
-            name: origin_name  # FIXED: Actual column name  
-            country: origin_country  # FIXED: Actual column name
+          database: test_integration
+          table: flights
+          node_id: code  # Logical property name for the ID
+          property_mappings: {}  # Empty - all properties are denormalized
+          
+          # Denormalized origin (from_node) properties
+          from_node_properties:
+            code: Origin  # Airport.code (the ID) → flights.Origin
+            city: OriginCityName
+            state: OriginState
+          
+          # Denormalized destination (to_node) properties
+          to_node_properties:
+            code: Dest  # Airport.code (the ID) → flights.Dest
+            city: DestCityName
+            state: DestState
+
       edges:
+        # FLIGHT relationship - node properties declared above
         - type: FLIGHT
-          database: travel
-          table: flights_denorm
-          from_id: origin_code  # FIXED: Actual column name
-          to_id: dest_code  # FIXED: Actual column name
+          database: test_integration
+          table: flights
+          from_id: Origin
+          to_id: Dest
           from_node: Airport
           to_node: Airport
+          
+          # Composite edge ID (flights can have same route multiple times per day)
+          # This demonstrates cycle prevention with composite IDs
+          edge_id: [flight_id, flight_number]
+          
+          # Edge properties
           property_mappings:
-            flight_id: flight_id
-            flight_num: flight_num
-            departure_time: departure_time
-            arrival_time: arrival_time
+            flight_num: flight_number
+            carrier: airline
+            departure_time: dep_time
+            arrival_time: arr_time
+            distance: distance_miles
 
   - name: pattern_comp
     graph_schema:
