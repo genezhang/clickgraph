@@ -9,13 +9,16 @@ pub enum UnionType {
     All,
 }
 
-/// A complete Cypher statement that may contain UNION clauses
+/// A complete Cypher statement - either a regular query or a standalone procedure call
 #[derive(Debug, PartialEq, Clone)]
-pub struct CypherStatement<'a> {
-    /// The first (or only) query
-    pub query: OpenCypherQueryAst<'a>,
-    /// Optional union with additional queries
-    pub union_clauses: Vec<UnionClause<'a>>,
+pub enum CypherStatement<'a> {
+    /// Regular query with optional UNION clauses
+    Query {
+        query: OpenCypherQueryAst<'a>,
+        union_clauses: Vec<UnionClause<'a>>,
+    },
+    /// Standalone procedure call (e.g., CALL db.labels())
+    ProcedureCall(StandaloneProcedureCall<'a>),
 }
 
 /// A UNION clause combining queries
@@ -23,6 +26,18 @@ pub struct CypherStatement<'a> {
 pub struct UnionClause<'a> {
     pub union_type: UnionType,
     pub query: OpenCypherQueryAst<'a>,
+}
+
+/// Standalone procedure call for system/metadata queries
+/// Examples: CALL db.labels(), CALL dbms.components()
+#[derive(Debug, PartialEq, Clone)]
+pub struct StandaloneProcedureCall<'a> {
+    /// Procedure name (can include dots, e.g., "db.labels", "dbms.components")
+    pub procedure_name: &'a str,
+    /// Optional arguments (for procedures that take parameters)
+    pub arguments: Vec<Expression<'a>>,
+    /// Optional YIELD clause to select specific return fields
+    pub yield_items: Option<Vec<&'a str>>,
 }
 
 /// Enum representing a reading clause - either MATCH or OPTIONAL MATCH

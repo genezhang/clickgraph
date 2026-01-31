@@ -182,6 +182,7 @@ pub async fn sql_generation_handler(
         QueryType::Update => "update",
         QueryType::Delete => "delete",
         QueryType::Call => "call",
+        QueryType::Procedure => "procedure",
     }
     .to_string();
 

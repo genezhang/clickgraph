@@ -1,7 +1,8 @@
 use ast::{
     CallClause, CreateClause, CypherStatement, DeleteClause, MatchClause, OpenCypherQueryAst,
-    OptionalMatchClause, ReadingClause, RemoveClause, ReturnClause, SetClause, UnionClause,
-    UnionType, UnwindClause, UseClause, WhereClause, WithClause,
+    OptionalMatchClause, ReadingClause, RemoveClause, ReturnClause, SetClause,
+    StandaloneProcedureCall, UnionClause, UnionType, UnwindClause, UseClause, WhereClause,
+    WithClause,
 };
 pub use common::strip_comments;
 use common::ws;
@@ -30,16 +31,26 @@ mod remove_clause;
 mod return_clause;
 mod set_clause;
 mod skip_clause;
+mod standalone_procedure_call;
 mod unwind_clause;
 mod use_clause;
 mod where_clause;
 mod with_clause;
 
-/// Parse a complete Cypher statement, potentially with UNION clauses
+/// Parse a complete Cypher statement, potentially with UNION clauses or standalone procedure call
 pub fn parse_cypher_statement(
     input: &'_ str,
 ) -> IResult<&'_ str, CypherStatement<'_>, OpenCypherParsingError<'_>> {
     let (input, _) = multispace0.parse(input)?;
+
+    // Try to parse as standalone procedure call first
+    if let Ok((input, procedure_call)) =
+        standalone_procedure_call::parse_standalone_procedure_call(input)
+    {
+        // Optional trailing semicolon
+        let (input, _) = opt(ws(tag(";"))).parse(input)?;
+        return Ok((input, CypherStatement::ProcedureCall(procedure_call)));
+    }
 
     // Parse the first query
     let (input, first_query) = parse_query_with_nom.parse(input)?;
@@ -52,7 +63,7 @@ pub fn parse_cypher_statement(
 
     Ok((
         input,
-        CypherStatement {
+        CypherStatement::Query {
             query: first_query,
             union_clauses,
         },
@@ -1502,14 +1513,21 @@ mod tests {
             "Expected empty remaining, got: '{}'",
             remaining
         );
-        assert!(
-            stmt.union_clauses.is_empty(),
-            "Expected no UNION clauses for single query"
-        );
-        assert!(
-            !stmt.query.match_clauses.is_empty(),
-            "Expected MATCH clause"
-        );
+        match &stmt {
+            CypherStatement::Query { query, union_clauses } => {
+                assert!(
+                    union_clauses.is_empty(),
+                    "Expected no UNION clauses for single query"
+                );
+                assert!(
+                    !query.match_clauses.is_empty(),
+                    "Expected MATCH clause"
+                );
+            }
+            CypherStatement::ProcedureCall(_) => {
+                panic!("Expected Query, got ProcedureCall");
+            }
+        }
     }
 
     #[test]
@@ -1529,13 +1547,20 @@ mod tests {
             "Expected empty remaining, got: '{}'",
             remaining
         );
-        assert_eq!(stmt.union_clauses.len(), 1, "Expected 1 UNION clause");
-        assert_eq!(stmt.union_clauses[0].union_type, UnionType::Distinct);
+        match &stmt {
+            CypherStatement::Query { query, union_clauses } => {
+                assert_eq!(union_clauses.len(), 1, "Expected 1 UNION clause");
+                assert_eq!(union_clauses[0].union_type, UnionType::Distinct);
 
-        // Verify first query
-        assert!(!stmt.query.match_clauses.is_empty());
-        // Verify union query
-        assert!(!stmt.union_clauses[0].query.match_clauses.is_empty());
+                // Verify first query
+                assert!(!query.match_clauses.is_empty());
+                // Verify union query
+                assert!(!union_clauses[0].query.match_clauses.is_empty());
+            }
+            CypherStatement::ProcedureCall(_) => {
+                panic!("Expected Query, got ProcedureCall");
+            }
+        }
     }
 
     #[test]
@@ -1555,8 +1580,15 @@ mod tests {
             "Expected empty remaining, got: '{}'",
             remaining
         );
-        assert_eq!(stmt.union_clauses.len(), 1, "Expected 1 UNION clause");
-        assert_eq!(stmt.union_clauses[0].union_type, UnionType::All);
+        match &stmt {
+            CypherStatement::Query { query: _, union_clauses } => {
+                assert_eq!(union_clauses.len(), 1, "Expected 1 UNION clause");
+                assert_eq!(union_clauses[0].union_type, UnionType::All);
+            }
+            CypherStatement::ProcedureCall(_) => {
+                panic!("Expected Query, got ProcedureCall");
+            }
+        }
     }
 
     #[test]
@@ -1576,9 +1608,16 @@ mod tests {
             "Expected empty remaining, got: '{}'",
             remaining
         );
-        assert_eq!(stmt.union_clauses.len(), 2, "Expected 2 UNION clauses");
-        assert_eq!(stmt.union_clauses[0].union_type, UnionType::Distinct);
-        assert_eq!(stmt.union_clauses[1].union_type, UnionType::All);
+        match &stmt {
+            CypherStatement::Query { query: _, union_clauses } => {
+                assert_eq!(union_clauses.len(), 2, "Expected 2 UNION clauses");
+                assert_eq!(union_clauses[0].union_type, UnionType::Distinct);
+                assert_eq!(union_clauses[1].union_type, UnionType::All);
+            }
+            CypherStatement::ProcedureCall(_) => {
+                panic!("Expected Query, got ProcedureCall");
+            }
+        }
     }
 
     #[test]
@@ -1593,8 +1632,15 @@ mod tests {
         );
 
         let (_, stmt) = result.unwrap();
-        assert_eq!(stmt.union_clauses.len(), 1);
-        assert_eq!(stmt.union_clauses[0].union_type, UnionType::All);
+        match &stmt {
+            CypherStatement::Query { query: _, union_clauses } => {
+                assert_eq!(union_clauses.len(), 1);
+                assert_eq!(union_clauses[0].union_type, UnionType::All);
+            }
+            CypherStatement::ProcedureCall(_) => {
+                panic!("Expected Query, got ProcedureCall");
+            }
+        }
     }
 
     #[test]
@@ -1613,7 +1659,14 @@ mod tests {
             remaining.trim().is_empty(),
             "Expected empty remaining after semicolon"
         );
-        assert_eq!(stmt.union_clauses.len(), 1);
+        match &stmt {
+            CypherStatement::Query { query: _, union_clauses } => {
+                assert_eq!(union_clauses.len(), 1);
+            }
+            CypherStatement::ProcedureCall(_) => {
+                panic!("Expected Query, got ProcedureCall");
+            }
+        }
     }
 
     #[test]

@@ -14,7 +14,7 @@ use tokio::io::AsyncBufReadExt;
 use crate::{
     clickhouse_query_generator,
     graph_catalog::graph_schema::GraphSchemaElement,
-    open_cypher_parser::{self},
+    open_cypher_parser::{self, ast::CypherStatement},
     query_planner::{self, types::QueryType},
     render_plan::plan_builder::RenderPlanBuilder,
 };
@@ -398,6 +398,7 @@ async fn query_handler_inner(
             QueryType::Update => "update",
             QueryType::Delete => "delete",
             QueryType::Call => "call",
+            QueryType::Procedure => "procedure",
         }
         .to_string();
 
@@ -406,17 +407,25 @@ async fn query_handler_inner(
 
         if is_call {
             // Handle CALL queries (like PageRank) - use first query's AST
-            let logical_plan =
-                match query_planner::evaluate_call_query(cypher_statement.query, &graph_schema) {
-                    Ok(plan) => plan,
-                    Err(e) => {
-                        // Return 400 for call planning errors (both sql_only and normal mode)
-                        return Err((
-                            StatusCode::BAD_REQUEST,
-                            format!("CALL planning error: {}", e),
-                        ));
-                    }
-                };
+            let query_ast = match &cypher_statement {
+                CypherStatement::Query { query, .. } => query,
+                CypherStatement::ProcedureCall(_) => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "Standalone procedure calls should not reach this path".to_string(),
+                    ));
+                }
+            };
+            let logical_plan = match query_planner::evaluate_call_query(query_ast.clone(), &graph_schema) {
+                Ok(plan) => plan,
+                Err(e) => {
+                    // Return 400 for call planning errors (both sql_only and normal mode)
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        format!("CALL planning error: {}", e),
+                    ));
+                }
+            };
 
             // For CALL queries, we need to generate SQL directly from the logical plan
             // Since PageRank generates complete SQL, we'll use a special approach

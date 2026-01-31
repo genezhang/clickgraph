@@ -133,69 +133,81 @@ pub fn evaluate_cypher_statement(
     view_parameter_values: Option<HashMap<String, String>>,
     max_inferred_types: Option<usize>,
 ) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
-    // If no union clauses, just evaluate the single query
-    if statement.union_clauses.is_empty() {
-        return evaluate_query(
-            statement.query,
-            schema,
-            tenant_id,
-            view_parameter_values,
-            max_inferred_types,
-        );
-    }
-
-    // Build logical plans for all queries
-    let mut all_plans: Vec<Arc<LogicalPlan>> = Vec::new();
-    #[allow(unused_assignments)]
-    let mut combined_ctx: Option<PlanCtx> = None;
-
-    // First query
-    let (first_plan, first_ctx) = plan_builder::build_logical_plan(
-        &statement.query,
-        schema,
-        tenant_id.clone(),
-        view_parameter_values.clone(),
-        max_inferred_types,
-    )?;
-    all_plans.push(first_plan);
-    combined_ctx = Some(first_ctx);
-
-    // Track the union type (all must be the same for simplicity, or we use the first UNION's type)
-    let union_type = if let Some(first_union) = statement.union_clauses.first() {
-        match first_union.union_type {
-            AstUnionType::All => UnionType::All,
-            AstUnionType::Distinct => UnionType::Distinct,
+    // Handle standalone procedure calls
+    match statement {
+        CypherStatement::ProcedureCall(proc_call) => {
+            // Procedure calls should be handled separately
+            return Err(LogicalPlanError::QueryPlanningError(format!(
+                "Standalone procedure call '{}' should be handled by procedures module, not query planner",
+                proc_call.procedure_name
+            )));
         }
-    } else {
-        UnionType::All
-    };
+        CypherStatement::Query { query, union_clauses } => {
+            // If no union clauses, just evaluate the single query
+            if union_clauses.is_empty() {
+                return evaluate_query(
+                    query,
+                    schema,
+                    tenant_id,
+                    view_parameter_values,
+                    max_inferred_types,
+                );
+            }
 
-    // Build plans for each union clause
-    for union_clause in statement.union_clauses {
-        let (plan, ctx) = plan_builder::build_logical_plan(
-            &union_clause.query,
-            schema,
-            tenant_id.clone(),
-            view_parameter_values.clone(),
-            max_inferred_types,
-        )?;
-        all_plans.push(plan);
-        // Merge the context from this union branch into combined context
-        if let Some(ref mut combined) = combined_ctx {
-            combined.merge(ctx);
+            // Build logical plans for all queries
+            let mut all_plans: Vec<Arc<LogicalPlan>> = Vec::new();
+            #[allow(unused_assignments)]
+            let mut combined_ctx: Option<PlanCtx> = None;
+
+            // First query
+            let (first_plan, first_ctx) = plan_builder::build_logical_plan(
+                &query,
+                schema,
+                tenant_id.clone(),
+                view_parameter_values.clone(),
+                max_inferred_types,
+            )?;
+            all_plans.push(first_plan);
+            combined_ctx = Some(first_ctx);
+
+            // Track the union type (all must be the same for simplicity, or we use the first UNION's type)
+            let union_type = if let Some(first_union) = union_clauses.first() {
+                match first_union.union_type {
+                    AstUnionType::All => UnionType::All,
+                    AstUnionType::Distinct => UnionType::Distinct,
+                }
+            } else {
+                UnionType::All
+            };
+
+            // Build plans for each union clause
+            for union_clause in union_clauses {
+                let (plan, ctx) = plan_builder::build_logical_plan(
+                    &union_clause.query,
+                    schema,
+                    tenant_id.clone(),
+                    view_parameter_values.clone(),
+                    max_inferred_types,
+                )?;
+                all_plans.push(plan);
+                // Merge the context from this union branch into combined context
+                if let Some(ref mut combined) = combined_ctx {
+                    combined.merge(ctx);
+                }
+            }
+
+            // Create Union logical plan
+            let union_plan = Arc::new(LogicalPlan::Union(Union {
+                inputs: all_plans,
+                union_type,
+            }));
+
+            let final_ctx = combined_ctx.ok_or_else(|| {
+                LogicalPlanError::QueryPlanningError("Failed to merge plan contexts for UNION".to_string())
+            })?;
+            Ok((union_plan, final_ctx))
         }
     }
-
-    // Create Union logical plan
-    let union_plan = Arc::new(LogicalPlan::Union(Union {
-        inputs: all_plans,
-        union_type,
-    }));
-
-    let final_ctx = combined_ctx.ok_or_else(|| {
-        LogicalPlanError::QueryPlanningError("Failed to merge plan contexts for UNION".to_string())
-    })?;
-    Ok((union_plan, final_ctx))
 }
 
 /// Global counter for generating simple, human-readable aliases like t1, t2, t3...
