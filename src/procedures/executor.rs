@@ -7,6 +7,37 @@ use crate::server::GLOBAL_SCHEMAS;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Execute a standalone procedure call by name
+///
+/// # Arguments
+/// * `procedure_name` - Name of the procedure to execute
+/// * `schema_name` - Schema to execute against (from USE clause or connection)
+/// * `registry` - Procedure registry containing available procedures
+///
+/// # Returns
+/// * `Ok(records)` - Vector of record maps (field name -> value)
+/// * `Err(message)` - Error message if procedure fails or doesn't exist
+pub async fn execute_procedure_by_name(
+    procedure_name: &str,
+    schema_name: &str,
+    registry: &ProcedureRegistry,
+) -> ProcedureResult {
+    // Look up the procedure
+    let proc_fn = registry
+        .get(procedure_name)
+        .ok_or_else(|| format!("Unknown procedure: {}", procedure_name))?;
+
+    // Get the schema
+    let schema = get_schema(schema_name).await?;
+
+    // Execute the procedure
+    let results = proc_fn(&schema)?;
+
+    // TODO: Apply YIELD clause filtering if present in Phase 3
+
+    Ok(results)
+}
+
 /// Execute a standalone procedure call
 ///
 /// # Arguments
@@ -22,23 +53,7 @@ pub async fn execute_procedure(
     schema_name: &str,
     registry: &ProcedureRegistry,
 ) -> ProcedureResult {
-    // Look up the procedure
-    let proc_fn = registry
-        .get(call.procedure_name)
-        .ok_or_else(|| format!("Unknown procedure: {}", call.procedure_name))?;
-
-    // Get the schema
-    let schema = get_schema(schema_name).await?;
-
-    // Execute the procedure
-    let results = proc_fn(&schema)?;
-
-    // TODO: Apply YIELD clause filtering if present
-    // if let Some(yield_items) = &call.yield_items {
-    //     results = filter_by_yield(results, yield_items)?;
-    // }
-
-    Ok(results)
+    execute_procedure_by_name(call.procedure_name, schema_name, registry).await
 }
 
 /// Get a schema by name from the global registry
