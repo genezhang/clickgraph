@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-### � Security
+### 🔒 Security
 
 - **Parser Recursion Depth Limits** (Jan 26, 2026): Added MAX_RELATIONSHIP_CHAIN_DEPTH = 1000 to prevent DoS attacks
   - **Problem**: Unbounded recursion in `parse_consecutive_relationships()` vulnerable to stack overflow on malicious inputs like `()-[]->()-[]->...` (1000+ hops)
@@ -9,7 +9,17 @@
   - **Impact**: Parser now protected against DoS via deep recursion; all 184 parser tests passing
   - **Files**: `src/open_cypher_parser/path_pattern.rs`
 
-### �🐛 Bug Fixes
+### 🐛 Bug Fixes
+
+- **Denormalized Single-Hop Property Access** (Jan 30, 2026): ⭐ **CRITICAL BUG FIX** - Fixed denormalized schemas generating SQL with wrong table alias
+  - **Problem**: Single-hop queries like `MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN a.name, b.city` on denormalized schemas generated `SELECT t.name, t.city FROM user_follows AS r` with wrong alias 't' instead of 'r', causing "Unknown expression identifier" errors
+  - **Root Cause**: PlanCtx stored denormalized node→edge mappings during query planning, but rendering phase used task-local storage - **the transfer between these phases was missing!**
+  - **Solution**: Added transfer loop in `to_render_plan_with_ctx()` to copy denormalized aliases from PlanCtx to task-local storage before rendering
+  - **Architecture**: Three-phase lifecycle documented in `docs/architecture/denormalized-alias-lifecycle.md` (Planning → Transfer → Rendering)
+  - **Test Coverage**: Added 19 comprehensive tests for single-hop property selection patterns across all schema types
+  - **Impact**: All denormalized single-hop queries now work correctly; bug blocked alpha release
+  - **Files**: `src/render_plan/plan_builder.rs`, `src/query_planner/plan_ctx/mod.rs`
+  - **Tests**: `tests/integration/matrix/test_single_hop_properties.py` (19 passing tests)
 
 - **Nested WITH Filtered Exports** (Jan 26, 2026): Fixed infinite iteration loop in nested WITH clauses with filtered exports
   - **Problem**: Queries like `MATCH (u:User) WITH u AS person WITH person.name AS name RETURN name` hit 10-iteration safety limit and failed

@@ -1,36 +1,43 @@
 # ClickGraph Status
 
-*Updated: January 26, 2026*
+*Updated: January 29, 2026*
+
+## 🚨 CRITICAL: Recurring Regression Bugs
+
+**Test Pass Rate**: 2,901/3,055 = 94.96% (227 skipped for unavailable schemas)
+
+**⚠️ WARNING**: We have identified recurring bugs that keep breaking after refactoring.  
+See `REGRESSION_BUGS.md` for detailed tracking and prevention policy.
+
+**Active Regressions**:
+1. 🔴 **VLP Chained Join Bug**: `MATCH (a)-[*2]->(b)` generates undefined table alias `t4411`
+2. 🔴 **Multi-Type CTE Bug**: `[:FOLLOWS|AUTHORED]` references wrong CTE name
+3. 🔴 **Shortest Path Validation**: Missing relationship type causes analyzer error
+
+**Policy**: NO new features until these regressions are fixed. Run `./scripts/test/smoke_tests.sh` before ANY commit.
+
+---
 
 ## Current Version
 
-**v0.6.2** - Production-ready graph query engine for ClickHouse (In development)
+**v0.6.2** - Production-ready graph query engine for ClickHouse (In development - BLOCKED by regressions)
 
 **Test Status**:
-- ✅ Unit tests: 832/832 passing (100%) ⬆️ **IMPROVED** (Jan 26 Phase 2)
+- ✅ Unit tests: 832/832 passing (100%)
 - ✅ Parser tests: 184/184 passing (100%, 2 ignored)
-- ✅ Integration matrix tests: 233/273 passing (85%) ⬆️ **IMPROVED**
-  - Fixed EXISTS subquery schema context issue (thread_local vs task_local)
-  - Fixed WITH+aggregation scalar export handling
-- ✅ Denormalized edge tests: 16/18 passing (89%) ⬆️ **FIXED VLP property access issue**
-  - Fixed VLP CTE property access for denormalized relationships
-  - All denormalized edge functionality now working correctly
+- 🔴 Integration tests: 2,901/3,055 passing (94.96%) - **DOWN from 99%+ (regressions)**
+  - 227 skipped (unavailable schemas: ontime_flights, social_polymorphic, zeek_dns)
+  - 154 failing (includes 3 critical regressions + auto-generated test bugs)
+- ✅ Single-hop property tests: 19/21 passing (90%)
+- ✅ Denormalized edge tests: 16/18 passing (89%)
 - ✅ OPTIONAL MATCH tests: 26/27 passing (96%)
-- ✅ EXISTS subquery tests: 3/3 passing (100%) ✅ **ALL FIXED**
-- ✅ All `test_collect` tests passing (10/10)
 
-**Code Quality** (Updated - January 26, 2026):
+**Code Quality** (Updated - January 29, 2026):
 - ✅ Parser module: Grade A (comprehensive audit complete)
-- ✅ Query planner: Grade A (35 production panic risks eliminated) ⬆️ **IMPROVED**
+- ✅ Query planner: Grade A (35 production panic risks eliminated)
+- 🔴 VLP rendering: **Grade C** - Recurring regressions after refactoring
 - ✅ Recursion depth limits: MAX_RELATIONSHIP_CHAIN_DEPTH = 50 (DoS protection)
 - ✅ Production unwrap() calls: 0 (all replaced with safe error handling)
-- ✅ Comprehensive refactoring complete (5 phases)
-- ✅ 440+ boilerplate lines eliminated
-- ✅ 7 reusable components created (traits, structs, factories, helpers)
-- ✅ Visitor pattern infrastructure established
-- ✅ Type complexity reduction via semantic aliases (15+ type definitions)
-- ✅ Parameter reduction: 60-75% in CTE rewriting functions
-- ⬆️ Architecture significantly improved, maintainability enhanced
 
 **LDBC SNB Benchmark Status**: 15/41 queries passing (37%)
 - Interactive Short: 7/7 (100%) ✅
@@ -38,6 +45,26 @@
 - Business Intelligence: 4/20 (20%) - BI-5, BI-11, BI-12, BI-19 working
 
 **Recent Fixes**:
+
+0. **Jan 31, 2026 - OPTIONAL MATCH + VLP WHERE Filter Regression** ✅ **CRITICAL BUG FIX**:
+   - **Problem**: Queries like `MATCH (a:User) WHERE a.name = 'Alice' OPTIONAL MATCH (a)-[*]->(b) RETURN a.name, COUNT(b)` 
+     returned ALL users instead of just Alice - the WHERE filter was silently dropped!
+   - **Root Cause**: Half-baked refactoring in commit `268889c` - code removed filters from CTE with comment "will be applied 
+     to final FROM" but the code to apply them was **never written**. Test was changed to match buggy behavior.
+   - **Solution**: Added OPTIONAL VLP handling in `filter_builder.rs` to extract start node filters for outer query
+   - **Lesson Learned**: Never change test expectations to match bugs. See `docs/lessons_learned/2026-01-31-optional-vlp-filter-regression.md`
+   - **Files**: `src/render_plan/filter_builder.rs`, `tests/integration/test_optional_match.py`
+   - **Tests**: All 26 OPTIONAL MATCH tests passing (was incorrectly reporting 2 passing with wrong expectations)
+
+0. **Jan 30, 2026 - Denormalized Single-Hop Property Access** ✅ **CRITICAL BUG FIX**:
+   - **Problem**: Single-hop queries like `MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN a.name, b.city` on denormalized schemas generated SQL with wrong table alias ('t' instead of 'r'), causing "Unknown expression identifier" errors
+   - **Root Cause**: PlanCtx stored denormalized node→edge mappings during query planning, but rendering phase used task-local storage - **the transfer between these phases was missing!**
+   - **Solution**: Added transfer loop in `to_render_plan_with_ctx()` to copy denormalized aliases from PlanCtx to task-local storage
+   - **Architecture**: Documented three-phase lifecycle in `docs/architecture/denormalized-alias-lifecycle.md` (Planning → Transfer → Rendering)
+   - **Test Coverage**: Added 19 comprehensive tests for single-hop property selection patterns across all schema types
+   - **Impact**: All denormalized single-hop queries now work correctly; bug blocked alpha release
+   - **Files**: `src/render_plan/plan_builder.rs`, `src/query_planner/plan_ctx/mod.rs`
+   - **Tests**: `tests/integration/matrix/test_single_hop_properties.py` (19 passing)
 
 0. **Jan 27, 2026 - Error Propagation: Phase 2B + Phase 3 Implementation** ✅ COMPLETED:
    - **Phase 2B (Error Context Infrastructure)** - 1 hour:
