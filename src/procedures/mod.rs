@@ -32,6 +32,7 @@ pub mod db_labels;
 pub mod db_property_keys;
 pub mod db_relationship_types;
 pub mod dbms_components;
+pub mod dbms_stubs;
 pub mod executor;
 
 // Re-export key functions for easier access
@@ -67,6 +68,12 @@ impl ProcedureRegistry {
         );
         registry.register("dbms.components", Arc::new(dbms_components::execute));
         registry.register("db.propertyKeys", Arc::new(db_property_keys::execute));
+        
+        // Register dbms.* stubs for Neo4j Browser compatibility
+        registry.register("dbms.clientConfig", Arc::new(dbms_stubs::client_config));
+        registry.register("dbms.security.showCurrentUser", Arc::new(dbms_stubs::show_current_user));
+        registry.register("dbms.procedures", Arc::new(dbms_stubs::list_procedures));
+        registry.register("dbms.functions", Arc::new(dbms_stubs::list_functions));
 
         registry
     }
@@ -105,22 +112,26 @@ mod tests {
     #[test]
     fn test_registry_creation() {
         let registry = ProcedureRegistry::new();
-        // Now we have 4 procedures registered
-        assert_eq!(registry.names().len(), 4);
+        // Now we have 8 procedures registered (4 core + 4 dbms stubs)
+        assert_eq!(registry.names().len(), 8);
 
         // Verify all expected procedures are registered
         assert!(registry.contains("db.labels"));
         assert!(registry.contains("db.relationshipTypes"));
         assert!(registry.contains("dbms.components"));
         assert!(registry.contains("db.propertyKeys"));
+        assert!(registry.contains("dbms.clientConfig"));
+        assert!(registry.contains("dbms.security.showCurrentUser"));
+        assert!(registry.contains("dbms.procedures"));
+        assert!(registry.contains("dbms.functions"));
     }
 
     #[test]
     fn test_registry_register_and_lookup() {
         let mut registry = ProcedureRegistry::new();
 
-        // Should already have 4 built-in procedures
-        assert_eq!(registry.names().len(), 4);
+        // Should already have 8 built-in procedures (4 core + 4 dbms stubs)
+        assert_eq!(registry.names().len(), 8);
 
         // Register a dummy procedure
         let dummy_proc: ProcedureFn = Arc::new(|_schema| {
@@ -134,7 +145,7 @@ mod tests {
 
         assert!(registry.contains("test.procedure"));
         assert!(registry.get("test.procedure").is_some());
-        assert_eq!(registry.names().len(), 5); // 4 built-in + 1 test
+        assert_eq!(registry.names().len(), 9); // 8 built-in + 1 test
     }
 
     #[test]
