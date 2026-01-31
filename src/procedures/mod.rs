@@ -25,6 +25,10 @@
 //! 2. Database parameter in Bolt connection
 //! 3. Default schema from configuration
 
+pub mod db_labels;
+pub mod db_property_keys;
+pub mod db_relationship_types;
+pub mod dbms_components;
 pub mod executor;
 
 use crate::graph_catalog::graph_schema::GraphSchema;
@@ -50,11 +54,13 @@ impl ProcedureRegistry {
         };
 
         // Register built-in procedures
-        // TODO: Implement actual procedures in Phase 2
-        // registry.register("db.labels", Arc::new(db_labels::execute));
-        // registry.register("db.relationshipTypes", Arc::new(db_relationship_types::execute));
-        // registry.register("dbms.components", Arc::new(dbms_components::execute));
-        // registry.register("db.propertyKeys", Arc::new(db_property_keys::execute));
+        registry.register("db.labels", Arc::new(db_labels::execute));
+        registry.register(
+            "db.relationshipTypes",
+            Arc::new(db_relationship_types::execute),
+        );
+        registry.register("dbms.components", Arc::new(dbms_components::execute));
+        registry.register("db.propertyKeys", Arc::new(db_property_keys::execute));
 
         registry
     }
@@ -93,13 +99,22 @@ mod tests {
     #[test]
     fn test_registry_creation() {
         let registry = ProcedureRegistry::new();
-        // Initially no procedures registered (will add in Phase 2)
-        assert_eq!(registry.names().len(), 0);
+        // Now we have 4 procedures registered
+        assert_eq!(registry.names().len(), 4);
+
+        // Verify all expected procedures are registered
+        assert!(registry.contains("db.labels"));
+        assert!(registry.contains("db.relationshipTypes"));
+        assert!(registry.contains("dbms.components"));
+        assert!(registry.contains("db.propertyKeys"));
     }
 
     #[test]
     fn test_registry_register_and_lookup() {
         let mut registry = ProcedureRegistry::new();
+
+        // Should already have 4 built-in procedures
+        assert_eq!(registry.names().len(), 4);
 
         // Register a dummy procedure
         let dummy_proc: ProcedureFn = Arc::new(|_schema| {
@@ -113,7 +128,7 @@ mod tests {
 
         assert!(registry.contains("test.procedure"));
         assert!(registry.get("test.procedure").is_some());
-        assert_eq!(registry.names().len(), 1);
+        assert_eq!(registry.names().len(), 5); // 4 built-in + 1 test
     }
 
     #[test]
