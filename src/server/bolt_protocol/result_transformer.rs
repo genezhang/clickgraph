@@ -372,33 +372,57 @@ fn transform_to_relationship(
         .get_relationships_schema_opt(rel_type)
         .ok_or_else(|| format!("Relationship schema not found for type: {}", rel_type))?;
 
-    // Extract from_id and to_id from properties
-    // The SQL might use generic names "from_id" and "to_id" or actual column names
-    let from_id_col = &rel_schema.from_id;
-    let to_id_col = &rel_schema.to_id;
-
-    let from_id_value = properties
-        .get(from_id_col)
-        .or_else(|| properties.get("from_id")) // Fallback to generic name
-        .and_then(value_to_string)
-        .ok_or_else(|| format!("Missing from_id column '{}' (or 'from_id') for relationship '{}'", from_id_col, var_name))?;
-
-    let to_id_value = properties
-        .get(to_id_col)
-        .or_else(|| properties.get("to_id")) // Fallback to generic name
-        .and_then(value_to_string)
-        .ok_or_else(|| format!("Missing to_id column '{}' (or 'to_id') for relationship '{}'", to_id_col, var_name))?;
-
-    // Generate relationship elementId: "FOLLOWS:1->2"
-    let element_id = generate_relationship_element_id(rel_type, &from_id_value, &to_id_value);
-
-    // Generate node elementIds for start and end nodes
-    // Use provided labels if available, otherwise use from schema
+    // Get from/to node labels (use provided or schema defaults)
     let from_node_label = from_label.unwrap_or(&rel_schema.from_node);
     let to_node_label = to_label.unwrap_or(&rel_schema.to_node);
 
-    let start_node_element_id = generate_node_element_id(from_node_label, &[&from_id_value]);
-    let end_node_element_id = generate_node_element_id(to_node_label, &[&to_id_value]);
+    // Get from/to node schemas to determine if IDs are composite
+    let from_node_schema = schema
+        .node_schema_opt(from_node_label)
+        .ok_or_else(|| format!("From node schema not found for label: {}", from_node_label))?;
+    let to_node_schema = schema
+        .node_schema_opt(to_node_label)
+        .ok_or_else(|| format!("To node schema not found for label: {}", to_node_label))?;
+
+    // Extract from_id values (may be composite)
+    let from_id_columns = from_node_schema.node_id.id.columns();
+    let from_id_values: Vec<String> = from_id_columns
+        .iter()
+        .map(|col_name| {
+            properties
+                .get(*col_name)
+                .or_else(|| properties.get("from_id")) // Fallback to generic name for single column
+                .and_then(value_to_string)
+                .ok_or_else(|| format!("Missing from_id column '{}' for relationship '{}'", col_name, var_name))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Extract to_id values (may be composite)
+    let to_id_columns = to_node_schema.node_id.id.columns();
+    let to_id_values: Vec<String> = to_id_columns
+        .iter()
+        .map(|col_name| {
+            properties
+                .get(*col_name)
+                .or_else(|| properties.get("to_id")) // Fallback to generic name for single column
+                .and_then(value_to_string)
+                .ok_or_else(|| format!("Missing to_id column '{}' for relationship '{}'", col_name, var_name))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Join composite IDs with pipe separator
+    let from_id_str = from_id_values.join("|");
+    let to_id_str = to_id_values.join("|");
+
+    // Generate relationship elementId: "FOLLOWS:1->2" or "BELONGS_TO:tenant1|user1->tenant1|org1"
+    let element_id = generate_relationship_element_id(rel_type, &from_id_str, &to_id_str);
+
+    // Generate node elementIds for start and end nodes (with composite ID support)
+    let from_id_refs: Vec<&str> = from_id_values.iter().map(|s| s.as_str()).collect();
+    let to_id_refs: Vec<&str> = to_id_values.iter().map(|s| s.as_str()).collect();
+    
+    let start_node_element_id = generate_node_element_id(from_node_label, &from_id_refs);
+    let end_node_element_id = generate_node_element_id(to_node_label, &to_id_refs);
 
     // Create Relationship struct
     Ok(Relationship {
