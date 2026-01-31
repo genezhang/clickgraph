@@ -1502,15 +1502,17 @@ impl DenormalizedCteStrategy {
             let where_clause = where_conditions.join(" AND ");
 
             // Outer CTE selects from inner and applies end filter
+            // Match format of other strategies: WITH RECURSIVE ... SELECT *
             Ok(format!(
-                "{},\n{} AS (\n    SELECT * FROM {} WHERE {}\n)",
-                inner_cte, cte_name, recursive_cte_name, where_clause
+                "WITH RECURSIVE {},\n{} AS (\n    SELECT * FROM {} WHERE {}\n) SELECT * FROM {}",
+                inner_cte, cte_name, recursive_cte_name, where_clause, cte_name
             ))
         } else {
             // No end filter: simple single CTE
+            // Match format of other strategies: WITH RECURSIVE ... SELECT *
             Ok(format!(
-                "{} AS (\n{}{}\n)",
-                recursive_cte_name, base_case, recursive_case
+                "WITH RECURSIVE {} AS (\n{}{}\n) SELECT * FROM {}",
+                recursive_cte_name, base_case, recursive_case, recursive_cte_name
             ))
         }
     }
