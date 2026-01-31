@@ -142,7 +142,10 @@ pub fn evaluate_cypher_statement(
                 proc_call.procedure_name
             )));
         }
-        CypherStatement::Query { query, union_clauses } => {
+        CypherStatement::Query {
+            query,
+            union_clauses,
+        } => {
             // If no union clauses, just evaluate the single query
             if union_clauses.is_empty() {
                 return evaluate_query(
@@ -203,7 +206,9 @@ pub fn evaluate_cypher_statement(
             }));
 
             let final_ctx = combined_ctx.ok_or_else(|| {
-                LogicalPlanError::QueryPlanningError("Failed to merge plan contexts for UNION".to_string())
+                LogicalPlanError::QueryPlanningError(
+                    "Failed to merge plan contexts for UNION".to_string(),
+                )
             })?;
             Ok((union_plan, final_ctx))
         }
