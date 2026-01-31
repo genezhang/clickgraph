@@ -226,6 +226,35 @@ impl Relationship {
 
 // ========== Packstream Encoding Helpers ==========
 
+// ========== Packstream Encoding Helpers ==========
+//
+// Custom Packstream Implementation Rationale:
+//
+// We implement Packstream encoding directly (vs using crates like `packs` or `neo4j_rust_bolt`)
+// for several reasons:
+//
+// 1. **Precise Control**: Need exact byte-level control for Bolt 5.x graph objects
+//    - Custom elementId format: "Label:id1|id2|id3" for composite IDs
+//    - Tight integration with ClickGraph's schema type system
+//    - Direct control over Node/Relationship structure encoding
+//
+// 2. **Minimal Dependencies**: ~200 LOC implementation with zero external deps
+//    - No version conflicts or breaking changes risk
+//    - Faster compilation, smaller binary
+//    - Easier to debug and maintain
+//
+// 3. **Available Crates Limitations**:
+//    - `packstream 0.0.0`: Appears unfinished/placeholder
+//    - `packs`: General-purpose, would need adapter layer anyway
+//    - `raio`/`neo4j_rust_bolt`: Full drivers (overkill for encoding layer)
+//
+// 4. **Performance**: Zero abstraction overhead - direct byte vector generation
+//
+// If migrating to external crate in future: benchmark performance, add adapter layer,
+// test all schema variations (composite IDs, denormalized, polymorphic, etc.)
+//
+// Spec reference: https://neo4j.com/docs/bolt/current/packstream/
+
 /// Encode an integer to packstream format
 ///
 /// Packstream integer encoding:
