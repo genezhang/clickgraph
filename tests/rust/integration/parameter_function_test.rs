@@ -34,7 +34,6 @@ fn create_test_schema() -> GraphSchema {
                 props.insert("age".to_string(), PropertyValue::Column("age".to_string()));
                 props
             },
-            node_id_types: None,
             view_parameters: None,
             engine: None,
             use_final: None,
@@ -67,7 +66,6 @@ fn create_test_schema() -> GraphSchema {
                 );
                 props
             },
-            node_id_types: None,
             view_parameters: None,
             engine: None,
             use_final: None,
@@ -104,7 +102,6 @@ fn create_test_schema() -> GraphSchema {
                 );
                 props
             },
-            node_id_types: None,
             view_parameters: None,
             engine: None,
             use_final: None,
@@ -137,7 +134,6 @@ fn create_test_schema() -> GraphSchema {
                 );
                 props
             },
-            node_id_types: None,
             view_parameters: None,
             engine: None,
             use_final: None,
@@ -170,7 +166,6 @@ fn create_test_schema() -> GraphSchema {
                 );
                 props
             },
-            node_id_types: None,
             view_parameters: None,
             engine: None,
             use_final: None,
@@ -203,7 +198,6 @@ fn create_test_schema() -> GraphSchema {
                 );
                 props
             },
-            node_id_types: None,
             view_parameters: None,
             engine: None,
             use_final: None,
