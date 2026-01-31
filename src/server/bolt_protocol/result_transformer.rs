@@ -121,7 +121,11 @@ pub fn extract_return_metadata(
         let field_name = get_field_name(proj_item);
 
         // Debug: log what we're seeing
-        log::debug!("Projection item: field_name={}, expr={:?}", field_name, proj_item.expression);
+        log::debug!(
+            "Projection item: field_name={}, expr={:?}",
+            field_name,
+            proj_item.expression
+        );
 
         // Check if expression is a simple variable reference
         let item_type = match &proj_item.expression {
@@ -241,14 +245,18 @@ pub fn transform_row(
                 let packstream_bytes = node.to_packstream();
                 result.push(BoltValue::PackstreamBytes(packstream_bytes));
             }
-            ReturnItemType::Relationship { rel_types, from_label, to_label } => {
+            ReturnItemType::Relationship {
+                rel_types,
+                from_label,
+                to_label,
+            } => {
                 let rel = transform_to_relationship(
-                    &row, 
-                    &meta.field_name, 
-                    rel_types, 
+                    &row,
+                    &meta.field_name,
+                    rel_types,
                     from_label.as_deref(),
                     to_label.as_deref(),
-                    schema
+                    schema,
                 )?;
                 // Use the Relationship's packstream encoding
                 let packstream_bytes = rel.to_packstream();
@@ -393,7 +401,12 @@ fn transform_to_relationship(
                 .get(*col_name)
                 .or_else(|| properties.get("from_id")) // Fallback to generic name for single column
                 .and_then(value_to_string)
-                .ok_or_else(|| format!("Missing from_id column '{}' for relationship '{}'", col_name, var_name))
+                .ok_or_else(|| {
+                    format!(
+                        "Missing from_id column '{}' for relationship '{}'",
+                        col_name, var_name
+                    )
+                })
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -406,7 +419,12 @@ fn transform_to_relationship(
                 .get(*col_name)
                 .or_else(|| properties.get("to_id")) // Fallback to generic name for single column
                 .and_then(value_to_string)
-                .ok_or_else(|| format!("Missing to_id column '{}' for relationship '{}'", col_name, var_name))
+                .ok_or_else(|| {
+                    format!(
+                        "Missing to_id column '{}' for relationship '{}'",
+                        col_name, var_name
+                    )
+                })
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -420,13 +438,13 @@ fn transform_to_relationship(
     // Generate node elementIds for start and end nodes (with composite ID support)
     let from_id_refs: Vec<&str> = from_id_values.iter().map(|s| s.as_str()).collect();
     let to_id_refs: Vec<&str> = to_id_values.iter().map(|s| s.as_str()).collect();
-    
+
     let start_node_element_id = generate_node_element_id(from_node_label, &from_id_refs);
     let end_node_element_id = generate_node_element_id(to_node_label, &to_id_refs);
 
     // Create Relationship struct
     Ok(Relationship {
-        id: 0, // Legacy ID (unused in Neo4j 5.x)
+        id: 0,            // Legacy ID (unused in Neo4j 5.x)
         start_node_id: 0, // Legacy ID
         end_node_id: 0,   // Legacy ID
         rel_type: rel_type.to_string(),
@@ -480,7 +498,7 @@ mod tests {
 
     #[test]
     fn test_get_field_name_from_variable() {
-        use crate::query_planner::{logical_plan::ProjectionItem, logical_expr::TableAlias};
+        use crate::query_planner::{logical_expr::TableAlias, logical_plan::ProjectionItem};
 
         let proj_item = ProjectionItem {
             expression: LogicalExpr::TableAlias(TableAlias("n".to_string())),
@@ -516,20 +534,19 @@ mod tests {
         use std::collections::HashMap;
 
         // Create a minimal schema
-        let mut schema = GraphSchema::build(
-            1,
-            "test".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-        );
-        
+        let mut schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+
         // Add relationship schema for FOLLOWS
         schema.insert_relationship_schema(
             "FOLLOWS".to_string(),
             RelationshipSchema {
                 database: "test".to_string(),
                 table_name: "follows".to_string(),
-                column_names: vec!["follower_id".to_string(), "followed_id".to_string(), "follow_date".to_string()],
+                column_names: vec![
+                    "follower_id".to_string(),
+                    "followed_id".to_string(),
+                    "follow_date".to_string(),
+                ],
                 from_node: "User".to_string(),
                 to_node: "User".to_string(),
                 from_node_table: "users".to_string(),
@@ -561,7 +578,10 @@ mod tests {
         let mut row = HashMap::new();
         row.insert("r.follower_id".to_string(), Value::Number(1.into()));
         row.insert("r.followed_id".to_string(), Value::Number(2.into()));
-        row.insert("r.follow_date".to_string(), Value::String("2024-01-15".to_string()));
+        row.insert(
+            "r.follow_date".to_string(),
+            Value::String("2024-01-15".to_string()),
+        );
 
         // Transform
         let result = transform_to_relationship(
@@ -579,7 +599,10 @@ mod tests {
         assert_eq!(rel.element_id, "FOLLOWS:1->2");
         assert_eq!(rel.start_node_element_id, "User:1");
         assert_eq!(rel.end_node_element_id, "User:2");
-        assert_eq!(rel.properties.get("follow_date").unwrap(), &Value::String("2024-01-15".to_string()));
+        assert_eq!(
+            rel.properties.get("follow_date").unwrap(),
+            &Value::String("2024-01-15".to_string())
+        );
     }
 
     // Integration-style test (requires more setup)

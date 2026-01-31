@@ -37,22 +37,22 @@ use crate::server::models::SqlDialect;
 pub enum SchemaType {
     /// Whole numbers (Int8/16/32/64, UInt8/16/32/64, BIGINT, etc.)
     Integer,
-    
+
     /// Decimal numbers (Float32/64, Decimal, DOUBLE PRECISION, etc.)
     Float,
-    
+
     /// Text (String, FixedString, VARCHAR, TEXT, etc.)
     String,
-    
+
     /// True/False (Bool, UInt8, BOOLEAN, etc.)
     Boolean,
-    
+
     /// Timestamps (DateTime, DateTime64, TIMESTAMP, etc.)
     DateTime,
-    
+
     /// Dates (Date, Date32, DATE, etc.)
     Date,
-    
+
     /// UUIDs (UUID)
     Uuid,
 }
@@ -124,40 +124,39 @@ impl SchemaType {
     /// ```
     pub fn to_sql_literal(&self, value: &str, dialect: SqlDialect) -> Result<String, String> {
         match self {
-            SchemaType::Integer => {
-                value.parse::<i64>()
-                    .map(|i| i.to_string())
-                    .map_err(|_| format!("Invalid integer: '{}'", value))
-            }
-            
-            SchemaType::Float => {
-                value.parse::<f64>()
-                    .map(|f| f.to_string())
-                    .map_err(|_| format!("Invalid float: '{}'", value))
-            }
-            
+            SchemaType::Integer => value
+                .parse::<i64>()
+                .map(|i| i.to_string())
+                .map_err(|_| format!("Invalid integer: '{}'", value)),
+
+            SchemaType::Float => value
+                .parse::<f64>()
+                .map(|f| f.to_string())
+                .map_err(|_| format!("Invalid float: '{}'", value)),
+
             SchemaType::String | SchemaType::Uuid => {
                 // Escape single quotes by doubling them (SQL standard)
                 let escaped = value.replace('\'', "''");
                 Ok(format!("'{}'", escaped))
             }
-            
-            SchemaType::Boolean => {
-                match value.to_lowercase().trim() {
-                    "true" | "1" => Ok(match dialect {
-                        SqlDialect::ClickHouse => "1".to_string(),
-                        SqlDialect::PostgreSQL => "TRUE".to_string(),
-                        _ => "1".to_string(),
-                    }),
-                    "false" | "0" => Ok(match dialect {
-                        SqlDialect::ClickHouse => "0".to_string(),
-                        SqlDialect::PostgreSQL => "FALSE".to_string(),
-                        _ => "0".to_string(),
-                    }),
-                    _ => Err(format!("Invalid boolean: '{}' (expected: true, false, 1, or 0)", value)),
-                }
-            }
-            
+
+            SchemaType::Boolean => match value.to_lowercase().trim() {
+                "true" | "1" => Ok(match dialect {
+                    SqlDialect::ClickHouse => "1".to_string(),
+                    SqlDialect::PostgreSQL => "TRUE".to_string(),
+                    _ => "1".to_string(),
+                }),
+                "false" | "0" => Ok(match dialect {
+                    SqlDialect::ClickHouse => "0".to_string(),
+                    SqlDialect::PostgreSQL => "FALSE".to_string(),
+                    _ => "0".to_string(),
+                }),
+                _ => Err(format!(
+                    "Invalid boolean: '{}' (expected: true, false, 1, or 0)",
+                    value
+                )),
+            },
+
             SchemaType::DateTime | SchemaType::Date => {
                 // Dates and timestamps are quoted strings in SQL
                 let escaped = value.replace('\'', "''");
@@ -202,7 +201,8 @@ impl fmt::Display for SchemaType {
 /// ```
 pub fn map_clickhouse_type(ch_type: &str) -> SchemaType {
     // Normalize: lowercase, strip wrapper types
-    let normalized = ch_type.to_lowercase()
+    let normalized = ch_type
+        .to_lowercase()
         .replace("nullable(", "")
         .replace("lowcardinality(", "")
         .replace(')', "")
@@ -235,11 +235,20 @@ mod tests {
 
     #[test]
     fn test_from_str_basic() {
-        assert_eq!(SchemaType::from_str("integer").unwrap(), SchemaType::Integer);
+        assert_eq!(
+            SchemaType::from_str("integer").unwrap(),
+            SchemaType::Integer
+        );
         assert_eq!(SchemaType::from_str("float").unwrap(), SchemaType::Float);
         assert_eq!(SchemaType::from_str("string").unwrap(), SchemaType::String);
-        assert_eq!(SchemaType::from_str("boolean").unwrap(), SchemaType::Boolean);
-        assert_eq!(SchemaType::from_str("datetime").unwrap(), SchemaType::DateTime);
+        assert_eq!(
+            SchemaType::from_str("boolean").unwrap(),
+            SchemaType::Boolean
+        );
+        assert_eq!(
+            SchemaType::from_str("datetime").unwrap(),
+            SchemaType::DateTime
+        );
         assert_eq!(SchemaType::from_str("date").unwrap(), SchemaType::Date);
         assert_eq!(SchemaType::from_str("uuid").unwrap(), SchemaType::Uuid);
     }
@@ -249,25 +258,34 @@ mod tests {
         // Integer aliases
         assert_eq!(SchemaType::from_str("int").unwrap(), SchemaType::Integer);
         assert_eq!(SchemaType::from_str("long").unwrap(), SchemaType::Integer);
-        
+
         // Float aliases
         assert_eq!(SchemaType::from_str("double").unwrap(), SchemaType::Float);
         assert_eq!(SchemaType::from_str("decimal").unwrap(), SchemaType::Float);
-        
+
         // String aliases
         assert_eq!(SchemaType::from_str("text").unwrap(), SchemaType::String);
-        
+
         // Boolean aliases
         assert_eq!(SchemaType::from_str("bool").unwrap(), SchemaType::Boolean);
-        
+
         // DateTime aliases
-        assert_eq!(SchemaType::from_str("timestamp").unwrap(), SchemaType::DateTime);
+        assert_eq!(
+            SchemaType::from_str("timestamp").unwrap(),
+            SchemaType::DateTime
+        );
     }
 
     #[test]
     fn test_from_str_case_insensitive() {
-        assert_eq!(SchemaType::from_str("INTEGER").unwrap(), SchemaType::Integer);
-        assert_eq!(SchemaType::from_str("Integer").unwrap(), SchemaType::Integer);
+        assert_eq!(
+            SchemaType::from_str("INTEGER").unwrap(),
+            SchemaType::Integer
+        );
+        assert_eq!(
+            SchemaType::from_str("Integer").unwrap(),
+            SchemaType::Integer
+        );
         assert_eq!(SchemaType::from_str("INT").unwrap(), SchemaType::Integer);
         assert_eq!(SchemaType::from_str("String").unwrap(), SchemaType::String);
         assert_eq!(SchemaType::from_str("FLOAT").unwrap(), SchemaType::Float);
@@ -275,8 +293,14 @@ mod tests {
 
     #[test]
     fn test_from_str_whitespace() {
-        assert_eq!(SchemaType::from_str(" integer ").unwrap(), SchemaType::Integer);
-        assert_eq!(SchemaType::from_str("  string  ").unwrap(), SchemaType::String);
+        assert_eq!(
+            SchemaType::from_str(" integer ").unwrap(),
+            SchemaType::Integer
+        );
+        assert_eq!(
+            SchemaType::from_str("  string  ").unwrap(),
+            SchemaType::String
+        );
     }
 
     #[test]
@@ -289,10 +313,16 @@ mod tests {
     #[test]
     fn test_to_sql_literal_integer() {
         let t = SchemaType::Integer;
-        assert_eq!(t.to_sql_literal("123", SqlDialect::ClickHouse).unwrap(), "123");
+        assert_eq!(
+            t.to_sql_literal("123", SqlDialect::ClickHouse).unwrap(),
+            "123"
+        );
         assert_eq!(t.to_sql_literal("0", SqlDialect::ClickHouse).unwrap(), "0");
-        assert_eq!(t.to_sql_literal("-456", SqlDialect::ClickHouse).unwrap(), "-456");
-        
+        assert_eq!(
+            t.to_sql_literal("-456", SqlDialect::ClickHouse).unwrap(),
+            "-456"
+        );
+
         // Invalid integers
         assert!(t.to_sql_literal("abc", SqlDialect::ClickHouse).is_err());
         assert!(t.to_sql_literal("12.34", SqlDialect::ClickHouse).is_err());
@@ -301,10 +331,19 @@ mod tests {
     #[test]
     fn test_to_sql_literal_float() {
         let t = SchemaType::Float;
-        assert_eq!(t.to_sql_literal("123.45", SqlDialect::ClickHouse).unwrap(), "123.45");
-        assert_eq!(t.to_sql_literal("0.0", SqlDialect::ClickHouse).unwrap(), "0");
-        assert_eq!(t.to_sql_literal("-3.14", SqlDialect::ClickHouse).unwrap(), "-3.14");
-        
+        assert_eq!(
+            t.to_sql_literal("123.45", SqlDialect::ClickHouse).unwrap(),
+            "123.45"
+        );
+        assert_eq!(
+            t.to_sql_literal("0.0", SqlDialect::ClickHouse).unwrap(),
+            "0"
+        );
+        assert_eq!(
+            t.to_sql_literal("-3.14", SqlDialect::ClickHouse).unwrap(),
+            "-3.14"
+        );
+
         // Invalid floats
         assert!(t.to_sql_literal("abc", SqlDialect::ClickHouse).is_err());
     }
@@ -312,11 +351,22 @@ mod tests {
     #[test]
     fn test_to_sql_literal_string() {
         let t = SchemaType::String;
-        assert_eq!(t.to_sql_literal("hello", SqlDialect::ClickHouse).unwrap(), "'hello'");
-        assert_eq!(t.to_sql_literal("alice@example.com", SqlDialect::ClickHouse).unwrap(), "'alice@example.com'");
-        
+        assert_eq!(
+            t.to_sql_literal("hello", SqlDialect::ClickHouse).unwrap(),
+            "'hello'"
+        );
+        assert_eq!(
+            t.to_sql_literal("alice@example.com", SqlDialect::ClickHouse)
+                .unwrap(),
+            "'alice@example.com'"
+        );
+
         // SQL injection protection: single quotes are escaped
-        assert_eq!(t.to_sql_literal("O'Reilly", SqlDialect::ClickHouse).unwrap(), "'O''Reilly'");
+        assert_eq!(
+            t.to_sql_literal("O'Reilly", SqlDialect::ClickHouse)
+                .unwrap(),
+            "'O''Reilly'"
+        );
     }
 
     #[test]
@@ -332,21 +382,39 @@ mod tests {
     #[test]
     fn test_to_sql_literal_boolean() {
         let t = SchemaType::Boolean;
-        
+
         // ClickHouse uses 0/1
-        assert_eq!(t.to_sql_literal("true", SqlDialect::ClickHouse).unwrap(), "1");
-        assert_eq!(t.to_sql_literal("false", SqlDialect::ClickHouse).unwrap(), "0");
+        assert_eq!(
+            t.to_sql_literal("true", SqlDialect::ClickHouse).unwrap(),
+            "1"
+        );
+        assert_eq!(
+            t.to_sql_literal("false", SqlDialect::ClickHouse).unwrap(),
+            "0"
+        );
         assert_eq!(t.to_sql_literal("1", SqlDialect::ClickHouse).unwrap(), "1");
         assert_eq!(t.to_sql_literal("0", SqlDialect::ClickHouse).unwrap(), "0");
-        
+
         // PostgreSQL uses TRUE/FALSE
-        assert_eq!(t.to_sql_literal("true", SqlDialect::PostgreSQL).unwrap(), "TRUE");
-        assert_eq!(t.to_sql_literal("false", SqlDialect::PostgreSQL).unwrap(), "FALSE");
-        
+        assert_eq!(
+            t.to_sql_literal("true", SqlDialect::PostgreSQL).unwrap(),
+            "TRUE"
+        );
+        assert_eq!(
+            t.to_sql_literal("false", SqlDialect::PostgreSQL).unwrap(),
+            "FALSE"
+        );
+
         // Case insensitive
-        assert_eq!(t.to_sql_literal("TRUE", SqlDialect::ClickHouse).unwrap(), "1");
-        assert_eq!(t.to_sql_literal("False", SqlDialect::ClickHouse).unwrap(), "0");
-        
+        assert_eq!(
+            t.to_sql_literal("TRUE", SqlDialect::ClickHouse).unwrap(),
+            "1"
+        );
+        assert_eq!(
+            t.to_sql_literal("False", SqlDialect::ClickHouse).unwrap(),
+            "0"
+        );
+
         // Invalid booleans
         assert!(t.to_sql_literal("yes", SqlDialect::ClickHouse).is_err());
         assert!(t.to_sql_literal("2", SqlDialect::ClickHouse).is_err());
@@ -356,7 +424,8 @@ mod tests {
     fn test_to_sql_literal_datetime() {
         let t = SchemaType::DateTime;
         assert_eq!(
-            t.to_sql_literal("2025-01-30 12:34:56", SqlDialect::ClickHouse).unwrap(),
+            t.to_sql_literal("2025-01-30 12:34:56", SqlDialect::ClickHouse)
+                .unwrap(),
             "'2025-01-30 12:34:56'"
         );
     }
@@ -365,7 +434,8 @@ mod tests {
     fn test_to_sql_literal_date() {
         let t = SchemaType::Date;
         assert_eq!(
-            t.to_sql_literal("2025-01-30", SqlDialect::ClickHouse).unwrap(),
+            t.to_sql_literal("2025-01-30", SqlDialect::ClickHouse)
+                .unwrap(),
             "'2025-01-30'"
         );
     }
@@ -410,18 +480,30 @@ mod tests {
     fn test_map_clickhouse_type_nullable() {
         assert_eq!(map_clickhouse_type("Nullable(UInt64)"), SchemaType::Integer);
         assert_eq!(map_clickhouse_type("Nullable(String)"), SchemaType::String);
-        assert_eq!(map_clickhouse_type("Nullable(DateTime)"), SchemaType::DateTime);
+        assert_eq!(
+            map_clickhouse_type("Nullable(DateTime)"),
+            SchemaType::DateTime
+        );
     }
 
     #[test]
     fn test_map_clickhouse_type_lowcardinality() {
-        assert_eq!(map_clickhouse_type("LowCardinality(String)"), SchemaType::String);
-        assert_eq!(map_clickhouse_type("LowCardinality(FixedString(10))"), SchemaType::String);
+        assert_eq!(
+            map_clickhouse_type("LowCardinality(String)"),
+            SchemaType::String
+        );
+        assert_eq!(
+            map_clickhouse_type("LowCardinality(FixedString(10))"),
+            SchemaType::String
+        );
     }
 
     #[test]
     fn test_map_clickhouse_type_nested_wrappers() {
-        assert_eq!(map_clickhouse_type("Nullable(LowCardinality(String))"), SchemaType::String);
+        assert_eq!(
+            map_clickhouse_type("Nullable(LowCardinality(String))"),
+            SchemaType::String
+        );
     }
 
     #[test]

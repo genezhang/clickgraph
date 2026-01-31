@@ -355,8 +355,8 @@ fn encode_properties_map(properties: &HashMap<String, Value>) -> Vec<u8> {
 /// Encode a JSON value to packstream format
 fn encode_json_value(value: &Value) -> Vec<u8> {
     match value {
-        Value::Null => vec![0xC0], // NULL
-        Value::Bool(true) => vec![0xC3], // TRUE
+        Value::Null => vec![0xC0],        // NULL
+        Value::Bool(true) => vec![0xC3],  // TRUE
         Value::Bool(false) => vec![0xC2], // FALSE
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
@@ -451,7 +451,7 @@ mod tests {
         let list = vec!["User".to_string()];
         let encoded = encode_string_list(&list);
         assert_eq!(encoded[0], 0x91); // TINY_LIST with 1 item
-        // Followed by encoded "User" string
+                                      // Followed by encoded "User" string
         assert_eq!(&encoded[1..], &[0x84, b'U', b's', b'e', b'r']);
     }
 

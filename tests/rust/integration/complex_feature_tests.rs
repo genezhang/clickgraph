@@ -56,9 +56,9 @@ fn create_test_schema() -> GraphSchema {
                     "is_active".to_string(),
                     PropertyValue::Column("is_active".to_string()),
                 );
-                props,
-            node_id_types: None
+                props
             },
+            node_id_types: None,
             view_parameters: None,
             engine: None,
             use_final: None,
@@ -109,9 +109,9 @@ fn create_test_schema() -> GraphSchema {
                     "date".to_string(),
                     PropertyValue::Column("post_date".to_string()),
                 );
-                props,
-            node_id_types: None
+                props
             },
+            node_id_types: None,
             view_parameters: None,
             engine: None,
             use_final: None,
@@ -150,9 +150,9 @@ fn create_test_schema() -> GraphSchema {
                     "follow_date".to_string(),
                     PropertyValue::Column("follow_date".to_string()),
                 );
-                props,
-            edge_id_types: None
+                props
             },
+            edge_id_types: None,
             view_parameters: None,
             engine: None,
             use_final: None,
@@ -199,8 +199,8 @@ fn create_test_schema() -> GraphSchema {
             from_node_properties: None,
             to_node_properties: None,
             is_fk_edge: false,
-            constraints: None,,
-            edge_id_types: None
+            constraints: None,
+            edge_id_types: None,
         },
     );
 

@@ -475,20 +475,23 @@ async fn query_handler_inner(
             let planning_start = Instant::now();
 
             // Convert view_parameters from Option<HashMap<String, Value>> to Option<HashMap<String, String>>
-            let view_parameter_values: Option<HashMap<String, String>> = payload.view_parameters.as_ref().map(|params: &HashMap<String, serde_json::Value>| {
-                params
-                    .iter()
-                    .map(|(k, v): (&String, &serde_json::Value)| {
-                        let string_value = match v {
-                            serde_json::Value::String(s) => s.clone(),
-                            serde_json::Value::Number(n) => n.to_string(),
-                            serde_json::Value::Bool(b) => b.to_string(),
-                            _ => v.to_string(),
-                        };
-                        (k.clone(), string_value)
-                    })
-                    .collect()
-            });
+            let view_parameter_values: Option<HashMap<String, String>> = payload
+                .view_parameters
+                .as_ref()
+                .map(|params: &HashMap<String, serde_json::Value>| {
+                    params
+                        .iter()
+                        .map(|(k, v): (&String, &serde_json::Value)| {
+                            let string_value = match v {
+                                serde_json::Value::String(s) => s.clone(),
+                                serde_json::Value::Number(n) => n.to_string(),
+                                serde_json::Value::Bool(b) => b.to_string(),
+                                _ => v.to_string(),
+                            };
+                            (k.clone(), string_value)
+                        })
+                        .collect()
+                });
 
             log::debug!(
                 "Handler: view_parameters from request: {:?}",

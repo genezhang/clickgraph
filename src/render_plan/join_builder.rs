@@ -1569,45 +1569,47 @@ impl JoinBuilder for LogicalPlan {
                     // Only compile constraints for directional edges (bidirectional is complex OR condition)
                     // Use the passed schema parameter instead of accessing GLOBAL_SCHEMAS
                     log::info!("🔍 Using passed schema: {}", schema.database());
-                    
+
                     // Get the first relationship type (for multi-type like [:TYPE1|TYPE2], constraints not supported)
                     if let Some(labels_vec) = &graph_rel.labels {
                         log::info!("🔍 Relationship labels: {:?}", labels_vec);
                         if let Some(rel_type) = labels_vec.first() {
                             log::info!("🔍 Looking up relationship type: {}", rel_type);
                             // Look up relationship schema by type using passed schema
-                            if let Some(rel_schema) =
-                                schema.get_relationships_schema_opt(rel_type)
+                            if let Some(rel_schema) = schema.get_relationships_schema_opt(rel_type)
                             {
-                                log::info!("🔍 Found relationship schema for {}, constraints={:?}", rel_type, rel_schema.constraints);
-                                            // Check if constraints are defined
-                                            if let Some(ref constraint_expr) =
-                                                rel_schema.constraints
-                                            {
-                                                log::info!(
-                                                    "🔍 Found constraint expression: {}",
-                                                    constraint_expr
-                                                );
-                                                // Get node schemas for from/to nodes
-                                                log::info!(
-                                                    "🔍 Node labels: start={:?}, end={:?}",
-                                                    start_label,
-                                                    end_label
-                                                );
-                                                if let (Some(start_label), Some(end_label)) =
-                                                    (&start_label, &end_label)
-                                                {
-                                                    log::info!("🔍 Looking up node schemas: start={}, end={}", start_label, end_label);
-                                                    if let (
-                                                        Some(from_node_schema),
-                                                        Some(to_node_schema),
-                                                    ) = (
-                                                        schema.node_schema_opt(start_label),
-                                                        schema.node_schema_opt(end_label),
-                                                    ) {
-                                                        log::info!("🔍 Found both node schemas, compiling constraint...");
-                                                        // Compile the constraint expression
-                                                        match crate::graph_catalog::constraint_compiler::compile_constraint(
+                                log::info!(
+                                    "🔍 Found relationship schema for {}, constraints={:?}",
+                                    rel_type,
+                                    rel_schema.constraints
+                                );
+                                // Check if constraints are defined
+                                if let Some(ref constraint_expr) = rel_schema.constraints {
+                                    log::info!(
+                                        "🔍 Found constraint expression: {}",
+                                        constraint_expr
+                                    );
+                                    // Get node schemas for from/to nodes
+                                    log::info!(
+                                        "🔍 Node labels: start={:?}, end={:?}",
+                                        start_label,
+                                        end_label
+                                    );
+                                    if let (Some(start_label), Some(end_label)) =
+                                        (&start_label, &end_label)
+                                    {
+                                        log::info!(
+                                            "🔍 Looking up node schemas: start={}, end={}",
+                                            start_label,
+                                            end_label
+                                        );
+                                        if let (Some(from_node_schema), Some(to_node_schema)) = (
+                                            schema.node_schema_opt(start_label),
+                                            schema.node_schema_opt(end_label),
+                                        ) {
+                                            log::info!("🔍 Found both node schemas, compiling constraint...");
+                                            // Compile the constraint expression
+                                            match crate::graph_catalog::constraint_compiler::compile_constraint(
                                                                 constraint_expr,
                                                                 from_node_schema,
                                                                 to_node_schema,
@@ -1638,12 +1640,12 @@ impl JoinBuilder for LogicalPlan {
                                                                     );
                                                                 }
                                                             }
-                                                    }
-                                                }
-                                            }
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
                 }
 
                 joins.push(Join {

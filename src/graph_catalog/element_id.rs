@@ -197,7 +197,7 @@ pub fn parse_node_element_id(element_id: &str) -> Result<(String, Vec<String>), 
 /// assert_eq!(element_id, "BELONGS_TO:tenant_1|user_456->tenant_1|org_789");
 /// ```
 pub fn generate_relationship_element_id(rel_type: &str, from_id: &str, to_id: &str) -> String {
-    format!("{}:{}->{}",rel_type, from_id, to_id)
+    format!("{}:{}->{}", rel_type, from_id, to_id)
 }
 
 /// Parse a Neo4j relationship elementId back into its components.
@@ -300,7 +300,8 @@ mod tests {
 
     #[test]
     fn test_generate_node_element_id_single_uuid() {
-        let element_id = generate_node_element_id("Post", &["550e8400-e29b-41d4-a716-446655440000"]);
+        let element_id =
+            generate_node_element_id("Post", &["550e8400-e29b-41d4-a716-446655440000"]);
         assert_eq!(element_id, "Post:550e8400-e29b-41d4-a716-446655440000");
     }
 
@@ -356,7 +357,10 @@ mod tests {
     fn test_parse_node_element_id_missing_colon() {
         let result = parse_node_element_id("User123");
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ElementIdError::InvalidFormat(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ElementIdError::InvalidFormat(_)
+        ));
     }
 
     #[test]
@@ -403,21 +407,15 @@ mod tests {
 
     #[test]
     fn test_generate_relationship_element_id_strings() {
-        let element_id = generate_relationship_element_id(
-            "AUTHORED",
-            "alice@example.com",
-            "post-uuid-123",
-        );
+        let element_id =
+            generate_relationship_element_id("AUTHORED", "alice@example.com", "post-uuid-123");
         assert_eq!(element_id, "AUTHORED:alice@example.com->post-uuid-123");
     }
 
     #[test]
     fn test_generate_relationship_element_id_composite() {
-        let element_id = generate_relationship_element_id(
-            "BELONGS_TO",
-            "tenant_1|user_456",
-            "tenant_1|org_789",
-        );
+        let element_id =
+            generate_relationship_element_id("BELONGS_TO", "tenant_1|user_456", "tenant_1|org_789");
         assert_eq!(element_id, "BELONGS_TO:tenant_1|user_456->tenant_1|org_789");
     }
 
@@ -452,7 +450,10 @@ mod tests {
     fn test_parse_relationship_element_id_missing_colon() {
         let result = parse_relationship_element_id("FOLLOWS123->456");
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ElementIdError::InvalidFormat(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ElementIdError::InvalidFormat(_)
+        ));
     }
 
     #[test]
@@ -469,7 +470,10 @@ mod tests {
     fn test_parse_relationship_element_id_missing_arrow() {
         let result = parse_relationship_element_id("FOLLOWS:123456");
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ElementIdError::InvalidFormat(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ElementIdError::InvalidFormat(_)
+        ));
     }
 
     #[test]

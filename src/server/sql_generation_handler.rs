@@ -188,7 +188,12 @@ pub async fn sql_generation_handler(
     let is_read = query_type == QueryType::Read;
     let is_call = query_type == QueryType::Call;
 
-    let (ch_query, logical_plan_str, planning_time, sql_gen_time): (String, Option<String>, f64, f64) = if is_call {
+    let (ch_query, logical_plan_str, planning_time, sql_gen_time): (
+        String,
+        Option<String>,
+        f64,
+        f64,
+    ) = if is_call {
         // Handle CALL queries (like PageRank)
         let planning_start = Instant::now();
         let logical_plan = match query_planner::evaluate_call_query(cypher_ast, &graph_schema) {
@@ -269,20 +274,23 @@ pub async fn sql_generation_handler(
         let planning_start = Instant::now();
 
         // Convert view_parameters from Option<HashMap<String, Value>> to Option<HashMap<String, String>>
-        let view_parameter_values: Option<HashMap<String, String>> = payload.view_parameters.as_ref().map(|params: &HashMap<String, serde_json::Value>| {
-            params
-                .iter()
-                .map(|(k, v): (&String, &serde_json::Value)| {
-                    let string_value = match v {
-                        serde_json::Value::String(s) => s.clone(),
-                        serde_json::Value::Number(n) => n.to_string(),
-                        serde_json::Value::Bool(b) => b.to_string(),
-                        _ => v.to_string(),
-                    };
-                    (k.clone(), string_value)
-                })
-                .collect()
-        });
+        let view_parameter_values: Option<HashMap<String, String>> = payload
+            .view_parameters
+            .as_ref()
+            .map(|params: &HashMap<String, serde_json::Value>| {
+                params
+                    .iter()
+                    .map(|(k, v): (&String, &serde_json::Value)| {
+                        let string_value = match v {
+                            serde_json::Value::String(s) => s.clone(),
+                            serde_json::Value::Number(n) => n.to_string(),
+                            serde_json::Value::Bool(b) => b.to_string(),
+                            _ => v.to_string(),
+                        };
+                        (k.clone(), string_value)
+                    })
+                    .collect()
+            });
 
         let (logical_plan, plan_ctx) = match query_planner::evaluate_read_query(
             cypher_ast,

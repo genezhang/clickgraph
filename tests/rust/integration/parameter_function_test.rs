@@ -32,9 +32,9 @@ fn create_test_schema() -> GraphSchema {
                     PropertyValue::Column("name".to_string()),
                 );
                 props.insert("age".to_string(), PropertyValue::Column("age".to_string()));
-                props,
-            node_id_types: None
+                props
             },
+            node_id_types: None,
             view_parameters: None,
             engine: None,
             use_final: None,
@@ -65,9 +65,9 @@ fn create_test_schema() -> GraphSchema {
                     "total".to_string(),
                     PropertyValue::Column("total".to_string()),
                 );
-                props,
-            node_id_types: None
+                props
             },
+            node_id_types: None,
             view_parameters: None,
             engine: None,
             use_final: None,
@@ -102,9 +102,9 @@ fn create_test_schema() -> GraphSchema {
                     "price".to_string(),
                     PropertyValue::Column("price".to_string()),
                 );
-                props,
-            node_id_types: None
+                props
             },
+            node_id_types: None,
             view_parameters: None,
             engine: None,
             use_final: None,
@@ -135,9 +135,9 @@ fn create_test_schema() -> GraphSchema {
                     "name".to_string(),
                     PropertyValue::Column("name".to_string()),
                 );
-                props,
-            node_id_types: None
+                props
             },
+            node_id_types: None,
             view_parameters: None,
             engine: None,
             use_final: None,
@@ -168,9 +168,9 @@ fn create_test_schema() -> GraphSchema {
                     "value".to_string(),
                     PropertyValue::Column("value".to_string()),
                 );
-                props,
-            node_id_types: None
+                props
             },
+            node_id_types: None,
             view_parameters: None,
             engine: None,
             use_final: None,
@@ -201,9 +201,9 @@ fn create_test_schema() -> GraphSchema {
                     "content".to_string(),
                     PropertyValue::Column("content".to_string()),
                 );
-                props,
-            node_id_types: None
+                props
             },
+            node_id_types: None,
             view_parameters: None,
             engine: None,
             use_final: None,

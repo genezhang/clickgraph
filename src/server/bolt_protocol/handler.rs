@@ -124,11 +124,7 @@ impl BoltHandler {
         // DEBUG: Log HELLO message structure
         log::info!("🔍 HELLO message has {} fields", message.fields.len());
         for (i, field) in message.fields.iter().enumerate() {
-            log::info!(
-                "  HELLO Field[{}]: {}",
-                i,
-                bolt_value_to_string(field)
-            );
+            log::info!("  HELLO Field[{}]: {}", i, bolt_value_to_string(field));
         }
 
         if is_bolt_51_plus {
@@ -138,7 +134,7 @@ impl BoltHandler {
             // Extract database from HELLO extra field (routing context)
             let database = message.extract_database();
             log::info!("📊 Extracted database from HELLO: {:?}", database);
-            
+
             // Store database selection in context for later use in LOGON
             if let Some(ref db_name) = database {
                 let mut context = lock_context!(self.context);
@@ -178,11 +174,7 @@ impl BoltHandler {
             // Debug: log HELLO message fields
             log::debug!("HELLO message has {} fields", message.fields.len());
             for (i, field) in message.fields.iter().enumerate() {
-                log::debug!(
-                    "  Field[{}]: {}",
-                    i,
-                    bolt_value_to_string(field)
-                );
+                log::debug!("  Field[{}]: {}", i, bolt_value_to_string(field));
             }
 
             let auth_token = message.extract_auth_token().unwrap_or_default();
@@ -277,11 +269,7 @@ impl BoltHandler {
         // Debug: log LOGON message fields
         log::info!("🔍 LOGON message has {} fields", message.fields.len());
         for (i, field) in message.fields.iter().enumerate() {
-            log::info!(
-                "  LOGON Field[{}]: {}",
-                i,
-                bolt_value_to_string(field)
-            );
+            log::info!("  LOGON Field[{}]: {}", i, bolt_value_to_string(field));
         }
 
         // Extract authentication token from LOGON message
@@ -483,11 +471,7 @@ impl BoltHandler {
             // Debug: log RUN message fields
             log::info!("🔍 RUN message has {} fields", message.fields.len());
             for (i, field) in message.fields.iter().enumerate() {
-                log::info!(
-                    "  Field[{}]: {}",
-                    i,
-                    bolt_value_to_string(field)
-                );
+                log::info!("  Field[{}]: {}", i, bolt_value_to_string(field));
             }
 
             // Check if RUN message specifies a database (Bolt 4.x)
@@ -563,15 +547,16 @@ impl BoltHandler {
                 let error_code = query_error.error_code().to_string();
                 let error_message = query_error.to_string();
                 log::error!("Query execution failed: {}", query_error);
-                log::error!("Sending FAILURE: code='{}', message='{}'", error_code, error_message);
-                
+                log::error!(
+                    "Sending FAILURE: code='{}', message='{}'",
+                    error_code,
+                    error_message
+                );
+
                 // Don't update state - let client send RESET to recover
                 // Setting to Failed would close the connection
-                
-                Ok(vec![BoltMessage::failure(
-                    error_code,
-                    error_message,
-                )])
+
+                Ok(vec![BoltMessage::failure(error_code, error_message)])
             }
         }
     }
@@ -662,9 +647,12 @@ impl BoltHandler {
         // Extract database from BEGIN message extra field (Bolt 4.0+)
         log::debug!("BEGIN message has {} fields", message.fields.len());
         if !message.fields.is_empty() {
-            log::debug!("BEGIN Field[0]: {}", bolt_value_to_string(&message.fields[0]));
+            log::debug!(
+                "BEGIN Field[0]: {}",
+                bolt_value_to_string(&message.fields[0])
+            );
         }
-        
+
         if let Some(db) = message.extract_begin_database() {
             log::info!("✅ BEGIN message contains database: {}", db);
             let mut context = lock_context!(self.context);
@@ -739,11 +727,12 @@ impl BoltHandler {
     /// where extra can contain {"db": "database_name"}
     async fn handle_route(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         log::info!("ROUTE message received");
-        
+
         // Extract database from ROUTE message (field 2 - extra metadata)
         let database = if message.fields.len() >= 3 {
             if let BoltValue::Json(Value::Object(extra_map)) = &message.fields[2] {
-                extra_map.get("db")
+                extra_map
+                    .get("db")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
             } else {
@@ -752,10 +741,10 @@ impl BoltHandler {
         } else {
             None
         };
-        
+
         let db_name = database.unwrap_or_else(|| "default".to_string());
         log::info!("ROUTE request for database: {}", db_name);
-        
+
         // Verify schema exists
         let schema_exists = if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
             if let Ok(schemas) = schemas_lock.try_read() {
@@ -766,7 +755,7 @@ impl BoltHandler {
         } else {
             false
         };
-        
+
         if !schema_exists {
             log::warn!("ROUTE requested for non-existent database: {}", db_name);
             return Ok(vec![BoltMessage::failure(
@@ -774,15 +763,15 @@ impl BoltHandler {
                 format!("Database '{}' not found", db_name),
             )]);
         }
-        
+
         // Build routing table response
         // For ClickGraph (single server, no cluster), we return ourselves for all roles
         let server_address = format!("{}:{}", self.config.host, self.config.port);
-        
+
         let mut routing_table = serde_json::Map::new();
         routing_table.insert("ttl".to_string(), Value::Number(300.into())); // 5 minutes TTL
         routing_table.insert("db".to_string(), Value::String(db_name));
-        
+
         // Servers list: we are WRITE, READ, and ROUTE all in one
         let servers = serde_json::json!([
             {
@@ -790,7 +779,7 @@ impl BoltHandler {
                 "addresses": [server_address.clone()]
             },
             {
-                "role": "READ", 
+                "role": "READ",
                 "addresses": [server_address.clone()]
             },
             {
@@ -798,15 +787,22 @@ impl BoltHandler {
                 "addresses": [server_address]
             }
         ]);
-        
+
         routing_table.insert("servers".to_string(), servers);
-        
+
         // Return SUCCESS with routing table
         let mut metadata = HashMap::new();
         metadata.insert("rt".to_string(), Value::Object(routing_table));
-        
-        log::info!("✅ Returning routing table for database: {}", metadata.get("rt").and_then(|v| v.get("db")).and_then(|v| v.as_str()).unwrap_or("unknown"));
-        
+
+        log::info!(
+            "✅ Returning routing table for database: {}",
+            metadata
+                .get("rt")
+                .and_then(|v| v.get("db"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+        );
+
         Ok(vec![BoltMessage::success(metadata)])
     }
 
@@ -979,7 +975,8 @@ impl BoltHandler {
                             // Extract field values in consistent order
                             let mut row_fields = Vec::new();
                             for field_name in &field_names {
-                                row_fields.push(obj.get(field_name).cloned().unwrap_or(Value::Null));
+                                row_fields
+                                    .push(obj.get(field_name).cloned().unwrap_or(Value::Null));
                             }
                             rows.push(row_fields);
                         }
@@ -1004,9 +1001,12 @@ impl BoltHandler {
 
         // Transform results if we have graph objects (nodes, relationships, paths)
         if has_graph_objects {
-            log::info!("Transforming graph objects. Original field_names: {:?}, metadata items: {}", 
-                field_names, return_metadata.len());
-            
+            log::info!(
+                "Transforming graph objects. Original field_names: {:?}, metadata items: {}",
+                field_names,
+                return_metadata.len()
+            );
+
             let mut transformed_rows: Vec<Vec<BoltValue>> = Vec::new();
             for row in &rows {
                 // Convert row Vec back to HashMap for transformation
@@ -1023,27 +1023,32 @@ impl BoltHandler {
                     &graph_schema,
                 ) {
                     Ok(transformed) => {
-                        log::debug!("Transformed row: {} fields → {} items", field_names.len(), transformed.len());
+                        log::debug!(
+                            "Transformed row: {} fields → {} items",
+                            field_names.len(),
+                            transformed.len()
+                        );
                         transformed_rows.push(transformed);
                     }
                     Err(e) => {
                         log::warn!("Failed to transform row to graph objects: {}", e);
                         // Fall back to original row wrapped in BoltValue::Json on error
-                        let fallback: Vec<BoltValue> = row.iter().map(|v| BoltValue::Json(v.clone())).collect();
+                        let fallback: Vec<BoltValue> =
+                            row.iter().map(|v| BoltValue::Json(v.clone())).collect();
                         transformed_rows.push(fallback);
                     }
                 }
             }
-            
+
             // Cache the transformed results
             self.cached_results = Some(transformed_rows);
-            
+
             // Update field names to match transformed structure
             field_names = return_metadata
                 .iter()
                 .map(|m| m.field_name.clone())
                 .collect();
-            
+
             log::info!("After transformation: field_names: {:?}", field_names);
         } else {
             // No graph objects - wrap rows in BoltValue::Json and cache

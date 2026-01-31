@@ -113,7 +113,9 @@ impl BoltMessage {
         ];
 
         if let Some(extra_map) = extra {
-            fields.push(BoltValue::Json(Value::Object(serde_json::Map::from_iter(extra_map))));
+            fields.push(BoltValue::Json(Value::Object(serde_json::Map::from_iter(
+                extra_map,
+            ))));
         }
 
         BoltMessage::new(signatures::RUN, fields)
@@ -128,7 +130,10 @@ impl BoltMessage {
             extra.insert("qid".to_string(), Value::Number(qid.into()));
         }
 
-        BoltMessage::new(signatures::PULL, vec![BoltValue::Json(Value::Object(extra))])
+        BoltMessage::new(
+            signatures::PULL,
+            vec![BoltValue::Json(Value::Object(extra))],
+        )
     }
 
     /// Create a DISCARD message
@@ -140,13 +145,18 @@ impl BoltMessage {
             extra.insert("qid".to_string(), Value::Number(qid.into()));
         }
 
-        BoltMessage::new(signatures::DISCARD, vec![BoltValue::Json(Value::Object(extra))])
+        BoltMessage::new(
+            signatures::DISCARD,
+            vec![BoltValue::Json(Value::Object(extra))],
+        )
     }
 
     /// Create a BEGIN message
     pub fn begin(extra: Option<HashMap<String, Value>>) -> Self {
         let fields = if let Some(extra_map) = extra {
-            vec![BoltValue::Json(Value::Object(serde_json::Map::from_iter(extra_map)))]
+            vec![BoltValue::Json(Value::Object(serde_json::Map::from_iter(
+                extra_map,
+            )))]
         } else {
             vec![BoltValue::Json(Value::Object(serde_json::Map::new()))]
         };
@@ -168,7 +178,9 @@ impl BoltMessage {
     pub fn success(metadata: HashMap<String, Value>) -> Self {
         BoltMessage::new(
             signatures::SUCCESS,
-            vec![BoltValue::Json(Value::Object(serde_json::Map::from_iter(metadata)))],
+            vec![BoltValue::Json(Value::Object(serde_json::Map::from_iter(
+                metadata,
+            )))],
         )
     }
 
@@ -177,12 +189,12 @@ impl BoltMessage {
     pub fn record(fields: Vec<BoltValue>) -> Self {
         // RECORD message has structure: RECORD [field1, field2, ...]
         // where the array is a single packstream LIST field
-        
+
         // We'll create a special marker to indicate this is a record array
         // The serializer will handle encoding it as a proper packstream LIST
         BoltMessage {
             signature: signatures::RECORD,
-            fields,  // Store fields directly - serializer will wrap in LIST
+            fields, // Store fields directly - serializer will wrap in LIST
         }
     }
 
@@ -195,7 +207,9 @@ impl BoltMessage {
 
         BoltMessage::new(
             signatures::FAILURE,
-            vec![BoltValue::Json(Value::Object(serde_json::Map::from_iter(metadata)))],
+            vec![BoltValue::Json(Value::Object(serde_json::Map::from_iter(
+                metadata,
+            )))],
         )
     }
 

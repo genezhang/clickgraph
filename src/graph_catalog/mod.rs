@@ -2,6 +2,7 @@ pub mod column_info;
 pub mod composite_key_utils;
 pub mod config;
 pub mod constraint_compiler;
+pub mod element_id;
 pub mod engine_detection;
 pub mod errors;
 pub mod expression_parser;
@@ -10,7 +11,6 @@ pub mod graph_schema;
 pub mod node_classification;
 pub mod pattern_schema;
 pub mod schema_types;
-pub mod element_id;
 pub mod schema_validator;
 
 #[cfg(test)]
