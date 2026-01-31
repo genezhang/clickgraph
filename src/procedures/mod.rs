@@ -34,6 +34,9 @@ pub mod db_relationship_types;
 pub mod dbms_components;
 pub mod executor;
 
+// Re-export key functions for easier access
+pub use executor::{execute_procedure_union, is_procedure_union_query};
+
 use crate::graph_catalog::graph_schema::GraphSchema;
 use std::collections::HashMap;
 use std::sync::Arc;
