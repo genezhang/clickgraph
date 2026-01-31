@@ -108,6 +108,8 @@ pub struct CteGenerationResult {
     pub columns: Vec<CteColumnMetadata>,
     /// VLP endpoint info (for conversion to Cte)
     pub vlp_endpoint: Option<VlpEndpointInfo>,
+    /// Filters that should be applied to outer SELECT (e.g., end_node_filters for denormalized VLP)
+    pub outer_where_filters: Option<String>,
 }
 
 impl CteGenerationResult {
@@ -385,7 +387,7 @@ impl CteManager {
                 TraditionalCteStrategy::new(pattern_ctx)?,
             )),
             JoinStrategy::SingleTableScan { .. } => Ok(CteStrategy::Denormalized(
-                DenormalizedCteStrategy::new(pattern_ctx)?,
+                DenormalizedCteStrategy::new(pattern_ctx, self.schema.clone())?,
             )),
             JoinStrategy::FkEdgeJoin { .. } => {
                 // For FK-edge, we need to determine the ID column from the node schema
@@ -532,6 +534,7 @@ pub struct DenormalizedCteStrategy {
     table: String,
     from_col: String,
     to_col: String,
+    schema: Arc<GraphSchema>,
 }
 pub struct FkEdgeCteStrategy {
     pattern_ctx: PatternSchemaContext,
@@ -630,6 +633,7 @@ impl FkEdgeCteStrategy {
             from_alias: VLP_CTE_FROM_ALIAS.to_string(),
             columns,
             vlp_endpoint: Some(vlp_endpoint),
+            outer_where_filters: None,
         })
     }
 
@@ -906,6 +910,7 @@ impl TraditionalCteStrategy {
             from_alias: VLP_CTE_FROM_ALIAS.to_string(),
             columns,
             vlp_endpoint: Some(vlp_endpoint),
+            outer_where_filters: None,
         })
     }
 
@@ -1218,8 +1223,29 @@ impl TraditionalCteStrategy {
     }
 }
 
+// ===== DenormalizedCteStrategy =====
+/// Strategy for denormalized schemas where node properties are embedded in edge table
+///
+/// **ARCHITECTURE NOTE**: This implementation follows the exact pattern from the OLD
+/// VariableLengthCteGenerator (lines 908-1095 in variable_length_cte.rs).
+///
+/// **CRITICAL PATTERN**: For denormalized VLP with end_node_filters:
+/// - Inner CTE: Apply start_node_filters only, traverse all paths
+/// - Outer CTE: Wrap inner and apply end_node_filters after traversal
+///
+/// **WHY**: Denormalized schemas have both nodes in the SAME ROW. Applying both start
+/// and end filters in the base case would only find direct paths (e.g., LAX→ATL).
+/// Multi-hop paths (e.g., LAX→ORD→ATL) require traversing from LAX first, then
+/// filtering for ATL in the final results.
+///
+/// **REFACTORING LESSON**: When refactoring, copy the logic EXACTLY from the working
+/// implementation. Don't reimplement patterns from scratch - you'll miss critical details
+/// like the wrapper CTE pattern that took 2+ hours to rediscover.
 impl DenormalizedCteStrategy {
-    pub fn new(pattern_ctx: &PatternSchemaContext) -> Result<Self, CteError> {
+    pub fn new(
+        pattern_ctx: &PatternSchemaContext,
+        schema: Arc<GraphSchema>,
+    ) -> Result<Self, CteError> {
         // Validate that this is a denormalized schema
         match &pattern_ctx.join_strategy {
             JoinStrategy::SingleTableScan { table } => Ok(Self {
@@ -1227,6 +1253,7 @@ impl DenormalizedCteStrategy {
                 table: table.clone(),
                 from_col: Self::get_from_column(pattern_ctx)?,
                 to_col: Self::get_to_column(pattern_ctx)?,
+                schema,
             }),
             _ => Err(CteError::InvalidStrategy(
                 "DenormalizedCteStrategy requires JoinStrategy::SingleTableScan".into(),
@@ -1260,9 +1287,8 @@ impl DenormalizedCteStrategy {
     ) -> Result<CteGenerationResult, CteError> {
         // Generate CTE name
         let cte_name = format!(
-            "vlp_{}_{}_{}",
+            "vlp_{}_{}",
             self.pattern_ctx.left_node_alias,
-            self.pattern_ctx.right_node_alias,
             context.spec.effective_min_hops()
         );
 
@@ -1292,21 +1318,31 @@ impl DenormalizedCteStrategy {
             vlp_position: Some(VlpColumnPosition::End),
         });
 
-        // Add property columns - for denormalized, properties are selected as-is
+        // Add property columns - for denormalized, properties need start_/end_ prefixes
         for prop in properties {
-            // For denormalized schema, the CTE column name is the DB column name (e.g., "OriginCityName")
-            // which matches how properties are selected in add_property_selections
+            // Determine prefix based on which endpoint this property belongs to
+            let position = if prop.cypher_alias == self.pattern_ctx.left_node_alias {
+                VlpColumnPosition::Start
+            } else {
+                VlpColumnPosition::End
+            };
+            let prefix = match position {
+                VlpColumnPosition::Start => "start_",
+                VlpColumnPosition::End => "end_",
+                _ => "",
+            };
+
+            // 🔧 FIX: For denormalized VLP, CTE columns must have start_/end_ prefixes
+            // This allows the VLP rewrite to correctly map origin.city → t.start_OriginCityName
+            let cte_column_name = format!("{}{}", prefix, prop.column_name);
+
             columns.push(CteColumnMetadata {
-                cte_column_name: prop.column_name.clone(), // e.g., "OriginCityName"
-                cypher_alias: prop.cypher_alias.clone(),   // e.g., "origin"
-                cypher_property: prop.alias.clone(),       // e.g., "city"
-                db_column: prop.column_name.clone(),
+                cte_column_name,                         // e.g., "start_OriginCityName"
+                cypher_alias: prop.cypher_alias.clone(), // e.g., "origin"
+                cypher_property: prop.alias.clone(),     // e.g., "city"
+                db_column: prop.column_name.clone(),     // e.g., "OriginCityName"
                 is_id_column: false,
-                vlp_position: if prop.cypher_alias == self.pattern_ctx.left_node_alias {
-                    Some(VlpColumnPosition::Start)
-                } else {
-                    Some(VlpColumnPosition::End)
-                },
+                vlp_position: Some(position),
             });
         }
 
@@ -1331,6 +1367,8 @@ impl DenormalizedCteStrategy {
             from_alias: VLP_CTE_FROM_ALIAS.to_string(),
             columns,
             vlp_endpoint: Some(vlp_endpoint),
+            // ⚠️ CRITICAL: For denormalized VLP, end_node_filters must be applied in outer SELECT
+            outer_where_filters: filters.end_sql.clone(),
         })
     }
 
@@ -1347,6 +1385,53 @@ impl DenormalizedCteStrategy {
         }
     }
 
+    /// Map logical property name to physical column name in edge table
+    /// For denormalized nodes, properties are stored in from_node_properties and to_node_properties
+    fn map_denormalized_property(
+        &self,
+        logical_prop: &str,
+        is_from_node: bool,
+    ) -> Result<String, CteError> {
+        // Find the node schema that points to our relationship table
+        let node_schemas = self.schema.all_node_schemas();
+        let rel_table_name = self.table.rsplit('.').next().unwrap_or(&self.table);
+
+        let node_schema = node_schemas
+            .values()
+            .find(|n| {
+                let schema_table = n.table_name.rsplit('.').next().unwrap_or(&n.table_name);
+                schema_table == rel_table_name
+            })
+            .ok_or_else(|| {
+                CteError::SchemaValidationError(format!(
+                    "No node schema found for table '{}'",
+                    rel_table_name
+                ))
+            })?;
+
+        // Get the appropriate property mapping (from_properties or to_properties)
+        let property_map = if is_from_node {
+            node_schema.from_properties.as_ref()
+        } else {
+            node_schema.to_properties.as_ref()
+        };
+
+        if let Some(map) = property_map {
+            // Find the physical column for the logical property
+            if let Some(physical_col) = map.get(logical_prop) {
+                return Ok(physical_col.clone());
+            }
+        }
+
+        // Property not found in mapping
+        Err(CteError::SchemaValidationError(format!(
+            "Property '{}' not found in {} mappings for table '{}'",
+            logical_prop,
+            if is_from_node { "from_node" } else { "to_node" },
+            rel_table_name
+        )))
+    }
+
     /// Generate the complete recursive CTE SQL for denormalized single table
     fn generate_recursive_cte_sql(
         &self,
@@ -1357,6 +1442,24 @@ impl DenormalizedCteStrategy {
         let min_hops = context.spec.effective_min_hops();
         let max_hops = context.spec.max_hops;
 
+        let cte_name = format!(
+            "vlp_{}_{}",
+            self.pattern_ctx.left_node_alias, self.pattern_ctx.right_node_alias
+        );
+
+        // ⚠️ CRITICAL FIX: For denormalized VLP with end_node_filters, wrap with outer CTE
+        // Following OLD generator pattern (line 908-1070 in variable_length_cte.rs)
+        //
+        // WHY: Denormalized schemas have start/end nodes in SAME ROW. Applying both filters
+        // in base case would only find direct connections. Instead:
+        // 1. Inner CTE: Apply start filter, traverse all paths
+        // 2. Outer CTE: Filter by end node after traversal completes
+        let (recursive_cte_name, needs_wrapper) = if filters.end_sql.is_some() {
+            (format!("{}_inner", cte_name), true)
+        } else {
+            (cte_name.clone(), false)
+        };
+
         // Generate base case (1-hop)
         let base_case = self.generate_base_case_sql(context, properties, filters)?;
 
@@ -1365,22 +1468,53 @@ impl DenormalizedCteStrategy {
         let recursive_case = if needs_recursion {
             format!(
                 "\n    UNION ALL\n{}",
-                self.generate_recursive_case_sql(context, properties, filters)?
+                self.generate_recursive_case_sql(
+                    context,
+                    properties,
+                    filters,
+                    &recursive_cte_name
+                )?
             )
         } else {
             String::new()
         };
 
-        // Build complete CTE
-        let cte_name = format!(
-            "vlp_{}_{}_{}",
-            self.pattern_ctx.left_node_alias, self.pattern_ctx.right_node_alias, min_hops
-        );
+        if needs_wrapper {
+            let end_filter = filters.end_sql.as_ref().unwrap();
 
-        Ok(format!(
-            "WITH RECURSIVE {} AS (\n{}{}\n) SELECT * FROM {}",
-            cte_name, base_case, recursive_case, cte_name
-        ))
+            // ⚠️ FIX: Rewrite filter for CTE columns
+            // filters.end_sql uses the relationship table alias (e.g., "f.Dest = 'ATL'")
+            // But in the outer CTE, we select from the inner CTE which has columns like "end_Dest"
+            // Replace: "f.COLUMN" → "end_COLUMN" (where f is the rel_alias)
+            let rewritten_filter =
+                end_filter.replace(&format!("{}.", self.pattern_ctx.rel_alias), "end_");
+
+            let inner_cte = format!(
+                "{} AS (\n{}{}\n)",
+                recursive_cte_name, base_case, recursive_case
+            );
+
+            // Build WHERE clause for outer CTE
+            let mut where_conditions = vec![rewritten_filter];
+            if min_hops > 1 {
+                where_conditions.push(format!("hop_count >= {}", min_hops));
+            }
+            let where_clause = where_conditions.join(" AND ");
+
+            // Outer CTE selects from inner and applies end filter
+            // Match format of other strategies: WITH RECURSIVE ... SELECT *
+            Ok(format!(
+                "WITH RECURSIVE {},\n{} AS (\n    SELECT * FROM {} WHERE {}\n) SELECT * FROM {}",
+                inner_cte, cte_name, recursive_cte_name, where_clause, cte_name
+            ))
+        } else {
+            // No end filter: simple single CTE
+            // Match format of other strategies: WITH RECURSIVE ... SELECT *
+            Ok(format!(
+                "WITH RECURSIVE {} AS (\n{}{}\n) SELECT * FROM {}",
+                recursive_cte_name, base_case, recursive_case, recursive_cte_name
+            ))
+        }
     }
 
     /// Generate the base case SQL (1-hop traversal) for denormalized schema
@@ -1435,14 +1569,15 @@ impl DenormalizedCteStrategy {
         context: &CteGenerationContext,
         properties: &[NodeProperty],
         filters: &CategorizedFilters,
+        recursive_cte_name: &str,
     ) -> Result<String, CteError> {
         // Build SELECT clause for recursive case
         let mut select_items = vec![
             format!("next.{} as start_id", self.from_col),
             format!("next.{} as end_id", self.to_col),
-            "prev.hop_count + 1".to_string(),
-            "prev.path_edges || next.start_id".to_string(), // Extend edge path
-            "prev.path_nodes || next.end_id".to_string(),   // Extend node path
+            "vp.hop_count + 1".to_string(),
+            format!("arrayConcat(vp.path_edges, [next.{}])", self.from_col), // Extend edge path array
+            format!("arrayConcat(vp.path_nodes, [next.{}])", self.to_col), // Extend node path array
         ];
 
         // Add properties from the next table occurrence
@@ -1450,16 +1585,18 @@ impl DenormalizedCteStrategy {
 
         let select_clause = select_items.join(",\n        ");
 
-        // Build FROM clause with self-join
+        // Build FROM clause with self-join - use the passed recursive_cte_name
         let from_clause = format!(
-            "    FROM {} prev\n    JOIN {} next ON next.{} = prev.end_id",
-            self.pattern_ctx.rel_alias, self.table, self.from_col
+            "    FROM {} vp\n    JOIN {} next ON next.{} = vp.end_id",
+            recursive_cte_name, self.table, self.from_col
         );
 
         // Build WHERE clause for recursion
         let mut where_conditions = vec![
-            format!("prev.hop_count < {}", context.spec.max_hops.unwrap_or(10)),
-            format!("next.{} NOT IN prev.path_nodes", self.to_col), // Cycle prevention
+            format!("vp.hop_count < {}", context.spec.max_hops.unwrap_or(10)),
+            // ⚠️ ClickHouse limitation: NOT IN with array doesn't work in recursive CTEs
+            // Use NOT has(array, element) instead for cycle detection
+            format!("NOT has(vp.path_nodes, next.{})", self.to_col), // Cycle prevention
         ];
 
         // Add additional filters if present
@@ -1482,11 +1619,18 @@ impl DenormalizedCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
-            // All properties come from the single table
-            select_items.push(format!(
-                "{}.{} as {}",
-                self.pattern_ctx.rel_alias, prop.column_name, prop.alias
-            ));
+            // Determine if this property belongs to start (from) or end (to) node
+            let is_from_node = prop.cypher_alias == self.pattern_ctx.left_node_alias;
+            let prefix = if is_from_node { "start_" } else { "end_" };
+
+            // Map logical property to physical column in edge table
+            let physical_col = self.map_denormalized_property(&prop.column_name, is_from_node)?;
+
+            let sql = format!(
+                "{}.{} as {}{}",
+                self.pattern_ctx.rel_alias, physical_col, prefix, physical_col
+            );
+            select_items.push(sql);
         }
         Ok(())
     }
@@ -1498,8 +1642,23 @@ impl DenormalizedCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
-            // All properties come from the next occurrence of the single table
-            select_items.push(format!("next.{} as {}", prop.column_name, prop.alias));
+            // Determine if this property belongs to start (from) or end (to) node
+            let is_from_node = prop.cypher_alias == self.pattern_ctx.left_node_alias;
+            let prefix = if is_from_node { "start_" } else { "end_" };
+
+            // Map logical property to physical column in edge table
+            let physical_col = self.map_denormalized_property(&prop.column_name, is_from_node)?;
+
+            if is_from_node {
+                // Start node property comes from previous iteration (already has prefix)
+                select_items.push(format!(
+                    "vp.start_{} as start_{}",
+                    physical_col, physical_col
+                ));
+            } else {
+                // End node property comes from the new edge being joined
+                select_items.push(format!("next.{} as end_{}", physical_col, physical_col));
+            }
         }
         Ok(())
     }
@@ -1512,6 +1671,18 @@ impl DenormalizedCteStrategy {
     ) -> Result<String, CteError> {
         let mut conditions = Vec::new();
 
+        // ⚠️ CRITICAL FIX: For VLP in denormalized schemas, end_node_filters must NOT be applied in base case!
+        //
+        // WHY: In denormalized schema, start and end nodes are in SAME ROW (same table).
+        // Base case with both filters: WHERE f.Origin = 'LAX' AND f.Dest = 'ATL'
+        //   → Only finds direct LAX→ATL flights (wrong!)
+        //
+        // Correct approach:
+        //   Base case: WHERE f.Origin = 'LAX' (start from LAX)
+        //   Outer query: WHERE t.end_Dest = 'ATL' (filter final destination)
+        //
+        // This matches Neo4j behavior: VLP first explores from start, then filters end.
+
         // Add start node filters - prefer pre-rendered SQL
         if let Some(start_sql) = &filters.start_sql {
             conditions.push(start_sql.clone());
@@ -1519,12 +1690,8 @@ impl DenormalizedCteStrategy {
             conditions.push(start_filters.to_sql());
         }
 
-        // Add end node filters - prefer pre-rendered SQL
-        if let Some(end_sql) = &filters.end_sql {
-            conditions.push(end_sql.clone());
-        } else if let Some(end_filters) = &filters.end_node_filters {
-            conditions.push(end_filters.to_sql());
-        }
+        // ❌ DO NOT add end_node_filters here for denormalized schemas!
+        // They will be applied in the outer SELECT after path traversal completes.
 
         // Add relationship filters - prefer pre-rendered SQL
         if let Some(rel_sql) = &filters.relationship_sql {
@@ -1610,6 +1777,7 @@ impl MixedAccessCteStrategy {
             from_alias: VLP_CTE_FROM_ALIAS.to_string(),
             columns,
             vlp_endpoint: Some(vlp_endpoint),
+            outer_where_filters: None,
         })
     }
 
@@ -2024,6 +2192,7 @@ impl EdgeToEdgeCteStrategy {
             from_alias: VLP_CTE_FROM_ALIAS.to_string(),
             columns,
             vlp_endpoint: Some(vlp_endpoint),
+            outer_where_filters: None,
         })
     }
 
@@ -2297,6 +2466,7 @@ impl CoupledCteStrategy {
             from_alias: self.unified_alias.clone(),
             columns,
             vlp_endpoint: Some(vlp_endpoint),
+            outer_where_filters: None,
         })
     }
 
@@ -2593,8 +2763,29 @@ impl VariableLengthCteStrategy {
             .as_ref()
             .map(|m| m.clone().into());
 
-        // Build the generator based on pattern type
+        // ✅ REFACTORING COMPLETE: Use refactored DenormalizedCteStrategy directly
+        if self.is_denormalized {
+            let strategy = DenormalizedCteStrategy {
+                pattern_ctx: self.pattern_ctx.clone(),
+                table: self.rel_table.clone(),
+                from_col: self.rel_from_col.clone(),
+                to_col: self.rel_to_col.clone(),
+                schema: Arc::new(schema.clone()),
+            };
+
+            log::debug!(
+                "🔧 Using NEW DenormalizedCteStrategy for {}-[*]->{}",
+                self.pattern_ctx.left_node_alias,
+                self.pattern_ctx.right_node_alias
+            );
+
+            return strategy.generate_sql(context, properties, filters);
+        }
+
+        // Build the generator based on pattern type (Traditional/FK-Edge schemas)
         let mut generator = if self.is_denormalized {
+            // Dead code - we return above for denormalized
+            unreachable!("Denormalized case handled above");
             VariableLengthCteGenerator::new_denormalized(
                 schema,
                 context.spec.clone(),
@@ -2757,6 +2948,7 @@ impl VariableLengthCteStrategy {
             from_alias: VLP_CTE_FROM_ALIAS.to_string(),
             columns,
             vlp_endpoint: Some(vlp_endpoint),
+            outer_where_filters: None,
         })
     }
 
@@ -2897,8 +3089,16 @@ mod tests {
             constraints: None,
         };
 
+        // Create an empty schema for the test
+        let schema = Arc::new(GraphSchema::build(
+            1,
+            "test".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+        ));
+
         // Create strategy
-        let strategy = DenormalizedCteStrategy::new(&pattern_ctx);
+        let strategy = DenormalizedCteStrategy::new(&pattern_ctx, schema);
         assert!(strategy.is_ok());
         let strategy = strategy.unwrap();
 
@@ -2933,7 +3133,7 @@ mod tests {
 
         // Check basic properties
         assert!(generation_result.recursive);
-        assert!(generation_result.cte_name.starts_with("vlp_f1_f2_"));
+        assert!(generation_result.cte_name.starts_with("vlp_f1_"));
         assert!(!generation_result.sql.is_empty());
         assert!(generation_result.sql.contains("WITH RECURSIVE"));
         assert!(generation_result.sql.contains("flights"));

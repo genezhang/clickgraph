@@ -792,10 +792,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
                     let vlp_join = Join {
                         join_type: JoinType::Left,
-                        table_name: format!(
-                            "(SELECT start_id, COUNT(*) as __vlp_count FROM {} GROUP BY start_id)",
-                            cte_name
-                        ),
+                        table_name: cte_name,
                         table_alias: vlp_alias.clone(),
                         joining_on: vec![join_condition],
                         pre_filter: None,

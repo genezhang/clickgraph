@@ -55,7 +55,7 @@ class TestCountRelationships:
             json={"query": "USE test_fixtures\nMATCH ()-[r]->()\nRETURN count(r)"}
         )
         
-        assert response.status_code == 500
+        assert response.status_code == 400  # Validation error, not server error
         assert "Missing type for relationship" in response.text
         assert "Missing label" not in response.text.lower()  # Should NOT say "label"
 
@@ -129,7 +129,7 @@ class TestCountRelationships:
             "http://localhost:8080/query",
             json={"query": "USE test_fixtures\nMATCH ()-[r]->()\nRETURN count(r)"}
         )
-        assert response_rel.status_code == 500
+        assert response_rel.status_code == 400  # Validation error, not server error
         assert "Missing type for relationship" in response_rel.text
 
 

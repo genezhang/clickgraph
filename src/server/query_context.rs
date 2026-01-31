@@ -196,9 +196,20 @@ pub fn clear_relationship_columns() {
 // ============================================================================
 
 /// Set CTE property mappings for the current query
+/// Deep-merges new mappings with existing ones to preserve prior entries
 pub fn set_cte_property_mappings(mappings: HashMap<String, HashMap<String, String>>) {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
-        ctx.borrow_mut().cte_property_mappings = mappings;
+        let mut ctx = ctx.borrow_mut();
+        let existing = &mut ctx.cte_property_mappings;
+
+        // Deep-merge: for each CTE alias, merge its property mappings
+        for (cte_alias, new_props) in mappings {
+            let entry = existing.entry(cte_alias).or_default();
+            // New or updated properties overwrite existing ones; unrelated ones are preserved
+            for (prop, column) in new_props {
+                entry.insert(prop, column);
+            }
+        }
     });
 }
 

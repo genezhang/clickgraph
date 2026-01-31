@@ -41,6 +41,49 @@ use crate::render_plan::utils::alias_utils::get_anchor_alias_from_plan;
 // Additional types
 use crate::render_plan::cte_extraction::RelationshipColumns;
 
+/// Helper function to find multi-type relationship patterns in a logical plan
+/// Returns the GraphRel with multiple relationship types if found
+/// IMPORTANT: Excludes true VLP patterns, but includes implicit *1 for multi-type
+fn find_multi_type_in_plan(
+    plan: &LogicalPlan,
+) -> Option<&crate::query_planner::logical_plan::GraphRel> {
+    use crate::query_planner::logical_plan::*;
+    match plan {
+        LogicalPlan::GraphRel(gr) => {
+            log::debug!("🔍 find_multi_type_in_plan: Found GraphRel alias={}, labels={:?}, variable_length={:?}", 
+                gr.alias, gr.labels, gr.variable_length.is_some());
+            // Check if this is a multi-type pattern
+            // Note: Query planner adds implicit *1 for multi-type, so check for exact 1-hop
+            let is_implicit_one_hop = gr
+                .variable_length
+                .as_ref()
+                .map(|spec| spec.min_hops == Some(1) && spec.max_hops == Some(1))
+                .unwrap_or(false);
+            let is_no_vlp_or_implicit = gr.variable_length.is_none() || is_implicit_one_hop;
+
+            if is_no_vlp_or_implicit {
+                if let Some(ref labels) = gr.labels {
+                    log::debug!("  → No VLP or implicit *1, labels.len() = {}", labels.len());
+                    if labels.len() > 1 {
+                        log::info!("  ✅ MULTI-TYPE MATCH: {:?}", labels);
+                        return Some(gr);
+                    }
+                }
+            }
+            // Check recursively in left and right
+            if let Some(multi) = find_multi_type_in_plan(&gr.left) {
+                return Some(multi);
+            }
+            find_multi_type_in_plan(&gr.right)
+        }
+        LogicalPlan::Projection(proj) => find_multi_type_in_plan(&proj.input),
+        LogicalPlan::Filter(filter) => find_multi_type_in_plan(&filter.input),
+        LogicalPlan::GroupBy(group_by) => find_multi_type_in_plan(&group_by.input),
+        LogicalPlan::GraphNode(gn) => find_multi_type_in_plan(&gn.input),
+        _ => None,
+    }
+}
+
 /// Join Builder trait for extracting JOIN-related information from logical plans
 pub trait JoinBuilder {
     /// Extract JOIN clauses from the logical plan
@@ -270,7 +313,33 @@ impl JoinBuilder for LogicalPlan {
                 joins
             }
             LogicalPlan::GraphJoins(graph_joins) => {
-                // 🔧 FIX: For GraphJoins with CTE references, delegate to input.extract_joins()
+                // � MULTI-TYPE FIX: Check for multi-type relationship patterns FIRST
+                // Multi-type patterns like [:FOLLOWS|AUTHORED] don't use the deprecated joins field
+                // They generate a CTE (vlp_multi_type_a_b) that must be used as FROM, not JOINs
+                // Delegate to input.extract_joins() which will return empty (see GraphRel handler)
+                // IMPORTANT: Only for non-VLP patterns (VLP multi-type is handled below)
+                if let Some(graph_rel) = find_multi_type_in_plan(&graph_joins.input) {
+                    let is_implicit_one_hop = graph_rel
+                        .variable_length
+                        .as_ref()
+                        .map(|spec| spec.min_hops == Some(1) && spec.max_hops == Some(1))
+                        .unwrap_or(false);
+                    let is_no_vlp_or_implicit =
+                        graph_rel.variable_length.is_none() || is_implicit_one_hop;
+
+                    if is_no_vlp_or_implicit {
+                        log::info!(
+                            "✓ MULTI-TYPE (non-VLP or implicit *1) detected in GraphJoins input: {:?} - delegating to input.extract_joins()",
+                            graph_rel.labels
+                        );
+                        return <LogicalPlan as JoinBuilder>::extract_joins(
+                            &graph_joins.input,
+                            schema,
+                        );
+                    }
+                }
+
+                // �🔧 FIX: For GraphJoins with CTE references, delegate to input.extract_joins()
                 // The analyzer creates joins that reference CTEs (like "with_friend_cte_1"),
                 // but they're in the input plan, not in the deprecated graph_joins.joins field.
                 // We need to delegate to the input to get the actual joins.
@@ -602,13 +671,39 @@ impl JoinBuilder for LogicalPlan {
             LogicalPlan::GraphRel(graph_rel) => {
                 // FIX: GraphRel must generate JOINs for the relationship traversal
                 // This fixes OPTIONAL MATCH queries by creating proper JOIN clauses
-                println!(
-                    "🔧 DEBUG: GraphRel.extract_joins called for alias='{}', left='{}', right='{}'",
-                    graph_rel.alias, graph_rel.left_connection, graph_rel.right_connection
+                log::info!(
+                    "🔧 DEBUG: GraphRel.extract_joins called for alias='{}', left='{}', right='{}', labels={:?}",
+                    graph_rel.alias, graph_rel.left_connection, graph_rel.right_connection, graph_rel.labels
                 );
 
+                // 🚀 MULTI-TYPE RELATIONSHIPS: Check if this is a multi-type pattern (e.g., [:FOLLOWS|AUTHORED])
+                // If it has multiple relationship types, a VLP CTE is generated for the UNION ALL
+                // Return empty joins - the CTE will be used as FROM clause
+                // IMPORTANT: Handles implicit *1 added by query planner for multi-type
+                let is_implicit_one_hop = graph_rel
+                    .variable_length
+                    .as_ref()
+                    .map(|spec| spec.min_hops == Some(1) && spec.max_hops == Some(1))
+                    .unwrap_or(false);
+                let is_no_vlp_or_implicit =
+                    graph_rel.variable_length.is_none() || is_implicit_one_hop;
+
+                if is_no_vlp_or_implicit {
+                    if let Some(ref labels) = graph_rel.labels {
+                        if labels.len() > 1 {
+                            log::info!(
+                                "✓ Multi-type relationship (non-VLP or implicit *1) {:?} - using CTE vlp_multi_type_{}_{}, no joins needed (RETURNING EMPTY)",
+                                labels,
+                                graph_rel.left_connection,
+                                graph_rel.right_connection
+                            );
+                            return Ok(Vec::new());
+                        }
+                    }
+                }
+
                 // 🚀 FIXED-LENGTH VLP: Use consolidated VlpContext for all schema types
-                if let Some(vlp_ctx) = build_vlp_context(graph_rel) {
+                if let Some(vlp_ctx) = build_vlp_context(graph_rel, schema) {
                     let exact_hops = vlp_ctx.exact_hops.unwrap_or(1);
 
                     // Special case: *0 pattern (zero hops = same node)

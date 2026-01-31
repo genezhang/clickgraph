@@ -361,6 +361,15 @@ impl PlanCtx {
         self.denormalized_node_edges.get(node_alias).cloned()
     }
 
+    /// Get all denormalized aliases for transfer to rendering phase
+    /// Returns an iterator over (node_alias, (edge_alias, is_from_node, node_label, rel_type))
+    /// Used by render_plan to transfer PlanCtx state to task-local storage
+    pub fn iter_denormalized_aliases(
+        &self,
+    ) -> impl Iterator<Item = (&String, &(String, bool, String, String))> {
+        self.denormalized_node_edges.iter()
+    }
+
     /// Get an iterator over all aliases and their TableCtx in the CURRENT scope only.
     /// Used for copying child scope state back to parent scope.
     pub fn iter_aliases(&self) -> impl Iterator<Item = (&String, &TableCtx)> {

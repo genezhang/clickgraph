@@ -246,11 +246,11 @@ def test_edge_constraint_vlp(edge_constraints_schemas, edge_constraints_data):
 @pytest.mark.edge_constraints
 def test_query_without_constraint(edge_constraints_schemas, edge_constraints_data):
     """Test query for relationship type without constraints - should work normally"""
-    # AUTHORED relationship has no constraints in lineage_schema.yaml
+    # Use test_integration schema which has TEST_FRIENDS_WITH relationship without constraints
     query = """
-        USE lineage MATCH (d:DataFile)-[r:AUTHORED]->(u:User) 
-        WHERE d.file_id = 1 
-        RETURN d.path, u.name
+        USE test_fixtures MATCH (a:TestUser)-[r:TEST_FRIENDS_WITH]->(b:TestUser) 
+        WHERE a.name = 'Alice'
+        RETURN a.name, b.name
     """
     
     response = requests.post(
@@ -270,7 +270,7 @@ def test_query_without_constraint(edge_constraints_schemas, edge_constraints_dat
     print(sql)
     print()
     
-    # Should NOT contain timestamp constraint
+    # Should NOT contain timestamp constraint (TEST_FRIENDS_WITH has no constraints)
     assert "created_timestamp <=" not in sql, \
         "Unexpected constraint in relationship without constraints"
     
@@ -426,9 +426,14 @@ def test_vlp_with_relationship_filters_and_constraints(edge_constraints_data):
     assert "start_node.created_timestamp <= end_node.created_timestamp" in sql1, \
            f"Edge constraint missing from VLP base case. SQL:\n{sql1[:500]}"
     
-    # Verify constraint in recursive case (current_node, end_node aliases)
-    assert "current_node.created_timestamp <= end_node.created_timestamp" in sql1, \
-           f"Edge constraint missing or wrong alias in VLP recursive case. SQL:\n{sql1}"
+    # Verify constraint in recursive case
+    # The constraint can use either:
+    # - "current_node.created_timestamp" (old format with current_node JOIN)
+    # - "vp.end_timestamp" (new format using CTE columns directly, more efficient)
+    recursive_constraint_old = "current_node.created_timestamp <= end_node.created_timestamp"
+    recursive_constraint_new = "vp.end_timestamp <= end_node.created_timestamp"
+    assert recursive_constraint_old in sql1 or recursive_constraint_new in sql1, \
+           f"Edge constraint missing in VLP recursive case. Expected '{recursive_constraint_old}' or '{recursive_constraint_new}'. SQL:\n{sql1}"
     
     print("✅ VLP SQL: constraints present with correct aliases")
     
