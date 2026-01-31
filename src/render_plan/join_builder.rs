@@ -44,7 +44,9 @@ use crate::render_plan::cte_extraction::RelationshipColumns;
 /// Helper function to find multi-type relationship patterns in a logical plan
 /// Returns the GraphRel with multiple relationship types if found
 /// IMPORTANT: Excludes true VLP patterns, but includes implicit *1 for multi-type
-fn find_multi_type_in_plan(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::GraphRel> {
+fn find_multi_type_in_plan(
+    plan: &LogicalPlan,
+) -> Option<&crate::query_planner::logical_plan::GraphRel> {
     use crate::query_planner::logical_plan::*;
     match plan {
         LogicalPlan::GraphRel(gr) => {
@@ -52,11 +54,13 @@ fn find_multi_type_in_plan(plan: &LogicalPlan) -> Option<&crate::query_planner::
                 gr.alias, gr.labels, gr.variable_length.is_some());
             // Check if this is a multi-type pattern
             // Note: Query planner adds implicit *1 for multi-type, so check for exact 1-hop
-            let is_implicit_one_hop = gr.variable_length.as_ref()
+            let is_implicit_one_hop = gr
+                .variable_length
+                .as_ref()
                 .map(|spec| spec.min_hops == Some(1) && spec.max_hops == Some(1))
                 .unwrap_or(false);
             let is_no_vlp_or_implicit = gr.variable_length.is_none() || is_implicit_one_hop;
-            
+
             if is_no_vlp_or_implicit {
                 if let Some(ref labels) = gr.labels {
                     log::debug!("  → No VLP or implicit *1, labels.len() = {}", labels.len());
@@ -315,17 +319,23 @@ impl JoinBuilder for LogicalPlan {
                 // Delegate to input.extract_joins() which will return empty (see GraphRel handler)
                 // IMPORTANT: Only for non-VLP patterns (VLP multi-type is handled below)
                 if let Some(graph_rel) = find_multi_type_in_plan(&graph_joins.input) {
-                    let is_implicit_one_hop = graph_rel.variable_length.as_ref()
+                    let is_implicit_one_hop = graph_rel
+                        .variable_length
+                        .as_ref()
                         .map(|spec| spec.min_hops == Some(1) && spec.max_hops == Some(1))
                         .unwrap_or(false);
-                    let is_no_vlp_or_implicit = graph_rel.variable_length.is_none() || is_implicit_one_hop;
-                    
+                    let is_no_vlp_or_implicit =
+                        graph_rel.variable_length.is_none() || is_implicit_one_hop;
+
                     if is_no_vlp_or_implicit {
                         log::info!(
                             "✓ MULTI-TYPE (non-VLP or implicit *1) detected in GraphJoins input: {:?} - delegating to input.extract_joins()",
                             graph_rel.labels
                         );
-                        return <LogicalPlan as JoinBuilder>::extract_joins(&graph_joins.input, schema);
+                        return <LogicalPlan as JoinBuilder>::extract_joins(
+                            &graph_joins.input,
+                            schema,
+                        );
                     }
                 }
 
@@ -670,11 +680,14 @@ impl JoinBuilder for LogicalPlan {
                 // If it has multiple relationship types, a VLP CTE is generated for the UNION ALL
                 // Return empty joins - the CTE will be used as FROM clause
                 // IMPORTANT: Handles implicit *1 added by query planner for multi-type
-                let is_implicit_one_hop = graph_rel.variable_length.as_ref()
+                let is_implicit_one_hop = graph_rel
+                    .variable_length
+                    .as_ref()
                     .map(|spec| spec.min_hops == Some(1) && spec.max_hops == Some(1))
                     .unwrap_or(false);
-                let is_no_vlp_or_implicit = graph_rel.variable_length.is_none() || is_implicit_one_hop;
-                
+                let is_no_vlp_or_implicit =
+                    graph_rel.variable_length.is_none() || is_implicit_one_hop;
+
                 if is_no_vlp_or_implicit {
                     if let Some(ref labels) = graph_rel.labels {
                         if labels.len() > 1 {

@@ -218,10 +218,18 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
         .0
         .iter()
         .find(|cte| cte.vlp_cypher_start_alias.is_some());
-    
-    log::error!("🔍🔍🔍 TRACING: Checking for VLP CTEs. Found {} CTEs", plan.ctes.0.len());
+
+    log::error!(
+        "🔍🔍🔍 TRACING: Checking for VLP CTEs. Found {} CTEs",
+        plan.ctes.0.len()
+    );
     for (i, cte) in plan.ctes.0.iter().enumerate() {
-        log::error!("🔍🔍🔍 TRACING: CTE {}: name={}, vlp_start_alias={:?}", i, cte.cte_name, cte.vlp_cypher_start_alias);
+        log::error!(
+            "🔍🔍🔍 TRACING: CTE {}: name={}, vlp_start_alias={:?}",
+            i,
+            cte.cte_name,
+            cte.vlp_cypher_start_alias
+        );
     }
 
     if let Some(vlp_cte) = vlp_cte {
@@ -235,7 +243,11 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
         // Detection: If FROM uses a regular table (not the VLP CTE), skip rewriting
         log::error!("🔍🔍🔍 TRACING: VLP CTE detected: {}", vlp_cte.cte_name);
         if let Some(from_ref) = &plan.from.0 {
-            log::error!("🔍🔍🔍 TRACING: FROM ref name: '{}', starts_with vlp_: {}", from_ref.name, from_ref.name.starts_with("vlp_"));
+            log::error!(
+                "🔍🔍🔍 TRACING: FROM ref name: '{}', starts_with vlp_: {}",
+                from_ref.name,
+                from_ref.name.starts_with("vlp_")
+            );
             if !from_ref.name.starts_with("vlp_") {
                 log::error!(
                     "🔍🔍🔍 TRACING: OPTIONAL VLP detected - FROM uses anchor table '{}' - SKIPPING VLP SELECT rewriting",
@@ -271,8 +283,13 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
         for (idx, item) in plan.select.items.iter_mut().enumerate() {
             log::info!("🔧 Item {}: {:?}", idx, item.expression);
             let before = format!("{:?}", item.expression);
-            item.expression =
-                rewrite_expr_for_vlp(&item.expression, &start_alias, &end_alias, &path_variable, is_optional_vlp);
+            item.expression = rewrite_expr_for_vlp(
+                &item.expression,
+                &start_alias,
+                &end_alias,
+                &path_variable,
+                is_optional_vlp,
+            );
             let after = format!("{:?}", item.expression);
             if before != after {
                 log::info!("🔧   Rewritten from: {} → {}", before, after);
@@ -286,8 +303,13 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
         for (idx, group_expr) in plan.group_by.0.iter_mut().enumerate() {
             log::info!("🔧 GROUP BY {}: {:?}", idx, group_expr);
             let before = format!("{:?}", group_expr);
-            *group_expr =
-                rewrite_expr_for_vlp(group_expr, &start_alias, &end_alias, &path_variable, is_optional_vlp);
+            *group_expr = rewrite_expr_for_vlp(
+                group_expr,
+                &start_alias,
+                &end_alias,
+                &path_variable,
+                is_optional_vlp,
+            );
             let after = format!("{:?}", group_expr);
             if before != after {
                 log::info!("🔧   GROUP BY rewritten from: {} → {}", before, after);
@@ -352,12 +374,16 @@ fn rewrite_expr_for_vlp(
                     if skip_start_alias {
                         return expr.clone();
                     }
-                    return RenderExpr::Column(Column(PropertyValue::Column("t.start_id".to_string())));
+                    return RenderExpr::Column(Column(PropertyValue::Column(
+                        "t.start_id".to_string(),
+                    )));
                 }
             }
             if let Some(end) = end_alias {
                 if &alias.0 == end {
-                    return RenderExpr::Column(Column(PropertyValue::Column("t.end_id".to_string())));
+                    return RenderExpr::Column(Column(PropertyValue::Column(
+                        "t.end_id".to_string(),
+                    )));
                 }
             }
             expr.clone()
@@ -401,7 +427,15 @@ fn rewrite_expr_for_vlp(
                 args: func
                     .args
                     .iter()
-                    .map(|a| rewrite_expr_for_vlp(a, start_alias, end_alias, path_variable, skip_start_alias))
+                    .map(|a| {
+                        rewrite_expr_for_vlp(
+                            a,
+                            start_alias,
+                            end_alias,
+                            path_variable,
+                            skip_start_alias,
+                        )
+                    })
                     .collect(),
             })
         }
@@ -415,7 +449,11 @@ fn rewrite_expr_for_vlp(
         // But PropertyAccess gives us database names like email_address, full_name
         // We need to match these by deriving the property name.
         RenderExpr::PropertyAccessExp(prop) => {
-            log::error!("🔧🔧🔧 rewrite_expr_for_vlp: Processing PropertyAccessExp {}.{}", prop.table_alias.0, prop.column.raw());
+            log::error!(
+                "🔧🔧🔧 rewrite_expr_for_vlp: Processing PropertyAccessExp {}.{}",
+                prop.table_alias.0,
+                prop.column.raw()
+            );
             if let Some(start) = start_alias {
                 if &prop.table_alias.0 == start {
                     if skip_start_alias {
@@ -456,7 +494,15 @@ fn rewrite_expr_for_vlp(
                 operands: op
                     .operands
                     .iter()
-                    .map(|o| rewrite_expr_for_vlp(o, start_alias, end_alias, path_variable, skip_start_alias))
+                    .map(|o| {
+                        rewrite_expr_for_vlp(
+                            o,
+                            start_alias,
+                            end_alias,
+                            path_variable,
+                            skip_start_alias,
+                        )
+                    })
                     .collect(),
             })
         }
@@ -466,7 +512,9 @@ fn rewrite_expr_for_vlp(
             args: agg
                 .args
                 .iter()
-                .map(|a| rewrite_expr_for_vlp(a, start_alias, end_alias, path_variable, skip_start_alias))
+                .map(|a| {
+                    rewrite_expr_for_vlp(a, start_alias, end_alias, path_variable, skip_start_alias)
+                })
                 .collect(),
         }),
 

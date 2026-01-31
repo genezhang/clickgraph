@@ -2032,8 +2032,11 @@ pub fn extract_ctes_with_context(
                     // 🔧 FIX: Create alias mapping based on schema type
                     // For denormalized (SingleTableScan): both nodes map to relationship alias
                     // For traditional: nodes map to start_node/end_node
-                    let pattern_ctx_for_mapping = recreate_pattern_schema_context(graph_rel, schema).ok();
-                    let (start_target_alias, end_target_alias) = if let Some(ref ctx) = pattern_ctx_for_mapping {
+                    let pattern_ctx_for_mapping =
+                        recreate_pattern_schema_context(graph_rel, schema).ok();
+                    let (start_target_alias, end_target_alias) = if let Some(ref ctx) =
+                        pattern_ctx_for_mapping
+                    {
                         match &ctx.join_strategy {
                             JoinStrategy::SingleTableScan { .. } => {
                                 // Denormalized: both nodes accessed via relationship table alias
@@ -2166,24 +2169,30 @@ pub fn extract_ctes_with_context(
                 // 🔧 FIX: Determine correct CTE aliases based on schema type
                 // For denormalized (SingleTableScan), use relationship alias
                 // For traditional, use "start_node"/"end_node"
-                let pattern_ctx_for_filters = recreate_pattern_schema_context(graph_rel, schema).ok();
-                let (start_cte_alias, end_cte_alias) = if let Some(ref ctx) = pattern_ctx_for_filters {
-                    match &ctx.join_strategy {
-                        JoinStrategy::SingleTableScan { .. } => {
-                            // Denormalized: both nodes accessed via relationship table alias
-                            (rel_alias.clone(), rel_alias.clone())
+                let pattern_ctx_for_filters =
+                    recreate_pattern_schema_context(graph_rel, schema).ok();
+                let (start_cte_alias, end_cte_alias) =
+                    if let Some(ref ctx) = pattern_ctx_for_filters {
+                        match &ctx.join_strategy {
+                            JoinStrategy::SingleTableScan { .. } => {
+                                // Denormalized: both nodes accessed via relationship table alias
+                                (rel_alias.clone(), rel_alias.clone())
+                            }
+                            _ => {
+                                // Traditional/FK-Edge/etc: use start_node/end_node
+                                ("start_node".to_string(), "end_node".to_string())
+                            }
                         }
-                        _ => {
-                            // Traditional/FK-Edge/etc: use start_node/end_node
-                            ("start_node".to_string(), "end_node".to_string())
-                        }
-                    }
-                } else {
-                    // Fallback if pattern_ctx recreation fails
-                    ("start_node".to_string(), "end_node".to_string())
-                };
+                    } else {
+                        // Fallback if pattern_ctx recreation fails
+                        ("start_node".to_string(), "end_node".to_string())
+                    };
 
-                log::info!("🔧 Filter CTE aliases: start='{}', end='{}'", start_cte_alias, end_cte_alias);
+                log::info!(
+                    "🔧 Filter CTE aliases: start='{}', end='{}'",
+                    start_cte_alias,
+                    end_cte_alias
+                );
 
                 // Extract start node filter (from left side) with relationship context for denormalized schemas
                 let rel_type = graph_rel
@@ -3356,40 +3365,58 @@ pub fn extract_ctes_with_context(
                         .and_then(|s| s.strip_suffix("_cte_3"))
                 })
                 .unwrap_or(&cte_name);
-            
-            let mut cte_mappings: std::collections::HashMap<String, std::collections::HashMap<String, String>> = std::collections::HashMap::new();
-            let mut alias_mapping: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-            
+
+            let mut cte_mappings: std::collections::HashMap<
+                String,
+                std::collections::HashMap<String, String>,
+            > = std::collections::HashMap::new();
+            let mut alias_mapping: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+
             for select_item in &cte_render_plan.select.items {
                 if let Some(col_alias) = &select_item.col_alias {
                     let col_name = col_alias.0.clone();
-                    
+
                     // CTE columns can be:
                     // 1. Prefixed: "a_name", "a_user_id" → property is after underscore
                     // 2. Unprefixed: "follows" (aggregate result) → property is the column name itself
-                    
+
                     if let Some(underscore_pos) = col_name.find('_') {
                         // Case 1: Prefixed column like "a_name"
                         let property = &col_name[underscore_pos + 1..];
-                        log::debug!("🔧 CTE mapping (prefixed): {}.{} → {}", from_alias, property, col_name);
+                        log::debug!(
+                            "🔧 CTE mapping (prefixed): {}.{} → {}",
+                            from_alias,
+                            property,
+                            col_name
+                        );
                         alias_mapping.insert(property.to_string(), col_name.clone());
                     } else {
                         // Case 2: Unprefixed column like "follows" (aggregate or scalar)
                         // Map the column name to itself
-                        log::debug!("🔧 CTE mapping (unprefixed): {}.{} → {}", from_alias, &col_name, &col_name);
+                        log::debug!(
+                            "🔧 CTE mapping (unprefixed): {}.{} → {}",
+                            from_alias,
+                            &col_name,
+                            &col_name
+                        );
                         alias_mapping.insert(col_name.clone(), col_name.clone());
                     }
                 }
             }
-            
+
             // Map the FROM alias (e.g., "a_follows") to the property mappings
             cte_mappings.insert(from_alias.to_string(), alias_mapping);
-            
+
             // Log before moving cte_mappings
             let num_properties = cte_mappings.get(from_alias).map(|m| m.len()).unwrap_or(0);
-            log::info!("🔧 Populated CTE property mappings: CTE '{}' → FROM alias '{}' with {} properties", 
-                      cte_name, from_alias, num_properties);
-            
+            log::info!(
+                "🔧 Populated CTE property mappings: CTE '{}' → FROM alias '{}' with {} properties",
+                cte_name,
+                from_alias,
+                num_properties
+            );
+
             // Store in task-local context for SQL rendering
             crate::server::query_context::set_cte_property_mappings(cte_mappings);
 
@@ -4099,44 +4126,63 @@ pub fn build_vlp_context(
 
     // Extract relationship info
     let rel_alias = graph_rel.alias.clone();
-    
+
     // 🔧 FIX: For VLP patterns, graph_rel.center might be Empty instead of ViewScan
     // Fall back to looking up the relationship table from schema using the relationship type
     let rel_table = extract_table_name(&graph_rel.center).or_else(|| {
         // Get relationship type from graph_rel.labels
         let rel_type = graph_rel.labels.as_ref()?.first()?;
-        log::info!("🔍 VLP: center is not ViewScan, looking up relationship type '{}' in schema", rel_type);
-        
+        log::info!(
+            "🔍 VLP: center is not ViewScan, looking up relationship type '{}' in schema",
+            rel_type
+        );
+
         // Look up relationship schema by type
         let rel_schemas = schema.rel_schemas_for_type(rel_type);
         if rel_schemas.is_empty() {
-            log::warn!("⚠️  VLP: No relationship schema found for type '{}'", rel_type);
+            log::warn!(
+                "⚠️  VLP: No relationship schema found for type '{}'",
+                rel_type
+            );
             return None;
         }
-        
+
         if rel_schemas.len() > 1 {
-            log::warn!("⚠️  VLP: Multiple relationship schemas found for type '{}', using first one", rel_type);
+            log::warn!(
+                "⚠️  VLP: Multiple relationship schemas found for type '{}', using first one",
+                rel_type
+            );
         }
-        
+
         let rel_schema = rel_schemas[0];
         let full_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
-        log::info!("✓ VLP: Resolved relationship type '{}' to table '{}'", rel_type, full_table);
+        log::info!(
+            "✓ VLP: Resolved relationship type '{}' to table '{}'",
+            rel_type,
+            full_table
+        );
         Some(full_table)
     })?;
-    
+
     // 🔧 FIX: For VLP patterns, also fall back to schema for relationship columns
     let rel_cols = extract_relationship_columns(&graph_rel.center).or_else(|| {
         // Get relationship type from graph_rel.labels
         let rel_type = graph_rel.labels.as_ref()?.first()?;
-        log::info!("🔍 VLP: center has no columns, looking up relationship type '{}' in schema", rel_type);
-        
+        log::info!(
+            "🔍 VLP: center has no columns, looking up relationship type '{}' in schema",
+            rel_type
+        );
+
         // Look up relationship schema by type
         let rel_schemas = schema.rel_schemas_for_type(rel_type);
         if rel_schemas.is_empty() {
-            log::warn!("⚠️  VLP: No relationship schema found for type '{}'", rel_type);
+            log::warn!(
+                "⚠️  VLP: No relationship schema found for type '{}'",
+                rel_type
+            );
             return None;
         }
-        
+
         let rel_schema = rel_schemas[0];
         Some(RelationshipColumns {
             from_id: rel_schema.from_id.clone(),

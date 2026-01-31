@@ -218,7 +218,7 @@ impl VlpTransitivityCheck {
                     );
                     if needs_transitivity {
                         log::info!("🔍 VLP Transitivity Check: Checking transitivity...");
-                        
+
                         // 🔧 FIX: Shortest path queries don't require explicit relationship types
                         // They can traverse any relationship, and the schema will be resolved dynamically
                         if rel.shortest_path_mode.is_some() {
@@ -227,7 +227,7 @@ impl VlpTransitivityCheck {
                             // The query will traverse all available relationships
                             return Ok(Transformed::No(plan));
                         }
-                        
+
                         // Get relationship type(s) - required for non-shortest-path VLP
                         let rel_types = rel.labels.as_ref().ok_or_else(|| {
                             AnalyzerError::InvalidPlan(

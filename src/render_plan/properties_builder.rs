@@ -28,7 +28,10 @@ impl PropertiesBuilder for LogicalPlan {
         &self,
         alias: &str,
     ) -> PropertiesBuilderResult<(Vec<(String, String)>, Option<String>)> {
-        log::error!("🔍🔍🔍 TRACING: get_properties_with_table_alias called for '{}'", alias);
+        log::error!(
+            "🔍🔍🔍 TRACING: get_properties_with_table_alias called for '{}'",
+            alias
+        );
         match self {
             LogicalPlan::GraphNode(node) => {
                 // Check if this node's alias matches
@@ -217,16 +220,20 @@ impl PropertiesBuilder for LogicalPlan {
                         if let Some(node_props) = props {
                             let properties = extract_sorted_properties(node_props);
                             if !properties.is_empty() {
-                                log::info!("🔍 VLP properties for '{}': {:?}", alias, properties.iter().map(|(k,v)| k).collect::<Vec<_>>());
+                                log::info!(
+                                    "🔍 VLP properties for '{}': {:?}",
+                                    alias,
+                                    properties.iter().map(|(k, v)| k).collect::<Vec<_>>()
+                                );
                                 // 🔧 FIX: For OPTIONAL MATCH + VLP, if this is the anchor node (start node),
                                 // use the ANCHOR TABLE's columns, not VLP CTE columns!
                                 // The anchor node is in FROM clause, VLP CTE is LEFT JOINed.
                                 // Detection: VLP + is_optional + left_connection (start node) matches this alias
                                 log::info!("🔍 Checking OPTIONAL VLP: vlp={}, optional={}, left_connection='{}', alias='{}'", 
                                     rel.variable_length.is_some(), rel.is_optional.unwrap_or(false), rel.left_connection, alias);
-                                if rel.variable_length.is_some() 
+                                if rel.variable_length.is_some()
                                     && rel.is_optional.unwrap_or(false)
-                                    && rel.left_connection == alias 
+                                    && rel.left_connection == alias
                                 {
                                     log::info!(
                                         "🎯 OPTIONAL VLP: anchor node '{}' - fetching from ANCHOR GraphNode (not VLP CTE)",
@@ -235,9 +242,13 @@ impl PropertiesBuilder for LogicalPlan {
                                     // For anchor node: Get properties from the anchor GraphNode's ViewScan
                                     // NOT from the VLP denormalized properties (which have start_/end_ prefixes)
                                     if let LogicalPlan::GraphNode(anchor_node) = rel.left.as_ref() {
-                                        if let LogicalPlan::ViewScan(anchor_scan) = anchor_node.input.as_ref() {
+                                        if let LogicalPlan::ViewScan(anchor_scan) =
+                                            anchor_node.input.as_ref()
+                                        {
                                             // Get properties from the anchor table's ViewScan
-                                            let anchor_properties = extract_sorted_properties(&anchor_scan.property_mapping);
+                                            let anchor_properties = extract_sorted_properties(
+                                                &anchor_scan.property_mapping,
+                                            );
                                             log::info!(
                                                 "✓ OPTIONAL VLP: Found {} properties from anchor table '{}': {:?}",
                                                 anchor_properties.len(),

@@ -135,16 +135,13 @@ impl FilterBuilder for LogicalPlan {
                         // The CTE extraction intentionally removes these from the CTE
                         if let Some(ref predicate) = graph_rel.where_predicate {
                             if let Ok(expr) = RenderExpr::try_from(predicate.clone()) {
-                                log::info!(
-                                    "🔧 OPTIONAL VLP: Found start filter: {:?}",
-                                    expr
-                                );
+                                log::info!("🔧 OPTIONAL VLP: Found start filter: {:?}", expr);
                                 return Ok(Some(expr));
                             }
                         }
                         return Ok(None);
                     }
-                    
+
                     log::info!(
                         "🔧 BUG #10: Skipping GraphRel filter extraction for VLP/shortest path - already in CTE"
                     );

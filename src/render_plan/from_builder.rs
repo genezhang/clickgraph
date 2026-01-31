@@ -596,11 +596,14 @@ impl LogicalPlan {
                     if let Some(ref labels) = gr.labels {
                         if labels.len() > 1 {
                             // Check if it's VLP (but not implicit *1)
-                            let is_implicit_one_hop = gr.variable_length.as_ref()
+                            let is_implicit_one_hop = gr
+                                .variable_length
+                                .as_ref()
                                 .map(|spec| spec.min_hops == Some(1) && spec.max_hops == Some(1))
                                 .unwrap_or(false);
-                            let is_no_vlp_or_implicit = gr.variable_length.is_none() || is_implicit_one_hop;
-                            
+                            let is_no_vlp_or_implicit =
+                                gr.variable_length.is_none() || is_implicit_one_hop;
+
                             if is_no_vlp_or_implicit {
                                 log::debug!(
                                     "🔍 find_multi_type_graph_rel: Found multi-type GraphRel (non-VLP or implicit *1) with {} labels: {:?}",
@@ -677,66 +680,67 @@ impl LogicalPlan {
             // IMPORTANT: Exclude implicit *1 patterns (multi-type), which are handled separately
             if let Some(graph_rel) = find_vlp_graph_rel(&graph_joins.input) {
                 // Check if it's a true VLP (not implicit *1 from multi-type)
-                let is_implicit_one_hop = graph_rel.variable_length.as_ref()
+                let is_implicit_one_hop = graph_rel
+                    .variable_length
+                    .as_ref()
                     .map(|spec| spec.min_hops == Some(1) && spec.max_hops == Some(1))
                     .unwrap_or(false);
-                
+
                 let is_true_vlp = !is_implicit_one_hop;
                 let is_optional = graph_rel.is_optional.unwrap_or(false);
 
                 if is_true_vlp {
+                    if is_optional {
+                        // OPTIONAL VLP: Don't use VLP CTE as FROM. Instead, find the anchor node
+                        // (from required MATCH) and use it as FROM. The VLP CTE will be added
+                        // as a LEFT JOIN later. This ensures rows where start node has no paths
+                        // still appear in results.
+                        log::info!(
+                            "🎯 OPTIONAL VLP: Not using CTE as FROM, finding anchor node instead"
+                        );
 
-                if is_optional {
-                    // OPTIONAL VLP: Don't use VLP CTE as FROM. Instead, find the anchor node
-                    // (from required MATCH) and use it as FROM. The VLP CTE will be added
-                    // as a LEFT JOIN later. This ensures rows where start node has no paths
-                    // still appear in results.
-                    log::info!(
-                        "🎯 OPTIONAL VLP: Not using CTE as FROM, finding anchor node instead"
-                    );
-
-                    // Find the start node (GraphNode) in the VLP pattern - it should be FROM
-                    if let LogicalPlan::GraphNode(start_node) = graph_rel.left.as_ref() {
-                        if let LogicalPlan::ViewScan(scan) = start_node.input.as_ref() {
-                            log::info!(
+                        // Find the start node (GraphNode) in the VLP pattern - it should be FROM
+                        if let LogicalPlan::GraphNode(start_node) = graph_rel.left.as_ref() {
+                            if let LogicalPlan::ViewScan(scan) = start_node.input.as_ref() {
+                                log::info!(
                                 "✓ OPTIONAL VLP: Using anchor node '{}' from table '{}' as FROM",
                                 start_node.alias,
                                 scan.source_table
                             );
-                            return Ok(Some(ViewTableRef {
-                                source: Arc::new(LogicalPlan::GraphNode(start_node.clone())),
-                                name: scan.source_table.clone(),
-                                alias: Some(start_node.alias.clone()),
-                                use_final: scan.use_final,
-                            }));
+                                return Ok(Some(ViewTableRef {
+                                    source: Arc::new(LogicalPlan::GraphNode(start_node.clone())),
+                                    name: scan.source_table.clone(),
+                                    alias: Some(start_node.alias.clone()),
+                                    use_final: scan.use_final,
+                                }));
+                            }
                         }
+
+                        log::warn!("⚠️ OPTIONAL VLP: Could not find anchor node, falling through");
+                        // Fall through to try other patterns
+                    } else {
+                        // Non-optional VLP: Use CTE as FROM
+                        log::info!(
+                            "🎯 VARIABLE-LENGTH: Using CTE as FROM for path '{}'",
+                            graph_rel.alias
+                        );
+
+                        // TODO: Extract CTE naming logic to shared utility function
+                        // Current duplication: plan_builder.rs (here and lines 965-986),
+                        // plan_builder_utils.rs (lines 1152-1167 with multi-type support)
+                        // Note: This handles single-type VLP only. Multi-type VLP uses
+                        // vlp_multi_type_{start}_{end} format (see plan_builder_utils.rs)
+                        let start_alias = &graph_rel.left_connection;
+                        let end_alias = &graph_rel.right_connection;
+                        let cte_name = format!("vlp_{}_{}", start_alias, end_alias);
+
+                        return Ok(Some(ViewTableRef {
+                            source: Arc::new(LogicalPlan::Empty),
+                            name: cte_name,
+                            alias: Some(VLP_CTE_FROM_ALIAS.to_string()), // Standard VLP alias
+                            use_final: false,
+                        }));
                     }
-
-                    log::warn!("⚠️ OPTIONAL VLP: Could not find anchor node, falling through");
-                    // Fall through to try other patterns
-                } else {
-                    // Non-optional VLP: Use CTE as FROM
-                    log::info!(
-                        "🎯 VARIABLE-LENGTH: Using CTE as FROM for path '{}'",
-                        graph_rel.alias
-                    );
-
-                    // TODO: Extract CTE naming logic to shared utility function
-                    // Current duplication: plan_builder.rs (here and lines 965-986),
-                    // plan_builder_utils.rs (lines 1152-1167 with multi-type support)
-                    // Note: This handles single-type VLP only. Multi-type VLP uses
-                    // vlp_multi_type_{start}_{end} format (see plan_builder_utils.rs)
-                    let start_alias = &graph_rel.left_connection;
-                    let end_alias = &graph_rel.right_connection;
-                    let cte_name = format!("vlp_{}_{}", start_alias, end_alias);
-
-                    return Ok(Some(ViewTableRef {
-                        source: Arc::new(LogicalPlan::Empty),
-                        name: cte_name,
-                        alias: Some(VLP_CTE_FROM_ALIAS.to_string()), // Standard VLP alias
-                        use_final: false,
-                    }));
-                }
                 } // end if is_true_vlp
             }
 

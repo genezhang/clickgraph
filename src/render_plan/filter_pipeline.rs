@@ -508,7 +508,7 @@ pub fn rewrite_expr_for_mixed_denormalized_cte(
         rel_alias: rel_alias.map(|s| s.to_string()),
         from_col: from_col.map(|s| s.to_string()),
         to_col: to_col.map(|s| s.to_string()),
-        is_optional: false,  // TODO: Pass from caller if needed
+        is_optional: false, // TODO: Pass from caller if needed
     };
     rewriter.transform_expr(expr)
 }

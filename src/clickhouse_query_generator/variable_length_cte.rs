@@ -575,21 +575,21 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Get the first relationship type (multi-type not supported for constraints)
         let rel_types = self.relationship_types.as_ref()?;
         let rel_type = rel_types.first()?;
-        
+
         // Look up relationship schema
         let rel_schema = self.schema.get_relationships_schema_opt(rel_type)?;
-        
+
         // Check if constraints are defined
         let constraint_expr = rel_schema.constraints.as_ref()?;
-        
+
         // Get node schemas for property resolution
         let from_node_schema = self.schema.node_schema_opt(&rel_schema.from_node)?;
         let to_node_schema = self.schema.node_schema_opt(&rel_schema.to_node)?;
-        
+
         // Build the constraint by replacing property references
         // Pattern: from.property -> vp.end_<alias>, to.property -> end_node.<column>
         let mut compiled = constraint_expr.clone();
-        
+
         // Replace from.property references with vp.end_<property_alias>
         // We need to find the property alias from self.properties
         for (property_name, mapping) in &from_node_schema.property_mappings {
@@ -598,41 +598,54 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 // Find the corresponding property alias in self.properties
                 // The property alias is based on the cypher property name, not column name
                 let column_name = match mapping {
-                    crate::graph_catalog::expression_parser::PropertyValue::Column(col) => col.clone(),
-                    crate::graph_catalog::expression_parser::PropertyValue::Expression(_) => continue,
+                    crate::graph_catalog::expression_parser::PropertyValue::Column(col) => {
+                        col.clone()
+                    }
+                    crate::graph_catalog::expression_parser::PropertyValue::Expression(_) => {
+                        continue
+                    }
                 };
-                
+
                 // Find the alias used in CTE for this column
                 // Properties in CTE are stored as end_<alias> where alias is the property's output name
-                let cte_alias = self.properties.iter()
-                    .find(|p| p.column_name == column_name && p.cypher_alias == self.end_cypher_alias)
+                let cte_alias = self
+                    .properties
+                    .iter()
+                    .find(|p| {
+                        p.column_name == column_name && p.cypher_alias == self.end_cypher_alias
+                    })
                     .map(|p| p.alias.clone())
                     .unwrap_or_else(|| property_name.clone());
-                
+
                 let replacement = format!("vp.end_{}", cte_alias);
                 compiled = compiled.replace(&from_pattern, &replacement);
             }
         }
-        
+
         // Replace to.property references with end_node.<column_name>
         for (property_name, mapping) in &to_node_schema.property_mappings {
             let to_pattern = format!("to.{}", property_name);
             if compiled.contains(&to_pattern) {
                 let column_name = match mapping {
-                    crate::graph_catalog::expression_parser::PropertyValue::Column(col) => col.clone(),
-                    crate::graph_catalog::expression_parser::PropertyValue::Expression(_) => continue,
+                    crate::graph_catalog::expression_parser::PropertyValue::Column(col) => {
+                        col.clone()
+                    }
+                    crate::graph_catalog::expression_parser::PropertyValue::Expression(_) => {
+                        continue
+                    }
                 };
-                
+
                 let replacement = format!("{}.{}", self.end_node_alias, column_name);
                 compiled = compiled.replace(&to_pattern, &replacement);
             }
         }
-        
+
         log::debug!(
             "✅ Compiled VLP edge constraint for recursive case: {} → {}",
-            constraint_expr, compiled
+            constraint_expr,
+            compiled
         );
-        
+
         Some(compiled)
     }
 
@@ -2453,7 +2466,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 // Start properties: carry forward from CTE (physical column names)
                 if let Ok(physical_col) = self.map_denormalized_property(&prop.alias, true) {
                     // 🔧 FIX: Carry forward with start_ prefix (base case has start_X, recursive needs to preserve it)
-                    select_items.push(format!("vp.start_{} as start_{}", physical_col, physical_col));
+                    select_items.push(format!(
+                        "vp.start_{} as start_{}",
+                        physical_col, physical_col
+                    ));
                 }
             }
             if prop.cypher_alias == self.end_cypher_alias {

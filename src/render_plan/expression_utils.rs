@@ -520,7 +520,7 @@ impl ExprVisitor for VLPExprRewriter {
             // OPTIONAL VLP: Skip start node rewriting - it's the anchor in FROM clause
             return RenderExpr::PropertyAccessExp(new_prop);
         }
-        
+
         if prop.table_alias.0 == self.start_cypher_alias && self.start_is_denormalized {
             new_prop.table_alias = TableAlias(VLP_CTE_FROM_ALIAS.to_string());
             if raw_col != "*" {
