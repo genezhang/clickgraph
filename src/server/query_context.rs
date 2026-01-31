@@ -201,7 +201,7 @@ pub fn set_cte_property_mappings(mappings: HashMap<String, HashMap<String, Strin
     let _ = QUERY_CONTEXT.try_with(|ctx| {
         let mut ctx = ctx.borrow_mut();
         let existing = &mut ctx.cte_property_mappings;
-        
+
         // Deep-merge: for each CTE alias, merge its property mappings
         for (cte_alias, new_props) in mappings {
             let entry = existing.entry(cte_alias).or_default();

@@ -6107,7 +6107,7 @@ fn expand_table_aliases_in_plan(
 }
 
 /// Extract FROM alias from CTE name by stripping "with_" prefix and "_cte[_<digits>]" suffix
-/// 
+///
 /// Examples:
 /// - "with_a_follows_cte" → "a_follows"
 /// - "with_a_follows_cte_1" → "a_follows"
@@ -6116,12 +6116,12 @@ fn expand_table_aliases_in_plan(
 fn extract_from_alias_from_cte_name(cte_name: &str) -> &str {
     // Strip optional "with_" prefix
     let base = cte_name.strip_prefix("with_").unwrap_or(cte_name);
-    
+
     // Handle unnumbered suffix "_cte"
     if let Some(stripped) = base.strip_suffix("_cte") {
         return stripped;
     }
-    
+
     // Handle numbered suffixes like "_cte_1", "_cte_2", ..., "_cte_<digits>"
     if let Some(pos) = base.rfind("_cte_") {
         let suffix = &base[pos + "_cte_".len()..];
@@ -6129,7 +6129,7 @@ fn extract_from_alias_from_cte_name(cte_name: &str) -> &str {
             return &base[..pos];
         }
     }
-    
+
     base
 }
 

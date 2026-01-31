@@ -168,7 +168,12 @@ pub fn rewrite_expression_with_property_mapping(
                     // Map the property to DB column
                     match map_property_to_db_column(cypher_property, &label) {
                         Ok(db_column) => {
-                            log::debug!("🔍 TRACING: Mapped property '{}' to DB column '{}' for label '{}'", cypher_property, db_column, label);
+                            log::debug!(
+                                "🔍 TRACING: Mapped property '{}' to DB column '{}' for label '{}'",
+                                cypher_property,
+                                db_column,
+                                label
+                            );
                             // IDEMPOTENCY CHECK: If the mapped column is the same as the input,
                             // the property is already a DB column name. Return as-is.
                             // This handles cases where the expression was already rewritten.

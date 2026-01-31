@@ -99,10 +99,7 @@ impl SelectBuilder for LogicalPlan {
                 let mut select_items = vec![];
 
                 for item in &projection.items {
-                    log::debug!(
-                        "🔍 TRACING: Processing SELECT item: {:?}",
-                        item.expression
-                    );
+                    log::debug!("🔍 TRACING: Processing SELECT item: {:?}", item.expression);
                     match &item.expression {
                         // Case 0: ColumnAlias (regular column reference)
                         LogicalExpr::ColumnAlias(col_alias) => {

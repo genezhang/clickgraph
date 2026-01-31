@@ -259,7 +259,9 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                 );
                 return plan;
             } else {
-                log::debug!("🔍 TRACING: NOT optional VLP - FROM uses VLP CTE - proceeding with rewriting");
+                log::debug!(
+                    "🔍 TRACING: NOT optional VLP - FROM uses VLP CTE - proceeding with rewriting"
+                );
             }
         } else {
             log::debug!("🔍 TRACING: No FROM ref found");
