@@ -9,7 +9,7 @@ import json
 
 SERVER_URL = "http://localhost:8080"
 
-def execute_execute_test_query(description, query, expected_keywords=None):
+def execute_test_query(description, query, expected_keywords=None):
     """Test a Cypher query and check for expected SQL keywords"""
     print(f"\n{'='*70}")
     print(f"Test: {description}")
@@ -27,7 +27,7 @@ def execute_execute_test_query(description, query, expected_keywords=None):
         
         if response.status_code == 200:
             result = response.json()
-            sql = result.get("sql", "")
+            sql = result.get("generated_sql", result.get("sql", ""))
             print(f"Generated SQL:")
             print(sql)
             
