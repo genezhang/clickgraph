@@ -971,9 +971,24 @@ impl BoltHandler {
 
         // Handle regular queries - parse again for query type check (no await yet)
         let query_type = {
-            let parsed_query = open_cypher_parser::parse_query(query).map_err(|e| {
-                BoltError::query_error(format!("Query type check parse failed: {}", e))
-            })?;
+            // Use parse_cypher_statement which handles UNION properly
+            let parsed_stmt = open_cypher_parser::parse_cypher_statement(query)
+                .map_err(|e| {
+                    BoltError::query_error(format!("Query type check parse failed: {}", e))
+                })?
+                .1;
+            
+            // Extract the main query from the statement
+            let parsed_query = match parsed_stmt {
+                CypherStatement::Query { query, .. } => query,
+                CypherStatement::ProcedureCall(_) => {
+                    // This shouldn't happen as we already handled procedures above
+                    return Err(BoltError::query_error(
+                        "Unexpected procedure call in regular query path".to_string(),
+                    ));
+                }
+            };
+            
             query_planner::get_query_type(&parsed_query)
         };
 
@@ -993,8 +1008,21 @@ impl BoltHandler {
         };
 
         // Re-parse for planning (necessary for Send safety)
-        let parsed_query_for_planning = open_cypher_parser::parse_query(query)
-            .map_err(|e| BoltError::query_error(format!("Query re-parse failed: {}", e)))?;
+        // Use parse_cypher_statement which handles UNION properly
+        let parsed_query_for_planning = {
+            let parsed_stmt = open_cypher_parser::parse_cypher_statement(query)
+                .map_err(|e| BoltError::query_error(format!("Query re-parse failed: {}", e)))?
+                .1;
+            
+            match parsed_stmt {
+                CypherStatement::Query { query, .. } => query,
+                CypherStatement::ProcedureCall(_) => {
+                    return Err(BoltError::query_error(
+                        "Unexpected procedure call in regular query path".to_string(),
+                    ));
+                }
+            }
+        };
 
         // Generate logical plan (returns both plan and context with VLP metadata)
         let (logical_plan, plan_ctx) = match query_planner::evaluate_read_query(
