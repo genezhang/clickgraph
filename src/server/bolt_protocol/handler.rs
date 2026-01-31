@@ -819,7 +819,7 @@ impl BoltHandler {
         use crate::open_cypher_parser::ast::CypherStatement;
 
         // Parse and determine if this is a procedure call (synchronously, no await)
-        let (is_procedure, proc_name, effective_schema) = {
+        let (is_procedure, is_union, proc_name, effective_schema) = {
             // Parse Cypher statement (could be query or procedure call)
             let parsed_stmt = match open_cypher_parser::parse_cypher_statement(query) {
                 Ok((_, stmt)) => stmt,
@@ -833,6 +833,8 @@ impl BoltHandler {
 
             // Extract what we need before dropping parsed_stmt
             let is_proc = matches!(parsed_stmt, CypherStatement::ProcedureCall(_));
+            let is_union_check = crate::procedures::is_procedure_union_query(&parsed_stmt);
+            
             let proc_name_opt = if let CypherStatement::ProcedureCall(ref pc) = parsed_stmt {
                 Some(pc.procedure_name.to_string())
             } else {
@@ -854,12 +856,64 @@ impl BoltHandler {
                 }
             };
 
-            (is_proc, proc_name_opt, eff_schema)
+            (is_proc, is_union_check, proc_name_opt, eff_schema)
         }; // parsed_stmt is dropped here!
 
         log::debug!("Statement execution using schema: {}", effective_schema);
 
-        // Handle procedure calls
+        // Handle UNION of procedure calls
+        if is_union {
+            log::info!("Executing UNION ALL of procedures via Bolt");
+
+            // Extract procedure names BEFORE any async calls
+            let proc_names = crate::procedures::extract_procedure_names_from_union(query)
+                .map_err(|e| BoltError::query_error(format!("Failed to parse UNION query: {}", e)))?;
+
+            let registry = crate::procedures::ProcedureRegistry::new();
+
+            // Execute UNION (no lifetimes involved)
+            let results = crate::procedures::execute_procedure_union(proc_names, &effective_schema, &registry)
+                .await
+                .map_err(|e| BoltError::query_error(format!("Procedure union execution failed: {}", e)))?;
+
+            // Convert to Bolt records
+            let bolt_records: Vec<Vec<BoltValue>> = results
+                .iter()
+                .map(|record| {
+                    let mut values: Vec<BoltValue> = Vec::new();
+                    let mut keys: Vec<_> = record.keys().collect();
+                    keys.sort();
+
+                    for key in keys {
+                        let json_value = &record[key];
+                        values.push(BoltValue::Json(json_value.clone()));
+                    }
+                    values
+                })
+                .collect();
+
+            // Cache results for PULL
+            self.cached_results = Some(bolt_records);
+
+            // Return metadata with field names
+            let mut metadata = HashMap::new();
+            if let Some(first_record) = results.first() {
+                let mut keys: Vec<_> = first_record.keys().map(|k| k.to_string()).collect();
+                keys.sort();
+                
+                metadata.insert(
+                    "fields".to_string(),
+                    Value::Array(keys.into_iter().map(Value::String).collect()),
+                );
+            } else {
+                metadata.insert("fields".to_string(), Value::Array(vec![]));
+            }
+            metadata.insert("t_first".to_string(), Value::Number(0.into()));
+
+            return Ok(metadata);
+        }
+
+        // Handle standalone procedure calls
         if is_procedure {
             let proc_name = proc_name.unwrap(); // Safe: we checked is_procedure
             log::info!("Executing procedure via Bolt: {}", proc_name);
