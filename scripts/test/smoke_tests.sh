@@ -1,8 +1,7 @@
 #!/bin/bash
 # Critical Smoke Tests - Run before any commit to catch regressions
 # These test the most commonly broken features after refactoring
-
-set -e
+# Note: We don't use 'set -e' to run all tests and report comprehensive results
 
 CLICKGRAPH_URL="${CLICKGRAPH_URL:-http://localhost:8080}"
 SCHEMA="${SCHEMA:-social_benchmark}"

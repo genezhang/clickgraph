@@ -198,13 +198,13 @@ fn build_multi_type_vlp_aliases(plan: &RenderPlan) -> HashMap<String, String> {
 /// Maps Cypher aliases (a, b) to CTE column names (start_xxx, end_xxx)
 /// For VLP, the CTE includes properties named using the Cypher property name: start_email, start_name, etc.
 fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
-    log::error!("🔍🔍🔍 TRACING: rewrite_vlp_select_aliases called - checking for VLP CTEs");
+    log::debug!("🔍 TRACING: rewrite_vlp_select_aliases called - checking for VLP CTEs");
     // 🔧 FIX: If FROM references a WITH CTE (not the raw VLP CTE), skip this rewriting
     // The WITH CTE has already transformed the columns, and the SELECT items reference
     // the WITH CTE columns, not the raw VLP CTE columns.
     if let Some(from_ref) = &plan.from.0 {
         if is_generated_cte_name(&from_ref.name) {
-            log::error!(
+            log::debug!(
                 "🔧 VLP: FROM uses WITH CTE '{}' - skipping VLP SELECT rewriting",
                 from_ref.name
             );
@@ -224,8 +224,8 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
         plan.ctes.0.len()
     );
     for (i, cte) in plan.ctes.0.iter().enumerate() {
-        log::error!(
-            "🔍🔍🔍 TRACING: CTE {}: name={}, vlp_start_alias={:?}",
+        log::debug!(
+            "🔍 TRACING: CTE {}: name={}, vlp_start_alias={:?}",
             i,
             cte.cte_name,
             cte.vlp_cypher_start_alias
@@ -241,16 +241,16 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
         // - VLP CTE is: LEFT JOIN vlp_a_b AS t ON a.user_id = t.start_id
         //
         // Detection: If FROM uses a regular table (not the VLP CTE), skip rewriting
-        log::error!("🔍🔍🔍 TRACING: VLP CTE detected: {}", vlp_cte.cte_name);
+        log::debug!("🔍 TRACING: VLP CTE detected: {}", vlp_cte.cte_name);
         if let Some(from_ref) = &plan.from.0 {
-            log::error!(
-                "🔍🔍🔍 TRACING: FROM ref name: '{}', starts_with vlp_: {}",
+            log::debug!(
+                "🔍 TRACING: FROM ref name: '{}', starts_with vlp_: {}",
                 from_ref.name,
                 from_ref.name.starts_with("vlp_")
             );
             if !from_ref.name.starts_with("vlp_") {
-                log::error!(
-                    "🔍🔍🔍 TRACING: OPTIONAL VLP detected - FROM uses anchor table '{}' - SKIPPING VLP SELECT rewriting",
+                log::debug!(
+                    "🔍 TRACING: OPTIONAL VLP detected - FROM uses anchor table '{}' - SKIPPING VLP SELECT rewriting",
                     from_ref.name
                 );
                 log::info!(
@@ -259,10 +259,10 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                 );
                 return plan;
             } else {
-                log::error!("🔍🔍🔍 TRACING: NOT optional VLP - FROM uses VLP CTE - proceeding with rewriting");
+                log::debug!("🔍 TRACING: NOT optional VLP - FROM uses VLP CTE - proceeding with rewriting");
             }
         } else {
-            log::error!("🔍🔍🔍 TRACING: No FROM ref found");
+            log::debug!("🔍 TRACING: No FROM ref found");
         }
 
         let start_alias = vlp_cte.vlp_cypher_start_alias.clone();

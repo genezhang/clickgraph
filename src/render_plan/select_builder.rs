@@ -99,8 +99,8 @@ impl SelectBuilder for LogicalPlan {
                 let mut select_items = vec![];
 
                 for item in &projection.items {
-                    log::error!(
-                        "🔍🔍🔍 TRACING: Processing SELECT item: {:?}",
+                    log::debug!(
+                        "🔍 TRACING: Processing SELECT item: {:?}",
                         item.expression
                     );
                     match &item.expression {

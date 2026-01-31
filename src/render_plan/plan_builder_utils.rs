@@ -288,7 +288,7 @@ pub fn rewrite_render_expr_for_vlp_with_from_alias(
                 );
 
                 // Update both the alias (to FROM alias) and the column name (with prefix)
-                prop_access.table_alias.0 = "t".to_string();
+                prop_access.table_alias.0 = vlp_from_alias.to_string();
                 if !prefix.is_empty() {
                     // Replace the column with the prefixed version
                     prop_access.column = PropertyValue::Column(prefixed_col);
@@ -412,7 +412,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                     );
 
                     // Rewrite to use the CTE column
-                    prop_access.table_alias.0 = "t".to_string();
+                    prop_access.table_alias.0 = vlp_from_alias.to_string();
                     prop_access.column = PropertyValue::Column(cte_column_name.clone());
                 } else {
                     // Fallback: construct from endpoint_position
@@ -431,7 +431,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                         fallback_col
                     );
 
-                    prop_access.table_alias.0 = "t".to_string();
+                    prop_access.table_alias.0 = vlp_from_alias.to_string();
                     prop_access.column = PropertyValue::Column(fallback_col);
                 }
             }
@@ -6106,6 +6106,33 @@ fn expand_table_aliases_in_plan(
     }
 }
 
+/// Extract FROM alias from CTE name by stripping "with_" prefix and "_cte[_<digits>]" suffix
+/// 
+/// Examples:
+/// - "with_a_follows_cte" → "a_follows"
+/// - "with_a_follows_cte_1" → "a_follows"
+/// - "with_a_follows_cte_999" → "a_follows"
+/// - "a_follows" → "a_follows" (no prefix/suffix to strip)
+fn extract_from_alias_from_cte_name(cte_name: &str) -> &str {
+    // Strip optional "with_" prefix
+    let base = cte_name.strip_prefix("with_").unwrap_or(cte_name);
+    
+    // Handle unnumbered suffix "_cte"
+    if let Some(stripped) = base.strip_suffix("_cte") {
+        return stripped;
+    }
+    
+    // Handle numbered suffixes like "_cte_1", "_cte_2", ..., "_cte_<digits>"
+    if let Some(pos) = base.rfind("_cte_") {
+        let suffix = &base[pos + "_cte_".len()..];
+        if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
+            return &base[..pos];
+        }
+    }
+    
+    base
+}
+
 /// Populate task-local CTE property mappings from a RenderPlan's SELECT items
 ///
 /// This enables PropertyAccessExp rendering to resolve CTE column names correctly.
@@ -6118,28 +6145,10 @@ fn populate_cte_property_mappings_from_render_plan(
     cte_name: &str,
     render_plan: &super::RenderPlan,
 ) {
-    // Compute FROM alias by stripping "with_" and "_cte_X" from CTE name
+    // Compute FROM alias by stripping "with_" and "_cte[_<digits>]" from CTE name
     // Example: "with_a_follows_cte_1" → "a_follows"
-    let from_alias = cte_name
-        .strip_prefix("with_")
-        .unwrap_or(cte_name)
-        .strip_suffix("_cte")
-        .or_else(|| {
-            cte_name
-                .strip_prefix("with_")
-                .and_then(|s| s.strip_suffix("_cte_1"))
-        })
-        .or_else(|| {
-            cte_name
-                .strip_prefix("with_")
-                .and_then(|s| s.strip_suffix("_cte_2"))
-        })
-        .or_else(|| {
-            cte_name
-                .strip_prefix("with_")
-                .and_then(|s| s.strip_suffix("_cte_3"))
-        })
-        .unwrap_or(cte_name);
+    // This handles arbitrary CTE numbering: _cte, _cte_1, _cte_2, ..., _cte_999, etc.
+    let from_alias = extract_from_alias_from_cte_name(cte_name);
 
     let mut cte_mappings: std::collections::HashMap<
         String,
