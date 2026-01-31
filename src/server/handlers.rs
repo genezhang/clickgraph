@@ -182,6 +182,55 @@ pub async fn query_handler(
     let clean_query_string = open_cypher_parser::strip_comments(clean_query_with_comments);
     let clean_query = clean_query_string.clone();
 
+    // Handle procedure calls early (before query context)
+    // Parse to check if it's a procedure call
+    let proc_name_opt =
+        if let Ok((_, parsed_stmt)) = open_cypher_parser::parse_cypher_statement(&clean_query) {
+            if let CypherStatement::ProcedureCall(proc_call) = parsed_stmt {
+                Some(proc_call.procedure_name.to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+    if let Some(proc_name) = proc_name_opt {
+        log::info!("Executing procedure: {}", proc_name);
+
+        let registry = crate::procedures::ProcedureRegistry::new();
+        let schema_name = schema_name_param.unwrap_or_else(|| "default".to_string());
+
+        // Check if procedure exists
+        if !registry.contains(&proc_name) {
+            return Err((
+                StatusCode::NOT_FOUND,
+                format!("Unknown procedure: {}", proc_name),
+            ));
+        }
+
+        // Execute procedure
+        let results = crate::procedures::executor::execute_procedure_by_name(
+            &proc_name,
+            &schema_name,
+            &registry,
+        )
+        .await;
+
+        match results {
+            Ok(r) => {
+                let response_json = crate::procedures::executor::format_as_json(r);
+                return Ok(Json(response_json).into_response());
+            }
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Procedure execution failed: {}", e),
+                ));
+            }
+        }
+    }
+
     // 🔧 FIX: Validate query syntax FIRST before schema lookup
     // This prevents misleading "Schema not found" errors when query has syntax errors
     // Quick syntax validation (doesn't need full planning)
