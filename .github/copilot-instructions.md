@@ -12,6 +12,25 @@ ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, writ
 - Remove unused code, imports, variables, and comments promptly to avoid clutter
 - When fixing a bug, step back and consider general patterns, not just the specific instance
 
+### Late-Stage Development Principles (Post-Alpha)
+**Current Phase**: Code quality and robustness over new features
+
+- **Investigation Before Claims**: Never make cleanup claims without thorough analysis
+  - "44 dead functions" → Actually 0 after proper investigation
+  - Check internal usage within same file, not just external references
+  - Module-level `#![allow(dead_code)]` can hide actual usage from tooling
+  - Use comprehensive grep including the target file itself
+
+- **Evidence-Based Decisions**: Verify before acting
+  - Test removal attempts compile before claiming code is dead
+  - Document investigation methodology when keeping seemingly large files
+  - Accept reasonable file sizes when functions are interconnected utilities
+
+- **No Hacking, No Guessing**: Solid logic only
+  - If uncertain, investigate thoroughly
+  - Don't rush to "cleanup" without understanding actual usage
+  - Large files may be intentional refactoring results (e.g., 16K → 10K + 4K split)
+
 ## Development Environment
 
 **Current Platform**: WSL Ubuntu 24.04 (migrated from Windows, November 2025)
