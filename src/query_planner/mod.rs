@@ -37,7 +37,10 @@ pub fn get_query_type(query_ast: &OpenCypherQueryAst) -> QueryType {
 
 /// Get query type from a CypherStatement (checks the first query)
 pub fn get_statement_query_type(statement: &CypherStatement) -> QueryType {
-    get_query_type(&statement.query)
+    match statement {
+        CypherStatement::Query { query, .. } => get_query_type(query),
+        CypherStatement::ProcedureCall(_) => QueryType::Procedure,
+    }
 }
 
 /// Evaluate a read query AST and return both the logical plan and the plan context.

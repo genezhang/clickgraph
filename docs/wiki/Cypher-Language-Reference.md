@@ -28,6 +28,10 @@ Complete syntax reference for Cypher queries supported by ClickGraph.
 - [Data Types](#data-types)
 - [Parameters](#parameters)
 - [Enterprise Features](#enterprise-features)
+- [System Procedures](#system-procedures) ⭐ **NEW**
+  - [Schema Metadata](#schema-metadata-procedures)
+  - [Graph Algorithms](#graph-algorithms)
+- [Query Examples](#query-examples)
 
 ---
 
@@ -1747,6 +1751,174 @@ curl -X POST http://localhost:8080/query \
 - ✅ Document schema → database mappings
 
 See [Multi-Tenancy & RBAC](Multi-Tenancy-RBAC.md) for complete documentation.
+
+---
+
+## System Procedures
+
+System procedures provide metadata about the graph schema and enable graph algorithms. Procedures are called using the `CALL` statement and can be used standalone or within queries.
+
+### Schema Metadata Procedures
+
+These procedures introspect the currently selected graph schema and return metadata. Useful for schema exploration, autocomplete features, and tool integration.
+
+> **Performance**: All metadata procedures execute against in-memory schema data (< 5ms). They do not query ClickHouse.
+
+#### db.labels()
+
+Returns all node labels in the current schema.
+
+**Syntax:**
+```cypher
+CALL db.labels()
+```
+
+**Returns:** Single column `label` containing label names (sorted alphabetically).
+
+**Example:**
+```cypher
+CALL db.labels()
+
+// Returns:
+╒═══════════════╕
+│ label         │
+╞═══════════════╡
+│ "Post"        │
+├───────────────┤
+│ "User"        │
+└───────────────┘
+```
+
+**Use Cases:**
+- Schema discovery
+- Neo4j Browser schema tab
+- Autocomplete in query editors
+- Validation before querying
+
+---
+
+#### db.relationshipTypes()
+
+Returns all relationship/edge types in the current schema.
+
+**Syntax:**
+```cypher
+CALL db.relationshipTypes()
+```
+
+**Returns:** Single column `relationshipType` containing edge type names (sorted alphabetically).
+
+**Example:**
+```cypher
+CALL db.relationshipTypes()
+
+// Returns:
+╒═══════════════════╕
+│ relationshipType  │
+╞═══════════════════╡
+│ "AUTHORED"        │
+├───────────────────┤
+│ "FOLLOWS"         │
+├───────────────────┤
+│ "LIKED"           │
+└───────────────────┘
+```
+
+**Use Cases:**
+- Discover available edge types
+- Build relationship selector UIs
+- Query planning and optimization
+
+**Note:** ClickGraph uses "edge" terminology (ISO standard) but returns `relationshipType` field for Neo4j compatibility.
+
+---
+
+#### db.propertyKeys()
+
+Returns all unique property keys across all nodes and edges.
+
+**Syntax:**
+```cypher
+CALL db.propertyKeys()
+```
+
+**Returns:** Single column `propertyKey` containing property names (sorted alphabetically, deduplicated).
+
+**Example:**
+```cypher
+CALL db.propertyKeys()
+
+// Returns:
+╒═══════════════╕
+│ propertyKey   │
+╞═══════════════╡
+│ "city"        │
+├───────────────┤
+│ "created_at"  │
+├───────────────┤
+│ "email"       │
+├───────────────┤
+│ "name"        │
+└───────────────┘
+```
+
+**Use Cases:**
+- Property autocomplete in query builders
+- Schema documentation generation
+- Data governance and cataloging
+
+---
+
+#### dbms.components()
+
+Returns ClickGraph version and edition information.
+
+**Syntax:**
+```cypher
+CALL dbms.components()
+```
+
+**Returns:** Three columns:
+- `name`: Always "ClickGraph"
+- `versions`: Array with single version string (e.g., `["0.6.1"]`)
+- `edition`: Always "community"
+
+**Example:**
+```cypher
+CALL dbms.components()
+
+// Returns:
+╒════════════╤═══════════╤═════════════╕
+│ name       │ versions  │ edition     │
+╞════════════╪═══════════╪═════════════╡
+│ ClickGraph │ ["0.6.1"] │ "community" │
+└────────────┴───────────┴─────────────┘
+```
+
+**Use Cases:**
+- Version checking for compatibility
+- Tool integration (Neo4j Browser, Neodash)
+- Diagnostic information
+
+---
+
+### Schema Selection for Procedures
+
+**HTTP API:**
+```bash
+# Specify schema per request
+curl -X POST http://localhost:8080/query \
+  -d '{"query":"CALL db.labels()", "schema_name":"ldbc_snb"}'
+```
+
+**Bolt Protocol:**
+```cypher
+// Connection bound to one schema
+// Uses default_schema from config or first loaded schema
+CALL db.labels()  // Uses connection's schema
+```
+
+See [Neo4j Tools Integration](Neo4j-Tools-Integration.md) for details on schema selection.
 
 ---
 

@@ -5,4 +5,6 @@ pub enum QueryType {
     Update,
     Delete,
     Call,
+    /// Standalone procedure call (e.g., CALL db.labels())
+    Procedure,
 }

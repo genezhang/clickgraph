@@ -32,6 +32,7 @@ pub mod config;
 pub mod graph_catalog;
 pub mod open_cypher_parser;
 pub mod packstream; // Vendored from neo4rs for Bolt protocol support
+pub mod procedures;
 pub mod query_planner;
 pub mod render_plan;
 pub mod server;

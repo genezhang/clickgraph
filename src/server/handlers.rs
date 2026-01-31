@@ -14,7 +14,7 @@ use tokio::io::AsyncBufReadExt;
 use crate::{
     clickhouse_query_generator,
     graph_catalog::graph_schema::GraphSchemaElement,
-    open_cypher_parser::{self},
+    open_cypher_parser::{self, ast::CypherStatement},
     query_planner::{self, types::QueryType},
     render_plan::plan_builder::RenderPlanBuilder,
 };
@@ -181,6 +181,64 @@ pub async fn query_handler(
     // Strip SQL-style comments (-- and /* */) before parsing
     let clean_query_string = open_cypher_parser::strip_comments(clean_query_with_comments);
     let clean_query = clean_query_string.clone();
+
+    // Handle procedure calls early (before query context)
+    // Parse to check if it's a procedure call
+    let proc_name_opt =
+        if let Ok((_, parsed_stmt)) = open_cypher_parser::parse_cypher_statement(&clean_query) {
+            if let CypherStatement::ProcedureCall(proc_call) = parsed_stmt {
+                Some(proc_call.procedure_name.to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+    if let Some(proc_name) = proc_name_opt {
+        log::info!("Executing procedure: {}", proc_name);
+
+        let registry = crate::procedures::ProcedureRegistry::new();
+        let schema_name = schema_name_param.unwrap_or_else(|| "default".to_string());
+
+        // Check if procedure exists
+        if !registry.contains(&proc_name) {
+            return Err((
+                StatusCode::NOT_FOUND,
+                format!("Unknown procedure: {}", proc_name),
+            ));
+        }
+
+        // Execute procedure
+        let results = crate::procedures::executor::execute_procedure_by_name(
+            &proc_name,
+            &schema_name,
+            &registry,
+        )
+        .await;
+
+        match results {
+            Ok(r) => {
+                let response_json = crate::procedures::executor::format_as_json(r);
+                return Ok(Json(response_json).into_response());
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                // Map known client-side errors (e.g., unknown schema) to 4xx instead of 500.
+                // This keeps INTERNAL_SERVER_ERROR reserved for genuine server failures.
+                if msg.contains("Schema not found") {
+                    return Err((
+                        StatusCode::NOT_FOUND,
+                        format!("Procedure execution failed: {}", msg),
+                    ));
+                }
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Procedure execution failed: {}", msg),
+                ));
+            }
+        }
+    }
 
     // 🔧 FIX: Validate query syntax FIRST before schema lookup
     // This prevents misleading "Schema not found" errors when query has syntax errors
@@ -398,6 +456,7 @@ async fn query_handler_inner(
             QueryType::Update => "update",
             QueryType::Delete => "delete",
             QueryType::Call => "call",
+            QueryType::Procedure => "procedure",
         }
         .to_string();
 
@@ -406,8 +465,17 @@ async fn query_handler_inner(
 
         if is_call {
             // Handle CALL queries (like PageRank) - use first query's AST
+            let query_ast = match &cypher_statement {
+                CypherStatement::Query { query, .. } => query,
+                CypherStatement::ProcedureCall(_) => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "Standalone procedure calls should not reach this path".to_string(),
+                    ));
+                }
+            };
             let logical_plan =
-                match query_planner::evaluate_call_query(cypher_statement.query, &graph_schema) {
+                match query_planner::evaluate_call_query(query_ast.clone(), &graph_schema) {
                     Ok(plan) => plan,
                     Err(e) => {
                         // Return 400 for call planning errors (both sql_only and normal mode)

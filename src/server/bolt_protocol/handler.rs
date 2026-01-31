@@ -816,42 +816,121 @@ impl BoltHandler {
         role: Option<String>,
         view_parameters: Option<HashMap<String, String>>,
     ) -> BoltResult<HashMap<String, Value>> {
-        // Parse and extract schema name synchronously (no await points, so Rc<RefCell<>> is safe)
-        let (effective_schema, query_type_check) = {
-            // Parse the Cypher query
-            let parsed_query = match open_cypher_parser::parse_query(query) {
-                Ok(ast) => ast,
+        use crate::open_cypher_parser::ast::CypherStatement;
+
+        // Parse and determine if this is a procedure call (synchronously, no await)
+        let (is_procedure, proc_name, effective_schema) = {
+            // Parse Cypher statement (could be query or procedure call)
+            let parsed_stmt = match open_cypher_parser::parse_cypher_statement(query) {
+                Ok((_, stmt)) => stmt,
                 Err(parse_error) => {
                     return Err(BoltError::query_error(format!(
-                        "Query parsing failed: {}",
+                        "Statement parsing failed: {}",
                         parse_error
                     )));
                 }
             };
 
-            // Determine schema_name
-            let effective_schema = if let Some(ref use_clause) = parsed_query.use_clause {
-                use_clause.database_name.to_string()
+            // Extract what we need before dropping parsed_stmt
+            let is_proc = matches!(parsed_stmt, CypherStatement::ProcedureCall(_));
+            let proc_name_opt = if let CypherStatement::ProcedureCall(ref pc) = parsed_stmt {
+                Some(pc.procedure_name.to_string())
             } else {
-                schema_name.as_deref().unwrap_or("default").to_string()
+                None
             };
 
-            // Get query type
-            let query_type = query_planner::get_query_type(&parsed_query);
+            // Determine effective schema
+            let eff_schema = match &parsed_stmt {
+                CypherStatement::Query { query, .. } => {
+                    if let Some(ref use_clause) = query.use_clause {
+                        use_clause.database_name.to_string()
+                    } else {
+                        schema_name.as_deref().unwrap_or("default").to_string()
+                    }
+                }
+                CypherStatement::ProcedureCall(_) => {
+                    // Procedures use connection's schema (Bolt is connection-bound)
+                    schema_name.as_deref().unwrap_or("default").to_string()
+                }
+            };
 
-            (effective_schema, query_type)
-        }; // parsed_query is dropped here!
+            (is_proc, proc_name_opt, eff_schema)
+        }; // parsed_stmt is dropped here!
+
+        log::debug!("Statement execution using schema: {}", effective_schema);
+
+        // Handle procedure calls
+        if is_procedure {
+            let proc_name = proc_name.unwrap(); // Safe: we checked is_procedure
+            log::info!("Executing procedure via Bolt: {}", proc_name);
+
+            // Get procedure registry
+            let registry = crate::procedures::ProcedureRegistry::new();
+
+            // Execute procedure
+            let results = crate::procedures::executor::execute_procedure_by_name(
+                &proc_name,
+                &effective_schema,
+                &registry,
+            )
+            .await
+            .map_err(|e| BoltError::query_error(format!("Procedure execution failed: {}", e)))?;
+
+            // Convert to Bolt records
+            let bolt_records: Vec<Vec<BoltValue>> = results
+                .iter()
+                .map(|record| {
+                    // Each record is a HashMap<String, serde_json::Value>
+                    // Convert to Vec<BoltValue> (values only, in consistent order)
+                    let mut values: Vec<BoltValue> = Vec::new();
+
+                    // Get keys in consistent order (sorted)
+                    let mut keys: Vec<_> = record.keys().collect();
+                    keys.sort();
+
+                    for key in keys {
+                        let json_value = &record[key];
+                        values.push(BoltValue::Json(json_value.clone()));
+                    }
+
+                    values
+                })
+                .collect();
+
+            // Cache results for PULL
+            self.cached_results = Some(bolt_records);
+
+            // Return metadata with field names
+            let mut metadata = HashMap::new();
+            if let Some(first_record) = results.first() {
+                let mut field_names: Vec<_> = first_record.keys().cloned().collect();
+                field_names.sort(); // Consistent order
+                metadata.insert(
+                    "fields".to_string(),
+                    Value::Array(field_names.into_iter().map(Value::String).collect()),
+                );
+            }
+            metadata.insert("t_first".to_string(), Value::Number(0.into()));
+
+            return Ok(metadata);
+        }
+
+        // Handle regular queries - parse again for query type check (no await yet)
+        let query_type = {
+            let parsed_query = open_cypher_parser::parse_query(query).map_err(|e| {
+                BoltError::query_error(format!("Query type check parse failed: {}", e))
+            })?;
+            query_planner::get_query_type(&parsed_query)
+        };
 
         // Check query type
-        if query_type_check != query_planner::types::QueryType::Read {
+        if query_type != query_planner::types::QueryType::Read {
             return Err(BoltError::query_error(
                 "Only read queries are currently supported via Bolt protocol".to_string(),
             ));
         }
 
-        log::debug!("Query execution using schema: {}", effective_schema);
-
-        // NOW we can await - no more Rc<RefCell<>> held
+        // Get graph schema (safe to await now - all Rc<RefCell<>> dropped)
         let graph_schema = match graph_catalog::get_graph_schema_by_name(&effective_schema).await {
             Ok(schema) => schema,
             Err(e) => {
@@ -859,7 +938,7 @@ impl BoltHandler {
             }
         };
 
-        // Re-parse for planning (yes, inefficient, but ensures Send safety)
+        // Re-parse for planning (necessary for Send safety)
         let parsed_query_for_planning = open_cypher_parser::parse_query(query)
             .map_err(|e| BoltError::query_error(format!("Query re-parse failed: {}", e)))?;
 
