@@ -202,6 +202,8 @@ pub fn generate_vlp_cte_via_manager(
         // Preserve column metadata from CteGenerationResult for deterministic column lookups
         columns: result.columns.clone(),
         from_alias: Some(result.from_alias.clone()),
+        // Pass through outer_where_filters for denormalized VLP end node filtering
+        outer_where_filters: result.outer_where_filters.clone(),
     };
 
     log::info!(
@@ -460,7 +462,7 @@ fn extract_node_labels(plan: &LogicalPlan) -> Option<Vec<String>> {
 fn should_use_join_expansion(
     graph_rel: &crate::query_planner::logical_plan::GraphRel,
     rel_types: &[String],
-    schema: &GraphSchema,
+    _schema: &GraphSchema,
 ) -> bool {
     log::info!(
         "🔍 VLP: should_use_join_expansion called with {} rel_types: {:?}",
@@ -484,43 +486,14 @@ fn should_use_join_expansion(
         }
     }
 
-    // Case 2: Multiple relationship types that connect to different node types
-    // This requires checking the schema to see what to_node each rel_type connects to
+    // Case 2: Multiple relationship types ALWAYS require UNION ALL CTE
+    // Even if they connect to the same node type, they may be in different tables
     if rel_types.len() > 1 {
         log::info!(
-            "🔍 VLP: Checking if {} rel_types lead to different end node types...",
+            "🎯 CTE: Multi-relationship-type VLP detected - {} relationship types require UNION ALL CTE",
             rel_types.len()
         );
-        let mut end_types = std::collections::HashSet::new();
-        for rel_type in rel_types {
-            log::info!("🔍 VLP: Looking up schema for rel_type '{}'...", rel_type);
-            if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
-                log::info!(
-                    "🔍 VLP: rel_type '{}' → to_node '{}'",
-                    rel_type,
-                    rel_schema.to_node
-                );
-                end_types.insert(rel_schema.to_node.clone());
-            } else {
-                log::warn!("⚠️  VLP: Failed to get schema for rel_type '{}'", rel_type);
-            }
-        }
-
-        log::info!(
-            "🔍 VLP: Found {} unique end_types: {:?}",
-            end_types.len(),
-            end_types
-        );
-
-        if end_types.len() > 1 {
-            log::info!(
-                "🎯 CTE: Multi-type VLP detected - {} relationship types lead to {} different end node types: {:?}",
-                rel_types.len(),
-                end_types.len(),
-                end_types
-            );
-            return true;
-        }
+        return true;
     }
 
     log::info!(
@@ -2056,10 +2029,31 @@ pub fn extract_ctes_with_context(
                         );
                     }
 
-                    // Create alias mapping for node aliases (standard 3-table schema)
+                    // 🔧 FIX: Create alias mapping based on schema type
+                    // For denormalized (SingleTableScan): both nodes map to relationship alias
+                    // For traditional: nodes map to start_node/end_node
+                    let pattern_ctx_for_mapping = recreate_pattern_schema_context(graph_rel, schema).ok();
+                    let (start_target_alias, end_target_alias) = if let Some(ref ctx) = pattern_ctx_for_mapping {
+                        match &ctx.join_strategy {
+                            JoinStrategy::SingleTableScan { .. } => {
+                                // Denormalized: both nodes accessed via relationship table alias
+                                log::info!("🔧 VLP Denormalized: Mapping start/end aliases to relationship table");
+                                (rel_alias.clone(), rel_alias.clone())
+                            }
+                            _ => {
+                                // Traditional/FK-Edge/etc: use start_node/end_node
+                                ("start_node".to_string(), "end_node".to_string())
+                            }
+                        }
+                    } else {
+                        // Fallback if pattern_ctx recreation fails
+                        ("start_node".to_string(), "end_node".to_string())
+                    };
+
+                    // Create alias mapping for node aliases
                     let alias_mapping = [
-                        (start_alias.clone(), "start_node".to_string()),
-                        (end_alias.clone(), "end_node".to_string()),
+                        (start_alias.clone(), start_target_alias),
+                        (end_alias.clone(), end_target_alias),
                     ];
 
                     // 🔧 HOLISTIC FIX: Create alias mapping for relationship based on schema pattern
@@ -2169,6 +2163,28 @@ pub fn extract_ctes_with_context(
                     std::mem::discriminant(graph_rel.right.as_ref())
                 );
 
+                // 🔧 FIX: Determine correct CTE aliases based on schema type
+                // For denormalized (SingleTableScan), use relationship alias
+                // For traditional, use "start_node"/"end_node"
+                let pattern_ctx_for_filters = recreate_pattern_schema_context(graph_rel, schema).ok();
+                let (start_cte_alias, end_cte_alias) = if let Some(ref ctx) = pattern_ctx_for_filters {
+                    match &ctx.join_strategy {
+                        JoinStrategy::SingleTableScan { .. } => {
+                            // Denormalized: both nodes accessed via relationship table alias
+                            (rel_alias.clone(), rel_alias.clone())
+                        }
+                        _ => {
+                            // Traditional/FK-Edge/etc: use start_node/end_node
+                            ("start_node".to_string(), "end_node".to_string())
+                        }
+                    }
+                } else {
+                    // Fallback if pattern_ctx recreation fails
+                    ("start_node".to_string(), "end_node".to_string())
+                };
+
+                log::info!("🔧 Filter CTE aliases: start='{}', end='{}'", start_cte_alias, end_cte_alias);
+
                 // Extract start node filter (from left side) with relationship context for denormalized schemas
                 let rel_type = graph_rel
                     .labels
@@ -2178,7 +2194,7 @@ pub fn extract_ctes_with_context(
                 if let Some(bound_start_filter) = extract_bound_node_filter(
                     &graph_rel.left,
                     &start_alias,
-                    "start_node",
+                    &start_cte_alias,
                     rel_type,
                     Some(crate::render_plan::cte_generation::NodeRole::From),
                 ) {
@@ -2197,7 +2213,7 @@ pub fn extract_ctes_with_context(
                 if let Some(bound_end_filter) = extract_bound_node_filter(
                     &graph_rel.right,
                     &end_alias,
-                    "end_node",
+                    &end_cte_alias,
                     rel_type,
                     Some(crate::render_plan::cte_generation::NodeRole::To),
                 ) {
@@ -2323,7 +2339,7 @@ pub fn extract_ctes_with_context(
                     );
 
                     // Build VlpContext with all necessary information
-                    if let Some(vlp_ctx) = build_vlp_context(graph_rel) {
+                    if let Some(vlp_ctx) = build_vlp_context(graph_rel, schema) {
                         // Generate inline JOINs using expand_fixed_length_joins_with_context
                         let (from_table, from_alias, joins) =
                             expand_fixed_length_joins_with_context(&vlp_ctx);
@@ -2505,6 +2521,7 @@ pub fn extract_ctes_with_context(
                                         },
                                     ],
                                     from_alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
+                                    outer_where_filters: None, // Multi-type VLP doesn't need outer filters
                                 };
 
                                 // Extract CTEs from child plans
@@ -3307,9 +3324,74 @@ pub fn extract_ctes_with_context(
             // Create the CTE
             let with_cte = Cte::new(
                 cte_name.clone(),
-                CteContent::Structured(Box::new(cte_render_plan)),
+                CteContent::Structured(Box::new(cte_render_plan.clone())),
                 false,
             );
+
+            // 🔧 FIX: Populate task-local CTE column mappings for SQL rendering
+            // Extract column mappings from the CTE SELECT items
+            // Format: (from_alias, property) → cte_column_name
+            // Example: ("a_follows", "name") → "a_name"
+            //
+            // CRITICAL: The FROM clause uses a simplified alias, not the full CTE name
+            // CTE name: "with_a_follows_cte_1" → FROM alias: "a_follows"
+            // We strip "with_" prefix and "_cte_X" suffix to get the FROM alias
+            let from_alias = cte_name
+                .strip_prefix("with_")
+                .unwrap_or(&cte_name)
+                .strip_suffix("_cte")
+                .or_else(|| {
+                    cte_name
+                        .strip_prefix("with_")
+                        .and_then(|s| s.strip_suffix("_cte_1"))
+                })
+                .or_else(|| {
+                    cte_name
+                        .strip_prefix("with_")
+                        .and_then(|s| s.strip_suffix("_cte_2"))
+                })
+                .or_else(|| {
+                    cte_name
+                        .strip_prefix("with_")
+                        .and_then(|s| s.strip_suffix("_cte_3"))
+                })
+                .unwrap_or(&cte_name);
+            
+            let mut cte_mappings: std::collections::HashMap<String, std::collections::HashMap<String, String>> = std::collections::HashMap::new();
+            let mut alias_mapping: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            
+            for select_item in &cte_render_plan.select.items {
+                if let Some(col_alias) = &select_item.col_alias {
+                    let col_name = col_alias.0.clone();
+                    
+                    // CTE columns can be:
+                    // 1. Prefixed: "a_name", "a_user_id" → property is after underscore
+                    // 2. Unprefixed: "follows" (aggregate result) → property is the column name itself
+                    
+                    if let Some(underscore_pos) = col_name.find('_') {
+                        // Case 1: Prefixed column like "a_name"
+                        let property = &col_name[underscore_pos + 1..];
+                        log::debug!("🔧 CTE mapping (prefixed): {}.{} → {}", from_alias, property, col_name);
+                        alias_mapping.insert(property.to_string(), col_name.clone());
+                    } else {
+                        // Case 2: Unprefixed column like "follows" (aggregate or scalar)
+                        // Map the column name to itself
+                        log::debug!("🔧 CTE mapping (unprefixed): {}.{} → {}", from_alias, &col_name, &col_name);
+                        alias_mapping.insert(col_name.clone(), col_name.clone());
+                    }
+                }
+            }
+            
+            // Map the FROM alias (e.g., "a_follows") to the property mappings
+            cte_mappings.insert(from_alias.to_string(), alias_mapping);
+            
+            // Log before moving cte_mappings
+            let num_properties = cte_mappings.get(from_alias).map(|m| m.len()).unwrap_or(0);
+            log::info!("🔧 Populated CTE property mappings: CTE '{}' → FROM alias '{}' with {} properties", 
+                      cte_name, from_alias, num_properties);
+            
+            // Store in task-local context for SQL rendering
+            crate::server::query_context::set_cte_property_mappings(cte_mappings);
 
             // CRITICAL: Insert WITH clause CTE at the BEGINNING of the list
             // This ensures it's in the first CTE group and doesn't get nested
@@ -3998,6 +4080,7 @@ fn is_node_denormalized_from_graph_node(plan: &LogicalPlan) -> bool {
 /// This gathers all VLP-related information into a single struct
 pub fn build_vlp_context(
     graph_rel: &crate::query_planner::logical_plan::GraphRel,
+    schema: &GraphSchema,
 ) -> Option<VlpContext> {
     let spec = graph_rel.variable_length.as_ref()?;
 
@@ -4016,8 +4099,50 @@ pub fn build_vlp_context(
 
     // Extract relationship info
     let rel_alias = graph_rel.alias.clone();
-    let rel_table = extract_table_name(&graph_rel.center)?;
-    let rel_cols = extract_relationship_columns(&graph_rel.center)?;
+    
+    // 🔧 FIX: For VLP patterns, graph_rel.center might be Empty instead of ViewScan
+    // Fall back to looking up the relationship table from schema using the relationship type
+    let rel_table = extract_table_name(&graph_rel.center).or_else(|| {
+        // Get relationship type from graph_rel.labels
+        let rel_type = graph_rel.labels.as_ref()?.first()?;
+        log::info!("🔍 VLP: center is not ViewScan, looking up relationship type '{}' in schema", rel_type);
+        
+        // Look up relationship schema by type
+        let rel_schemas = schema.rel_schemas_for_type(rel_type);
+        if rel_schemas.is_empty() {
+            log::warn!("⚠️  VLP: No relationship schema found for type '{}'", rel_type);
+            return None;
+        }
+        
+        if rel_schemas.len() > 1 {
+            log::warn!("⚠️  VLP: Multiple relationship schemas found for type '{}', using first one", rel_type);
+        }
+        
+        let rel_schema = rel_schemas[0];
+        let full_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+        log::info!("✓ VLP: Resolved relationship type '{}' to table '{}'", rel_type, full_table);
+        Some(full_table)
+    })?;
+    
+    // 🔧 FIX: For VLP patterns, also fall back to schema for relationship columns
+    let rel_cols = extract_relationship_columns(&graph_rel.center).or_else(|| {
+        // Get relationship type from graph_rel.labels
+        let rel_type = graph_rel.labels.as_ref()?.first()?;
+        log::info!("🔍 VLP: center has no columns, looking up relationship type '{}' in schema", rel_type);
+        
+        // Look up relationship schema by type
+        let rel_schemas = schema.rel_schemas_for_type(rel_type);
+        if rel_schemas.is_empty() {
+            log::warn!("⚠️  VLP: No relationship schema found for type '{}'", rel_type);
+            return None;
+        }
+        
+        let rel_schema = rel_schemas[0];
+        Some(RelationshipColumns {
+            from_id: rel_schema.from_id.clone(),
+            to_id: rel_schema.to_id.clone(),
+        })
+    })?;
 
     // 🔧 PARAMETERIZED VIEW FIX: Extract parameterized table names for chained join optimization
     let start_table_parameterized = extract_parameterized_table_name(&graph_rel.left);

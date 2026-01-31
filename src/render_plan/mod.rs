@@ -294,6 +294,8 @@ pub struct Cte {
     pub columns: Vec<CteColumnMetadata>,
     /// The table alias to use when referencing this CTE's columns (e.g., "t" for VLP CTEs)
     pub from_alias: Option<String>,
+    /// Filters to apply to outer SELECT when referencing this CTE (for denormalized VLP end_node_filters)
+    pub outer_where_filters: Option<String>,
 }
 
 impl Cte {
@@ -314,6 +316,7 @@ impl Cte {
             vlp_path_variable: None,
             columns: Vec::new(),
             from_alias: None,
+            outer_where_filters: None,
         }
     }
 
@@ -365,6 +368,7 @@ impl Cte {
                 },
             ],
             from_alias: Some(VLP_CTE_FROM_ALIAS.to_string()), // VLP CTEs use standard FROM alias
+            outer_where_filters: None,
         }
     }
 
@@ -400,6 +404,7 @@ impl Cte {
             vlp_path_variable: path_variable,
             columns,
             from_alias: Some(from_alias),
+            outer_where_filters: None,
         }
     }
 

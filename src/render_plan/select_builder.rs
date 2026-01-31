@@ -99,6 +99,7 @@ impl SelectBuilder for LogicalPlan {
                 let mut select_items = vec![];
 
                 for item in &projection.items {
+                    log::error!("🔍🔍🔍 TRACING: Processing SELECT item: {:?}", item.expression);
                     match &item.expression {
                         // Case 0: ColumnAlias (regular column reference)
                         LogicalExpr::ColumnAlias(col_alias) => {
@@ -354,6 +355,42 @@ impl SelectBuilder for LogicalPlan {
                                 col_name
                             );
 
+                            // ✅ DETERMINISTIC LOGIC: Check if this variable comes from a CTE
+                            // VLP endpoint nodes and WITH clause variables are CTE-sourced
+                            // For CTE variables, properties should reference the CTE alias directly, 
+                            // NOT use denormalized property table resolution
+                            log::error!("🔍🔍🔍 TRACING: Checking TypedVariable for alias '{}'", cypher_alias);
+                            if let Some(ctx) = plan_ctx {
+                                if let Some(typed_var) = ctx.lookup_variable(cypher_alias) {
+                                    log::error!("🔍🔍🔍 TRACING: Found typed_var for '{}', source={:?}", cypher_alias, typed_var.source());
+                                    if matches!(typed_var.source(), crate::query_planner::typed_variable::VariableSource::Cte { .. }) {
+                                        log::error!(
+                                            "🔍🔍🔍 TRACING: Variable '{}' is CTE-sourced - skipping get_properties_with_table_alias",
+                                            cypher_alias
+                                        );
+                                        // Pass through as-is - will use CTE alias from PropertyAccessExp
+                                        select_items.push(SelectItem {
+                                            expression: item.expression.clone().try_into()?,
+                                            col_alias: item
+                                                .col_alias
+                                                .as_ref()
+                                                .map(|ca| ca.clone().try_into())
+                                                .transpose()?,
+                                        });
+                                        continue;
+                                    } else {
+                                        log::error!(
+                                            "🔍🔍🔍 TRACING: Variable '{}' is NOT CTE-sourced (source={:?}) - will call get_properties_with_table_alias",
+                                            cypher_alias, typed_var.source()
+                                        );
+                                    }
+                                } else {
+                                    log::error!("🔍🔍🔍 TRACING: Variable '{}' NOT found in TypedVariable registry", cypher_alias);
+                                }
+                            } else {
+                                log::error!("🔍🔍🔍 TRACING: No plan_ctx available for TypedVariable lookup");
+                            }
+
                             log::warn!("   → trying get_properties_with_table_alias...");
 
                             // For denormalized nodes in edges, we need to get the actual table alias
@@ -361,18 +398,15 @@ impl SelectBuilder for LogicalPlan {
                             if let Ok((_properties, Some(actual_table_alias))) =
                                 self.get_properties_with_table_alias(cypher_alias)
                             {
-                                // Hack for VLP denormalized: if col_name contains "Origin" or "Dest", use "t"
-                                let table_alias_to_use =
-                                    if col_name.contains("Origin") || col_name.contains("Dest") {
-                                        "t"
-                                    } else {
-                                        &actual_table_alias
-                                    };
+                                log::warn!(
+                                    "🔍 Using actual table alias '{}' for {}.{}",
+                                    actual_table_alias,
+                                    cypher_alias,
+                                    col_name
+                                );
                                 select_items.push(SelectItem {
                                     expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: RenderTableAlias(
-                                            table_alias_to_use.to_string(),
-                                        ),
+                                        table_alias: RenderTableAlias(actual_table_alias),
                                         column: PropertyValue::Column(col_name.to_string()),
                                     }),
                                     col_alias: item

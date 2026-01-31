@@ -198,7 +198,10 @@ pub fn clear_relationship_columns() {
 /// Set CTE property mappings for the current query
 pub fn set_cte_property_mappings(mappings: HashMap<String, HashMap<String, String>>) {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
-        ctx.borrow_mut().cte_property_mappings = mappings;
+        // Merge new mappings with existing ones instead of overwriting
+        let mut existing = std::mem::take(&mut ctx.borrow_mut().cte_property_mappings);
+        existing.extend(mappings);
+        ctx.borrow_mut().cte_property_mappings = existing;
     });
 }
 

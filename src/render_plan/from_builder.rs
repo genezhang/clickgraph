@@ -586,6 +586,54 @@ impl LogicalPlan {
             }
         }
 
+        // Helper to find multi-type relationship patterns (e.g., [:FOLLOWS|AUTHORED])
+        // NOTE: Only returns multi-type if it's non-VLP or implicit *1
+        // True VLP multi-type (like [:A|B]*2..5) is handled by find_vlp_graph_rel
+        fn find_multi_type_graph_rel(plan: &LogicalPlan) -> Option<&GraphRel> {
+            match plan {
+                LogicalPlan::GraphRel(gr) => {
+                    // Check if this GraphRel has multiple relationship types
+                    if let Some(ref labels) = gr.labels {
+                        if labels.len() > 1 {
+                            // Check if it's VLP (but not implicit *1)
+                            let is_implicit_one_hop = gr.variable_length.as_ref()
+                                .map(|spec| spec.min_hops == Some(1) && spec.max_hops == Some(1))
+                                .unwrap_or(false);
+                            let is_no_vlp_or_implicit = gr.variable_length.is_none() || is_implicit_one_hop;
+                            
+                            if is_no_vlp_or_implicit {
+                                log::debug!(
+                                    "🔍 find_multi_type_graph_rel: Found multi-type GraphRel (non-VLP or implicit *1) with {} labels: {:?}",
+                                    labels.len(),
+                                    labels
+                                );
+                                return Some(gr);
+                            } else {
+                                log::debug!(
+                                    "🔍 find_multi_type_graph_rel: Skipping multi-type GraphRel (true VLP) with {} labels: {:?}",
+                                    labels.len(),
+                                    labels
+                                );
+                            }
+                        }
+                    }
+                    // Check left side
+                    if let Some(multi) = find_multi_type_graph_rel(&gr.left) {
+                        return Some(multi);
+                    }
+                    // Check right side
+                    find_multi_type_graph_rel(&gr.right)
+                }
+                LogicalPlan::Projection(proj) => find_multi_type_graph_rel(&proj.input),
+                LogicalPlan::Filter(filter) => find_multi_type_graph_rel(&filter.input),
+                LogicalPlan::GroupBy(group_by) => find_multi_type_graph_rel(&group_by.input),
+                LogicalPlan::Unwind(u) => find_multi_type_graph_rel(&u.input),
+                LogicalPlan::GraphJoins(gj) => find_multi_type_graph_rel(&gj.input),
+                LogicalPlan::GraphNode(gn) => find_multi_type_graph_rel(&gn.input),
+                _ => None,
+            }
+        }
+
         // Helper to find GraphNode for node-only queries
         fn find_graph_node(plan: &LogicalPlan) -> Option<&GraphNode> {
             match plan {
@@ -626,8 +674,17 @@ impl LogicalPlan {
 
             // A.1: Check for variable-length path FIRST (before other checks)
             // Use find_vlp_graph_rel to search entire plan tree (handles chained patterns)
+            // IMPORTANT: Exclude implicit *1 patterns (multi-type), which are handled separately
             if let Some(graph_rel) = find_vlp_graph_rel(&graph_joins.input) {
+                // Check if it's a true VLP (not implicit *1 from multi-type)
+                let is_implicit_one_hop = graph_rel.variable_length.as_ref()
+                    .map(|spec| spec.min_hops == Some(1) && spec.max_hops == Some(1))
+                    .unwrap_or(false);
+                
+                let is_true_vlp = !is_implicit_one_hop;
                 let is_optional = graph_rel.is_optional.unwrap_or(false);
+
+                if is_true_vlp {
 
                 if is_optional {
                     // OPTIONAL VLP: Don't use VLP CTE as FROM. Instead, find the anchor node
@@ -680,6 +737,7 @@ impl LogicalPlan {
                         use_final: false,
                     }));
                 }
+                } // end if is_true_vlp
             }
 
             // A.2: Denormalized edge pattern - use edge table directly
@@ -770,7 +828,31 @@ impl LogicalPlan {
         // ALSO: After WITH scope barriers, anchor_table may be None if the original anchor
         // was not exported by the WITH. In this case, pick the first join as anchor.
 
-        // B.0: CRITICAL - Check for VLP in input FIRST
+        // B.0: CRITICAL - Check for multi-type relationships FIRST
+        // Multi-type patterns like [:FOLLOWS|AUTHORED] generate a CTE vlp_multi_type_a_b
+        // that needs to be used as FROM instead of trying to use non-existent rel_a_b table
+        log::info!("🔍 FROM GraphJoins: Checking for multi-type relationship...");
+        if let Some(graph_rel) = find_multi_type_graph_rel(&graph_joins.input) {
+            let start_alias = &graph_rel.left_connection;
+            let end_alias = &graph_rel.right_connection;
+            let cte_name = format!("vlp_multi_type_{}_{}", start_alias, end_alias);
+
+            log::info!(
+                "🎯 MULTI-TYPE: Using CTE '{}' as FROM (relationship types: {:?})",
+                cte_name,
+                graph_rel.labels
+            );
+
+            return Ok(Some(ViewTableRef {
+                source: Arc::new(LogicalPlan::Empty),
+                name: cte_name,
+                alias: Some(VLP_CTE_FROM_ALIAS.to_string()), // Standard VLP alias
+                use_final: false,
+            }));
+        }
+        log::info!("🔍 FROM GraphJoins: No multi-type found, checking VLP...");
+
+        // B.1: CRITICAL - Check for VLP in input NEXT
         // When VLP is followed by additional relationships (chained pattern like
         // (a)-[*]->(b)-[:REL]->(c)), the anchor might be set to 'b', but we need
         // the VLP CTE as FROM, with 'b' being accessed via t.end_* columns.
