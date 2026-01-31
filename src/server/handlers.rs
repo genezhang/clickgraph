@@ -391,6 +391,15 @@ async fn query_handler_inner(
         };
         metrics.parse_time = parse_start.elapsed().as_secs_f64();
 
+        // Handle standalone procedure calls (bypass query planner)
+        // TODO: Complete implementation in Phase 2
+        if matches!(cypher_statement, CypherStatement::ProcedureCall(_)) {
+            return Err((
+                StatusCode::NOT_IMPLEMENTED,
+                "Procedure calls not yet fully implemented (Phase 2)".to_string(),
+            ));
+        }
+
         let query_type = query_planner::get_statement_query_type(&cypher_statement);
         let query_type_str = match query_type {
             QueryType::Read => "read",
