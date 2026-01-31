@@ -4,6 +4,7 @@ Common issues, solutions, and debugging techniques for ClickGraph.
 
 ## Table of Contents
 - [Connection Issues](#connection-issues)
+- [Neo4j Tools & Bolt Issues](#neo4j-tools--bolt-issues) ⭐ **NEW**
 - [Schema Loading Issues](#schema-loading-issues)
 - [Query Errors](#query-errors)
 - [Performance Issues](#performance-issues)
@@ -180,6 +181,226 @@ Password: test_pass
 # Try with official Neo4j drivers instead:
 from neo4j import GraphDatabase
 driver = GraphDatabase.driver("bolt://localhost:7687")
+```
+
+---
+
+## Neo4j Tools & Bolt Issues
+
+### Neo4j Browser Shows "Empty Database"
+
+**Symptoms**:
+- Neo4j Browser connects successfully
+- Schema tab shows no labels or relationship types
+- Queries return no results
+
+**Cause**: Schema not loaded or wrong schema selected
+
+**Solutions**:
+
+**1. Verify schema is loaded:**
+```bash
+# Check server logs
+tail -f clickgraph.log | grep -i "schema"
+
+# Should see: "Loaded graph schema: social_benchmark"
+```
+
+**2. Test procedures:**
+```cypher
+// These should return results
+CALL dbms.components()
+CALL db.labels()
+CALL db.relationshipTypes()
+```
+
+**3. Set explicit default schema** in your YAML config:
+```yaml
+default_schema: social_benchmark  # Add this at top of file
+
+schemas:
+  - name: social_benchmark
+    nodes:
+      - name: User
+        # ...
+```
+
+**4. Use single-schema configuration:**
+```bash
+# Load only the schema you want to explore
+export GRAPH_CONFIG_PATH="schemas/examples/social_network.yaml"
+cargo run
+```
+
+**5. Check data exists:**
+```cypher
+// Test with simple query
+MATCH (n) RETURN count(n) AS node_count
+```
+
+---
+
+### "Schema not found: xxx" from Procedures
+
+**Symptoms**:
+```
+CALL db.labels()
+ERROR: Procedure execution failed: Schema not found: xxx
+```
+
+**Cause**: Requested schema doesn't exist or name mismatch
+
+**Solutions**:
+
+**1. List loaded schemas:**
+```bash
+# Check server startup output
+grep "Loaded graph schema" clickgraph.log
+
+# Or check config file
+cat $GRAPH_CONFIG_PATH | grep "name:"
+```
+
+**2. Verify default_schema setting:**
+```yaml
+# In your schema YAML
+default_schema: social_benchmark  # Must match a schema name below
+
+schemas:
+  - name: social_benchmark  # Exact match required
+    # ...
+```
+
+**3. Check YAML syntax:**
+```bash
+# Validate YAML structure
+python3 -c "import yaml; yaml.safe_load(open('schemas/your_schema.yaml'))"
+```
+
+**4. Restart after config changes:**
+```bash
+# Config is loaded at startup only
+docker-compose restart  # Docker
+# Or restart cargo run process
+```
+
+---
+
+### Bolt Connection Works but Queries Fail
+
+**Symptoms**:
+- `CALL dbms.components()` works
+- Regular queries fail with schema errors
+
+**Causes**:
+
+**1. Schema selection issue:**
+```yaml
+# Solution: Set default_schema explicitly
+default_schema: my_graph  # Use this schema for Bolt connections
+
+schemas:
+  - name: my_graph
+    # ...
+```
+
+**2. No data in ClickHouse:**
+```sql
+-- Check ClickHouse directly
+clickhouse-client --query "SELECT count(*) FROM my_database.users_table"
+```
+
+**3. Schema-to-table mapping incorrect:**
+```yaml
+# Verify table names match ClickHouse
+nodes:
+  - name: User
+    from_database: my_database    # Check database name
+    from_table: users_table       # Check table name exists
+```
+
+---
+
+### Tools Don't Send Database Parameter
+
+**Symptoms**:
+- Neo4j Browser connects but uses wrong schema
+- Multiple schemas loaded but tool uses unexpected one
+
+**Explanation**:
+
+Current Neo4j Bolt 5.x drivers do NOT send database parameter in protocol messages (tested with Python driver v6.0.3). They use internal connection pooling.
+
+**ClickGraph's fallback logic:**
+1. Check HELLO message for database → Not sent by tools ❌
+2. Check LOGON message for database → Not sent by tools ❌
+3. Check RUN message for database → Not sent by tools ❌
+4. ✅ Use `default_schema` from config, or first loaded schema
+
+**Solutions**:
+
+**Single Schema (Recommended):**
+```yaml
+# Option 1: Explicit default
+default_schema: production_graph
+
+schemas:
+  - name: production_graph
+    # ...
+```
+
+```yaml
+# Option 2: Load only one schema (becomes default)
+schemas:
+  - name: my_graph  # This is the only schema, so it's default
+    # ...
+```
+
+**Multiple Schemas (Workaround):**
+
+Run separate ClickGraph instances for different schemas:
+```bash
+# Terminal 1: Social network on port 7687
+export GRAPH_CONFIG_PATH="schemas/social_network.yaml"
+cargo run -- --bolt-port 7687
+
+# Terminal 2: LDBC on port 7688
+export GRAPH_CONFIG_PATH="schemas/ldbc_snb.yaml"
+cargo run -- --bolt-port 7688
+```
+
+Connect tools to different ports to access different schemas.
+
+---
+
+### Procedures Return Wrong Schema Data
+
+**Symptoms**:
+```cypher
+CALL db.labels()
+// Returns labels from different schema than expected
+```
+
+**Cause**: Default schema not set correctly
+
+**Solution**:
+
+Check schema order in config:
+```yaml
+default_schema: expected_schema  # Add explicit default
+
+schemas:
+  - name: expected_schema  # Or ensure this is FIRST in list
+    # ...
+  - name: other_schema
+    # ...
+```
+
+**Verification:**
+```cypher
+// Check which schema is active
+CALL dbms.components()  // Verify server is responding
+CALL db.labels()        // Check if expected labels appear
 ```
 
 ---
