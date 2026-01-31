@@ -24,13 +24,22 @@ pub mod typed_variable;
 pub mod types;
 
 pub fn get_query_type(query_ast: &OpenCypherQueryAst) -> QueryType {
-    if query_ast.call_clause.is_some() {
+    // CALL with RETURN (e.g., CALL db.labels() YIELD label RETURN ...) is a read query
+    // Standalone CALL without RETURN is handled separately as CypherStatement::ProcedureCall
+    let has_call = query_ast.call_clause.is_some();
+    let has_return = query_ast.return_clause.is_some();
+    
+    log::debug!("get_query_type: has_call={}, has_return={}", has_call, has_return);
+    
+    if has_call && !has_return {
+        log::debug!("  -> Classified as Call");
         QueryType::Call
     } else if query_ast.delete_clause.is_some() {
         QueryType::Delete
     } else if query_ast.set_clause.is_some() || query_ast.remove_clause.is_some() {
         QueryType::Update
     } else {
+        log::debug!("  -> Classified as Read");
         QueryType::Read
     }
 }
