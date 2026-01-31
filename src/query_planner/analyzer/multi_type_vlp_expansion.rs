@@ -274,6 +274,7 @@ mod tests {
                 denormalized_source_table: None,
                 label_column: None,
                 label_value: None,
+                node_id_types: None,
             },
         );
 
@@ -297,6 +298,7 @@ mod tests {
                 denormalized_source_table: None,
                 label_column: None,
                 label_value: None,
+                node_id_types: None,
             },
         );
 
@@ -330,6 +332,7 @@ mod tests {
                 to_node_properties: None,
                 is_fk_edge: false,
                 constraints: None,
+                edge_id_types: None,
             },
         );
 
@@ -363,6 +366,7 @@ mod tests {
                 to_node_properties: None,
                 is_fk_edge: false,
                 constraints: None,
+                edge_id_types: None,
             },
         );
 

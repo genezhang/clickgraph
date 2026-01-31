@@ -1662,65 +1662,49 @@ impl JoinBuilder for LogicalPlan {
 
                 if !is_bidirectional {
                     // Only compile constraints for directional edges (bidirectional is complex OR condition)
-                    if let Some(schema_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-                        log::info!("🔍 GLOBAL_SCHEMAS lock acquired");
-                        if let Ok(schemas) = schema_lock.try_read() {
-                            log::info!(
-                                "🔍 Schemas read lock acquired, available schemas: {:?}",
-                                schemas.keys().collect::<Vec<_>>()
-                            );
-                            // Try to find schema - check all available schemas
-                            // Priority: "default", then empty string, then any other schema
-                            let mut schema_to_use = None;
-                            if let Some(schema) = schemas.get("default") {
-                                schema_to_use = Some(("default", schema));
-                            } else if let Some(schema) = schemas.get("") {
-                                schema_to_use = Some(("", schema));
-                            } else if let Some((name, schema)) = schemas.iter().next() {
-                                // Use first available schema if no default
-                                schema_to_use = Some((name.as_str(), schema));
-                            }
+                    // Use the passed schema parameter instead of accessing GLOBAL_SCHEMAS
+                    log::info!("🔍 Using passed schema: {}", schema.database());
 
-                            if let Some((schema_name, schema)) = schema_to_use {
-                                log::info!("🔍 Using schema: {}", schema_name);
-                                // Get the first relationship type (for multi-type like [:TYPE1|TYPE2], constraints not supported)
-                                if let Some(labels_vec) = &graph_rel.labels {
-                                    log::info!("🔍 Relationship labels: {:?}", labels_vec);
-                                    if let Some(rel_type) = labels_vec.first() {
-                                        log::info!("🔍 Looking up relationship type: {}", rel_type);
-                                        // Look up relationship schema by type
-                                        if let Some(rel_schema) =
-                                            schema.get_relationships_schema_opt(rel_type)
-                                        {
-                                            log::info!("🔍 Found relationship schema for {}, constraints={:?}", rel_type, rel_schema.constraints);
-                                            // Check if constraints are defined
-                                            if let Some(ref constraint_expr) =
-                                                rel_schema.constraints
-                                            {
-                                                log::info!(
-                                                    "🔍 Found constraint expression: {}",
-                                                    constraint_expr
-                                                );
-                                                // Get node schemas for from/to nodes
-                                                log::info!(
-                                                    "🔍 Node labels: start={:?}, end={:?}",
-                                                    start_label,
-                                                    end_label
-                                                );
-                                                if let (Some(start_label), Some(end_label)) =
-                                                    (&start_label, &end_label)
-                                                {
-                                                    log::info!("🔍 Looking up node schemas: start={}, end={}", start_label, end_label);
-                                                    if let (
-                                                        Some(from_node_schema),
-                                                        Some(to_node_schema),
-                                                    ) = (
-                                                        schema.node_schema_opt(start_label),
-                                                        schema.node_schema_opt(end_label),
-                                                    ) {
-                                                        log::info!("🔍 Found both node schemas, compiling constraint...");
-                                                        // Compile the constraint expression
-                                                        match crate::graph_catalog::constraint_compiler::compile_constraint(
+                    // Get the first relationship type (for multi-type like [:TYPE1|TYPE2], constraints not supported)
+                    if let Some(labels_vec) = &graph_rel.labels {
+                        log::info!("🔍 Relationship labels: {:?}", labels_vec);
+                        if let Some(rel_type) = labels_vec.first() {
+                            log::info!("🔍 Looking up relationship type: {}", rel_type);
+                            // Look up relationship schema by type using passed schema
+                            if let Some(rel_schema) = schema.get_relationships_schema_opt(rel_type)
+                            {
+                                log::info!(
+                                    "🔍 Found relationship schema for {}, constraints={:?}",
+                                    rel_type,
+                                    rel_schema.constraints
+                                );
+                                // Check if constraints are defined
+                                if let Some(ref constraint_expr) = rel_schema.constraints {
+                                    log::info!(
+                                        "🔍 Found constraint expression: {}",
+                                        constraint_expr
+                                    );
+                                    // Get node schemas for from/to nodes
+                                    log::info!(
+                                        "🔍 Node labels: start={:?}, end={:?}",
+                                        start_label,
+                                        end_label
+                                    );
+                                    if let (Some(start_label), Some(end_label)) =
+                                        (&start_label, &end_label)
+                                    {
+                                        log::info!(
+                                            "🔍 Looking up node schemas: start={}, end={}",
+                                            start_label,
+                                            end_label
+                                        );
+                                        if let (Some(from_node_schema), Some(to_node_schema)) = (
+                                            schema.node_schema_opt(start_label),
+                                            schema.node_schema_opt(end_label),
+                                        ) {
+                                            log::info!("🔍 Found both node schemas, compiling constraint...");
+                                            // Compile the constraint expression
+                                            match crate::graph_catalog::constraint_compiler::compile_constraint(
                                                                 constraint_expr,
                                                                 from_node_schema,
                                                                 to_node_schema,
@@ -1730,7 +1714,7 @@ impl JoinBuilder for LogicalPlan {
                                                                 Ok(compiled_sql) => {
                                                                     log::info!(
                                                                         "✅ Compiled edge constraint for {} (schema={}): {} → {}",
-                                                                        graph_rel.alias, schema_name, constraint_expr, compiled_sql
+                                                                        graph_rel.alias, schema.database(), constraint_expr, compiled_sql
                                                                     );
                                                                     // Add compiled constraint to pre_filter (will be added to ON clause)
                                                                     let constraint_render_expr = RenderExpr::Raw(compiled_sql);
@@ -1747,13 +1731,10 @@ impl JoinBuilder for LogicalPlan {
                                                                 Err(e) => {
                                                                     log::warn!(
                                                                         "⚠️  Failed to compile edge constraint for {} (schema={}): {}",
-                                                                        graph_rel.alias, schema_name, e
+                                                                        graph_rel.alias, schema.database(), e
                                                                     );
                                                                 }
                                                             }
-                                                    }
-                                                }
-                                            }
                                         }
                                     }
                                 }

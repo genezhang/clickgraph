@@ -57,6 +57,7 @@ fn setup_denormalized_schema() -> GraphSchema {
             denormalized_source_table: Some("test_db.flights".to_string()),
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -141,6 +142,7 @@ fn setup_denormalized_schema() -> GraphSchema {
             ),
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 
@@ -365,6 +367,7 @@ fn test_multiple_relationships_same_node() {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 
@@ -454,6 +457,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -536,6 +540,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
             ),
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 

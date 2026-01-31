@@ -16,6 +16,7 @@ use super::engine_detection::TableEngine;
 use super::errors::GraphSchemaError;
 use super::expression_parser::PropertyValue;
 use super::filter_parser::SchemaFilter;
+use super::schema_types::SchemaType;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NodeSchema {
@@ -78,6 +79,15 @@ pub struct NodeSchema {
     /// Example: "Comment" for Comment nodes in Message table where type='Comment'
     #[serde(skip)]
     pub label_value: Option<String>,
+
+    // ===== Neo4j elementId support =====
+    /// Types for node_id columns (for performant elementId queries)
+    /// Populated from:
+    /// 1. Auto-detection (querying ClickHouse system.columns) - preferred
+    /// 2. Schema YAML (type/types field) - for sql_only mode
+    /// Required for Neo4j compatibility (elementId function support)
+    #[serde(skip)]
+    pub node_id_types: Option<Vec<SchemaType>>,
 }
 
 impl NodeSchema {
@@ -137,6 +147,7 @@ impl NodeSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         }
     }
 }
@@ -253,6 +264,15 @@ pub struct RelationshipSchema {
     /// - VLP: Additional condition in recursive CTE JOIN
     #[serde(skip_serializing_if = "Option::is_none")]
     pub constraints: Option<String>,
+
+    // ===== Neo4j elementId support =====
+    /// Types for edge_id columns (for performant elementId queries)
+    /// Populated from:
+    /// 1. Auto-detection (querying ClickHouse system.columns)
+    /// 2. Schema YAML (type/types field)
+    /// Required for Neo4j compatibility (elementId function support for relationships)
+    #[serde(skip)]
+    pub edge_id_types: Option<Vec<SchemaType>>,
 }
 
 impl RelationshipSchema {
@@ -1500,6 +1520,7 @@ mod tests {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         };
 
         relationships.insert("FLIGHT".to_string(), flight_rel);
@@ -1566,6 +1587,7 @@ mod tests {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         };
 
         relationships.insert("AUTHORED".to_string(), authored_rel);
@@ -1613,6 +1635,7 @@ mod tests {
             denormalized_source_table: Some("test.flights".to_string()),
             label_column: None,
             label_value: None,
+            node_id_types: None,
         };
 
         let flight_edge = RelationshipSchema {
@@ -1642,6 +1665,7 @@ mod tests {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         };
 
         // Test detection
@@ -1688,6 +1712,7 @@ mod tests {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         };
 
         let flight_edge = RelationshipSchema {
@@ -1717,6 +1742,7 @@ mod tests {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         };
 
         // Test detection
@@ -1756,6 +1782,7 @@ mod tests {
             denormalized_source_table: Some("test.flights".to_string()),
             label_column: None,
             label_value: None,
+            node_id_types: None,
         };
 
         let user = NodeSchema {
@@ -1786,6 +1813,7 @@ mod tests {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         };
 
         let mut from_props = HashMap::new();
@@ -1819,6 +1847,7 @@ mod tests {
             to_node_properties: None, // User is traditional
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         };
 
         // Test detection
@@ -1867,6 +1896,7 @@ mod tests {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         };
 
         let mut to_props_post = HashMap::new();
@@ -1890,6 +1920,7 @@ mod tests {
             denormalized_source_table: Some("test.posts".to_string()),
             label_column: None,
             label_value: None,
+            node_id_types: None,
         };
 
         let mut to_props = HashMap::new();
@@ -1923,6 +1954,7 @@ mod tests {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         };
 
         // Test detection
@@ -1975,6 +2007,7 @@ mod tests {
             denormalized_source_table: Some("test.flights".to_string()),
             label_column: None,
             label_value: None,
+            node_id_types: None,
         };
 
         let mut from_props = HashMap::new();
@@ -2011,6 +2044,7 @@ mod tests {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         };
 
         // Should still be detected as denormalized (1-2 mappings allowed)
@@ -2043,6 +2077,7 @@ mod tests {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         };
 
         let flight_edge = RelationshipSchema {
@@ -2072,6 +2107,7 @@ mod tests {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         };
 
         // Should NOT be detected as denormalized (missing props)
@@ -2108,6 +2144,7 @@ mod tests {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         };
 
         let mut from_props = HashMap::new();
@@ -2140,6 +2177,7 @@ mod tests {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         };
 
         // Should NOT be detected (different databases)
@@ -2186,6 +2224,7 @@ mod tests {
             engine: None,
             use_final: None,
             filter: None,
+            node_id_types: None,
         };
 
         let mut from_props = HashMap::new();
@@ -2218,6 +2257,7 @@ mod tests {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         };
 
         // Should NOT be detected (too many property_mappings)
@@ -2261,6 +2301,7 @@ mod tests {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         };
 
         // RESOLVED_TO: (Domain)-[:RESOLVED_TO]->(ResolvedIP)
@@ -2291,6 +2332,7 @@ mod tests {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         };
 
         relationships.insert("REQUESTED".to_string(), requested);
@@ -2344,6 +2386,7 @@ mod tests {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         };
 
         let edge2 = RelationshipSchema {
@@ -2373,6 +2416,7 @@ mod tests {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         };
 
         relationships.insert("REL1".to_string(), edge1);
@@ -2417,6 +2461,7 @@ mod tests {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         };
 
         let edge2 = RelationshipSchema {
@@ -2446,6 +2491,7 @@ mod tests {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         };
 
         relationships.insert("REL1".to_string(), edge1);

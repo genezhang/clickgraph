@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use super::auth::{AuthToken, AuthenticatedUser, Authenticator};
 use super::errors::{BoltError, BoltResult};
-use super::messages::{signatures, BoltMessage};
+use super::messages::{signatures, BoltMessage, BoltValue};
+use super::result_transformer::extract_return_metadata;
 use super::{BoltConfig, BoltContext, ConnectionState};
 
 use crate::clickhouse_query_generator;
@@ -30,6 +31,14 @@ macro_rules! lock_context {
     };
 }
 
+/// Helper function to format BoltValue for logging
+fn bolt_value_to_string(value: &BoltValue) -> String {
+    match value {
+        BoltValue::Json(v) => serde_json::to_string(v).unwrap_or_else(|_| format!("{:?}", v)),
+        BoltValue::PackstreamBytes(bytes) => format!("<packstream: {} bytes>", bytes.len()),
+    }
+}
+
 /// Bolt protocol message handler
 pub struct BoltHandler {
     /// Connection context
@@ -43,7 +52,7 @@ pub struct BoltHandler {
     /// ClickHouse client for query execution
     clickhouse_client: Client,
     /// Cached query results for streaming
-    cached_results: Option<Vec<Vec<Value>>>,
+    cached_results: Option<Vec<Vec<BoltValue>>>,
 }
 
 impl BoltHandler {
@@ -79,6 +88,7 @@ impl BoltHandler {
             signatures::BEGIN => self.handle_begin(message).await,
             signatures::COMMIT => self.handle_commit(message).await,
             signatures::ROLLBACK => self.handle_rollback(message).await,
+            signatures::ROUTE => self.handle_route(message).await,
             _ => {
                 log::warn!("Unhandled Bolt message type: {}", message.type_name());
                 Ok(vec![BoltMessage::failure(
@@ -112,18 +122,25 @@ impl BoltHandler {
         let is_bolt_51_plus = negotiated_version >= 0x00000501;
 
         // DEBUG: Log HELLO message structure
-        log::debug!("HELLO message has {} fields", message.fields.len());
+        log::info!("🔍 HELLO message has {} fields", message.fields.len());
         for (i, field) in message.fields.iter().enumerate() {
-            log::debug!(
-                "  HELLO Field[{}]: {}",
-                i,
-                serde_json::to_string(field).unwrap_or_else(|_| "?".to_string())
-            );
+            log::info!("  HELLO Field[{}]: {}", i, bolt_value_to_string(field));
         }
 
         if is_bolt_51_plus {
             // Bolt 5.1+: HELLO just initializes connection, auth happens in LOGON
             log::info!("HELLO received (Bolt 5.1+), awaiting LOGON for authentication");
+
+            // Extract database from HELLO extra field (routing context)
+            let database = message.extract_database();
+            log::info!("📊 Extracted database from HELLO: {:?}", database);
+
+            // Store database selection in context for later use in LOGON
+            if let Some(ref db_name) = database {
+                let mut context = lock_context!(self.context);
+                context.schema_name = Some(db_name.clone());
+                log::info!("Database/schema specified in HELLO: {}", db_name);
+            }
 
             // Update context to AUTHENTICATION state
             {
@@ -157,11 +174,7 @@ impl BoltHandler {
             // Debug: log HELLO message fields
             log::debug!("HELLO message has {} fields", message.fields.len());
             for (i, field) in message.fields.iter().enumerate() {
-                log::debug!(
-                    "  Field[{}]: {}",
-                    i,
-                    serde_json::to_string(field).unwrap_or_else(|_| "ERROR".to_string())
-                );
+                log::debug!("  Field[{}]: {}", i, bolt_value_to_string(field));
             }
 
             let auth_token = message.extract_auth_token().unwrap_or_default();
@@ -254,13 +267,9 @@ impl BoltHandler {
         }
 
         // Debug: log LOGON message fields
-        log::debug!("LOGON message has {} fields", message.fields.len());
+        log::info!("🔍 LOGON message has {} fields", message.fields.len());
         for (i, field) in message.fields.iter().enumerate() {
-            log::debug!(
-                "  Field[{}]: {}",
-                i,
-                serde_json::to_string(field).unwrap_or_else(|_| "ERROR".to_string())
-            );
+            log::info!("  LOGON Field[{}]: {}", i, bolt_value_to_string(field));
         }
 
         // Extract authentication token from LOGON message
@@ -294,7 +303,16 @@ impl BoltHandler {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                // If no database specified, use the first loaded schema (if any)
+                // If no database in LOGON, check if it was set in HELLO (Bolt 5.1+)
+                if database.is_none() {
+                    let context = lock_context!(self.context);
+                    database = context.schema_name.clone();
+                    if database.is_some() {
+                        log::debug!("Using database from HELLO: {:?}", database);
+                    }
+                }
+
+                // If still no database specified, use the first loaded schema (if any)
                 if database.is_none() {
                     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
                         let schemas = schemas_lock.read().await;
@@ -451,13 +469,9 @@ impl BoltHandler {
             let context = lock_context!(self.context);
 
             // Debug: log RUN message fields
-            log::debug!("RUN message has {} fields", message.fields.len());
+            log::info!("🔍 RUN message has {} fields", message.fields.len());
             for (i, field) in message.fields.iter().enumerate() {
-                log::debug!(
-                    "  Field[{}]: {}",
-                    i,
-                    serde_json::to_string(field).unwrap_or_else(|_| "<<unparseable>>".to_string())
-                );
+                log::info!("  Field[{}]: {}", i, bolt_value_to_string(field));
             }
 
             // Check if RUN message specifies a database (Bolt 4.x)
@@ -472,8 +486,8 @@ impl BoltHandler {
                 }
                 Some(run_db)
             } else {
-                log::debug!(
-                    "RUN message does NOT contain database field, using context schema: {:?}",
+                log::info!(
+                    "⚠️  RUN message does NOT contain database field, using context schema: {:?}",
                     context.schema_name
                 );
                 context.schema_name.clone()
@@ -530,11 +544,19 @@ impl BoltHandler {
                 Ok(vec![BoltMessage::success(result_metadata)])
             }
             Err(query_error) => {
+                let error_code = query_error.error_code().to_string();
+                let error_message = query_error.to_string();
                 log::error!("Query execution failed: {}", query_error);
-                Ok(vec![BoltMessage::failure(
-                    query_error.error_code().to_string(),
-                    query_error.to_string(),
-                )])
+                log::error!(
+                    "Sending FAILURE: code='{}', message='{}'",
+                    error_code,
+                    error_message
+                );
+
+                // Don't update state - let client send RESET to recover
+                // Setting to Failed would close the connection
+
+                Ok(vec![BoltMessage::failure(error_code, error_message)])
             }
         }
     }
@@ -545,10 +567,10 @@ impl BoltHandler {
         {
             let context = lock_context!(self.context);
             if !matches!(context.state, ConnectionState::Streaming) {
-                return Ok(vec![BoltMessage::failure(
-                    "Neo.ClientError.Request.Invalid".to_string(),
-                    "PULL message received in invalid state".to_string(),
-                )]);
+                // If we're not streaming, a FAILURE was likely already sent
+                // Return IGNORED instead of sending another FAILURE
+                log::debug!("PULL received in non-streaming state, returning IGNORED");
+                return Ok(vec![BoltMessage::ignored()]);
             }
         }
 
@@ -560,6 +582,7 @@ impl BoltHandler {
 
             // Send each row as a RECORD message
             for row in rows {
+                // Row is already Vec<BoltValue> - pass directly
                 messages.push(BoltMessage::record(row));
             }
         }
@@ -622,7 +645,16 @@ impl BoltHandler {
         }
 
         // Extract database from BEGIN message extra field (Bolt 4.0+)
+        log::debug!("BEGIN message has {} fields", message.fields.len());
+        if !message.fields.is_empty() {
+            log::debug!(
+                "BEGIN Field[0]: {}",
+                bolt_value_to_string(&message.fields[0])
+            );
+        }
+
         if let Some(db) = message.extract_begin_database() {
+            log::info!("✅ BEGIN message contains database: {}", db);
             let mut context = lock_context!(self.context);
             if context.schema_name.as_deref() != Some(&db) {
                 log::debug!(
@@ -632,6 +664,8 @@ impl BoltHandler {
                 );
                 context.schema_name = Some(db);
             }
+        } else {
+            log::debug!("BEGIN message does NOT contain database field");
         }
 
         // Generate transaction ID
@@ -686,6 +720,90 @@ impl BoltHandler {
         log::info!("Rolled back transaction: {}", tx_id);
 
         Ok(vec![BoltMessage::success(HashMap::new())])
+    }
+
+    /// Handle ROUTE message (return routing table for database)
+    /// ROUTE message format: ROUTE {routing_context} [bookmarks] {extra}
+    /// where extra can contain {"db": "database_name"}
+    async fn handle_route(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
+        log::info!("ROUTE message received");
+
+        // Extract database from ROUTE message (field 2 - extra metadata)
+        let database = if message.fields.len() >= 3 {
+            if let BoltValue::Json(Value::Object(extra_map)) = &message.fields[2] {
+                extra_map
+                    .get("db")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let db_name = database.unwrap_or_else(|| "default".to_string());
+        log::info!("ROUTE request for database: {}", db_name);
+
+        // Verify schema exists
+        let schema_exists = if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+            if let Ok(schemas) = schemas_lock.try_read() {
+                schemas.contains_key(&db_name)
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !schema_exists {
+            log::warn!("ROUTE requested for non-existent database: {}", db_name);
+            return Ok(vec![BoltMessage::failure(
+                "Neo.ClientError.Database.DatabaseNotFound".to_string(),
+                format!("Database '{}' not found", db_name),
+            )]);
+        }
+
+        // Build routing table response
+        // For ClickGraph (single server, no cluster), we return ourselves for all roles
+        let server_address = format!("{}:{}", self.config.host, self.config.port);
+
+        let mut routing_table = serde_json::Map::new();
+        routing_table.insert("ttl".to_string(), Value::Number(300.into())); // 5 minutes TTL
+        routing_table.insert("db".to_string(), Value::String(db_name));
+
+        // Servers list: we are WRITE, READ, and ROUTE all in one
+        let servers = serde_json::json!([
+            {
+                "role": "WRITE",
+                "addresses": [server_address.clone()]
+            },
+            {
+                "role": "READ",
+                "addresses": [server_address.clone()]
+            },
+            {
+                "role": "ROUTE",
+                "addresses": [server_address]
+            }
+        ]);
+
+        routing_table.insert("servers".to_string(), servers);
+
+        // Return SUCCESS with routing table
+        let mut metadata = HashMap::new();
+        metadata.insert("rt".to_string(), Value::Object(routing_table));
+
+        log::info!(
+            "✅ Returning routing table for database: {}",
+            metadata
+                .get("rt")
+                .and_then(|v| v.get("db"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+        );
+
+        Ok(vec![BoltMessage::success(metadata)])
     }
 
     /// Execute a Cypher query and return result metadata
@@ -762,6 +880,23 @@ impl BoltHandler {
         };
         // parsed_query is now dropped - no more Rc<RefCell<>> held!
 
+        // Extract return metadata for result transformation
+        let return_metadata = match extract_return_metadata(&logical_plan, &plan_ctx) {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                log::warn!("Failed to extract return metadata: {}", e);
+                Vec::new() // Fall back to no transformation
+            }
+        };
+        let has_graph_objects = return_metadata.iter().any(|m| {
+            matches!(
+                m.item_type,
+                super::result_transformer::ReturnItemType::Node { .. }
+                    | super::result_transformer::ReturnItemType::Relationship { .. }
+                    | super::result_transformer::ReturnItemType::Path
+            )
+        });
+
         // Generate render plan - use _with_ctx to pass VLP endpoint information
         let render_plan = match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx))
         {
@@ -823,33 +958,106 @@ impl BoltHandler {
 
         let mut lines = result_reader.lines();
 
-        while let Ok(Some(line)) = lines.next_line().await {
-            if line.trim().is_empty() {
-                continue;
-            }
-
-            match serde_json::from_str::<serde_json::Value>(&line) {
-                Ok(Value::Object(obj)) => {
-                    // Extract field names from first row
-                    if field_names.is_empty() {
-                        field_names = obj.keys().cloned().collect();
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    if line.trim().is_empty() {
+                        continue;
                     }
 
-                    // Extract field values in consistent order
-                    let mut row_fields = Vec::new();
-                    for field_name in &field_names {
-                        row_fields.push(obj.get(field_name).cloned().unwrap_or(Value::Null));
+                    match serde_json::from_str::<serde_json::Value>(&line) {
+                        Ok(Value::Object(obj)) => {
+                            // Extract field names from first row
+                            if field_names.is_empty() {
+                                field_names = obj.keys().cloned().collect();
+                            }
+
+                            // Extract field values in consistent order
+                            let mut row_fields = Vec::new();
+                            for field_name in &field_names {
+                                row_fields
+                                    .push(obj.get(field_name).cloned().unwrap_or(Value::Null));
+                            }
+                            rows.push(row_fields);
+                        }
+                        _ => {
+                            log::warn!("Unexpected JSON format in result row: {}", line);
+                        }
                     }
-                    rows.push(row_fields);
                 }
-                _ => {
-                    log::warn!("Unexpected JSON format in result row: {}", line);
+                Ok(None) => {
+                    // End of stream - normal completion
+                    break;
+                }
+                Err(e) => {
+                    // ClickHouse error during result streaming (e.g., unknown column)
+                    return Err(BoltError::query_error(format!(
+                        "ClickHouse error while reading results: {}",
+                        e
+                    )));
                 }
             }
         }
 
-        // Cache the results for streaming in PULL
-        self.cached_results = Some(rows);
+        // Transform results if we have graph objects (nodes, relationships, paths)
+        if has_graph_objects {
+            log::info!(
+                "Transforming graph objects. Original field_names: {:?}, metadata items: {}",
+                field_names,
+                return_metadata.len()
+            );
+
+            let mut transformed_rows: Vec<Vec<BoltValue>> = Vec::new();
+            for row in &rows {
+                // Convert row Vec back to HashMap for transformation
+                let mut row_map = HashMap::new();
+                for (i, field_name) in field_names.iter().enumerate() {
+                    if let Some(value) = row.get(i) {
+                        row_map.insert(field_name.clone(), value.clone());
+                    }
+                }
+
+                match super::result_transformer::transform_row(
+                    row_map,
+                    &return_metadata,
+                    &graph_schema,
+                ) {
+                    Ok(transformed) => {
+                        log::debug!(
+                            "Transformed row: {} fields → {} items",
+                            field_names.len(),
+                            transformed.len()
+                        );
+                        transformed_rows.push(transformed);
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to transform row to graph objects: {}", e);
+                        // Fall back to original row wrapped in BoltValue::Json on error
+                        let fallback: Vec<BoltValue> =
+                            row.iter().map(|v| BoltValue::Json(v.clone())).collect();
+                        transformed_rows.push(fallback);
+                    }
+                }
+            }
+
+            // Cache the transformed results
+            self.cached_results = Some(transformed_rows);
+
+            // Update field names to match transformed structure
+            field_names = return_metadata
+                .iter()
+                .map(|m| m.field_name.clone())
+                .collect();
+
+            log::info!("After transformation: field_names: {:?}", field_names);
+        } else {
+            // No graph objects - wrap rows in BoltValue::Json and cache
+            let wrapped_rows: Vec<Vec<BoltValue>> = rows
+                .into_iter()
+                .map(|row| row.into_iter().map(BoltValue::Json).collect())
+                .collect();
+            self.cached_results = Some(wrapped_rows);
+        }
 
         // Return SUCCESS with metadata
         let mut metadata = HashMap::new();

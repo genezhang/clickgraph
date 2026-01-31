@@ -48,6 +48,7 @@ fn create_test_graph_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -71,6 +72,7 @@ fn create_test_graph_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -108,6 +110,7 @@ fn create_test_graph_schema() -> GraphSchema {
             to_node_properties: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 
@@ -145,6 +148,7 @@ fn create_test_graph_schema() -> GraphSchema {
             to_node_properties: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 
@@ -912,6 +916,7 @@ fn create_self_referencing_fk_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -946,6 +951,7 @@ fn create_self_referencing_fk_schema() -> GraphSchema {
             to_node_properties: None,
             is_fk_edge: true, // Self-referencing FK pattern
             constraints: None,
+            edge_id_types: None,
         },
     );
 
@@ -993,6 +999,7 @@ fn create_non_self_referencing_fk_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -1027,6 +1034,7 @@ fn create_non_self_referencing_fk_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -1061,6 +1069,7 @@ fn create_non_self_referencing_fk_schema() -> GraphSchema {
             to_node_properties: None,
             is_fk_edge: true, // FK-edge pattern (non-self-ref)
             constraints: None,
+            edge_id_types: None,
         },
     );
 

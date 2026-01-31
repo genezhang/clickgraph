@@ -32,6 +32,7 @@ fn create_test_schema() -> GraphSchema {
                 );
                 props
             },
+            node_id_types: None,
             view_parameters: None,
             engine: None,
             use_final: None,
@@ -75,6 +76,7 @@ fn create_test_schema() -> GraphSchema {
             to_node_properties: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 

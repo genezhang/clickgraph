@@ -16,8 +16,10 @@ use tokio::io::{AsyncRead, AsyncWrite};
 pub mod auth;
 pub mod connection;
 pub mod errors;
+pub mod graph_objects;
 pub mod handler;
 pub mod messages;
+pub mod result_transformer;
 
 use errors::BoltError;
 
@@ -153,6 +155,10 @@ pub struct BoltConfig {
     pub default_user: Option<String>,
     /// Server user agent string
     pub server_agent: String,
+    /// Bolt server host (for ROUTE response)
+    pub host: String,
+    /// Bolt server port (for ROUTE response)
+    pub port: u16,
 }
 
 impl Default for BoltConfig {
@@ -163,6 +169,8 @@ impl Default for BoltConfig {
             enable_auth: false, // Start with auth disabled for development
             default_user: Some("brahmand".to_string()),
             server_agent: format!("Brahmand/{}", env!("CARGO_PKG_VERSION")),
+            host: "localhost".to_string(),
+            port: 7687,
         }
     }
 }

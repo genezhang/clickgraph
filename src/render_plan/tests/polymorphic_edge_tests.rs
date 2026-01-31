@@ -56,6 +56,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -93,6 +94,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -140,6 +142,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 
@@ -180,6 +183,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 
@@ -220,6 +224,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 
@@ -383,6 +388,7 @@ fn test_non_polymorphic_relationship() {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -416,6 +422,7 @@ fn test_non_polymorphic_relationship() {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 
@@ -476,6 +483,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -499,6 +507,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            node_id_types: None,
         },
     );
 
@@ -539,6 +548,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
             to_label_values: None,
             is_fk_edge: false,
             constraints: None,
+            edge_id_types: None,
         },
     );
 

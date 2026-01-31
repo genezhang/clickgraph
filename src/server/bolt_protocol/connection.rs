@@ -15,7 +15,7 @@ use crate::packstream; // Our vendored packstream module
 
 use super::errors::{BoltError, BoltResult};
 use super::handler::BoltHandler;
-use super::messages::{signatures, BoltChunk, BoltMessage};
+use super::messages::{signatures, BoltChunk, BoltMessage, BoltValue};
 use super::{BoltConfig, BoltContext, ConnectionState, SUPPORTED_VERSIONS};
 
 /// Magic preamble for Bolt protocol
@@ -249,8 +249,12 @@ where
 
     /// Send a Bolt message to the client
     async fn send_message(&mut self, message: BoltMessage) -> BoltResult<()> {
+        log::debug!("Sending Bolt message: {}", message.type_name());
+
         // Serialize message to bytes
         let message_bytes = self.serialize_message(message)?;
+
+        log::debug!("Serialized message size: {} bytes", message_bytes.len());
 
         // Split into chunks if necessary
         let chunks = self.create_chunks(message_bytes);
@@ -331,7 +335,9 @@ where
 
                 Ok(BoltMessage::new(
                     signature,
-                    vec![Value::Object(serde_json::Map::from_iter(metadata))],
+                    vec![BoltValue::Json(Value::Object(serde_json::Map::from_iter(
+                        metadata,
+                    )))],
                 ))
             }
 
@@ -355,8 +361,10 @@ where
 
                 // Convert to BoltMessage values
                 let values = vec![
-                    Value::String(fields.0),                                         // query
-                    Value::Object(serde_json::Map::from_iter(fields.1.into_iter())), // parameters
+                    BoltValue::Json(Value::String(fields.0)), // query
+                    BoltValue::Json(Value::Object(serde_json::Map::from_iter(
+                        fields.1.into_iter(),
+                    ))), // parameters
                 ];
 
                 // If field_count == 3, we'd parse the optional extra map here
@@ -383,7 +391,9 @@ where
 
                 Ok(BoltMessage::new(
                     signature,
-                    vec![Value::Object(serde_json::Map::from_iter(metadata))],
+                    vec![BoltValue::Json(Value::Object(serde_json::Map::from_iter(
+                        metadata,
+                    )))],
                 ))
             }
 
@@ -397,6 +407,51 @@ where
     /// Serialize a BoltMessage to bytes
     fn serialize_message(&self, message: BoltMessage) -> BoltResult<Vec<u8>> {
         // Bolt messages are PackStream structures: 0xB[field_count] [signature] [field1] [field2] ...
+
+        let mut bytes = Vec::new();
+
+        // Special handling for RECORD messages
+        // RECORD has structure: RECORD [field1, field2, ...] where array is a single LIST field
+        if message.signature == signatures::RECORD {
+            // Write structure marker (0xB1 - RECORD always has 1 field: the list)
+            bytes.push(0xB1);
+            bytes.push(message.signature);
+
+            // Encode the fields as a packstream LIST
+            let field_count = message.fields.len();
+            if field_count <= 15 {
+                bytes.push(0x90 | (field_count as u8)); // Tiny list
+            } else if field_count <= 255 {
+                bytes.push(0xD4); // LIST_8
+                bytes.push(field_count as u8);
+            } else if field_count <= 65535 {
+                bytes.push(0xD5); // LIST_16
+                bytes.extend_from_slice(&(field_count as u16).to_be_bytes());
+            } else {
+                bytes.push(0xD6); // LIST_32
+                bytes.extend_from_slice(&(field_count as u32).to_be_bytes());
+            }
+
+            // Serialize each list element
+            for field in message.fields {
+                let field_bytes = match field {
+                    BoltValue::Json(value) => packstream::to_bytes(&value)
+                        .map_err(|e| {
+                            BoltError::invalid_message(format!(
+                                "Failed to serialize field: {:?}",
+                                e
+                            ))
+                        })?
+                        .to_vec(),
+                    BoltValue::PackstreamBytes(bytes) => bytes,
+                };
+                bytes.extend_from_slice(&field_bytes);
+            }
+
+            return Ok(bytes);
+        }
+
+        // Standard message handling for non-RECORD messages
         let field_count = message.fields.len();
 
         if field_count > 15 {
@@ -406,8 +461,6 @@ where
             )));
         }
 
-        let mut bytes = Vec::new();
-
         // Write structure marker (0xB0 | field_count)
         bytes.push(0xB0 | (field_count as u8));
 
@@ -416,9 +469,23 @@ where
 
         // Serialize each field using PackStream
         for field in message.fields {
-            let field_bytes = packstream::to_bytes(&field).map_err(|e| {
-                BoltError::invalid_message(format!("Failed to serialize field: {:?}", e))
-            })?;
+            let field_bytes = match field {
+                BoltValue::Json(value) => {
+                    // Regular JSON value - serialize via packstream
+                    packstream::to_bytes(&value)
+                        .map_err(|e| {
+                            BoltError::invalid_message(format!(
+                                "Failed to serialize field: {:?}",
+                                e
+                            ))
+                        })?
+                        .to_vec()
+                }
+                BoltValue::PackstreamBytes(bytes) => {
+                    // Already encoded as packstream - use directly
+                    bytes
+                }
+            };
             bytes.extend_from_slice(&field_bytes);
         }
 

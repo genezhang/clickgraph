@@ -115,6 +115,7 @@ fn setup_test_graph_schema() -> GraphSchema {
         denormalized_source_table: None,
         label_column: None,
         label_value: None,
+        node_id_types: None,
     };
     nodes.insert("User".to_string(), user_node);
 
@@ -146,6 +147,7 @@ fn setup_test_graph_schema() -> GraphSchema {
         to_label_values: None,
         is_fk_edge: false,
         constraints: None,
+        edge_id_types: None,
     };
     relationships.insert("FOLLOWS".to_string(), follows_rel);
 
