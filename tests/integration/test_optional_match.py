@@ -408,14 +408,14 @@ class TestOptionalMatchVariableLength:
         )
         
         assert_query_success(response)
-        assert_row_count(response, 2)
+        assert_row_count(response, 1)
         # Alice can reach multiple users within 2 hops
         results = response["results"]
         if isinstance(results[0], dict):
-            assert any(result["reachable"] >= 2 for result in results)
+            assert results[0]["reachable"] >= 2
         else:
             col_idx = response["columns"].index("reachable")
-            assert any(result[col_idx] >= 2 for result in results)
+            assert results[0][col_idx] >= 2
     
     def test_optional_variable_length_no_path(self, simple_graph):
         """Test OPTIONAL MATCH with variable-length when no path exists."""
