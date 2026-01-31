@@ -3837,15 +3837,11 @@ impl GraphJoinInference {
                 let rel_alias = graph_rel.alias.to_string();
 
                 // Mark VLP endpoints with proper CTE access information
-                // This is needed for property resolution and subsequent JOINs
-                join_ctx.mark_vlp_endpoint(
-                    left_alias.clone(),
-                    VlpEndpointInfo {
-                        position: VlpPosition::Start,
-                        other_endpoint_alias: right_alias.clone(),
-                        rel_alias: rel_alias.clone(),
-                    },
-                );
+                // For OPTIONAL VLP, only mark the END node as VLP endpoint
+                // The START/anchor node should remain a regular table reference
+
+                // Only mark the END node as VLP endpoint for optional VLP
+                // The START/anchor node stays as regular table
                 join_ctx.mark_vlp_endpoint(
                     right_alias.clone(),
                     VlpEndpointInfo {
@@ -3856,8 +3852,8 @@ impl GraphJoinInference {
                 );
 
                 log::debug!(
-                    "  🎯 OPTIONAL VLP: Marked endpoints '{}' (start) and '{}' (end) for rel '{}' - will create GraphJoins",
-                    left_alias, right_alias, rel_alias
+                    "  🎯 OPTIONAL VLP: Marked only END endpoint '{}' for rel '{}' - START endpoint '{}' remains regular table",
+                    right_alias, rel_alias, left_alias
                 );
                 log::debug!("  📊 JoinContext: {}", join_ctx.debug_summary());
 

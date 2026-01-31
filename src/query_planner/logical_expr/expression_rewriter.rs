@@ -164,9 +164,11 @@ pub fn rewrite_expression_with_property_mapping(
             // Find the label for this alias
             match ctx.find_label_for_alias(alias) {
                 Some(label) => {
+                    log::error!("🔍🔍🔍 TRACING: Expression rewriter found label '{}' for alias '{}', property '{}'", label, alias, cypher_property);
                     // Map the property to DB column
                     match map_property_to_db_column(cypher_property, &label) {
                         Ok(db_column) => {
+                            log::error!("🔍🔍🔍 TRACING: Mapped property '{}' to DB column '{}' for label '{}'", cypher_property, db_column, label);
                             // IDEMPOTENCY CHECK: If the mapped column is the same as the input,
                             // the property is already a DB column name. Return as-is.
                             // This handles cases where the expression was already rewritten.

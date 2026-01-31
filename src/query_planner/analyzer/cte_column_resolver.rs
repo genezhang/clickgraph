@@ -42,6 +42,8 @@ impl CteColumnResolver {
             return prop_access.clone();
         }
 
+        log::error!("🔧🔧🔧 CteColumnResolver: '{}' IS a CTE reference! This should not happen for anchor nodes in OPTIONAL VLP", table_alias);
+
         // Get the property name from the column
         let property_name = match &prop_access.column {
             crate::graph_catalog::expression_parser::PropertyValue::Column(col) => col,
