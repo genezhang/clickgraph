@@ -488,6 +488,7 @@ pub struct VLPExprRewriter {
     pub rel_alias: Option<String>,
     pub from_col: Option<String>,
     pub to_col: Option<String>,
+    pub is_optional: bool, // NEW: For OPTIONAL MATCH + VLP, skip start node rewriting
 }
 
 impl ExprVisitor for VLPExprRewriter {
@@ -513,6 +514,13 @@ impl ExprVisitor for VLPExprRewriter {
         }
 
         // Rewrite only for denormalized nodes
+        // 🔧 FIX: For OPTIONAL MATCH + VLP, do NOT rewrite the anchor (start) node
+        // The anchor is in FROM clause as a regular table, not from VLP CTE
+        if self.is_optional && prop.table_alias.0 == self.start_cypher_alias {
+            // OPTIONAL VLP: Skip start node rewriting - it's the anchor in FROM clause
+            return RenderExpr::PropertyAccessExp(new_prop);
+        }
+        
         if prop.table_alias.0 == self.start_cypher_alias && self.start_is_denormalized {
             new_prop.table_alias = TableAlias(VLP_CTE_FROM_ALIAS.to_string());
             if raw_col != "*" {

@@ -226,8 +226,9 @@ pub(super) fn rewrite_table_aliases_to_cte(
     match expr {
         RenderExpr::PropertyAccessExp(prop) => {
             if with_table_aliases.contains(&prop.table_alias.0) {
-                // Rewrite person.id -> with_result."person.id"
-                let col_name = format!("{}.{}", prop.table_alias.0, prop.column.raw());
+                // 🔧 FIX: CTE columns use underscore naming (a_name), not dot notation (a.name)
+                // Rewrite a.name -> with_result."a_name" (not "a.name")
+                let col_name = format!("{}_{}", prop.table_alias.0, prop.column.raw());
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(cte_name.to_string()),
                     column: PropertyValue::Column(col_name),
