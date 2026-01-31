@@ -3,6 +3,7 @@
 use super::{ProcedureRegistry, ProcedureResult};
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::open_cypher_parser::ast::{CypherStatement, StandaloneProcedureCall};
+use crate::open_cypher_parser;
 use crate::server::GLOBAL_SCHEMAS;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -123,19 +124,22 @@ pub fn is_procedure_union_query(stmt: &CypherStatement<'_>) -> bool {
 /// Full RETURN expression evaluation (COLLECT, array slicing) is simplified.
 ///
 /// # Arguments
-/// * `stmt` - The parsed UNION statement (must pass is_procedure_union_query check)
+/// * `query` - The Cypher query string (must be a procedure UNION)
 /// * `schema_name` - Schema name to use for all procedure calls
 /// * `registry` - Procedure registry
 ///
 /// # Returns
 /// * `Ok(records)` - Combined results from all procedures
 /// * `Err(message)` - Error if any procedure fails
-pub async fn execute_procedure_union<'a>(
-    stmt: &CypherStatement<'a>,
+pub async fn execute_procedure_union(
+    query: &str,
     schema_name: &str,
     registry: &ProcedureRegistry,
 ) -> ProcedureResult {
-    // Extract procedure names first (before any awaits)
+    // Parse to extract procedure names (synchronous, before any awaits)
+    let (_, stmt) = open_cypher_parser::parse_cypher_statement(query)
+        .map_err(|e| format!("Parse error: {}", e))?;
+    
     let proc_names: Vec<String> = match stmt {
         CypherStatement::Query {
             query,
@@ -159,6 +163,7 @@ pub async fn execute_procedure_union<'a>(
         }
         _ => return Err("Not a query statement".to_string()),
     };
+    // stmt is dropped here, no longer borrowing from query string
 
     // Now execute all procedures (can await safely)
     let mut all_results = Vec::new();
