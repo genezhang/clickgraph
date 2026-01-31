@@ -223,9 +223,18 @@ pub async fn query_handler(
                 return Ok(Json(response_json).into_response());
             }
             Err(e) => {
+                let msg = e.to_string();
+                // Map known client-side errors (e.g., unknown schema) to 4xx instead of 500.
+                // This keeps INTERNAL_SERVER_ERROR reserved for genuine server failures.
+                if msg.contains("Schema not found") {
+                    return Err((
+                        StatusCode::NOT_FOUND,
+                        format!("Procedure execution failed: {}", msg),
+                    ));
+                }
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Procedure execution failed: {}", e),
+                    format!("Procedure execution failed: {}", msg),
                 ));
             }
         }
@@ -439,15 +448,6 @@ async fn query_handler_inner(
             }
         };
         metrics.parse_time = parse_start.elapsed().as_secs_f64();
-
-        // Handle standalone procedure calls (bypass query planner)
-        // TODO: Complete implementation in Phase 2
-        if matches!(cypher_statement, CypherStatement::ProcedureCall(_)) {
-            return Err((
-                StatusCode::NOT_IMPLEMENTED,
-                "Procedure calls not yet fully implemented (Phase 2)".to_string(),
-            ));
-        }
 
         let query_type = query_planner::get_statement_query_type(&cypher_statement);
         let query_type_str = match query_type {

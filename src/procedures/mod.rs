@@ -20,10 +20,13 @@
 //!
 //! # Schema Selection
 //!
-//! Procedures operate on a single schema selected via:
-//! 1. USE clause in the CALL statement (if present)
-//! 2. Database parameter in Bolt connection
-//! 3. Default schema from configuration
+//! Procedures operate on a single logical schema.
+//! The schema is selected by the HTTP request's `schema_name` parameter,
+//! falling back to the `"default"` schema when the parameter is omitted.
+//!
+//! Note: Schema selection via `USE` clauses in CALL statements or via Bolt
+//! connection database parameters is not currently supported; all procedure
+//! calls are evaluated against the HTTP-selected (or default) schema.
 
 pub mod db_labels;
 pub mod db_property_keys;

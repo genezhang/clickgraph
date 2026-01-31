@@ -11,7 +11,7 @@ use std::sync::Arc;
 ///
 /// # Arguments
 /// * `procedure_name` - Name of the procedure to execute
-/// * `schema_name` - Schema to execute against (from USE clause or connection)
+/// * `schema_name` - Schema name from HTTP request parameter (defaults to "default")
 /// * `registry` - Procedure registry containing available procedures
 ///
 /// # Returns
@@ -42,7 +42,7 @@ pub async fn execute_procedure_by_name(
 ///
 /// # Arguments
 /// * `call` - The parsed procedure call AST
-/// * `schema_name` - Schema to execute against (from USE clause or connection)
+/// * `schema_name` - Schema name from HTTP request parameter (defaults to "default")
 /// * `registry` - Procedure registry containing available procedures
 ///
 /// # Returns
