@@ -125,7 +125,6 @@ docs1/
 # Development assistants
 .claude/
 agent-os/
-.github/copilot-instructions.md
 
 # Private/Sensitive Examples (not for public repo)
 # Security graph schema and data - resembles real-world security scenarios
