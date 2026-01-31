@@ -122,9 +122,9 @@ impl BoltHandler {
         let is_bolt_51_plus = negotiated_version >= 0x00000501;
 
         // DEBUG: Log HELLO message structure
-        log::debug!("HELLO message has {} fields", message.fields.len());
+        log::info!("🔍 HELLO message has {} fields", message.fields.len());
         for (i, field) in message.fields.iter().enumerate() {
-            log::debug!(
+            log::info!(
                 "  HELLO Field[{}]: {}",
                 i,
                 bolt_value_to_string(field)
@@ -137,7 +137,7 @@ impl BoltHandler {
 
             // Extract database from HELLO extra field (routing context)
             let database = message.extract_database();
-            log::debug!("Extracted database from HELLO: {:?}", database);
+            log::info!("📊 Extracted database from HELLO: {:?}", database);
             
             // Store database selection in context for later use in LOGON
             if let Some(ref db_name) = database {
@@ -275,10 +275,10 @@ impl BoltHandler {
         }
 
         // Debug: log LOGON message fields
-        log::debug!("LOGON message has {} fields", message.fields.len());
+        log::info!("🔍 LOGON message has {} fields", message.fields.len());
         for (i, field) in message.fields.iter().enumerate() {
-            log::debug!(
-                "  Field[{}]: {}",
+            log::info!(
+                "  LOGON Field[{}]: {}",
                 i,
                 bolt_value_to_string(field)
             );
