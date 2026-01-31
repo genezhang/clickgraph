@@ -238,6 +238,8 @@ pub async fn run_with_config(config: ServerConfig) {
             enable_auth: false,
             default_user: Some("neo4j".to_string()),
             server_agent: format!("ClickGraph/{}", env!("CARGO_PKG_VERSION")),
+            host: config.bolt_host.clone(),
+            port: config.bolt_port,
         };
 
         // Clone the ClickHouse client from app_state for Bolt server

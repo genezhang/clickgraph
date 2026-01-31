@@ -88,6 +88,7 @@ impl BoltHandler {
             signatures::BEGIN => self.handle_begin(message).await,
             signatures::COMMIT => self.handle_commit(message).await,
             signatures::ROLLBACK => self.handle_rollback(message).await,
+            signatures::ROUTE => self.handle_route(message).await,
             _ => {
                 log::warn!("Unhandled Bolt message type: {}", message.type_name());
                 Ok(vec![BoltMessage::failure(
@@ -659,7 +660,13 @@ impl BoltHandler {
         }
 
         // Extract database from BEGIN message extra field (Bolt 4.0+)
+        log::debug!("BEGIN message has {} fields", message.fields.len());
+        if !message.fields.is_empty() {
+            log::debug!("BEGIN Field[0]: {}", bolt_value_to_string(&message.fields[0]));
+        }
+        
         if let Some(db) = message.extract_begin_database() {
+            log::info!("✅ BEGIN message contains database: {}", db);
             let mut context = lock_context!(self.context);
             if context.schema_name.as_deref() != Some(&db) {
                 log::debug!(
@@ -669,6 +676,8 @@ impl BoltHandler {
                 );
                 context.schema_name = Some(db);
             }
+        } else {
+            log::debug!("BEGIN message does NOT contain database field");
         }
 
         // Generate transaction ID
@@ -723,6 +732,82 @@ impl BoltHandler {
         log::info!("Rolled back transaction: {}", tx_id);
 
         Ok(vec![BoltMessage::success(HashMap::new())])
+    }
+
+    /// Handle ROUTE message (return routing table for database)
+    /// ROUTE message format: ROUTE {routing_context} [bookmarks] {extra}
+    /// where extra can contain {"db": "database_name"}
+    async fn handle_route(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
+        log::info!("ROUTE message received");
+        
+        // Extract database from ROUTE message (field 2 - extra metadata)
+        let database = if message.fields.len() >= 3 {
+            if let BoltValue::Json(Value::Object(extra_map)) = &message.fields[2] {
+                extra_map.get("db")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        
+        let db_name = database.unwrap_or_else(|| "default".to_string());
+        log::info!("ROUTE request for database: {}", db_name);
+        
+        // Verify schema exists
+        let schema_exists = if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+            if let Ok(schemas) = schemas_lock.try_read() {
+                schemas.contains_key(&db_name)
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        
+        if !schema_exists {
+            log::warn!("ROUTE requested for non-existent database: {}", db_name);
+            return Ok(vec![BoltMessage::failure(
+                "Neo.ClientError.Database.DatabaseNotFound".to_string(),
+                format!("Database '{}' not found", db_name),
+            )]);
+        }
+        
+        // Build routing table response
+        // For ClickGraph (single server, no cluster), we return ourselves for all roles
+        let server_address = format!("{}:{}", self.config.host, self.config.port);
+        
+        let mut routing_table = serde_json::Map::new();
+        routing_table.insert("ttl".to_string(), Value::Number(300.into())); // 5 minutes TTL
+        routing_table.insert("db".to_string(), Value::String(db_name));
+        
+        // Servers list: we are WRITE, READ, and ROUTE all in one
+        let servers = serde_json::json!([
+            {
+                "role": "WRITE",
+                "addresses": [server_address.clone()]
+            },
+            {
+                "role": "READ", 
+                "addresses": [server_address.clone()]
+            },
+            {
+                "role": "ROUTE",
+                "addresses": [server_address]
+            }
+        ]);
+        
+        routing_table.insert("servers".to_string(), servers);
+        
+        // Return SUCCESS with routing table
+        let mut metadata = HashMap::new();
+        metadata.insert("rt".to_string(), Value::Object(routing_table));
+        
+        log::info!("✅ Returning routing table for database: {}", metadata.get("rt").and_then(|v| v.get("db")).and_then(|v| v.as_str()).unwrap_or("unknown"));
+        
+        Ok(vec![BoltMessage::success(metadata)])
     }
 
     /// Execute a Cypher query and return result metadata
