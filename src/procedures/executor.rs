@@ -79,13 +79,16 @@ async fn get_schema(schema_name: &str) -> Result<GraphSchema, String> {
 /// - All union clauses also have call_clause
 /// - All unions are UNION ALL (not DISTINCT)
 pub fn is_procedure_union_query(stmt: &CypherStatement<'_>) -> bool {
+    log::debug!("is_procedure_union_query called, stmt type: {:?}", std::mem::discriminant(stmt));
     match stmt {
         CypherStatement::Query {
             query,
             union_clauses,
         } => {
+            log::debug!("is_procedure_union_query: It's a Query variant");
             // Must have at least one union
             if union_clauses.is_empty() {
+                log::debug!("is_procedure_union_query: No union clauses");
                 return false;
             }
 
@@ -96,6 +99,11 @@ pub fn is_procedure_union_query(stmt: &CypherStatement<'_>) -> bool {
                 && query.reading_clauses.is_empty()
                 && query.where_clause.is_none()
                 && query.with_clause.is_none();
+
+            log::debug!("is_procedure_union_query: union_clauses={}, call_clause={:?}, main_is_call={}", 
+                union_clauses.len(), 
+                query.call_clause.is_some(),
+                main_is_call);
 
             if !main_is_call {
                 return false;
@@ -113,34 +121,26 @@ pub fn is_procedure_union_query(stmt: &CypherStatement<'_>) -> bool {
                     && union_clause.query.with_clause.is_none()
             })
         }
-        CypherStatement::ProcedureCall(_) => false, // Standalone call, not a union
+        CypherStatement::ProcedureCall(_) => {
+            log::debug!("is_procedure_union_query: It's a ProcedureCall variant, returning false");
+            false
+        }
     }
 }
 
-/// Execute a UNION ALL of procedure calls
-///
-/// Executes each procedure in the union and combines results.
-/// Note: This currently only handles CALL ... YIELD ... RETURN patterns.
-/// Full RETURN expression evaluation (COLLECT, array slicing) is simplified.
+/// Extract procedure names from a UNION query
 ///
 /// # Arguments
-/// * `query` - The Cypher query string (must be a procedure UNION)
-/// * `schema_name` - Schema name to use for all procedure calls
-/// * `registry` - Procedure registry
+/// * `query` - The Cypher UNION query string
 ///
 /// # Returns
-/// * `Ok(records)` - Combined results from all procedures
-/// * `Err(message)` - Error if any procedure fails
-pub async fn execute_procedure_union(
-    query: &str,
-    schema_name: &str,
-    registry: &ProcedureRegistry,
-) -> ProcedureResult {
-    // Parse to extract procedure names (synchronous, before any awaits)
+/// * `Ok(Vec<String>)` - List of procedure names
+/// * `Err(String)` - Parse error
+pub fn extract_procedure_names_from_union(query: &str) -> Result<Vec<String>, String> {
     let (_, stmt) = open_cypher_parser::parse_cypher_statement(query)
         .map_err(|e| format!("Parse error: {}", e))?;
     
-    let proc_names: Vec<String> = match stmt {
+    let proc_names = match stmt {
         CypherStatement::Query {
             query,
             union_clauses,
@@ -163,9 +163,30 @@ pub async fn execute_procedure_union(
         }
         _ => return Err("Not a query statement".to_string()),
     };
-    // stmt is dropped here, no longer borrowing from query string
+    
+    Ok(proc_names)
+}
 
-    // Now execute all procedures (can await safely)
+/// Execute a UNION ALL of procedure calls
+///
+/// Executes each procedure in the union and combines results.
+/// Note: This currently only handles CALL ... YIELD ... RETURN patterns.
+/// Full RETURN expression evaluation (COLLECT, array slicing) is simplified.
+///
+/// # Arguments
+/// * `proc_names` - List of procedure names to execute
+/// * `schema_name` - Schema name to use for all procedure calls
+/// * `registry` - Procedure registry
+///
+/// # Returns
+/// * `Ok(records)` - Combined results from all procedures
+/// * `Err(message)` - Error if any procedure fails
+pub async fn execute_procedure_union(
+    proc_names: Vec<String>,
+    schema_name: &str,
+    registry: &ProcedureRegistry,
+) -> ProcedureResult {
+    // Execute all procedures and combine results
     let mut all_results = Vec::new();
     for proc_name in proc_names {
         let results = execute_procedure_by_name(&proc_name, schema_name, registry).await?;

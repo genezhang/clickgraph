@@ -44,12 +44,21 @@ pub fn parse_cypher_statement(
     let (input, _) = multispace0.parse(input)?;
 
     // Try to parse as standalone procedure call first
-    if let Ok((input, procedure_call)) =
+    // BUT: If there's a UNION after it, we need to treat it as a Query, not a standalone call
+    if let Ok((remaining, procedure_call)) =
         standalone_procedure_call::parse_standalone_procedure_call(input)
     {
-        // Optional trailing semicolon
-        let (input, _) = opt(ws(tag(";"))).parse(input)?;
-        return Ok((input, CypherStatement::ProcedureCall(procedure_call)));
+        // Look ahead for UNION keyword
+        let (check_input, _) = multispace0.parse(remaining)?;
+        let has_union = tag::<_, _, OpenCypherParsingError>("UNION")(check_input).is_ok();
+        
+        if !has_union {
+            // No UNION - treat as standalone procedure call
+            // Optional trailing semicolon
+            let (input, _) = opt(ws(tag(";"))).parse(remaining)?;
+            return Ok((input, CypherStatement::ProcedureCall(procedure_call)));
+        }
+        // Has UNION - fall through to regular query parser
     }
 
     // Parse the first query
