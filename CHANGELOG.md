@@ -1,5 +1,26 @@
 ## [Unreleased]
 
+### 🚀 Features
+
+- **Neo4j Schema Metadata Procedures** (Feb 2026): Implemented 4 essential procedures for Neo4j tool compatibility
+  - **New Procedures**:
+    - `CALL db.labels()` - Returns all node labels in current schema
+    - `CALL db.relationshipTypes()` - Returns all relationship types
+    - `CALL db.propertyKeys()` - Returns all unique property keys from nodes and relationships
+    - `CALL dbms.components()` - Returns ClickGraph version, name, and edition
+  - **Architecture**: New top-level `src/procedures/` module for future extensibility; CypherStatement changed from struct to enum (Query | ProcedureCall)
+  - **Execution Flow**: Procedures bypass query planner and execute directly against GLOBAL_SCHEMAS for fast response (<5ms)
+  - **Multi-Schema Support**: Works with `schema_name` request parameter to query different schemas
+  - **Response Format**: Neo4j-compatible JSON with `count` and `records` fields
+  - **Impact**: Enables Neo4j Browser and Neodash visualization tools to introspect ClickGraph schemas and show autocomplete
+  - **Testing**: 922 unit tests passing + E2E validation with `scripts/test/test_procedures.sh`
+  - **Files**: 
+    - New: `src/procedures/*.rs` (mod, executor, db_labels, db_relationship_types, dbms_components, db_property_keys)
+    - New: `src/open_cypher_parser/standalone_procedure_call.rs` (parser for CALL statements)
+    - Modified: `src/server/handlers.rs` (procedure detection and execution), `src/open_cypher_parser/ast.rs` (CypherStatement enum)
+    - Test: `scripts/test/test_procedures.sh`
+  - **Branch**: `feature/neo4j-schema-procedures`
+
 ### 🔒 Security
 
 - **Parser Recursion Depth Limits** (Jan 26, 2026): Added MAX_RELATIONSHIP_CHAIN_DEPTH = 1000 to prevent DoS attacks

@@ -46,6 +46,29 @@ See `REGRESSION_BUGS.md` for detailed tracking and prevention policy.
 
 **Recent Fixes**:
 
+0. **Feb 2026 - Neo4j Schema Metadata Procedures** ✅ **NEW FEATURE**:
+   - **Feature**: Implemented 4 essential Neo4j schema metadata procedures for tool compatibility
+   - **Procedures Added**:
+     - `CALL db.labels()` - Returns all node labels in current schema
+     - `CALL db.relationshipTypes()` - Returns all relationship types
+     - `CALL db.propertyKeys()` - Returns all property keys from nodes and relationships
+     - `CALL dbms.components()` - Returns ClickGraph version and metadata
+   - **Architecture**:
+     - New top-level `src/procedures/` module (future-proof for custom procedures)
+     - CypherStatement changed from struct to enum (Query | ProcedureCall)
+     - Procedures bypass query planner, execute directly against GLOBAL_SCHEMAS
+     - HTTP handler integration with procedure detection before query planning
+   - **Multi-Schema Support**: Works with `schema_name` parameter to query different schemas
+   - **Response Format**: Neo4j-compatible JSON with `count` and `records` fields
+   - **Performance**: All procedures execute in <5ms (in-memory schema metadata)
+   - **Testing**: 922 unit tests passing + comprehensive E2E testing with curl
+   - **Impact**: Enables Neo4j Browser and Neodash visualization tools to introspect ClickGraph schemas
+   - **Files**: 
+     - New: `src/procedures/*.rs` (7 files), `src/open_cypher_parser/standalone_procedure_call.rs`
+     - Modified: `src/server/handlers.rs`, `src/open_cypher_parser/ast.rs`, `src/lib.rs`
+     - Test: `scripts/test/test_procedures.sh`
+   - **Branch**: `feature/neo4j-schema-procedures`
+
 0. **Jan 31, 2026 - OPTIONAL MATCH + VLP WHERE Filter Regression** ✅ **CRITICAL BUG FIX**:
    - **Problem**: Queries like `MATCH (a:User) WHERE a.name = 'Alice' OPTIONAL MATCH (a)-[*]->(b) RETURN a.name, COUNT(b)` 
      returned ALL users instead of just Alice - the WHERE filter was silently dropped!
@@ -444,6 +467,25 @@ CALL pagerank(
   relationship_type='FOLLOWS',
   max_iterations=20
 ) RETURN node_id, rank
+```
+
+**Neo4j Schema Metadata Procedures** (New!)
+```cypher
+-- Get all node labels
+CALL db.labels()
+-- Returns: {"label": "User"}, {"label": "Post"}, ...
+
+-- Get all relationship types
+CALL db.relationshipTypes()
+-- Returns: {"relationshipType": "FOLLOWS"}, {"relationshipType": "AUTHORED"}, ...
+
+-- Get all property keys
+CALL db.propertyKeys()
+-- Returns: {"propertyKey": "name"}, {"propertyKey": "email"}, ...
+
+-- Get database components
+CALL dbms.components()
+-- Returns: {"name": "ClickGraph", "versions": ["0.6.1"], "edition": "community"}
 ```
 
 ### Internal Architecture ✅
