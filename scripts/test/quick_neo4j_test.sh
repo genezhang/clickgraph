@@ -45,14 +45,36 @@ echo "3️⃣  Starting ClickGraph..."
 cargo run --release --bin clickgraph &
 CLICKGRAPH_PID=$!
 echo "   PID: $CLICKGRAPH_PID"
-sleep 5
+echo "   Waiting for ClickGraph to compile and start..."
 
-# Verify it started successfully
-if ! ps -p $CLICKGRAPH_PID > /dev/null 2>&1; then
-  echo "❌ ClickGraph failed to start! Check the logs."
-  exit 1
+# Wait for server to be ready (up to 120 seconds for compilation + startup)
+MAX_WAIT=120
+ELAPSED=0
+while [ $ELAPSED -lt $MAX_WAIT ]; do
+    if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+        echo "✅ ClickGraph running and responding"
+        break
+    fi
+    
+    # Check if process is still alive
+    if ! ps -p $CLICKGRAPH_PID > /dev/null 2>&1; then
+        echo "❌ ClickGraph process died! Check logs."
+        exit 1
+    fi
+    
+    sleep 2
+    ELAPSED=$((ELAPSED + 2))
+    
+    # Show progress every 10 seconds
+    if [ $((ELAPSED % 10)) -eq 0 ]; then
+        echo "   Still waiting... (${ELAPSED}s elapsed)"
+    fi
+done
+
+if [ $ELAPSED -ge $MAX_WAIT ]; then
+    echo "❌ Timeout waiting for ClickGraph to start"
+    exit 1
 fi
-echo "✅ ClickGraph running"
 echo ""
 
 echo "4️⃣  Testing procedures via HTTP..."
