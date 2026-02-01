@@ -78,18 +78,18 @@ graph_schema:
       from_node: User
       to_node: Post
       property_mappings:
-        like_date: like_date
+        like_date: liked_at
 
     - type: FRIENDS_WITH
       database: brahmand
       table: friendships
-      from_id: user1_id
-      to_id: user2_id
-      edge_id: friendship_id
+      from_id: user_id_1
+      to_id: user_id_2
+      edge_id: user_id_1  # Use composite key
       from_node: User
       to_node: User
       property_mappings:
-        since_date: since_date
+        since_date: since
 
     - type: PATTERN_COMP_FOLLOWS
       database: brahmand

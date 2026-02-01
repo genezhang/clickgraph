@@ -352,6 +352,10 @@ pub fn transform_row(
     metadata: &[ReturnItemMetadata],
     schema: &GraphSchema,
 ) -> Result<Vec<BoltValue>, String> {
+    log::info!("🔍 transform_row called with {} columns: {:?}", row.len(), row.keys().collect::<Vec<_>>());
+    log::info!("🔍 Metadata has {} items: {:?}", metadata.len(), 
+               metadata.iter().map(|m| (&m.field_name, &m.item_type)).collect::<Vec<_>>());
+    
     // Check for multi-label scan results (has {alias}_label, {alias}_id, {alias}_properties columns)
     if let Some(transformed) = try_transform_multi_label_row(&row, metadata)? {
         return Ok(transformed);
@@ -667,7 +671,7 @@ fn transform_to_path(
     );
     
     // Try to get start node data from row, or create with known label
-    let start_node = find_node_in_row(row, start_alias, return_metadata, schema)
+    let start_node = find_node_in_row_with_label(row, start_alias, start_labels, return_metadata, schema)
         .unwrap_or_else(|| {
             let label = start_labels.first().cloned().unwrap_or_else(|| "_Unknown".to_string());
             log::info!("Creating start node with label: {}", label);
@@ -675,7 +679,7 @@ fn transform_to_path(
         });
     
     // Try to get end node data from row, or create with known label
-    let end_node = find_node_in_row(row, end_alias, return_metadata, schema)
+    let end_node = find_node_in_row_with_label(row, end_alias, end_labels, return_metadata, schema)
         .unwrap_or_else(|| {
             let label = end_labels.first().cloned().unwrap_or_else(|| "_Unknown".to_string());
             log::info!("Creating end node with label: {}", label);
@@ -683,8 +687,9 @@ fn transform_to_path(
         });
     
     // Try to get relationship data from row, or create with known type
-    let relationship = find_relationship_in_row(
-        row, rel_alias, &start_node.element_id, &end_node.element_id, return_metadata, schema
+    let relationship = find_relationship_in_row_with_type(
+        row, rel_alias, &start_node.element_id, &end_node.element_id, 
+        rel_types, start_labels, end_labels, return_metadata, schema
     ).unwrap_or_else(|| {
         let rel_type = rel_types.first().cloned().unwrap_or_else(|| "_UNKNOWN".to_string());
         log::info!("Creating relationship with type: {}", rel_type);
@@ -700,6 +705,75 @@ fn transform_to_path(
     // Indices for single hop: [1, 1] means "relationship index 1, then node index 1"
     // (Neo4j uses 1-based indexing in path indices)
     Ok(Path::single_hop(start_node, relationship, end_node))
+}
+
+/// Find a node in the result row by its alias, using known labels
+fn find_node_in_row_with_label(
+    row: &HashMap<String, Value>,
+    alias: &str,
+    known_labels: &[String],
+    return_metadata: &[ReturnItemMetadata],
+    schema: &GraphSchema,
+) -> Option<Node> {
+    log::info!("🔍 find_node_in_row_with_label: alias='{}', known_labels={:?}, row_keys={:?}", 
+               alias, known_labels, row.keys().collect::<Vec<_>>());
+    
+    // First try the return metadata approach
+    for meta in return_metadata {
+        if meta.field_name == alias {
+            if let ReturnItemType::Node { labels } = &meta.item_type {
+                return transform_to_node(row, alias, labels, schema).ok();
+            }
+        }
+    }
+    
+    // Check if there are properties in the row with this alias prefix
+    let prefix = format!("{}.", alias);
+    let mut properties = HashMap::new();
+    
+    for (key, value) in row.iter() {
+        if let Some(prop_name) = key.strip_prefix(&prefix) {
+            properties.insert(prop_name.to_string(), value.clone());
+        }
+    }
+    
+    log::info!("🔍 Found {} properties for alias '{}' with prefix '{}'", 
+               properties.len(), alias, prefix);
+    
+    if properties.is_empty() {
+        return None;
+    }
+    
+    // Use the known label from path metadata (already extracted from composite keys)
+    let label = known_labels.first()?;
+    
+    // Get node schema
+    let node_schema = schema.node_schema_opt(label)?;
+    
+    // Get ID columns from schema
+    let id_columns = node_schema.node_id.id.columns();
+    let id_values: Vec<String> = id_columns
+        .iter()
+        .filter_map(|col| properties.get(*col).and_then(value_to_string))
+        .collect();
+    
+    if id_values.is_empty() {
+        log::warn!("No ID values found for node '{}' with label '{}'", alias, label);
+        return None;
+    }
+    
+    let element_id = generate_node_element_id(label, &id_values.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+    let id: i64 = id_values.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+    
+    log::info!("✅ Found node '{}' in row: label={}, properties={}, element_id={}", 
+               alias, label, properties.len(), element_id);
+    
+    Some(Node {
+        id,
+        labels: vec![label.clone()],
+        properties,
+        element_id,
+    })
 }
 
 /// Find a node in the result row by its alias
@@ -764,6 +838,67 @@ fn find_node_in_row(
     }
     
     None
+}
+
+/// Find a relationship in the result row by its alias, using known types
+fn find_relationship_in_row_with_type(
+    row: &HashMap<String, Value>,
+    alias: &str,
+    start_element_id: &str,
+    end_element_id: &str,
+    known_rel_types: &[String],
+    from_labels: &[String],
+    to_labels: &[String],
+    return_metadata: &[ReturnItemMetadata],
+    schema: &GraphSchema,
+) -> Option<Relationship> {
+    // First try return metadata
+    for meta in return_metadata {
+        if meta.field_name == alias {
+            if let ReturnItemType::Relationship { rel_types, from_label, to_label } = &meta.item_type {
+                return transform_to_relationship(
+                    row, alias, rel_types,
+                    from_label.as_deref(), to_label.as_deref(), schema
+                ).ok();
+            }
+        }
+    }
+    
+    // Check if there are properties in the row with this alias prefix
+    let prefix = format!("{}.", alias);
+    let mut properties = HashMap::new();
+    
+    for (key, value) in row.iter() {
+        if let Some(prop_name) = key.strip_prefix(&prefix) {
+            properties.insert(prop_name.to_string(), value.clone());
+        }
+    }
+    
+    if properties.is_empty() {
+        return None;
+    }
+    
+    // Use the known relationship type from path metadata
+    let rel_type = known_rel_types.first()?;
+    let from_label = from_labels.first()?;
+    let to_label = to_labels.first()?;
+    
+    log::info!("✅ Found relationship '{}' in row: type={}, properties={}", 
+               alias, rel_type, properties.len());
+    
+    // Create relationship with extracted properties
+    Some(Relationship {
+        id: 0,
+        start_node_id: 0,
+        end_node_id: 0,
+        rel_type: rel_type.clone(),
+        properties,
+        element_id: format!("{}:{}->{}",rel_type, 
+                           start_element_id.split(':').nth(1).unwrap_or("0"),
+                           end_element_id.split(':').nth(1).unwrap_or("0")),
+        start_node_element_id: start_element_id.to_string(),
+        end_node_element_id: end_element_id.to_string(),
+    })
 }
 
 /// Find a relationship in the result row by its alias
