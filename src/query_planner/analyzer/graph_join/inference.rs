@@ -2514,6 +2514,7 @@ impl GraphJoinInference {
         plan_ctx: &mut PlanCtx,
         collected_graph_joins: &mut Vec<Join>,
         join_ctx: &mut JoinContext,
+        graph_rel: &GraphRel,  // Added to check for path variables
     ) -> AnalyzerResult<()> {
         log::warn!(
             "🚨 handle_graph_pattern_v2 ENTER: rel={}, left={}, right={}, strategy={:?}",
@@ -3697,6 +3698,7 @@ impl GraphJoinInference {
         // AND:
         // - Not a variable-length path (VLP needs CTEs)
         // - Not a shortest path
+        // - Not a path variable query (path needs all node properties)
         // - This is the first relationship AND it's a single-hop pattern
         //   (multi-hop needs ALL node tables for chaining, even if unreferenced)
         //
@@ -3704,16 +3706,18 @@ impl GraphJoinInference {
         // Anonymous nodes without label: () → has_label=false, never needs JOIN for its own table
         let both_nodes_anonymous = !left_has_explicit_label && !right_has_explicit_label;
         let neither_node_referenced = !left_is_referenced && !right_is_referenced;
+        let has_path_variable = graph_rel.path_variable.is_some();
 
         let apply_optimization = (both_nodes_anonymous || neither_node_referenced)
             && !is_vlp
             && !is_shortest_path
+            && !has_path_variable  // CRITICAL: Path queries need node properties!
             && is_first_relationship
             && !is_multi_hop_pattern; // CRITICAL: Multi-hop patterns need node JOINs for chaining!
 
         if apply_optimization {
-            crate::debug_print!("    ⚡ SingleTableScan: both_anonymous={}, neither_referenced={}, left_ref={}, right_ref={}",
-                both_nodes_anonymous, neither_node_referenced, left_is_referenced, right_is_referenced);
+            crate::debug_print!("    ⚡ SingleTableScan: both_anonymous={}, neither_referenced={}, left_ref={}, right_ref={}, has_path_var={}",
+                both_nodes_anonymous, neither_node_referenced, left_is_referenced, right_is_referenced, has_path_variable);
             // Override join strategy: no node JOINs needed, only relationship table
             ctx.join_strategy = JoinStrategy::SingleTableScan {
                 table: rel_schema.full_table_name(),
@@ -3789,6 +3793,7 @@ impl GraphJoinInference {
             plan_ctx,
             collected_graph_joins,
             join_ctx,
+            graph_rel,  // Pass graph_rel to check for path variables
         );
 
         let _joins_added = collected_graph_joins.len() - joins_before;
