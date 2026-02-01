@@ -886,16 +886,31 @@ fn find_relationship_in_row_with_type(
     log::info!("✅ Found relationship '{}' in row: type={}, properties={}", 
                alias, rel_type, properties.len());
     
+    // Extract node IDs from element_ids (format: "Label:id")
+    let start_id = start_element_id.split(':').nth(1)
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0);
+    let end_id = end_element_id.split(':').nth(1)
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0);
+    
+    // Generate unique relationship ID by combining start and end IDs
+    // Use a simple hash: (start_id << 32) | end_id
+    // This ensures each unique (from, to) pair gets a unique ID
+    let rel_id = if start_id > 0 && end_id > 0 {
+        ((start_id as i64) << 20) | (end_id as i64)
+    } else {
+        0
+    };
+    
     // Create relationship with extracted properties
     Some(Relationship {
-        id: 0,
-        start_node_id: 0,
-        end_node_id: 0,
+        id: rel_id,
+        start_node_id: start_id,
+        end_node_id: end_id,
         rel_type: rel_type.clone(),
         properties,
-        element_id: format!("{}:{}->{}",rel_type, 
-                           start_element_id.split(':').nth(1).unwrap_or("0"),
-                           end_element_id.split(':').nth(1).unwrap_or("0")),
+        element_id: format!("{}:{}->{}",rel_type, start_id, end_id),
         start_node_element_id: start_element_id.to_string(),
         end_node_element_id: end_element_id.to_string(),
     })
