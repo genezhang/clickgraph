@@ -139,6 +139,7 @@ impl SelectBuilder for LogicalPlan {
                                                     &table_alias.0,
                                                     typed_var,
                                                     &mut select_items,
+                                                    Some(plan_ctx),
                                                 );
                                             }
                                             VariableSource::Cte { cte_name } => {
@@ -531,6 +532,7 @@ impl LogicalPlan {
         alias: &str,
         typed_var: &TypedVariable,
         select_items: &mut Vec<SelectItem>,
+        plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
     ) {
         log::info!("✅ Expanding base table entity '{}' to properties", alias);
 
@@ -541,33 +543,54 @@ impl LogicalPlan {
             _ => return, // Should not happen
         };
 
-        // Use existing logic to get properties and table alias
-        let mapped_alias = crate::render_plan::get_denormalized_alias_mapping(alias)
-            .unwrap_or_else(|| alias.to_string());
+        // CRITICAL: Check if this alias is a FK-edge (denormalized on another table)
+        // For FK-edge patterns like (u)-[r:AUTHORED]->(po), relationship r is stored ON po table
+        // We need to select columns from po table but alias them as r.*
+        let (actual_table_alias, is_fk_edge) = if let Some(ctx) = plan_ctx {
+            if let Some((edge_alias, _is_from, _label, _type)) = ctx.get_denormalized_alias_info(alias) {
+                log::info!(
+                    "🔑 FK-edge detected: '{}' is denormalized on '{}'",
+                    alias, edge_alias
+                );
+                (edge_alias.clone(), true)
+            } else {
+                // Try global denormalized alias mapping (for SingleTableScan)
+                let mapped = crate::render_plan::get_denormalized_alias_mapping(alias)
+                    .unwrap_or_else(|| alias.to_string());
+                (mapped, false)
+            }
+        } else {
+            // No plan_ctx, use global mapping
+            let mapped = crate::render_plan::get_denormalized_alias_mapping(alias)
+                .unwrap_or_else(|| alias.to_string());
+            (mapped, false)
+        };
 
-        if mapped_alias != alias {
+        if actual_table_alias != alias {
             log::info!(
-                "🔍 Denormalized alias mapping: '{}' → '{}'",
+                "🔍 {} alias mapping: '{}' → '{}'",
+                if is_fk_edge { "FK-edge" } else { "Denormalized" },
                 alias,
-                mapped_alias
+                actual_table_alias
             );
         }
 
-        match self.get_properties_with_table_alias(&mapped_alias) {
+        match self.get_properties_with_table_alias(&actual_table_alias) {
             Ok((properties, _)) if !properties.is_empty() => {
                 let prop_count = properties.len();
                 for (prop_name, col_name) in properties {
                     select_items.push(SelectItem {
                         expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: RenderTableAlias(mapped_alias.clone()),
+                            table_alias: RenderTableAlias(actual_table_alias.clone()),
                             column: PropertyValue::Column(col_name),
                         }),
                         col_alias: Some(ColumnAlias(format!("{}.{}", alias, prop_name))),
                     });
                 }
                 log::info!(
-                    "✅ Expanded base table '{}' to {} properties",
+                    "✅ Expanded base table '{}' (actual: '{}') to {} properties",
                     alias,
+                    actual_table_alias,
                     prop_count
                 );
             }
@@ -788,7 +811,7 @@ impl LogicalPlan {
                         log::info!("  📦 Expanding start node '{}' properties", start_alias);
                         match typed_var.source() {
                             VariableSource::Match => {
-                                self.expand_base_table_entity(start_alias, typed_var, select_items);
+                                self.expand_base_table_entity(start_alias, typed_var, select_items, Some(ctx));
                             }
                             VariableSource::Cte { cte_name } => {
                                 self.expand_cte_entity(start_alias, typed_var, cte_name, Some(ctx), select_items);
@@ -807,7 +830,7 @@ impl LogicalPlan {
                         log::info!("  📦 Expanding end node '{}' properties", end_alias);
                         match typed_var.source() {
                             VariableSource::Match => {
-                                self.expand_base_table_entity(end_alias, typed_var, select_items);
+                                self.expand_base_table_entity(end_alias, typed_var, select_items, Some(ctx));
                             }
                             VariableSource::Cte { cte_name } => {
                                 self.expand_cte_entity(end_alias, typed_var, cte_name, Some(ctx), select_items);
@@ -827,7 +850,7 @@ impl LogicalPlan {
                         log::info!("  📦 Expanding relationship '{}' properties", rel_alias);
                         match typed_var.source() {
                             VariableSource::Match => {
-                                self.expand_base_table_entity(rel_alias, typed_var, select_items);
+                                self.expand_base_table_entity(rel_alias, typed_var, select_items, Some(ctx));
                             }
                             VariableSource::Cte { cte_name } => {
                                 self.expand_cte_entity(rel_alias, typed_var, cte_name, Some(ctx), select_items);
