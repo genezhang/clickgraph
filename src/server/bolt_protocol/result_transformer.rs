@@ -164,7 +164,7 @@ pub fn extract_return_metadata(
 
 /// Find the final Projection node in the logical plan
 ///
-/// Traverses through OrderBy, Limit, Skip, GraphJoins wrappers to find the underlying Projection
+/// Traverses through OrderBy, Limit, Skip, GraphJoins, Union wrappers to find the underlying Projection
 fn find_final_projection(plan: &LogicalPlan) -> Result<&Projection, String> {
     match plan {
         LogicalPlan::Projection(proj) => Ok(proj),
@@ -172,6 +172,14 @@ fn find_final_projection(plan: &LogicalPlan) -> Result<&Projection, String> {
         LogicalPlan::Limit(limit) => find_final_projection(&limit.input),
         LogicalPlan::Skip(skip) => find_final_projection(&skip.input),
         LogicalPlan::GraphJoins(joins) => find_final_projection(&joins.input),
+        LogicalPlan::Union(union_plan) => {
+            // For Union plans, check the first branch for Projection
+            if let Some(first) = union_plan.inputs.first() {
+                find_final_projection(first)
+            } else {
+                Err("Union plan has no inputs".to_string())
+            }
+        }
         _ => Err(format!(
             "No projection found in plan, got: {:?}",
             std::mem::discriminant(plan)
@@ -235,6 +243,11 @@ pub fn transform_row(
     metadata: &[ReturnItemMetadata],
     schema: &GraphSchema,
 ) -> Result<Vec<BoltValue>, String> {
+    // Check for multi-label scan results (has {alias}_label, {alias}_id, {alias}_properties columns)
+    if let Some(transformed) = try_transform_multi_label_row(&row, metadata)? {
+        return Ok(transformed);
+    }
+
     let mut result = Vec::new();
 
     for meta in metadata {
@@ -325,9 +338,17 @@ fn transform_to_node(
     let id_value_refs: Vec<&str> = id_values.iter().map(|s| s.as_str()).collect();
     let element_id = generate_node_element_id(label, &id_value_refs);
 
+    // Try to extract numeric ID for legacy `id` field
+    // For single-column numeric IDs, parse as i64; otherwise use 0
+    let legacy_id: i64 = if id_values.len() == 1 {
+        id_values[0].parse().unwrap_or(0)
+    } else {
+        0 // Composite IDs can't be represented as single i64
+    };
+
     // Create Node struct
     Ok(Node {
-        id: 0, // Legacy ID (unused in Neo4j 5.x)
+        id: legacy_id,
         labels: labels.to_vec(),
         properties,
         element_id,
@@ -465,6 +486,99 @@ fn value_to_string(value: &Value) -> Option<String> {
         Value::Bool(b) => Some(b.to_string()),
         Value::Null => None,
         _ => None, // Arrays and Objects not supported for IDs
+    }
+}
+
+/// Try to transform a multi-label scan result row
+///
+/// Multi-label scan results have columns in the format: {alias}_label, {alias}_id, {alias}_properties
+/// This function detects these columns and transforms them into proper Node objects.
+///
+/// Returns None if this is not a multi-label scan result.
+fn try_transform_multi_label_row(
+    row: &HashMap<String, Value>,
+    metadata: &[ReturnItemMetadata],
+) -> Result<Option<Vec<BoltValue>>, String> {
+    // Find return items that might be multi-label nodes
+    // Multi-label results have columns: {alias}_label, {alias}_id, {alias}_properties
+    let mut result = Vec::new();
+    let mut found_multi_label = false;
+
+    for meta in metadata {
+        // Check if we have the special multi-label columns for this alias
+        let label_col = format!("{}_label", meta.field_name);
+        let id_col = format!("{}_id", meta.field_name);
+        let props_col = format!("{}_properties", meta.field_name);
+
+        if row.contains_key(&label_col) && row.contains_key(&id_col) && row.contains_key(&props_col)
+        {
+            found_multi_label = true;
+
+            // Extract label
+            let label = match row.get(&label_col) {
+                Some(Value::String(l)) => l.clone(),
+                Some(v) => v.to_string().trim_matches('"').to_string(),
+                None => return Err(format!("Missing {} column", label_col)),
+            };
+
+            // Extract ID
+            let id = match row.get(&id_col) {
+                Some(Value::String(i)) => i.clone(),
+                Some(v) => v.to_string().trim_matches('"').to_string(),
+                None => return Err(format!("Missing {} column", id_col)),
+            };
+
+            // Extract and parse properties JSON
+            let properties: HashMap<String, Value> = match row.get(&props_col) {
+                Some(Value::String(json_str)) => {
+                    serde_json::from_str(json_str).unwrap_or_else(|_| HashMap::new())
+                }
+                Some(Value::Object(map)) => {
+                    // Already parsed as object
+                    map.iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect()
+                }
+                _ => HashMap::new(),
+            };
+
+            // Generate element_id
+            let element_id = generate_node_element_id(&label, &[&id]);
+
+            // Try to parse ID as numeric for legacy `id` field
+            let legacy_id: i64 = id.parse().unwrap_or(0);
+
+            // Create Node
+            let node = Node::new(legacy_id, vec![label], properties, element_id);
+            let packstream_bytes = node.to_packstream();
+            result.push(BoltValue::PackstreamBytes(packstream_bytes));
+        } else {
+            // Not a multi-label column set, check for regular handling
+            match &meta.item_type {
+                ReturnItemType::Scalar => {
+                    let value = row.get(&meta.field_name).cloned().unwrap_or(Value::Null);
+                    result.push(BoltValue::Json(value));
+                }
+                _ => {
+                    // If we've found some multi-label results but this one isn't,
+                    // we can't use this code path
+                    if found_multi_label {
+                        return Err(format!(
+                            "Mixed multi-label and regular results not supported for field: {}",
+                            meta.field_name
+                        ));
+                    }
+                    // Not a multi-label result at all
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
+    if found_multi_label {
+        Ok(Some(result))
+    } else {
+        Ok(None)
     }
 }
 
