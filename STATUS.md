@@ -46,6 +46,47 @@ See `REGRESSION_BUGS.md` for detailed tracking and prevention policy.
 
 **Recent Fixes**:
 
+0. **Feb 2026 - Label-less Node Queries** ✅ **NEO4J COMPATIBILITY**:
+   - **Feature**: Support for `MATCH (n) RETURN n` without explicit label
+   - **Problem**: Neo4j Browser "dot" exploration sends label-less queries; ClickGraph required explicit labels
+   - **Solution**: Reused Union infrastructure - generates UNION ALL across all node types in schema
+   - **Impact**: ✨ **Neo4j Browser "dot" exploration feature now works!**
+   - **Files**: `helpers.rs` (Union generation), `plan_builder.rs` (multi-label detection), `mod.rs` (flag field)
+
+1. **Feb 2026 - RETURN Clause Evaluation for Procedures** ✅ **CRITICAL FEATURE**:
+   - **Feature**: Full RETURN clause evaluation for procedure-only queries with aggregations, map literals, and array slicing
+   - **Problem**: Neo4j Browser schema sidebar empty because Browser sends complex queries with RETURN clauses that aggregate 
+     procedure results: `CALL db.labels() YIELD label RETURN {name:'labels', data:COLLECT(label)[..1000]} AS result UNION ALL ...`
+   - **Solution**: Built complete RETURN clause evaluator in `src/procedures/return_evaluator.rs`
+     - Expression evaluation: variables, literals, map literals, list construction, property access
+     - Aggregation functions: COLLECT (array aggregation), COUNT (with distinct support)
+     - Array slicing: `[..1000]`, `[5..]`, `[2..10]` syntax
+     - Proper aggregation semantics: all records → single aggregated record
+   - **Architecture**:
+     - Async-safe execution: Parse → Extract plan → Execute async → Re-parse → Evaluate RETURN sync
+     - ExecutionPlan enum with owned data (Strings) to cross async boundaries
+     - Three execution paths: SimpleProcedure, ProcedureWithReturn, Union
+     - Explicit AST drop() to prove to compiler it doesn't cross async boundary
+   - **Browser Query Format**:
+     ```cypher
+     CALL db.labels() YIELD label
+     RETURN {name:'labels', data:COLLECT(label)[..1000]} AS result
+     UNION ALL
+     CALL db.relationshipTypes() YIELD relationshipType
+     RETURN {name:'relationshipTypes', data:COLLECT(relationshipType)[..1000]} AS result
+     UNION ALL
+     CALL db.propertyKeys() YIELD propertyKey
+     RETURN {name:'propertyKeys', data:COLLECT(propertyKey)[..1000]} AS result
+     ```
+   - **Result**: Returns aggregated format Browser expects: `{result: {name: 'labels', data: ['User', 'Post', ...]}}`
+   - **Impact**: ✨ **Neo4j Browser schema sidebar auto-populates with labels, relationships, and properties!**
+   - **Testing**: 3/3 unit tests + E2E validation with Python neo4j-driver
+   - **Files**: 
+     - New: `src/procedures/return_evaluator.rs` (~400 lines)
+     - Modified: `src/server/bolt_protocol/handler.rs` (lines 18-1070, added ExecutionPlan and RETURN evaluation)
+     - Modified: `src/procedures/executor.rs`, `src/procedures/mod.rs`
+   - **Performance**: Full 3-branch UNION query executes in <10ms
+
 0. **Feb 2026 - Neo4j Schema Metadata Procedures** ✅ **NEW FEATURE**:
    - **Feature**: Implemented 4 essential Neo4j schema metadata procedures for tool compatibility
    - **Procedures Added**:
