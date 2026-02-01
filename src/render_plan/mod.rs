@@ -97,6 +97,10 @@ pub struct RenderPlan {
     /// Contains path variable name and hop count for queries like:
     /// MATCH p = (a)-[:T]->(b) RETURN length(p)
     pub fixed_path_info: Option<FixedPathMetadata>,
+    /// Flag indicating this is a multi-label node scan (labelless MATCH (n))
+    /// When true, the SELECT items should NOT be overwritten by Projection
+    /// as they contain the special _label, _id, _properties columns
+    pub is_multi_label_scan: bool,
 }
 
 /// Metadata for simple/fixed path patterns (non-VLP)

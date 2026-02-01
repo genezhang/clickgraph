@@ -725,6 +725,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     limit,
                     union,
                     fixed_path_info: None,
+                    is_multi_label_scan: false,
                     // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
                 };
 
@@ -835,6 +836,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         limit,
                         union,
                         fixed_path_info: None,
+                        is_multi_label_scan: false,
                         // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
                     };
 
@@ -868,6 +870,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         limit: LimitItem(None),
                         union: UnionItems(None),
                         fixed_path_info: None,
+                        is_multi_label_scan: false,
                         // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
                     };
 
@@ -926,6 +929,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         limit,
                         union,
                         fixed_path_info: None,
+                        is_multi_label_scan: false,
                         // cte_column_registry: temp_render_plan.cte_column_registry, // REMOVED: No longer used
                     };
 
@@ -946,9 +950,20 @@ impl RenderPlanBuilder for LogicalPlan {
                 let mut render_plan = p.input.to_render_plan(schema)?;
 
                 log::debug!(
-                    "Projection::to_render_plan: after input conversion, has_union={}",
-                    render_plan.union.0.is_some()
+                    "Projection::to_render_plan: after input conversion, has_union={}, is_multi_label_scan={}",
+                    render_plan.union.0.is_some(),
+                    render_plan.is_multi_label_scan
                 );
+
+                // 🔧 Multi-label scan: Skip SELECT overwriting to preserve special columns
+                // When a multi-label scan creates _label, _id, _properties columns,
+                // we must NOT overwrite them with the normal extract_select_items result
+                if render_plan.is_multi_label_scan {
+                    log::info!("🎯 Projection over multi-label scan: preserving special SELECT columns");
+                    // Just apply distinct if needed, but keep the SELECT items
+                    render_plan.select.distinct = p.distinct;
+                    return Ok(render_plan);
+                }
 
                 // CRITICAL FIX: If the input is a WithClause, the render_plan will have the CTE registry
                 // Set it as thread-local so that extract_select_items can use it for property resolution
@@ -1139,6 +1154,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     limit: LimitItem(None),
                     union: UnionItems(None),
                     fixed_path_info: None,
+                    is_multi_label_scan: false,
                     // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
                 })
             }
@@ -1266,6 +1282,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     limit: cte_limit,
                     union: UnionItems(None),
                     fixed_path_info: None,
+                    is_multi_label_scan: false,
                     // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
                 }));
 
@@ -1313,6 +1330,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     limit,
                     union,
                     fixed_path_info: None,
+                    is_multi_label_scan: false,
                     // cte_column_registry: registry, // REMOVED: No longer used
                 })
             }
@@ -1455,6 +1473,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 Ok(base_render)
             }
             LogicalPlan::Union(union) => {
+                log::debug!("Union rendering: {} inputs", union.inputs.len());
+                
                 // Union - convert each branch to RenderPlan and combine with UNION ALL
                 if union.inputs.is_empty() {
                     return Err(RenderBuildError::InvalidRenderPlan(
@@ -1462,6 +1482,136 @@ impl RenderPlanBuilder for LogicalPlan {
                     ));
                 }
 
+                // SPECIAL CASE: Multi-label node scan (labelless queries like `MATCH (n) RETURN n`)
+                // Detect if all Union inputs are ViewScans (possibly wrapped in GraphNode, GraphJoins, etc.)
+                // In this case, use json_builder::generate_multi_type_union_sql() for uniform columns
+                fn is_node_scan_input(plan: &LogicalPlan, depth: usize) -> bool {
+                    let indent = "  ".repeat(depth);
+                    match plan {
+                        LogicalPlan::ViewScan(_) => {
+                            log::debug!("{}ViewScan -> true", indent);
+                            true
+                        }
+                        LogicalPlan::GraphNode(gn) => {
+                            log::debug!("{}GraphNode -> checking input", indent);
+                            is_node_scan_input(gn.input.as_ref(), depth + 1)
+                        }
+                        LogicalPlan::GraphJoins(gj) => {
+                            log::debug!("{}GraphJoins -> checking input", indent);
+                            is_node_scan_input(gj.input.as_ref(), depth + 1)
+                        }
+                        LogicalPlan::Union(u) => {
+                            log::debug!("{}Union({} inputs) -> checking all", indent, u.inputs.len());
+                            u.inputs.iter().all(|i| is_node_scan_input(i.as_ref(), depth + 1))
+                        }
+                        LogicalPlan::Projection(p) => {
+                            log::debug!("{}Projection -> checking input", indent);
+                            is_node_scan_input(p.input.as_ref(), depth + 1)
+                        }
+                        LogicalPlan::Filter(f) => {
+                            log::debug!("{}Filter -> checking input", indent);
+                            is_node_scan_input(f.input.as_ref(), depth + 1)
+                        }
+                        LogicalPlan::Limit(l) => {
+                            log::debug!("{}Limit -> checking input", indent);
+                            is_node_scan_input(l.input.as_ref(), depth + 1)
+                        }
+                        _ => {
+                            log::debug!("{}Other plan type -> false", indent);
+                            false
+                        }
+                    }
+                }
+                
+                log::debug!("Checking {} Union inputs for multi-label scan", union.inputs.len());
+                let is_multi_label_scan = union.inputs.iter().all(|input| {
+                    is_node_scan_input(input.as_ref(), 1)
+                });
+                
+                log::debug!("is_multi_label_scan={}", is_multi_label_scan);
+
+                if is_multi_label_scan && union.inputs.len() > 1 {
+                    log::info!(
+                        "Multi-label node scan detected: {} ViewScans - using json_builder for uniform UNION",
+                        union.inputs.len()
+                    );
+                    
+                    // Use json_builder to generate UNION with _label, _id, _properties columns
+                    let union_sql = crate::clickhouse_query_generator::json_builder::generate_multi_type_union_sql(
+                        schema.all_node_schemas(),
+                        None, // LIMIT will be applied at outer query level
+                    );
+                    
+                    // Create a CTE with the UNION SQL
+                    let cte_name = "__multi_label_union".to_string();
+                    let cte = super::Cte::new(
+                        cte_name.clone(),
+                        CteContent::RawSql(union_sql),
+                        false, // not recursive
+                    );
+                    
+                    // Create RenderPlan that selects from this CTE
+                    // The alias is determined from the first ViewScan
+                    let node_alias = if let LogicalPlan::ViewScan(_first_scan) = union.inputs[0].as_ref() {
+                        // Extract alias from the source table or use a default
+                        // ViewScan doesn't store the alias directly, so we need to infer it
+                        // For now, use "n" as default for labelless queries
+                        "n".to_string()
+                    } else {
+                        "n".to_string()
+                    };
+                    
+                    let render_plan = RenderPlan {
+                        ctes: CteItems(vec![cte]),
+                        select: SelectItems {
+                            items: vec![
+                                SelectItem {
+                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(node_alias.clone()),
+                                        column: PropertyValue::Column("_label".to_string()),
+                                    }),
+                                    col_alias: Some(ColumnAlias(format!("{}_label", node_alias))),
+                                },
+                                SelectItem {
+                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(node_alias.clone()),
+                                        column: PropertyValue::Column("_id".to_string()),
+                                    }),
+                                    col_alias: Some(ColumnAlias(format!("{}_id", node_alias))),
+                                },
+                                SelectItem {
+                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(node_alias.clone()),
+                                        column: PropertyValue::Column("_properties".to_string()),
+                                    }),
+                                    col_alias: Some(ColumnAlias(format!("{}_properties", node_alias))),
+                                },
+                            ],
+                            distinct: false,
+                        },
+                        from: FromTableItem(Some(ViewTableRef {
+                            source: Arc::new(LogicalPlan::Empty), // Placeholder - we're using CTE instead
+                            name: cte_name,
+                            alias: Some(node_alias.clone()),
+                            use_final: false,
+                        })),
+                        joins: JoinItems(vec![]),
+                        array_join: ArrayJoinItem(vec![]),
+                        filters: FilterItems(None),
+                        group_by: GroupByExpressions(vec![]),
+                        having_clause: None,
+                        order_by: OrderByItems(vec![]),
+                        skip: SkipItem(None),
+                        limit: LimitItem(None),
+                        union: UnionItems(None),
+                        fixed_path_info: None,
+                        is_multi_label_scan: true, // Prevent Projection from overwriting SELECT
+                    };
+                    
+                    return Ok(render_plan);
+                }
+
+                // Regular UNION handling (same columns across branches)
                 // Convert first branch to get the base plan
                 let first_input = &union.inputs[0];
                 let mut base_plan = first_input.to_render_plan(schema)?;

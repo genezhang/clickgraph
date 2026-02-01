@@ -26,6 +26,7 @@
 //! ...
 //! ```
 
+use crate::clickhouse_query_generator::json_builder::generate_json_properties_from_schema;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::analyzer::multi_type_vlp_expansion::{
     enumerate_vlp_paths, PathEnumeration,
@@ -451,7 +452,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             }
         }
 
-        // Serialize all properties as JSON string using map() for proper JSON object format
+        // Serialize all properties as JSON string using formatRowNoNewline for type preservation
         if let Ok(node_schema) = self
             .schema
             .all_node_schemas()
@@ -459,30 +460,9 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             .ok_or("Node not found")
         {
             if !node_schema.property_mappings.is_empty() {
-                // Build map: map('key1', toString(value1), 'key2', toString(value2), ...)
-                // ClickHouse's toJSONString(map(...)) creates proper JSON objects
-                let mut map_items = Vec::new();
-                for (cypher_prop, prop_value) in &node_schema.property_mappings {
-                    let column_name = match prop_value {
-                        crate::graph_catalog::expression_parser::PropertyValue::Column(col) => {
-                            col.clone()
-                        }
-                        _ => continue, // Skip non-column property mappings
-                    };
-                    map_items.push(format!(
-                        "'{}', toString({}.{})",
-                        cypher_prop, node_alias, column_name
-                    ));
-                }
-
-                if !map_items.is_empty() {
-                    items.push(format!(
-                        "toJSONString(map({})) AS end_properties",
-                        map_items.join(", ")
-                    ));
-                } else {
-                    items.push("'{}' AS end_properties".to_string());
-                }
+                // Use formatRowNoNewline('JSONEachRow', ...) for type-preserving JSON
+                let json_sql = generate_json_properties_from_schema(node_schema, node_alias);
+                items.push(format!("{} AS end_properties", json_sql));
             } else {
                 // No properties - empty JSON object
                 items.push("'{}' AS end_properties".to_string());
