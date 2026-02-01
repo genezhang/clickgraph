@@ -60,6 +60,8 @@ fn traverse_connected_pattern_with_mode<'a>(
     path_variable: Option<&str>,
     is_optional: bool,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
+    log::info!("🔍 TRAVERSE_CONNECTED_PATTERN called with {} patterns", connected_patterns.len());
+    
     crate::debug_print!("\n╔════════════════════════════════════════");
     crate::debug_print!("║ traverse_connected_pattern_with_mode");
     crate::debug_print!("║ connected_patterns.len() = {}", connected_patterns.len());
@@ -1060,12 +1062,18 @@ pub fn evaluate_match_clause_with_optional<'a>(
     plan_ctx: &mut PlanCtx,
     is_optional: bool,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
+    log::info!("🔍 EVALUATE_MATCH_CLAUSE: {} path patterns", match_clause.path_patterns.len());
+    
     for (idx, (path_variable, path_pattern)) in match_clause.path_patterns.iter().enumerate() {
+        log::info!("🔍 Pattern #{}: type={:?}, var={:?}", idx, std::mem::discriminant(path_pattern), path_variable);
+        
         match path_pattern {
             ast::PathPattern::Node(node_pattern) => {
+                log::info!("  → Processing as NODE pattern");
                 plan = traverse_node_pattern(node_pattern, plan, plan_ctx)?;
             }
             ast::PathPattern::ConnectedPattern(connected_patterns) => {
+                log::info!("  → Processing as CONNECTED pattern with {} connections", connected_patterns.len());
                 plan = traverse_connected_pattern_with_mode(
                     connected_patterns,
                     plan,

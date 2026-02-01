@@ -62,7 +62,26 @@ pub fn strip_comments(input: &str) -> String {
         // Now handle comments (only when NOT in a string/identifier)
 
         // Check for line comment (-- or //)
+        // BUT: `-->` and `<--` are NOT comments (they're Cypher relationship patterns!)
         if ch == '-' && chars.peek() == Some(&'-') {
+            // Peek ahead to check if this is `-->` or part of `<--` (relationship patterns, not comments)
+            let mut lookahead = chars.clone();
+            lookahead.next(); // skip second '-'
+            
+            // Check for `-->`  (outgoing relationship)
+            if lookahead.peek() == Some(&'>') {
+                result.push(ch);
+                continue;
+            }
+            
+            // Check if previous character was `<` (making this `<--` incoming relationship)
+            // We already pushed the `<`, so check the last char in result
+            if result.chars().last() == Some('<') {
+                result.push(ch);
+                continue;
+            }
+            
+            // It's actually a `--` comment
             chars.next(); // consume second '-'
                           // Skip until newline
             for c in chars.by_ref() {
@@ -374,6 +393,27 @@ mod tests {
         assert_eq!(
             strip_comments("MATCH (n:`Some--Label`) WHERE n.`prop--name` = 1 RETURN n"),
             "MATCH (n:`Some--Label`) WHERE n.`prop--name` = 1 RETURN n"
+        );
+
+        // Relationship patterns (should NOT be treated as comments!)
+        assert_eq!(
+            strip_comments("MATCH p=()-->() RETURN p"),
+            "MATCH p=()-->() RETURN p"
+        );
+
+        assert_eq!(
+            strip_comments("MATCH p=()<--() RETURN p"),
+            "MATCH p=()<--() RETURN p"
+        );
+
+        assert_eq!(
+            strip_comments("MATCH (a)-->(b)-->(c) RETURN a"),
+            "MATCH (a)-->(b)-->(c) RETURN a"
+        );
+
+        assert_eq!(
+            strip_comments("MATCH (a)<--(b)<--(c) RETURN a"),
+            "MATCH (a)<--(b)<--(c) RETURN a"
         );
 
         // Mixed: real comments + string literals
