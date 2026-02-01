@@ -764,9 +764,9 @@ impl LogicalPlan {
                 col_alias: Some(ColumnAlias(path_alias.to_string())),
             });
         } else {
-            // Fixed single-hop path - return path metadata
-            // The Bolt transformer will create Path objects with labels from metadata
-            // TODO: Add property expansion using schema mappings for rich node/relationship data
+            // Fixed single-hop path - expand component properties
+            // Need to select properties for start node, end node, and relationship
+            // so the Bolt transformer can create full Node/Relationship objects
             
             let start_alias = path_var.start_node.as_deref().unwrap_or("_start");
             let end_alias = path_var.end_node.as_deref().unwrap_or("_end");
@@ -776,6 +776,57 @@ impl LogicalPlan {
                 "🔍 Expanding fixed-hop path variable '{}': start={}, end={}, rel={}",
                 path_alias, start_alias, end_alias, rel_alias
             );
+
+            // Expand properties for each component if we have plan_ctx
+            if let Some(ctx) = plan_ctx {
+                // Expand start node properties
+                if let Some(typed_var) = ctx.lookup_variable(start_alias) {
+                    if typed_var.is_entity() {
+                        log::info!("  📦 Expanding start node '{}' properties", start_alias);
+                        match typed_var.source() {
+                            VariableSource::Match => {
+                                self.expand_base_table_entity(start_alias, typed_var, select_items);
+                            }
+                            VariableSource::Cte { cte_name } => {
+                                self.expand_cte_entity(start_alias, typed_var, cte_name, Some(ctx), select_items);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Expand end node properties
+                if let Some(typed_var) = ctx.lookup_variable(end_alias) {
+                    if typed_var.is_entity() {
+                        log::info!("  📦 Expanding end node '{}' properties", end_alias);
+                        match typed_var.source() {
+                            VariableSource::Match => {
+                                self.expand_base_table_entity(end_alias, typed_var, select_items);
+                            }
+                            VariableSource::Cte { cte_name } => {
+                                self.expand_cte_entity(end_alias, typed_var, cte_name, Some(ctx), select_items);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Expand relationship properties
+                if let Some(typed_var) = ctx.lookup_variable(rel_alias) {
+                    if typed_var.is_entity() {
+                        log::info!("  📦 Expanding relationship '{}' properties", rel_alias);
+                        match typed_var.source() {
+                            VariableSource::Match => {
+                                self.expand_base_table_entity(rel_alias, typed_var, select_items);
+                            }
+                            VariableSource::Cte { cte_name } => {
+                                self.expand_cte_entity(rel_alias, typed_var, cte_name, Some(ctx), select_items);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
 
             // Add the path metadata column with component aliases
             // Format: tuple('fixed_path', start_alias, end_alias, rel_alias)
