@@ -34,9 +34,19 @@ pub mod db_relationship_types;
 pub mod dbms_components;
 pub mod dbms_stubs;
 pub mod executor;
+pub mod return_evaluator;
 
 // Re-export key functions for easier access
-pub use executor::{execute_procedure_union, extract_procedure_names_from_union, is_procedure_union_query};
+pub use executor::{
+    execute_procedure_union, 
+    execute_procedure_union_with_return,
+    execute_procedure_query,
+    extract_procedure_names_from_union, 
+    is_procedure_union_query,
+    is_procedure_only_query,
+    is_procedure_only_statement,
+};
+pub use return_evaluator::apply_return_clause;
 
 use crate::graph_catalog::graph_schema::GraphSchema;
 use std::collections::HashMap;

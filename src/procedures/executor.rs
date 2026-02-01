@@ -196,6 +196,139 @@ pub async fn execute_procedure_union(
     Ok(all_results)
 }
 
+/// Execute a procedure-only query with RETURN clause evaluation
+///
+/// This handles queries like: `CALL db.labels() YIELD label RETURN {name:'labels', data:COLLECT(label)} AS result`
+///
+/// # Arguments
+/// * `query` - The Query AST (must be procedure-only, checked by caller)
+/// * `schema_name` - Schema name to use
+/// * `registry` - Procedure registry
+///
+/// # Returns
+/// * Transformed results with RETURN clause applied
+pub async fn execute_procedure_query(
+    query: &crate::open_cypher_parser::ast::OpenCypherQueryAst<'_>,
+    schema_name: &str,
+    registry: &ProcedureRegistry,
+) -> ProcedureResult {
+    // Extract procedure name from call_clause
+    let call_clause = query
+        .call_clause
+        .as_ref()
+        .ok_or_else(|| "No call clause in procedure query".to_string())?;
+
+    let proc_name = call_clause.procedure_name;
+
+    // Execute the procedure to get raw results
+    let raw_results = execute_procedure_by_name(proc_name, schema_name, registry).await?;
+
+    // If there's a RETURN clause, apply transformations
+    if let Some(return_clause) = &query.return_clause {
+        crate::procedures::return_evaluator::apply_return_clause(raw_results, return_clause)
+    } else {
+        // No RETURN clause - return raw results
+        Ok(raw_results)
+    }
+}
+
+/// Execute a UNION of procedure-only queries with RETURN clause evaluation
+///
+/// This handles queries like the Browser's schema query:
+/// ```cypher
+/// CALL db.labels() YIELD label RETURN {name:'labels', data:COLLECT(label)} AS result
+/// UNION ALL
+/// CALL db.relationshipTypes() YIELD relationshipType RETURN {name:'relationshipTypes', data:COLLECT(relationshipType)} AS result
+/// ```
+///
+/// # Arguments
+/// * `main_query` - The main query
+/// * `union_clauses` - UNION clauses
+/// * `schema_name` - Schema name to use
+/// * `registry` - Procedure registry
+///
+/// # Returns
+/// * Combined and transformed results
+pub async fn execute_procedure_union_with_return(
+    main_query: &crate::open_cypher_parser::ast::OpenCypherQueryAst<'_>,
+    union_clauses: &[crate::open_cypher_parser::ast::UnionClause<'_>],
+    schema_name: &str,
+    registry: &ProcedureRegistry,
+) -> ProcedureResult {
+    let mut all_results = Vec::new();
+
+    // Execute main query
+    let main_results = execute_procedure_query(main_query, schema_name, registry).await?;
+    all_results.extend(main_results);
+
+    // Execute each union branch
+    for union_clause in union_clauses {
+        let branch_results =
+            execute_procedure_query(&union_clause.query, schema_name, registry).await?;
+        all_results.extend(branch_results);
+    }
+
+    Ok(all_results)
+}
+
+/// Check if a query (non-UNION) is procedure-only
+///
+/// Returns true if the query:
+/// - Has a call_clause
+/// - Has NO match_clauses, optional_match_clauses, or reading_clauses
+/// - Has NO create/set/delete/remove clauses
+/// - May have RETURN, WITH, WHERE, UNWIND (these project/filter procedure results)
+///
+/// This is used to determine if a Query AST should be executed as a procedure
+/// rather than going through SQL generation.
+pub fn is_procedure_only_query(query: &crate::open_cypher_parser::ast::OpenCypherQueryAst<'_>) -> bool {
+    query.call_clause.is_some()
+        && query.match_clauses.is_empty()
+        && query.optional_match_clauses.is_empty()
+        && query.reading_clauses.is_empty()
+        && query.create_clause.is_none()
+        && query.set_clause.is_none()
+        && query.delete_clause.is_none()
+        && query.remove_clause.is_none()
+}
+
+/// Check if a statement is procedure-only
+///
+/// Returns true if:
+/// - Statement is ProcedureCall (always procedure-only), OR
+/// - Statement is Query with procedure-only main query (and all UNION branches if present)
+///
+/// This is the main function to use in handlers to determine execution routing:
+/// - `true` → execute as procedure
+/// - `false` → execute as SQL query
+pub fn is_procedure_only_statement(stmt: &CypherStatement<'_>) -> bool {
+    match stmt {
+        // Standalone procedure calls are always procedure-only
+        CypherStatement::ProcedureCall(_) => true,
+        
+        // Query statements need deeper inspection
+        CypherStatement::Query {
+            query,
+            union_clauses,
+        } => {
+            // Check main query
+            if !is_procedure_only_query(query) {
+                return false;
+            }
+            
+            // If has UNION clauses, check all branches
+            if !union_clauses.is_empty() {
+                return union_clauses.iter().all(|union_clause| {
+                    is_procedure_only_query(&union_clause.query)
+                });
+            }
+            
+            // Single procedure-only query
+            true
+        }
+    }
+}
+
 /// Format procedure results as JSON (for HTTP API)
 pub fn format_as_json(results: Vec<HashMap<String, serde_json::Value>>) -> serde_json::Value {
     serde_json::json!({
@@ -224,5 +357,101 @@ mod tests {
         let json = format_as_json(results);
         assert_eq!(json["count"], 2);
         assert_eq!(json["records"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_is_procedure_only_statement_standalone_call() {
+        // CALL db.labels()
+        let query = "CALL db.labels()";
+        let (_, stmt) = open_cypher_parser::parse_cypher_statement(query).unwrap();
+        assert!(is_procedure_only_statement(&stmt), "Standalone CALL should be procedure-only");
+    }
+
+    #[test]
+    fn test_is_procedure_only_statement_call_with_yield() {
+        // CALL db.labels() YIELD label
+        let query = "CALL db.labels() YIELD label";
+        let (_, stmt) = open_cypher_parser::parse_cypher_statement(query).unwrap();
+        assert!(is_procedure_only_statement(&stmt), "CALL with YIELD should be procedure-only");
+    }
+
+    #[test]
+    fn test_is_procedure_only_statement_call_with_return() {
+        // CALL db.labels() YIELD label RETURN label
+        let query = "CALL db.labels() YIELD label RETURN label";
+        let (_, stmt) = open_cypher_parser::parse_cypher_statement(query).unwrap();
+        assert!(is_procedure_only_statement(&stmt), "CALL with RETURN should be procedure-only");
+    }
+
+    #[test]
+    fn test_is_procedure_only_statement_call_with_complex_return() {
+        // CALL db.labels() YIELD label RETURN {name:'labels', data:COLLECT(label)} AS result
+        let query = "CALL db.labels() YIELD label RETURN {name:'labels', data:COLLECT(label)[..1000]} AS result";
+        let (_, stmt) = open_cypher_parser::parse_cypher_statement(query).unwrap();
+        assert!(is_procedure_only_statement(&stmt), "CALL with complex RETURN should be procedure-only");
+    }
+
+    #[test]
+    fn test_is_procedure_only_statement_union_of_calls() {
+        // CALL db.labels() YIELD label RETURN label UNION ALL CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType
+        let query = r#"
+            CALL db.labels() YIELD label RETURN label
+            UNION ALL
+            CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType
+        "#;
+        let (_, stmt) = open_cypher_parser::parse_cypher_statement(query).unwrap();
+        assert!(is_procedure_only_statement(&stmt), "UNION of CALLs should be procedure-only");
+    }
+
+    #[test]
+    fn test_is_procedure_only_statement_match_query() {
+        // MATCH (n) RETURN n
+        let query = "MATCH (n:User) RETURN n";
+        let (_, stmt) = open_cypher_parser::parse_cypher_statement(query).unwrap();
+        assert!(!is_procedure_only_statement(&stmt), "MATCH query should NOT be procedure-only");
+    }
+
+    #[test]
+    fn test_is_procedure_only_statement_mixed_match_and_call() {
+        // MATCH (n) CALL db.labels() YIELD label RETURN n, label
+        // Note: This might fail to parse currently, but if it does parse, should NOT be procedure-only
+        let query = "MATCH (n:User) WITH n CALL db.labels() YIELD label RETURN n.name, label";
+        match open_cypher_parser::parse_cypher_statement(query) {
+            Ok((_, stmt)) => {
+                assert!(!is_procedure_only_statement(&stmt), "Mixed MATCH+CALL should NOT be procedure-only");
+            }
+            Err(_) => {
+                // Expected - mixed queries might not parse yet
+                // Skip this test
+            }
+        }
+    }
+
+    #[test]
+    fn test_is_procedure_only_query_with_create() {
+        // CREATE (n:User) RETURN n - has no CALL, should be false
+        let query = "CREATE (n:User) RETURN n";
+        let (_, stmt) = open_cypher_parser::parse_cypher_statement(query).unwrap();
+        assert!(!is_procedure_only_statement(&stmt), "CREATE query should NOT be procedure-only");
+    }
+
+    #[test]
+    fn test_is_procedure_union_query_detection() {
+        // Test the existing is_procedure_union_query function
+        let query = r#"
+            CALL db.labels() YIELD label RETURN label
+            UNION ALL
+            CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType
+        "#;
+        let (_, stmt) = open_cypher_parser::parse_cypher_statement(query).unwrap();
+        assert!(is_procedure_union_query(&stmt), "UNION of CALLs should be detected");
+    }
+
+    #[test]
+    fn test_is_procedure_union_query_non_union() {
+        // Single CALL should return false (not a UNION)
+        let query = "CALL db.labels() YIELD label RETURN label";
+        let (_, stmt) = open_cypher_parser::parse_cypher_statement(query).unwrap();
+        assert!(!is_procedure_union_query(&stmt), "Single CALL should not be detected as UNION");
     }
 }

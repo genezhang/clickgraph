@@ -167,6 +167,8 @@ pub struct WithClause<'a> {
 pub struct CallClause<'a> {
     pub procedure_name: &'a str,
     pub arguments: Vec<CallArgument<'a>>,
+    /// Optional YIELD clause to select specific return fields
+    pub yield_items: Option<Vec<&'a str>>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
