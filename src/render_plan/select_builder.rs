@@ -806,7 +806,8 @@ impl LogicalPlan {
                 
                 // Expand start node properties
                 if let Some(typed_var) = ctx.lookup_variable(start_alias) {
-                    log::debug!("  ✓ Found start node '{}' in plan_ctx, is_entity={}", start_alias, typed_var.is_entity());
+                    let variant_name = if typed_var.is_node() { "Node" } else if typed_var.is_relationship() { "Relationship" } else if typed_var.is_scalar() { "Scalar" } else if typed_var.as_path().is_some() { "Path" } else { "Unknown" };
+                    log::debug!("  ✓ Found start node '{}' in plan_ctx, variant={}, is_entity={}", start_alias, variant_name, typed_var.is_entity());
                     if typed_var.is_entity() {
                         log::info!("  📦 Expanding start node '{}' properties", start_alias);
                         match typed_var.source() {
