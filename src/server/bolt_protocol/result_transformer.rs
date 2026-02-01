@@ -85,6 +85,12 @@ pub enum ReturnItemType {
         end_alias: Option<String>,
         /// Relationship alias
         rel_alias: Option<String>,
+        /// Start node labels (from variable registry lookup)
+        start_labels: Vec<String>,
+        /// End node labels (from variable registry lookup)
+        end_labels: Vec<String>,
+        /// Relationship types (from variable registry lookup)
+        rel_types: Vec<String>,
         /// Whether this is a VLP (variable-length path)
         is_vlp: bool,
     },
@@ -152,10 +158,95 @@ pub fn extract_return_metadata(
                     Some(TypedVariable::Path(path_var)) => {
                         // VLP has length_bounds set, fixed single-hop doesn't
                         let is_vlp = path_var.length_bounds.is_some();
+                        
+                        // Look up component types from their aliases in plan_ctx
+                        let mut start_labels = path_var.start_node.as_ref()
+                            .and_then(|alias| plan_ctx.lookup_variable(alias))
+                            .and_then(|tv| tv.as_node())
+                            .map(|nv| nv.labels.clone())
+                            .unwrap_or_default();
+                        
+                        let mut end_labels = path_var.end_node.as_ref()
+                            .and_then(|alias| plan_ctx.lookup_variable(alias))
+                            .and_then(|tv| tv.as_node())
+                            .map(|nv| nv.labels.clone())
+                            .unwrap_or_default();
+                        
+                        let mut rel_types = path_var.relationship.as_ref()
+                            .and_then(|alias| plan_ctx.lookup_variable(alias))
+                            .and_then(|tv| tv.as_relationship())
+                            .map(|rv| rv.rel_types.clone())
+                            .unwrap_or_default();
+                        
+                        // Parse composite relationship keys: "AUTHORED::User::Post" -> ("AUTHORED", "User", "Post")
+                        // This happens when relationships use composite keys for disambiguation
+                        let (actual_rel_types, inferred_from_labels, inferred_to_labels): (Vec<String>, Vec<String>, Vec<String>) = 
+                            rel_types.iter().map(|rt| {
+                                let parts: Vec<&str> = rt.split("::").collect();
+                                match parts.as_slice() {
+                                    [rel_type, from_label, to_label] => {
+                                        // Composite key format
+                                        (rel_type.to_string(), Some(from_label.to_string()), Some(to_label.to_string()))
+                                    }
+                                    _ => {
+                                        // Simple type
+                                        (rt.clone(), None, None)
+                                    }
+                                }
+                            })
+                            .fold((Vec::new(), Vec::new(), Vec::new()), |(mut types, mut from, mut to), (t, f, to_label)| {
+                                types.push(t);
+                                if let Some(from_label) = f {
+                                    from.push(from_label);
+                                }
+                                if let Some(to_l) = to_label {
+                                    to.push(to_l);
+                                }
+                                (types, from, to)
+                            });
+                        
+                        // Use parsed relationship types
+                        rel_types = actual_rel_types;
+                        
+                        // If we have relationship type but missing node labels (anonymous nodes),
+                        // try to infer labels from the relationship schema or parsed composite key
+                        if !rel_types.is_empty() && (start_labels.is_empty() || end_labels.is_empty()) {
+                            // First try inferred labels from composite key
+                            if start_labels.is_empty() && !inferred_from_labels.is_empty() {
+                                start_labels = vec![inferred_from_labels[0].clone()];
+                            }
+                            if end_labels.is_empty() && !inferred_to_labels.is_empty() {
+                                end_labels = vec![inferred_to_labels[0].clone()];
+                            }
+                            
+                            // Fallback to relationship variable metadata
+                            if start_labels.is_empty() || end_labels.is_empty() {
+                                if let Some(rel_var) = path_var.relationship.as_ref()
+                                    .and_then(|alias| plan_ctx.lookup_variable(alias))
+                                    .and_then(|tv| tv.as_relationship()) 
+                                {
+                                    // Use from_node_label and to_node_label if available
+                                    if start_labels.is_empty() {
+                                        if let Some(from_label) = &rel_var.from_node_label {
+                                            start_labels = vec![from_label.clone()];
+                                        }
+                                    }
+                                    if end_labels.is_empty() {
+                                        if let Some(to_label) = &rel_var.to_node_label {
+                                            end_labels = vec![to_label.clone()];
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
                         ReturnItemType::Path {
                             start_alias: path_var.start_node.clone(),
                             end_alias: path_var.end_node.clone(),
                             rel_alias: path_var.relationship.clone(),
+                            start_labels,
+                            end_labels,
+                            rel_types,
                             is_vlp,
                         }
                     }
@@ -297,13 +388,16 @@ pub fn transform_row(
                 start_alias,
                 end_alias,
                 rel_alias,
+                start_labels,
+                end_labels,
+                rel_types,
                 is_vlp,
             } => {
                 // Transform fixed-hop path to Neo4j Path structure
                 // For now, we support fixed single-hop paths: (a)-[r]->(b)
                 //
                 // The SQL returns: tuple('fixed_path', start_alias, end_alias, rel_alias)
-                // We need to look up component data from the row and construct Path
+                // We use the metadata (labels, types) from query planning
                 
                 if *is_vlp {
                     // VLP paths have different column format - not yet supported
@@ -312,16 +406,18 @@ pub fn transform_row(
                     continue;
                 }
                 
-                // For fixed-hop paths, try to construct a minimal path
-                // The actual node/relationship data might be in the row with prefixed columns
+                // For fixed-hop paths, construct path using known metadata
                 let path = transform_to_path(
                     &row,
                     &meta.field_name,
                     start_alias.as_deref(),
                     end_alias.as_deref(),
                     rel_alias.as_deref(),
+                    start_labels,
+                    end_labels,
+                    rel_types,
                     schema,
-                    metadata,  // Pass the metadata from transform_row
+                    metadata,
                 )?;
                 
                 // Use the Path's packstream encoding
@@ -528,8 +624,8 @@ fn transform_to_relationship(
 /// Transform fixed-hop path data to Neo4j Path structure
 ///
 /// For a path p = (a)-[r]->(b), this function:
-/// 1. Looks up metadata for start/end nodes and relationship from other return items
-/// 2. Creates placeholder Node/Relationship objects with IDs derived from path tuple
+/// 1. Uses known labels/types from query planning metadata
+/// 2. Tries to find actual data in the row, falls back to metadata-based nodes
 /// 3. Constructs a Path with proper structure for Neo4j visualization
 ///
 /// # Arguments
@@ -539,6 +635,9 @@ fn transform_to_relationship(
 /// * `start_alias` - Alias of the start node
 /// * `end_alias` - Alias of the end node
 /// * `rel_alias` - Alias of the relationship
+/// * `start_labels` - Known labels for start node from query planning
+/// * `end_labels` - Known labels for end node from query planning
+/// * `rel_types` - Known relationship types from query planning
 /// * `schema` - Graph schema for type information
 /// * `return_metadata` - Metadata for all return items (to find component info)
 ///
@@ -552,37 +651,50 @@ fn transform_to_path(
     start_alias: Option<&str>,
     end_alias: Option<&str>,
     rel_alias: Option<&str>,
+    start_labels: &[String],
+    end_labels: &[String],
+    rel_types: &[String],
     schema: &GraphSchema,
     return_metadata: &[ReturnItemMetadata],
 ) -> Result<Path, String> {
-    // Try to find component metadata from the return items
-    // This works when the user returns both the path and its components
-    
     let start_alias = start_alias.unwrap_or("_start");
     let end_alias = end_alias.unwrap_or("_end");
     let rel_alias = rel_alias.unwrap_or("_rel");
     
     log::debug!(
-        "transform_to_path: path={}, start={}, end={}, rel={}",
-        path_name, start_alias, end_alias, rel_alias
+        "transform_to_path: path={}, start={}({:?}), end={}({:?}), rel={}({:?})",
+        path_name, start_alias, start_labels, end_alias, end_labels, rel_alias, rel_types
     );
     
-    // Try to get start node data
+    // Try to get start node data from row, or create with known label
     let start_node = find_node_in_row(row, start_alias, return_metadata, schema)
-        .unwrap_or_else(|| create_placeholder_node(start_alias, 0));
+        .unwrap_or_else(|| {
+            let label = start_labels.first().cloned().unwrap_or_else(|| "_Unknown".to_string());
+            log::info!("Creating start node with label: {}", label);
+            create_node_with_label(&label, 0)
+        });
     
-    // Try to get end node data
+    // Try to get end node data from row, or create with known label
     let end_node = find_node_in_row(row, end_alias, return_metadata, schema)
-        .unwrap_or_else(|| create_placeholder_node(end_alias, 1));
+        .unwrap_or_else(|| {
+            let label = end_labels.first().cloned().unwrap_or_else(|| "_Unknown".to_string());
+            log::info!("Creating end node with label: {}", label);
+            create_node_with_label(&label, 1)
+        });
     
-    // Try to get relationship data
+    // Try to get relationship data from row, or create with known type
     let relationship = find_relationship_in_row(
         row, rel_alias, &start_node.element_id, &end_node.element_id, return_metadata, schema
-    ).unwrap_or_else(|| create_placeholder_relationship(
-        rel_alias,
-        &start_node.element_id,
-        &end_node.element_id,
-    ));
+    ).unwrap_or_else(|| {
+        let rel_type = rel_types.first().cloned().unwrap_or_else(|| "_UNKNOWN".to_string());
+        log::info!("Creating relationship with type: {}", rel_type);
+        create_relationship_with_type(&rel_type, &start_node.element_id, &end_node.element_id)
+    });
+    
+    log::info!(
+        "Path created: start_node.labels={:?}, end_node.labels={:?}, rel.type={}",
+        start_node.labels, end_node.labels, relationship.rel_type
+    );
     
     // Create Path with single-hop structure
     // Indices for single hop: [1, 1] means "relationship index 1, then node index 1"
@@ -718,7 +830,8 @@ fn find_relationship_in_row(
 }
 
 /// Create a placeholder node when we can't find actual data
-fn create_placeholder_node(alias: &str, id: i64) -> Node {
+#[allow(dead_code)]
+fn create_placeholder_node(_alias: &str, id: i64) -> Node {
     Node {
         id,
         labels: vec!["_Unknown".to_string()],
@@ -728,8 +841,9 @@ fn create_placeholder_node(alias: &str, id: i64) -> Node {
 }
 
 /// Create a placeholder relationship when we can't find actual data
+#[allow(dead_code)]
 fn create_placeholder_relationship(
-    alias: &str,
+    _alias: &str,
     start_element_id: &str,
     end_element_id: &str,
 ) -> Relationship {
@@ -740,6 +854,39 @@ fn create_placeholder_relationship(
         rel_type: "_UNKNOWN".to_string(),
         properties: std::collections::HashMap::new(),
         element_id: format!("_UNKNOWN:{}:{}", start_element_id, end_element_id),
+        start_node_element_id: start_element_id.to_string(),
+        end_node_element_id: end_element_id.to_string(),
+    }
+}
+
+/// Create a node with a known label but no data
+fn create_node_with_label(label: &str, id: i64) -> Node {
+    Node {
+        id,
+        labels: vec![label.to_string()],
+        properties: std::collections::HashMap::new(),
+        element_id: format!("{}:{}", label, id),
+    }
+}
+
+/// Create a relationship with a known type but no data
+fn create_relationship_with_type(
+    rel_type: &str,
+    start_element_id: &str,
+    end_element_id: &str,
+) -> Relationship {
+    // Extract just the ID portions from element IDs (format: "Label:id")
+    let start_id = start_element_id.split(':').last().unwrap_or("0");
+    let end_id = end_element_id.split(':').last().unwrap_or("0");
+    
+    Relationship {
+        id: 0,
+        start_node_id: 0,
+        end_node_id: 0,
+        rel_type: rel_type.to_string(),
+        properties: std::collections::HashMap::new(),
+        // Use simpler elementId format: TYPE:from_id->to_id
+        element_id: format!("{}:{}->{}",rel_type, start_id, end_id),
         start_node_element_id: start_element_id.to_string(),
         end_node_element_id: end_element_id.to_string(),
     }

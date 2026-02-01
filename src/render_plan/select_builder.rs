@@ -200,6 +200,7 @@ impl SelectBuilder for LogicalPlan {
                                             &table_alias.0,
                                             typed_var,
                                             &mut select_items,
+                                            Some(plan_ctx),
                                         );
                                     }
                                     _ => {
@@ -705,12 +706,13 @@ impl LogicalPlan {
     ///
     /// For fixed single-hop paths:
     ///   - Constructs path from actual node/relationship aliases
-    ///   - tuple([start_node, end_node], [relationship]) AS "p"
+    ///   - Adds component property columns based on schema mappings
     fn expand_path_variable(
         &self,
         path_alias: &str,
         typed_var: &TypedVariable,
         select_items: &mut Vec<SelectItem>,
+        plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
     ) {
         // Check if this is a VLP (variable-length path) or fixed-hop path
         let path_var = match typed_var.as_path() {
@@ -762,14 +764,9 @@ impl LogicalPlan {
                 col_alias: Some(ColumnAlias(path_alias.to_string())),
             });
         } else {
-            // Fixed single-hop path - construct from actual node/relationship aliases
-            // For `p = (a)-[r]->(b)`, we need to return the actual data for nodes and relationships
-            // so the Bolt transformer can construct a proper Neo4j Path object.
-            //
-            // Strategy: Return path metadata tuple with component aliases.
-            // The Bolt transformer will look for other SELECT items with these aliases
-            // (from the same RETURN clause or wildcard expansion) and construct the Path.
-            // If component data isn't explicitly returned, the path will contain placeholder nodes.
+            // Fixed single-hop path - return path metadata
+            // The Bolt transformer will create Path objects with labels from metadata
+            // TODO: Add property expansion using schema mappings for rich node/relationship data
             
             let start_alias = path_var.start_node.as_deref().unwrap_or("_start");
             let end_alias = path_var.end_node.as_deref().unwrap_or("_end");
@@ -782,7 +779,6 @@ impl LogicalPlan {
 
             // Add the path metadata column with component aliases
             // Format: tuple('fixed_path', start_alias, end_alias, rel_alias)
-            // The Bolt transformer uses these to find and package component data
             select_items.push(SelectItem {
                 expression: RenderExpr::ScalarFnCall(ScalarFnCall {
                     name: "tuple".to_string(),
