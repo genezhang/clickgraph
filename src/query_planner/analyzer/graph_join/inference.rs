@@ -3262,6 +3262,24 @@ impl GraphJoinInference {
                         // Edge conceptually lives on right node's table
                         join_ctx.insert(rel_alias.to_string());
 
+                        // CRITICAL: Register relationship alias as denormalized on anchor node
+                        // For FK-edge patterns, relationship properties come from the node table
+                        // Example: (u)-[r:AUTHORED]->(po) where edge IS posts_bench
+                        //   - r properties (r.post_date) are actually po properties (po.created_at)
+                        //   - Property resolver needs to know r is embedded in po
+                        let rel_type = ctx.rel_types.first().cloned().unwrap_or_default();
+                        plan_ctx.register_denormalized_alias(
+                            rel_alias.to_string(),
+                            right_alias.to_string(),  // rel is on right table
+                            false,  // is_from_node = false (rel is the edge itself)
+                            String::new(),  // label not needed
+                            rel_type,
+                        );
+                        log::info!(
+                            "🔑 Registered FK-edge '{}' as denormalized on anchor '{}'",
+                            rel_alias, right_alias
+                        );
+
                         // CRITICAL FIX: For VLP + chained FK-edge patterns
                         // When left is already joined via VLP CTE, we need to:
                         // 1. JOIN the right/edge table (posts_bench) to make 'p' accessible
@@ -3354,6 +3372,21 @@ impl GraphJoinInference {
 
                         // Edge conceptually lives on left node's table
                         join_ctx.insert(rel_alias.to_string());
+
+                        // CRITICAL: Register relationship alias as denormalized on anchor node
+                        // For FK-edge patterns, relationship properties come from the node table
+                        let rel_type = ctx.rel_types.first().cloned().unwrap_or_default();
+                        plan_ctx.register_denormalized_alias(
+                            rel_alias.to_string(),
+                            left_alias.to_string(),  // rel is on left table
+                            false,  // is_from_node = false
+                            String::new(),
+                            rel_type,
+                        );
+                        log::info!(
+                            "🔑 Registered FK-edge '{}' as denormalized on anchor '{}'",
+                            rel_alias, left_alias
+                        );
 
                         // CRITICAL FIX: For VLP + chained FK-edge patterns (symmetric to NodePosition::Left)
                         let right_already_joined = join_ctx.contains(right_alias);

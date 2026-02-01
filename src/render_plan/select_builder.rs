@@ -764,9 +764,9 @@ impl LogicalPlan {
                 col_alias: Some(ColumnAlias(path_alias.to_string())),
             });
         } else {
-            // Fixed single-hop path - return path metadata only
-            // Properties will need to come from denormalized columns or separate queries
-            // For now, just return the component aliases for the transformer
+            // Fixed single-hop path - expand component properties
+            // All node tables are now in FROM clause (after FK-edge duplicate fix),
+            // so we can expand properties for start node, end node, and relationship.
             
             let start_alias = path_var.start_node.as_deref().unwrap_or("_start");
             let end_alias = path_var.end_node.as_deref().unwrap_or("_end");
@@ -777,14 +777,71 @@ impl LogicalPlan {
                 path_alias, start_alias, end_alias, rel_alias
             );
 
-            // NOTE: We DON'T expand properties here because the node tables may not be
-            // in the FROM clause. Path queries are relationship-centric and only include
-            // the relationship table + end node table in FROM clause.
-            // Properties would need to come from:
-            // 1. Denormalized columns in the relationship table
-            // 2. Separate subqueries/CTEs to fetch node properties
-            // 3. Lazy loading by client (fetch properties on node click)
-            
+            // Expand properties for each component if we have plan_ctx
+            if let Some(ctx) = plan_ctx {
+                log::debug!("  🔍 Looking up variables in plan_ctx for path components");
+                
+                // Expand start node properties
+                if let Some(typed_var) = ctx.lookup_variable(start_alias) {
+                    log::debug!("  ✓ Found start node '{}' in plan_ctx, is_entity={}", start_alias, typed_var.is_entity());
+                    if typed_var.is_entity() {
+                        log::info!("  📦 Expanding start node '{}' properties", start_alias);
+                        match typed_var.source() {
+                            VariableSource::Match => {
+                                self.expand_base_table_entity(start_alias, typed_var, select_items);
+                            }
+                            VariableSource::Cte { cte_name } => {
+                                self.expand_cte_entity(start_alias, typed_var, cte_name, Some(ctx), select_items);
+                            }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    log::warn!("  ✗ Start node '{}' not found in plan_ctx", start_alias);
+                }
+
+                // Expand end node properties
+                if let Some(typed_var) = ctx.lookup_variable(end_alias) {
+                    log::debug!("  ✓ Found end node '{}' in plan_ctx", end_alias);
+                    if typed_var.is_entity() {
+                        log::info!("  📦 Expanding end node '{}' properties", end_alias);
+                        match typed_var.source() {
+                            VariableSource::Match => {
+                                self.expand_base_table_entity(end_alias, typed_var, select_items);
+                            }
+                            VariableSource::Cte { cte_name } => {
+                                self.expand_cte_entity(end_alias, typed_var, cte_name, Some(ctx), select_items);
+                            }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    log::warn!("  ✗ End node '{}' not found in plan_ctx", end_alias);
+                }
+
+                // Expand relationship properties
+                if let Some(typed_var) = ctx.lookup_variable(rel_alias) {
+                    log::debug!("  ✓ Found relationship '{}' in plan_ctx, is_entity={}, source={:?}", 
+                        rel_alias, typed_var.is_entity(), typed_var.source());
+                    if typed_var.is_entity() {
+                        log::info!("  📦 Expanding relationship '{}' properties", rel_alias);
+                        match typed_var.source() {
+                            VariableSource::Match => {
+                                self.expand_base_table_entity(rel_alias, typed_var, select_items);
+                            }
+                            VariableSource::Cte { cte_name } => {
+                                self.expand_cte_entity(rel_alias, typed_var, cte_name, Some(ctx), select_items);
+                            }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    log::warn!("  ✗ Relationship '{}' not found in plan_ctx", rel_alias);
+                }
+            } else {
+                log::warn!("  ✗ No plan_ctx available for property expansion");
+            }
+
             // Add the path metadata column with component aliases
             // Format: tuple('fixed_path', start_alias, end_alias, rel_alias)
             select_items.push(SelectItem {
