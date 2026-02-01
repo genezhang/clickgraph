@@ -44,7 +44,7 @@ use crate::{
         typed_variable::TypedVariable,
     },
     server::bolt_protocol::{
-        graph_objects::{Node, Relationship},
+        graph_objects::{Node, Path, Relationship},
         messages::BoltValue,
     },
 };
@@ -78,7 +78,16 @@ pub enum ReturnItemType {
         to_label: Option<String>,
     },
     /// Path variable - needs transformation to Path struct
-    Path,
+    Path {
+        /// Start node alias (for looking up component data)
+        start_alias: Option<String>,
+        /// End node alias
+        end_alias: Option<String>,
+        /// Relationship alias
+        rel_alias: Option<String>,
+        /// Whether this is a VLP (variable-length path)
+        is_vlp: bool,
+    },
     /// Scalar value (property access, expression, aggregate) - return as-is
     Scalar,
 }
@@ -140,7 +149,16 @@ pub fn extract_return_metadata(
                         from_label: rel_var.from_node_label.clone(),
                         to_label: rel_var.to_node_label.clone(),
                     },
-                    Some(TypedVariable::Path(_)) => ReturnItemType::Path,
+                    Some(TypedVariable::Path(path_var)) => {
+                        // VLP has length_bounds set, fixed single-hop doesn't
+                        let is_vlp = path_var.length_bounds.is_some();
+                        ReturnItemType::Path {
+                            start_alias: path_var.start_node.clone(),
+                            end_alias: path_var.end_node.clone(),
+                            rel_alias: path_var.relationship.clone(),
+                            is_vlp,
+                        }
+                    }
                     _ => {
                         // Scalar variable or not found
                         ReturnItemType::Scalar
@@ -275,9 +293,40 @@ pub fn transform_row(
                 let packstream_bytes = rel.to_packstream();
                 result.push(BoltValue::PackstreamBytes(packstream_bytes));
             }
-            ReturnItemType::Path => {
-                // TODO: Path transformation requires path variable support in query planner
-                result.push(BoltValue::Json(Value::Null));
+            ReturnItemType::Path {
+                start_alias,
+                end_alias,
+                rel_alias,
+                is_vlp,
+            } => {
+                // Transform fixed-hop path to Neo4j Path structure
+                // For now, we support fixed single-hop paths: (a)-[r]->(b)
+                //
+                // The SQL returns: tuple('fixed_path', start_alias, end_alias, rel_alias)
+                // We need to look up component data from the row and construct Path
+                
+                if *is_vlp {
+                    // VLP paths have different column format - not yet supported
+                    log::warn!("VLP path transformation not yet implemented");
+                    result.push(BoltValue::Json(Value::Null));
+                    continue;
+                }
+                
+                // For fixed-hop paths, try to construct a minimal path
+                // The actual node/relationship data might be in the row with prefixed columns
+                let path = transform_to_path(
+                    &row,
+                    &meta.field_name,
+                    start_alias.as_deref(),
+                    end_alias.as_deref(),
+                    rel_alias.as_deref(),
+                    schema,
+                    metadata,  // Pass the metadata from transform_row
+                )?;
+                
+                // Use the Path's packstream encoding
+                let packstream_bytes = path.to_packstream();
+                result.push(BoltValue::PackstreamBytes(packstream_bytes));
             }
             ReturnItemType::Scalar => {
                 // For scalars, just extract the value and wrap in BoltValue::Json
@@ -474,6 +523,226 @@ fn transform_to_relationship(
         start_node_element_id,
         end_node_element_id,
     })
+}
+
+/// Transform fixed-hop path data to Neo4j Path structure
+///
+/// For a path p = (a)-[r]->(b), this function:
+/// 1. Looks up metadata for start/end nodes and relationship from other return items
+/// 2. Creates placeholder Node/Relationship objects with IDs derived from path tuple
+/// 3. Constructs a Path with proper structure for Neo4j visualization
+///
+/// # Arguments
+///
+/// * `row` - The result row from ClickHouse
+/// * `path_name` - The path variable name (e.g., "p")
+/// * `start_alias` - Alias of the start node
+/// * `end_alias` - Alias of the end node
+/// * `rel_alias` - Alias of the relationship
+/// * `schema` - Graph schema for type information
+/// * `return_metadata` - Metadata for all return items (to find component info)
+///
+/// # Returns
+///
+/// Path struct with nodes, relationships, and indices
+#[allow(clippy::too_many_arguments)]
+fn transform_to_path(
+    row: &HashMap<String, Value>,
+    path_name: &str,
+    start_alias: Option<&str>,
+    end_alias: Option<&str>,
+    rel_alias: Option<&str>,
+    schema: &GraphSchema,
+    return_metadata: &[ReturnItemMetadata],
+) -> Result<Path, String> {
+    // Try to find component metadata from the return items
+    // This works when the user returns both the path and its components
+    
+    let start_alias = start_alias.unwrap_or("_start");
+    let end_alias = end_alias.unwrap_or("_end");
+    let rel_alias = rel_alias.unwrap_or("_rel");
+    
+    log::debug!(
+        "transform_to_path: path={}, start={}, end={}, rel={}",
+        path_name, start_alias, end_alias, rel_alias
+    );
+    
+    // Try to get start node data
+    let start_node = find_node_in_row(row, start_alias, return_metadata, schema)
+        .unwrap_or_else(|| create_placeholder_node(start_alias, 0));
+    
+    // Try to get end node data
+    let end_node = find_node_in_row(row, end_alias, return_metadata, schema)
+        .unwrap_or_else(|| create_placeholder_node(end_alias, 1));
+    
+    // Try to get relationship data
+    let relationship = find_relationship_in_row(
+        row, rel_alias, &start_node.element_id, &end_node.element_id, return_metadata, schema
+    ).unwrap_or_else(|| create_placeholder_relationship(
+        rel_alias,
+        &start_node.element_id,
+        &end_node.element_id,
+    ));
+    
+    // Create Path with single-hop structure
+    // Indices for single hop: [1, 1] means "relationship index 1, then node index 1"
+    // (Neo4j uses 1-based indexing in path indices)
+    Ok(Path::single_hop(start_node, relationship, end_node))
+}
+
+/// Find a node in the result row by its alias
+fn find_node_in_row(
+    row: &HashMap<String, Value>,
+    alias: &str,
+    return_metadata: &[ReturnItemMetadata],
+    schema: &GraphSchema,
+) -> Option<Node> {
+    // Look for this alias in return metadata
+    for meta in return_metadata {
+        if meta.field_name == alias {
+            if let ReturnItemType::Node { labels } = &meta.item_type {
+                // Found it! Try to transform
+                return transform_to_node(row, alias, labels, schema).ok();
+            }
+        }
+    }
+    
+    // Check if it's in the row with property prefixes (e.g., "t1.user_id")
+    let prefix = format!("{}.", alias);
+    let mut properties = std::collections::HashMap::new();
+    
+    for (key, value) in row.iter() {
+        if let Some(prop_name) = key.strip_prefix(&prefix) {
+            properties.insert(prop_name.to_string(), value.clone());
+        }
+    }
+    
+    if properties.is_empty() {
+        return None;
+    }
+    
+    // Try to guess label from schema by looking at property names
+    // This is a heuristic - we check which node type has these properties
+    for (label, node_schema) in schema.all_node_schemas() {
+        let schema_props: std::collections::HashSet<&String> = node_schema.property_mappings.keys().collect();
+        let row_props: std::collections::HashSet<&str> = properties.keys().map(|s| s.as_str()).collect();
+        
+        // If most row properties match schema properties, this is likely the right label
+        let matches = row_props.iter().filter(|p| schema_props.iter().any(|sp| sp.as_str() == **p)).count();
+        if matches > 0 && matches >= row_props.len() / 2 {
+            // Found a matching label
+            let id_columns = node_schema.node_id.id.columns();
+            let id_values: Vec<String> = id_columns
+                .iter()
+                .filter_map(|col| properties.get(*col).and_then(value_to_string))
+                .collect();
+            
+            if !id_values.is_empty() {
+                let element_id = format!("{}:{}", label, id_values.join("|"));
+                let id: i64 = id_values.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+                
+                return Some(Node {
+                    id,
+                    labels: vec![label.clone()],
+                    properties,
+                    element_id,
+                });
+            }
+        }
+    }
+    
+    None
+}
+
+/// Find a relationship in the result row by its alias
+fn find_relationship_in_row(
+    row: &HashMap<String, Value>,
+    alias: &str,
+    start_element_id: &str,
+    end_element_id: &str,
+    return_metadata: &[ReturnItemMetadata],
+    schema: &GraphSchema,
+) -> Option<Relationship> {
+    // Look for this alias in return metadata
+    for meta in return_metadata {
+        if meta.field_name == alias {
+            if let ReturnItemType::Relationship { rel_types, from_label, to_label } = &meta.item_type {
+                // Found it! Try to transform
+                return transform_to_relationship(
+                    row, alias, rel_types,
+                    from_label.as_deref(), to_label.as_deref(), schema
+                ).ok();
+            }
+        }
+    }
+    
+    // Check if it's in the row with property prefixes
+    let prefix = format!("{}.", alias);
+    let mut properties = std::collections::HashMap::new();
+    
+    for (key, value) in row.iter() {
+        if let Some(prop_name) = key.strip_prefix(&prefix) {
+            properties.insert(prop_name.to_string(), value.clone());
+        }
+    }
+    
+    if properties.is_empty() {
+        return None;
+    }
+    
+    // Try to guess relationship type from schema
+    for (rel_type, rel_schema) in schema.get_relationships_schemas() {
+        // Check if this relationship type's properties match
+        let from_col = &rel_schema.from_id;
+        let to_col = &rel_schema.to_id;
+        
+        if properties.contains_key(from_col) && properties.contains_key(to_col) {
+            let from_id = properties.get(from_col).and_then(value_to_string).unwrap_or_default();
+            let to_id = properties.get(to_col).and_then(value_to_string).unwrap_or_default();
+            let element_id = format!("{}:{}->{}",rel_type, from_id, to_id);
+            
+            return Some(Relationship {
+                id: 0,
+                start_node_id: 0,
+                end_node_id: 0,
+                rel_type: rel_type.clone(),
+                properties,
+                element_id,
+                start_node_element_id: start_element_id.to_string(),
+                end_node_element_id: end_element_id.to_string(),
+            });
+        }
+    }
+    
+    None
+}
+
+/// Create a placeholder node when we can't find actual data
+fn create_placeholder_node(alias: &str, id: i64) -> Node {
+    Node {
+        id,
+        labels: vec!["_Unknown".to_string()],
+        properties: std::collections::HashMap::new(),
+        element_id: format!("_Unknown:{}", id),
+    }
+}
+
+/// Create a placeholder relationship when we can't find actual data
+fn create_placeholder_relationship(
+    alias: &str,
+    start_element_id: &str,
+    end_element_id: &str,
+) -> Relationship {
+    Relationship {
+        id: 0,
+        start_node_id: 0,
+        end_node_id: 0,
+        rel_type: "_UNKNOWN".to_string(),
+        properties: std::collections::HashMap::new(),
+        element_id: format!("_UNKNOWN:{}:{}", start_element_id, end_element_id),
+        start_node_element_id: start_element_id.to_string(),
+        end_node_element_id: end_element_id.to_string(),
+    }
 }
 
 /// Convert a JSON Value to a String for elementId generation

@@ -763,8 +763,13 @@ impl LogicalPlan {
             });
         } else {
             // Fixed single-hop path - construct from actual node/relationship aliases
-            // For `p = (a)-[r]->(b)`, produce: tuple([a, b], [r])
-            // This gives a simple representation: (nodes_array, relationships_array)
+            // For `p = (a)-[r]->(b)`, we need to return the actual data for nodes and relationships
+            // so the Bolt transformer can construct a proper Neo4j Path object.
+            //
+            // Strategy: Return path metadata tuple with component aliases.
+            // The Bolt transformer will look for other SELECT items with these aliases
+            // (from the same RETURN clause or wildcard expansion) and construct the Path.
+            // If component data isn't explicitly returned, the path will contain placeholder nodes.
             
             let start_alias = path_var.start_node.as_deref().unwrap_or("_start");
             let end_alias = path_var.end_node.as_deref().unwrap_or("_end");
@@ -775,16 +780,16 @@ impl LogicalPlan {
                 path_alias, start_alias, end_alias, rel_alias
             );
 
-            // For fixed paths, we create a simple representation
-            // tuple('path', start_alias, end_alias, rel_alias) AS "p"
-            // This identifies it as a path and includes the component aliases
+            // Add the path metadata column with component aliases
+            // Format: tuple('fixed_path', start_alias, end_alias, rel_alias)
+            // The Bolt transformer uses these to find and package component data
             select_items.push(SelectItem {
                 expression: RenderExpr::ScalarFnCall(ScalarFnCall {
                     name: "tuple".to_string(),
                     args: vec![
-                        // Path marker
+                        // Path type marker
                         RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
-                            "path".to_string(),
+                            "fixed_path".to_string(),
                         )),
                         // Start node alias
                         RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
