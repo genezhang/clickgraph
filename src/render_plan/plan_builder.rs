@@ -1677,8 +1677,96 @@ impl RenderPlanBuilder for LogicalPlan {
             return build_chained_with_match_cte_plan(self, schema, plan_ctx);
         }
 
+        // For non-WITH clause queries, we need to pass plan_ctx through to extract_select_items
+        // to enable TypedVariable lookup (particularly for path variables)
+        // The plan may be wrapped in Limit/Skip/OrderBy, so we need to check the structure
+        
+        // Helper to check if plan contains GraphJoins (handles Limit, Skip, OrderBy wrappers)
+        fn contains_graph_joins(plan: &LogicalPlan) -> bool {
+            match plan {
+                LogicalPlan::GraphJoins(_) => true,
+                LogicalPlan::Limit(l) => contains_graph_joins(&l.input),
+                LogicalPlan::Skip(s) => contains_graph_joins(&s.input),
+                LogicalPlan::OrderBy(o) => contains_graph_joins(&o.input),
+                LogicalPlan::Filter(f) => contains_graph_joins(&f.input),
+                _ => false,
+            }
+        }
+        
+        // If this plan contains GraphJoins, we handle it ourselves with plan_ctx
+        if contains_graph_joins(self) {
+            log::info!("to_render_plan_with_ctx: plan contains GraphJoins, using plan_ctx for SELECT extraction");
+            
+            let mut select_items = SelectItems {
+                items: <LogicalPlan as SelectBuilder>::extract_select_items(self, plan_ctx)?,
+                distinct: FilterBuilder::extract_distinct(self),
+            };
+            let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
+            let joins = JoinItems(RenderPlanBuilder::extract_joins(self, schema)?);
+            let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
+            let filters = FilterItems(FilterBuilder::extract_filters(self)?);
+            let group_by =
+                GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
+            let having_clause = self.extract_having()?;
+
+            select_items.items =
+                apply_anylast_wrapping_for_group_by(select_items.items, &group_by.0, self)?;
+
+            let order_by = OrderByItems(self.extract_order_by()?);
+            // Use utility functions that properly handle Limit/Skip wrappers
+            let skip = SkipItem(super::plan_builder_utils::extract_skip(self));
+            let limit = LimitItem(super::plan_builder_utils::extract_limit(self));
+            let union = UnionItems(self.extract_union(schema)?);
+
+            // Extract CTEs from the inner plan
+            let cte_input = match self {
+                LogicalPlan::GraphJoins(gj) => &gj.input,
+                LogicalPlan::Limit(l) => match l.input.as_ref() {
+                    LogicalPlan::GraphJoins(gj) => &gj.input,
+                    other => other,
+                },
+                LogicalPlan::Skip(s) => match s.input.as_ref() {
+                    LogicalPlan::GraphJoins(gj) => &gj.input,
+                    other => other,
+                },
+                LogicalPlan::OrderBy(o) => match o.input.as_ref() {
+                    LogicalPlan::GraphJoins(gj) => &gj.input,
+                    other => other,
+                },
+                other => other,
+            };
+            
+            let mut context = super::cte_generation::CteGenerationContext::new();
+            let ctes = CteItems(extract_ctes_with_context(
+                cte_input,
+                "",
+                &mut context,
+                schema,
+            )?);
+
+            let mut render_plan = RenderPlan {
+                ctes,
+                select: select_items,
+                from,
+                joins,
+                array_join,
+                filters,
+                group_by,
+                having_clause,
+                order_by,
+                skip,
+                limit,
+                union,
+                fixed_path_info: None,
+                is_multi_label_scan: false,
+            };
+
+            rewrite_vlp_union_branch_aliases(&mut render_plan)?;
+
+            return Ok(render_plan);
+        }
+
         // For all other cases, delegate to the standard to_render_plan
-        // (which doesn't need plan_ctx for non-WITH clause handling)
         self.to_render_plan(schema)
     }
 }

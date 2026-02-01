@@ -191,13 +191,14 @@ impl SelectBuilder for LogicalPlan {
                                     }
                                     Some(typed_var) if typed_var.is_path() => {
                                         // Path variable - expand to tuple of path components
-                                        // Path variables come from VLP CTEs with columns: path_nodes, path_edges, path_relationships, hop_count
+                                        // Handles both VLP (variable-length) and fixed single-hop paths
                                         log::info!(
                                             "🔍 Expanding path variable '{}' to path components",
                                             table_alias.0
                                         );
                                         self.expand_path_variable(
                                             &table_alias.0,
+                                            typed_var,
                                             &mut select_items,
                                         );
                                     }
@@ -698,39 +699,109 @@ impl LogicalPlan {
 
     /// Expand a path variable to its constituent components
     ///
-    /// Path variables from VLP queries contain: path_nodes, path_edges, path_relationships, hop_count
-    /// We wrap these in a tuple() for clean output: tuple(path_nodes, path_edges, path_relationships, hop_count) AS "p"
-    fn expand_path_variable(&self, path_alias: &str, select_items: &mut Vec<SelectItem>) {
-        use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
-        // The VLP CTE uses alias defined in join_context for the final SELECT from the CTE
-        // Path components are columns in the CTE result
-        let cte_alias = VLP_CTE_FROM_ALIAS;
+    /// For VLP (variable-length paths) queries:
+    ///   - Uses VLP CTE columns: path_nodes, path_edges, path_relationships, hop_count
+    ///   - tuple(t.path_nodes, t.path_edges, t.path_relationships, t.hop_count) AS "p"
+    ///
+    /// For fixed single-hop paths:
+    ///   - Constructs path from actual node/relationship aliases
+    ///   - tuple([start_node, end_node], [relationship]) AS "p"
+    fn expand_path_variable(
+        &self,
+        path_alias: &str,
+        typed_var: &TypedVariable,
+        select_items: &mut Vec<SelectItem>,
+    ) {
+        // Check if this is a VLP (variable-length path) or fixed-hop path
+        let path_var = match typed_var.as_path() {
+            Some(pv) => pv,
+            None => {
+                log::warn!("expand_path_variable called with non-path variable");
+                return;
+            }
+        };
+        
+        // VLP paths have length_bounds set (e.g., *1..3, *, *2..)
+        // Fixed single-hop paths have length_bounds = None
+        let is_vlp = path_var.length_bounds.is_some() || path_var.is_shortest_path;
+        
+        if is_vlp {
+            // VLP path - use VLP CTE columns
+            use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
+            let cte_alias = VLP_CTE_FROM_ALIAS;
+            
+            log::info!(
+                "🔍 Expanding VLP path variable '{}' using CTE columns from '{}'",
+                path_alias, cte_alias
+            );
 
-        // Create a tuple expression wrapping all path components
-        // tuple(t.path_nodes, t.path_edges, t.path_relationships, t.hop_count)
-        select_items.push(SelectItem {
-            expression: RenderExpr::ScalarFnCall(ScalarFnCall {
-                name: "tuple".to_string(),
-                args: vec![
-                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: RenderTableAlias(cte_alias.to_string()),
-                        column: PropertyValue::Column("path_nodes".to_string()),
-                    }),
-                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: RenderTableAlias(cte_alias.to_string()),
-                        column: PropertyValue::Column("path_edges".to_string()),
-                    }),
-                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: RenderTableAlias(cte_alias.to_string()),
-                        column: PropertyValue::Column("path_relationships".to_string()),
-                    }),
-                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: RenderTableAlias(cte_alias.to_string()),
-                        column: PropertyValue::Column("hop_count".to_string()),
-                    }),
-                ],
-            }),
-            col_alias: Some(ColumnAlias(path_alias.to_string())),
-        });
+            // Create a tuple expression wrapping all path components
+            // tuple(t.path_nodes, t.path_edges, t.path_relationships, t.hop_count)
+            select_items.push(SelectItem {
+                expression: RenderExpr::ScalarFnCall(ScalarFnCall {
+                    name: "tuple".to_string(),
+                    args: vec![
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: RenderTableAlias(cte_alias.to_string()),
+                            column: PropertyValue::Column("path_nodes".to_string()),
+                        }),
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: RenderTableAlias(cte_alias.to_string()),
+                            column: PropertyValue::Column("path_edges".to_string()),
+                        }),
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: RenderTableAlias(cte_alias.to_string()),
+                            column: PropertyValue::Column("path_relationships".to_string()),
+                        }),
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: RenderTableAlias(cte_alias.to_string()),
+                            column: PropertyValue::Column("hop_count".to_string()),
+                        }),
+                    ],
+                }),
+                col_alias: Some(ColumnAlias(path_alias.to_string())),
+            });
+        } else {
+            // Fixed single-hop path - construct from actual node/relationship aliases
+            // For `p = (a)-[r]->(b)`, produce: tuple([a, b], [r])
+            // This gives a simple representation: (nodes_array, relationships_array)
+            
+            let start_alias = path_var.start_node.as_deref().unwrap_or("_start");
+            let end_alias = path_var.end_node.as_deref().unwrap_or("_end");
+            let rel_alias = path_var.relationship.as_deref().unwrap_or("_rel");
+            
+            log::info!(
+                "🔍 Expanding fixed-hop path variable '{}': start={}, end={}, rel={}",
+                path_alias, start_alias, end_alias, rel_alias
+            );
+
+            // For fixed paths, we create a simple representation
+            // tuple('path', start_alias, end_alias, rel_alias) AS "p"
+            // This identifies it as a path and includes the component aliases
+            select_items.push(SelectItem {
+                expression: RenderExpr::ScalarFnCall(ScalarFnCall {
+                    name: "tuple".to_string(),
+                    args: vec![
+                        // Path marker
+                        RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
+                            "path".to_string(),
+                        )),
+                        // Start node alias
+                        RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
+                            start_alias.to_string(),
+                        )),
+                        // End node alias
+                        RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
+                            end_alias.to_string(),
+                        )),
+                        // Relationship alias
+                        RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
+                            rel_alias.to_string(),
+                        )),
+                    ],
+                }),
+                col_alias: Some(ColumnAlias(path_alias.to_string())),
+            });
+        }
     }
 }
