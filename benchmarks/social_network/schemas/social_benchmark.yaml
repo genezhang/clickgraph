@@ -62,13 +62,13 @@ graph_schema:
     - type: AUTHORED
       database: brahmand
       table: posts_bench
-      from_id: author_id
+      from_id: user_id
       to_id: post_id
       edge_id: post_id
       from_node: User
       to_node: Post
       property_mappings:
-        post_date: post_date
+        post_date: created_at
     
     - type: LIKED
       database: brahmand
