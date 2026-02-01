@@ -154,29 +154,51 @@ fn parse_relationship_and_connected_node(
     }
 }
 
-// Parses a single `-` (dash) without a direction
+// Parses a single `-` (dash) followed by `[` (for relationships with brackets like `-[r:TYPE]->`)
 fn parse_single_dash(input: &str) -> IResult<&str, bool> {
     map((char('-'), multispace0, char('[')), |_| true).parse(input)
 }
 
-// Parses `<-` with spaces allowed in between
+// Parses `--` pattern (undirected/either relationship)
+fn parse_double_dash(input: &str) -> IResult<&str, bool> {
+    map((char('-'), multispace0, char('-')), |_| true).parse(input)
+}
+
+// Parses `<-` or `<--` with spaces allowed in between  
+// Matches both:
+// - `<-` (arrow followed by single dash, used for relationships with properties)
+// - `<--` (arrow followed by double dash, used for empty relationships)
 fn parse_incoming(input: &str) -> IResult<&str, bool> {
-    map((char('<'), multispace0, char('-')), |_| true).parse(input)
+    alt((
+        // Try `<--` first (empty relationship pattern)
+        map((char('<'), multispace0, char('-'), multispace0, char('-')), |_| true),
+        // Fall back to `<-` (relationship with properties)
+        map((char('<'), multispace0, char('-')), |_| true),
+    )).parse(input)
 }
 
-// Parses `->` with spaces allowed in between
+// Parses `->` or `-->` with spaces allowed in between
+// Matches both:
+// - `->` (single dash followed by arrow)
+// - `-->` (double dash followed by arrow, used for empty relationships)
 fn parse_outgoing(input: &str) -> IResult<&str, bool> {
-    map((char('-'), multispace0, char('>')), |_| true).parse(input)
+    alt((
+        // Try `-->` first (empty relationship pattern)
+        map((char('-'), multispace0, char('-'), multispace0, char('>')), |_| true),
+        // Fall back to `->` (relationship with properties)
+        map((char('-'), multispace0, char('>')), |_| true),
+    )).parse(input)
 }
 
-// Main parser that checks for `<-`, `->`, or `-`
+// Main parser that checks for `<-`, `<--`, `->`, `-->`, `--`, or `-[`
 fn is_start_of_a_relationship(input: &str) -> IResult<&str, bool> {
     let (input, _) = multispace0(input)?;
 
     let (_, found_relationship_start) = opt(peek(alt((
-        parse_incoming,
-        parse_outgoing,
-        parse_single_dash,
+        parse_incoming,      // `<-` or `<--`
+        parse_outgoing,      // `->` or `-->`
+        parse_double_dash,   // `--` (must come before parse_single_dash to avoid false match)
+        parse_single_dash,   // `-[`
     ))))
     .parse(input)?;
     let is_start = found_relationship_start.is_some();

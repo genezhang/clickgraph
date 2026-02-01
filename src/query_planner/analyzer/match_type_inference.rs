@@ -140,16 +140,19 @@ pub fn infer_relationship_type_from_nodes(
         return Ok(Some(vec![rel_type]));
     }
 
-    // Case 2: At least one node is typed - filter relationships by node type compatibility
+    // Case 2: Both nodes untyped - expand to ALL relationship types (UNION ALL)
+    // This enables Neo4j Browser's "dot" feature: MATCH ()-->() RETURN p
+    // Each UNION branch becomes a typed query we already support
     if start_label.is_none() && end_label.is_none() {
-        log::debug!(
-            "Relationship inference: Both nodes untyped and schema has {} relationships, cannot infer",
-            rel_schemas.len()
+        let all_rel_types: Vec<String> = rel_schemas.keys().cloned().collect();
+        log::info!(
+            "Relationship type inference: Both nodes untyped, expanding to all {} relationship types for UNION",
+            all_rel_types.len()
         );
-        return Ok(None);
+        return Ok(Some(all_rel_types));
     }
 
-    // Find relationships that match the typed node(s)
+    // Case 3: At least one node is typed - filter relationships by node type compatibility
     let matching_types: Vec<String> = rel_schemas
         .iter()
         .filter(|(_, rel_schema)| {

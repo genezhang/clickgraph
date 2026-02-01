@@ -909,11 +909,12 @@ pub(super) fn traverse_node_pattern(
     plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
-    // For now we are not supporting empty node. standalone node with name is supported.
+    // Generate anonymous alias for nodes without names
+    // This supports Neo4j Browser "dot" feature: MATCH () RETURN *
     let node_alias = node_pattern
         .name
-        .ok_or(LogicalPlanError::EmptyNode)?
-        .to_string();
+        .map(|n| n.to_string())
+        .unwrap_or_else(generate_id);
     let mut node_label: Option<String> = node_pattern.first_label().map(|val| val.to_string());
 
     // === SINGLE-NODE-SCHEMA INFERENCE ===
