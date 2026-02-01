@@ -44,9 +44,7 @@ graph_schema:
       node_id: user_id
       property_mappings:
         user_id: user_id
-        name: full_name
-        country: country
-        city: city
+        name: name  # Table only has 'name', not 'full_name'
 
   edges:
     - type: FOLLOWS

@@ -183,24 +183,36 @@ pub async fn query_handler(
     let clean_query = clean_query_string.clone();
 
     // Handle procedure calls early (before query context)
-    // Parse to check if it's a procedure call or union
-    let (is_union, proc_name_opt) =
+    // Parse to check if it's a procedure call or procedure-only query
+    let (is_procedure, is_union, proc_name_opt) =
         if let Ok((_, parsed_stmt)) = open_cypher_parser::parse_cypher_statement(&clean_query) {
             log::debug!("Parse succeeded for query: {}", &clean_query);
+            
+            // Check if it's a procedure-only statement
+            let proc_check = crate::procedures::is_procedure_only_statement(&parsed_stmt);
+            
             // Check if it's a procedure UNION
             let union_check = crate::procedures::is_procedure_union_query(&parsed_stmt);
-            log::debug!("Union check result: {}", union_check);
+            log::debug!("Procedure check: {}, Union check: {}", proc_check, union_check);
             
-            let proc_name = if let CypherStatement::ProcedureCall(proc_call) = parsed_stmt {
-                Some(proc_call.procedure_name.to_string())
+            // Extract procedure name for standalone procedures (non-UNION)
+            let proc_name = if proc_check && !union_check {
+                match &parsed_stmt {
+                    CypherStatement::ProcedureCall(proc_call) => {
+                        Some(proc_call.procedure_name.to_string())
+                    }
+                    CypherStatement::Query { query, .. } => {
+                        query.call_clause.as_ref().map(|cc| cc.procedure_name.to_string())
+                    }
+                }
             } else {
                 None
             };
             
-            (union_check, proc_name)
+            (proc_check, union_check, proc_name)
         } else {
             log::debug!("Parse FAILED for query: {}", &clean_query);
-            (false, None)
+            (false, false, None)
         };
     
     if is_union {
