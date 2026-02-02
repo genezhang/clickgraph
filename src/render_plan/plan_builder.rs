@@ -209,6 +209,14 @@ pub(crate) trait RenderPlanBuilder {
     fn extract_skip(&self) -> Option<i64>;
 
     fn extract_union(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<Option<Union>>;
+    
+    /// Extract union with plan_ctx for path variable support.
+    /// This is a bridge method that allows Union branches to be rendered with plan_ctx.
+    fn extract_union_with_ctx(
+        &self,
+        schema: &GraphSchema,
+        plan_ctx: Option<&PlanCtx>,
+    ) -> RenderPlanBuilderResult<Option<Union>>;
 
     /// Extract UNWIND clause as ARRAY JOIN items
     fn extract_array_join(&self) -> RenderPlanBuilderResult<Vec<super::ArrayJoin>>;
@@ -637,6 +645,37 @@ impl RenderPlanBuilder for LogicalPlan {
                         // Found Union nested deep, convert it to render plan
                         log::debug!("extract_union: found nested Union, converting to render");
                         let union_render_plan = current.to_render_plan(schema)?;
+                        return Ok(union_render_plan.union.0);
+                    }
+                    _ => break,
+                }
+            }
+        }
+
+        // Note: UNION is handled by LogicalPlan::Union nodes in to_render_plan().
+        // This method returns None for other node types.
+        Ok(None)
+    }
+
+    /// Extract union with plan_ctx for path variable support.
+    /// This is a bridge method that allows Union branches to be rendered with plan_ctx.
+    fn extract_union_with_ctx(
+        &self,
+        schema: &GraphSchema,
+        plan_ctx: Option<&PlanCtx>,
+    ) -> RenderPlanBuilderResult<Option<Union>> {
+        // For GraphJoins, check if Union is nested inside (possibly wrapped in GraphNode, Projection, GroupBy, etc.)
+        if let LogicalPlan::GraphJoins(gj) = self {
+            let mut current = gj.input.as_ref();
+            loop {
+                match current {
+                    LogicalPlan::GraphNode(gn) => current = gn.input.as_ref(),
+                    LogicalPlan::Projection(proj) => current = proj.input.as_ref(),
+                    LogicalPlan::GroupBy(gb) => current = gb.input.as_ref(),
+                    LogicalPlan::Union(_union) => {
+                        // Found Union nested deep, convert it to render plan WITH plan_ctx
+                        log::debug!("extract_union_with_ctx: found nested Union, converting to render with plan_ctx");
+                        let union_render_plan = current.to_render_plan_with_ctx(schema, plan_ctx)?;
                         return Ok(union_render_plan.union.0);
                     }
                     _ => break,
@@ -1744,7 +1783,8 @@ impl RenderPlanBuilder for LogicalPlan {
             // Use utility functions that properly handle Limit/Skip wrappers
             let skip = SkipItem(super::plan_builder_utils::extract_skip(self));
             let limit = LimitItem(super::plan_builder_utils::extract_limit(self));
-            let union = UnionItems(self.extract_union(schema)?);
+            // Use extract_union_with_ctx to pass plan_ctx through to Union branches
+            let union = UnionItems(self.extract_union_with_ctx(schema, plan_ctx)?);
 
             // Extract CTEs from the inner plan
             let cte_input = match self {
@@ -1792,6 +1832,47 @@ impl RenderPlanBuilder for LogicalPlan {
             rewrite_vlp_union_branch_aliases(&mut render_plan)?;
 
             return Ok(render_plan);
+        }
+        
+        // If this is a Union without GraphJoins, handle it specially to pass plan_ctx to branches
+        if let LogicalPlan::Union(union) = self {
+            log::warn!("🔀 to_render_plan_with_ctx: Union without GraphJoins, rendering branches with plan_ctx");
+            
+            if union.inputs.is_empty() {
+                return Err(RenderBuildError::InvalidRenderPlan(
+                    "Union has no inputs".to_string(),
+                ));
+            }
+            
+            // Render each branch with plan_ctx
+            let mut branch_renders = Vec::new();
+            for (idx, branch) in union.inputs.iter().enumerate() {
+                log::debug!("Rendering Union branch {} with plan_ctx", idx);
+                let branch_render = branch.to_render_plan_with_ctx(schema, plan_ctx)?;
+                branch_renders.push(branch_render);
+            }
+            
+            // Use first branch as base and put rest in union.input
+            let mut base_render = branch_renders.into_iter().next().unwrap();
+            
+            // Set union field if there are multiple branches
+            if union.inputs.len() > 1 {
+                let remaining_renders: Vec<RenderPlan> = union.inputs[1..]
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, branch)| {
+                        log::debug!("Converting Union branch {} to RenderPlan", idx + 1);
+                        branch.to_render_plan_with_ctx(schema, plan_ctx)
+                    })
+                    .collect::<RenderPlanBuilderResult<Vec<_>>>()?;
+                
+                base_render.union = UnionItems(Some(super::Union {
+                    input: remaining_renders,
+                    union_type: super::UnionType::All,
+                }));
+            }
+            
+            return Ok(base_render);
         }
 
         // For all other cases, delegate to the standard to_render_plan
