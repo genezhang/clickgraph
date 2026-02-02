@@ -721,6 +721,33 @@ impl LogicalPlan {
         cte_name.to_string()
     }
 
+    /// Find GraphRel with matching path_variable in the plan tree.
+    /// This is used to get the actual connection aliases used in UNION branches.
+    fn find_graph_rel_for_path(&self, path_name: &str) -> Option<&crate::query_planner::logical_plan::GraphRel> {
+        use crate::query_planner::logical_plan::LogicalPlan;
+        match self {
+            LogicalPlan::GraphRel(gr) if gr.path_variable.as_deref() == Some(path_name) => Some(gr),
+            LogicalPlan::GraphRel(gr) => {
+                // Check children
+                gr.left.find_graph_rel_for_path(path_name)
+                    .or_else(|| gr.right.find_graph_rel_for_path(path_name))
+            }
+            LogicalPlan::GraphJoins(gj) => gj.input.find_graph_rel_for_path(path_name),
+            LogicalPlan::GraphNode(gn) => gn.input.find_graph_rel_for_path(path_name),
+            LogicalPlan::Projection(p) => p.input.find_graph_rel_for_path(path_name),
+            LogicalPlan::Filter(f) => f.input.find_graph_rel_for_path(path_name),
+            LogicalPlan::GroupBy(gb) => gb.input.find_graph_rel_for_path(path_name),
+            LogicalPlan::Limit(l) => l.input.find_graph_rel_for_path(path_name),
+            LogicalPlan::Skip(s) => s.input.find_graph_rel_for_path(path_name),
+            LogicalPlan::OrderBy(o) => o.input.find_graph_rel_for_path(path_name),
+            LogicalPlan::Union(u) => {
+                // Check first branch - all branches should have same path structure
+                u.inputs.first().and_then(|branch| branch.find_graph_rel_for_path(path_name))
+            }
+            _ => None,
+        }
+    }
+
     /// Expand a path variable to its constituent components
     ///
     /// For VLP (variable-length paths) queries:
@@ -791,9 +818,30 @@ impl LogicalPlan {
             // All node tables are now in FROM clause (after FK-edge duplicate fix),
             // so we can expand properties for start node, end node, and relationship.
             
-            let start_alias = path_var.start_node.as_deref().unwrap_or("_start");
-            let end_alias = path_var.end_node.as_deref().unwrap_or("_end");
-            let rel_alias = path_var.relationship.as_deref().unwrap_or("_rel");
+            // Try to find the actual GraphRel in the plan tree to get real aliases
+            // This is critical for UNION branches which use branch-specific aliases (t1_0, t2_0)
+            // instead of the original aliases (a, b) registered in plan_ctx
+            let (start_alias, end_alias, rel_alias) = if let Some(graph_rel) = self.find_graph_rel_for_path(path_alias) {
+                log::info!(
+                    "🔍 Found GraphRel for path '{}' with actual aliases: left={}, right={}, rel={}",
+                    path_alias, graph_rel.left_connection, graph_rel.right_connection, graph_rel.alias
+                );
+                (
+                    graph_rel.left_connection.clone(),
+                    graph_rel.right_connection.clone(),
+                    graph_rel.alias.clone(),
+                )
+            } else {
+                // Fallback to registered aliases from plan_ctx (for non-UNION patterns)
+                let start = path_var.start_node.as_deref().unwrap_or("_start").to_string();
+                let end = path_var.end_node.as_deref().unwrap_or("_end").to_string();
+                let rel = path_var.relationship.as_deref().unwrap_or("_rel").to_string();
+                log::info!(
+                    "🔍 Using registered aliases for path '{}': start={}, end={}, rel={}",
+                    path_alias, start, end, rel
+                );
+                (start, end, rel)
+            };
             
             log::info!(
                 "🔍 Expanding fixed-hop path variable '{}': start={}, end={}, rel={}",
@@ -805,17 +853,17 @@ impl LogicalPlan {
                 log::debug!("  🔍 Looking up variables in plan_ctx for path components");
                 
                 // Expand start node properties
-                if let Some(typed_var) = ctx.lookup_variable(start_alias) {
+                if let Some(typed_var) = ctx.lookup_variable(&start_alias) {
                     let variant_name = if typed_var.is_node() { "Node" } else if typed_var.is_relationship() { "Relationship" } else if typed_var.is_scalar() { "Scalar" } else if typed_var.as_path().is_some() { "Path" } else { "Unknown" };
                     log::debug!("  ✓ Found start node '{}' in plan_ctx, variant={}, is_entity={}", start_alias, variant_name, typed_var.is_entity());
                     if typed_var.is_entity() {
                         log::info!("  📦 Expanding start node '{}' properties", start_alias);
                         match typed_var.source() {
                             VariableSource::Match => {
-                                self.expand_base_table_entity(start_alias, typed_var, select_items, Some(ctx));
+                                self.expand_base_table_entity(&start_alias, typed_var, select_items, Some(ctx));
                             }
                             VariableSource::Cte { cte_name } => {
-                                self.expand_cte_entity(start_alias, typed_var, cte_name, Some(ctx), select_items);
+                                self.expand_cte_entity(&start_alias, typed_var, cte_name, Some(ctx), select_items);
                             }
                             _ => {}
                         }
@@ -825,16 +873,16 @@ impl LogicalPlan {
                 }
 
                 // Expand end node properties
-                if let Some(typed_var) = ctx.lookup_variable(end_alias) {
+                if let Some(typed_var) = ctx.lookup_variable(&end_alias) {
                     log::debug!("  ✓ Found end node '{}' in plan_ctx", end_alias);
                     if typed_var.is_entity() {
                         log::info!("  📦 Expanding end node '{}' properties", end_alias);
                         match typed_var.source() {
                             VariableSource::Match => {
-                                self.expand_base_table_entity(end_alias, typed_var, select_items, Some(ctx));
+                                self.expand_base_table_entity(&end_alias, typed_var, select_items, Some(ctx));
                             }
                             VariableSource::Cte { cte_name } => {
-                                self.expand_cte_entity(end_alias, typed_var, cte_name, Some(ctx), select_items);
+                                self.expand_cte_entity(&end_alias, typed_var, cte_name, Some(ctx), select_items);
                             }
                             _ => {}
                         }
@@ -844,17 +892,17 @@ impl LogicalPlan {
                 }
 
                 // Expand relationship properties
-                if let Some(typed_var) = ctx.lookup_variable(rel_alias) {
+                if let Some(typed_var) = ctx.lookup_variable(&rel_alias) {
                     log::debug!("  ✓ Found relationship '{}' in plan_ctx, is_entity={}, source={:?}", 
                         rel_alias, typed_var.is_entity(), typed_var.source());
                     if typed_var.is_entity() {
                         log::info!("  📦 Expanding relationship '{}' properties", rel_alias);
                         match typed_var.source() {
                             VariableSource::Match => {
-                                self.expand_base_table_entity(rel_alias, typed_var, select_items, Some(ctx));
+                                self.expand_base_table_entity(&rel_alias, typed_var, select_items, Some(ctx));
                             }
                             VariableSource::Cte { cte_name } => {
-                                self.expand_cte_entity(rel_alias, typed_var, cte_name, Some(ctx), select_items);
+                                self.expand_cte_entity(&rel_alias, typed_var, cte_name, Some(ctx), select_items);
                             }
                             _ => {}
                         }
