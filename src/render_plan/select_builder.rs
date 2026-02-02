@@ -205,26 +205,78 @@ impl SelectBuilder for LogicalPlan {
                                         );
                                     }
                                     _ => {
-                                        // Unknown variable or path/collection - fallback to old logic
-                                        log::warn!("⚠️ Variable '{}' not found in TypedVariable registry, using fallback logic", table_alias.0);
-                                        self.fallback_table_alias_expansion(
-                                            table_alias,
-                                            item,
-                                            &mut select_items,
-                                        );
+                                        // Unknown variable - check if it's a path by looking for GraphRel
+                                        if let Some(graph_rel) = self.find_graph_rel_for_path(&table_alias.0) {
+                                            log::info!(
+                                                "🔍 Found unregistered path variable '{}' in GraphRel, expanding with actual aliases",
+                                                table_alias.0
+                                            );
+                                            // Create a minimal TypedVariable for path expansion
+                                            // The expand_path_variable will use find_graph_rel_for_path again to get aliases
+                                            use crate::query_planner::typed_variable::{TypedVariable, PathVariable, VariableSource};
+                                            let path_var = TypedVariable::Path(
+                                                PathVariable {
+                                                    source: VariableSource::Match,
+                                                    start_node: Some(graph_rel.left_connection.clone()),
+                                                    end_node: Some(graph_rel.right_connection.clone()),
+                                                    relationship: Some(graph_rel.alias.clone()),
+                                                    length_bounds: graph_rel.variable_length.as_ref().map(|v| (v.min_hops, v.max_hops)),
+                                                    is_shortest_path: graph_rel.shortest_path_mode.is_some(),
+                                                }
+                                            );
+                                            self.expand_path_variable(
+                                                &table_alias.0,
+                                                &path_var,
+                                                &mut select_items,
+                                                Some(plan_ctx),
+                                            );
+                                        } else {
+                                            // Really unknown - fallback to old logic
+                                            log::warn!("⚠️ Variable '{}' not found in TypedVariable registry or GraphRel, using fallback logic", table_alias.0);
+                                            self.fallback_table_alias_expansion(
+                                                table_alias,
+                                                item,
+                                                &mut select_items,
+                                            );
+                                        }
                                     }
                                 }
                             } else {
-                                // No PlanCtx available - use fallback logic
-                                log::warn!(
-                                    "⚠️ No PlanCtx available for '{}', using fallback logic",
-                                    table_alias.0
-                                );
-                                self.fallback_table_alias_expansion(
-                                    table_alias,
-                                    item,
-                                    &mut select_items,
-                                );
+                                // No PlanCtx available - check if it's a path by looking for GraphRel
+                                if let Some(graph_rel) = self.find_graph_rel_for_path(&table_alias.0) {
+                                    log::info!(
+                                        "🔍 Found unregistered path variable '{}' in GraphRel (no plan_ctx), expanding with actual aliases",
+                                        table_alias.0
+                                    );
+                                    // Create a minimal TypedVariable for path expansion
+                                    use crate::query_planner::typed_variable::{TypedVariable, PathVariable, VariableSource};
+                                    let path_var = TypedVariable::Path(
+                                        PathVariable {
+                                            source: VariableSource::Match,
+                                            start_node: Some(graph_rel.left_connection.clone()),
+                                            end_node: Some(graph_rel.right_connection.clone()),
+                                            relationship: Some(graph_rel.alias.clone()),
+                                            length_bounds: graph_rel.variable_length.as_ref().map(|v| (v.min_hops, v.max_hops)),
+                                            is_shortest_path: graph_rel.shortest_path_mode.is_some(),
+                                        }
+                                    );
+                                    self.expand_path_variable(
+                                        &table_alias.0,
+                                        &path_var,
+                                        &mut select_items,
+                                        None, // No plan_ctx available
+                                    );
+                                } else {
+                                    log::warn!(
+                                        "⚠️ No PlanCtx available for '{}' and no GraphRel found, using fallback logic",
+                                        table_alias.0
+                                    );
+                                    self.fallback_table_alias_expansion(
+                                        table_alias,
+                                        item,
+                                        &mut select_items,
+                                    );
+                                }
                             }
                         }
 

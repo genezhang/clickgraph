@@ -513,52 +513,38 @@ fn traverse_connected_pattern_with_mode<'a>(
                     );
 
                     // Register path variable if present
-                    // ⚠️ LIMITATION: Path variables (p=()-->()) are NOT YET SUPPORTED for non-VLP queries!
-                    // Path variable expansion in SQL generator (to_sql_query.rs) only works for VLP queries
-                    // with recursive CTEs that generate path_nodes, path_edges, etc. For single-hop patterns,
-                    // we would need to construct these arrays inline in the SELECT clause.
-                    // TODO: Implement path variable support for single-hop patterns (UNION and regular).
-                    //
-                    // NOTE: For UNION patterns, we register the path variable with ORIGINAL aliases (a, b),
-                    // not branch-specific aliases (a_0, b_0). When path variables are implemented, this
-                    // registration will allow the SQL generator to construct the correct path tuple.
+                    // Path variables for UNION patterns use ORIGINAL aliases (a, b, t3) for registration
+                    // but each branch will use its own aliases (t1_0, t2_0, t3) during SQL generation.
+                    // The SQL generator (select_builder.rs) will find the actual GraphRel to get branch aliases.
                     if let Some(pvar) = path_variable {
-                        if let LogicalPlan::Union(ref union_struct) = union_plan {
-                            if let LogicalPlan::GraphRel(ref first_graph_rel) = *union_struct.inputs[0] {
-                                // Extract length bounds from first branch for path metadata
-                                let length_bounds = first_graph_rel
-                                    .variable_length
-                                    .as_ref()
-                                    .map(|vlp| (vlp.min_hops, vlp.max_hops));
-                                
-                                // Register path with ORIGINAL aliases, not branch-specific ones
-                                plan_ctx.define_path(
-                                    pvar.to_string(),
-                                    Some(start_node_alias.clone()), // Original start alias
-                                    Some(end_node_alias.clone()),   // Original end alias
-                                    Some(rel_alias.clone()),        // Original rel alias
-                                    length_bounds,
-                                    shortest_path_mode.is_some(),
-                                );
-                                
-                                // Register TableCtx for backward compatibility
-                                plan_ctx.insert_table_ctx(
-                                    pvar.to_string(),
-                                    crate::query_planner::plan_ctx::TableCtx::build(
-                                        pvar.to_string(),
-                                        None,
-                                        vec![],
-                                        false,
-                                        true,
-                                    ),
-                                );
-                                
-                                log::warn!(
-                                    "📍 Registered UNION path variable '{}' (NOT YET IMPLEMENTED - will fail at SQL generation)",
-                                    pvar
-                                );
-                            }
-                        }
+                        log::warn!("📍 Registering UNION path variable '{}'", pvar);
+                        
+                        // Register path with ORIGINAL aliases, not branch-specific ones
+                        plan_ctx.define_path(
+                            pvar.to_string(),
+                            Some(start_node_alias.clone()), // Original start alias
+                            Some(end_node_alias.clone()),   // Original end alias
+                            Some(rel_alias.clone()),        // Original rel alias
+                            None, // No length bounds for single-hop
+                            shortest_path_mode.is_some(),
+                        );
+                        
+                        // Register TableCtx for backward compatibility
+                        plan_ctx.insert_table_ctx(
+                            pvar.to_string(),
+                            crate::query_planner::plan_ctx::TableCtx::build(
+                                pvar.to_string(),
+                                None,
+                                vec![],
+                                false,
+                                true,
+                            ),
+                        );
+                        
+                        log::warn!(
+                            "✅ Registered UNION path variable '{}' with aliases: start={}, end={}, rel={}",
+                            pvar, start_node_alias, end_node_alias, rel_alias
+                        );
                     }
 
                     plan = Arc::new(union_plan);
