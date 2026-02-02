@@ -426,7 +426,31 @@ fn traverse_connected_pattern_with_mode<'a>(
                             &rel_alias
                         );
 
-                        union_branches.push(Arc::new(LogicalPlan::GraphRel(graph_rel_node)));
+                        // Wrap GraphRel in Projection if path_variable is present
+                        // This ensures each UNION branch has the path variable in its SELECT list
+                        let branch_plan = if let Some(ref pvar) = path_variable {
+                            log::info!(
+                                "🔀 Wrapping UNION branch {} in Projection for path variable '{}'",
+                                union_branches.len(),
+                                pvar
+                            );
+                            Arc::new(LogicalPlan::Projection(crate::query_planner::logical_plan::Projection {
+                                input: Arc::new(LogicalPlan::GraphRel(graph_rel_node)),
+                                items: vec![
+                                    crate::query_planner::logical_plan::ProjectionItem {
+                                        expression: crate::query_planner::logical_expr::LogicalExpr::TableAlias(
+                                            crate::query_planner::logical_expr::TableAlias(pvar.to_string())
+                                        ),
+                                        col_alias: Some(crate::query_planner::logical_expr::ColumnAlias(pvar.to_string())),
+                                    }
+                                ],
+                                distinct: false,
+                            }))
+                        } else {
+                            Arc::new(LogicalPlan::GraphRel(graph_rel_node))
+                        };
+
+                        union_branches.push(branch_plan);
                     }
 
                     // Create Union of all branches
