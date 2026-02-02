@@ -674,8 +674,9 @@ impl RenderPlanBuilder for LogicalPlan {
                     LogicalPlan::GroupBy(gb) => current = gb.input.as_ref(),
                     LogicalPlan::Union(_union) => {
                         // Found Union nested deep, convert it to render plan WITH plan_ctx
-                        log::debug!("extract_union_with_ctx: found nested Union, converting to render with plan_ctx");
+                        log::warn!("🔀 extract_union_with_ctx: found nested Union, calling to_render_plan_with_ctx");
                         let union_render_plan = current.to_render_plan_with_ctx(schema, plan_ctx)?;
+                        log::warn!("🔀 extract_union_with_ctx: Union rendered, has_union={:?}", union_render_plan.union.0.is_some());
                         return Ok(union_render_plan.union.0);
                     }
                     _ => break,
@@ -1701,7 +1702,7 @@ impl RenderPlanBuilder for LogicalPlan {
         schema: &GraphSchema,
         plan_ctx: Option<&PlanCtx>,
     ) -> RenderPlanBuilderResult<RenderPlan> {
-        log::warn!("🔀🔀🔀 to_render_plan_with_ctx ENTRY");
+        log::warn!("🔀🔀🔀 to_render_plan_with_ctx ENTRY - plan type: {:?}", std::mem::discriminant(self));
         
         // CRITICAL: If the plan contains WITH clauses, use the specialized handler
         // build_chained_with_match_cte_plan handles chained/nested WITH correctly
@@ -1874,7 +1875,35 @@ impl RenderPlanBuilder for LogicalPlan {
             
             return Ok(base_render);
         }
+        
+        // Handle Projection with plan_ctx to enable path variable property expansion
+        if let LogicalPlan::Projection(p) = self {
+            log::warn!("🔀 to_render_plan_with_ctx: Projection detected, rendering input with plan_ctx");
+            
+            // Render input with plan_ctx
+            let mut render_plan = p.input.to_render_plan_with_ctx(schema, plan_ctx)?;
+            
+            // Multi-label scan: Skip SELECT overwriting to preserve special columns
+            if render_plan.is_multi_label_scan {
+                log::info!("🎯 Projection over multi-label scan: preserving special SELECT columns");
+                render_plan.select.distinct = p.distinct;
+                return Ok(render_plan);
+            }
+            
+            // Extract select items WITH plan_ctx for path variable expansion
+            log::warn!("🔀 Projection: extracting select items with plan_ctx for property expansion");
+            let select_items = <LogicalPlan as SelectBuilder>::extract_select_items(self, plan_ctx)?;
+            render_plan.select = SelectItems {
+                items: select_items,
+                distinct: p.distinct,
+            };
+            
+            return Ok(render_plan);
+        }
 
+        // For all other cases, log what type we're delegating
+        log::debug!("🔀 to_render_plan_with_ctx: delegating {:?} to to_render_plan (no special handler)", std::mem::discriminant(self));
+        
         // For all other cases, delegate to the standard to_render_plan
         self.to_render_plan(schema)
     }

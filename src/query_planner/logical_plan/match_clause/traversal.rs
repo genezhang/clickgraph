@@ -427,7 +427,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                         );
 
                         // Wrap GraphRel in Projection if path_variable is present
-                        // This ensures each UNION branch has the path variable in its SELECT list
+                        // The Projection just includes the path variable - property expansion happens automatically
                         let branch_plan = if let Some(ref pvar) = path_variable {
                             log::info!(
                                 "🔀 Wrapping UNION branch {} in Projection for path variable '{}'",
