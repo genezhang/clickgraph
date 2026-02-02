@@ -122,13 +122,14 @@ impl SelectBuilder for LogicalPlan {
 
                         // Case 1: TableAlias (e.g., RETURN n)
                         LogicalExpr::TableAlias(table_alias) => {
-                            log::info!(
-                                "🔍 Expanding TableAlias('{}') to properties",
-                                table_alias.0
+                            log::warn!(
+                                "🔍 Processing TableAlias('{}'), has_plan_ctx={}",
+                                table_alias.0, plan_ctx.is_some()
                             );
 
                             // NEW APPROACH: Use TypedVariable for type/source checking
                             if let Some(plan_ctx) = plan_ctx {
+                                log::warn!("  🔍 Looking up '{}' in plan_ctx...", table_alias.0);
                                 match plan_ctx.lookup_variable(&table_alias.0) {
                                     Some(typed_var) if typed_var.is_entity() => {
                                         // Entity (Node or Relationship) - expand properties
@@ -193,8 +194,8 @@ impl SelectBuilder for LogicalPlan {
                                     Some(typed_var) if typed_var.is_path() => {
                                         // Path variable - expand to tuple of path components
                                         // Handles both VLP (variable-length) and fixed single-hop paths
-                                        log::info!(
-                                            "🔍 Expanding path variable '{}' to path components",
+                                        log::warn!(
+                                            "🔍 Found PATH variable '{}', calling expand_path_variable",
                                             table_alias.0
                                         );
                                         self.expand_path_variable(
@@ -205,6 +206,7 @@ impl SelectBuilder for LogicalPlan {
                                         );
                                     }
                                     _ => {
+                                        log::warn!("  ✗ Variable '{}' NOT FOUND or not a recognized type in plan_ctx", table_alias.0);
                                         // Unknown variable - check if it's a path by looking for GraphRel
                                         if let Some(graph_rel) = self.find_graph_rel_for_path(&table_alias.0) {
                                             log::info!(
@@ -816,6 +818,8 @@ impl LogicalPlan {
         select_items: &mut Vec<SelectItem>,
         plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
     ) {
+        log::warn!("🔍 expand_path_variable ENTRY: path='{}', has_plan_ctx={}", path_alias, plan_ctx.is_some());
+        
         // Check if this is a VLP (variable-length path) or fixed-hop path
         let path_var = match typed_var.as_path() {
             Some(pv) => pv,
@@ -902,7 +906,7 @@ impl LogicalPlan {
 
             // Expand properties for each component if we have plan_ctx
             if let Some(ctx) = plan_ctx {
-                log::debug!("  🔍 Looking up variables in plan_ctx for path components");
+                log::warn!("  🔍 Have plan_ctx, looking up path components: start={}, end={}, rel={}", start_alias, end_alias, rel_alias);
                 
                 // Expand start node properties
                 if let Some(typed_var) = ctx.lookup_variable(&start_alias) {
@@ -963,7 +967,7 @@ impl LogicalPlan {
                     log::warn!("  ✗ Relationship '{}' not found in plan_ctx", rel_alias);
                 }
             } else {
-                log::warn!("  ✗ No plan_ctx available for property expansion");
+                log::warn!("  ✗ NO plan_ctx available for path variable '{}' property expansion!", path_alias);
             }
 
             // Add the path metadata column with component aliases
