@@ -419,39 +419,17 @@ fn traverse_connected_pattern_with_mode<'a>(
                             cte_references: std::collections::HashMap::new(),
                         };
 
-                        log::debug!(
-                            "✅ Created GraphRel for branch {}: alias='{}' (expected: '{}')",
+                        log::warn!(
+                            "🔀 Created GraphRel for UNION branch {}: alias='{}', path_variable={:?}",
                             union_branches.len(),
                             &graph_rel_node.alias,
-                            &rel_alias
+                            &graph_rel_node.path_variable
                         );
 
-                        // Each UNION branch is logically its own query with its own RETURN
-                        // Wrap GraphRel in Projection to represent "RETURN p" for this branch
-                        // This leverages the standard flow: each Projection independently expands path variables
-                        let branch_plan = if let Some(ref pvar) = path_variable {
-                            log::info!(
-                                "🔀 Creating UNION branch {} with its own RETURN projection for '{}'",
-                                union_branches.len(),
-                                pvar
-                            );
-                            Arc::new(LogicalPlan::Projection(crate::query_planner::logical_plan::Projection {
-                                input: Arc::new(LogicalPlan::GraphRel(graph_rel_node)),
-                                items: vec![
-                                    crate::query_planner::logical_plan::ProjectionItem {
-                                        expression: crate::query_planner::logical_expr::LogicalExpr::TableAlias(
-                                            crate::query_planner::logical_expr::TableAlias(pvar.to_string())
-                                        ),
-                                        col_alias: Some(crate::query_planner::logical_expr::ColumnAlias(pvar.to_string())),
-                                    }
-                                ],
-                                distinct: false,
-                            }))
-                        } else {
-                            Arc::new(LogicalPlan::GraphRel(graph_rel_node))
-                        };
-
-                        union_branches.push(branch_plan);
+                        // SIMPLE: Don't wrap in Projection - let GraphRel handle everything
+                        // GraphRel already emits all node/rel properties in its SELECT
+                        // We just need it to also emit the path tuple (done in select_builder.rs)
+                        union_branches.push(Arc::new(LogicalPlan::GraphRel(graph_rel_node)));
                     }
 
                     // Create Union of all branches

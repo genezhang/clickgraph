@@ -20,7 +20,7 @@ use crate::query_planner::typed_variable::{TypedVariable, VariableSource};
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::properties_builder::PropertiesBuilder;
 use crate::render_plan::render_expr::{
-    Column, ColumnAlias, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias as RenderTableAlias,
+    Column, ColumnAlias, Literal, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias as RenderTableAlias,
 };
 use crate::render_plan::SelectItem;
 
@@ -80,6 +80,7 @@ impl SelectBuilder for LogicalPlan {
                 }
             }
             LogicalPlan::GraphRel(graph_rel) => {
+                log::warn!("🔍 GraphRel.extract_select_items: alias={}, path_variable={:?}", graph_rel.alias, graph_rel.path_variable);
                 // FIX: GraphRel must generate SELECT items for both left and right nodes
                 // This fixes OPTIONAL MATCH queries where the right node (b) was being ignored
                 let mut items = vec![];
@@ -89,6 +90,26 @@ impl SelectBuilder for LogicalPlan {
 
                 // Get SELECT items from right node (for OPTIONAL MATCH, this is the optional part)
                 items.extend(graph_rel.right.extract_select_items(plan_ctx)?);
+
+                // SIMPLE FIX: If GraphRel has path_variable, add the path tuple directly
+                // This handles UNION branches without needing plan_ctx or Projection wrapping
+                if let Some(ref path_var) = graph_rel.path_variable {
+                    log::warn!("🔍 GraphRel has path_variable '{}', adding path tuple to SELECT", path_var);
+                    items.push(SelectItem {
+                        expression: RenderExpr::ScalarFnCall(ScalarFnCall {
+                            name: "tuple".to_string(),
+                            args: vec![
+                                RenderExpr::Literal(Literal::String("fixed_path".to_string())),
+                                RenderExpr::Literal(Literal::String(graph_rel.left_connection.clone())),
+                                RenderExpr::Literal(Literal::String(graph_rel.right_connection.clone())),
+                                RenderExpr::Literal(Literal::String(graph_rel.alias.clone())),
+                            ],
+                        }),
+                        col_alias: Some(ColumnAlias(path_var.clone())),
+                    });
+                }
+                
+                log::warn!("🔍 GraphRel.extract_select_items: returning {} items", items.len());
 
                 items
             }
@@ -516,6 +537,7 @@ impl SelectBuilder for LogicalPlan {
                 select_items
             }
             LogicalPlan::GraphJoins(graph_joins) => {
+                log::warn!("🔍 GraphJoins.extract_select_items: input type={:?}", std::mem::discriminant(graph_joins.input.as_ref()));
                 graph_joins.input.extract_select_items(plan_ctx)?
             }
             LogicalPlan::GroupBy(group_by) => {
