@@ -1614,6 +1614,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Regular UNION handling (same columns across branches)
                 // Convert first branch to get the base plan
                 let first_input = &union.inputs[0];
+                log::warn!("🔀 Union branch 0 plan type: {:?}", std::mem::discriminant(first_input.as_ref()));
                 let mut base_plan = first_input.to_render_plan(schema)?;
 
                 // If there's only one branch, just return it
@@ -1623,7 +1624,8 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 // Convert remaining branches
                 let mut union_branches = Vec::new();
-                for input in union.inputs.iter().skip(1) {
+                for (idx, input) in union.inputs.iter().enumerate().skip(1) {
+                    log::warn!("🔀 Union branch {} plan type: {:?}", idx, std::mem::discriminant(input.as_ref()));
                     let branch_plan = input.to_render_plan(schema)?;
                     union_branches.push(branch_plan);
                 }
@@ -1660,6 +1662,8 @@ impl RenderPlanBuilder for LogicalPlan {
         schema: &GraphSchema,
         plan_ctx: Option<&PlanCtx>,
     ) -> RenderPlanBuilderResult<RenderPlan> {
+        log::warn!("🔀🔀🔀 to_render_plan_with_ctx ENTRY");
+        
         // CRITICAL: If the plan contains WITH clauses, use the specialized handler
         // build_chained_with_match_cte_plan handles chained/nested WITH correctly
         // AND needs plan_ctx for VLP endpoint information
@@ -1691,6 +1695,30 @@ impl RenderPlanBuilder for LogicalPlan {
                 LogicalPlan::Filter(f) => contains_graph_joins(&f.input),
                 _ => false,
             }
+        }
+        
+        // Helper to check if plan contains Union (handles Limit, Skip, OrderBy wrappers)
+        fn contains_union(plan: &LogicalPlan) -> bool {
+            match plan {
+                LogicalPlan::Union(_) => true,
+                LogicalPlan::Limit(l) => contains_union(&l.input),
+                LogicalPlan::Skip(s) => contains_union(&s.input),
+                LogicalPlan::OrderBy(o) => contains_union(&o.input),
+                LogicalPlan::Filter(f) => contains_union(&f.input),
+                LogicalPlan::Projection(p) => contains_union(&p.input),
+                _ => false,
+            }
+        }
+        
+        // If this plan contains a Union, handle it with plan_ctx for path variables
+        // Check BEFORE GraphJoins because Union branches may contain GraphJoins
+        if contains_union(self) {
+            log::warn!("🔀 to_render_plan_with_ctx: Plan contains Union, delegating to standard flow with plan_ctx");
+            
+            // The Union is handled by the regular GraphJoins flow below, which will
+            // extract Union via extract_union(). That code calls to_render_plan() on branches
+            // without plan_ctx. We need to fix that, but for now, fall through to GraphJoins
+            // handling which at least passes plan_ctx to SELECT extraction.
         }
         
         // If this plan contains GraphJoins, we handle it ourselves with plan_ctx

@@ -894,4 +894,45 @@ impl LogicalPlan {
             });
         }
     }
+
+    /// Expand path variable directly from GraphRel metadata (for UNION branches without plan_ctx)
+    /// Creates the fixed-path tuple: tuple('fixed_path', start_alias, end_alias, rel_alias)
+    fn expand_path_variable_from_graph_rel(
+        path_alias: &str,
+        start_alias: &str,
+        end_alias: &str,
+        rel_alias: &str,
+    ) -> SelectItem {
+        log::info!(
+            "🔍 Expanding fixed-hop path variable '{}' from GraphRel: start={}, end={}, rel={}",
+            path_alias, start_alias, end_alias, rel_alias
+        );
+
+        // Add the path metadata column with component aliases
+        // Format: tuple('fixed_path', start_alias, end_alias, rel_alias)
+        SelectItem {
+            expression: RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: "tuple".to_string(),
+                args: vec![
+                    // Path type marker
+                    RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
+                        "fixed_path".to_string(),
+                    )),
+                    // Start node alias
+                    RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
+                        start_alias.to_string(),
+                    )),
+                    // End node alias
+                    RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
+                        end_alias.to_string(),
+                    )),
+                    // Relationship alias
+                    RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
+                        rel_alias.to_string(),
+                    )),
+                ],
+            }),
+            col_alias: Some(ColumnAlias(path_alias.to_string())),
+        }
+    }
 }
