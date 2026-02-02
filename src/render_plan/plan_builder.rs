@@ -666,12 +666,22 @@ impl RenderPlanBuilder for LogicalPlan {
     ) -> RenderPlanBuilderResult<Option<Union>> {
         // For GraphJoins, check if Union is nested inside (possibly wrapped in GraphNode, Projection, GroupBy, etc.)
         if let LogicalPlan::GraphJoins(gj) = self {
+            log::warn!("🔀 extract_union_with_ctx: GraphJoins.input type: {:?}", std::mem::discriminant(gj.input.as_ref()));
             let mut current = gj.input.as_ref();
             loop {
                 match current {
-                    LogicalPlan::GraphNode(gn) => current = gn.input.as_ref(),
-                    LogicalPlan::Projection(proj) => current = proj.input.as_ref(),
-                    LogicalPlan::GroupBy(gb) => current = gb.input.as_ref(),
+                    LogicalPlan::GraphNode(gn) => {
+                        log::warn!("🔀 extract_union_with_ctx: Found GraphNode, recursing...");
+                        current = gn.input.as_ref();
+                    }
+                    LogicalPlan::Projection(proj) => {
+                        log::warn!("🔀 extract_union_with_ctx: Found Projection, recursing...");
+                        current = proj.input.as_ref();
+                    }
+                    LogicalPlan::GroupBy(gb) => {
+                        log::warn!("🔀 extract_union_with_ctx: Found GroupBy, recursing...");
+                        current = gb.input.as_ref();
+                    }
                     LogicalPlan::Union(_union) => {
                         // Found Union nested deep, convert it to render plan WITH plan_ctx
                         log::warn!("🔀 extract_union_with_ctx: found nested Union, calling to_render_plan_with_ctx");
@@ -679,13 +689,17 @@ impl RenderPlanBuilder for LogicalPlan {
                         log::warn!("🔀 extract_union_with_ctx: Union rendered, has_union={:?}", union_render_plan.union.0.is_some());
                         return Ok(union_render_plan.union.0);
                     }
-                    _ => break,
+                    other => {
+                        log::warn!("🔀 extract_union_with_ctx: Found {:?}, breaking loop", std::mem::discriminant(other));
+                        break;
+                    }
                 }
             }
         }
 
         // Note: UNION is handled by LogicalPlan::Union nodes in to_render_plan().
         // This method returns None for other node types.
+        log::warn!("🔀 extract_union_with_ctx: No Union found, returning None");
         Ok(None)
     }
 
@@ -1848,7 +1862,7 @@ impl RenderPlanBuilder for LogicalPlan {
             // Render each branch with plan_ctx
             let mut branch_renders = Vec::new();
             for (idx, branch) in union.inputs.iter().enumerate() {
-                log::debug!("Rendering Union branch {} with plan_ctx", idx);
+                log::warn!("🔀 Rendering Union branch {} type: {:?}, with plan_ctx", idx, std::mem::discriminant(branch.as_ref()));
                 let branch_render = branch.to_render_plan_with_ctx(schema, plan_ctx)?;
                 branch_renders.push(branch_render);
             }

@@ -426,11 +426,12 @@ fn traverse_connected_pattern_with_mode<'a>(
                             &rel_alias
                         );
 
-                        // Wrap GraphRel in Projection if path_variable is present
-                        // The Projection just includes the path variable - property expansion happens automatically
+                        // Each UNION branch is logically its own query with its own RETURN
+                        // Wrap GraphRel in Projection to represent "RETURN p" for this branch
+                        // This leverages the standard flow: each Projection independently expands path variables
                         let branch_plan = if let Some(ref pvar) = path_variable {
                             log::info!(
-                                "🔀 Wrapping UNION branch {} in Projection for path variable '{}'",
+                                "🔀 Creating UNION branch {} with its own RETURN projection for '{}'",
                                 union_branches.len(),
                                 pvar
                             );
