@@ -1869,6 +1869,108 @@ CALL db.propertyKeys()
 
 ---
 
+#### db.schema.nodeTypeProperties()
+
+Returns detailed property metadata for each node type (label), including type information. Provides richer schema introspection than `db.propertyKeys()`.
+
+**Syntax:**
+```cypher
+CALL db.schema.nodeTypeProperties()
+```
+
+**Returns:** Five columns:
+- `nodeType`: Node type in Neo4j format (e.g., ":`User`")
+- `nodeLabels`: Array of label names (e.g., `["User"]`)
+- `propertyName`: Property name as used in Cypher queries
+- `propertyTypes`: Array of data types (currently always `["String"]`)
+- `mandatory`: Boolean indicating if property always exists (currently always `true`)
+
+**Example:**
+```cypher
+CALL db.schema.nodeTypeProperties()
+
+// Returns:
+╒═══════════╤═════════════╤══════════════╤═══════════════╤═══════════╕
+│ nodeType  │ nodeLabels  │ propertyName │ propertyTypes │ mandatory │
+╞═══════════╪═════════════╪══════════════╪═══════════════╪═══════════╡
+│ :`Post`   │ ["Post"]    │ "content"    │ ["String"]    │ true      │
+├───────────┼─────────────┼──────────────┼───────────────┼───────────┤
+│ :`Post`   │ ["Post"]    │ "post_id"    │ ["String"]    │ true      │
+├───────────┼─────────────┼──────────────┼───────────────┼───────────┤
+│ :`User`   │ ["User"]    │ "name"       │ ["String"]    │ true      │
+├───────────┼─────────────┼──────────────┼───────────────┼───────────┤
+│ :`User`   │ ["User"]    │ "user_id"    │ ["String"]    │ true      │
+└───────────┴─────────────┴──────────────┴───────────────┴───────────┘
+```
+
+**Use Cases:**
+- Neodash schema introspection (enables property-based visualizations)
+- Query builder autocomplete with type hints
+- Schema documentation generation with type information
+- Form field generation in graph applications
+
+**Filter by specific node type:**
+```cypher
+CALL db.schema.nodeTypeProperties() 
+YIELD nodeType, propertyName, propertyTypes
+WHERE nodeType = ":`User`"
+RETURN propertyName, propertyTypes
+```
+
+**Limitations:**
+- `propertyTypes` currently returns `["String"]` for all properties (type mapping planned for future release)
+- `mandatory` currently always `true` (constraint-based detection planned)
+
+---
+
+#### db.schema.relTypeProperties()
+
+Returns detailed property metadata for each relationship/edge type. Complementary to `db.schema.nodeTypeProperties()` for edges.
+
+**Syntax:**
+```cypher
+CALL db.schema.relTypeProperties()
+```
+
+**Returns:** Four columns:
+- `relType`: Relationship type in Neo4j format (e.g., ":`FOLLOWS`")
+- `propertyName`: Property name as used in Cypher queries
+- `propertyTypes`: Array of data types (currently always `["String"]`)
+- `mandatory`: Boolean indicating if property always exists (currently always `true`)
+
+**Example:**
+```cypher
+CALL db.schema.relTypeProperties()
+
+// Returns:
+╒════════════╤══════════════╤═══════════════╤═══════════╕
+│ relType    │ propertyName │ propertyTypes │ mandatory │
+╞════════════╪══════════════╪═══════════════╪═══════════╡
+│ :`FOLLOWS` │ "since"      │ ["String"]    │ true      │
+├────────────┼──────────────┼───────────────┼───────────┤
+│ :`LIKED`   │ "timestamp"  │ ["String"]    │ true      │
+└────────────┴──────────────┴───────────────┴───────────┘
+```
+
+**Use Cases:**
+- Neodash relationship property visualization
+- Edge property autocomplete in query builders
+- Relationship schema documentation
+- Graph data modeling and validation
+
+**Filter by specific relationship type:**
+```cypher
+CALL db.schema.relTypeProperties()
+YIELD relType, propertyName
+WHERE relType = ":`FOLLOWS`"
+RETURN propertyName
+```
+
+**Limitations:**
+- Same as `db.schema.nodeTypeProperties()` (type inference and mandatory detection planned)
+
+---
+
 #### dbms.components()
 
 Returns ClickGraph version and edition information.
