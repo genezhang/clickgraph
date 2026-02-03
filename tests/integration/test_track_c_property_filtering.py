@@ -99,13 +99,16 @@ class TestPropertyFilteringNodes:
 
     def test_multiple_properties_must_intersect(self):
         """
-        Query: MATCH (n) WHERE n.prop1 = 1 AND n.prop2 = 2
-        Expected: Only types with BOTH properties queried
+        Query: MATCH (n) WHERE n.user_id = 1 AND n.email IS NOT NULL
+        Expected: Only types with BOTH user_id AND email properties queried
+        
+        Note: This tests property intersection - User has both properties,
+        but Post only has post_id, so only User type should be queried.
         """
         query = """
         USE social_benchmark
-        MATCH (n) WHERE n.user_id = 1 AND n.user_id IS NOT NULL
-        RETURN n.user_id AS uid
+        MATCH (n) WHERE n.user_id = 1 AND n.email IS NOT NULL
+        RETURN n.user_id AS uid, n.email AS email
         """
         
         response = requests.post(
@@ -141,10 +144,6 @@ class TestPropertyFilteringRelationships:
         )
         
         assert response.status_code == 200, f"Query failed: {response.text}"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-s"])
 
 
 class TestUnionAllSupport:
@@ -203,3 +202,7 @@ class TestUnionAllSupport:
         
         assert "results" in result
         assert len(result["results"]) <= 10  # 5 from each branch max
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "-s"])

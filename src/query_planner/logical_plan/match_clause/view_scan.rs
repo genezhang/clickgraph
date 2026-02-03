@@ -894,71 +894,16 @@ pub fn generate_relationship_center(
             Ok(Arc::new(LogicalPlan::Empty))
         }
     } else {
+        // No explicit relationship labels were provided to this function.
+        // Any property-based narrowing of relationship types should already
+        // have been applied earlier in traversal.rs (lines 247-296) when computing rel_labels.
+        // At this stage, we simply return an empty plan and rely on the
+        // broader planning / type inference pipeline to handle this case.
         log::debug!(
-            "No relationship labels specified - generating UNION of all relationship types"
+            "No relationship labels specified for alias '{}' - returning Empty plan (type inference will handle)",
+            rel_alias
         );
-
-        // Check if WHERE clause has property requirements for this relationship
-        if let Some(required_props) = plan_ctx.get_where_property_requirements(rel_alias) {
-            log::debug!(
-                "Found WHERE property requirements for relationship alias '{}': {:?}",
-                rel_alias,
-                required_props
-            );
-
-            // Use schema filter to get only types with required properties
-            use super::schema_filter::SchemaPropertyFilter;
-            let schema = plan_ctx.schema();
-            let filter = SchemaPropertyFilter::new(schema);
-            let filtered_labels = filter.filter_relationship_schemas(required_props);
-
-            log::info!(
-                "Property-based filtering: {} → {} relationship types (required properties: {:?})",
-                schema.get_relationships_schemas().len(),
-                filtered_labels.len(),
-                required_props
-            );
-
-            if filtered_labels.is_empty() {
-                log::warn!("No relationship types have required properties {:?} - query will return 0 rows", required_props);
-                return Ok(Arc::new(LogicalPlan::Empty));
-            }
-
-            if filtered_labels.len() == 1 {
-                // Single type after filtering - create direct ViewScan
-                log::info!(
-                    "Single relationship type '{}' after filtering - creating ViewScan",
-                    filtered_labels[0]
-                );
-                if let Some(view_scan) = try_generate_relationship_view_scan(
-                    rel_alias,
-                    &filtered_labels[0],
-                    left_node_label.as_ref().map(|s| s.as_str()),
-                    right_node_label.as_ref().map(|s| s.as_str()),
-                    plan_ctx,
-                ) {
-                    return Ok(view_scan);
-                } else {
-                    return Err(LogicalPlanError::RelationshipNotFound(
-                        filtered_labels[0].clone(),
-                    ));
-                }
-            }
-
-            // Multiple types - create UNION (defer to CTE generation in render phase)
-            log::info!(
-                "Creating UNION of {} relationship types: {:?}",
-                filtered_labels.len(),
-                filtered_labels
-            );
-            // Store the filtered labels for CTE generation
-            // For now, return Empty and rely on CTE generation
-            Ok(Arc::new(LogicalPlan::Empty))
-        } else {
-            // No property requirements - use all relationship types
-            log::debug!("No property requirements - using Empty plan (type inference will handle)");
-            Ok(Arc::new(LogicalPlan::Empty))
-        }
+        Ok(Arc::new(LogicalPlan::Empty))
     }
 }
 

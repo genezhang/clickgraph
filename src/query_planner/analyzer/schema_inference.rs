@@ -1107,18 +1107,19 @@ impl SchemaInference {
         {
             // SPECIAL CASE: Property-based filtering for untyped relationship patterns
             // For queries like: MATCH ()-[r]->() WHERE r.property...
-            // Skip inference - the property filtering in generate_relationship_center will handle it
+            // Skip inference - the property filtering in traversal.rs will handle it
             // We can detect this by checking if the middle table is a relationship
             if rel_table_ctx.is_relation() {
                 log::info!(
                     "SchemaInference: Skipping validation for untyped relationship pattern (will use property-based filtering)"
                 );
                 // Return placeholder - actual types determined during scan generation
-                // Use "$any" as placeholder to signal polymorphic pattern
+                // Use internal placeholders to signal polymorphic pattern
+                // These are prefixed with __ to avoid conflicts with user schema names
                 return Ok((
-                    "$any".to_string(),
-                    "$untyped_rel".to_string(),
-                    "$any".to_string(),
+                    "__clickgraph_any__".to_string(),
+                    "__clickgraph_untyped_rel__".to_string(),
+                    "__clickgraph_any__".to_string(),
                 ));
             }
 
