@@ -1409,6 +1409,22 @@ pub fn evaluate_match_clause_with_optional<'a>(
         match_clause.path_patterns.len()
     );
 
+    // Extract property requirements from WHERE clause BEFORE pattern traversal
+    // This enables property-based optimization (pruning UNION branches)
+    if let Some(where_clause) = &match_clause.where_clause {
+        use crate::query_planner::analyzer::where_property_extractor::WherePropertyExtractor;
+        let required_properties = WherePropertyExtractor::extract_property_references(where_clause);
+        
+        log::debug!(
+            "Extracted {} property requirements from WHERE clause: {:?}",
+            required_properties.len(),
+            required_properties
+        );
+        
+        // Store in PlanCtx for use during scan generation
+        plan_ctx.set_where_property_requirements(required_properties);
+    }
+
     for (idx, (path_variable, path_pattern)) in match_clause.path_patterns.iter().enumerate() {
         log::info!(
             "🔍 Pattern #{}: type={:?}, var={:?}",

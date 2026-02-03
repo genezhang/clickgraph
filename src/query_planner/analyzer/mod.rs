@@ -51,6 +51,7 @@ mod view_resolver_tests;
 pub mod multi_type_vlp_expansion;
 pub mod property_requirements;
 pub mod property_requirements_analyzer;
+pub mod where_property_extractor;
 #[cfg(test)]
 mod test_multi_type_vlp_auto_inference;
 
