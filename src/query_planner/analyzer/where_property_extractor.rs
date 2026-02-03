@@ -1,7 +1,7 @@
 //! WHERE Property Extractor
 //!
 //! Extracts property references from WHERE clauses for property-based optimization.
-//! 
+//!
 //! Key principle: ANY property reference in a WHERE clause implies that property
 //! must exist in the schema. This enables pruning of UNION branches that don't
 //! have the required properties.
@@ -19,21 +19,23 @@ pub struct WherePropertyExtractor;
 
 impl WherePropertyExtractor {
     /// Extract ALL property references from WHERE clause
-    /// 
+    ///
     /// Returns: HashMap mapping alias → set of property names
-    /// 
+    ///
     /// # Examples
     /// ```
     /// // WHERE n.bytes_sent > 100
     /// // Returns: {"n": {"bytes_sent"}}
-    /// 
+    ///
     /// // WHERE n.x = 1 AND n.y = 2
     /// // Returns: {"n": {"x", "y"}}
-    /// 
+    ///
     /// // WHERE n.x > 1 OR r.y < 10
     /// // Returns: {"n": {"x"}, "r": {"y"}}
     /// ```
-    pub fn extract_property_references(where_clause: &WhereClause) -> HashMap<String, HashSet<String>> {
+    pub fn extract_property_references(
+        where_clause: &WhereClause,
+    ) -> HashMap<String, HashSet<String>> {
         let mut properties: HashMap<String, HashSet<String>> = HashMap::new();
         Self::walk_expression(&where_clause.conditions, &mut properties);
         properties
@@ -47,13 +49,13 @@ impl WherePropertyExtractor {
                 // Extract alias (base) and property (key)
                 let alias = prop.base.to_string();
                 let property = prop.key.to_string();
-                
+
                 properties
                     .entry(alias)
-                    .or_insert_with(HashSet::new)
+                    .or_default()
                     .insert(property);
             }
-            
+
             Expression::OperatorApplicationExp(op) => {
                 // Recurse into operator operands
                 // Handles: AND, OR, comparisons (=, >, <, etc.), IS NOT NULL, etc.
@@ -61,7 +63,7 @@ impl WherePropertyExtractor {
                     Self::walk_expression(operand, properties);
                 }
             }
-            
+
             Expression::FunctionCallExp(func) => {
                 // Recurse into function arguments
                 // Example: size(n.tags) > 5 → extracts n.tags
@@ -69,7 +71,7 @@ impl WherePropertyExtractor {
                     Self::walk_expression(arg, properties);
                 }
             }
-            
+
             Expression::List(list) => {
                 // Recurse into list elements
                 // Example: n.value IN [1, 2, n.other]
@@ -77,40 +79,40 @@ impl WherePropertyExtractor {
                     Self::walk_expression(elem, properties);
                 }
             }
-            
+
             Expression::Case(case_expr) => {
                 // Recurse into CASE expression parts
                 // CASE expr
                 if let Some(expr) = &case_expr.expr {
                     Self::walk_expression(expr, properties);
                 }
-                
+
                 // WHEN conditions and THEN results
                 for (when_expr, then_expr) in &case_expr.when_then {
                     Self::walk_expression(when_expr, properties);
                     Self::walk_expression(then_expr, properties);
                 }
-                
+
                 // ELSE result
                 if let Some(else_expr) = &case_expr.else_expr {
                     Self::walk_expression(else_expr, properties);
                 }
             }
-            
+
             Expression::ExistsExpression(exists) => {
                 // Recurse into EXISTS subquery
                 if let Some(where_clause) = &exists.where_clause {
                     Self::walk_expression(&where_clause.conditions, properties);
                 }
             }
-            
+
             Expression::ReduceExp(reduce) => {
                 // Recurse into reduce expression parts
                 Self::walk_expression(&reduce.initial_value, properties);
                 Self::walk_expression(&reduce.list, properties);
                 Self::walk_expression(&reduce.expression, properties);
             }
-            
+
             Expression::MapLiteral(map) => {
                 // Recurse into map values
                 // Example: {key: n.value}
@@ -118,17 +120,17 @@ impl WherePropertyExtractor {
                     Self::walk_expression(value_expr, properties);
                 }
             }
-            
+
             // Base cases - no property references to extract
-            Expression::Literal(_) |
-            Expression::Variable(_) |
-            Expression::Parameter(_) |
-            Expression::PathPattern(_) |
-            Expression::LabelExpression { .. } |
-            Expression::Lambda(_) |
-            Expression::PatternComprehension(_) |
-            Expression::ArraySubscript { .. } |
-            Expression::ArraySlicing { .. } => {
+            Expression::Literal(_)
+            | Expression::Variable(_)
+            | Expression::Parameter(_)
+            | Expression::PathPattern(_)
+            | Expression::LabelExpression { .. }
+            | Expression::Lambda(_)
+            | Expression::PatternComprehension(_)
+            | Expression::ArraySubscript { .. }
+            | Expression::ArraySlicing { .. } => {
                 // No property access in these expression types (or not supported yet)
             }
         }

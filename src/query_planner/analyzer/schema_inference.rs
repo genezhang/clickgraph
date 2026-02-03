@@ -1117,11 +1117,11 @@ impl SchemaInference {
                 // Use "$any" as placeholder to signal polymorphic pattern
                 return Ok((
                     "$any".to_string(),
-                    "$untyped_rel".to_string(), 
+                    "$untyped_rel".to_string(),
                     "$any".to_string(),
                 ));
             }
-            
+
             let extracted_left_node_table_result =
                 self.get_table_name_from_filters_and_projections(graph_schema, left_table_ctx);
             let extracted_right_node_table_result =

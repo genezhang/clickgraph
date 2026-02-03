@@ -822,7 +822,10 @@ impl PlanCtx {
 
     /// Set property requirements extracted from WHERE clause
     /// Used for property-based UNION branch pruning
-    pub fn set_where_property_requirements(&mut self, requirements: HashMap<String, HashSet<String>>) {
+    pub fn set_where_property_requirements(
+        &mut self,
+        requirements: HashMap<String, HashSet<String>>,
+    ) {
         log::debug!("Setting WHERE property requirements: {:?}", requirements);
         self.where_property_requirements = requirements;
     }

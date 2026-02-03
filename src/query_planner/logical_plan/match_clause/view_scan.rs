@@ -894,8 +894,10 @@ pub fn generate_relationship_center(
             Ok(Arc::new(LogicalPlan::Empty))
         }
     } else {
-        log::debug!("No relationship labels specified - generating UNION of all relationship types");
-        
+        log::debug!(
+            "No relationship labels specified - generating UNION of all relationship types"
+        );
+
         // Check if WHERE clause has property requirements for this relationship
         if let Some(required_props) = plan_ctx.get_where_property_requirements(rel_alias) {
             log::debug!(
@@ -903,25 +905,25 @@ pub fn generate_relationship_center(
                 rel_alias,
                 required_props
             );
-            
+
             // Use schema filter to get only types with required properties
             use super::schema_filter::SchemaPropertyFilter;
             let schema = plan_ctx.schema();
             let filter = SchemaPropertyFilter::new(schema);
             let filtered_labels = filter.filter_relationship_schemas(required_props);
-            
+
             log::info!(
                 "Property-based filtering: {} → {} relationship types (required properties: {:?})",
                 schema.get_relationships_schemas().len(),
                 filtered_labels.len(),
                 required_props
             );
-            
+
             if filtered_labels.is_empty() {
                 log::warn!("No relationship types have required properties {:?} - query will return 0 rows", required_props);
                 return Ok(Arc::new(LogicalPlan::Empty));
             }
-            
+
             if filtered_labels.len() == 1 {
                 // Single type after filtering - create direct ViewScan
                 log::info!(
@@ -937,10 +939,12 @@ pub fn generate_relationship_center(
                 ) {
                     return Ok(view_scan);
                 } else {
-                    return Err(LogicalPlanError::RelationshipNotFound(filtered_labels[0].clone()));
+                    return Err(LogicalPlanError::RelationshipNotFound(
+                        filtered_labels[0].clone(),
+                    ));
                 }
             }
-            
+
             // Multiple types - create UNION (defer to CTE generation in render phase)
             log::info!(
                 "Creating UNION of {} relationship types: {:?}",

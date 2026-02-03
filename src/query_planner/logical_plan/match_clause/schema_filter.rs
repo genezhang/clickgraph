@@ -1,7 +1,7 @@
 //! Schema Property Filter
 //!
 //! Filters node and relationship schemas based on required properties from WHERE clauses.
-//! 
+//!
 //! Core principle: If a WHERE clause references a property (e.g., `n.bytes_sent > 100`),
 //! then only node/relationship types that have that property in their schema should be
 //! included in the UNION.
@@ -37,11 +37,7 @@ impl<'a> SchemaPropertyFilter<'a> {
     pub fn filter_node_schemas(&self, required_properties: &HashSet<String>) -> Vec<String> {
         // If no properties required, return all node schemas
         if required_properties.is_empty() {
-            return self.schema
-                .all_node_schemas()
-                .keys()
-                .cloned()
-                .collect();
+            return self.schema.all_node_schemas().keys().cloned().collect();
         }
 
         let all_node_schemas = self.schema.all_node_schemas();
@@ -49,7 +45,9 @@ impl<'a> SchemaPropertyFilter<'a> {
 
         for (label, node_schema) in all_node_schemas {
             // Check if this node schema has ALL required properties
-            let schema_properties: HashSet<String> = node_schema.property_mappings.keys()
+            let schema_properties: HashSet<String> = node_schema
+                .property_mappings
+                .keys()
                 .map(|k| k.to_string())
                 .collect();
 
@@ -77,10 +75,14 @@ impl<'a> SchemaPropertyFilter<'a> {
     ///
     /// # Returns
     /// Vector of relationship type names (e.g., ["FOLLOWS", "AUTHORED"])
-    pub fn filter_relationship_schemas(&self, required_properties: &HashSet<String>) -> Vec<String> {
+    pub fn filter_relationship_schemas(
+        &self,
+        required_properties: &HashSet<String>,
+    ) -> Vec<String> {
         // If no properties required, return all relationship schemas
         if required_properties.is_empty() {
-            return self.schema
+            return self
+                .schema
                 .get_relationships_schemas()
                 .keys()
                 .cloned()
@@ -92,7 +94,9 @@ impl<'a> SchemaPropertyFilter<'a> {
 
         for (rel_type, rel_schema) in all_rel_schemas {
             // Check if this relationship schema has ALL required properties
-            let schema_properties: HashSet<String> = rel_schema.property_mappings.keys()
+            let schema_properties: HashSet<String> = rel_schema
+                .property_mappings
+                .keys()
                 .map(|k| k.to_string())
                 .collect();
 
