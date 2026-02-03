@@ -566,7 +566,7 @@ mod tests {
         let schema = create_test_schema_with_relationships();
         let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
-        // Both nodes untyped with multiple relationships - cannot infer
+        // Both nodes untyped with multiple relationships - returns all rel types for UNION expansion
         let result = infer_relationship_type_from_nodes(
             &None,
             &None,
@@ -576,6 +576,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result, None);
+        // Now returns all relationship types for UNION expansion (changed behavior)
+        assert!(result.is_some());
+        let rel_types = result.unwrap();
+        assert!(rel_types.contains(&"FOLLOWS".to_string()));
+        assert!(rel_types.contains(&"LIKES".to_string()));
     }
 }

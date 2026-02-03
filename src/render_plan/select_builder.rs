@@ -40,7 +40,7 @@ impl SelectBuilder for LogicalPlan {
         &self,
         plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
     ) -> Result<Vec<SelectItem>, RenderBuildError> {
-        log::warn!("🔍🔍🔍 extract_select_items CALLED on plan type");
+        log::trace!("🔍🔍🔍 extract_select_items CALLED on plan type");
         crate::debug_println!("DEBUG: extract_select_items called on: {:?}", self);
         let select_items = match &self {
             LogicalPlan::Empty => vec![],
@@ -81,7 +81,7 @@ impl SelectBuilder for LogicalPlan {
                 }
             }
             LogicalPlan::GraphRel(graph_rel) => {
-                log::warn!(
+                log::trace!(
                     "🔍 GraphRel.extract_select_items: alias={}, path_variable={:?}",
                     graph_rel.alias,
                     graph_rel.path_variable
@@ -166,10 +166,13 @@ impl SelectBuilder for LogicalPlan {
 
                             // NEW APPROACH: Use TypedVariable for type/source checking
                             if let Some(plan_ctx) = plan_ctx {
-                                log::warn!("  🔍 Looking up '{}' in plan_ctx...", table_alias.0);
+                                log::trace!("  🔍 Looking up '{}' in plan_ctx...", table_alias.0);
                                 match plan_ctx.lookup_variable(&table_alias.0) {
                                     Some(typed_var) if typed_var.is_entity() => {
-                                        log::warn!("  ✓ Found ENTITY variable '{}'", table_alias.0);
+                                        log::trace!(
+                                            "  ✓ Found ENTITY variable '{}'",
+                                            table_alias.0
+                                        );
                                         // Entity (Node or Relationship) - expand properties
                                         match &typed_var.source() {
                                             VariableSource::Match => {
@@ -192,7 +195,7 @@ impl SelectBuilder for LogicalPlan {
                                                 );
                                             }
                                             _ => {
-                                                log::warn!("⚠️ Entity variable '{}' has unexpected source, treating as scalar", table_alias.0);
+                                                log::debug!("⚠️ Entity variable '{}' has unexpected source, treating as scalar", table_alias.0);
                                                 select_items.push(SelectItem {
                                                     expression: RenderExpr::ColumnAlias(
                                                         ColumnAlias(table_alias.0.clone()),
@@ -206,7 +209,10 @@ impl SelectBuilder for LogicalPlan {
                                         }
                                     }
                                     Some(typed_var) if typed_var.is_scalar() => {
-                                        log::warn!("  ✓ Found SCALAR variable '{}'", table_alias.0);
+                                        log::trace!(
+                                            "  ✓ Found SCALAR variable '{}'",
+                                            table_alias.0
+                                        );
                                         // Scalar - single item, no expansion
                                         match &typed_var.source() {
                                             VariableSource::Cte { cte_name } => {
@@ -245,7 +251,7 @@ impl SelectBuilder for LogicalPlan {
                                         );
                                     }
                                     _ => {
-                                        log::warn!("  ✗ Variable '{}' NOT FOUND or not a recognized type in plan_ctx", table_alias.0);
+                                        log::trace!("  ✗ Variable '{}' NOT FOUND or not a recognized type in plan_ctx", table_alias.0);
                                         // Unknown variable - check if it's a path by looking for GraphRel
                                         if let Some(graph_rel) =
                                             self.find_graph_rel_for_path(&table_alias.0)
@@ -280,7 +286,7 @@ impl SelectBuilder for LogicalPlan {
                                             );
                                         } else {
                                             // Really unknown - fallback to old logic
-                                            log::warn!("⚠️ Variable '{}' not found in TypedVariable registry or GraphRel, using fallback logic", table_alias.0);
+                                            log::debug!("⚠️ Variable '{}' not found in TypedVariable registry or GraphRel, using fallback logic", table_alias.0);
                                             self.fallback_table_alias_expansion(
                                                 table_alias,
                                                 item,
@@ -408,7 +414,7 @@ impl SelectBuilder for LogicalPlan {
                             );
 
                             if cte_ref.columns.is_empty() {
-                                log::warn!("⚠️ CteEntityRef '{}' has no columns - falling back to TableAlias", cte_ref.alias);
+                                log::debug!("⚠️ CteEntityRef '{}' has no columns - falling back to TableAlias", cte_ref.alias);
                                 select_items.push(SelectItem {
                                     expression: RenderExpr::TableAlias(RenderTableAlias(
                                         cte_ref.alias.clone(),
@@ -586,7 +592,7 @@ impl SelectBuilder for LogicalPlan {
             LogicalPlan::Unwind(u) => u.input.extract_select_items(plan_ctx)?,
             LogicalPlan::CartesianProduct(cp) => {
                 // Combine select items from both sides
-                log::warn!("🔍 CartesianProduct.extract_select_items START");
+                log::trace!("🔍 CartesianProduct.extract_select_items START");
                 let left_items = cp.left.extract_select_items(plan_ctx)?;
                 log::warn!(
                     "🔍 CartesianProduct.extract_select_items: left side returned {} items",
@@ -609,7 +615,7 @@ impl SelectBuilder for LogicalPlan {
                 graph_node.input.extract_select_items(plan_ctx)?
             }
             LogicalPlan::WithClause(wc) => {
-                log::warn!("🔍 WithClause.extract_select_items: calling extract on input");
+                log::trace!("🔍 WithClause.extract_select_items: calling extract on input");
                 let items = wc.input.extract_select_items(plan_ctx)?;
                 log::warn!(
                     "🔍 WithClause.extract_select_items DONE: extracted {} items from input plan",
@@ -711,7 +717,7 @@ impl LogicalPlan {
                 );
             }
             _ => {
-                log::warn!("⚠️ No properties found for base table entity '{}'", alias);
+                log::debug!("⚠️ No properties found for base table entity '{}'", alias);
             }
         }
     }
@@ -733,7 +739,7 @@ impl LogicalPlan {
 
         // Parse CTE name to get aliases and compute FROM alias
         let from_alias = self.compute_from_alias_from_cte_name(cte_name);
-        log::info!("🔍 CTE '{}' → FROM alias '{}'", cte_name, from_alias);
+        log::trace!("🔍 CTE '{}' → FROM alias '{}'", cte_name, from_alias);
 
         // Get labels from TypedVariable
         let labels = match typed_var {
@@ -1002,7 +1008,7 @@ impl LogicalPlan {
                     );
                     vs.is_denormalized
                 } else {
-                    log::info!("🔍 Relationship '{}' center is NOT ViewScan", rel_alias);
+                    log::trace!("🔍 Relationship '{}' center is NOT ViewScan", rel_alias);
                     false
                 }
             } else {
@@ -1073,7 +1079,7 @@ impl LogicalPlan {
                         }
                     }
                 } else {
-                    log::warn!("  ✗ Start node '{}' not found in plan_ctx", start_alias);
+                    log::trace!("  ✗ Start node '{}' not found in plan_ctx", start_alias);
                 }
 
                 // Expand end node properties
@@ -1103,7 +1109,7 @@ impl LogicalPlan {
                         }
                     }
                 } else {
-                    log::warn!("  ✗ End node '{}' not found in plan_ctx", end_alias);
+                    log::trace!("  ✗ End node '{}' not found in plan_ctx", end_alias);
                 }
 
                 // Expand relationship properties (ONLY if not denormalized)
@@ -1140,7 +1146,7 @@ impl LogicalPlan {
                             }
                         }
                     } else {
-                        log::warn!("  ✗ Relationship '{}' not found in plan_ctx", rel_alias);
+                        log::trace!("  ✗ Relationship '{}' not found in plan_ctx", rel_alias);
                     }
                 } else {
                     // Denormalized relationship: properties come from end node's table

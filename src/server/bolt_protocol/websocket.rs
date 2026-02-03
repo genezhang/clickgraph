@@ -79,10 +79,8 @@ impl AsyncRead for WebSocketBoltAdapter {
             }
             Poll::Ready(Some(Ok(Message::Close(_)))) => {
                 log::debug!("WebSocket close message received");
-                Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::ConnectionAborted,
-                    "WebSocket closed",
-                )))
+                // Signal EOF for graceful disconnect instead of error
+                Poll::Ready(Ok(()))
             }
             Poll::Ready(Some(Ok(Message::Ping(_)))) | Poll::Ready(Some(Ok(Message::Pong(_)))) => {
                 // Handled automatically by tungstenite, poll again

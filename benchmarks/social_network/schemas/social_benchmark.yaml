@@ -62,7 +62,7 @@ graph_schema:
     - type: AUTHORED
       database: brahmand
       table: posts_bench
-      from_id: user_id
+      from_id: author_id
       to_id: post_id
       edge_id: post_id
       from_node: User
@@ -78,7 +78,7 @@ graph_schema:
       from_node: User
       to_node: Post
       property_mappings:
-        like_date: liked_at
+        like_date: like_date
 
     - type: FRIENDS_WITH
       database: brahmand

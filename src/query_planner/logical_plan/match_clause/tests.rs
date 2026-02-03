@@ -204,22 +204,21 @@ fn test_traverse_node_pattern_existing_node() {
 }
 
 #[test]
-fn test_traverse_node_pattern_empty_node_error() {
-    let mut plan_ctx = PlanCtx::new_empty();
+fn test_traverse_node_pattern_unnamed_node_gets_alias() {
+    // Previously this would error, but now we auto-generate aliases for unnamed nodes
+    let graph_schema = create_test_schema_with_relationships();
+    let mut plan_ctx = PlanCtx::new(Arc::new(graph_schema));
     let initial_plan = Arc::new(LogicalPlan::Empty);
 
     let node_pattern = ast::NodePattern {
-        name: None, // Empty node
-        labels: Some(vec!["Person"]),
+        name: None,                 // Unnamed node - should get auto-generated alias
+        labels: Some(vec!["User"]), // Use a label that exists in test schema
         properties: None,
     };
 
     let result = traverse_node_pattern(&node_pattern, initial_plan, &mut plan_ctx);
-    assert!(result.is_err());
-    match result.unwrap_err() {
-        LogicalPlanError::EmptyNode => (), // Expected error
-        _ => panic!("Expected EmptyNode error"),
-    }
+    // Should succeed now - auto-generates alias like "t1"
+    assert!(result.is_ok());
 }
 
 #[test]
@@ -1180,7 +1179,7 @@ fn test_infer_relationship_type_no_matches() {
 
 #[test]
 fn test_infer_relationship_type_both_untyped_multi_schema() {
-    // ()-[r]->() with multiple relationships should return None
+    // ()-[r]->() with multiple relationships returns all types for UNION expansion
     let schema = create_test_schema_with_relationships();
     let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
 
@@ -1193,8 +1192,11 @@ fn test_infer_relationship_type_both_untyped_multi_schema() {
     )
     .expect("Should not error");
 
-    // Both nodes untyped and schema has 3 relationships - cannot infer
-    assert!(result.is_none());
+    // Now returns all relationship types for UNION expansion (changed behavior)
+    assert!(result.is_some());
+    let rel_types = result.unwrap();
+    assert!(rel_types.contains(&"FOLLOWS".to_string()));
+    assert!(rel_types.contains(&"LIKES".to_string()));
 }
 
 #[test]

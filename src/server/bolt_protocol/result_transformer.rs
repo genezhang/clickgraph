@@ -379,7 +379,7 @@ pub fn transform_row(
         row.len(),
         row.keys().collect::<Vec<_>>()
     );
-    log::info!(
+    log::trace!(
         "🔍 Metadata has {} items: {:?}",
         metadata.len(),
         metadata
@@ -711,7 +711,7 @@ fn transform_to_path(
     // Check for JSON format first (UNION path queries)
     // Format: _start_properties, _end_properties, _rel_properties
     if row.contains_key("_start_properties") && row.contains_key("_end_properties") {
-        log::info!("🎯 Detected JSON format for path - parsing _start_properties, _end_properties, _rel_properties");
+        log::trace!("🎯 Detected JSON format for path - parsing _start_properties, _end_properties, _rel_properties");
         return transform_path_from_json(row, start_labels, end_labels, rel_types);
     }
 
@@ -724,7 +724,7 @@ fn transform_to_path(
                     .first()
                     .cloned()
                     .unwrap_or_else(|| "_Unknown".to_string());
-                log::info!("Creating start node with label: {}", label);
+                log::trace!("Creating start node with label: {}", label);
                 create_node_with_label(&label, 0)
             });
 
@@ -735,7 +735,7 @@ fn transform_to_path(
                 .first()
                 .cloned()
                 .unwrap_or_else(|| "_Unknown".to_string());
-            log::info!("Creating end node with label: {}", label);
+            log::trace!("Creating end node with label: {}", label);
             create_node_with_label(&label, 1)
         });
 
@@ -756,7 +756,7 @@ fn transform_to_path(
             .first()
             .cloned()
             .unwrap_or_else(|| "_UNKNOWN".to_string());
-        log::info!("Creating relationship with type: {}", rel_type);
+        log::trace!("Creating relationship with type: {}", rel_type);
         create_relationship_with_type(&rel_type, &start_node.element_id, &end_node.element_id)
     });
 
