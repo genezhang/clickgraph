@@ -2,6 +2,32 @@
 
 ### 🚀 Features
 
+- **Path UNION Queries for Neo4j Browser "Dot" Feature** (Feb 2, 2026): ⭐ **NEO4J COMPATIBILITY**
+  - **Problem**: Neo4j Browser's dot query explorer sends `MATCH p=()-->() RETURN p` but ClickGraph couldn't handle untyped paths with properties
+  - **Solution**: Reused Union infrastructure to generate UNION ALL across all relationship types with JSON property format
+  - **How It Works**:
+    - `plan_builder.rs` detects path UNION patterns (GraphJoins with path tuples)
+    - `convert_path_branches_to_json()` transforms each branch to consistent 4-column JSON schema
+    - `build_format_row_json()` uses prefixed aliases (`_s_city`, `_e_city`, `_r_follow_date`) to avoid ClickHouse alias collision
+    - `select_builder.rs` expands denormalized relationship properties via schema lookup
+    - Bolt transformer strips prefixes for clean Neo4j Browser display
+  - **Generated SQL Pattern**:
+    ```sql
+    SELECT tuple('fixed_path', 't1_0', 't2_0', 't3') as p,
+           formatRowNoNewline('JSONEachRow', t1_0.user_id AS _s_user_id, ...) as _start_properties,
+           formatRowNoNewline('JSONEachRow', t2_0.post_id AS _e_post_id, ...) as _end_properties,
+           formatRowNoNewline('JSONEachRow', t3.post_date AS _r_post_date) as _rel_properties
+    FROM users_bench t1_0 JOIN posts_bench t2_0 ... JOIN posts_bench t3
+    UNION ALL ...
+    ```
+  - **Impact**: ✨ **Neo4j Browser dot query now shows all connected edges with properties!**
+  - **Key Features**:
+    - All relationship types included (denormalized + explicit edge tables)
+    - Type preservation: numbers stay numbers, dates stay dates
+    - Automatic property expansion for denormalized relationships (e.g., AUTHORED)
+    - Clean property names in browser (prefixes internal only)
+  - **Files**: `src/render_plan/plan_builder.rs`, `src/render_plan/plan_builder_helpers.rs`, `src/render_plan/select_builder.rs`, `src/server/bolt_protocol/result_transformer.rs`
+
 - **Label-less Node Queries for Neo4j Browser "Dot" Feature** (Feb 1, 2026): ⭐ **NEO4J COMPATIBILITY**
   - **Problem**: Neo4j Browser's exploration feature sends `MATCH (n) RETURN n LIMIT 25` but ClickGraph required explicit labels
   - **Solution**: Reused existing Union infrastructure to generate UNION ALL across all node types when no label specified
