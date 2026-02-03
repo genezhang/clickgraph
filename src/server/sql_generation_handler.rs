@@ -54,12 +54,17 @@ pub async fn sql_generation_handler(
     let clean_query = payload.query.trim();
     let schema_name = if clean_query.to_uppercase().starts_with("USE ") {
         // Quick extraction of schema name from USE clause
-        match open_cypher_parser::parse_query(clean_query) {
-            Ok(ast) => {
-                if let Some(ref use_clause) = ast.use_clause {
-                    use_clause.database_name
-                } else {
-                    payload.schema_name.as_deref().unwrap_or("default")
+        match open_cypher_parser::parse_cypher_statement(clean_query) {
+            Ok((_, statement)) => {
+                match statement {
+                    open_cypher_parser::ast::CypherStatement::Query { query, .. } => {
+                        if let Some(ref use_clause) = query.use_clause {
+                            use_clause.database_name
+                        } else {
+                            payload.schema_name.as_deref().unwrap_or("default")
+                        }
+                    }
+                    _ => payload.schema_name.as_deref().unwrap_or("default"),
                 }
             }
             Err(_) => payload.schema_name.as_deref().unwrap_or("default"),
@@ -148,10 +153,10 @@ pub async fn sql_generation_handler(
         clean_query
     };
 
-    // Phase 1: Parse query
+    // Phase 1: Parse query (support UNION ALL)
     let parse_start = Instant::now();
-    let cypher_ast = match open_cypher_parser::parse_query(clean_query) {
-        Ok(ast) => ast,
+    let cypher_statement = match open_cypher_parser::parse_cypher_statement(clean_query) {
+        Ok((_, stmt)) => stmt,
         Err(e) => {
             let _parse_time = parse_start.elapsed().as_secs_f64() * 1000.0;
             return Err((
@@ -175,7 +180,24 @@ pub async fn sql_generation_handler(
     };
     let parse_time = parse_start.elapsed().as_secs_f64() * 1000.0;
 
-    let query_type = query_planner::get_query_type(&cypher_ast);
+    // Extract the first query for query_type detection
+    // For UNION queries, all branches should have the same type
+    let first_query = match &cypher_statement {
+        open_cypher_parser::ast::CypherStatement::Query { query, .. } => query,
+        open_cypher_parser::ast::CypherStatement::ProcedureCall(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(SqlGenerationError {
+                    cypher_query: payload.query.clone(),
+                    error: "Procedure calls not supported in SQL generation endpoint".to_string(),
+                    error_type: "UnsupportedQuery".to_string(),
+                    error_details: None,
+                }),
+            ));
+        }
+    };
+
+    let query_type = query_planner::get_query_type(first_query);
     let query_type_str = match query_type {
         QueryType::Read => "read",
         QueryType::Ddl => "ddl",
@@ -196,8 +218,9 @@ pub async fn sql_generation_handler(
         f64,
     ) = if is_call {
         // Handle CALL queries (like PageRank)
+        // Note: CALL with UNION doesn't make sense, so we use the first query
         let planning_start = Instant::now();
-        let logical_plan = match query_planner::evaluate_call_query(cypher_ast, &graph_schema) {
+        let logical_plan = match query_planner::evaluate_call_query(first_query.clone(), &graph_schema) {
             Ok(plan) => plan,
             Err(e) => {
                 let _planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;
@@ -293,11 +316,12 @@ pub async fn sql_generation_handler(
                     .collect()
             });
 
-        let (logical_plan, plan_ctx) = match query_planner::evaluate_read_query(
-            cypher_ast,
+        let (logical_plan, plan_ctx) = match query_planner::logical_plan::evaluate_cypher_statement(
+            cypher_statement,
             &graph_schema,
             None, // tenant_id not needed for SQL generation
             view_parameter_values,
+            None, // max_inferred_types
         ) {
             Ok(result) => result,
             Err(e) => {
