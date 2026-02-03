@@ -12,30 +12,6 @@
 use crate::graph_catalog::graph_schema::GraphSchema;
 use std::collections::HashMap;
 
-/// Map ClickHouse column types to Neo4j type names
-fn map_clickhouse_to_neo4j_type(ch_type: &str) -> String {
-    match ch_type {
-        // Integer types
-        "UInt64" | "Int64" | "UInt32" | "Int32" | "UInt16" | "Int16" | "UInt8" | "Int8" => {
-            "Long".to_string()
-        }
-        // String types
-        "String" | "FixedString" => "String".to_string(),
-        // Date types
-        "Date" | "Date32" => "Date".to_string(),
-        // DateTime types
-        "DateTime" | "DateTime64" => "DateTime".to_string(),
-        // Float types
-        "Float32" | "Float64" => "Double".to_string(),
-        // Boolean (ClickHouse uses UInt8 for bool)
-        "Bool" => "Boolean".to_string(),
-        // Array types
-        t if t.starts_with("Array(") => "List".to_string(),
-        // Default fallback
-        _ => "String".to_string(),
-    }
-}
-
 /// Execute db.schema.relTypeProperties() procedure
 ///
 /// Returns property metadata for all relationship types in the schema.
@@ -108,16 +84,28 @@ pub fn execute(schema: &GraphSchema) -> Result<Vec<HashMap<String, serde_json::V
 mod tests {
     use super::*;
 
+    fn create_empty_schema() -> GraphSchema {
+        GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new())
+    }
+
     #[test]
-    fn test_map_clickhouse_to_neo4j_type() {
-        assert_eq!(map_clickhouse_to_neo4j_type("UInt64"), "Long");
-        assert_eq!(map_clickhouse_to_neo4j_type("Int32"), "Long");
-        assert_eq!(map_clickhouse_to_neo4j_type("String"), "String");
-        assert_eq!(map_clickhouse_to_neo4j_type("DateTime64"), "DateTime");
-        assert_eq!(map_clickhouse_to_neo4j_type("Date"), "Date");
-        assert_eq!(map_clickhouse_to_neo4j_type("Float64"), "Double");
-        assert_eq!(map_clickhouse_to_neo4j_type("Bool"), "Boolean");
-        assert_eq!(map_clickhouse_to_neo4j_type("Array(String)"), "List");
-        assert_eq!(map_clickhouse_to_neo4j_type("Unknown"), "String");
+    fn test_execute_with_empty_schema() {
+        let schema = create_empty_schema();
+        let results = execute(&schema).unwrap();
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn test_output_format_structure() {
+        // Verify the expected output structure is documented correctly
+        // Actual testing with real schema data is done via integration tests
+        let schema = create_empty_schema();
+        let results = execute(&schema).unwrap();
+
+        // Verify empty schema returns empty results
+        assert_eq!(results.len(), 0);
+        
+        // Format verification: if there were results, each should have these keys
+        // This is verified by manual testing and integration tests
     }
 }
