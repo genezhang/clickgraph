@@ -53,6 +53,7 @@ pub mod property_requirements;
 pub mod property_requirements_analyzer;
 #[cfg(test)]
 mod test_multi_type_vlp_auto_inference;
+pub mod where_property_extractor;
 
 use crate::{
     graph_catalog::graph_schema::GraphSchema,

@@ -54,6 +54,7 @@ pub struct PlanCtxBuilder {
     vlp_endpoints: HashMap<String, VlpEndpointInfo>,
     variables: VariableRegistry,
     cte_alias_sources: HashMap<String, (String, String)>,
+    where_property_requirements: HashMap<String, HashSet<String>>,
 }
 
 impl PlanCtxBuilder {
@@ -76,6 +77,7 @@ impl PlanCtxBuilder {
             vlp_endpoints: HashMap::new(),
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
+            where_property_requirements: HashMap::new(),
         }
     }
 
@@ -99,6 +101,7 @@ impl PlanCtxBuilder {
             vlp_endpoints: parent.vlp_endpoints.clone(),
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
+            where_property_requirements: HashMap::new(),
         }
     }
 
@@ -202,6 +205,7 @@ impl PlanCtxBuilder {
             vlp_endpoints: self.vlp_endpoints,
             variables: self.variables,
             cte_alias_sources: self.cte_alias_sources,
+            where_property_requirements: self.where_property_requirements,
         }
     }
 }

@@ -246,19 +246,55 @@ fn traverse_connected_pattern_with_mode<'a>(
             }
             None => {
                 // Anonymous edge pattern: [] (no type specified)
-                // Use smart inference to determine relationship type(s):
-                // 1. If schema has only one relationship, use it
-                // 2. If nodes are typed, find relationships that match those types
-                // 3. Otherwise, expand to all matching relationship types for UNION
-                let graph_schema = plan_ctx.schema();
+                // STEP 1: Check if WHERE clause has property requirements
+                let inferred_types = if let Some(required_props) =
+                    plan_ctx.get_where_property_requirements(&rel_alias)
+                {
+                    log::info!(
+                        "🔍 Property-based filtering for untyped relationship '{}': required properties {:?}",
+                        rel_alias,
+                        required_props
+                    );
 
-                infer_relationship_type_from_nodes(
-                    &start_node_label,
-                    &end_node_label,
-                    &rel.direction,
-                    graph_schema,
-                    plan_ctx,
-                )?
+                    // Filter all relationship types by required properties
+                    use super::schema_filter::SchemaPropertyFilter;
+                    let graph_schema = plan_ctx.schema();
+                    let filter = SchemaPropertyFilter::new(graph_schema);
+                    let filtered_types = filter.filter_relationship_schemas(required_props);
+
+                    log::info!(
+                        "Property-based filtering: {} → {} relationship types for '{}'",
+                        graph_schema.get_relationships_schemas().len(),
+                        filtered_types.len(),
+                        rel_alias
+                    );
+
+                    if filtered_types.is_empty() {
+                        log::warn!(
+                            "No relationship types have required properties {:?}",
+                            required_props
+                        );
+                        None // Will generate empty result
+                    } else {
+                        Some(filtered_types)
+                    }
+                } else {
+                    // STEP 2: No property requirements - use smart inference
+                    // 1. If schema has only one relationship, use it
+                    // 2. If nodes are typed, find relationships that match those types
+                    // 3. Otherwise, expand to all matching relationship types for UNION
+                    let graph_schema = plan_ctx.schema();
+
+                    infer_relationship_type_from_nodes(
+                        &start_node_label,
+                        &end_node_label,
+                        &rel.direction,
+                        graph_schema,
+                        plan_ctx,
+                    )?
+                };
+
+                inferred_types
             }
         };
 
@@ -1408,6 +1444,22 @@ pub fn evaluate_match_clause_with_optional<'a>(
         "🔍 EVALUATE_MATCH_CLAUSE: {} path patterns",
         match_clause.path_patterns.len()
     );
+
+    // Extract property requirements from WHERE clause BEFORE pattern traversal
+    // This enables property-based optimization (pruning UNION branches)
+    if let Some(where_clause) = &match_clause.where_clause {
+        use crate::query_planner::analyzer::where_property_extractor::WherePropertyExtractor;
+        let required_properties = WherePropertyExtractor::extract_property_references(where_clause);
+
+        log::debug!(
+            "Extracted {} property requirements from WHERE clause: {:?}",
+            required_properties.len(),
+            required_properties
+        );
+
+        // Store in PlanCtx for use during scan generation
+        plan_ctx.set_where_property_requirements(required_properties);
+    }
 
     for (idx, (path_variable, path_pattern)) in match_clause.path_patterns.iter().enumerate() {
         log::info!(

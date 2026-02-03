@@ -686,41 +686,20 @@ impl FilterTagging {
                 }
 
                 // Get the label for this table
-                let label = table_ctx.get_label_opt().ok_or_else(|| {
-                    // DEBUG: Write debug info to file
-                    use std::io::Write;
-                    if let Ok(mut file) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open("/tmp/clickgraph_debug_labels.txt")
-                    {
-                        writeln!(file, "\n=== FilterTagging Label Lookup Failed ===").ok();
-                        writeln!(file, "Looking for: '{}'", property_access.table_alias.0).ok();
-                        writeln!(file, "Available aliases in plan_ctx:").ok();
-                        for (alias, ctx) in plan_ctx.iter_table_contexts() {
-                            writeln!(
-                                file,
-                                "  - '{}': is_rel={}, label={:?}",
-                                alias,
-                                ctx.is_relation(),
-                                ctx.get_label_opt()
-                            )
-                            .ok();
-                        }
-                        writeln!(file, "=== End ===\n").ok();
+                let label = match table_ctx.get_label_opt() {
+                    Some(l) => l,
+                    None => {
+                        // No label yet - this is an untyped pattern like MATCH (n)
+                        // Property validation will happen during scan generation when we filter types
+                        // For now, pass through the property access as-is
+                        log::info!(
+                            "🔧 FilterTagging: Skipping validation for untyped pattern '{}', property='{}' (will validate during scan generation)",
+                            property_access.table_alias.0,
+                            property_access.column.raw()
+                        );
+                        return Ok(LogicalExpr::PropertyAccessExp(property_access));
                     }
-
-                    crate::debug_print!(
-                        "FilterTagging: ERROR - No label found for alias '{}', is_relation={}",
-                        property_access.table_alias.0,
-                        table_ctx.is_relation()
-                    );
-                    AnalyzerError::PropertyNotFound {
-                        entity_type: "node".to_string(),
-                        entity_name: property_access.table_alias.0.clone(),
-                        property: property_access.column.raw().to_string(),
-                    }
-                })?;
+                };
 
                 // Check if this node uses EmbeddedInEdge strategy (denormalized access)
                 let (is_embedded_in_edge, _owning_edge_info) = if let Some(plan) = plan {

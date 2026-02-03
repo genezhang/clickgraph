@@ -894,9 +894,15 @@ pub fn generate_relationship_center(
             Ok(Arc::new(LogicalPlan::Empty))
         }
     } else {
-        log::debug!("No relationship labels specified, using Empty plan");
-        // For relationships without labels, use Empty
-        // Type inference pass will fill in the relationship type
+        // No explicit relationship labels were provided to this function.
+        // Any property-based narrowing of relationship types should already
+        // have been applied earlier in traversal.rs (lines 247-296) when computing rel_labels.
+        // At this stage, we simply return an empty plan and rely on the
+        // broader planning / type inference pipeline to handle this case.
+        log::debug!(
+            "No relationship labels specified for alias '{}' - returning Empty plan (type inference will handle)",
+            rel_alias
+        );
         Ok(Arc::new(LogicalPlan::Empty))
     }
 }

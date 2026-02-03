@@ -126,6 +126,12 @@ pub struct PlanCtx {
     /// Used to resolve property access on renamed CTE aliases:
     /// When accessing person.name, map to u.name, then to CTE column u_name
     cte_alias_sources: HashMap<String, (String, String)>,
+    /// **NEW (Feb 2026 - Track C)**: WHERE clause property requirements
+    /// Extracted from WHERE clause before pattern traversal for property-based optimization
+    /// Map: alias (e.g., "n", "r") → set of required property names (e.g., {"bytes_sent", "timestamp"})
+    /// Enables pruning of UNION branches that don't have required properties
+    /// Example: `WHERE n.bytes_sent IS NOT NULL` → {"n": {"bytes_sent"}}
+    where_property_requirements: HashMap<String, HashSet<String>>,
 }
 
 impl PlanCtx {
@@ -437,6 +443,7 @@ impl PlanCtx {
             vlp_endpoints: HashMap::new(),
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
+            where_property_requirements: HashMap::new(),
         }
     }
 
@@ -462,6 +469,7 @@ impl PlanCtx {
             vlp_endpoints: HashMap::new(),
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
+            where_property_requirements: HashMap::new(),
         }
     }
 
@@ -501,6 +509,7 @@ impl PlanCtx {
             vlp_endpoints: HashMap::new(),
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
+            where_property_requirements: HashMap::new(),
         }
     }
 
@@ -536,6 +545,7 @@ impl PlanCtx {
             vlp_endpoints: parent.vlp_endpoints.clone(), // Inherit VLP endpoint info from parent
             variables: VariableRegistry::new(), // Fresh variable registry for new scope
             cte_alias_sources: HashMap::new(),
+            where_property_requirements: HashMap::new(),
         }
     }
 
@@ -564,6 +574,7 @@ impl PlanCtx {
             vlp_endpoints: HashMap::new(),
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
+            where_property_requirements: HashMap::new(),
         }
     }
 
@@ -803,6 +814,31 @@ impl PlanCtx {
     /// Returns true if PropertyRequirementsAnalyzer pass has run and set requirements
     pub fn has_property_requirements(&self) -> bool {
         self.property_requirements.is_some()
+    }
+
+    // ========================================================================
+    // WHERE Property Requirements (Track C - Property-Based Optimization)
+    // ========================================================================
+
+    /// Set property requirements extracted from WHERE clause
+    /// Used for property-based UNION branch pruning
+    pub fn set_where_property_requirements(
+        &mut self,
+        requirements: HashMap<String, HashSet<String>>,
+    ) {
+        log::debug!("Setting WHERE property requirements: {:?}", requirements);
+        self.where_property_requirements = requirements;
+    }
+
+    /// Get property requirements for a specific alias from WHERE clause
+    /// Returns None if no requirements for this alias
+    pub fn get_where_property_requirements(&self, alias: &str) -> Option<&HashSet<String>> {
+        self.where_property_requirements.get(alias)
+    }
+
+    /// Check if alias has any WHERE property requirements
+    pub fn has_where_property_requirements(&self, alias: &str) -> bool {
+        self.where_property_requirements.contains_key(alias)
     }
 }
 
