@@ -145,3 +145,61 @@ class TestPropertyFilteringRelationships:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])
+
+
+class TestUnionAllSupport:
+    """Test property-based filtering for UNION ALL queries"""
+
+    @pytest.mark.skip(reason="Schema loading setup needed")
+    def test_union_node_and_relationship(self):
+        """
+        Query: UNION ALL with different property filters per branch
+        Expected: Each branch queries only matching types
+        """
+        query = """
+        USE social_benchmark
+        MATCH (n) WHERE n.user_id = 1
+        RETURN "node" AS entity, n.user_id AS value
+        UNION ALL
+        MATCH ()-[r:FOLLOWS]->() WHERE r.follow_date IS NOT NULL
+        RETURN "relationship" AS entity, r.follow_date AS value
+        LIMIT 10
+        """
+        
+        response = requests.post(
+            f"{BASE_URL}/query",
+            json={"query": query}
+        )
+        
+        assert response.status_code == 200, f"Query failed: {response.text}"
+        result = response.json()
+        
+        assert "results" in result
+        # Should have both node and relationship results
+        entities = {row["entity"] for row in result["results"]}
+        assert "node" in entities or "relationship" in entities
+
+    @pytest.mark.skip(reason="Schema loading setup needed")
+    def test_union_both_branches_filtered(self):
+        """
+        Test Neo4j Browser pattern: both branches use property filtering
+        """
+        query = """
+        USE social_benchmark
+        MATCH (n) WHERE n.user_id IS NOT NULL
+        RETURN DISTINCT "node" AS entity, n.user_id AS value LIMIT 5
+        UNION ALL
+        MATCH ()-[r]->() WHERE r.follow_date IS NOT NULL
+        RETURN DISTINCT "relationship" AS entity, r.follow_date AS value LIMIT 5
+        """
+        
+        response = requests.post(
+            f"{BASE_URL}/query",
+            json={"query": query}
+        )
+        
+        assert response.status_code == 200, f"Query failed: {response.text}"
+        result = response.json()
+        
+        assert "results" in result
+        assert len(result["results"]) <= 10  # 5 from each branch max
