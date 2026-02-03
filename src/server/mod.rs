@@ -277,13 +277,25 @@ pub async fn run_with_config(config: ServerConfig) {
                             match stream.peek(&mut peek_buf).await {
                                 Ok(n) if n >= 4 => {
                                     // Check if this is an HTTP request (WebSocket upgrade)
-                                    if peek_buf.starts_with(b"GET ") || peek_buf.starts_with(b"POST") {
-                                        log::info!("Detected WebSocket connection from {}", addr_str);
-                                        
+                                    if peek_buf.starts_with(b"GET ")
+                                        || peek_buf.starts_with(b"POST")
+                                    {
+                                        log::info!(
+                                            "Detected WebSocket connection from {}",
+                                            addr_str
+                                        );
+
                                         // Handle WebSocket connection
-                                        match bolt_protocol::websocket::WebSocketBoltAdapter::new(stream).await {
+                                        match bolt_protocol::websocket::WebSocketBoltAdapter::new(
+                                            stream,
+                                        )
+                                        .await
+                                        {
                                             Ok(ws_adapter) => {
-                                                match server.handle_connection(ws_adapter, addr_str.clone()).await {
+                                                match server
+                                                    .handle_connection(ws_adapter, addr_str.clone())
+                                                    .await
+                                                {
                                                     Ok(_) => {
                                                         log::debug!("WebSocket Bolt connection closed successfully");
                                                     }
@@ -293,28 +305,51 @@ pub async fn run_with_config(config: ServerConfig) {
                                                 }
                                             }
                                             Err(e) => {
-                                                log::error!("WebSocket handshake failed from {}: {}", addr_str, e);
+                                                log::error!(
+                                                    "WebSocket handshake failed from {}: {}",
+                                                    addr_str,
+                                                    e
+                                                );
                                             }
                                         }
                                     } else {
-                                        log::info!("Detected TCP Bolt connection from {}", addr_str);
-                                        
+                                        log::info!(
+                                            "Detected TCP Bolt connection from {}",
+                                            addr_str
+                                        );
+
                                         // Handle raw TCP Bolt connection (existing behavior)
-                                        match server.handle_connection(stream, addr_str.clone()).await {
+                                        match server
+                                            .handle_connection(stream, addr_str.clone())
+                                            .await
+                                        {
                                             Ok(_) => {
-                                                log::debug!("TCP Bolt connection closed successfully");
+                                                log::debug!(
+                                                    "TCP Bolt connection closed successfully"
+                                                );
                                             }
                                             Err(e) => {
-                                                log::error!("TCP Bolt connection error from {}: {:?}", addr_str, e);
+                                                log::error!(
+                                                    "TCP Bolt connection error from {}: {:?}",
+                                                    addr_str,
+                                                    e
+                                                );
                                             }
                                         }
                                     }
                                 }
                                 Ok(_) => {
-                                    log::warn!("Connection from {} closed before protocol detection", addr_str);
+                                    log::warn!(
+                                        "Connection from {} closed before protocol detection",
+                                        addr_str
+                                    );
                                 }
                                 Err(e) => {
-                                    log::error!("Failed to peek connection from {}: {}", addr_str, e);
+                                    log::error!(
+                                        "Failed to peek connection from {}: {}",
+                                        addr_str,
+                                        e
+                                    );
                                 }
                             }
                         });

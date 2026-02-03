@@ -3587,7 +3587,7 @@ pub(super) fn sort_joins_by_dependency(
             // No progress possible - break to avoid infinite loop
             // This can happen with circular dependencies (shouldn't occur in practice)
             println!(
-                "WARNING: Could not fully sort JOINs by dependency - {} remaining with circular dependencies", 
+                "WARNING: Could not fully sort JOINs by dependency - {} remaining with circular dependencies",
                 remaining.len()
             );
             println!(
@@ -4049,4 +4049,188 @@ pub(super) fn get_graph_rel_from_plan(
         LogicalPlan::GraphJoins(joins) => get_graph_rel_from_plan(&joins.input),
         _ => None,
     }
+}
+
+/// Convert path UNION branches to JSON format for consistent schema
+///
+/// For path queries like `MATCH p=()-->() RETURN p`, each branch may have different
+/// node/relationship types with different property counts. Convert to fixed schema:
+/// - `p`: path tuple (unchanged)
+/// - `_start_properties`: JSON with start node properties
+/// - `_end_properties`: JSON with end node properties
+/// - `_rel_properties`: JSON with relationship properties
+pub(super) fn convert_path_branches_to_json(
+    union_plans: Vec<super::RenderPlan>,
+) -> Vec<super::RenderPlan> {
+    use super::render_expr::{Literal, RenderExpr, ScalarFnCall};
+    use super::{ColumnAlias, RenderPlan, SelectItem, SelectItems};
+
+    log::warn!(
+        "🔧 convert_path_branches_to_json: Processing {} branches",
+        union_plans.len()
+    );
+
+    union_plans
+        .into_iter()
+        .enumerate()
+        .map(|(branch_idx, plan)| {
+            // First, find the path tuple and extract aliases from it
+            let mut path_item = None;
+            let mut start_alias = String::new();
+            let mut end_alias = String::new();
+            let mut rel_alias = String::new();
+
+            // Find path tuple and extract aliases
+            for item in &plan.select.items {
+                if matches!(&item.expression, RenderExpr::ScalarFnCall(fn_call) if fn_call.name == "tuple") {
+                    if let RenderExpr::ScalarFnCall(fn_call) = &item.expression {
+                        // tuple('fixed_path', start_alias, end_alias, rel_alias)
+                        // Arguments are: [Literal("fixed_path"), Literal(start), Literal(end), Literal(rel)]
+                        if fn_call.args.len() >= 4 {
+                            if let RenderExpr::Literal(Literal::String(s)) = &fn_call.args[1] {
+                                start_alias = s.clone();
+                            }
+                            if let RenderExpr::Literal(Literal::String(s)) = &fn_call.args[2] {
+                                end_alias = s.clone();
+                            }
+                            if let RenderExpr::Literal(Literal::String(s)) = &fn_call.args[3] {
+                                rel_alias = s.clone();
+                            }
+                        }
+                    }
+                }
+            }
+
+            log::warn!("  Branch {}: start='{}', end='{}', rel='{}'",
+                      branch_idx, start_alias, end_alias, rel_alias);
+
+            let mut start_items = Vec::new();
+            let mut end_items = Vec::new();
+            let mut rel_items = Vec::new();
+
+            // Now group items by their table alias prefix
+            for item in plan.select.items {
+                if let Some(alias) = &item.col_alias {
+                    let alias_str = &alias.0;
+
+                    // Path tuple: ScalarFnCall to tuple() function
+                    if matches!(&item.expression, RenderExpr::ScalarFnCall(fn_call) if fn_call.name == "tuple") {
+                        path_item = Some(item);
+                    }
+                    // Check if alias starts with start node table alias
+                    else if !start_alias.is_empty() && alias_str.starts_with(&format!("{}.", start_alias)) {
+                        start_items.push(item);
+                    }
+                    // Check if alias starts with end node table alias
+                    else if !end_alias.is_empty() && alias_str.starts_with(&format!("{}.", end_alias)) {
+                        end_items.push(item);
+                    }
+                    // Check if alias starts with relationship table alias
+                    else if !rel_alias.is_empty() && alias_str.starts_with(&format!("{}.", rel_alias)) {
+                        rel_items.push(item);
+                    }
+                }
+            }
+
+            log::warn!("  Branch {}: found {} start, {} end, {} rel items",
+                      branch_idx, start_items.len(), end_items.len(), rel_items.len());
+
+            let mut new_items = Vec::new();
+
+            // 1. Keep path tuple as-is
+            if let Some(p) = path_item {
+                new_items.push(p);
+            }
+
+            // 2. Convert start node properties to JSON (prefix: _s_)
+            if !start_items.is_empty() {
+                let json_expr = build_format_row_json(&start_items, "_s_");
+                new_items.push(SelectItem {
+                    expression: json_expr,
+                    col_alias: Some(ColumnAlias("_start_properties".to_string())),
+                });
+            }
+
+            // 3. Convert end node properties to JSON (prefix: _e_)
+            if !end_items.is_empty() {
+                let json_expr = build_format_row_json(&end_items, "_e_");
+                new_items.push(SelectItem {
+                    expression: json_expr,
+                    col_alias: Some(ColumnAlias("_end_properties".to_string())),
+                });
+            }
+
+            // 4. Convert relationship properties to JSON (prefix: _r_) or empty object if none
+            if !rel_items.is_empty() {
+                let json_expr = build_format_row_json(&rel_items, "_r_");
+                new_items.push(SelectItem {
+                    expression: json_expr,
+                    col_alias: Some(ColumnAlias("_rel_properties".to_string())),
+                });
+            } else {
+                // No relationship properties (denormalized) - empty JSON object
+                new_items.push(SelectItem {
+                    expression: RenderExpr::Literal(Literal::String("{}".to_string())),
+                    col_alias: Some(ColumnAlias("_rel_properties".to_string())),
+                });
+            }
+
+            RenderPlan {
+                select: SelectItems {
+                    items: new_items,
+                    distinct: plan.select.distinct,
+                },
+                ..plan
+            }
+        })
+        .collect()
+}
+
+/// Helper to build JSON object from select items using formatRowNoNewline('JSONEachRow', ...)
+/// Uses column aliases (AS prefix+clean_name) so JSON keys have unique prefixes
+/// to avoid ClickHouse alias collision when same property names appear in both nodes.
+/// The prefix (_s_, _e_, _r_) is stripped in the Bolt transformer.
+fn build_format_row_json(items: &[super::SelectItem], prefix: &str) -> RenderExpr {
+    use super::render_expr::{Literal, RenderExpr};
+    use crate::graph_catalog::expression_parser::PropertyValue;
+
+    if items.is_empty() {
+        return RenderExpr::Literal(Literal::String("{}".to_string()));
+    }
+
+    // Build aliased column expressions: t1_0.city AS _s_city, t1_0.full_name AS _s_name, ...
+    // Prefix (_s_, _e_, _r_) ensures unique aliases even when start/end have same properties
+    let mut aliased_cols = Vec::new();
+    for item in items {
+        if let Some(alias) = &item.col_alias {
+            let alias_str = &alias.0;
+            // Extract clean property name (after the dot, if any)
+            let clean_name = if let Some(dot_pos) = alias_str.find('.') {
+                &alias_str[dot_pos + 1..]
+            } else {
+                alias_str.as_str()
+            };
+
+            // Get the column expression
+            if let RenderExpr::PropertyAccessExp(prop_access) = &item.expression {
+                if let PropertyValue::Column(col_name) = &prop_access.column {
+                    let col_expr = format!("{}.{}", prop_access.table_alias.0, col_name);
+                    // Use prefixed alias to avoid collision (e.g., _s_city, _e_city)
+                    aliased_cols.push(format!("{} AS {}{}", col_expr, prefix, clean_name));
+                }
+            }
+        }
+    }
+
+    if aliased_cols.is_empty() {
+        return RenderExpr::Literal(Literal::String("{}".to_string()));
+    }
+
+    // formatRowNoNewline('JSONEachRow', t1.col AS _s_city, t1.name AS _s_name, ...)
+    // Prefixed aliases ensure no collision in ClickHouse scope
+    let format_expr = format!(
+        "formatRowNoNewline('JSONEachRow', {})",
+        aliased_cols.join(", ")
+    );
+    RenderExpr::Raw(format_expr)
 }

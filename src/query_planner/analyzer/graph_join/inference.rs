@@ -2514,7 +2514,7 @@ impl GraphJoinInference {
         plan_ctx: &mut PlanCtx,
         collected_graph_joins: &mut Vec<Join>,
         join_ctx: &mut JoinContext,
-        graph_rel: &GraphRel,  // Added to check for path variables
+        graph_rel: &GraphRel, // Added to check for path variables
     ) -> AnalyzerResult<()> {
         log::warn!(
             "🚨 handle_graph_pattern_v2 ENTER: rel={}, left={}, right={}, strategy={:?}",
@@ -3270,14 +3270,15 @@ impl GraphJoinInference {
                         let rel_type = ctx.rel_types.first().cloned().unwrap_or_default();
                         plan_ctx.register_denormalized_alias(
                             rel_alias.to_string(),
-                            right_alias.to_string(),  // rel is on right table
-                            false,  // is_from_node = false (rel is the edge itself)
-                            String::new(),  // label not needed
+                            right_alias.to_string(), // rel is on right table
+                            false,         // is_from_node = false (rel is the edge itself)
+                            String::new(), // label not needed
                             rel_type,
                         );
                         log::info!(
                             "🔑 Registered FK-edge '{}' as denormalized on anchor '{}'",
-                            rel_alias, right_alias
+                            rel_alias,
+                            right_alias
                         );
 
                         // CRITICAL FIX: For VLP + chained FK-edge patterns
@@ -3378,14 +3379,15 @@ impl GraphJoinInference {
                         let rel_type = ctx.rel_types.first().cloned().unwrap_or_default();
                         plan_ctx.register_denormalized_alias(
                             rel_alias.to_string(),
-                            left_alias.to_string(),  // rel is on left table
-                            false,  // is_from_node = false
+                            left_alias.to_string(), // rel is on left table
+                            false,                  // is_from_node = false
                             String::new(),
                             rel_type,
                         );
                         log::info!(
                             "🔑 Registered FK-edge '{}' as denormalized on anchor '{}'",
-                            rel_alias, left_alias
+                            rel_alias,
+                            left_alias
                         );
 
                         // CRITICAL FIX: For VLP + chained FK-edge patterns (symmetric to NodePosition::Left)
@@ -3826,7 +3828,7 @@ impl GraphJoinInference {
             plan_ctx,
             collected_graph_joins,
             join_ctx,
-            graph_rel,  // Pass graph_rel to check for path variables
+            graph_rel, // Pass graph_rel to check for path variables
         );
 
         let _joins_added = collected_graph_joins.len() - joins_before;

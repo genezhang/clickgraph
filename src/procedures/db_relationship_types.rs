@@ -29,7 +29,7 @@ pub fn execute(schema: &GraphSchema) -> Result<Vec<HashMap<String, serde_json::V
             if !parts.is_empty() && !parts[0].is_empty() {
                 Some(parts[0].to_string())
             } else {
-                None  // Skip empty strings
+                None // Skip empty strings
             }
         })
         .collect();

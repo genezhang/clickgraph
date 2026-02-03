@@ -39,7 +39,10 @@ pub fn list_procedures(_schema: &GraphSchema) -> ProcedureResult {
         .map(|(name, description)| {
             HashMap::from([
                 ("name".to_string(), serde_json::json!(name)),
-                ("signature".to_string(), serde_json::json!(format!("{}()", name))),
+                (
+                    "signature".to_string(),
+                    serde_json::json!(format!("{}()", name)),
+                ),
                 ("description".to_string(), serde_json::json!(description)),
                 ("mode".to_string(), serde_json::json!("READ")),
             ])

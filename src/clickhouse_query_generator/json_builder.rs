@@ -65,7 +65,10 @@ pub fn generate_json_properties_sql(
 
         // Format: table_alias.column_name AS cypher_property_name
         // The AS clause ensures the JSON uses Cypher property names, not ClickHouse column names
-        columns.push(format!("{}.{} AS {}", table_alias, column_name, cypher_prop));
+        columns.push(format!(
+            "{}.{} AS {}",
+            table_alias, column_name, cypher_prop
+        ));
     }
 
     if columns.is_empty() {
@@ -88,10 +91,7 @@ pub fn generate_json_properties_sql(
 /// # Returns
 ///
 /// SQL expression string for formatRowNoNewline
-pub fn generate_json_properties_from_schema(
-    node_schema: &NodeSchema,
-    table_alias: &str,
-) -> String {
+pub fn generate_json_properties_from_schema(node_schema: &NodeSchema, table_alias: &str) -> String {
     generate_json_properties_sql(&node_schema.property_mappings, table_alias)
 }
 
@@ -148,9 +148,7 @@ pub fn generate_multi_type_union_sql(
 
         // Get node ID column
         let node_id_col = match &node_schema.node_id.id {
-            crate::graph_catalog::config::Identifier::Single(column) => {
-                column.clone()
-            }
+            crate::graph_catalog::config::Identifier::Single(column) => column.clone(),
             crate::graph_catalog::config::Identifier::Composite(columns) => {
                 // For composite IDs, concatenate with pipe separator
                 format!(
@@ -192,9 +190,18 @@ mod tests {
     #[test]
     fn test_generate_json_properties_sql() {
         let mut mappings = HashMap::new();
-        mappings.insert("user_id".to_string(), PropertyValue::Column("user_id".to_string()));
-        mappings.insert("name".to_string(), PropertyValue::Column("full_name".to_string()));
-        mappings.insert("is_active".to_string(), PropertyValue::Column("is_active".to_string()));
+        mappings.insert(
+            "user_id".to_string(),
+            PropertyValue::Column("user_id".to_string()),
+        );
+        mappings.insert(
+            "name".to_string(),
+            PropertyValue::Column("full_name".to_string()),
+        );
+        mappings.insert(
+            "is_active".to_string(),
+            PropertyValue::Column("is_active".to_string()),
+        );
 
         let sql = generate_json_properties_sql(&mappings, "n");
 
@@ -217,7 +224,10 @@ mod tests {
     #[test]
     fn test_skip_non_column_properties() {
         let mut mappings = HashMap::new();
-        mappings.insert("user_id".to_string(), PropertyValue::Column("user_id".to_string()));
+        mappings.insert(
+            "user_id".to_string(),
+            PropertyValue::Column("user_id".to_string()),
+        );
         // Expression properties should be skipped
         mappings.insert(
             "computed".to_string(),

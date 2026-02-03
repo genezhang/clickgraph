@@ -115,10 +115,16 @@ pub fn build_logical_plan(
                 ReadingClause::Match(match_clause) => {
                     log::info!(
                         "🔍 AST DUMP: MATCH clause {} has {} path_patterns",
-                        idx, match_clause.path_patterns.len()
+                        idx,
+                        match_clause.path_patterns.len()
                     );
                     for (pidx, (pvar, ppat)) in match_clause.path_patterns.iter().enumerate() {
-                        log::info!("  Pattern #{}: var={:?}, type={:?}", pidx, pvar, std::mem::discriminant(ppat));
+                        log::info!(
+                            "  Pattern #{}: var={:?}, type={:?}",
+                            pidx,
+                            pvar,
+                            std::mem::discriminant(ppat)
+                        );
                         match ppat {
                             crate::open_cypher_parser::ast::PathPattern::Node(n) => {
                                 log::info!("    → Node: name={:?}, labels={:?}", n.name, n.labels);
@@ -131,7 +137,7 @@ pub fn build_logical_plan(
                             }
                         }
                     }
-                    
+
                     log::debug!(
                         "build_logical_plan: Processing MATCH clause {} (from reading_clauses)",
                         idx

@@ -655,43 +655,45 @@ impl JoinBuilder for LogicalPlan {
 
                 let input_joins =
                     <LogicalPlan as JoinBuilder>::extract_joins(&graph_joins.input, schema)?;
-                
+
                 // CRITICAL FIX: For FK-edge patterns, detect duplicate table joins
                 // Build a map of alias -> table_name from joins and FROM markers
-                let mut alias_to_table: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-                
+                let mut alias_to_table: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
+
                 // Add joins
                 for j in &graph_joins.joins {
                     alias_to_table.insert(j.table_alias.clone(), j.table_name.clone());
                 }
-                
+
                 // Add FROM markers (joins with empty joining_on)
                 for j in &graph_joins.joins {
                     if j.joining_on.is_empty() {
                         alias_to_table.insert(j.table_alias.clone(), j.table_name.clone());
                     }
                 }
-                
+
                 // Get anchor table name if set
-                let anchor_table_name = graph_joins.anchor_table.as_ref().and_then(|anchor_alias| {
-                    // First check our map
-                    if let Some(name) = alias_to_table.get(anchor_alias) {
-                        return Some(name.clone());
-                    }
-                    // Otherwise try to extract from GraphRel right node (which is typically the anchor for FK-edge)
-                    if let LogicalPlan::Projection(proj) = graph_joins.input.as_ref() {
-                        if let LogicalPlan::GraphRel(graph_rel) = proj.input.as_ref() {
-                            if &graph_rel.right_connection == anchor_alias {
-                                if let LogicalPlan::GraphNode(gn) = graph_rel.right.as_ref() {
-                                    if let LogicalPlan::ViewScan(scan) = gn.input.as_ref() {
-                                        return Some(scan.source_table.clone());
+                let anchor_table_name =
+                    graph_joins.anchor_table.as_ref().and_then(|anchor_alias| {
+                        // First check our map
+                        if let Some(name) = alias_to_table.get(anchor_alias) {
+                            return Some(name.clone());
+                        }
+                        // Otherwise try to extract from GraphRel right node (which is typically the anchor for FK-edge)
+                        if let LogicalPlan::Projection(proj) = graph_joins.input.as_ref() {
+                            if let LogicalPlan::GraphRel(graph_rel) = proj.input.as_ref() {
+                                if &graph_rel.right_connection == anchor_alias {
+                                    if let LogicalPlan::GraphNode(gn) = graph_rel.right.as_ref() {
+                                        if let LogicalPlan::ViewScan(scan) = gn.input.as_ref() {
+                                            return Some(scan.source_table.clone());
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    None
-                });
+                        None
+                    });
 
                 log::debug!(
                     "🔍 anchor_table_name for FK-edge check: {:?}",

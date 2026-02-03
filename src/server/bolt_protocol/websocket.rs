@@ -1,7 +1,7 @@
 //! WebSocket transport layer for Bolt protocol
 
-use futures_util::stream::{Stream, StreamExt};
 use futures_util::sink::{Sink, SinkExt};
+use futures_util::stream::{Stream, StreamExt};
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -45,13 +45,13 @@ impl AsyncRead for WebSocketBoltAdapter {
         if self.read_pos < self.read_buffer.len() {
             let available = &self.read_buffer[self.read_pos..];
             let to_read = available.len().min(buf.remaining());
-            
+
             if to_read > 0 {
                 buf.put_slice(&available[..to_read]);
                 self.read_pos += to_read;
                 log::trace!("Read {} bytes from WebSocket buffer", to_read);
             }
-            
+
             return Poll::Ready(Ok(()));
         }
 
@@ -64,22 +64,25 @@ impl AsyncRead for WebSocketBoltAdapter {
             Poll::Ready(Some(Ok(Message::Binary(data)))) => {
                 log::debug!("Received WebSocket binary message: {} bytes", data.len());
                 self.read_buffer = data;
-                
+
                 // Copy what we can to caller's buffer
                 let available = &self.read_buffer[..];
                 let to_read = available.len().min(buf.remaining());
-                
+
                 if to_read > 0 {
                     buf.put_slice(&available[..to_read]);
                     self.read_pos = to_read;
                     log::trace!("Read {} bytes from WebSocket message", to_read);
                 }
-                
+
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(Some(Ok(Message::Close(_)))) => {
                 log::debug!("WebSocket close message received");
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::ConnectionAborted, "WebSocket closed")))
+                Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "WebSocket closed",
+                )))
             }
             Poll::Ready(Some(Ok(Message::Ping(_)))) | Poll::Ready(Some(Ok(Message::Pong(_)))) => {
                 // Handled automatically by tungstenite, poll again
@@ -88,7 +91,10 @@ impl AsyncRead for WebSocketBoltAdapter {
             }
             Poll::Ready(Some(Ok(msg))) => {
                 log::warn!("Unexpected WebSocket message: {:?}", msg);
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, "Unexpected message type")))
+                Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Unexpected message type",
+                )))
             }
             Poll::Ready(Some(Err(e))) => {
                 log::error!("WebSocket error: {}", e);
@@ -96,7 +102,10 @@ impl AsyncRead for WebSocketBoltAdapter {
             }
             Poll::Ready(None) => {
                 log::debug!("WebSocket stream ended");
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::UnexpectedEof, "WebSocket ended")))
+                Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "WebSocket ended",
+                )))
             }
             Poll::Pending => Poll::Pending,
         }
@@ -110,23 +119,19 @@ impl AsyncWrite for WebSocketBoltAdapter {
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         let message = Message::Binary(buf.to_vec());
-        
+
         match Pin::new(&mut self.ws_stream).poll_ready(cx) {
-            Poll::Ready(Ok(())) => {
-                match Pin::new(&mut self.ws_stream).start_send(message) {
-                    Ok(()) => {
-                        log::trace!("Wrote {} bytes to WebSocket", buf.len());
-                        Poll::Ready(Ok(buf.len()))
-                    }
-                    Err(e) => {
-                        log::error!("WebSocket write error: {}", e);
-                        Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e)))
-                    }
+            Poll::Ready(Ok(())) => match Pin::new(&mut self.ws_stream).start_send(message) {
+                Ok(()) => {
+                    log::trace!("Wrote {} bytes to WebSocket", buf.len());
+                    Poll::Ready(Ok(buf.len()))
                 }
-            }
-            Poll::Ready(Err(e)) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e)))
-            }
+                Err(e) => {
+                    log::error!("WebSocket write error: {}", e);
+                    Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e)))
+                }
+            },
+            Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
             Poll::Pending => Poll::Pending,
         }
     }

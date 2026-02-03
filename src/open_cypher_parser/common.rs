@@ -67,20 +67,20 @@ pub fn strip_comments(input: &str) -> String {
             // Peek ahead to check if this is `-->` or part of `<--` (relationship patterns, not comments)
             let mut lookahead = chars.clone();
             lookahead.next(); // skip second '-'
-            
+
             // Check for `-->`  (outgoing relationship)
             if lookahead.peek() == Some(&'>') {
                 result.push(ch);
                 continue;
             }
-            
+
             // Check if previous character was `<` (making this `<--` incoming relationship)
             // We already pushed the `<`, so check the last char in result
             if result.chars().last() == Some('<') {
                 result.push(ch);
                 continue;
             }
-            
+
             // It's actually a `--` comment
             chars.next(); // consume second '-'
                           // Skip until newline

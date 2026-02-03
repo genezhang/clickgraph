@@ -48,7 +48,7 @@ pub fn parse_cypher_statement(
     let input_upper = input.to_uppercase();
     let has_union_in_query = input_upper.contains("UNION");
     let has_return_in_query = input_upper.contains("RETURN");
-    
+
     if !has_union_in_query && !has_return_in_query {
         // Try to parse as standalone procedure call
         if let Ok((remaining, procedure_call)) =

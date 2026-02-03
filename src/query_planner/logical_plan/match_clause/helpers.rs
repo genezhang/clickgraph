@@ -61,17 +61,17 @@ pub fn generate_scan(
         }
     } else {
         log::debug!("No label provided - generating UNION of all node types");
-        
+
         // Get all node labels from schema
         let schema = plan_ctx.schema();
         let all_node_schemas = schema.all_node_schemas();
-        
+
         if all_node_schemas.is_empty() {
             return Err(LogicalPlanError::QueryPlanningError(
-                "No node types found in schema".to_string()
+                "No node types found in schema".to_string(),
             ));
         }
-        
+
         // Collect unique base labels (deduplicate qualified names like "brahmand::users_bench::User")
         let mut base_labels = std::collections::HashSet::new();
         for label_key in all_node_schemas.keys() {
@@ -82,16 +82,19 @@ pub fn generate_scan(
             };
             base_labels.insert(base_label.to_string());
         }
-        
+
         let unique_labels: Vec<String> = base_labels.into_iter().collect();
-        
+
         if unique_labels.len() == 1 {
             // Edge case: exactly one node type exists
             // Create a ViewScan for it directly
-            log::info!("Single node type '{}' - creating ViewScan", unique_labels[0]);
+            log::info!(
+                "Single node type '{}' - creating ViewScan",
+                unique_labels[0]
+            );
             match super::try_generate_view_scan(&alias, &unique_labels[0], plan_ctx)? {
                 Some(view_scan) => Ok(view_scan),
-                None => Err(LogicalPlanError::NodeNotFound(unique_labels[0].clone()))
+                None => Err(LogicalPlanError::NodeNotFound(unique_labels[0].clone())),
             }
         } else {
             // Multiple node types - create UNION ALL of ViewScans
@@ -100,7 +103,7 @@ pub fn generate_scan(
                 unique_labels.len(),
                 unique_labels
             );
-            
+
             let mut union_inputs = Vec::new();
             for label in &unique_labels {
                 match super::try_generate_view_scan(&alias, label, plan_ctx)? {
@@ -110,13 +113,13 @@ pub fn generate_scan(
                     }
                 }
             }
-            
+
             if union_inputs.is_empty() {
                 return Err(LogicalPlanError::QueryPlanningError(
-                    "Failed to create ViewScans for any node type".to_string()
+                    "Failed to create ViewScans for any node type".to_string(),
                 ));
             }
-            
+
             if union_inputs.len() == 1 {
                 // Only one valid ViewScan created
                 Ok(union_inputs.into_iter().next().unwrap())
@@ -126,7 +129,7 @@ pub fn generate_scan(
                     crate::query_planner::logical_plan::Union {
                         inputs: union_inputs,
                         union_type: crate::query_planner::logical_plan::UnionType::All,
-                    }
+                    },
                 )))
             }
         }

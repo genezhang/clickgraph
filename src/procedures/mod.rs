@@ -38,13 +38,9 @@ pub mod return_evaluator;
 
 // Re-export key functions for easier access
 pub use executor::{
-    execute_procedure_union, 
-    execute_procedure_union_with_return,
-    execute_procedure_query,
-    extract_procedure_names_from_union, 
+    execute_procedure_query, execute_procedure_union, execute_procedure_union_with_return,
+    extract_procedure_names_from_union, is_procedure_only_query, is_procedure_only_statement,
     is_procedure_union_query,
-    is_procedure_only_query,
-    is_procedure_only_statement,
 };
 pub use return_evaluator::apply_return_clause;
 
@@ -78,10 +74,13 @@ impl ProcedureRegistry {
         );
         registry.register("dbms.components", Arc::new(dbms_components::execute));
         registry.register("db.propertyKeys", Arc::new(db_property_keys::execute));
-        
+
         // Register dbms.* stubs for Neo4j Browser compatibility
         registry.register("dbms.clientConfig", Arc::new(dbms_stubs::client_config));
-        registry.register("dbms.security.showCurrentUser", Arc::new(dbms_stubs::show_current_user));
+        registry.register(
+            "dbms.security.showCurrentUser",
+            Arc::new(dbms_stubs::show_current_user),
+        );
         registry.register("dbms.procedures", Arc::new(dbms_stubs::list_procedures));
         registry.register("dbms.functions", Arc::new(dbms_stubs::list_functions));
 

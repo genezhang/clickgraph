@@ -85,7 +85,9 @@ fn has_aggregation_in_expr(expr: &Expression) -> bool {
             // Check arguments recursively
             func.args.iter().any(has_aggregation_in_expr)
         }
-        Expression::MapLiteral(pairs) => pairs.iter().any(|(_, expr)| has_aggregation_in_expr(expr)),
+        Expression::MapLiteral(pairs) => {
+            pairs.iter().any(|(_, expr)| has_aggregation_in_expr(expr))
+        }
         Expression::List(exprs) => exprs.iter().any(has_aggregation_in_expr),
         Expression::PropertyAccessExp(_prop_access) => {
             // PropertyAccess has base and key as strings, not expressions
@@ -278,12 +280,14 @@ fn evaluate_expr(expr: &Expression, context: &EvalContext) -> EvalResult {
             }
 
             Err(format!(
-                "Cannot access property {} on non-object", prop_access.key
+                "Cannot access property {} on non-object",
+                prop_access.key
             ))
         }
-        Expression::FunctionCallExp(func) => {
-            Err(format!("Function calls in non-aggregation context not yet supported: {}", func.name))
-        }
+        Expression::FunctionCallExp(func) => Err(format!(
+            "Function calls in non-aggregation context not yet supported: {}",
+            func.name
+        )),
         _ => Err(format!("Expression type not yet supported: {:?}", expr)),
     }
 }
@@ -294,8 +298,8 @@ fn evaluate_literal(lit: &Literal) -> EvalResult {
         Literal::String(s) => Ok(JsonValue::String(s.to_string())),
         Literal::Integer(i) => Ok(JsonValue::Number((*i).into())),
         Literal::Float(f) => {
-            let num = serde_json::Number::from_f64(*f)
-                .ok_or_else(|| format!("Invalid float: {}", f))?;
+            let num =
+                serde_json::Number::from_f64(*f).ok_or_else(|| format!("Invalid float: {}", f))?;
             Ok(JsonValue::Number(num))
         }
         Literal::Boolean(b) => Ok(JsonValue::Bool(*b)),
@@ -343,9 +347,7 @@ fn apply_array_slicing(
     let to_clamped = to_idx.min(arr.len());
 
     if from_clamped <= to_clamped {
-        Ok(JsonValue::Array(
-            arr[from_clamped..to_clamped].to_vec(),
-        ))
+        Ok(JsonValue::Array(arr[from_clamped..to_clamped].to_vec()))
     } else {
         Ok(JsonValue::Array(vec![]))
     }
@@ -361,18 +363,21 @@ mod tests {
         // RETURN label
         let query = "RETURN label";
         let (_, stmt) = open_cypher_parser::parse_cypher_statement(query).unwrap();
-        
+
         if let crate::open_cypher_parser::ast::CypherStatement::Query { query, .. } = stmt {
             let return_clause = query.return_clause.as_ref().unwrap();
-            
+
             let input = vec![
                 HashMap::from([("label".to_string(), JsonValue::String("User".to_string()))]),
                 HashMap::from([("label".to_string(), JsonValue::String("Post".to_string()))]),
             ];
-            
+
             let result = apply_return_clause(input, return_clause).unwrap();
             assert_eq!(result.len(), 2);
-            assert_eq!(result[0].get("label"), Some(&JsonValue::String("User".to_string())));
+            assert_eq!(
+                result[0].get("label"),
+                Some(&JsonValue::String("User".to_string()))
+            );
         } else {
             panic!("Expected Query statement");
         }
@@ -383,18 +388,18 @@ mod tests {
         // RETURN COLLECT(label)
         let query = "RETURN COLLECT(label) AS labels";
         let (_, stmt) = open_cypher_parser::parse_cypher_statement(query).unwrap();
-        
+
         if let crate::open_cypher_parser::ast::CypherStatement::Query { query, .. } = stmt {
             let return_clause = query.return_clause.as_ref().unwrap();
-            
+
             let input = vec![
                 HashMap::from([("label".to_string(), JsonValue::String("User".to_string()))]),
                 HashMap::from([("label".to_string(), JsonValue::String("Post".to_string()))]),
             ];
-            
+
             let result = apply_return_clause(input, return_clause).unwrap();
             assert_eq!(result.len(), 1); // Aggregation returns single record
-            
+
             let labels_value = result[0].get("labels").unwrap();
             assert!(labels_value.is_array());
             assert_eq!(labels_value.as_array().unwrap().len(), 2);
@@ -408,23 +413,26 @@ mod tests {
         // RETURN {name:'labels', data:COLLECT(label)}
         let query = "RETURN {name:'labels', data:COLLECT(label)} AS result";
         let (_, stmt) = open_cypher_parser::parse_cypher_statement(query).unwrap();
-        
+
         if let crate::open_cypher_parser::ast::CypherStatement::Query { query, .. } = stmt {
             let return_clause = query.return_clause.as_ref().unwrap();
-            
+
             let input = vec![
                 HashMap::from([("label".to_string(), JsonValue::String("User".to_string()))]),
                 HashMap::from([("label".to_string(), JsonValue::String("Post".to_string()))]),
             ];
-            
+
             let result = apply_return_clause(input, return_clause).unwrap();
             assert_eq!(result.len(), 1);
-            
+
             let result_value = result[0].get("result").unwrap();
             assert!(result_value.is_object());
-            
+
             let obj = result_value.as_object().unwrap();
-            assert_eq!(obj.get("name"), Some(&JsonValue::String("labels".to_string())));
+            assert_eq!(
+                obj.get("name"),
+                Some(&JsonValue::String("labels".to_string()))
+            );
             assert!(obj.get("data").unwrap().is_array());
             assert_eq!(obj.get("data").unwrap().as_array().unwrap().len(), 2);
         } else {

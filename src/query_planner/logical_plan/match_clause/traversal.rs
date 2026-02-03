@@ -61,8 +61,11 @@ fn traverse_connected_pattern_with_mode<'a>(
     path_variable: Option<&str>,
     is_optional: bool,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
-    log::info!("🔍 TRAVERSE_CONNECTED_PATTERN called with {} patterns", connected_patterns.len());
-    
+    log::info!(
+        "🔍 TRAVERSE_CONNECTED_PATTERN called with {} patterns",
+        connected_patterns.len()
+    );
+
     crate::debug_print!("\n╔════════════════════════════════════════");
     crate::debug_print!("║ traverse_connected_pattern_with_mode");
     crate::debug_print!("║ connected_patterns.len() = {}", connected_patterns.len());
@@ -277,7 +280,8 @@ fn traverse_connected_pattern_with_mode<'a>(
                         types
                             .iter()
                             .filter_map(|rel_type| {
-                                let rel_schema = graph_schema.get_relationships_schema_opt(rel_type)?;
+                                let rel_schema =
+                                    graph_schema.get_relationships_schema_opt(rel_type)?;
                                 Some((
                                     rel_type.clone(),
                                     rel_schema.from_node.clone(),
@@ -289,14 +293,17 @@ fn traverse_connected_pattern_with_mode<'a>(
 
                     if relationship_node_types.is_empty() {
                         return Err(LogicalPlanError::QueryPlanningError(
-                            "No valid relationship schemas found for fully untyped pattern".to_string()
+                            "No valid relationship schemas found for fully untyped pattern"
+                                .to_string(),
                         ));
                     }
 
                     let mut union_branches = Vec::new();
 
                     // For each relationship type, process as a typed pattern through normal flow
-                    for (branch_idx, (rel_type, from_node_type, to_node_type)) in relationship_node_types.iter().enumerate() {
+                    for (branch_idx, (rel_type, from_node_type, to_node_type)) in
+                        relationship_node_types.iter().enumerate()
+                    {
                         log::info!(
                             "  UNION branch: (:{from_node})-[:{rel_type}]->(:{to_node})",
                             from_node = from_node_type,
@@ -326,7 +333,7 @@ fn traverse_connected_pattern_with_mode<'a>(
 
                         // Process this typed pattern through the STANDARD flow below
                         // by duplicating the "disconnected pattern" logic for each branch
-                        
+
                         // Generate scans for typed nodes
                         let (start_scan, start_is_denorm) =
                             if is_label_denormalized(&branch_start_label, plan_ctx) {
@@ -349,12 +356,11 @@ fn traverse_connected_pattern_with_mode<'a>(
                             projected_columns: None,
                         };
 
-                        let (end_scan, end_is_denorm) =
-                            generate_denormalization_aware_scan(
-                                &branch_end_alias,
-                                &branch_end_label,
-                                plan_ctx,
-                            )?;
+                        let (end_scan, end_is_denorm) = generate_denormalization_aware_scan(
+                            &branch_end_alias,
+                            &branch_end_label,
+                            plan_ctx,
+                        )?;
 
                         let end_graph_node = GraphNode {
                             input: end_scan,
@@ -364,11 +370,18 @@ fn traverse_connected_pattern_with_mode<'a>(
                             projected_columns: None,
                         };
 
-                        let (left_conn, right_conn) =
-                            compute_connection_aliases(&rel.direction, &branch_start_alias, &branch_end_alias);
+                        let (left_conn, right_conn) = compute_connection_aliases(
+                            &rel.direction,
+                            &branch_start_alias,
+                            &branch_end_alias,
+                        );
 
                         let (left_node_label_for_rel, right_node_label_for_rel) =
-                            compute_rel_node_labels(&rel.direction, &branch_start_label, &branch_end_label);
+                            compute_rel_node_labels(
+                                &rel.direction,
+                                &branch_start_label,
+                                &branch_end_label,
+                            );
 
                         let (left_node, right_node) = match rel.direction {
                             ast::Direction::Outgoing => (
@@ -426,6 +439,32 @@ fn traverse_connected_pattern_with_mode<'a>(
                             &graph_rel_node.path_variable
                         );
 
+                        // Register branch-specific node aliases in plan_ctx
+                        // This is critical for property expansion to work!
+                        register_node_in_context(
+                            plan_ctx,
+                            &left_conn,
+                            &Some(from_node_type.clone()),
+                            vec![], // Properties not used for UNION branches
+                            true,   // has_name
+                        );
+                        register_node_in_context(
+                            plan_ctx,
+                            &right_conn,
+                            &Some(to_node_type.clone()),
+                            vec![], // Properties not used for UNION branches
+                            true,   // has_name
+                        );
+
+                        log::info!(
+                            "📝 Registered branch {} node aliases: left='{}' ({}), right='{}' ({})",
+                            union_branches.len(),
+                            left_conn,
+                            from_node_type,
+                            right_conn,
+                            to_node_type
+                        );
+
                         // SIMPLE: Don't wrap in Projection - let GraphRel handle everything
                         // GraphRel already emits all node/rel properties in its SELECT
                         // We just need it to also emit the path tuple (done in select_builder.rs)
@@ -443,7 +482,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                     register_node_in_context(
                         plan_ctx,
                         &start_node_alias,
-                        &None, // No specific label for the generic alias
+                        &None,  // No specific label for the generic alias
                         vec![], // Properties not used for UNION branches
                         start_node_ref.name.is_some(),
                     );
@@ -454,7 +493,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                         vec![], // Properties not used for UNION branches
                         end_node_ref.name.is_some(),
                     );
-                    
+
                     // Register EACH branch's node aliases with CORRECT typed labels
                     for (branch_idx, branch) in union_branches.iter().enumerate() {
                         if let LogicalPlan::GraphRel(ref graph_rel) = **branch {
@@ -477,7 +516,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                                     true,
                                 );
                             }
-                            
+
                             // Register this branch's relationship alias
                             log::debug!(
                                 "Registering UNION branch {}: rel_alias='{}', labels={:?}",
@@ -503,7 +542,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                         .iter()
                         .map(|(rel_type, _, _)| rel_type.clone())
                         .collect();
-                    
+
                     plan_ctx.insert_table_ctx(
                         rel_alias.clone(),
                         crate::query_planner::plan_ctx::TableCtx::build(
@@ -516,23 +555,21 @@ fn traverse_connected_pattern_with_mode<'a>(
                     );
 
                     // Register path variable if present
-                    // Path variables for UNION patterns use ORIGINAL aliases (a, b, t3) for registration
-                    // but each branch will use its own aliases (t1_0, t2_0, t3) during SQL generation.
-                    // The SQL generator (select_builder.rs) will find the actual GraphRel to get branch aliases.
+                    // For UNION patterns: registered with original aliases, but expansion uses per-branch aliases from GraphRel
                     if let Some(pvar) = path_variable {
                         log::warn!("📍 Registering UNION path variable '{}'", pvar);
-                        
-                        // Register path with ORIGINAL aliases, not branch-specific ones
+
+                        // Register path - aliases don't matter much since expansion will use GraphRel's actual aliases
                         plan_ctx.define_path(
                             pvar.to_string(),
-                            Some(start_node_alias.clone()), // Original start alias
-                            Some(end_node_alias.clone()),   // Original end alias
-                            Some(rel_alias.clone()),        // Original rel alias
+                            Some(start_node_alias.clone()),
+                            Some(end_node_alias.clone()),
+                            Some(rel_alias.clone()),
                             None, // No length bounds for single-hop
                             shortest_path_mode.is_some(),
                         );
-                        
-                        // Register TableCtx for backward compatibility
+
+                        // Register TableCtx for ProjectionTagging
                         plan_ctx.insert_table_ctx(
                             pvar.to_string(),
                             crate::query_planner::plan_ctx::TableCtx::build(
@@ -543,16 +580,19 @@ fn traverse_connected_pattern_with_mode<'a>(
                                 true,
                             ),
                         );
-                        
+
                         log::warn!(
-                            "✅ Registered UNION path variable '{}' with aliases: start={}, end={}, rel={}",
-                            pvar, start_node_alias, end_node_alias, rel_alias
+                            "✅ Registered UNION path variable '{}' (expansion will use per-branch GraphRel aliases)",
+                            pvar
                         );
                     }
 
                     plan = Arc::new(union_plan);
 
-                    log::info!("✅ Created UNION with {} branches for fully untyped pattern", relationship_node_types.len());
+                    log::info!(
+                        "✅ Created UNION with {} branches for fully untyped pattern",
+                        relationship_node_types.len()
+                    );
 
                     // Skip the normal processing below
                     continue;
@@ -1364,18 +1404,29 @@ pub fn evaluate_match_clause_with_optional<'a>(
     plan_ctx: &mut PlanCtx,
     is_optional: bool,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
-    log::info!("🔍 EVALUATE_MATCH_CLAUSE: {} path patterns", match_clause.path_patterns.len());
-    
+    log::info!(
+        "🔍 EVALUATE_MATCH_CLAUSE: {} path patterns",
+        match_clause.path_patterns.len()
+    );
+
     for (idx, (path_variable, path_pattern)) in match_clause.path_patterns.iter().enumerate() {
-        log::info!("🔍 Pattern #{}: type={:?}, var={:?}", idx, std::mem::discriminant(path_pattern), path_variable);
-        
+        log::info!(
+            "🔍 Pattern #{}: type={:?}, var={:?}",
+            idx,
+            std::mem::discriminant(path_pattern),
+            path_variable
+        );
+
         match path_pattern {
             ast::PathPattern::Node(node_pattern) => {
                 log::info!("  → Processing as NODE pattern");
                 plan = traverse_node_pattern(node_pattern, plan, plan_ctx)?;
             }
             ast::PathPattern::ConnectedPattern(connected_patterns) => {
-                log::info!("  → Processing as CONNECTED pattern with {} connections", connected_patterns.len());
+                log::info!(
+                    "  → Processing as CONNECTED pattern with {} connections",
+                    connected_patterns.len()
+                );
                 plan = traverse_connected_pattern_with_mode(
                     connected_patterns,
                     plan,

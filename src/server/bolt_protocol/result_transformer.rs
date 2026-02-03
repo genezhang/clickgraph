@@ -158,35 +158,50 @@ pub fn extract_return_metadata(
                     Some(TypedVariable::Path(path_var)) => {
                         // VLP has length_bounds set, fixed single-hop doesn't
                         let is_vlp = path_var.length_bounds.is_some();
-                        
+
                         // Look up component types from their aliases in plan_ctx
-                        let mut start_labels = path_var.start_node.as_ref()
+                        let mut start_labels = path_var
+                            .start_node
+                            .as_ref()
                             .and_then(|alias| plan_ctx.lookup_variable(alias))
                             .and_then(|tv| tv.as_node())
                             .map(|nv| nv.labels.clone())
                             .unwrap_or_default();
-                        
-                        let mut end_labels = path_var.end_node.as_ref()
+
+                        let mut end_labels = path_var
+                            .end_node
+                            .as_ref()
                             .and_then(|alias| plan_ctx.lookup_variable(alias))
                             .and_then(|tv| tv.as_node())
                             .map(|nv| nv.labels.clone())
                             .unwrap_or_default();
-                        
-                        let mut rel_types = path_var.relationship.as_ref()
+
+                        let mut rel_types = path_var
+                            .relationship
+                            .as_ref()
                             .and_then(|alias| plan_ctx.lookup_variable(alias))
                             .and_then(|tv| tv.as_relationship())
                             .map(|rv| rv.rel_types.clone())
                             .unwrap_or_default();
-                        
+
                         // Parse composite relationship keys: "AUTHORED::User::Post" -> ("AUTHORED", "User", "Post")
                         // This happens when relationships use composite keys for disambiguation
-                        let (actual_rel_types, inferred_from_labels, inferred_to_labels): (Vec<String>, Vec<String>, Vec<String>) = 
-                            rel_types.iter().map(|rt| {
+                        let (actual_rel_types, inferred_from_labels, inferred_to_labels): (
+                            Vec<String>,
+                            Vec<String>,
+                            Vec<String>,
+                        ) = rel_types
+                            .iter()
+                            .map(|rt| {
                                 let parts: Vec<&str> = rt.split("::").collect();
                                 match parts.as_slice() {
                                     [rel_type, from_label, to_label] => {
                                         // Composite key format
-                                        (rel_type.to_string(), Some(from_label.to_string()), Some(to_label.to_string()))
+                                        (
+                                            rel_type.to_string(),
+                                            Some(from_label.to_string()),
+                                            Some(to_label.to_string()),
+                                        )
                                     }
                                     _ => {
                                         // Simple type
@@ -194,23 +209,28 @@ pub fn extract_return_metadata(
                                     }
                                 }
                             })
-                            .fold((Vec::new(), Vec::new(), Vec::new()), |(mut types, mut from, mut to), (t, f, to_label)| {
-                                types.push(t);
-                                if let Some(from_label) = f {
-                                    from.push(from_label);
-                                }
-                                if let Some(to_l) = to_label {
-                                    to.push(to_l);
-                                }
-                                (types, from, to)
-                            });
-                        
+                            .fold(
+                                (Vec::new(), Vec::new(), Vec::new()),
+                                |(mut types, mut from, mut to), (t, f, to_label)| {
+                                    types.push(t);
+                                    if let Some(from_label) = f {
+                                        from.push(from_label);
+                                    }
+                                    if let Some(to_l) = to_label {
+                                        to.push(to_l);
+                                    }
+                                    (types, from, to)
+                                },
+                            );
+
                         // Use parsed relationship types
                         rel_types = actual_rel_types;
-                        
+
                         // If we have relationship type but missing node labels (anonymous nodes),
                         // try to infer labels from the relationship schema or parsed composite key
-                        if !rel_types.is_empty() && (start_labels.is_empty() || end_labels.is_empty()) {
+                        if !rel_types.is_empty()
+                            && (start_labels.is_empty() || end_labels.is_empty())
+                        {
                             // First try inferred labels from composite key
                             if start_labels.is_empty() && !inferred_from_labels.is_empty() {
                                 start_labels = vec![inferred_from_labels[0].clone()];
@@ -218,12 +238,14 @@ pub fn extract_return_metadata(
                             if end_labels.is_empty() && !inferred_to_labels.is_empty() {
                                 end_labels = vec![inferred_to_labels[0].clone()];
                             }
-                            
+
                             // Fallback to relationship variable metadata
                             if start_labels.is_empty() || end_labels.is_empty() {
-                                if let Some(rel_var) = path_var.relationship.as_ref()
+                                if let Some(rel_var) = path_var
+                                    .relationship
+                                    .as_ref()
                                     .and_then(|alias| plan_ctx.lookup_variable(alias))
-                                    .and_then(|tv| tv.as_relationship()) 
+                                    .and_then(|tv| tv.as_relationship())
                                 {
                                     // Use from_node_label and to_node_label if available
                                     if start_labels.is_empty() {
@@ -239,7 +261,7 @@ pub fn extract_return_metadata(
                                 }
                             }
                         }
-                        
+
                         ReturnItemType::Path {
                             start_alias: path_var.start_node.clone(),
                             end_alias: path_var.end_node.clone(),
@@ -352,10 +374,20 @@ pub fn transform_row(
     metadata: &[ReturnItemMetadata],
     schema: &GraphSchema,
 ) -> Result<Vec<BoltValue>, String> {
-    log::info!("🔍 transform_row called with {} columns: {:?}", row.len(), row.keys().collect::<Vec<_>>());
-    log::info!("🔍 Metadata has {} items: {:?}", metadata.len(), 
-               metadata.iter().map(|m| (&m.field_name, &m.item_type)).collect::<Vec<_>>());
-    
+    log::info!(
+        "🔍 transform_row called with {} columns: {:?}",
+        row.len(),
+        row.keys().collect::<Vec<_>>()
+    );
+    log::info!(
+        "🔍 Metadata has {} items: {:?}",
+        metadata.len(),
+        metadata
+            .iter()
+            .map(|m| (&m.field_name, &m.item_type))
+            .collect::<Vec<_>>()
+    );
+
     // Check for multi-label scan results (has {alias}_label, {alias}_id, {alias}_properties columns)
     if let Some(transformed) = try_transform_multi_label_row(&row, metadata)? {
         return Ok(transformed);
@@ -402,14 +434,14 @@ pub fn transform_row(
                 //
                 // The SQL returns: tuple('fixed_path', start_alias, end_alias, rel_alias)
                 // We use the metadata (labels, types) from query planning
-                
+
                 if *is_vlp {
                     // VLP paths have different column format - not yet supported
                     log::warn!("VLP path transformation not yet implemented");
                     result.push(BoltValue::Json(Value::Null));
                     continue;
                 }
-                
+
                 // For fixed-hop paths, construct path using known metadata
                 let path = transform_to_path(
                     &row,
@@ -423,7 +455,7 @@ pub fn transform_row(
                     schema,
                     metadata,
                 )?;
-                
+
                 // Use the Path's packstream encoding
                 let packstream_bytes = path.to_packstream();
                 result.push(BoltValue::PackstreamBytes(packstream_bytes));
@@ -664,47 +696,328 @@ fn transform_to_path(
     let start_alias = start_alias.unwrap_or("_start");
     let end_alias = end_alias.unwrap_or("_end");
     let rel_alias = rel_alias.unwrap_or("_rel");
-    
+
     log::debug!(
         "transform_to_path: path={}, start={}({:?}), end={}({:?}), rel={}({:?})",
-        path_name, start_alias, start_labels, end_alias, end_labels, rel_alias, rel_types
+        path_name,
+        start_alias,
+        start_labels,
+        end_alias,
+        end_labels,
+        rel_alias,
+        rel_types
     );
-    
+
+    // Check for JSON format first (UNION path queries)
+    // Format: _start_properties, _end_properties, _rel_properties
+    if row.contains_key("_start_properties") && row.contains_key("_end_properties") {
+        log::info!("🎯 Detected JSON format for path - parsing _start_properties, _end_properties, _rel_properties");
+        return transform_path_from_json(row, start_labels, end_labels, rel_types);
+    }
+
+    // Original format: individual columns for each property
     // Try to get start node data from row, or create with known label
-    let start_node = find_node_in_row_with_label(row, start_alias, start_labels, return_metadata, schema)
-        .unwrap_or_else(|| {
-            let label = start_labels.first().cloned().unwrap_or_else(|| "_Unknown".to_string());
-            log::info!("Creating start node with label: {}", label);
-            create_node_with_label(&label, 0)
-        });
-    
+    let start_node =
+        find_node_in_row_with_label(row, start_alias, start_labels, return_metadata, schema)
+            .unwrap_or_else(|| {
+                let label = start_labels
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "_Unknown".to_string());
+                log::info!("Creating start node with label: {}", label);
+                create_node_with_label(&label, 0)
+            });
+
     // Try to get end node data from row, or create with known label
     let end_node = find_node_in_row_with_label(row, end_alias, end_labels, return_metadata, schema)
         .unwrap_or_else(|| {
-            let label = end_labels.first().cloned().unwrap_or_else(|| "_Unknown".to_string());
+            let label = end_labels
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "_Unknown".to_string());
             log::info!("Creating end node with label: {}", label);
             create_node_with_label(&label, 1)
         });
-    
+
     // Try to get relationship data from row, or create with known type
     let relationship = find_relationship_in_row_with_type(
-        row, rel_alias, &start_node.element_id, &end_node.element_id, 
-        rel_types, start_labels, end_labels, return_metadata, schema
-    ).unwrap_or_else(|| {
-        let rel_type = rel_types.first().cloned().unwrap_or_else(|| "_UNKNOWN".to_string());
+        row,
+        rel_alias,
+        &start_node.element_id,
+        &end_node.element_id,
+        rel_types,
+        start_labels,
+        end_labels,
+        return_metadata,
+        schema,
+    )
+    .unwrap_or_else(|| {
+        let rel_type = rel_types
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "_UNKNOWN".to_string());
         log::info!("Creating relationship with type: {}", rel_type);
         create_relationship_with_type(&rel_type, &start_node.element_id, &end_node.element_id)
     });
-    
+
     log::info!(
         "Path created: start_node.labels={:?}, end_node.labels={:?}, rel.type={}",
-        start_node.labels, end_node.labels, relationship.rel_type
+        start_node.labels,
+        end_node.labels,
+        relationship.rel_type
     );
-    
+
     // Create Path with single-hop structure
     // Indices for single hop: [1, 1] means "relationship index 1, then node index 1"
     // (Neo4j uses 1-based indexing in path indices)
     Ok(Path::single_hop(start_node, relationship, end_node))
+}
+
+/// Transform path from JSON format (UNION path queries)
+/// Parses _start_properties, _end_properties, _rel_properties JSON strings
+fn transform_path_from_json(
+    row: &HashMap<String, Value>,
+    start_labels: &[String],
+    end_labels: &[String],
+    rel_types: &[String],
+) -> Result<Path, String> {
+    // Parse start node properties from JSON
+    let start_props: HashMap<String, Value> = match row.get("_start_properties") {
+        Some(Value::String(json_str)) => {
+            serde_json::from_str(json_str).unwrap_or_else(|_| HashMap::new())
+        }
+        _ => HashMap::new(),
+    };
+
+    // Parse end node properties from JSON
+    let end_props: HashMap<String, Value> = match row.get("_end_properties") {
+        Some(Value::String(json_str)) => {
+            serde_json::from_str(json_str).unwrap_or_else(|_| HashMap::new())
+        }
+        _ => HashMap::new(),
+    };
+
+    // Parse relationship properties from JSON
+    let rel_props: HashMap<String, Value> = match row.get("_rel_properties") {
+        Some(Value::String(json_str)) => {
+            if json_str == "{}" {
+                HashMap::new() // Empty for denormalized relationships
+            } else {
+                serde_json::from_str(json_str).unwrap_or_else(|_| HashMap::new())
+            }
+        }
+        _ => HashMap::new(),
+    };
+
+    log::info!(
+        "📦 Parsed JSON: start_props keys={:?}, end_props keys={:?}, rel_props keys={:?}",
+        start_props.keys().collect::<Vec<_>>(),
+        end_props.keys().collect::<Vec<_>>(),
+        rel_props.keys().collect::<Vec<_>>()
+    );
+
+    // Infer node labels from properties (for UNION queries where each row can have different types)
+    let start_label = infer_label_from_props(&start_props, start_labels);
+    let end_label = infer_label_from_props(&end_props, end_labels);
+    let rel_type = infer_rel_type_from_props(&rel_props, rel_types);
+
+    // Create start node with inferred label and properties
+    let start_id = extract_id_from_props(&start_props, "user_id", "post_id", "id");
+    let start_element_id = generate_node_element_id(&start_label, &[&start_id.to_string()]);
+    // Clean property keys (remove table alias prefix like "t1_0.")
+    let start_props_clean = clean_property_keys(start_props);
+    let start_node = Node::new(
+        start_id,
+        vec![start_label.clone()],
+        start_props_clean,
+        start_element_id,
+    );
+
+    // Create end node with inferred label and properties
+    let end_id = extract_id_from_props(&end_props, "user_id", "post_id", "id");
+    let end_element_id = generate_node_element_id(&end_label, &[&end_id.to_string()]);
+    // Clean property keys
+    let end_props_clean = clean_property_keys(end_props);
+    let end_node = Node::new(
+        end_id,
+        vec![end_label.clone()],
+        end_props_clean,
+        end_element_id,
+    );
+
+    // Create relationship with type and properties
+    let rel_id = extract_id_from_props(&rel_props, "from_id", "follower_id", "user_id");
+    let from_id_str = start_id.to_string();
+    let to_id_str = end_id.to_string();
+    let rel_element_id = generate_relationship_element_id(&rel_type, &from_id_str, &to_id_str);
+    let rel_props_clean = clean_property_keys(rel_props);
+    let relationship = Relationship::new(
+        rel_id,
+        start_id, // start_node_id
+        end_id,   // end_node_id
+        rel_type.clone(),
+        rel_props_clean,
+        rel_element_id,
+        start_node.element_id.clone(),
+        end_node.element_id.clone(),
+    );
+
+    log::info!(
+        "✅ Path from JSON: start={} ({}), end={} ({}), rel={}",
+        start_node.labels[0],
+        start_node.id,
+        end_node.labels[0],
+        end_node.id,
+        relationship.rel_type
+    );
+
+    Ok(Path::single_hop(start_node, relationship, end_node))
+}
+
+/// Infer node label from properties
+/// Uses property names to determine if this is a User, Post, etc.
+fn infer_label_from_props(props: &HashMap<String, Value>, fallback_labels: &[String]) -> String {
+    // Check for characteristic properties to infer type
+    let keys: Vec<&String> = props.keys().collect();
+    let keys_str: Vec<&str> = keys.iter().map(|k| k.as_str()).collect();
+
+    // Check for post-specific properties (post_id, content, created_at with no user-specific props)
+    let has_post_id = keys_str.iter().any(|k| k.contains("post_id"));
+    let has_content = keys_str.iter().any(|k| k.contains("content"));
+
+    // Check for user-specific properties
+    let has_user_id = keys_str
+        .iter()
+        .any(|k| k.contains("user_id") && !k.contains("post"));
+    let has_full_name = keys_str
+        .iter()
+        .any(|k| k.contains("full_name") || k.contains("name"));
+    let has_email = keys_str.iter().any(|k| k.contains("email"));
+
+    if has_post_id && has_content {
+        return "Post".to_string();
+    }
+    if has_user_id && (has_full_name || has_email) {
+        return "User".to_string();
+    }
+    if has_post_id && !has_user_id {
+        return "Post".to_string();
+    }
+    if has_user_id {
+        return "User".to_string();
+    }
+
+    // Fall back to provided labels
+    fallback_labels
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "Node".to_string())
+}
+
+/// Infer relationship type from properties
+fn infer_rel_type_from_props(props: &HashMap<String, Value>, fallback_types: &[String]) -> String {
+    let keys: Vec<&String> = props.keys().collect();
+
+    // Check for characteristic relationship properties
+    let has_follower = keys.iter().any(|k| k.contains("follower"));
+    let has_followed = keys.iter().any(|k| k.contains("followed"));
+    let has_like = keys
+        .iter()
+        .any(|k| k.contains("like") || k.contains("liked"));
+    let has_since = keys.iter().any(|k| k.contains("since"));
+
+    if has_follower && has_followed {
+        return "FOLLOWS".to_string();
+    }
+    if has_like {
+        return "LIKED".to_string();
+    }
+    if has_since && !has_follower {
+        return "FRIENDS_WITH".to_string();
+    }
+
+    // Empty props usually means denormalized relationship (AUTHORED)
+    if props.is_empty() {
+        return "AUTHORED".to_string();
+    }
+
+    fallback_types
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "RELATED_TO".to_string())
+}
+
+/// Clean property keys by removing:
+/// 1. Table alias prefixes (e.g., "t1_0.city" -> "city")  
+/// 2. JSON uniqueness prefixes (e.g., "_s_city" -> "city", "_e_name" -> "name", "_r_from_id" -> "from_id")
+fn clean_property_keys(props: HashMap<String, Value>) -> HashMap<String, Value> {
+    props
+        .into_iter()
+        .map(|(k, v)| {
+            let mut clean_key = k.clone();
+
+            // Remove table alias prefix like "t1_0." or "t2_3."
+            if let Some(dot_pos) = clean_key.find('.') {
+                clean_key = clean_key[dot_pos + 1..].to_string();
+            }
+
+            // Remove JSON uniqueness prefixes: _s_, _e_, _r_
+            for prefix in &["_s_", "_e_", "_r_"] {
+                if clean_key.starts_with(prefix) {
+                    clean_key = clean_key[prefix.len()..].to_string();
+                    break;
+                }
+            }
+
+            (clean_key, v)
+        })
+        .collect()
+}
+
+/// Extract ID from properties HashMap, trying multiple possible ID field names
+/// Also handles prefixed keys like "t1_0.user_id" or "_s_user_id" by checking if key ends with the ID field
+fn extract_id_from_props(props: &HashMap<String, Value>, id1: &str, id2: &str, id3: &str) -> i64 {
+    // First try exact match
+    for id_field in &[id1, id2, id3] {
+        if let Some(val) = props.get(*id_field) {
+            if let Some(id) = value_to_i64(val) {
+                return id;
+            }
+        }
+    }
+
+    // Then try prefixed match (_s_, _e_, _r_ prefixes)
+    for id_field in &[id1, id2, id3] {
+        for prefix in &["_s_", "_e_", "_r_"] {
+            let prefixed_key = format!("{}{}", prefix, id_field);
+            if let Some(val) = props.get(&prefixed_key) {
+                if let Some(id) = value_to_i64(val) {
+                    return id;
+                }
+            }
+        }
+    }
+
+    // Finally try suffix match (for table alias prefixed keys like "t1_0.user_id")
+    for (key, val) in props {
+        for id_field in &[id1, id2, id3] {
+            if key.ends_with(&format!(".{}", id_field)) || key.ends_with(id_field) {
+                if let Some(id) = value_to_i64(val) {
+                    return id;
+                }
+            }
+        }
+    }
+
+    0
+}
+
+fn value_to_i64(val: &Value) -> Option<i64> {
+    match val {
+        Value::Number(n) => n.as_i64(),
+        Value::String(s) => s.parse::<i64>().ok(),
+        _ => None,
+    }
 }
 
 /// Find a node in the result row by its alias, using known labels
@@ -715,9 +1028,13 @@ fn find_node_in_row_with_label(
     return_metadata: &[ReturnItemMetadata],
     schema: &GraphSchema,
 ) -> Option<Node> {
-    log::info!("🔍 find_node_in_row_with_label: alias='{}', known_labels={:?}, row_keys={:?}", 
-               alias, known_labels, row.keys().collect::<Vec<_>>());
-    
+    log::info!(
+        "🔍 find_node_in_row_with_label: alias='{}', known_labels={:?}, row_keys={:?}",
+        alias,
+        known_labels,
+        row.keys().collect::<Vec<_>>()
+    );
+
     // First try the return metadata approach
     for meta in return_metadata {
         if meta.field_name == alias {
@@ -726,48 +1043,64 @@ fn find_node_in_row_with_label(
             }
         }
     }
-    
+
     // Check if there are properties in the row with this alias prefix
     let prefix = format!("{}.", alias);
     let mut properties = HashMap::new();
-    
+
     for (key, value) in row.iter() {
         if let Some(prop_name) = key.strip_prefix(&prefix) {
             properties.insert(prop_name.to_string(), value.clone());
         }
     }
-    
-    log::info!("🔍 Found {} properties for alias '{}' with prefix '{}'", 
-               properties.len(), alias, prefix);
-    
+
+    log::info!(
+        "🔍 Found {} properties for alias '{}' with prefix '{}'",
+        properties.len(),
+        alias,
+        prefix
+    );
+
     if properties.is_empty() {
         return None;
     }
-    
+
     // Use the known label from path metadata (already extracted from composite keys)
     let label = known_labels.first()?;
-    
+
     // Get node schema
     let node_schema = schema.node_schema_opt(label)?;
-    
+
     // Get ID columns from schema
     let id_columns = node_schema.node_id.id.columns();
     let id_values: Vec<String> = id_columns
         .iter()
         .filter_map(|col| properties.get(*col).and_then(value_to_string))
         .collect();
-    
+
     if id_values.is_empty() {
-        log::warn!("No ID values found for node '{}' with label '{}'", alias, label);
+        log::warn!(
+            "No ID values found for node '{}' with label '{}'",
+            alias,
+            label
+        );
         return None;
     }
-    
-    let element_id = generate_node_element_id(label, &id_values.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+
+    let element_id = generate_node_element_id(
+        label,
+        &id_values.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+    );
     let id: i64 = id_values.first().and_then(|s| s.parse().ok()).unwrap_or(0);
-    
-    log::info!("✅ Found node '{}' in row: label={}, properties={}, element_id={}", 
-               alias, label, properties.len(), element_id);
-    
+
+    log::info!(
+        "✅ Found node '{}' in row: label={}, properties={}, element_id={}",
+        alias,
+        label,
+        properties.len(),
+        element_id
+    );
+
     Some(Node {
         id,
         labels: vec![label.clone()],
@@ -792,29 +1125,34 @@ fn find_node_in_row(
             }
         }
     }
-    
+
     // Check if it's in the row with property prefixes (e.g., "t1.user_id")
     let prefix = format!("{}.", alias);
     let mut properties = std::collections::HashMap::new();
-    
+
     for (key, value) in row.iter() {
         if let Some(prop_name) = key.strip_prefix(&prefix) {
             properties.insert(prop_name.to_string(), value.clone());
         }
     }
-    
+
     if properties.is_empty() {
         return None;
     }
-    
+
     // Try to guess label from schema by looking at property names
     // This is a heuristic - we check which node type has these properties
     for (label, node_schema) in schema.all_node_schemas() {
-        let schema_props: std::collections::HashSet<&String> = node_schema.property_mappings.keys().collect();
-        let row_props: std::collections::HashSet<&str> = properties.keys().map(|s| s.as_str()).collect();
-        
+        let schema_props: std::collections::HashSet<&String> =
+            node_schema.property_mappings.keys().collect();
+        let row_props: std::collections::HashSet<&str> =
+            properties.keys().map(|s| s.as_str()).collect();
+
         // If most row properties match schema properties, this is likely the right label
-        let matches = row_props.iter().filter(|p| schema_props.iter().any(|sp| sp.as_str() == **p)).count();
+        let matches = row_props
+            .iter()
+            .filter(|p| schema_props.iter().any(|sp| sp.as_str() == **p))
+            .count();
         if matches > 0 && matches >= row_props.len() / 2 {
             // Found a matching label
             let id_columns = node_schema.node_id.id.columns();
@@ -822,11 +1160,11 @@ fn find_node_in_row(
                 .iter()
                 .filter_map(|col| properties.get(*col).and_then(value_to_string))
                 .collect();
-            
+
             if !id_values.is_empty() {
                 let element_id = format!("{}:{}", label, id_values.join("|"));
                 let id: i64 = id_values.first().and_then(|s| s.parse().ok()).unwrap_or(0);
-                
+
                 return Some(Node {
                     id,
                     labels: vec![label.clone()],
@@ -836,7 +1174,7 @@ fn find_node_in_row(
             }
         }
     }
-    
+
     None
 }
 
@@ -855,45 +1193,63 @@ fn find_relationship_in_row_with_type(
     // First try return metadata
     for meta in return_metadata {
         if meta.field_name == alias {
-            if let ReturnItemType::Relationship { rel_types, from_label, to_label } = &meta.item_type {
+            if let ReturnItemType::Relationship {
+                rel_types,
+                from_label,
+                to_label,
+            } = &meta.item_type
+            {
                 return transform_to_relationship(
-                    row, alias, rel_types,
-                    from_label.as_deref(), to_label.as_deref(), schema
-                ).ok();
+                    row,
+                    alias,
+                    rel_types,
+                    from_label.as_deref(),
+                    to_label.as_deref(),
+                    schema,
+                )
+                .ok();
             }
         }
     }
-    
+
     // Check if there are properties in the row with this alias prefix
     let prefix = format!("{}.", alias);
     let mut properties = HashMap::new();
-    
+
     for (key, value) in row.iter() {
         if let Some(prop_name) = key.strip_prefix(&prefix) {
             properties.insert(prop_name.to_string(), value.clone());
         }
     }
-    
+
     if properties.is_empty() {
         return None;
     }
-    
+
     // Use the known relationship type from path metadata
     let rel_type = known_rel_types.first()?;
     let from_label = from_labels.first()?;
     let to_label = to_labels.first()?;
-    
-    log::info!("✅ Found relationship '{}' in row: type={}, properties={}", 
-               alias, rel_type, properties.len());
-    
+
+    log::info!(
+        "✅ Found relationship '{}' in row: type={}, properties={}",
+        alias,
+        rel_type,
+        properties.len()
+    );
+
     // Extract node IDs from element_ids (format: "Label:id")
-    let start_id = start_element_id.split(':').nth(1)
+    let start_id = start_element_id
+        .split(':')
+        .nth(1)
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or(0);
-    let end_id = end_element_id.split(':').nth(1)
+    let end_id = end_element_id
+        .split(':')
+        .nth(1)
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or(0);
-    
+
     // Generate unique relationship ID by combining start and end IDs
     // Use a simple hash: (start_id << 32) | end_id
     // This ensures each unique (from, to) pair gets a unique ID
@@ -902,7 +1258,7 @@ fn find_relationship_in_row_with_type(
     } else {
         0
     };
-    
+
     // Create relationship with extracted properties
     Some(Relationship {
         id: rel_id,
@@ -910,7 +1266,7 @@ fn find_relationship_in_row_with_type(
         end_node_id: end_id,
         rel_type: rel_type.clone(),
         properties,
-        element_id: format!("{}:{}->{}",rel_type, start_id, end_id),
+        element_id: format!("{}:{}->{}", rel_type, start_id, end_id),
         start_node_element_id: start_element_id.to_string(),
         end_node_element_id: end_element_id.to_string(),
     })
@@ -928,41 +1284,57 @@ fn find_relationship_in_row(
     // Look for this alias in return metadata
     for meta in return_metadata {
         if meta.field_name == alias {
-            if let ReturnItemType::Relationship { rel_types, from_label, to_label } = &meta.item_type {
+            if let ReturnItemType::Relationship {
+                rel_types,
+                from_label,
+                to_label,
+            } = &meta.item_type
+            {
                 // Found it! Try to transform
                 return transform_to_relationship(
-                    row, alias, rel_types,
-                    from_label.as_deref(), to_label.as_deref(), schema
-                ).ok();
+                    row,
+                    alias,
+                    rel_types,
+                    from_label.as_deref(),
+                    to_label.as_deref(),
+                    schema,
+                )
+                .ok();
             }
         }
     }
-    
+
     // Check if it's in the row with property prefixes
     let prefix = format!("{}.", alias);
     let mut properties = std::collections::HashMap::new();
-    
+
     for (key, value) in row.iter() {
         if let Some(prop_name) = key.strip_prefix(&prefix) {
             properties.insert(prop_name.to_string(), value.clone());
         }
     }
-    
+
     if properties.is_empty() {
         return None;
     }
-    
+
     // Try to guess relationship type from schema
     for (rel_type, rel_schema) in schema.get_relationships_schemas() {
         // Check if this relationship type's properties match
         let from_col = &rel_schema.from_id;
         let to_col = &rel_schema.to_id;
-        
+
         if properties.contains_key(from_col) && properties.contains_key(to_col) {
-            let from_id = properties.get(from_col).and_then(value_to_string).unwrap_or_default();
-            let to_id = properties.get(to_col).and_then(value_to_string).unwrap_or_default();
-            let element_id = format!("{}:{}->{}",rel_type, from_id, to_id);
-            
+            let from_id = properties
+                .get(from_col)
+                .and_then(value_to_string)
+                .unwrap_or_default();
+            let to_id = properties
+                .get(to_col)
+                .and_then(value_to_string)
+                .unwrap_or_default();
+            let element_id = format!("{}:{}->{}", rel_type, from_id, to_id);
+
             return Some(Relationship {
                 id: 0,
                 start_node_id: 0,
@@ -975,7 +1347,7 @@ fn find_relationship_in_row(
             });
         }
     }
-    
+
     None
 }
 
@@ -1028,7 +1400,7 @@ fn create_relationship_with_type(
     // Extract just the ID portions from element IDs (format: "Label:id")
     let start_id = start_element_id.split(':').last().unwrap_or("0");
     let end_id = end_element_id.split(':').last().unwrap_or("0");
-    
+
     Relationship {
         id: 0,
         start_node_id: 0,
@@ -1036,7 +1408,7 @@ fn create_relationship_with_type(
         rel_type: rel_type.to_string(),
         properties: std::collections::HashMap::new(),
         // Use simpler elementId format: TYPE:from_id->to_id
-        element_id: format!("{}:{}->{}",rel_type, start_id, end_id),
+        element_id: format!("{}:{}->{}", rel_type, start_id, end_id),
         start_node_element_id: start_element_id.to_string(),
         end_node_element_id: end_element_id.to_string(),
     }
@@ -1101,9 +1473,7 @@ fn try_transform_multi_label_row(
                 }
                 Some(Value::Object(map)) => {
                     // Already parsed as object
-                    map.iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect()
+                    map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
                 }
                 _ => HashMap::new(),
             };
