@@ -7,9 +7,10 @@
 **v0.6.2** - Production-ready graph query engine for ClickHouse
 
 **Test Status**:
-- ✅ Unit tests: 936/936 passing (100%)
+- ✅ Unit tests: 943/943 passing (100%)
 - ✅ Parser tests: 184/184 passing (100%)
-- ✅ Integration tests: 932/935 passing (99.7%)
+- ✅ Integration tests: 935/938 passing (99.7%)
+  - 3 integration tests for UNION ALL passing
   - 3 pre-existing failures (unrelated to recent changes)
 
 **Recent Completed Features**:
@@ -30,6 +31,46 @@
 - **Example Query**: `MATCH p=()-->() RETURN p LIMIT 25`
 - **Impact**: ✨ **Neo4j Browser "dot" feature fully functional**
 - **Files**: `render_plan/plan_builder.rs`, `render_plan/plan_builder_helpers.rs`, `render_plan/select_builder.rs`, `server/bolt_protocol/result_transformer.rs`
+
+### ✅ Top-Level UNION ALL (Feb 2, 2026) - USER QUERIES
+- **Feature**: Support for explicit UNION/UNION ALL clauses combining independent queries
+- **What Works**:
+  - Multiple independent query branches combined with UNION or UNION ALL
+  - Per-branch clauses (DISTINCT, LIMIT, WHERE, ORDER BY)
+  - Mixed entity types (nodes and relationships in same result set)
+  - Temporal and categorical aggregations across different queries
+- **Syntax**: 
+  ```cypher
+  MATCH (u:User) WHERE u.user_id = 1 RETURN u.name
+  UNION ALL
+  MATCH (p:Post) WHERE p.post_id = 1 RETURN p.title AS name
+  ```
+- **Requirements**:
+  - Column count must match across branches
+  - Column names must match
+  - Types should be compatible (ClickHouse requirement)
+- **Known Limitations**:
+  - Requires explicit labels (`:User`, `:Post`); untyped patterns (`MATCH (n)`) require Track C
+  - Type casting may be needed for incompatible types
+- **Testing**: 
+  - 943/943 unit tests passing (100%)
+  - 3/3 integration tests passing (100%)
+- **Examples**:
+  ```cypher
+  -- Multi-type aggregation
+  MATCH (u:User) RETURN "users" AS type, count(*) AS count
+  UNION ALL
+  MATCH ()-[r:FOLLOWS]->() RETURN "follows" AS type, count(*) AS count
+  
+  -- Schema merging
+  MATCH (u:User) RETURN u.name, u.email, "user" AS source
+  UNION ALL
+  MATCH (a:Admin) RETURN a.name, a.email, "admin" AS source
+  ```
+- **Impact**: Enables combining multiple independent graph queries in a single request
+- **Files**: `server/handlers.rs`, `server/sql_generation_handler.rs`, `tests/integration/test_union_all.py`
+- **Branch**: `feature/top-level-union-all`
+- **Documentation**: [Cypher Language Reference - UNION](docs/wiki/Cypher-Language-Reference.md#union-and-union-all)
 
 ### ✅ Label-less Node Queries (Feb 1, 2026) - NEO4J COMPATIBILITY
 - **Feature**: Support for `MATCH (n) RETURN n` without explicit label

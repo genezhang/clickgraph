@@ -2,6 +2,35 @@
 
 ### 🚀 Features
 
+- **Top-Level UNION ALL Support** (Feb 3, 2026): Combine multiple independent queries with UNION/UNION ALL
+  - **Syntax**: `query1 UNION ALL query2` for combining results from different queries
+  - **Features**:
+    - Per-branch clauses: DISTINCT, LIMIT, WHERE, ORDER BY supported in each branch
+    - Mixed entity types: Nodes and relationships can be combined in same result set
+    - Both UNION (removes duplicates) and UNION ALL (keeps duplicates) supported
+  - **Requirements**:
+    - Column count and names must match across branches
+    - Types should be compatible (ClickHouse requirement)
+  - **Known Limitations**:
+    - Requires explicit labels (`:User`, `:Post`); untyped patterns (`MATCH (n)`) require Track C
+    - Type casting may be needed for incompatible types across branches
+  - **Testing**: 3 integration tests covering simple unions, DISTINCT/LIMIT, and mixed node/relationship queries
+  - **Examples**:
+    ```cypher
+    -- Multi-type aggregation
+    MATCH (u:User) RETURN "users" AS type, count(*) AS count
+    UNION ALL
+    MATCH ()-[r:FOLLOWS]->() RETURN "follows" AS type, count(*) AS count
+    
+    -- Schema merging
+    MATCH (u:User) RETURN u.name, u.email, "user" AS source
+    UNION ALL
+    MATCH (a:Admin) RETURN a.name, a.email, "admin" AS source
+    ```
+  - **Files**: `server/handlers.rs`, `server/sql_generation_handler.rs`, `tests/integration/test_union_all.py`
+  - **Branch**: `feature/top-level-union-all`
+  - **Documentation**: Added comprehensive section in [Cypher Language Reference](docs/wiki/Cypher-Language-Reference.md#union-and-union-all)
+
 - **Path UNION Queries for Neo4j Browser "Dot" Feature** (Feb 2, 2026): ⭐ **NEO4J COMPATIBILITY**
   - **Problem**: Neo4j Browser's dot query explorer sends `MATCH p=()-->() RETURN p` but ClickGraph couldn't handle untyped paths with properties
   - **Solution**: Reused Union infrastructure to generate UNION ALL across all relationship types with JSON property format

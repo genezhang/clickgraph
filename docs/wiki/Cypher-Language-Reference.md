@@ -14,6 +14,7 @@ Complete syntax reference for Cypher queries supported by ClickGraph.
 - [WHERE Clause](#where-clause)
 - [RETURN Clause](#return-clause)
 - [WITH Clause](#with-clause)
+- [UNION and UNION ALL](#union-and-union-all) ⭐ **NEW**
 - [UNWIND Clause](#unwind-clause)
 - [ORDER BY, LIMIT, SKIP](#order-by-limit-skip)
 - [Aggregation Functions](#aggregation-functions)
@@ -592,6 +593,189 @@ RETURN src.ip, d.name, dest.ip
 - The WHERE clause creates the JOIN condition between tables
 - Works with denormalized edge schemas
 - Generates efficient INNER JOINs in the SQL
+
+---
+
+## UNION and UNION ALL
+
+The `UNION` and `UNION ALL` clauses combine results from multiple queries into a single result set.
+
+### Syntax
+
+```cypher
+query1
+UNION [ALL]
+query2
+[UNION [ALL] query3 ...]
+```
+
+- **UNION**: Removes duplicate rows from the combined result set
+- **UNION ALL**: Keeps all rows, including duplicates (faster, recommended)
+
+### Requirements
+
+1. **Column Count**: All queries must return the same number of columns
+2. **Column Names**: Column names must match across all branches
+3. **Type Compatibility**: Column types should be compatible (ClickHouse requirement)
+
+### Examples
+
+#### Simple UNION ALL
+```cypher
+-- Combine users from two conditions
+MATCH (u:User) WHERE u.user_id = 1
+RETURN u.name, u.email
+UNION ALL
+MATCH (u:User) WHERE u.user_id = 2
+RETURN u.name, u.email
+```
+
+#### Multi-Type Aggregation
+```cypher
+-- Count different entity types
+MATCH (u:User)
+RETURN "users" AS type, count(*) AS count
+UNION ALL
+MATCH ()-[r:FOLLOWS]->()
+RETURN "follows" AS type, count(*) AS count
+```
+
+#### Temporal Queries
+```cypher
+-- Categorize data by date
+MATCH (e:Event) WHERE e.date > '2024-01-01'
+RETURN "new" AS category, e.name, e.date
+UNION ALL
+MATCH (e:Event) WHERE e.date <= '2024-01-01'
+RETURN "old" AS category, e.name, e.date
+```
+
+#### Schema Merging
+```cypher
+-- Combine similar entities from different labels
+MATCH (u:User)
+RETURN u.name, u.email, "user" AS source
+UNION ALL
+MATCH (a:Admin)
+RETURN a.name, a.email, "admin" AS source
+```
+
+### Per-Branch Clauses
+
+Each query in a UNION can have its own clauses:
+
+```cypher
+-- DISTINCT and LIMIT per branch
+MATCH (u:User)
+RETURN DISTINCT u.country LIMIT 10
+UNION ALL
+MATCH (p:Post)
+RETURN DISTINCT p.category LIMIT 5
+
+-- WHERE and ORDER BY per branch
+MATCH (u:User) WHERE u.active = true
+RETURN u.name ORDER BY u.name
+UNION ALL
+MATCH (p:Product) WHERE p.in_stock = true
+RETURN p.name ORDER BY p.price
+```
+
+### Type Compatibility
+
+ClickHouse requires compatible types across branches. Use casting if needed:
+
+```cypher
+-- ✅ Compatible types
+MATCH (u:User) RETURN toString(u.user_id) AS id
+UNION ALL
+MATCH (e:Event) RETURN toString(e.event_id) AS id
+
+-- ❌ Incompatible types (will fail)
+MATCH (u:User) RETURN u.user_id        -- UInt32
+UNION ALL
+MATCH (e:Event) RETURN e.date          -- Date
+```
+
+### Column Alignment
+
+Use NULL for missing columns:
+
+```cypher
+-- Add placeholder columns
+MATCH (u:User)
+RETURN u.name, u.email, NULL AS post_content
+UNION ALL
+MATCH (p:Post)
+RETURN p.author AS name, NULL AS email, p.content AS post_content
+```
+
+### UNION vs UNION ALL
+
+**UNION ALL** (recommended):
+- Keeps all rows including duplicates
+- Faster - no deduplication step
+- Use when duplicates are acceptable or expected
+
+**UNION** (removes duplicates):
+- Automatically removes duplicate rows
+- Slower - requires distinct operation
+- Use when guaranteed unique results are needed
+
+```cypher
+-- UNION ALL - faster, keeps duplicates
+MATCH (u:User) WHERE u.country = 'US' RETURN u.name
+UNION ALL
+MATCH (u:User) WHERE u.active = true RETURN u.name
+-- May return same user twice if active US user
+
+-- UNION - slower, removes duplicates
+MATCH (u:User) WHERE u.country = 'US' RETURN u.name
+UNION
+MATCH (u:User) WHERE u.active = true RETURN u.name
+-- Each user appears only once
+```
+
+### Common Errors
+
+**Different Column Count**:
+```cypher
+-- ❌ Error: Different column counts
+MATCH (u:User) RETURN u.name
+UNION ALL
+MATCH (p:Post) RETURN p.title, p.content  -- 2 columns vs 1
+```
+
+**Mismatched Column Names**:
+```cypher
+-- ❌ Error: Column names don't match
+MATCH (u:User) RETURN u.name
+UNION ALL
+MATCH (p:Post) RETURN p.title AS post_title  -- name vs post_title
+```
+
+**Type Incompatibility**:
+```cypher
+-- ❌ Error: Cannot union UInt32 with Date
+MATCH (u:User) RETURN u.user_id
+UNION ALL
+MATCH (e:Event) RETURN e.date
+```
+
+### Known Limitations
+
+1. **Typed Patterns Only**: Currently requires explicit labels (`:User`, `:FOLLOWS`)
+   - ✅ Works: `MATCH (u:User) RETURN u UNION ALL MATCH (p:Post) RETURN p`
+   - ❌ Not Yet: `MATCH (n) RETURN n UNION ALL MATCH ()-[r]-() RETURN r` (requires Track C)
+
+2. **Type Compatibility**: All column types must be compatible (ClickHouse limitation)
+
+3. **Column Alignment**: Manual NULL padding required for different schemas
+
+### See Also
+
+- [WITH Clause](#with-clause) - For query chaining and subqueries
+- [RETURN Clause](#return-clause) - For projection syntax
+- [DISTINCT](#return-clause) - For removing duplicates within a single query
 
 ---
 

@@ -303,14 +303,23 @@ pub async fn query_handler(
     // 🔧 FIX: Validate query syntax FIRST before schema lookup
     // This prevents misleading "Schema not found" errors when query has syntax errors
     // Quick syntax validation (doesn't need full planning)
-    let schema_name = match open_cypher_parser::parse_query(&clean_query) {
-        Ok(ast) => {
+    // Note: Use parse_cypher_statement to support UNION ALL queries
+    let schema_name = match open_cypher_parser::parse_cypher_statement(&clean_query) {
+        Ok((_, statement)) => {
             // Parse succeeded - extract schema name from USE clause
-            if let Some(ref use_clause) = ast.use_clause {
-                use_clause.database_name.to_string()
-            } else {
-                // No USE clause - use request parameter or "default"
-                schema_name_param.unwrap_or_else(|| "default".to_string())
+            match statement {
+                open_cypher_parser::ast::CypherStatement::Query { query, .. } => {
+                    if let Some(ref use_clause) = query.use_clause {
+                        use_clause.database_name.to_string()
+                    } else {
+                        // No USE clause - use request parameter or "default"
+                        schema_name_param.unwrap_or_else(|| "default".to_string())
+                    }
+                }
+                open_cypher_parser::ast::CypherStatement::ProcedureCall(_) => {
+                    // Procedure calls don't have USE clauses
+                    schema_name_param.unwrap_or_else(|| "default".to_string())
+                }
             }
         }
         Err(e) => {
