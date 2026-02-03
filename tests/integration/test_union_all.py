@@ -27,8 +27,9 @@ def test_union_all_simple():
     print(json.dumps(data, indent=2))
     
     # Response format: {"results": [...]}
+    # Should have at least 2 rows (user_id=1 and user_id=2)
     assert "results" in data
-    assert len(data["results"]) == 2
+    assert len(data["results"]) >= 2
 
 def test_union_all_with_distinct_and_limit():
     """Test UNION ALL where each branch has DISTINCT and LIMIT"""

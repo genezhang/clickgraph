@@ -55,18 +55,16 @@ pub async fn sql_generation_handler(
     let schema_name = if clean_query.to_uppercase().starts_with("USE ") {
         // Quick extraction of schema name from USE clause
         match open_cypher_parser::parse_cypher_statement(clean_query) {
-            Ok((_, statement)) => {
-                match statement {
-                    open_cypher_parser::ast::CypherStatement::Query { query, .. } => {
-                        if let Some(ref use_clause) = query.use_clause {
-                            use_clause.database_name
-                        } else {
-                            payload.schema_name.as_deref().unwrap_or("default")
-                        }
+            Ok((_, statement)) => match statement {
+                open_cypher_parser::ast::CypherStatement::Query { query, .. } => {
+                    if let Some(ref use_clause) = query.use_clause {
+                        use_clause.database_name
+                    } else {
+                        payload.schema_name.as_deref().unwrap_or("default")
                     }
-                    _ => payload.schema_name.as_deref().unwrap_or("default"),
                 }
-            }
+                _ => payload.schema_name.as_deref().unwrap_or("default"),
+            },
             Err(_) => payload.schema_name.as_deref().unwrap_or("default"),
         }
     } else {
@@ -220,21 +218,22 @@ pub async fn sql_generation_handler(
         // Handle CALL queries (like PageRank)
         // Note: CALL with UNION doesn't make sense, so we use the first query
         let planning_start = Instant::now();
-        let logical_plan = match query_planner::evaluate_call_query(first_query.clone(), &graph_schema) {
-            Ok(plan) => plan,
-            Err(e) => {
-                let _planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(SqlGenerationError {
-                        cypher_query: payload.query.clone(),
-                        error: format!("{}", e),
-                        error_type: "PlanningError".to_string(),
-                        error_details: None,
-                    }),
-                ));
-            }
-        };
+        let logical_plan =
+            match query_planner::evaluate_call_query(first_query.clone(), &graph_schema) {
+                Ok(plan) => plan,
+                Err(e) => {
+                    let _planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(SqlGenerationError {
+                            cypher_query: payload.query.clone(),
+                            error: format!("{}", e),
+                            error_type: "PlanningError".to_string(),
+                            error_details: None,
+                        }),
+                    ));
+                }
+            };
         let planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;
 
         let sql_gen_start = Instant::now();

@@ -10,11 +10,15 @@ RETURN DISTINCT "relationship" AS entity, r.bytes_sent AS bytes_sent LIMIT 25
 "#;
 
     println!("Testing UNION ALL query parsing...\n");
-    
+
     match parse_cypher_statement(query) {
         Ok((remaining, statement)) => {
             println!("✅ Parse successful!");
-            println!("Remaining input: '{}' (len: {})", remaining, remaining.len());
+            println!(
+                "Remaining input: '{}' (len: {})",
+                remaining,
+                remaining.len()
+            );
             println!("\nParsed statement:");
             println!("{:#?}", statement);
         }
