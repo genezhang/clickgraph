@@ -50,10 +50,7 @@ impl WherePropertyExtractor {
                 let alias = prop.base.to_string();
                 let property = prop.key.to_string();
 
-                properties
-                    .entry(alias)
-                    .or_default()
-                    .insert(property);
+                properties.entry(alias).or_default().insert(property);
             }
 
             Expression::OperatorApplicationExp(op) => {
