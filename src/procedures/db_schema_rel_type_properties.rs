@@ -104,7 +104,7 @@ mod tests {
 
         // Verify empty schema returns empty results
         assert_eq!(results.len(), 0);
-        
+
         // Format verification: if there were results, each should have these keys
         // This is verified by manual testing and integration tests
     }
