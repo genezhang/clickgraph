@@ -111,6 +111,97 @@ pub struct Path {
     pub indices: Vec<i64>,
 }
 
+impl Path {
+    /// Create a new Path
+    pub fn new(nodes: Vec<Node>, relationships: Vec<Relationship>, indices: Vec<i64>) -> Self {
+        Path {
+            nodes,
+            relationships,
+            indices,
+        }
+    }
+
+    /// Create a simple single-hop path: (start)-[rel]->(end)
+    pub fn single_hop(start_node: Node, relationship: Relationship, end_node: Node) -> Self {
+        // For a single hop path: node[0] -> rel[0] -> node[1]
+        // Indices: [1, 1] means "go to node 1 via relationship with index 1"
+        // In Neo4j path encoding: indices alternate between rel_idx and node_idx
+        // For (a)-[r]->(b): indices = [1, 1] meaning rel 1, then node 1
+        Path {
+            nodes: vec![start_node, end_node],
+            relationships: vec![relationship],
+            indices: vec![1, 1], // rel index 1 (meaning relationship[0] forward), then node index 1
+        }
+    }
+
+    /// Encode this Path to packstream format
+    ///
+    /// Path encoding: 0xB3 (3-field struct) + 0x50 ('P') + [nodes, rels, indices]
+    ///
+    /// # Returns
+    ///
+    /// A Vec<u8> containing the packstream-encoded bytes
+    pub fn to_packstream(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+
+        // Struct signature: 0xB3 (3 fields) + 0x50 ('P')
+        bytes.push(0xB3);
+        bytes.push(0x50);
+
+        // Field 1: nodes (List of Node structures)
+        // First encode the list header
+        let node_count = self.nodes.len();
+        if node_count < 16 {
+            bytes.push(0x90 | node_count as u8);
+        } else if node_count < 256 {
+            bytes.push(0xD4);
+            bytes.push(node_count as u8);
+        } else {
+            bytes.push(0xD5);
+            bytes.extend_from_slice(&(node_count as u16).to_be_bytes());
+        }
+        // Then encode each node
+        for node in &self.nodes {
+            bytes.extend_from_slice(&node.to_packstream());
+        }
+
+        // Field 2: relationships (List of UnboundRelationship structures)
+        // UnboundRelationship: 0xB3 (3-field) + 0x72 ('r') + [id, type, properties]
+        // Note: relationships in Path are "unbound" (no start/end node IDs in struct)
+        let rel_count = self.relationships.len();
+        if rel_count < 16 {
+            bytes.push(0x90 | rel_count as u8);
+        } else if rel_count < 256 {
+            bytes.push(0xD4);
+            bytes.push(rel_count as u8);
+        } else {
+            bytes.push(0xD5);
+            bytes.extend_from_slice(&(rel_count as u16).to_be_bytes());
+        }
+        // Encode each relationship as UnboundRelationship
+        for rel in &self.relationships {
+            bytes.extend_from_slice(&rel.to_unbound_packstream());
+        }
+
+        // Field 3: indices (List of Integers)
+        let idx_count = self.indices.len();
+        if idx_count < 16 {
+            bytes.push(0x90 | idx_count as u8);
+        } else if idx_count < 256 {
+            bytes.push(0xD4);
+            bytes.push(idx_count as u8);
+        } else {
+            bytes.push(0xD5);
+            bytes.extend_from_slice(&(idx_count as u16).to_be_bytes());
+        }
+        for idx in &self.indices {
+            bytes.extend_from_slice(&encode_integer(*idx));
+        }
+
+        bytes
+    }
+}
+
 impl Node {
     /// Create a new Node
     pub fn new(
@@ -219,6 +310,36 @@ impl Relationship {
 
         // Field 8: endNodeElementId (String)
         bytes.extend_from_slice(&encode_string(&self.end_node_element_id));
+
+        bytes
+    }
+
+    /// Encode this Relationship as UnboundRelationship for Path encoding
+    ///
+    /// UnboundRelationship format: 0xB4 (4-field struct) + 0x72 ('r') + [id, type, properties, elementId]
+    /// Note: Unlike full Relationship, UnboundRelationship doesn't include start/end node IDs
+    ///
+    /// # Returns
+    ///
+    /// A Vec<u8> containing the packstream-encoded bytes
+    pub fn to_unbound_packstream(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+
+        // Struct signature: 0xB4 (4 fields) + 0x72 ('r' lowercase for unbound)
+        bytes.push(0xB4);
+        bytes.push(0x72);
+
+        // Field 1: id (Integer)
+        bytes.extend_from_slice(&encode_integer(self.id));
+
+        // Field 2: type (String)
+        bytes.extend_from_slice(&encode_string(&self.rel_type));
+
+        // Field 3: properties (Map)
+        bytes.extend_from_slice(&encode_properties_map(&self.properties));
+
+        // Field 4: elementId (String)
+        bytes.extend_from_slice(&encode_string(&self.element_id));
 
         bytes
     }

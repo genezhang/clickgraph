@@ -26,11 +26,15 @@ pub fn parse_call_clause<'a>(
 
     let arguments = arguments.unwrap_or_default();
 
+    // Parse optional YIELD clause
+    let (input, yield_items) = opt(parse_yield_clause).parse(input)?;
+
     Ok((
         input,
         CallClause {
             procedure_name,
             arguments,
+            yield_items,
         },
     ))
 }
@@ -69,6 +73,14 @@ fn expression_parser(input: &str) -> IResult<&str, Expression<'_>, OpenCypherPar
         nom::Err::Error(err) => nom::Err::Failure(OpenCypherParsingError::from(err)),
         nom::Err::Failure(err) => nom::Err::Failure(OpenCypherParsingError::from(err)),
     })
+}
+
+fn parse_yield_clause<'a>(
+    input: &'a str,
+) -> IResult<&'a str, Vec<&'a str>, OpenCypherParsingError<'a>> {
+    use nom::multi::separated_list0;
+    let (input, _) = ws(tag("YIELD")).parse(input)?;
+    separated_list0(ws(char(',')), ws(alphanumeric1)).parse(input)
 }
 
 #[cfg(test)]

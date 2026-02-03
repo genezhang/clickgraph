@@ -183,17 +183,77 @@ pub async fn query_handler(
     let clean_query = clean_query_string.clone();
 
     // Handle procedure calls early (before query context)
-    // Parse to check if it's a procedure call
-    let proc_name_opt =
+    // Parse to check if it's a procedure call or procedure-only query
+    let (is_procedure, is_union, proc_name_opt) =
         if let Ok((_, parsed_stmt)) = open_cypher_parser::parse_cypher_statement(&clean_query) {
-            if let CypherStatement::ProcedureCall(proc_call) = parsed_stmt {
-                Some(proc_call.procedure_name.to_string())
+            log::debug!("Parse succeeded for query: {}", &clean_query);
+
+            // Check if it's a procedure-only statement
+            let proc_check = crate::procedures::is_procedure_only_statement(&parsed_stmt);
+
+            // Check if it's a procedure UNION
+            let union_check = crate::procedures::is_procedure_union_query(&parsed_stmt);
+            log::debug!(
+                "Procedure check: {}, Union check: {}",
+                proc_check,
+                union_check
+            );
+
+            // Extract procedure name for standalone procedures (non-UNION)
+            let proc_name = if proc_check && !union_check {
+                match &parsed_stmt {
+                    CypherStatement::ProcedureCall(proc_call) => {
+                        Some(proc_call.procedure_name.to_string())
+                    }
+                    CypherStatement::Query { query, .. } => query
+                        .call_clause
+                        .as_ref()
+                        .map(|cc| cc.procedure_name.to_string()),
+                }
             } else {
                 None
-            }
+            };
+
+            (proc_check, union_check, proc_name)
         } else {
-            None
+            log::debug!("Parse FAILED for query: {}", &clean_query);
+            (false, false, None)
         };
+
+    if is_union {
+        log::info!("Executing UNION ALL of procedures");
+
+        // Extract procedure names BEFORE any async calls
+        let proc_names = match crate::procedures::extract_procedure_names_from_union(&clean_query) {
+            Ok(names) => names,
+            Err(e) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("Failed to parse UNION query: {}", e),
+                ));
+            }
+        };
+
+        let registry = crate::procedures::ProcedureRegistry::new();
+        let schema_name = schema_name_param.unwrap_or_else(|| "default".to_string());
+
+        // Now execute (no lifetimes involved)
+        let results =
+            crate::procedures::execute_procedure_union(proc_names, &schema_name, &registry).await;
+
+        match results {
+            Ok(r) => {
+                let response_json = crate::procedures::executor::format_as_json(r);
+                return Ok(Json(response_json).into_response());
+            }
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Procedure union execution failed: {}", e),
+                ));
+            }
+        }
+    }
 
     if let Some(proc_name) = proc_name_opt {
         log::info!("Executing procedure: {}", proc_name);

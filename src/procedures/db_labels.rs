@@ -22,11 +22,20 @@ pub fn execute(schema: &GraphSchema) -> Result<Vec<HashMap<String, serde_json::V
     let mut labels: Vec<String> = schema
         .all_node_schemas()
         .keys()
-        .map(|s| s.to_string())
+        .filter_map(|key| {
+            // Extract base label from keys like "brahmand::users_bench::User" or "User"
+            // Return the last segment (the actual label users use in queries)
+            if key.contains("::") {
+                key.split("::").last().map(|s| s.to_string())
+            } else {
+                Some(key.to_string())
+            }
+        })
         .collect();
 
-    // Sort for consistent output
+    // Remove duplicates and sort
     labels.sort();
+    labels.dedup();
 
     // Convert to Neo4j-compatible format
     let results = labels

@@ -17,7 +17,24 @@ use super::{BoltConfig, BoltContext, ConnectionState};
 
 use crate::clickhouse_query_generator;
 use crate::open_cypher_parser;
+use crate::open_cypher_parser::ast::CypherStatement;
 use crate::query_planner;
+
+/// Execution plan for procedure-only queries (extracted before async execution)
+#[derive(Debug)]
+enum ExecutionPlan {
+    SimpleProcedure { proc_name: String },
+    ProcedureWithReturn { proc_name: String },
+    Union { branches: Vec<ProcedureBranch> },
+}
+
+/// Branch information for UNION execution
+#[derive(Debug)]
+struct ProcedureBranch {
+    proc_name: String,
+    has_return: bool,
+}
+
 use crate::render_plan::plan_builder::RenderPlanBuilder;
 use crate::server::{graph_catalog, parameter_substitution};
 
@@ -819,7 +836,7 @@ impl BoltHandler {
         use crate::open_cypher_parser::ast::CypherStatement;
 
         // Parse and determine if this is a procedure call (synchronously, no await)
-        let (is_procedure, proc_name, effective_schema) = {
+        let (is_procedure, is_union, proc_name, effective_schema) = {
             // Parse Cypher statement (could be query or procedure call)
             let parsed_stmt = match open_cypher_parser::parse_cypher_statement(query) {
                 Ok((_, stmt)) => stmt,
@@ -831,10 +848,22 @@ impl BoltHandler {
                 }
             };
 
-            // Extract what we need before dropping parsed_stmt
-            let is_proc = matches!(parsed_stmt, CypherStatement::ProcedureCall(_));
-            let proc_name_opt = if let CypherStatement::ProcedureCall(ref pc) = parsed_stmt {
-                Some(pc.procedure_name.to_string())
+            // Check if this is a procedure-only statement (handles both ProcedureCall and Query AST)
+            let is_proc = crate::procedures::is_procedure_only_statement(&parsed_stmt);
+            let is_union_check = crate::procedures::is_procedure_union_query(&parsed_stmt);
+
+            // Extract procedure name for standalone procedures (non-UNION)
+            let proc_name_opt = if is_proc && !is_union_check {
+                match &parsed_stmt {
+                    CypherStatement::ProcedureCall(ref pc) => Some(pc.procedure_name.to_string()),
+                    CypherStatement::Query { query, .. } => {
+                        // Single procedure-only query (CALL...YIELD...RETURN without UNION)
+                        query
+                            .call_clause
+                            .as_ref()
+                            .map(|cc| cc.procedure_name.to_string())
+                    }
+                }
             } else {
                 None
             };
@@ -854,37 +883,193 @@ impl BoltHandler {
                 }
             };
 
-            (is_proc, proc_name_opt, eff_schema)
+            (is_proc, is_union_check, proc_name_opt, eff_schema)
         }; // parsed_stmt is dropped here!
 
         log::debug!("Statement execution using schema: {}", effective_schema);
+        log::debug!(
+            "Routing decision: is_procedure={}, is_union={}, proc_name={:?}",
+            is_procedure,
+            is_union,
+            proc_name
+        );
 
-        // Handle procedure calls
+        // Handle procedure-only queries (including UNION)
         if is_procedure {
-            let proc_name = proc_name.unwrap(); // Safe: we checked is_procedure
-            log::info!("Executing procedure via Bolt: {}", proc_name);
+            // Re-parse and extract all needed data synchronously (in its own scope)
+            let exec_plan = {
+                let parsed_stmt = open_cypher_parser::parse_cypher_statement(query)
+                    .map_err(|e| BoltError::query_error(format!("Re-parse failed: {}", e)))?
+                    .1;
 
-            // Get procedure registry
+                // Extract execution plan synchronously
+                match &parsed_stmt {
+                    CypherStatement::ProcedureCall(proc_call) => ExecutionPlan::SimpleProcedure {
+                        proc_name: proc_call.procedure_name.to_string(),
+                    },
+                    CypherStatement::Query {
+                        query: query_ast,
+                        union_clauses,
+                    } => {
+                        if !union_clauses.is_empty() {
+                            // Extract data from all branches
+                            let mut branches = Vec::new();
+
+                            // Main branch
+                            if let Some(call_clause) = &query_ast.call_clause {
+                                branches.push(ProcedureBranch {
+                                    proc_name: call_clause.procedure_name.to_string(),
+                                    has_return: query_ast.return_clause.is_some(),
+                                });
+                            }
+
+                            // Union branches
+                            for union_clause in union_clauses {
+                                if let Some(call_clause) = &union_clause.query.call_clause {
+                                    branches.push(ProcedureBranch {
+                                        proc_name: call_clause.procedure_name.to_string(),
+                                        has_return: union_clause.query.return_clause.is_some(),
+                                    });
+                                }
+                            }
+
+                            ExecutionPlan::Union { branches }
+                        } else {
+                            // Single procedure with possible RETURN
+                            if let Some(call_clause) = &query_ast.call_clause {
+                                ExecutionPlan::ProcedureWithReturn {
+                                    proc_name: call_clause.procedure_name.to_string(),
+                                }
+                            } else {
+                                return Err(BoltError::query_error(
+                                    "No call clause found".to_string(),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }; // parsed_stmt dropped here at end of scope
+
+            // Now execute based on exec_plan (no AST references remain)
             let registry = crate::procedures::ProcedureRegistry::new();
 
-            // Execute procedure
-            let results = crate::procedures::executor::execute_procedure_by_name(
-                &proc_name,
-                &effective_schema,
-                &registry,
-            )
-            .await
-            .map_err(|e| BoltError::query_error(format!("Procedure execution failed: {}", e)))?;
+            let results = match exec_plan {
+                ExecutionPlan::SimpleProcedure { proc_name } => {
+                    log::info!("Executing simple procedure via Bolt: {}", proc_name);
+                    crate::procedures::executor::execute_procedure_by_name(
+                        &proc_name,
+                        &effective_schema,
+                        &registry,
+                    )
+                    .await
+                    .map_err(|e| {
+                        BoltError::query_error(format!("Procedure execution failed: {}", e))
+                    })?
+                }
+                ExecutionPlan::ProcedureWithReturn { proc_name } => {
+                    log::info!("Executing procedure with RETURN via Bolt: {}", proc_name);
+
+                    // Execute procedure
+                    let raw_results = crate::procedures::executor::execute_procedure_by_name(
+                        &proc_name,
+                        &effective_schema,
+                        &registry,
+                    )
+                    .await
+                    .map_err(|e| BoltError::query_error(e))?;
+
+                    // Re-parse JUST to get return clause (AST not held across await)
+                    let (_, reparsed) =
+                        open_cypher_parser::parse_cypher_statement(query).map_err(|e| {
+                            BoltError::query_error(format!("Re-parse for RETURN failed: {}", e))
+                        })?;
+
+                    if let CypherStatement::Query { query, .. } = reparsed {
+                        if let Some(return_clause) = &query.return_clause {
+                            crate::procedures::return_evaluator::apply_return_clause(
+                                raw_results,
+                                return_clause,
+                            )
+                            .map_err(|e| {
+                                BoltError::query_error(format!("RETURN evaluation failed: {}", e))
+                            })?
+                        } else {
+                            raw_results
+                        }
+                    } else {
+                        raw_results
+                    }
+                }
+                ExecutionPlan::Union { branches } => {
+                    log::info!(
+                        "Executing UNION of procedures via Bolt: {} branches",
+                        branches.len()
+                    );
+
+                    let mut all_results = Vec::new();
+
+                    // Execute each branch
+                    for (idx, branch) in branches.iter().enumerate() {
+                        let raw_results = crate::procedures::executor::execute_procedure_by_name(
+                            &branch.proc_name,
+                            &effective_schema,
+                            &registry,
+                        )
+                        .await
+                        .map_err(|e| BoltError::query_error(e))?;
+
+                        // Apply RETURN if this branch had one
+                        let transformed_results = if branch.has_return {
+                            // Re-parse to get the specific return clause for this branch
+                            let (_, reparsed) = open_cypher_parser::parse_cypher_statement(query)
+                                .map_err(|e| {
+                                BoltError::query_error(format!("Re-parse failed: {}", e))
+                            })?;
+
+                            if let CypherStatement::Query {
+                                query: main_q,
+                                union_clauses,
+                            } = reparsed
+                            {
+                                let return_clause = if idx == 0 {
+                                    &main_q.return_clause
+                                } else {
+                                    &union_clauses[idx - 1].query.return_clause
+                                };
+
+                                if let Some(ret_clause) = return_clause {
+                                    crate::procedures::return_evaluator::apply_return_clause(
+                                        raw_results,
+                                        ret_clause,
+                                    )
+                                    .map_err(|e| {
+                                        BoltError::query_error(format!(
+                                            "RETURN evaluation failed: {}",
+                                            e
+                                        ))
+                                    })?
+                                } else {
+                                    raw_results
+                                }
+                            } else {
+                                raw_results
+                            }
+                        } else {
+                            raw_results
+                        };
+
+                        all_results.extend(transformed_results);
+                    }
+
+                    all_results
+                }
+            };
 
             // Convert to Bolt records
             let bolt_records: Vec<Vec<BoltValue>> = results
                 .iter()
                 .map(|record| {
-                    // Each record is a HashMap<String, serde_json::Value>
-                    // Convert to Vec<BoltValue> (values only, in consistent order)
                     let mut values: Vec<BoltValue> = Vec::new();
-
-                    // Get keys in consistent order (sorted)
                     let mut keys: Vec<_> = record.keys().collect();
                     keys.sort();
 
@@ -892,7 +1077,6 @@ impl BoltHandler {
                         let json_value = &record[key];
                         values.push(BoltValue::Json(json_value.clone()));
                     }
-
                     values
                 })
                 .collect();
@@ -903,12 +1087,15 @@ impl BoltHandler {
             // Return metadata with field names
             let mut metadata = HashMap::new();
             if let Some(first_record) = results.first() {
-                let mut field_names: Vec<_> = first_record.keys().cloned().collect();
-                field_names.sort(); // Consistent order
+                let mut keys: Vec<_> = first_record.keys().map(|k| k.to_string()).collect();
+                keys.sort();
+
                 metadata.insert(
                     "fields".to_string(),
-                    Value::Array(field_names.into_iter().map(Value::String).collect()),
+                    Value::Array(keys.into_iter().map(Value::String).collect()),
                 );
+            } else {
+                metadata.insert("fields".to_string(), Value::Array(vec![]));
             }
             metadata.insert("t_first".to_string(), Value::Number(0.into()));
 
@@ -917,10 +1104,46 @@ impl BoltHandler {
 
         // Handle regular queries - parse again for query type check (no await yet)
         let query_type = {
-            let parsed_query = open_cypher_parser::parse_query(query).map_err(|e| {
-                BoltError::query_error(format!("Query type check parse failed: {}", e))
-            })?;
-            query_planner::get_query_type(&parsed_query)
+            // Use parse_cypher_statement which handles UNION properly
+            let parsed_stmt = open_cypher_parser::parse_cypher_statement(query)
+                .map_err(|e| {
+                    BoltError::query_error(format!("Query type check parse failed: {}", e))
+                })?
+                .1;
+
+            // Extract the main query and union clauses from the statement
+            match parsed_stmt {
+                CypherStatement::Query {
+                    query,
+                    union_clauses,
+                } => {
+                    // Check main query type
+                    let main_type = query_planner::get_query_type(&query);
+
+                    // For UNION queries, all branches must be Read queries
+                    if !union_clauses.is_empty() {
+                        // Check each union branch
+                        for union_clause in &union_clauses {
+                            let branch_type = query_planner::get_query_type(&union_clause.query);
+                            if branch_type != query_planner::types::QueryType::Read {
+                                log::debug!("UNION branch has non-Read type: {:?}", branch_type);
+                                return Err(BoltError::query_error(
+                                    "Only read queries are currently supported via Bolt protocol"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                    }
+
+                    main_type
+                }
+                CypherStatement::ProcedureCall(_) => {
+                    // This shouldn't happen as we already handled procedures above
+                    return Err(BoltError::query_error(
+                        "Unexpected procedure call in regular query path".to_string(),
+                    ));
+                }
+            }
         };
 
         // Check query type
@@ -939,8 +1162,21 @@ impl BoltHandler {
         };
 
         // Re-parse for planning (necessary for Send safety)
-        let parsed_query_for_planning = open_cypher_parser::parse_query(query)
-            .map_err(|e| BoltError::query_error(format!("Query re-parse failed: {}", e)))?;
+        // Use parse_cypher_statement which handles UNION properly
+        let parsed_query_for_planning = {
+            let parsed_stmt = open_cypher_parser::parse_cypher_statement(query)
+                .map_err(|e| BoltError::query_error(format!("Query re-parse failed: {}", e)))?
+                .1;
+
+            match parsed_stmt {
+                CypherStatement::Query { query, .. } => query,
+                CypherStatement::ProcedureCall(_) => {
+                    return Err(BoltError::query_error(
+                        "Unexpected procedure call in regular query path".to_string(),
+                    ));
+                }
+            }
+        };
 
         // Generate logical plan (returns both plan and context with VLP metadata)
         let (logical_plan, plan_ctx) = match query_planner::evaluate_read_query(
@@ -972,7 +1208,7 @@ impl BoltHandler {
                 m.item_type,
                 super::result_transformer::ReturnItemType::Node { .. }
                     | super::result_transformer::ReturnItemType::Relationship { .. }
-                    | super::result_transformer::ReturnItemType::Path
+                    | super::result_transformer::ReturnItemType::Path { .. }
             )
         });
 

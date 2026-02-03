@@ -44,9 +44,7 @@ graph_schema:
       node_id: user_id
       property_mappings:
         user_id: user_id
-        name: full_name
-        country: country
-        city: city
+        name: name  # Table only has 'name', not 'full_name'
 
   edges:
     - type: FOLLOWS
@@ -70,7 +68,7 @@ graph_schema:
       from_node: User
       to_node: Post
       property_mappings:
-        post_date: post_date
+        post_date: created_at
     
     - type: LIKED
       database: brahmand
@@ -85,13 +83,13 @@ graph_schema:
     - type: FRIENDS_WITH
       database: brahmand
       table: friendships
-      from_id: user1_id
-      to_id: user2_id
-      edge_id: friendship_id
+      from_id: user_id_1
+      to_id: user_id_2
+      edge_id: user_id_1  # Use composite key
       from_node: User
       to_node: User
       property_mappings:
-        since_date: since_date
+        since_date: since
 
     - type: PATTERN_COMP_FOLLOWS
       database: brahmand
@@ -100,6 +98,5 @@ graph_schema:
       to_id: followed_id
       from_node: PatternCompUser
       to_node: PatternCompUser
-      property_mappings:
-        follow_date: follow_date
+      property_mappings: {}
 

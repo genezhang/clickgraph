@@ -2514,6 +2514,7 @@ impl GraphJoinInference {
         plan_ctx: &mut PlanCtx,
         collected_graph_joins: &mut Vec<Join>,
         join_ctx: &mut JoinContext,
+        graph_rel: &GraphRel, // Added to check for path variables
     ) -> AnalyzerResult<()> {
         log::warn!(
             "🚨 handle_graph_pattern_v2 ENTER: rel={}, left={}, right={}, strategy={:?}",
@@ -3261,6 +3262,25 @@ impl GraphJoinInference {
                         // Edge conceptually lives on right node's table
                         join_ctx.insert(rel_alias.to_string());
 
+                        // CRITICAL: Register relationship alias as denormalized on anchor node
+                        // For FK-edge patterns, relationship properties come from the node table
+                        // Example: (u)-[r:AUTHORED]->(po) where edge IS posts_bench
+                        //   - r properties (r.post_date) are actually po properties (po.created_at)
+                        //   - Property resolver needs to know r is embedded in po
+                        let rel_type = ctx.rel_types.first().cloned().unwrap_or_default();
+                        plan_ctx.register_denormalized_alias(
+                            rel_alias.to_string(),
+                            right_alias.to_string(), // rel is on right table
+                            false,         // is_from_node = false (rel is the edge itself)
+                            String::new(), // label not needed
+                            rel_type,
+                        );
+                        log::info!(
+                            "🔑 Registered FK-edge '{}' as denormalized on anchor '{}'",
+                            rel_alias,
+                            right_alias
+                        );
+
                         // CRITICAL FIX: For VLP + chained FK-edge patterns
                         // When left is already joined via VLP CTE, we need to:
                         // 1. JOIN the right/edge table (posts_bench) to make 'p' accessible
@@ -3353,6 +3373,22 @@ impl GraphJoinInference {
 
                         // Edge conceptually lives on left node's table
                         join_ctx.insert(rel_alias.to_string());
+
+                        // CRITICAL: Register relationship alias as denormalized on anchor node
+                        // For FK-edge patterns, relationship properties come from the node table
+                        let rel_type = ctx.rel_types.first().cloned().unwrap_or_default();
+                        plan_ctx.register_denormalized_alias(
+                            rel_alias.to_string(),
+                            left_alias.to_string(), // rel is on left table
+                            false,                  // is_from_node = false
+                            String::new(),
+                            rel_type,
+                        );
+                        log::info!(
+                            "🔑 Registered FK-edge '{}' as denormalized on anchor '{}'",
+                            rel_alias,
+                            left_alias
+                        );
 
                         // CRITICAL FIX: For VLP + chained FK-edge patterns (symmetric to NodePosition::Left)
                         let right_already_joined = join_ctx.contains(right_alias);
@@ -3697,6 +3733,7 @@ impl GraphJoinInference {
         // AND:
         // - Not a variable-length path (VLP needs CTEs)
         // - Not a shortest path
+        // - Not a path variable query (path needs all node properties)
         // - This is the first relationship AND it's a single-hop pattern
         //   (multi-hop needs ALL node tables for chaining, even if unreferenced)
         //
@@ -3704,16 +3741,18 @@ impl GraphJoinInference {
         // Anonymous nodes without label: () → has_label=false, never needs JOIN for its own table
         let both_nodes_anonymous = !left_has_explicit_label && !right_has_explicit_label;
         let neither_node_referenced = !left_is_referenced && !right_is_referenced;
+        let has_path_variable = graph_rel.path_variable.is_some();
 
         let apply_optimization = (both_nodes_anonymous || neither_node_referenced)
             && !is_vlp
             && !is_shortest_path
+            && !has_path_variable  // CRITICAL: Path queries need node properties!
             && is_first_relationship
             && !is_multi_hop_pattern; // CRITICAL: Multi-hop patterns need node JOINs for chaining!
 
         if apply_optimization {
-            crate::debug_print!("    ⚡ SingleTableScan: both_anonymous={}, neither_referenced={}, left_ref={}, right_ref={}",
-                both_nodes_anonymous, neither_node_referenced, left_is_referenced, right_is_referenced);
+            crate::debug_print!("    ⚡ SingleTableScan: both_anonymous={}, neither_referenced={}, left_ref={}, right_ref={}, has_path_var={}",
+                both_nodes_anonymous, neither_node_referenced, left_is_referenced, right_is_referenced, has_path_variable);
             // Override join strategy: no node JOINs needed, only relationship table
             ctx.join_strategy = JoinStrategy::SingleTableScan {
                 table: rel_schema.full_table_name(),
@@ -3789,6 +3828,7 @@ impl GraphJoinInference {
             plan_ctx,
             collected_graph_joins,
             join_ctx,
+            graph_rel, // Pass graph_rel to check for path variables
         );
 
         let _joins_added = collected_graph_joins.len() - joins_before;

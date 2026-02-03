@@ -142,7 +142,18 @@ impl PlanCtx {
         // registered with full metadata via define_path() before this call)
         if !self.variables.contains(&alias) {
             let labels = table_ctx.get_labels().cloned().unwrap_or_default();
-            if table_ctx.is_relation() {
+            let is_rel = table_ctx.is_relation();
+            let is_path = table_ctx.is_path_variable();
+
+            log::debug!(
+                "🔍 insert_table_ctx: alias='{}', is_rel={}, is_path={}, labels={:?}",
+                alias,
+                is_rel,
+                is_path,
+                table_ctx.get_labels()
+            );
+
+            if is_rel {
                 // It's a relationship variable
                 self.variables.define_relationship(
                     alias.clone(),
@@ -151,11 +162,15 @@ impl PlanCtx {
                     table_ctx.get_to_node_label().cloned(),
                     VariableSource::Match,
                 );
-            } else if table_ctx.is_path_variable() {
+            } else if is_path {
                 // It's a path variable (no labels, not a relationship)
                 // Note: We don't have full path info here (start/end nodes, bounds),
                 // so we register a basic path. The full info would need to be passed
                 // from the caller or set via define_path() directly.
+                log::info!(
+                    "⚠️  Registering '{}' as Path variable via heuristic (no labels)",
+                    alias
+                );
                 self.variables.define_path(
                     alias.clone(),
                     None,  // start_node - not available from TableCtx
@@ -166,8 +181,30 @@ impl PlanCtx {
                 );
             } else {
                 // It's a node variable
+                log::debug!(
+                    "✓ Registering '{}' as Node variable with labels={:?}",
+                    alias,
+                    labels
+                );
                 self.variables
                     .define_node(alias.clone(), labels, VariableSource::Match);
+            }
+        } else {
+            if let Some(typed_var) = self.variables.lookup(&alias) {
+                let variant_name = if typed_var.is_node() {
+                    "Node"
+                } else if typed_var.is_relationship() {
+                    "Relationship"
+                } else if typed_var.as_path().is_some() {
+                    "Path"
+                } else {
+                    "Unknown"
+                };
+                log::info!(
+                    "⚠️  Skipping insert_table_ctx for '{}' - already registered as {} variant",
+                    alias,
+                    variant_name
+                );
             }
         }
 

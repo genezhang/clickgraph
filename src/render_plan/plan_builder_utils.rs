@@ -7473,6 +7473,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         union_type: crate::render_plan::UnionType::All,
                     })),
                     fixed_path_info: None,
+                    is_multi_label_scan: false,
                 }
             };
 

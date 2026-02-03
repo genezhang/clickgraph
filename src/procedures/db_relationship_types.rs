@@ -22,11 +22,21 @@ pub fn execute(schema: &GraphSchema) -> Result<Vec<HashMap<String, serde_json::V
     let mut types: Vec<String> = schema
         .get_relationships_schemas()
         .keys()
-        .map(|s| s.to_string())
+        .filter_map(|key| {
+            // Extract base type from keys like "FOLLOWS::User::User" or "FOLLOWS"
+            // Return the first segment (the actual type users use in queries)
+            let parts: Vec<&str> = key.split("::").collect();
+            if !parts.is_empty() && !parts[0].is_empty() {
+                Some(parts[0].to_string())
+            } else {
+                None // Skip empty strings
+            }
+        })
         .collect();
 
-    // Sort for consistent output
+    // Remove duplicates and sort
     types.sort();
+    types.dedup();
 
     // Convert to Neo4j-compatible format
     let results = types

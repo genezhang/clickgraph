@@ -2,6 +2,66 @@
 
 ### 🚀 Features
 
+- **Path UNION Queries for Neo4j Browser "Dot" Feature** (Feb 2, 2026): ⭐ **NEO4J COMPATIBILITY**
+  - **Problem**: Neo4j Browser's dot query explorer sends `MATCH p=()-->() RETURN p` but ClickGraph couldn't handle untyped paths with properties
+  - **Solution**: Reused Union infrastructure to generate UNION ALL across all relationship types with JSON property format
+  - **How It Works**:
+    - `plan_builder.rs` detects path UNION patterns (GraphJoins with path tuples)
+    - `convert_path_branches_to_json()` transforms each branch to consistent 4-column JSON schema
+    - `build_format_row_json()` uses prefixed aliases (`_s_city`, `_e_city`, `_r_follow_date`) to avoid ClickHouse alias collision
+    - `select_builder.rs` expands denormalized relationship properties via schema lookup
+    - Bolt transformer strips prefixes for clean Neo4j Browser display
+  - **Generated SQL Pattern**:
+    ```sql
+    SELECT tuple('fixed_path', 't1_0', 't2_0', 't3') as p,
+           formatRowNoNewline('JSONEachRow', t1_0.user_id AS _s_user_id, ...) as _start_properties,
+           formatRowNoNewline('JSONEachRow', t2_0.post_id AS _e_post_id, ...) as _end_properties,
+           formatRowNoNewline('JSONEachRow', t3.post_date AS _r_post_date) as _rel_properties
+    FROM users_bench t1_0 JOIN posts_bench t2_0 ... JOIN posts_bench t3
+    UNION ALL ...
+    ```
+  - **Impact**: ✨ **Neo4j Browser dot query now shows all connected edges with properties!**
+  - **Key Features**:
+    - All relationship types included (denormalized + explicit edge tables)
+    - Type preservation: numbers stay numbers, dates stay dates
+    - Automatic property expansion for denormalized relationships (e.g., AUTHORED)
+    - Clean property names in browser (prefixes internal only)
+  - **Files**: `src/render_plan/plan_builder.rs`, `src/render_plan/plan_builder_helpers.rs`, `src/render_plan/select_builder.rs`, `src/server/bolt_protocol/result_transformer.rs`
+
+- **Label-less Node Queries for Neo4j Browser "Dot" Feature** (Feb 1, 2026): ⭐ **NEO4J COMPATIBILITY**
+  - **Problem**: Neo4j Browser's exploration feature sends `MATCH (n) RETURN n LIMIT 25` but ClickGraph required explicit labels
+  - **Solution**: Reused existing Union infrastructure to generate UNION ALL across all node types when no label specified
+  - **How It Works**:
+    - `generate_scan()` detects label-less patterns and creates Union of ViewScans for all node types in schema
+    - Multi-label scan detection recursively unwraps GraphJoins→Projection→GraphNode→ViewScan layers
+    - `json_builder::generate_multi_type_union_sql()` generates uniform columns: `_label`, `_id`, `_properties`
+    - `is_multi_label_scan` flag preserves special columns through Projection pass
+  - **Generated SQL Pattern**:
+    ```sql
+    WITH __multi_label_union AS (
+      SELECT 'User' as _label, toString(user_id) as _id, formatRowNoNewline('JSONEachRow', ...) as _properties FROM users
+      UNION ALL
+      SELECT 'Post' as _label, toString(post_id) as _id, formatRowNoNewline('JSONEachRow', ...) as _properties FROM posts
+    )
+    SELECT n._label, n._id, n._properties FROM __multi_label_union AS n LIMIT 25
+    ```
+  - **Impact**: ✨ **Neo4j Browser "dot" exploration now works** - click any node to see all connected nodes!
+  - **Files**: `src/query_planner/logical_plan/match_clause/helpers.rs`, `src/render_plan/plan_builder.rs`, `src/render_plan/mod.rs`
+
+- **RETURN Clause Evaluation for Procedures** (Feb 1, 2026): ⭐ **CRITICAL FEATURE** - Full RETURN clause support for procedure-only queries
+  - **Problem**: Neo4j Browser schema sidebar was empty because Browser sends complex UNION queries with RETURN clauses that aggregate procedure results
+  - **Solution**: Implemented complete RETURN clause evaluator in `src/procedures/return_evaluator.rs` with:
+    - Expression evaluation: variables, literals, map literals, list construction, property access
+    - Aggregation functions: COLLECT (array aggregation), COUNT (with distinct support)
+    - Array slicing: `[..1000]`, `[5..]`, `[2..10]` operations
+    - Proper aggregation semantics: processes all records to produce single aggregated result
+  - **Architecture**: Async-safe execution flow with ExecutionPlan enum to cross async boundaries
+  - **Example Query**: `CALL db.labels() YIELD label RETURN {name:'labels', data:COLLECT(label)[..1000]} AS result`
+  - **Result Format**: Returns aggregated structure Browser expects: `{result: {name: 'labels', data: [...]}}`
+  - **Impact**: ✨ **Neo4j Browser schema sidebar now auto-populates with labels, relationships, and properties!**
+  - **Testing**: 3/3 unit tests + E2E validation with Python neo4j-driver (3-branch UNION query works perfectly)
+  - **Files**: New: `src/procedures/return_evaluator.rs`; Modified: `src/server/bolt_protocol/handler.rs`, `src/procedures/executor.rs`
+
 - **Neo4j Schema Metadata Procedures** (Feb 2026): Implemented 4 essential procedures for Neo4j tool compatibility
   - **New Procedures**:
     - `CALL db.labels()` - Returns all node labels in current schema

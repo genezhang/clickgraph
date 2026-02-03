@@ -43,14 +43,23 @@ pub fn parse_cypher_statement(
 ) -> IResult<&'_ str, CypherStatement<'_>, OpenCypherParsingError<'_>> {
     let (input, _) = multispace0.parse(input)?;
 
-    // Try to parse as standalone procedure call first
-    if let Ok((input, procedure_call)) =
-        standalone_procedure_call::parse_standalone_procedure_call(input)
-    {
-        // Optional trailing semicolon
-        let (input, _) = opt(ws(tag(";"))).parse(input)?;
-        return Ok((input, CypherStatement::ProcedureCall(procedure_call)));
+    // Check if this looks like a CALL with UNION or RETURN
+    // If so, parse as Query, not standalone procedure call
+    let input_upper = input.to_uppercase();
+    let has_union_in_query = input_upper.contains("UNION");
+    let has_return_in_query = input_upper.contains("RETURN");
+
+    if !has_union_in_query && !has_return_in_query {
+        // Try to parse as standalone procedure call
+        if let Ok((remaining, procedure_call)) =
+            standalone_procedure_call::parse_standalone_procedure_call(input)
+        {
+            // Optional trailing semicolon
+            let (input, _) = opt(ws(tag(";"))).parse(remaining)?;
+            return Ok((input, CypherStatement::ProcedureCall(procedure_call)));
+        }
     }
+    // Has UNION or RETURN (or standalone parse failed) - fall through to regular query parser
 
     // Parse the first query
     let (input, first_query) = parse_query_with_nom.parse(input)?;

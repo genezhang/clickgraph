@@ -20,6 +20,7 @@ pub mod graph_objects;
 pub mod handler;
 pub mod messages;
 pub mod result_transformer;
+pub mod websocket;
 
 use errors::BoltError;
 

@@ -20,7 +20,8 @@ use crate::query_planner::typed_variable::{TypedVariable, VariableSource};
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::properties_builder::PropertiesBuilder;
 use crate::render_plan::render_expr::{
-    Column, ColumnAlias, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias as RenderTableAlias,
+    Column, ColumnAlias, Literal, PropertyAccess, RenderExpr, ScalarFnCall,
+    TableAlias as RenderTableAlias,
 };
 use crate::render_plan::SelectItem;
 
@@ -39,7 +40,7 @@ impl SelectBuilder for LogicalPlan {
         &self,
         plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
     ) -> Result<Vec<SelectItem>, RenderBuildError> {
-        log::warn!("🔍🔍🔍 extract_select_items CALLED on plan type");
+        log::trace!("🔍🔍🔍 extract_select_items CALLED on plan type");
         crate::debug_println!("DEBUG: extract_select_items called on: {:?}", self);
         let select_items = match &self {
             LogicalPlan::Empty => vec![],
@@ -80,6 +81,11 @@ impl SelectBuilder for LogicalPlan {
                 }
             }
             LogicalPlan::GraphRel(graph_rel) => {
+                log::trace!(
+                    "🔍 GraphRel.extract_select_items: alias={}, path_variable={:?}",
+                    graph_rel.alias,
+                    graph_rel.path_variable
+                );
                 // FIX: GraphRel must generate SELECT items for both left and right nodes
                 // This fixes OPTIONAL MATCH queries where the right node (b) was being ignored
                 let mut items = vec![];
@@ -89,6 +95,36 @@ impl SelectBuilder for LogicalPlan {
 
                 // Get SELECT items from right node (for OPTIONAL MATCH, this is the optional part)
                 items.extend(graph_rel.right.extract_select_items(plan_ctx)?);
+
+                // SIMPLE FIX: If GraphRel has path_variable, add the path tuple directly
+                // This handles UNION branches without needing plan_ctx or Projection wrapping
+                if let Some(ref path_var) = graph_rel.path_variable {
+                    log::warn!(
+                        "🔍 GraphRel has path_variable '{}', adding path tuple to SELECT",
+                        path_var
+                    );
+                    items.push(SelectItem {
+                        expression: RenderExpr::ScalarFnCall(ScalarFnCall {
+                            name: "tuple".to_string(),
+                            args: vec![
+                                RenderExpr::Literal(Literal::String("fixed_path".to_string())),
+                                RenderExpr::Literal(Literal::String(
+                                    graph_rel.left_connection.clone(),
+                                )),
+                                RenderExpr::Literal(Literal::String(
+                                    graph_rel.right_connection.clone(),
+                                )),
+                                RenderExpr::Literal(Literal::String(graph_rel.alias.clone())),
+                            ],
+                        }),
+                        col_alias: Some(ColumnAlias(path_var.clone())),
+                    });
+                }
+
+                log::warn!(
+                    "🔍 GraphRel.extract_select_items: returning {} items",
+                    items.len()
+                );
 
                 items
             }
@@ -122,15 +158,21 @@ impl SelectBuilder for LogicalPlan {
 
                         // Case 1: TableAlias (e.g., RETURN n)
                         LogicalExpr::TableAlias(table_alias) => {
-                            log::info!(
-                                "🔍 Expanding TableAlias('{}') to properties",
-                                table_alias.0
+                            log::warn!(
+                                "🔍 Processing TableAlias('{}'), has_plan_ctx={}",
+                                table_alias.0,
+                                plan_ctx.is_some()
                             );
 
                             // NEW APPROACH: Use TypedVariable for type/source checking
                             if let Some(plan_ctx) = plan_ctx {
+                                log::trace!("  🔍 Looking up '{}' in plan_ctx...", table_alias.0);
                                 match plan_ctx.lookup_variable(&table_alias.0) {
                                     Some(typed_var) if typed_var.is_entity() => {
+                                        log::trace!(
+                                            "  ✓ Found ENTITY variable '{}'",
+                                            table_alias.0
+                                        );
                                         // Entity (Node or Relationship) - expand properties
                                         match &typed_var.source() {
                                             VariableSource::Match => {
@@ -139,6 +181,7 @@ impl SelectBuilder for LogicalPlan {
                                                     &table_alias.0,
                                                     typed_var,
                                                     &mut select_items,
+                                                    Some(plan_ctx),
                                                 );
                                             }
                                             VariableSource::Cte { cte_name } => {
@@ -152,7 +195,7 @@ impl SelectBuilder for LogicalPlan {
                                                 );
                                             }
                                             _ => {
-                                                log::warn!("⚠️ Entity variable '{}' has unexpected source, treating as scalar", table_alias.0);
+                                                log::debug!("⚠️ Entity variable '{}' has unexpected source, treating as scalar", table_alias.0);
                                                 select_items.push(SelectItem {
                                                     expression: RenderExpr::ColumnAlias(
                                                         ColumnAlias(table_alias.0.clone()),
@@ -166,6 +209,10 @@ impl SelectBuilder for LogicalPlan {
                                         }
                                     }
                                     Some(typed_var) if typed_var.is_scalar() => {
+                                        log::trace!(
+                                            "  ✓ Found SCALAR variable '{}'",
+                                            table_alias.0
+                                        );
                                         // Scalar - single item, no expansion
                                         match &typed_var.source() {
                                             VariableSource::Cte { cte_name } => {
@@ -191,37 +238,104 @@ impl SelectBuilder for LogicalPlan {
                                     }
                                     Some(typed_var) if typed_var.is_path() => {
                                         // Path variable - expand to tuple of path components
-                                        // Path variables come from VLP CTEs with columns: path_nodes, path_edges, path_relationships, hop_count
-                                        log::info!(
-                                            "🔍 Expanding path variable '{}' to path components",
+                                        // Handles both VLP (variable-length) and fixed single-hop paths
+                                        log::warn!(
+                                            "🔍 Found PATH variable '{}', calling expand_path_variable",
                                             table_alias.0
                                         );
                                         self.expand_path_variable(
                                             &table_alias.0,
+                                            typed_var,
                                             &mut select_items,
+                                            Some(plan_ctx),
                                         );
                                     }
                                     _ => {
-                                        // Unknown variable or path/collection - fallback to old logic
-                                        log::warn!("⚠️ Variable '{}' not found in TypedVariable registry, using fallback logic", table_alias.0);
-                                        self.fallback_table_alias_expansion(
-                                            table_alias,
-                                            item,
-                                            &mut select_items,
-                                        );
+                                        log::trace!("  ✗ Variable '{}' NOT FOUND or not a recognized type in plan_ctx", table_alias.0);
+                                        // Unknown variable - check if it's a path by looking for GraphRel
+                                        if let Some(graph_rel) =
+                                            self.find_graph_rel_for_path(&table_alias.0)
+                                        {
+                                            log::info!(
+                                                "🔍 Found unregistered path variable '{}' in GraphRel, expanding with actual aliases",
+                                                table_alias.0
+                                            );
+                                            // Create a minimal TypedVariable for path expansion
+                                            // The expand_path_variable will use find_graph_rel_for_path again to get aliases
+                                            use crate::query_planner::typed_variable::{
+                                                PathVariable, TypedVariable, VariableSource,
+                                            };
+                                            let path_var = TypedVariable::Path(PathVariable {
+                                                source: VariableSource::Match,
+                                                start_node: Some(graph_rel.left_connection.clone()),
+                                                end_node: Some(graph_rel.right_connection.clone()),
+                                                relationship: Some(graph_rel.alias.clone()),
+                                                length_bounds: graph_rel
+                                                    .variable_length
+                                                    .as_ref()
+                                                    .map(|v| (v.min_hops, v.max_hops)),
+                                                is_shortest_path: graph_rel
+                                                    .shortest_path_mode
+                                                    .is_some(),
+                                            });
+                                            self.expand_path_variable(
+                                                &table_alias.0,
+                                                &path_var,
+                                                &mut select_items,
+                                                Some(plan_ctx),
+                                            );
+                                        } else {
+                                            // Really unknown - fallback to old logic
+                                            log::debug!("⚠️ Variable '{}' not found in TypedVariable registry or GraphRel, using fallback logic", table_alias.0);
+                                            self.fallback_table_alias_expansion(
+                                                table_alias,
+                                                item,
+                                                &mut select_items,
+                                            );
+                                        }
                                     }
                                 }
                             } else {
-                                // No PlanCtx available - use fallback logic
-                                log::warn!(
-                                    "⚠️ No PlanCtx available for '{}', using fallback logic",
-                                    table_alias.0
-                                );
-                                self.fallback_table_alias_expansion(
-                                    table_alias,
-                                    item,
-                                    &mut select_items,
-                                );
+                                // No PlanCtx available - check if it's a path by looking for GraphRel
+                                if let Some(graph_rel) =
+                                    self.find_graph_rel_for_path(&table_alias.0)
+                                {
+                                    log::info!(
+                                        "🔍 Found unregistered path variable '{}' in GraphRel (no plan_ctx), expanding with actual aliases",
+                                        table_alias.0
+                                    );
+                                    // Create a minimal TypedVariable for path expansion
+                                    use crate::query_planner::typed_variable::{
+                                        PathVariable, TypedVariable, VariableSource,
+                                    };
+                                    let path_var = TypedVariable::Path(PathVariable {
+                                        source: VariableSource::Match,
+                                        start_node: Some(graph_rel.left_connection.clone()),
+                                        end_node: Some(graph_rel.right_connection.clone()),
+                                        relationship: Some(graph_rel.alias.clone()),
+                                        length_bounds: graph_rel
+                                            .variable_length
+                                            .as_ref()
+                                            .map(|v| (v.min_hops, v.max_hops)),
+                                        is_shortest_path: graph_rel.shortest_path_mode.is_some(),
+                                    });
+                                    self.expand_path_variable(
+                                        &table_alias.0,
+                                        &path_var,
+                                        &mut select_items,
+                                        None, // No plan_ctx available
+                                    );
+                                } else {
+                                    log::warn!(
+                                        "⚠️ No PlanCtx available for '{}' and no GraphRel found, using fallback logic",
+                                        table_alias.0
+                                    );
+                                    self.fallback_table_alias_expansion(
+                                        table_alias,
+                                        item,
+                                        &mut select_items,
+                                    );
+                                }
                             }
                         }
 
@@ -300,7 +414,7 @@ impl SelectBuilder for LogicalPlan {
                             );
 
                             if cte_ref.columns.is_empty() {
-                                log::warn!("⚠️ CteEntityRef '{}' has no columns - falling back to TableAlias", cte_ref.alias);
+                                log::debug!("⚠️ CteEntityRef '{}' has no columns - falling back to TableAlias", cte_ref.alias);
                                 select_items.push(SelectItem {
                                     expression: RenderExpr::TableAlias(RenderTableAlias(
                                         cte_ref.alias.clone(),
@@ -459,6 +573,10 @@ impl SelectBuilder for LogicalPlan {
                 select_items
             }
             LogicalPlan::GraphJoins(graph_joins) => {
+                log::warn!(
+                    "🔍 GraphJoins.extract_select_items: input type={:?}",
+                    std::mem::discriminant(graph_joins.input.as_ref())
+                );
                 graph_joins.input.extract_select_items(plan_ctx)?
             }
             LogicalPlan::GroupBy(group_by) => {
@@ -474,7 +592,7 @@ impl SelectBuilder for LogicalPlan {
             LogicalPlan::Unwind(u) => u.input.extract_select_items(plan_ctx)?,
             LogicalPlan::CartesianProduct(cp) => {
                 // Combine select items from both sides
-                log::warn!("🔍 CartesianProduct.extract_select_items START");
+                log::trace!("🔍 CartesianProduct.extract_select_items START");
                 let left_items = cp.left.extract_select_items(plan_ctx)?;
                 log::warn!(
                     "🔍 CartesianProduct.extract_select_items: left side returned {} items",
@@ -497,7 +615,7 @@ impl SelectBuilder for LogicalPlan {
                 graph_node.input.extract_select_items(plan_ctx)?
             }
             LogicalPlan::WithClause(wc) => {
-                log::warn!("🔍 WithClause.extract_select_items: calling extract on input");
+                log::trace!("🔍 WithClause.extract_select_items: calling extract on input");
                 let items = wc.input.extract_select_items(plan_ctx)?;
                 log::warn!(
                     "🔍 WithClause.extract_select_items DONE: extracted {} items from input plan",
@@ -529,6 +647,7 @@ impl LogicalPlan {
         alias: &str,
         typed_var: &TypedVariable,
         select_items: &mut Vec<SelectItem>,
+        plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
     ) {
         log::info!("✅ Expanding base table entity '{}' to properties", alias);
 
@@ -539,38 +658,66 @@ impl LogicalPlan {
             _ => return, // Should not happen
         };
 
-        // Use existing logic to get properties and table alias
-        let mapped_alias = crate::render_plan::get_denormalized_alias_mapping(alias)
-            .unwrap_or_else(|| alias.to_string());
+        // CRITICAL: Check if this alias is a FK-edge (denormalized on another table)
+        // For FK-edge patterns like (u)-[r:AUTHORED]->(po), relationship r is stored ON po table
+        // We need to select columns from po table but alias them as r.*
+        let (actual_table_alias, is_fk_edge) = if let Some(ctx) = plan_ctx {
+            if let Some((edge_alias, _is_from, _label, _type)) =
+                ctx.get_denormalized_alias_info(alias)
+            {
+                log::info!(
+                    "🔑 FK-edge detected: '{}' is denormalized on '{}'",
+                    alias,
+                    edge_alias
+                );
+                (edge_alias.clone(), true)
+            } else {
+                // Try global denormalized alias mapping (for SingleTableScan)
+                let mapped = crate::render_plan::get_denormalized_alias_mapping(alias)
+                    .unwrap_or_else(|| alias.to_string());
+                (mapped, false)
+            }
+        } else {
+            // No plan_ctx, use global mapping
+            let mapped = crate::render_plan::get_denormalized_alias_mapping(alias)
+                .unwrap_or_else(|| alias.to_string());
+            (mapped, false)
+        };
 
-        if mapped_alias != alias {
+        if actual_table_alias != alias {
             log::info!(
-                "🔍 Denormalized alias mapping: '{}' → '{}'",
+                "🔍 {} alias mapping: '{}' → '{}'",
+                if is_fk_edge {
+                    "FK-edge"
+                } else {
+                    "Denormalized"
+                },
                 alias,
-                mapped_alias
+                actual_table_alias
             );
         }
 
-        match self.get_properties_with_table_alias(&mapped_alias) {
+        match self.get_properties_with_table_alias(&actual_table_alias) {
             Ok((properties, _)) if !properties.is_empty() => {
                 let prop_count = properties.len();
                 for (prop_name, col_name) in properties {
                     select_items.push(SelectItem {
                         expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: RenderTableAlias(mapped_alias.clone()),
+                            table_alias: RenderTableAlias(actual_table_alias.clone()),
                             column: PropertyValue::Column(col_name),
                         }),
                         col_alias: Some(ColumnAlias(format!("{}.{}", alias, prop_name))),
                     });
                 }
                 log::info!(
-                    "✅ Expanded base table '{}' to {} properties",
+                    "✅ Expanded base table '{}' (actual: '{}') to {} properties",
                     alias,
+                    actual_table_alias,
                     prop_count
                 );
             }
             _ => {
-                log::warn!("⚠️ No properties found for base table entity '{}'", alias);
+                log::debug!("⚠️ No properties found for base table entity '{}'", alias);
             }
         }
     }
@@ -592,7 +739,7 @@ impl LogicalPlan {
 
         // Parse CTE name to get aliases and compute FROM alias
         let from_alias = self.compute_from_alias_from_cte_name(cte_name);
-        log::info!("🔍 CTE '{}' → FROM alias '{}'", cte_name, from_alias);
+        log::trace!("🔍 CTE '{}' → FROM alias '{}'", cte_name, from_alias);
 
         // Get labels from TypedVariable
         let labels = match typed_var {
@@ -696,41 +843,423 @@ impl LogicalPlan {
         cte_name.to_string()
     }
 
+    /// Find GraphRel with matching path_variable in the plan tree.
+    /// This is used to get the actual connection aliases used in UNION branches.
+    fn find_graph_rel_for_path(
+        &self,
+        path_name: &str,
+    ) -> Option<&crate::query_planner::logical_plan::GraphRel> {
+        use crate::query_planner::logical_plan::LogicalPlan;
+        match self {
+            LogicalPlan::GraphRel(gr) if gr.path_variable.as_deref() == Some(path_name) => Some(gr),
+            LogicalPlan::GraphRel(gr) => {
+                // Check children
+                gr.left
+                    .find_graph_rel_for_path(path_name)
+                    .or_else(|| gr.right.find_graph_rel_for_path(path_name))
+            }
+            LogicalPlan::GraphJoins(gj) => gj.input.find_graph_rel_for_path(path_name),
+            LogicalPlan::GraphNode(gn) => gn.input.find_graph_rel_for_path(path_name),
+            LogicalPlan::Projection(p) => p.input.find_graph_rel_for_path(path_name),
+            LogicalPlan::Filter(f) => f.input.find_graph_rel_for_path(path_name),
+            LogicalPlan::GroupBy(gb) => gb.input.find_graph_rel_for_path(path_name),
+            LogicalPlan::Limit(l) => l.input.find_graph_rel_for_path(path_name),
+            LogicalPlan::Skip(s) => s.input.find_graph_rel_for_path(path_name),
+            LogicalPlan::OrderBy(o) => o.input.find_graph_rel_for_path(path_name),
+            LogicalPlan::Union(u) => {
+                // Check first branch - all branches should have same path structure
+                u.inputs
+                    .first()
+                    .and_then(|branch| branch.find_graph_rel_for_path(path_name))
+            }
+            _ => None,
+        }
+    }
+
     /// Expand a path variable to its constituent components
     ///
-    /// Path variables from VLP queries contain: path_nodes, path_edges, path_relationships, hop_count
-    /// We wrap these in a tuple() for clean output: tuple(path_nodes, path_edges, path_relationships, hop_count) AS "p"
-    fn expand_path_variable(&self, path_alias: &str, select_items: &mut Vec<SelectItem>) {
-        use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
-        // The VLP CTE uses alias defined in join_context for the final SELECT from the CTE
-        // Path components are columns in the CTE result
-        let cte_alias = VLP_CTE_FROM_ALIAS;
+    /// For VLP (variable-length paths) queries:
+    ///   - Uses VLP CTE columns: path_nodes, path_edges, path_relationships, hop_count
+    ///   - tuple(t.path_nodes, t.path_edges, t.path_relationships, t.hop_count) AS "p"
+    ///
+    /// For fixed single-hop paths:
+    ///   - Constructs path from actual node/relationship aliases
+    ///   - Adds component property columns based on schema mappings
+    fn expand_path_variable(
+        &self,
+        path_alias: &str,
+        typed_var: &TypedVariable,
+        select_items: &mut Vec<SelectItem>,
+        plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
+    ) {
+        log::warn!(
+            "🔍 expand_path_variable ENTRY: path='{}', has_plan_ctx={}",
+            path_alias,
+            plan_ctx.is_some()
+        );
 
-        // Create a tuple expression wrapping all path components
-        // tuple(t.path_nodes, t.path_edges, t.path_relationships, t.hop_count)
-        select_items.push(SelectItem {
+        // Check if this is a VLP (variable-length path) or fixed-hop path
+        let path_var = match typed_var.as_path() {
+            Some(pv) => pv,
+            None => {
+                log::warn!("expand_path_variable called with non-path variable");
+                return;
+            }
+        };
+
+        // VLP paths have length_bounds set (e.g., *1..3, *, *2..)
+        // Fixed single-hop paths have length_bounds = None
+        let is_vlp = path_var.length_bounds.is_some() || path_var.is_shortest_path;
+
+        if is_vlp {
+            // VLP path - use VLP CTE columns
+            use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
+            let cte_alias = VLP_CTE_FROM_ALIAS;
+
+            log::info!(
+                "🔍 Expanding VLP path variable '{}' using CTE columns from '{}'",
+                path_alias,
+                cte_alias
+            );
+
+            // Create a tuple expression wrapping all path components
+            // tuple(t.path_nodes, t.path_edges, t.path_relationships, t.hop_count)
+            select_items.push(SelectItem {
+                expression: RenderExpr::ScalarFnCall(ScalarFnCall {
+                    name: "tuple".to_string(),
+                    args: vec![
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: RenderTableAlias(cte_alias.to_string()),
+                            column: PropertyValue::Column("path_nodes".to_string()),
+                        }),
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: RenderTableAlias(cte_alias.to_string()),
+                            column: PropertyValue::Column("path_edges".to_string()),
+                        }),
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: RenderTableAlias(cte_alias.to_string()),
+                            column: PropertyValue::Column("path_relationships".to_string()),
+                        }),
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: RenderTableAlias(cte_alias.to_string()),
+                            column: PropertyValue::Column("hop_count".to_string()),
+                        }),
+                    ],
+                }),
+                col_alias: Some(ColumnAlias(path_alias.to_string())),
+            });
+        } else {
+            // Fixed single-hop path - expand component properties
+            // All node tables are now in FROM clause (after FK-edge duplicate fix),
+            // so we can expand properties for start node, end node, and relationship.
+
+            // Try to find the actual GraphRel in the plan tree to get real aliases
+            // This is critical for UNION branches which use branch-specific aliases (t1_0, t2_0)
+            // instead of the original aliases (a, b) registered in plan_ctx
+            let graph_rel_ref = self.find_graph_rel_for_path(path_alias);
+            let (start_alias, end_alias, rel_alias) = if let Some(graph_rel) = &graph_rel_ref {
+                log::info!(
+                    "🔍 Found GraphRel for path '{}' with actual aliases: left={}, right={}, rel={}",
+                    path_alias, graph_rel.left_connection, graph_rel.right_connection, graph_rel.alias
+                );
+                (
+                    graph_rel.left_connection.clone(),
+                    graph_rel.right_connection.clone(),
+                    graph_rel.alias.clone(),
+                )
+            } else {
+                // Fallback to registered aliases from plan_ctx (for non-UNION patterns)
+                let start = path_var
+                    .start_node
+                    .as_deref()
+                    .unwrap_or("_start")
+                    .to_string();
+                let end = path_var.end_node.as_deref().unwrap_or("_end").to_string();
+                let rel = path_var
+                    .relationship
+                    .as_deref()
+                    .unwrap_or("_rel")
+                    .to_string();
+                log::info!(
+                    "🔍 Using registered aliases for path '{}': start={}, end={}, rel={}",
+                    path_alias,
+                    start,
+                    end,
+                    rel
+                );
+                (start, end, rel)
+            };
+
+            // Check if relationship is denormalized
+            let is_rel_denormalized = if let Some(graph_rel) = &graph_rel_ref {
+                log::info!(
+                    "🔍 Checking if relationship '{}' is denormalized, center type: {:?}",
+                    rel_alias,
+                    std::mem::discriminant(graph_rel.center.as_ref())
+                );
+                if let crate::query_planner::logical_plan::LogicalPlan::ViewScan(vs) =
+                    graph_rel.center.as_ref()
+                {
+                    log::info!(
+                        "🔍 Relationship '{}' center IS ViewScan, table={}, is_denormalized={}",
+                        rel_alias,
+                        vs.source_table,
+                        vs.is_denormalized
+                    );
+                    vs.is_denormalized
+                } else {
+                    log::trace!("🔍 Relationship '{}' center is NOT ViewScan", rel_alias);
+                    false
+                }
+            } else {
+                log::warn!(
+                    "🔍 No GraphRel found for relationship '{}', assuming not denormalized",
+                    rel_alias
+                );
+                false
+            };
+
+            log::info!(
+                "🔍 Expanding fixed-hop path variable '{}': start={}, end={}, rel={}",
+                path_alias,
+                start_alias,
+                end_alias,
+                rel_alias
+            );
+
+            // Expand properties for each component if we have plan_ctx
+            if let Some(ctx) = plan_ctx {
+                log::warn!(
+                    "  🔍 Have plan_ctx, looking up path components: start={}, end={}, rel={}",
+                    start_alias,
+                    end_alias,
+                    rel_alias
+                );
+
+                // Expand start node properties
+                if let Some(typed_var) = ctx.lookup_variable(&start_alias) {
+                    let variant_name = if typed_var.is_node() {
+                        "Node"
+                    } else if typed_var.is_relationship() {
+                        "Relationship"
+                    } else if typed_var.is_scalar() {
+                        "Scalar"
+                    } else if typed_var.as_path().is_some() {
+                        "Path"
+                    } else {
+                        "Unknown"
+                    };
+                    log::debug!(
+                        "  ✓ Found start node '{}' in plan_ctx, variant={}, is_entity={}",
+                        start_alias,
+                        variant_name,
+                        typed_var.is_entity()
+                    );
+                    if typed_var.is_entity() {
+                        log::info!("  📦 Expanding start node '{}' properties", start_alias);
+                        match typed_var.source() {
+                            VariableSource::Match => {
+                                self.expand_base_table_entity(
+                                    &start_alias,
+                                    typed_var,
+                                    select_items,
+                                    Some(ctx),
+                                );
+                            }
+                            VariableSource::Cte { cte_name } => {
+                                self.expand_cte_entity(
+                                    &start_alias,
+                                    typed_var,
+                                    cte_name,
+                                    Some(ctx),
+                                    select_items,
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    log::trace!("  ✗ Start node '{}' not found in plan_ctx", start_alias);
+                }
+
+                // Expand end node properties
+                if let Some(typed_var) = ctx.lookup_variable(&end_alias) {
+                    log::debug!("  ✓ Found end node '{}' in plan_ctx", end_alias);
+                    if typed_var.is_entity() {
+                        log::info!("  📦 Expanding end node '{}' properties", end_alias);
+                        match typed_var.source() {
+                            VariableSource::Match => {
+                                self.expand_base_table_entity(
+                                    &end_alias,
+                                    typed_var,
+                                    select_items,
+                                    Some(ctx),
+                                );
+                            }
+                            VariableSource::Cte { cte_name } => {
+                                self.expand_cte_entity(
+                                    &end_alias,
+                                    typed_var,
+                                    cte_name,
+                                    Some(ctx),
+                                    select_items,
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    log::trace!("  ✗ End node '{}' not found in plan_ctx", end_alias);
+                }
+
+                // Expand relationship properties (ONLY if not denormalized)
+                // Denormalized relationships (e.g., AUTHORED) don't have a separate relationship table
+                if !is_rel_denormalized {
+                    if let Some(typed_var) = ctx.lookup_variable(&rel_alias) {
+                        log::debug!(
+                            "  ✓ Found relationship '{}' in plan_ctx, is_entity={}, source={:?}",
+                            rel_alias,
+                            typed_var.is_entity(),
+                            typed_var.source()
+                        );
+                        if typed_var.is_entity() {
+                            log::info!("  📦 Expanding relationship '{}' properties", rel_alias);
+                            match typed_var.source() {
+                                VariableSource::Match => {
+                                    self.expand_base_table_entity(
+                                        &rel_alias,
+                                        typed_var,
+                                        select_items,
+                                        Some(ctx),
+                                    );
+                                }
+                                VariableSource::Cte { cte_name } => {
+                                    self.expand_cte_entity(
+                                        &rel_alias,
+                                        typed_var,
+                                        cte_name,
+                                        Some(ctx),
+                                        select_items,
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                    } else {
+                        log::trace!("  ✗ Relationship '{}' not found in plan_ctx", rel_alias);
+                    }
+                } else {
+                    // Denormalized relationship: properties come from end node's table
+                    // Get relationship properties from schema and select using end_alias table
+                    log::info!("  📦 Expanding denormalized relationship '{}' properties using end node table '{}'", rel_alias, end_alias);
+                    if let Some(graph_rel) = &graph_rel_ref {
+                        // Get relationship type from GraphRel labels
+                        if let Some(ref labels) = graph_rel.labels {
+                            if let Some(rel_type) = labels.first() {
+                                // Get property mappings from schema via plan_ctx
+                                let schema = ctx.schema();
+                                let rel_props =
+                                    schema.get_relationship_properties(&[rel_type.clone()]);
+                                log::info!(
+                                    "  🔍 Found {} properties for denormalized rel '{}': {:?}",
+                                    rel_props.len(),
+                                    rel_type,
+                                    rel_props
+                                );
+                                for (prop_name, db_column) in rel_props {
+                                    // Select from end node's table (since denormalized)
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: RenderTableAlias(end_alias.clone()),
+                                            column: PropertyValue::Column(db_column),
+                                        }),
+                                        col_alias: Some(ColumnAlias(format!(
+                                            "{}.{}",
+                                            rel_alias, prop_name
+                                        ))),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                log::warn!(
+                    "  ✗ NO plan_ctx available for path variable '{}' property expansion!",
+                    path_alias
+                );
+            }
+
+            // Add the path metadata column with component aliases
+            // Format: tuple('fixed_path', start_alias, end_alias, rel_alias)
+            select_items.push(SelectItem {
+                expression: RenderExpr::ScalarFnCall(ScalarFnCall {
+                    name: "tuple".to_string(),
+                    args: vec![
+                        // Path type marker
+                        RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
+                            "fixed_path".to_string(),
+                        )),
+                        // Start node alias
+                        RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
+                            start_alias.to_string(),
+                        )),
+                        // End node alias
+                        RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
+                            end_alias.to_string(),
+                        )),
+                        // Relationship alias
+                        RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
+                            rel_alias.to_string(),
+                        )),
+                    ],
+                }),
+                col_alias: Some(ColumnAlias(path_alias.to_string())),
+            });
+        }
+    }
+
+    /// Expand path variable directly from GraphRel metadata (for UNION branches without plan_ctx)
+    /// Creates the fixed-path tuple: tuple('fixed_path', start_alias, end_alias, rel_alias)
+    fn expand_path_variable_from_graph_rel(
+        path_alias: &str,
+        start_alias: &str,
+        end_alias: &str,
+        rel_alias: &str,
+    ) -> SelectItem {
+        log::info!(
+            "🔍 Expanding fixed-hop path variable '{}' from GraphRel: start={}, end={}, rel={}",
+            path_alias,
+            start_alias,
+            end_alias,
+            rel_alias
+        );
+
+        // Add the path metadata column with component aliases
+        // Format: tuple('fixed_path', start_alias, end_alias, rel_alias)
+        SelectItem {
             expression: RenderExpr::ScalarFnCall(ScalarFnCall {
                 name: "tuple".to_string(),
                 args: vec![
-                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: RenderTableAlias(cte_alias.to_string()),
-                        column: PropertyValue::Column("path_nodes".to_string()),
-                    }),
-                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: RenderTableAlias(cte_alias.to_string()),
-                        column: PropertyValue::Column("path_edges".to_string()),
-                    }),
-                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: RenderTableAlias(cte_alias.to_string()),
-                        column: PropertyValue::Column("path_relationships".to_string()),
-                    }),
-                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: RenderTableAlias(cte_alias.to_string()),
-                        column: PropertyValue::Column("hop_count".to_string()),
-                    }),
+                    // Path type marker
+                    RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
+                        "fixed_path".to_string(),
+                    )),
+                    // Start node alias
+                    RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
+                        start_alias.to_string(),
+                    )),
+                    // End node alias
+                    RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
+                        end_alias.to_string(),
+                    )),
+                    // Relationship alias
+                    RenderExpr::Literal(crate::render_plan::render_expr::Literal::String(
+                        rel_alias.to_string(),
+                    )),
                 ],
             }),
             col_alias: Some(ColumnAlias(path_alias.to_string())),
-        });
+        }
     }
 }

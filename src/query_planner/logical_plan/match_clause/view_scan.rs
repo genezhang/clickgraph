@@ -782,6 +782,19 @@ pub fn try_generate_relationship_view_scan(
         );
     }
 
+    // Detect denormalized relationships: if relationship table matches a node table, it's denormalized
+    // Example: AUTHORED uses posts_bench table (same as Post node table)
+    let is_denormalized = rel_schema.table_name == rel_schema.from_node_table
+        || rel_schema.table_name == rel_schema.to_node_table;
+    if is_denormalized {
+        view_scan.is_denormalized = true;
+        log::info!(
+            "✓ ViewScan: Relationship '{}' is DENORMALIZED (table '{}' matches node table)",
+            rel_type,
+            rel_schema.table_name
+        );
+    }
+
     // Set schema-level filter if defined in schema
     view_scan.schema_filter = rel_schema.filter.clone();
     if view_scan.schema_filter.is_some() {
