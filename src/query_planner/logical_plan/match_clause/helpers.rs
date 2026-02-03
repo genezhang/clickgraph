@@ -64,48 +64,79 @@ pub fn generate_scan(
 
         // Get all node labels from schema
         let schema = plan_ctx.schema();
-        let all_node_schemas = schema.all_node_schemas();
-
-        if all_node_schemas.is_empty() {
-            return Err(LogicalPlanError::QueryPlanningError(
-                "No node types found in schema".to_string(),
-            ));
-        }
-
-        // Collect unique base labels (deduplicate qualified names like "brahmand::users_bench::User")
-        let mut base_labels = std::collections::HashSet::new();
-        for label_key in all_node_schemas.keys() {
-            let base_label = if label_key.contains("::") {
-                label_key.split("::").last().unwrap_or(label_key)
-            } else {
-                label_key
-            };
-            base_labels.insert(base_label.to_string());
-        }
-
-        let unique_labels: Vec<String> = base_labels.into_iter().collect();
-
-        if unique_labels.len() == 1 {
-            // Edge case: exactly one node type exists
-            // Create a ViewScan for it directly
-            log::info!(
-                "Single node type '{}' - creating ViewScan",
-                unique_labels[0]
+        
+        // Check if WHERE clause has property requirements for this alias
+        let labels_to_use = if let Some(required_props) = plan_ctx.get_where_property_requirements(&alias) {
+            log::debug!(
+                "Found WHERE property requirements for alias '{}': {:?}",
+                alias,
+                required_props
             );
-            match super::try_generate_view_scan(&alias, &unique_labels[0], plan_ctx)? {
+            
+            // Use schema filter to get only types with required properties
+            use super::schema_filter::SchemaPropertyFilter;
+            let filter = SchemaPropertyFilter::new(schema);
+            let filtered_labels = filter.filter_node_schemas(required_props);
+            
+            log::info!(
+                "Property-based filtering: {} → {} node types (required properties: {:?})",
+                schema.all_node_schemas().len(),
+                filtered_labels.len(),
+                required_props
+            );
+            
+            if filtered_labels.is_empty() {
+                log::warn!("No node types have required properties {:?} - query will return 0 rows", required_props);
+                // Return empty result (0 rows)
+                return Ok(Arc::new(LogicalPlan::Empty));
+            }
+            
+            filtered_labels
+        } else {
+            // No property requirements - use all node types
+            let all_node_schemas = schema.all_node_schemas();
+            
+            if all_node_schemas.is_empty() {
+                return Err(LogicalPlanError::QueryPlanningError(
+                    "No node types found in schema".to_string(),
+                ));
+            }
+            
+            // Collect unique base labels (deduplicate qualified names)
+            let mut base_labels = std::collections::HashSet::new();
+            for label_key in all_node_schemas.keys() {
+                let base_label = if label_key.contains("::") {
+                    label_key.split("::").last().unwrap_or(label_key)
+                } else {
+                    label_key
+                };
+                base_labels.insert(base_label.to_string());
+            }
+            
+            base_labels.into_iter().collect()
+        };
+
+        if labels_to_use.len() == 1 {
+            // Edge case: exactly one node type (after filtering)
+            // Create a ViewScan for it directly (optimization: skip UNION wrapper)
+            log::info!(
+                "Single node type '{}' after filtering - creating ViewScan",
+                labels_to_use[0]
+            );
+            match super::try_generate_view_scan(&alias, &labels_to_use[0], plan_ctx)? {
                 Some(view_scan) => Ok(view_scan),
-                None => Err(LogicalPlanError::NodeNotFound(unique_labels[0].clone())),
+                None => Err(LogicalPlanError::NodeNotFound(labels_to_use[0].clone())),
             }
         } else {
             // Multiple node types - create UNION ALL of ViewScans
             log::info!(
                 "Creating UNION of {} node types for labelless query: {:?}",
-                unique_labels.len(),
-                unique_labels
+                labels_to_use.len(),
+                labels_to_use
             );
 
             let mut union_inputs = Vec::new();
-            for label in &unique_labels {
+            for label in &labels_to_use {
                 match super::try_generate_view_scan(&alias, label, plan_ctx)? {
                     Some(view_scan) => union_inputs.push(view_scan),
                     None => {

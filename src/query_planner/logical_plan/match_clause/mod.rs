@@ -21,6 +21,7 @@
 
 mod errors;
 mod helpers;
+mod schema_filter;
 mod traversal;
 mod view_scan;
 
