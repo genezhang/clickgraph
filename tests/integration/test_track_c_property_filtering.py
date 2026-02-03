@@ -3,6 +3,8 @@ Integration tests for Track C: Property-based UNION branch pruning
 
 Tests that untyped patterns with WHERE property conditions only query
 node/relationship types that have those properties.
+
+Uses social_benchmark schema which has users_bench and posts_bench nodes.
 """
 
 import pytest
@@ -15,15 +17,18 @@ BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 class TestPropertyFilteringNodes:
     """Test property-based filtering for node patterns"""
 
-    def test_single_property_bytes_sent(self):
+    def test_single_property_user_id(self):
         """
-        Query: MATCH (n) WHERE n.bytes_sent > 100
-        Expected: Only node types with bytes_sent property queried
+        Query: MATCH (n) WHERE n.user_id = 1
+        Expected: Only User type queried (has user_id property)
+        
+        Social benchmark has: users_bench (user_id), posts_bench (post_id)
+        So filtering by user_id should only query users_bench
         """
         query = """
-        USE test_fixtures
-        MATCH (n) WHERE n.bytes_sent > 100
-        RETURN n.bytes_sent AS bytes
+        USE social_benchmark
+        MATCH (n) WHERE n.user_id = 1
+        RETURN n.user_id AS uid
         LIMIT 5
         """
         
@@ -38,21 +43,21 @@ class TestPropertyFilteringNodes:
         # Should return results
         assert "results" in result
         
-        # Verify results have bytes_sent field > 100
+        # Verify results have user_id field = 1
         if result["results"]:
             for row in result["results"]:
-                assert "bytes" in row
-                assert row["bytes"] > 100
+                assert "uid" in row
+                assert row["uid"] == 1
 
-    def test_property_filter_user_id(self):
+    def test_property_filter_post_id(self):
         """
-        Query: MATCH (n) WHERE n.user_id = 1
-        Expected: Only User-like types queried (have user_id property)
+        Query: MATCH (n) WHERE n.post_id = 1
+        Expected: Only Post-like types queried (have post_id property)
         """
         query = """
-        USE test_fixtures
-        MATCH (n) WHERE n.user_id = 1
-        RETURN n.user_id AS uid
+        USE social_benchmark
+        MATCH (n) WHERE n.post_id = 1
+        RETURN n.post_id AS pid
         """
         
         response = requests.post(
@@ -66,7 +71,7 @@ class TestPropertyFilteringNodes:
         # Should return results
         assert "results" in result
         if result["results"]:
-            assert result["results"][0]["uid"] == 1
+            assert result["results"][0]["pid"] == 1
 
     def test_nonexistent_property_returns_empty(self):
         """
@@ -74,7 +79,7 @@ class TestPropertyFilteringNodes:
         Expected: 0 results (no types have this property)
         """
         query = """
-        USE test_fixtures
+        USE social_benchmark
         MATCH (n) WHERE n.nonexistent_xyz_999 = 123
         RETURN n
         """
@@ -98,7 +103,7 @@ class TestPropertyFilteringNodes:
         Expected: Only types with BOTH properties queried
         """
         query = """
-        USE test_fixtures
+        USE social_benchmark
         MATCH (n) WHERE n.user_id = 1 AND n.user_id IS NOT NULL
         RETURN n.user_id AS uid
         """
@@ -124,7 +129,7 @@ class TestPropertyFilteringRelationships:
         Expected: Only relationship types with that property queried
         """
         query = """
-        USE test_fixtures
+        USE social_benchmark
         MATCH ()-[r]->() WHERE r.follow_date IS NOT NULL
         RETURN r.follow_date AS date
         LIMIT 5
