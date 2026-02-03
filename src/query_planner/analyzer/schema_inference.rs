@@ -432,6 +432,7 @@ impl SchemaInference {
                         left_table_ctx,
                         rel_table_ctx,
                         right_table_ctx,
+                        plan_ctx,
                     )?;
 
                     for (alias, label) in [
@@ -574,6 +575,7 @@ impl SchemaInference {
         left_table_ctx: &TableCtx,
         rel_table_ctx: &TableCtx,
         right_table_ctx: &TableCtx,
+        plan_ctx: &PlanCtx,
     ) -> AnalyzerResult<(String, String, String)> {
         // if all present
         if left_table_ctx.get_label_opt().is_some()
@@ -1103,6 +1105,23 @@ impl SchemaInference {
             && rel_table_ctx.get_label_opt().is_none()
             && right_table_ctx.get_label_opt().is_none()
         {
+            // SPECIAL CASE: Property-based filtering for untyped relationship patterns
+            // For queries like: MATCH ()-[r]->() WHERE r.property...
+            // Skip inference - the property filtering in generate_relationship_center will handle it
+            // We can detect this by checking if the middle table is a relationship
+            if rel_table_ctx.is_relation() {
+                log::info!(
+                    "SchemaInference: Skipping validation for untyped relationship pattern (will use property-based filtering)"
+                );
+                // Return placeholder - actual types determined during scan generation
+                // Use "$any" as placeholder to signal polymorphic pattern
+                return Ok((
+                    "$any".to_string(),
+                    "$untyped_rel".to_string(), 
+                    "$any".to_string(),
+                ));
+            }
+            
             let extracted_left_node_table_result =
                 self.get_table_name_from_filters_and_projections(graph_schema, left_table_ctx);
             let extracted_right_node_table_result =

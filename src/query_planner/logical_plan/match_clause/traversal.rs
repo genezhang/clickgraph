@@ -246,19 +246,50 @@ fn traverse_connected_pattern_with_mode<'a>(
             }
             None => {
                 // Anonymous edge pattern: [] (no type specified)
-                // Use smart inference to determine relationship type(s):
-                // 1. If schema has only one relationship, use it
-                // 2. If nodes are typed, find relationships that match those types
-                // 3. Otherwise, expand to all matching relationship types for UNION
-                let graph_schema = plan_ctx.schema();
-
-                infer_relationship_type_from_nodes(
-                    &start_node_label,
-                    &end_node_label,
-                    &rel.direction,
-                    graph_schema,
-                    plan_ctx,
-                )?
+                // STEP 1: Check if WHERE clause has property requirements
+                let inferred_types = if let Some(required_props) = plan_ctx.get_where_property_requirements(&rel_alias) {
+                    log::info!(
+                        "🔍 Property-based filtering for untyped relationship '{}': required properties {:?}",
+                        rel_alias,
+                        required_props
+                    );
+                    
+                    // Filter all relationship types by required properties
+                    use super::schema_filter::SchemaPropertyFilter;
+                    let graph_schema = plan_ctx.schema();
+                    let filter = SchemaPropertyFilter::new(graph_schema);
+                    let filtered_types = filter.filter_relationship_schemas(required_props);
+                    
+                    log::info!(
+                        "Property-based filtering: {} → {} relationship types for '{}'",
+                        graph_schema.get_relationships_schemas().len(),
+                        filtered_types.len(),
+                        rel_alias
+                    );
+                    
+                    if filtered_types.is_empty() {
+                        log::warn!("No relationship types have required properties {:?}", required_props);
+                        None // Will generate empty result
+                    } else {
+                        Some(filtered_types)
+                    }
+                } else {
+                    // STEP 2: No property requirements - use smart inference
+                    // 1. If schema has only one relationship, use it
+                    // 2. If nodes are typed, find relationships that match those types
+                    // 3. Otherwise, expand to all matching relationship types for UNION
+                    let graph_schema = plan_ctx.schema();
+                    
+                    infer_relationship_type_from_nodes(
+                        &start_node_label,
+                        &end_node_label,
+                        &rel.direction,
+                        graph_schema,
+                        plan_ctx,
+                    )?
+                };
+                
+                inferred_types
             }
         };
 
