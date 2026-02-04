@@ -686,18 +686,42 @@ impl FilterTagging {
                 }
 
                 // Get the label for this table
+                // First try plan_ctx (works for typed patterns)
+                // If None, try to find it in the plan tree (works for UNION branches where
+                // each branch has a typed GraphNode but the global plan_ctx still has untyped entry)
                 let label = match table_ctx.get_label_opt() {
                     Some(l) => l,
                     None => {
-                        // No label yet - this is an untyped pattern like MATCH (n)
-                        // Property validation will happen during scan generation when we filter types
-                        // For now, pass through the property access as-is
-                        log::info!(
-                            "🔧 FilterTagging: Skipping validation for untyped pattern '{}', property='{}' (will validate during scan generation)",
-                            property_access.table_alias.0,
-                            property_access.column.raw()
-                        );
-                        return Ok(LogicalExpr::PropertyAccessExp(property_access));
+                        // Try to get label from the plan tree (for UNION branches)
+                        if let Some(plan_ref) = plan {
+                            if let Some(label_from_plan) =
+                                Self::find_label_in_plan(plan_ref, &property_access.table_alias.0)
+                            {
+                                log::info!(
+                                    "🔧 FilterTagging: Found label '{}' from plan tree for untyped pattern '{}', property='{}'",
+                                    label_from_plan,
+                                    property_access.table_alias.0,
+                                    property_access.column.raw()
+                                );
+                                label_from_plan
+                            } else {
+                                // No label in plan either - truly untyped, pass through as-is
+                                log::info!(
+                                    "🔧 FilterTagging: Skipping validation for untyped pattern '{}', property='{}' (will validate during scan generation)",
+                                    property_access.table_alias.0,
+                                    property_access.column.raw()
+                                );
+                                return Ok(LogicalExpr::PropertyAccessExp(property_access));
+                            }
+                        } else {
+                            // No plan reference - pass through as-is
+                            log::info!(
+                                "🔧 FilterTagging: Skipping validation for untyped pattern '{}', property='{}' (no plan context)",
+                                property_access.table_alias.0,
+                                property_access.column.raw()
+                            );
+                            return Ok(LogicalExpr::PropertyAccessExp(property_access));
+                        }
                     }
                 };
 
@@ -1676,6 +1700,44 @@ impl FilterTagging {
             LogicalPlan::Skip(skip) => Self::find_owning_edge_for_node(&skip.input, node_alias),
             LogicalPlan::Limit(limit) => Self::find_owning_edge_for_node(&limit.input, node_alias),
             LogicalPlan::Cte(cte) => Self::find_owning_edge_for_node(&cte.input, node_alias),
+            _ => None,
+        }
+    }
+
+    /// Find the label for an alias by looking at GraphNode in the plan tree
+    /// This is used for UNION branches where the branch has a typed GraphNode
+    /// but the global plan_ctx still has the untyped entry
+    fn find_label_in_plan(plan: &LogicalPlan, alias: &str) -> Option<String> {
+        match plan {
+            LogicalPlan::GraphNode(node) => {
+                if node.alias == alias {
+                    return node.label.clone();
+                }
+                Self::find_label_in_plan(&node.input, alias)
+            }
+            LogicalPlan::Filter(filter) => Self::find_label_in_plan(&filter.input, alias),
+            LogicalPlan::Projection(proj) => Self::find_label_in_plan(&proj.input, alias),
+            LogicalPlan::GraphJoins(joins) => Self::find_label_in_plan(&joins.input, alias),
+            LogicalPlan::GroupBy(gb) => Self::find_label_in_plan(&gb.input, alias),
+            LogicalPlan::OrderBy(ob) => Self::find_label_in_plan(&ob.input, alias),
+            LogicalPlan::Skip(skip) => Self::find_label_in_plan(&skip.input, alias),
+            LogicalPlan::Limit(limit) => Self::find_label_in_plan(&limit.input, alias),
+            LogicalPlan::Cte(cte) => Self::find_label_in_plan(&cte.input, alias),
+            LogicalPlan::GraphRel(rel) => {
+                if let Some(l) = Self::find_label_in_plan(&rel.left, alias) {
+                    return Some(l);
+                }
+                if let Some(l) = Self::find_label_in_plan(&rel.center, alias) {
+                    return Some(l);
+                }
+                Self::find_label_in_plan(&rel.right, alias)
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                if let Some(l) = Self::find_label_in_plan(&cp.left, alias) {
+                    return Some(l);
+                }
+                Self::find_label_in_plan(&cp.right, alias)
+            }
             _ => None,
         }
     }

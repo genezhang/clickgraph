@@ -676,6 +676,17 @@ pub fn try_generate_relationship_view_scan(
             }
         };
 
+    // ⚠️ DEBUGGING: Log the relationship schema details
+    log::warn!(
+        "🔍 SCHEMA DEBUG: Retrieved relationship schema for type '{}': table='{}', from_id='{}', to_id='{}', from_node='{}', to_node='{}'",
+        rel_type,
+        rel_schema.table_name,
+        rel_schema.from_id,
+        rel_schema.to_id,
+        rel_schema.from_node,
+        rel_schema.to_node
+    );
+
     // Log successful resolution
     log::info!(
         "✓ Relationship ViewScan: Resolved type '{}' to table '{}'",

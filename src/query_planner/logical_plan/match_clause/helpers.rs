@@ -133,8 +133,8 @@ pub fn generate_scan(
             }
         } else {
             // Multiple node types - create UNION ALL of ViewScans
-            log::info!(
-                "Creating UNION of {} node types for labelless query: {:?}",
+            log::warn!(
+                "🔍 Creating UNION of {} node types for labelless query: {:?}",
                 labels_to_use.len(),
                 labels_to_use
             );
@@ -142,7 +142,10 @@ pub fn generate_scan(
             let mut union_inputs = Vec::new();
             for label in &labels_to_use {
                 match super::try_generate_view_scan(&alias, label, plan_ctx)? {
-                    Some(view_scan) => union_inputs.push(view_scan),
+                    Some(view_scan) => {
+                        log::warn!("🔍 Added ViewScan for label '{}': {:?}", label, view_scan);
+                        union_inputs.push(view_scan);
+                    }
                     None => {
                         log::warn!("Skipping label '{}' - not found in schema", label);
                     }

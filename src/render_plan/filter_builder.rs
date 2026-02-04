@@ -4,6 +4,9 @@
 //! It processes WHERE clauses, HAVING clauses, and other filter conditions
 //! that need to be applied to the generated SQL queries.
 
+use crate::query_planner::logical_expr::expression_rewriter::{
+    rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+};
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::cte_extraction::{
     extract_relationship_columns, table_to_id_column, RelationshipColumns,
@@ -43,16 +46,23 @@ impl FilterBuilder for LogicalPlan {
                     // Extract view_filter (user's WHERE clause, injected by optimizer)
                     if let Some(ref view_filter) = scan.view_filter {
                         log::debug!(
-                            "extract_filters: view_filter BEFORE conversion: {:?}",
+                            "extract_filters: view_filter BEFORE rewrite: {:?}",
                             view_filter
                         );
-                        let mut expr: RenderExpr = view_filter.clone().try_into()?;
-                        log::debug!("extract_filters: view_filter AFTER conversion: {:?}", expr);
-                        apply_property_mapping_to_expr(&mut expr, &graph_node.input);
+
+                        // 🔧 FIX: Rewrite property names to DB column names BEFORE converting to RenderExpr
+                        // This uses the same function as WITH clause processing for consistency
+                        let rewrite_ctx = ExpressionRewriteContext::new(&graph_node.input);
+                        let rewritten_filter =
+                            rewrite_expression_with_property_mapping(view_filter, &rewrite_ctx);
+
                         log::debug!(
-                            "extract_filters: view_filter AFTER property mapping: {:?}",
-                            expr
+                            "extract_filters: view_filter AFTER rewrite: {:?}",
+                            rewritten_filter
                         );
+
+                        let expr: RenderExpr = rewritten_filter.try_into()?;
+                        log::debug!("extract_filters: view_filter AFTER conversion: {:?}", expr);
                         log::info!(
                             "GraphNode '{}': Adding view_filter: {:?}",
                             graph_node.alias,

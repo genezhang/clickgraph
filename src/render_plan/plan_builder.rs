@@ -1103,9 +1103,24 @@ impl RenderPlanBuilder for LogicalPlan {
                 } else {
                     eprintln!("DEBUG Filter::to_render_plan: Normal filter handling");
                     // Normal filter handling
-                    // Convert the filter predicate to RenderExpr
-                    let mut filter_expr: RenderExpr = f.predicate.clone().try_into()?;
-                    apply_property_mapping_to_expr(&mut filter_expr, &f.input);
+
+                    // 🔧 FIX: Rewrite property names to DB column names BEFORE converting to RenderExpr
+                    // This uses the same function as WITH clause processing for consistency
+                    use crate::query_planner::logical_expr::expression_rewriter::{
+                        rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+                    };
+                    let rewrite_ctx = ExpressionRewriteContext::new(&f.input);
+                    let rewritten_predicate =
+                        rewrite_expression_with_property_mapping(&f.predicate, &rewrite_ctx);
+
+                    log::debug!(
+                        "Filter rewrite: {:?} → {:?}",
+                        f.predicate,
+                        rewritten_predicate
+                    );
+
+                    // Convert the rewritten predicate to RenderExpr
+                    let filter_expr: RenderExpr = rewritten_predicate.try_into()?;
 
                     // Combine with existing filters if any
                     render_plan.filters = match render_plan.filters.0 {
