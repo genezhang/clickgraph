@@ -690,13 +690,23 @@ impl FilterTagging {
                 // If None, try to find it in the plan tree (works for UNION branches where
                 // each branch has a typed GraphNode but the global plan_ctx still has untyped entry)
                 let label = match table_ctx.get_label_opt() {
-                    Some(l) => l,
-                    None => {
+                    Some(l) if !l.is_empty() => l, // Skip empty labels (from pruned branches)
+                    _ => {
                         // Try to get label from the plan tree (for UNION branches)
                         if let Some(plan_ref) = plan {
                             if let Some(label_from_plan) =
                                 Self::find_label_in_plan(plan_ref, &property_access.table_alias.0)
                             {
+                                if label_from_plan.is_empty() {
+                                    // Empty label means this branch was pruned (no matching types)
+                                    // Skip property mapping - the branch will return 0 rows anyway
+                                    log::info!(
+                                        "🔧 FilterTagging: Skipping property mapping for pruned branch '{}', property='{}'",
+                                        property_access.table_alias.0,
+                                        property_access.column.raw()
+                                    );
+                                    return Ok(LogicalExpr::PropertyAccessExp(property_access));
+                                }
                                 log::info!(
                                     "🔧 FilterTagging: Found label '{}' from plan tree for untyped pattern '{}', property='{}'",
                                     label_from_plan,
@@ -724,6 +734,16 @@ impl FilterTagging {
                         }
                     }
                 };
+
+                // Handle empty label case (branch was pruned by property-based filtering)
+                if label.is_empty() {
+                    log::info!(
+                        "🔧 FilterTagging: Skipping property mapping for pruned branch '{}' (empty label), property='{}'",
+                        property_access.table_alias.0,
+                        property_access.column.raw()
+                    );
+                    return Ok(LogicalExpr::PropertyAccessExp(property_access));
+                }
 
                 // Check if this node uses EmbeddedInEdge strategy (denormalized access)
                 let (is_embedded_in_edge, _owning_edge_info) = if let Some(plan) = plan {

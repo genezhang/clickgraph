@@ -298,6 +298,27 @@ fn traverse_connected_pattern_with_mode<'a>(
             }
         };
 
+        // === HANDLE NO MATCHING RELATIONSHIP TYPES ===
+        // If property filtering removed all relationship types, return Empty plan
+        if rel_labels.is_none() {
+            log::warn!(
+                "🔀 No relationship types found for alias '{}' after property filtering - returning Empty",
+                rel_alias
+            );
+            // Register the relationship alias with empty labels to prevent downstream errors
+            plan_ctx.insert_table_ctx(
+                rel_alias.clone(),
+                crate::query_planner::plan_ctx::TableCtx::build(
+                    rel_alias.clone(),
+                    Some(vec![]), // Empty labels
+                    vec![],
+                    true,
+                    false,
+                ),
+            );
+            return Ok(Arc::new(LogicalPlan::Empty));
+        }
+
         // === FULLY UNTYPED MULTI-TYPE UNION EXPANSION ===
         // For patterns like ()-->() where BOTH nodes are untyped AND we have multiple relationship types,
         // generate a UNION where each branch processes as a typed pattern through the normal flow.

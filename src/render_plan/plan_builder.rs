@@ -1826,6 +1826,40 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 Ok(base_plan)
             }
+            LogicalPlan::Empty => {
+                // Empty plan represents a pruned branch (e.g., no types matched a property filter)
+                // Return an empty RenderPlan that will generate no rows
+                // Must include at least one select item for valid SQL: SELECT 1 WHERE false
+                log::info!(
+                    "🔧 to_render_plan: Empty plan (pruned branch) - generating empty result"
+                );
+                Ok(RenderPlan {
+                    ctes: CteItems(vec![]),
+                    select: SelectItems {
+                        items: vec![SelectItem {
+                            expression: RenderExpr::Literal(super::render_expr::Literal::Integer(
+                                1,
+                            )),
+                            col_alias: Some(ColumnAlias("_empty".to_string())),
+                        }],
+                        distinct: false,
+                    },
+                    from: FromTableItem(None),
+                    joins: JoinItems(vec![]),
+                    array_join: ArrayJoinItem(vec![]),
+                    filters: FilterItems(Some(RenderExpr::Literal(
+                        super::render_expr::Literal::Boolean(false),
+                    ))), // WHERE false
+                    group_by: GroupByExpressions(vec![]),
+                    having_clause: None,
+                    order_by: OrderByItems(vec![]),
+                    skip: SkipItem(None),
+                    limit: LimitItem(None),
+                    union: UnionItems(None),
+                    fixed_path_info: None,
+                    is_multi_label_scan: false,
+                })
+            }
             _ => todo!(
                 "Render plan conversion not implemented for LogicalPlan variant: {:?}",
                 std::mem::discriminant(self)

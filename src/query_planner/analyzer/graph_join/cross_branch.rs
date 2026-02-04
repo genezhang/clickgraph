@@ -98,6 +98,11 @@ pub fn generate_relationship_uniqueness_constraints(
                 continue;
             }
 
+            // Skip if either edge has no relationship types (filtered by property filtering)
+            if edge1.rel_types.is_empty() || edge2.rel_types.is_empty() {
+                continue;
+            }
+
             // Get relationship schemas to determine edge ID columns
             let rel1_schema = match graph_schema.get_rel_schema(&edge1.rel_types[0]) {
                 Ok(schema) => schema,
@@ -244,6 +249,16 @@ pub fn generate_cross_branch_joins_from_metadata(
         let mut to_edges: HashMap<String, Vec<&super::metadata::PatternEdgeInfo>> = HashMap::new();
 
         for edge in &edges {
+            // Skip edges with no relationship types (filtered out by property filtering)
+            if edge.rel_types.is_empty() {
+                log::debug!(
+                    "🔍 Skipping edge {}->{}->{}  with no relationship types (filtered)",
+                    edge.from_node,
+                    edge.alias,
+                    edge.to_node
+                );
+                continue;
+            }
             let rel_schema = graph_schema
                 .get_rel_schema(&edge.rel_types[0])
                 .map_err(|e| AnalyzerError::GraphSchema {
@@ -335,6 +350,20 @@ fn create_cross_branch_join_from_edges(
         node_alias,
         if is_from_side { "from_node" } else { "to_node" }
     );
+
+    // Guard: Skip if either edge has no relationship types (filtered by property filtering)
+    if edge1.rel_types.is_empty() {
+        return Err(AnalyzerError::SchemaNotFound(format!(
+            "Edge '{}' has no relationship types (filtered by property filtering)",
+            edge1.alias
+        )));
+    }
+    if edge2.rel_types.is_empty() {
+        return Err(AnalyzerError::SchemaNotFound(format!(
+            "Edge '{}' has no relationship types (filtered by property filtering)",
+            edge2.alias
+        )));
+    }
 
     // Get relationship schemas
     let rel1_schema = graph_schema

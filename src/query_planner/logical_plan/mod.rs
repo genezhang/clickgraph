@@ -162,6 +162,28 @@ pub fn evaluate_cypher_statement(
             #[allow(unused_assignments)]
             let mut combined_ctx: Option<PlanCtx> = None;
 
+            // Helper function to check if a branch is effectively empty
+            // (either LogicalPlan::Empty or a GraphRel with no relationship types)
+            fn is_empty_or_filtered_branch(plan: &LogicalPlan) -> bool {
+                match plan {
+                    LogicalPlan::Empty => true,
+                    // GraphRel with labels=None or labels=Some([]) means property filtering removed all types
+                    LogicalPlan::GraphRel(rel) => {
+                        matches!(&rel.labels, Some(labels) if labels.is_empty())
+                    }
+                    // Check wrapper nodes
+                    LogicalPlan::GraphNode(node) => is_empty_or_filtered_branch(&node.input),
+                    LogicalPlan::Projection(proj) => is_empty_or_filtered_branch(&proj.input),
+                    LogicalPlan::Filter(f) => is_empty_or_filtered_branch(&f.input),
+                    LogicalPlan::GraphJoins(joins) => is_empty_or_filtered_branch(&joins.input),
+                    LogicalPlan::OrderBy(ob) => is_empty_or_filtered_branch(&ob.input),
+                    LogicalPlan::Limit(l) => is_empty_or_filtered_branch(&l.input),
+                    LogicalPlan::Skip(s) => is_empty_or_filtered_branch(&s.input),
+                    LogicalPlan::GroupBy(gb) => is_empty_or_filtered_branch(&gb.input),
+                    _ => false,
+                }
+            }
+
             // First query
             let (first_plan, first_ctx) = plan_builder::build_logical_plan(
                 &query,
@@ -170,7 +192,14 @@ pub fn evaluate_cypher_statement(
                 view_parameter_values.clone(),
                 max_inferred_types,
             )?;
-            all_plans.push(first_plan);
+            // Only add non-empty branches
+            if !is_empty_or_filtered_branch(&first_plan) {
+                all_plans.push(first_plan);
+            } else {
+                log::info!(
+                    "🔀 UNION first branch filtered to 0 types by Track C - skipping empty branch"
+                );
+            }
             combined_ctx = Some(first_ctx);
 
             // Track the union type (all must be the same for simplicity, or we use the first UNION's type)
@@ -192,11 +221,39 @@ pub fn evaluate_cypher_statement(
                     view_parameter_values.clone(),
                     max_inferred_types,
                 )?;
-                all_plans.push(plan);
+                // Only add non-empty branches
+                if !is_empty_or_filtered_branch(&plan) {
+                    all_plans.push(plan);
+                } else {
+                    log::info!(
+                        "🔀 UNION branch filtered to 0 types by Track C - skipping empty branch"
+                    );
+                }
                 // Merge the context from this union branch into combined context
                 if let Some(ref mut combined) = combined_ctx {
                     combined.merge(ctx);
                 }
+            }
+
+            // If all branches were filtered, return Empty
+            if all_plans.is_empty() {
+                log::info!("🔀 All UNION branches filtered to 0 types - returning Empty plan");
+                // combined_ctx should always have a value from first_ctx, but use expect for safety
+                return Ok((
+                    Arc::new(LogicalPlan::Empty),
+                    combined_ctx.expect("PlanCtx should exist after first query"),
+                ));
+            }
+
+            // If only one branch remains, return it directly (no UNION needed)
+            if all_plans.len() == 1 {
+                log::info!(
+                    "🔀 Only 1 UNION branch remains after filtering - returning single plan"
+                );
+                return Ok((
+                    all_plans.remove(0),
+                    combined_ctx.expect("PlanCtx should exist after first query"),
+                ));
             }
 
             // Create Union logical plan

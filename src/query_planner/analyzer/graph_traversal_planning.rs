@@ -362,6 +362,15 @@ impl GraphTRaversalPlanning {
             }
         }
 
+        // Check if center is Empty (pruned branch - no relationship types matched the filter)
+        if matches!(graph_rel.center.as_ref(), LogicalPlan::Empty) {
+            log::info!(
+                "Skipping graph traversal planning for pruned relationship '{}' (center is Empty)",
+                graph_rel.alias
+            );
+            return Ok((graph_rel.clone(), vec![]));
+        }
+
         let graph_context = graph_context::get_graph_context(
             graph_rel,
             plan_ctx,
