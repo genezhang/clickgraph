@@ -138,9 +138,15 @@ fn is_empty_or_filtered_branch(plan: &LogicalPlan) -> bool {
         LogicalPlan::Empty => true,
 
         // Implicit empty: relationship filtered to 0 types by Track C
-        LogicalPlan::GraphRel(rel) if rel.labels.is_none() => {
+        // Check both None and empty vector cases for consistency with analyzer checks
+        LogicalPlan::GraphRel(rel)
+            if rel
+                .labels
+                .as_ref()
+                .map_or(true, |labels| labels.is_empty()) =>
+        {
             log::debug!(
-                "Detected filtered GraphRel (labels=None) for alias '{}'",
+                "Detected filtered GraphRel (labels=None or empty) for alias '{}'",
                 rel.alias
             );
             true
@@ -152,10 +158,14 @@ fn is_empty_or_filtered_branch(plan: &LogicalPlan) -> bool {
         }
 
         // Recursively check wrapped plans (common UNION branch structures)
+        // Includes all wrapper types that could appear in UNION branches
         LogicalPlan::Projection(proj) => is_empty_or_filtered_branch(&proj.input),
         LogicalPlan::Filter(f) => is_empty_or_filtered_branch(&f.input),
         LogicalPlan::GraphJoins(joins) => is_empty_or_filtered_branch(&joins.input),
         LogicalPlan::Limit(limit) => is_empty_or_filtered_branch(&limit.input),
+        LogicalPlan::Skip(skip) => is_empty_or_filtered_branch(&skip.input),
+        LogicalPlan::OrderBy(order) => is_empty_or_filtered_branch(&order.input),
+        LogicalPlan::GroupBy(group) => is_empty_or_filtered_branch(&group.input),
 
         // Not empty
         _ => false,

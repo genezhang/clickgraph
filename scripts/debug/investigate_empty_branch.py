@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
 Bug #2 Investigation: Trace where empty branch error occurs
+
+This script tests the Track C property filtering with UNION ALL queries.
+After the fix, empty relationship branches should be skipped gracefully.
 """
 import requests
 
@@ -19,8 +22,8 @@ print("Bug #2: Empty Branch Investigation")
 print("="*80)
 print("\nQuery:")
 print(query)
-print("\nExpected: Return nodes with country, skip relationships (none have country)")
-print("Actual: Will error with 'Relationship type '' not found'")
+print("\nExpected (after fix): Return nodes with country, skip empty relationship branch")
+print("Previous behavior: Would error with 'Relationship type '' not found'")
 print("\nSending query...")
 
 r = requests.post("http://localhost:8080/query", json={"query": query})
