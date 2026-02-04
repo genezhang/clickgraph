@@ -154,3 +154,34 @@ For developers:
 - **Development Guide**: [DEVELOPMENT_PROCESS.md](DEVELOPMENT_PROCESS.md)
 - **Test Infrastructure**: [tests/README.md](tests/README.md)
 - **VLP Cross-Functional Testing**: [docs/development/vlp-cross-functional-testing.md](docs/development/vlp-cross-functional-testing.md) ⭐ NEW
+
+## UNION Column Mismatch with Literal + Aggregate (2026-02-04)
+
+**Issue**: Queries with only literals and aggregates in RETURN fail with UNION column mismatch
+
+**Example**:
+```cypher
+MATCH (n) WHERE n.user_id IS NOT NULL
+RETURN 'user_id' as property, count(*) as count
+```
+
+**Error**: 
+```
+UNION different number of columns in queries
+```
+
+**Root Cause**:
+- `build_union_with_aggregation()` in `src/query_planner/logical_plan/return_clause.rs:539`
+- When no property accesses found (only literals + aggregates)
+- Inner UNION branches get `1 AS "__const"` placeholder
+- Outer query retains original columns
+- Result: Column count mismatch
+
+**Workaround**:
+- Include at least one property access: `RETURN n.user_id, count(*)`
+- Or use typed pattern: `MATCH (n:User) RETURN 'user_id', count(*)`
+
+**Status**: Pre-existing issue, NOT caused by Track C property optimization
+
+**Priority**: Low (not from Neo4j Browser usage patterns)
+
