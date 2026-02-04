@@ -2588,13 +2588,24 @@ pub(super) fn normalize_union_branches(
                 .collect();
 
             // Build normalized SELECT items in consistent order
+            // IMPORTANT: Wrap all expressions in toString() to ensure type compatibility across UNION branches
+            // This is needed because different node types may have different property types (e.g., Array vs Scalar)
             let normalized_items: Vec<SelectItem> = all_aliases
                 .iter()
                 .map(|alias| {
                     if let Some(item) = existing.get(alias) {
-                        item.clone()
+                        // Wrap the expression in toString() for type compatibility
+                        SelectItem {
+                            expression: RenderExpr::ScalarFnCall(
+                                super::render_expr::ScalarFnCall {
+                                    name: "toString".to_string(),
+                                    args: vec![item.expression.clone()],
+                                },
+                            ),
+                            col_alias: item.col_alias.clone(),
+                        }
                     } else {
-                        // Missing column - use NULL
+                        // Missing column - use NULL (which is compatible with any toString() result)
                         SelectItem {
                             expression: RenderExpr::Literal(Literal::Null),
                             col_alias: Some(super::ColumnAlias(alias.clone())),
