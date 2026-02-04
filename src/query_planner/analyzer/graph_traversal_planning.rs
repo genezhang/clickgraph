@@ -362,6 +362,21 @@ impl GraphTRaversalPlanning {
             }
         }
 
+        // Track C: Check if relationship has types (may be filtered to 0 by property-based pruning)
+        // If no types, skip graph traversal planning - the Empty plan handles this case
+        if let Ok(rel_ctx) = plan_ctx.get_rel_table_ctx(&graph_rel.alias) {
+            if rel_ctx
+                .get_labels()
+                .map_or(true, |labels| labels.is_empty())
+            {
+                log::info!(
+                    "🔧 GraphTraversalPlanning: Skipping for relationship '{}' with no types (filtered by Track C)",
+                    graph_rel.alias
+                );
+                return Ok((graph_rel.clone(), vec![]));
+            }
+        }
+
         let graph_context = graph_context::get_graph_context(
             graph_rel,
             plan_ctx,

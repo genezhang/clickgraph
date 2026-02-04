@@ -125,6 +125,43 @@ pub fn evaluate_query(
     )
 }
 
+/// Helper function to detect empty or filtered UNION branches
+///
+/// Track C filters branches to 0 types, but creates different "empty" representations:
+/// - Explicit: LogicalPlan::Empty (for nodes filtered to 0 types)
+/// - Implicit: GraphRel{labels: None} (for relationships filtered to 0 types)
+///
+/// This function detects both forms and recursively checks wrapped plans.
+fn is_empty_or_filtered_branch(plan: &LogicalPlan) -> bool {
+    match plan {
+        // Explicit empty
+        LogicalPlan::Empty => true,
+
+        // Implicit empty: relationship filtered to 0 types by Track C
+        LogicalPlan::GraphRel(rel) if rel.labels.is_none() => {
+            log::debug!(
+                "Detected filtered GraphRel (labels=None) for alias '{}'",
+                rel.alias
+            );
+            true
+        }
+
+        // Check if wrapped plan contains Empty
+        LogicalPlan::GraphNode(node) => {
+            matches!(node.input.as_ref(), LogicalPlan::Empty)
+        }
+
+        // Recursively check wrapped plans (common UNION branch structures)
+        LogicalPlan::Projection(proj) => is_empty_or_filtered_branch(&proj.input),
+        LogicalPlan::Filter(f) => is_empty_or_filtered_branch(&f.input),
+        LogicalPlan::GraphJoins(joins) => is_empty_or_filtered_branch(&joins.input),
+        LogicalPlan::Limit(limit) => is_empty_or_filtered_branch(&limit.input),
+
+        // Not empty
+        _ => false,
+    }
+}
+
 /// Evaluate a complete Cypher statement which may contain UNION clauses
 pub fn evaluate_cypher_statement(
     statement: CypherStatement<'_>,
@@ -192,18 +229,47 @@ pub fn evaluate_cypher_statement(
                     view_parameter_values.clone(),
                     max_inferred_types,
                 )?;
-                all_plans.push(plan);
-                // Merge the context from this union branch into combined context
-                if let Some(ref mut combined) = combined_ctx {
-                    combined.merge(ctx);
+
+                // Track C Property Optimization: Skip empty branches
+                // When Track C filters a branch to 0 matching types, detect and skip it
+                // This handles both explicit Empty and implicit GraphRel{labels: None}
+                if !is_empty_or_filtered_branch(plan.as_ref()) {
+                    all_plans.push(plan);
+                    // Merge the context from this union branch into combined context
+                    if let Some(ref mut combined) = combined_ctx {
+                        combined.merge(ctx);
+                    }
+                } else {
+                    log::info!(
+                        "🔀 UNION branch filtered to 0 types by Track C - skipping empty branch"
+                    );
                 }
             }
 
-            // Create Union logical plan
-            let union_plan = Arc::new(LogicalPlan::Union(Union {
-                inputs: all_plans,
-                union_type,
-            }));
+            // Handle different scenarios based on non-empty branch count
+            let union_plan = match all_plans.len() {
+                0 => {
+                    // All branches filtered to 0 types - return empty result
+                    log::info!("🔀 All UNION branches empty - returning Empty plan (0 rows)");
+                    Arc::new(LogicalPlan::Empty)
+                }
+                1 => {
+                    // Only one branch has data - no UNION needed
+                    log::info!("🔀 Only 1 non-empty UNION branch - skipping UNION wrapper");
+                    all_plans.into_iter().next().unwrap()
+                }
+                _ => {
+                    // Multiple branches with data - create UNION
+                    log::info!(
+                        "🔀 Creating UNION with {} non-empty branches",
+                        all_plans.len()
+                    );
+                    Arc::new(LogicalPlan::Union(Union {
+                        inputs: all_plans,
+                        union_type,
+                    }))
+                }
+            };
 
             let final_ctx = combined_ctx.ok_or_else(|| {
                 LogicalPlanError::QueryPlanningError(
