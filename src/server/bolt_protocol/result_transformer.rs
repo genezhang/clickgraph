@@ -487,18 +487,30 @@ fn transform_to_node(
 
     for (key, value) in row.iter() {
         if let Some(prop_name) = key.strip_prefix(&prefix) {
-            properties.insert(prop_name.to_string(), value.clone());
+            // Skip internal __label__ column from properties
+            if prop_name != "_label__" {
+                properties.insert(prop_name.to_string(), value.clone());
+            }
         }
     }
 
     // Get primary label
-    let label = labels
-        .first()
-        .ok_or_else(|| format!("No label for node variable: {}", var_name))?;
+    // Priority: 1. Use provided labels, 2. Check __label__ column, 3. Infer from properties
+    let label = if let Some(l) = labels.first() {
+        l.clone()
+    } else if let Some(label_value) = row.get("__label__") {
+        // For UNION queries, __label__ column contains the node type
+        value_to_string(label_value)
+            .ok_or_else(|| format!("Invalid __label__ value for node variable: {}", var_name))?
+    } else {
+        // Fallback: infer label from properties by matching schema ID columns
+        infer_node_label_from_properties(&properties, schema)
+            .ok_or_else(|| format!("No label for node variable: {}", var_name))?
+    };
 
     // Get node schema
     let node_schema = schema
-        .node_schema_opt(label)
+        .node_schema_opt(&label)
         .ok_or_else(|| format!("Node schema not found for label: {}", label))?;
 
     // Get ID column names from schema
@@ -517,23 +529,49 @@ fn transform_to_node(
 
     // Generate elementId using Phase 3 function
     let id_value_refs: Vec<&str> = id_values.iter().map(|s| s.as_str()).collect();
-    let element_id = generate_node_element_id(label, &id_value_refs);
+    let element_id = generate_node_element_id(&label, &id_value_refs);
 
-    // Try to extract numeric ID for legacy `id` field
-    // For single-column numeric IDs, parse as i64; otherwise use 0
-    let legacy_id: i64 = if id_values.len() == 1 {
-        id_values[0].parse().unwrap_or(0)
-    } else {
-        0 // Composite IDs can't be represented as single i64
-    };
+    // Derive integer ID from element_id (ensures uniqueness across labels)
+    let id: i64 = generate_id_from_element_id(&element_id);
 
     // Create Node struct
+    // Use inferred label if original labels was empty
+    let final_labels = if labels.is_empty() {
+        vec![label]
+    } else {
+        labels.to_vec()
+    };
+
     Ok(Node {
-        id: legacy_id,
-        labels: labels.to_vec(),
+        id,
+        labels: final_labels,
         properties,
         element_id,
     })
+}
+
+/// Infer node label from properties by matching against schema
+///
+/// Finds which node schema has the ID column present in the properties.
+/// This is used for unlabeled queries like `MATCH (n) RETURN n`.
+fn infer_node_label_from_properties(
+    properties: &HashMap<String, Value>,
+    schema: &GraphSchema,
+) -> Option<String> {
+    // For each node schema, check if its ID column is present and non-null
+    for (label, node_schema) in schema.all_node_schemas() {
+        let id_columns = node_schema.node_id.id.columns();
+
+        // Check if ANY of the ID columns is present with a non-null value
+        let has_id = id_columns
+            .iter()
+            .any(|col| properties.get(*col).map_or(false, |v| !v.is_null()));
+
+        if has_id {
+            return Some(label.clone());
+        }
+    }
+    None
 }
 
 /// Transform raw result row fields into a Relationship struct
@@ -644,11 +682,16 @@ fn transform_to_relationship(
     let start_node_element_id = generate_node_element_id(from_node_label, &from_id_refs);
     let end_node_element_id = generate_node_element_id(to_node_label, &to_id_refs);
 
+    // Derive integer IDs from element_ids (ensures uniqueness across labels)
+    let rel_id = generate_id_from_element_id(&element_id);
+    let start_node_id = generate_id_from_element_id(&start_node_element_id);
+    let end_node_id = generate_id_from_element_id(&end_node_element_id);
+
     // Create Relationship struct
     Ok(Relationship {
-        id: 0,            // Legacy ID (unused in Neo4j 5.x)
-        start_node_id: 0, // Legacy ID
-        end_node_id: 0,   // Legacy ID
+        id: rel_id,
+        start_node_id,
+        end_node_id,
         rel_type: rel_type.to_string(),
         properties,
         element_id,
@@ -709,10 +752,10 @@ fn transform_to_path(
     );
 
     // Check for JSON format first (UNION path queries)
-    // Format: _start_properties, _end_properties, _rel_properties
+    // Format: _start_properties, _end_properties, _rel_properties, __rel_type__, __start_label__, __end_label__
     if row.contains_key("_start_properties") && row.contains_key("_end_properties") {
-        log::trace!("🎯 Detected JSON format for path - parsing _start_properties, _end_properties, _rel_properties");
-        return transform_path_from_json(row, start_labels, end_labels, rel_types);
+        log::trace!("🎯 Detected JSON format for path - using explicit type/label columns");
+        return transform_path_from_json(row);
     }
 
     // Original format: individual columns for each property
@@ -775,12 +818,9 @@ fn transform_to_path(
 
 /// Transform path from JSON format (UNION path queries)
 /// Parses _start_properties, _end_properties, _rel_properties JSON strings
-fn transform_path_from_json(
-    row: &HashMap<String, Value>,
-    start_labels: &[String],
-    end_labels: &[String],
-    rel_types: &[String],
-) -> Result<Path, String> {
+/// Used for UNION path queries where each row has explicit type columns:
+/// __start_label__, __end_label__, __rel_type__
+fn transform_path_from_json(row: &HashMap<String, Value>) -> Result<Path, String> {
     // Parse start node properties from JSON
     let start_props: HashMap<String, Value> = match row.get("_start_properties") {
         Some(Value::String(json_str)) => {
@@ -816,14 +856,39 @@ fn transform_path_from_json(
         rel_props.keys().collect::<Vec<_>>()
     );
 
-    // Infer node labels from properties (for UNION queries where each row can have different types)
-    let start_label = infer_label_from_props(&start_props, start_labels);
-    let end_label = infer_label_from_props(&end_props, end_labels);
-    let rel_type = infer_rel_type_from_props(&rel_props, rel_types);
+    // Get explicit node labels from __start_label__ and __end_label__ columns (required for JSON format)
+    let start_label = match row.get("__start_label__") {
+        Some(Value::String(explicit_label)) if !explicit_label.is_empty() => explicit_label.clone(),
+        _ => {
+            return Err(
+                "Missing __start_label__ column in path JSON format - this is a bug".to_string(),
+            );
+        }
+    };
+    let end_label = match row.get("__end_label__") {
+        Some(Value::String(explicit_label)) if !explicit_label.is_empty() => explicit_label.clone(),
+        _ => {
+            return Err(
+                "Missing __end_label__ column in path JSON format - this is a bug".to_string(),
+            );
+        }
+    };
 
-    // Create start node with inferred label and properties
-    let start_id = extract_id_from_props(&start_props, "user_id", "post_id", "id");
-    let start_element_id = generate_node_element_id(&start_label, &[&start_id.to_string()]);
+    // Get relationship type from explicit __rel_type__ column (required for JSON format)
+    // JSON format is only used for UNION path queries, and we always add __rel_type__ there
+    let rel_type = match row.get("__rel_type__") {
+        Some(Value::String(explicit_type)) if !explicit_type.is_empty() => explicit_type.clone(),
+        _ => {
+            return Err(
+                "Missing __rel_type__ column in path JSON format - this is a bug".to_string(),
+            );
+        }
+    };
+
+    // Create start node - element_id is source of truth, integer id derived from it
+    let start_prop_id = extract_id_from_props(&start_props, "user_id", "post_id", "id");
+    let start_element_id = generate_node_element_id(&start_label, &[&start_prop_id.to_string()]);
+    let start_id = generate_id_from_element_id(&start_element_id);
     // Clean property keys (remove table alias prefix like "t1_0.")
     let start_props_clean = clean_property_keys(start_props);
     let start_node = Node::new(
@@ -833,9 +898,10 @@ fn transform_path_from_json(
         start_element_id,
     );
 
-    // Create end node with inferred label and properties
-    let end_id = extract_id_from_props(&end_props, "user_id", "post_id", "id");
-    let end_element_id = generate_node_element_id(&end_label, &[&end_id.to_string()]);
+    // Create end node - element_id is source of truth, integer id derived from it
+    let end_prop_id = extract_id_from_props(&end_props, "user_id", "post_id", "id");
+    let end_element_id = generate_node_element_id(&end_label, &[&end_prop_id.to_string()]);
+    let end_id = generate_id_from_element_id(&end_element_id);
     // Clean property keys
     let end_props_clean = clean_property_keys(end_props);
     let end_node = Node::new(
@@ -845,16 +911,18 @@ fn transform_path_from_json(
         end_element_id,
     );
 
-    // Create relationship with type and properties
-    let rel_id = extract_id_from_props(&rel_props, "from_id", "follower_id", "user_id");
-    let from_id_str = start_id.to_string();
-    let to_id_str = end_id.to_string();
-    let rel_element_id = generate_relationship_element_id(&rel_type, &from_id_str, &to_id_str);
+    // Create relationship - element_id is source of truth, integer id derived from it
+    let rel_element_id = generate_relationship_element_id(
+        &rel_type,
+        &start_prop_id.to_string(),
+        &end_prop_id.to_string(),
+    );
+    let rel_id = generate_id_from_element_id(&rel_element_id);
     let rel_props_clean = clean_property_keys(rel_props);
     let relationship = Relationship::new(
         rel_id,
-        start_id, // start_node_id
-        end_id,   // end_node_id
+        start_id, // start_node_id - derived from start_element_id
+        end_id,   // end_node_id - derived from end_element_id
         rel_type.clone(),
         rel_props_clean,
         rel_element_id,
@@ -872,79 +940,6 @@ fn transform_path_from_json(
     );
 
     Ok(Path::single_hop(start_node, relationship, end_node))
-}
-
-/// Infer node label from properties
-/// Uses property names to determine if this is a User, Post, etc.
-fn infer_label_from_props(props: &HashMap<String, Value>, fallback_labels: &[String]) -> String {
-    // Check for characteristic properties to infer type
-    let keys: Vec<&String> = props.keys().collect();
-    let keys_str: Vec<&str> = keys.iter().map(|k| k.as_str()).collect();
-
-    // Check for post-specific properties (post_id, content, created_at with no user-specific props)
-    let has_post_id = keys_str.iter().any(|k| k.contains("post_id"));
-    let has_content = keys_str.iter().any(|k| k.contains("content"));
-
-    // Check for user-specific properties
-    let has_user_id = keys_str
-        .iter()
-        .any(|k| k.contains("user_id") && !k.contains("post"));
-    let has_full_name = keys_str
-        .iter()
-        .any(|k| k.contains("full_name") || k.contains("name"));
-    let has_email = keys_str.iter().any(|k| k.contains("email"));
-
-    if has_post_id && has_content {
-        return "Post".to_string();
-    }
-    if has_user_id && (has_full_name || has_email) {
-        return "User".to_string();
-    }
-    if has_post_id && !has_user_id {
-        return "Post".to_string();
-    }
-    if has_user_id {
-        return "User".to_string();
-    }
-
-    // Fall back to provided labels
-    fallback_labels
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "Node".to_string())
-}
-
-/// Infer relationship type from properties
-fn infer_rel_type_from_props(props: &HashMap<String, Value>, fallback_types: &[String]) -> String {
-    let keys: Vec<&String> = props.keys().collect();
-
-    // Check for characteristic relationship properties
-    let has_follower = keys.iter().any(|k| k.contains("follower"));
-    let has_followed = keys.iter().any(|k| k.contains("followed"));
-    let has_like = keys
-        .iter()
-        .any(|k| k.contains("like") || k.contains("liked"));
-    let has_since = keys.iter().any(|k| k.contains("since"));
-
-    if has_follower && has_followed {
-        return "FOLLOWS".to_string();
-    }
-    if has_like {
-        return "LIKED".to_string();
-    }
-    if has_since && !has_follower {
-        return "FRIENDS_WITH".to_string();
-    }
-
-    // Empty props usually means denormalized relationship (AUTHORED)
-    if props.is_empty() {
-        return "AUTHORED".to_string();
-    }
-
-    fallback_types
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "RELATED_TO".to_string())
 }
 
 /// Clean property keys by removing:
@@ -1010,6 +1005,18 @@ fn extract_id_from_props(props: &HashMap<String, Value>, id1: &str, id2: &str, i
     }
 
     0
+}
+
+/// Generate a unique integer node ID from element_id
+/// This ensures round-trip: element_id is the source of truth, integer id is derived from it
+fn generate_id_from_element_id(element_id: &str) -> i64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    element_id.hash(&mut hasher);
+    // Use absolute value and mask to ensure positive i64
+    (hasher.finish() as i64).abs()
 }
 
 fn value_to_i64(val: &Value) -> Option<i64> {
@@ -1091,7 +1098,8 @@ fn find_node_in_row_with_label(
         label,
         &id_values.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
     );
-    let id: i64 = id_values.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+    // Derive integer ID from element_id (ensures uniqueness across labels)
+    let id: i64 = generate_id_from_element_id(&element_id);
 
     log::info!(
         "✅ Found node '{}' in row: label={}, properties={}, element_id={}",
@@ -1163,7 +1171,8 @@ fn find_node_in_row(
 
             if !id_values.is_empty() {
                 let element_id = format!("{}:{}", label, id_values.join("|"));
-                let id: i64 = id_values.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+                // Derive integer ID from element_id (ensures uniqueness across labels)
+                let id: i64 = generate_id_from_element_id(&element_id);
 
                 return Some(Node {
                     id,
@@ -1238,26 +1247,13 @@ fn find_relationship_in_row_with_type(
         properties.len()
     );
 
-    // Extract node IDs from element_ids (format: "Label:id")
-    let start_id = start_element_id
-        .split(':')
-        .nth(1)
-        .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(0);
-    let end_id = end_element_id
-        .split(':')
-        .nth(1)
-        .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(0);
+    // Node IDs are derived from element_id hash (same as the nodes themselves)
+    let start_id = generate_id_from_element_id(start_element_id);
+    let end_id = generate_id_from_element_id(end_element_id);
 
-    // Generate unique relationship ID by combining start and end IDs
-    // Use a simple hash: (start_id << 32) | end_id
-    // This ensures each unique (from, to) pair gets a unique ID
-    let rel_id = if start_id > 0 && end_id > 0 {
-        ((start_id as i64) << 20) | (end_id as i64)
-    } else {
-        0
-    };
+    // Generate relationship element_id from type and node element_ids
+    let rel_element_id = format!("{}:{}->{}", rel_type, start_element_id, end_element_id);
+    let rel_id = generate_id_from_element_id(&rel_element_id);
 
     // Create relationship with extracted properties
     Some(Relationship {
@@ -1266,7 +1262,7 @@ fn find_relationship_in_row_with_type(
         end_node_id: end_id,
         rel_type: rel_type.clone(),
         properties,
-        element_id: format!("{}:{}->{}", rel_type, start_id, end_id),
+        element_id: rel_element_id,
         start_node_element_id: start_element_id.to_string(),
         end_node_element_id: end_element_id.to_string(),
     })
@@ -1382,12 +1378,14 @@ fn create_placeholder_relationship(
 }
 
 /// Create a node with a known label but no data
-fn create_node_with_label(label: &str, id: i64) -> Node {
+fn create_node_with_label(label: &str, idx: i64) -> Node {
+    let element_id = format!("{}:{}", label, idx);
+    let id = generate_id_from_element_id(&element_id);
     Node {
         id,
         labels: vec![label.to_string()],
         properties: std::collections::HashMap::new(),
-        element_id: format!("{}:{}", label, id),
+        element_id,
     }
 }
 
@@ -1397,18 +1395,19 @@ fn create_relationship_with_type(
     start_element_id: &str,
     end_element_id: &str,
 ) -> Relationship {
-    // Extract just the ID portions from element IDs (format: "Label:id")
-    let start_id = start_element_id.split(':').last().unwrap_or("0");
-    let end_id = end_element_id.split(':').last().unwrap_or("0");
+    // Generate element_id and derive all integer IDs from element_ids
+    let element_id = format!("{}:{}->{}", rel_type, start_element_id, end_element_id);
+    let id = generate_id_from_element_id(&element_id);
+    let start_node_id = generate_id_from_element_id(start_element_id);
+    let end_node_id = generate_id_from_element_id(end_element_id);
 
     Relationship {
-        id: 0,
-        start_node_id: 0,
-        end_node_id: 0,
+        id,
+        start_node_id,
+        end_node_id,
         rel_type: rel_type.to_string(),
         properties: std::collections::HashMap::new(),
-        // Use simpler elementId format: TYPE:from_id->to_id
-        element_id: format!("{}:{}->{}", rel_type, start_id, end_id),
+        element_id,
         start_node_element_id: start_element_id.to_string(),
         end_node_element_id: end_element_id.to_string(),
     }

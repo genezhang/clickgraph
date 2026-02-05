@@ -20,7 +20,9 @@ use super::render_expr::{
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
-use crate::render_plan::cte_extraction::get_node_label_for_alias;
+use crate::render_plan::cte_extraction::{
+    get_node_label_for_alias, get_relationship_type_for_alias,
+};
 use crate::render_plan::expression_utils::{
     flatten_addition_operands, has_string_operand, ExprVisitor,
 };
@@ -2390,6 +2392,33 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                 );
 
                 prop.column = PropertyValue::Column(mapped_column);
+            } else if let Some(rel_type) =
+                get_relationship_type_for_alias(&prop.table_alias.0, plan)
+            {
+                // Alias is a relationship - map relationship property to column
+                log::warn!(
+                    "🔍 RELATIONSHIP PROPERTY MAPPING: Alias '{}' -> Type '{}', Property '{}' (before mapping)",
+                    prop.table_alias.0,
+                    rel_type,
+                    prop.column.raw()
+                );
+
+                // Map the relationship property to the correct column
+                let mapped_column =
+                    crate::render_plan::cte_generation::map_relationship_property_to_column(
+                        prop.column.raw(),
+                        &rel_type,
+                        None, // Use task-local schema context
+                    )
+                    .unwrap_or_else(|_| prop.column.raw().to_string());
+
+                log::warn!(
+                    "🔍 RELATIONSHIP PROPERTY MAPPING: '{}' -> '{}'",
+                    prop.column.raw(),
+                    mapped_column
+                );
+
+                prop.column = PropertyValue::Column(mapped_column);
             }
 
             // For denormalized nodes, remap the table alias to the edge alias
@@ -2621,6 +2650,87 @@ pub(super) fn normalize_union_branches(
                 },
                 ..plan
             }
+        })
+        .collect()
+}
+
+/// Add __label__ column to each UNION branch for node type identification.
+///
+/// For UNION queries across multiple node types (e.g., MATCH (n) RETURN n),
+/// we need to know which node type each row belongs to. This function:
+/// 1. Takes the normalized union branches
+/// 2. Extracts the label from each branch's logical plan
+/// 3. Adds a '__label__' column with the node type as a string literal
+///
+/// This enables the Bolt result transformer to construct proper Node objects
+/// with correct labels array even for unlabeled queries.
+pub(super) fn add_label_column_to_union_branches(
+    union_plans: Vec<super::RenderPlan>,
+    logical_branches: &[std::sync::Arc<LogicalPlan>],
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+) -> Vec<super::RenderPlan> {
+    use super::{ColumnAlias, SelectItem};
+    use crate::render_plan::cte_extraction::extract_node_label_from_viewscan_with_schema;
+
+    if union_plans.len() != logical_branches.len() {
+        log::warn!(
+            "add_label_column_to_union_branches: mismatch {} render plans vs {} logical branches",
+            union_plans.len(),
+            logical_branches.len()
+        );
+        return union_plans;
+    }
+
+    union_plans
+        .into_iter()
+        .zip(logical_branches.iter())
+        .map(|(mut plan, logical_branch)| {
+            // Check if __label__ already exists - skip if so
+            let has_label = plan.select.items.iter().any(|item| {
+                item.col_alias
+                    .as_ref()
+                    .map_or(false, |a| a.0 == "__label__")
+            });
+
+            if has_label {
+                log::debug!(
+                    "add_label_column_to_union_branches: __label__ already exists, skipping"
+                );
+                return plan;
+            }
+
+            // Extract label from the logical plan's ViewScan
+            let full_label = extract_node_label_from_viewscan_with_schema(logical_branch, schema)
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            // Extract just the base label (e.g., "User" from "brahmand::users_bench::User")
+            let base_label = if full_label.contains("::") {
+                full_label
+                    .split("::")
+                    .last()
+                    .unwrap_or(&full_label)
+                    .to_string()
+            } else {
+                full_label
+            };
+
+            log::debug!(
+                "add_label_column_to_union_branches: branch has label {:?}",
+                base_label
+            );
+
+            // Add __label__ as the first column
+            let label_item = SelectItem {
+                expression: RenderExpr::Literal(Literal::String(base_label)),
+                col_alias: Some(ColumnAlias("__label__".to_string())),
+            };
+
+            // Prepend __label__ to existing SELECT items
+            let mut new_items = vec![label_item];
+            new_items.extend(plan.select.items);
+            plan.select.items = new_items;
+
+            plan
         })
         .collect()
 }
@@ -4101,6 +4211,7 @@ pub(super) fn get_graph_rel_from_plan(
 /// - `_rel_properties`: JSON with relationship properties
 pub(super) fn convert_path_branches_to_json(
     union_plans: Vec<super::RenderPlan>,
+    logical_plans: Option<&[std::sync::Arc<crate::query_planner::logical_plan::LogicalPlan>]>,
 ) -> Vec<super::RenderPlan> {
     use super::render_expr::{Literal, RenderExpr, ScalarFnCall};
     use super::{ColumnAlias, RenderPlan, SelectItem, SelectItems};
@@ -4114,6 +4225,29 @@ pub(super) fn convert_path_branches_to_json(
         .into_iter()
         .enumerate()
         .map(|(branch_idx, plan)| {
+            // Extract relationship type from logical plan (explicit, no guessing)
+            let rel_type: Option<String> = logical_plans.and_then(|lp| {
+                lp.get(branch_idx).and_then(|lp| {
+                    super::cte_extraction::extract_relationship_type_from_plan(lp.as_ref())
+                })
+            });
+
+            // Extract start/end node labels from logical plan (explicit, no guessing)
+            let node_labels: Option<(String, String)> = logical_plans.and_then(|lp| {
+                lp.get(branch_idx).and_then(|lp| {
+                    super::cte_extraction::extract_path_node_labels_from_plan(lp.as_ref())
+                })
+            });
+
+            if let Some(ref rt) = rel_type {
+                log::warn!("  Branch {}: extracted relationship type = '{}'", branch_idx, rt);
+            }
+            if let Some((ref sl, ref el)) = node_labels {
+                log::warn!(
+                    "  Branch {}: extracted node labels = start='{}', end='{}'",
+                    branch_idx, sl, el
+                );
+            }
             // First, find the path tuple and extract aliases from it
             let mut path_item = None;
             let mut start_alias = String::new();
@@ -4212,6 +4346,26 @@ pub(super) fn convert_path_branches_to_json(
                 new_items.push(SelectItem {
                     expression: RenderExpr::Literal(Literal::String("{}".to_string())),
                     col_alias: Some(ColumnAlias("_rel_properties".to_string())),
+                });
+            }
+
+            // 5. Add explicit relationship type column (no guessing!)
+            if let Some(ref rt) = rel_type {
+                new_items.push(SelectItem {
+                    expression: RenderExpr::Literal(Literal::String(rt.clone())),
+                    col_alias: Some(ColumnAlias("__rel_type__".to_string())),
+                });
+            }
+
+            // 6. Add explicit start/end node label columns (no guessing!)
+            if let Some((ref start_label, ref end_label)) = node_labels {
+                new_items.push(SelectItem {
+                    expression: RenderExpr::Literal(Literal::String(start_label.clone())),
+                    col_alias: Some(ColumnAlias("__start_label__".to_string())),
+                });
+                new_items.push(SelectItem {
+                    expression: RenderExpr::Literal(Literal::String(end_label.clone())),
+                    col_alias: Some(ColumnAlias("__end_label__".to_string())),
                 });
             }
 

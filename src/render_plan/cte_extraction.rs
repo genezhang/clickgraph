@@ -1542,6 +1542,62 @@ pub(crate) fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Optio
     }
 }
 
+/// Get the relationship type for a given relationship alias by traversing the plan tree.
+/// Returns the first relationship type from GraphRel.labels if found.
+///
+/// IMPORTANT: For UNION queries, callers should invoke this function on the specific
+/// branch plan they are working with, not the full UNION plan. Each UNION branch
+/// should be processed independently for proper per-branch property mapping.
+pub(crate) fn get_relationship_type_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphRel(rel) if rel.alias == alias => {
+            // Found matching GraphRel - return the first label
+            // Labels are stored as "TYPE::FromNode::ToNode", extract just the type
+            rel.labels.as_ref().and_then(|labels| {
+                labels.first().map(|label| {
+                    let rel_type = label.split("::").next().unwrap_or(label);
+                    if !label.contains("::") {
+                        // Log a warning to help diagnose schema inconsistencies where
+                        // a composite relationship label was expected but a simple one was found.
+                        log::warn!(
+                            "Expected composite relationship label 'TYPE::FromNode::ToNode' \
+                             for alias '{}', but got '{}'; using full label as relationship type",
+                            alias,
+                            label
+                        );
+                    }
+                    rel_type.to_string()
+                })
+            })
+        }
+        LogicalPlan::GraphRel(rel) => get_relationship_type_for_alias(alias, &rel.left)
+            .or_else(|| get_relationship_type_for_alias(alias, &rel.center))
+            .or_else(|| get_relationship_type_for_alias(alias, &rel.right)),
+        LogicalPlan::GraphNode(node) => get_relationship_type_for_alias(alias, &node.input),
+        LogicalPlan::Filter(filter) => get_relationship_type_for_alias(alias, &filter.input),
+        LogicalPlan::Projection(proj) => get_relationship_type_for_alias(alias, &proj.input),
+        LogicalPlan::GraphJoins(joins) => get_relationship_type_for_alias(alias, &joins.input),
+        LogicalPlan::OrderBy(order_by) => get_relationship_type_for_alias(alias, &order_by.input),
+        LogicalPlan::Skip(skip) => get_relationship_type_for_alias(alias, &skip.input),
+        LogicalPlan::Limit(limit) => get_relationship_type_for_alias(alias, &limit.input),
+        LogicalPlan::GroupBy(group_by) => get_relationship_type_for_alias(alias, &group_by.input),
+        LogicalPlan::Cte(cte) => get_relationship_type_for_alias(alias, &cte.input),
+        LogicalPlan::Union(_union) => {
+            // IMPORTANT: Do not resolve relationship aliases across UNION branches here.
+            // Each UNION input/branch must be processed independently, so callers should
+            // invoke this function on the specific branch plan they are working with.
+            // Returning first match here is only for backward compatibility with simple cases.
+            for input in &_union.inputs {
+                if let Some(rel_type) = get_relationship_type_for_alias(alias, input) {
+                    return Some(rel_type);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// For denormalized schemas: get the relationship alias and ID column for a node alias
 /// Returns (rel_alias, id_column) if the node is denormalized, None otherwise
 fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option<(String, String)> {
@@ -4371,6 +4427,14 @@ pub fn extract_node_label_from_viewscan_with_schema(
         LogicalPlan::Filter(filter) => {
             extract_node_label_from_viewscan_with_schema(&filter.input, schema)
         }
+        LogicalPlan::Projection(proj) => {
+            extract_node_label_from_viewscan_with_schema(&proj.input, schema)
+        }
+        LogicalPlan::GraphJoins(gj) => {
+            extract_node_label_from_viewscan_with_schema(&gj.input, schema)
+        }
+        LogicalPlan::Limit(l) => extract_node_label_from_viewscan_with_schema(&l.input, schema),
+        LogicalPlan::Skip(s) => extract_node_label_from_viewscan_with_schema(&s.input, schema),
         _ => None,
     }
 }
@@ -4403,6 +4467,96 @@ pub fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
             extract_node_label_from_viewscan(&node.input)
         }
         LogicalPlan::Filter(filter) => extract_node_label_from_viewscan(&filter.input),
+        _ => None,
+    }
+}
+
+/// Extract the relationship type from a plan containing a GraphRel.
+/// Returns the first relationship type found (for UNION branches, each branch has one type).
+pub fn extract_relationship_type_from_plan(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphRel(rel) => {
+            // Labels are stored as "TYPE::FromNode::ToNode", extract just the type
+            rel.labels.as_ref().and_then(|labels| {
+                labels.first().map(|label| {
+                    // Split by "::" and take first part (the relationship type)
+                    label.split("::").next().unwrap_or(label).to_string()
+                })
+            })
+        }
+        LogicalPlan::GraphNode(node) => extract_relationship_type_from_plan(&node.input),
+        LogicalPlan::Filter(filter) => extract_relationship_type_from_plan(&filter.input),
+        LogicalPlan::Projection(proj) => extract_relationship_type_from_plan(&proj.input),
+        LogicalPlan::GraphJoins(joins) => extract_relationship_type_from_plan(&joins.input),
+        LogicalPlan::Limit(limit) => extract_relationship_type_from_plan(&limit.input),
+        LogicalPlan::Skip(skip) => extract_relationship_type_from_plan(&skip.input),
+        _ => None,
+    }
+}
+
+/// Extract start and end node labels from a path plan containing GraphRel.
+/// Gets node labels from the left (start) and right (end) nodes in the GraphRel.
+pub fn extract_path_node_labels_from_plan(plan: &LogicalPlan) -> Option<(String, String)> {
+    match plan {
+        LogicalPlan::GraphRel(rel) => {
+            // First try: composite label format "TYPE::FromNode::ToNode"
+            if let Some(labels) = &rel.labels {
+                if let Some(label) = labels.first() {
+                    let parts: Vec<&str> = label.split("::").collect();
+                    if parts.len() >= 3 {
+                        return Some((parts[1].to_string(), parts[2].to_string()));
+                    }
+                }
+            }
+
+            // Second try: extract from left/right node ViewScans
+            let start_label = extract_node_label_from_plan(&rel.left);
+            let end_label = extract_node_label_from_plan(&rel.right);
+
+            if let (Some(sl), Some(el)) = (start_label, end_label) {
+                return Some((sl, el));
+            }
+
+            None
+        }
+        LogicalPlan::GraphNode(node) => extract_path_node_labels_from_plan(&node.input),
+        LogicalPlan::Filter(filter) => extract_path_node_labels_from_plan(&filter.input),
+        LogicalPlan::Projection(proj) => extract_path_node_labels_from_plan(&proj.input),
+        LogicalPlan::GraphJoins(joins) => extract_path_node_labels_from_plan(&joins.input),
+        LogicalPlan::Limit(limit) => extract_path_node_labels_from_plan(&limit.input),
+        LogicalPlan::Skip(skip) => extract_path_node_labels_from_plan(&skip.input),
+        _ => None,
+    }
+}
+
+/// Extract node label from a plan (typically a GraphNode or ViewScan)
+fn extract_node_label_from_plan(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphNode(node) => {
+            // GraphNode.label has the node type
+            if let Some(label) = &node.label {
+                return Some(label.clone());
+            }
+            // Otherwise recurse into input
+            extract_node_label_from_plan(&node.input)
+        }
+        LogicalPlan::ViewScan(scan) => {
+            // Try to get from table alias via global schema
+            if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+                if let Ok(schemas) = schemas_lock.try_read() {
+                    for schema in schemas.values() {
+                        if let Some((label, _)) =
+                            get_node_schema_by_table(schema, &scan.source_table)
+                        {
+                            return Some(label.to_string());
+                        }
+                    }
+                }
+            }
+            None
+        }
+        LogicalPlan::Filter(filter) => extract_node_label_from_plan(&filter.input),
+        LogicalPlan::Projection(proj) => extract_node_label_from_plan(&proj.input),
         _ => None,
     }
 }
