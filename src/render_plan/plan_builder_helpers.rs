@@ -2339,6 +2339,83 @@ pub(super) fn plan_type_name(plan: &LogicalPlan) -> &'static str {
     }
 }
 
+/// Get property column mapping from ViewScan in the plan tree.
+/// 
+/// For denormalized virtual nodes, the ViewScan's property_mapping contains the
+/// position-specific column mappings (e.g., `code -> origin_code` for FROM position).
+/// This function traverses the plan tree to find the ViewScan for the given alias
+/// and looks up the property in its property_mapping.
+///
+/// Returns the mapped column name if found, None otherwise.
+fn get_property_from_viewscan(alias: &str, property: &str, plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphNode(node) if node.alias == alias => {
+            // Found the matching GraphNode - check its input for ViewScan
+            match node.input.as_ref() {
+                LogicalPlan::ViewScan(scan) => {
+                    // Look up property in the ViewScan's property_mapping
+                    if let Some(prop_value) = scan.property_mapping.get(property) {
+                        return Some(prop_value.raw().to_string());
+                    }
+                    // Also check from_node_properties and to_node_properties
+                    if let Some(from_props) = &scan.from_node_properties {
+                        if let Some(prop_value) = from_props.get(property) {
+                            return Some(prop_value.raw().to_string());
+                        }
+                    }
+                    if let Some(to_props) = &scan.to_node_properties {
+                        if let Some(prop_value) = to_props.get(property) {
+                            return Some(prop_value.raw().to_string());
+                        }
+                    }
+                    None
+                }
+                LogicalPlan::Union(_) => {
+                    // For denormalized nodes with Union, we need to get mapping from the specific branch
+                    // This shouldn't happen at filter level since filters are per-branch
+                    // But if it does, we can't determine which branch, so return None
+                    log::debug!(
+                        "get_property_from_viewscan: GraphNode '{}' has Union input - cannot determine branch",
+                        alias
+                    );
+                    None
+                }
+                _ => None,
+            }
+        }
+        LogicalPlan::GraphNode(node) => get_property_from_viewscan(alias, property, &node.input),
+        LogicalPlan::GraphRel(rel) => get_property_from_viewscan(alias, property, &rel.left)
+            .or_else(|| get_property_from_viewscan(alias, property, &rel.center))
+            .or_else(|| get_property_from_viewscan(alias, property, &rel.right)),
+        LogicalPlan::Filter(filter) => get_property_from_viewscan(alias, property, &filter.input),
+        LogicalPlan::Projection(proj) => get_property_from_viewscan(alias, property, &proj.input),
+        LogicalPlan::GraphJoins(joins) => get_property_from_viewscan(alias, property, &joins.input),
+        LogicalPlan::OrderBy(order_by) => get_property_from_viewscan(alias, property, &order_by.input),
+        LogicalPlan::Skip(skip) => get_property_from_viewscan(alias, property, &skip.input),
+        LogicalPlan::Limit(limit) => get_property_from_viewscan(alias, property, &limit.input),
+        LogicalPlan::GroupBy(group_by) => get_property_from_viewscan(alias, property, &group_by.input),
+        LogicalPlan::Cte(cte) => get_property_from_viewscan(alias, property, &cte.input),
+        LogicalPlan::ViewScan(scan) => {
+            // Direct ViewScan (not wrapped in GraphNode) - check property_mapping
+            if let Some(prop_value) = scan.property_mapping.get(property) {
+                return Some(prop_value.raw().to_string());
+            }
+            if let Some(from_props) = &scan.from_node_properties {
+                if let Some(prop_value) = from_props.get(property) {
+                    return Some(prop_value.raw().to_string());
+                }
+            }
+            if let Some(to_props) = &scan.to_node_properties {
+                if let Some(prop_value) = to_props.get(property) {
+                    return Some(prop_value.raw().to_string());
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Apply property mapping to an expression
 ///
 /// Main purpose: Convert TableAlias expressions to PropertyAccess for denormalized schemas.
@@ -2368,7 +2445,19 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
             // First, try to map the property name to the correct column name
             // This is essential for queries like: WHERE n.name = ...
             // where 'name' might map to 'full_name' in the schema
-            if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
+            
+            // For denormalized virtual nodes, try to get property mapping from ViewScan first
+            // This is needed because denormalized nodes have position-specific mappings
+            // (from_node_properties vs to_node_properties)
+            if let Some(column) = get_property_from_viewscan(&prop.table_alias.0, prop.column.raw(), plan) {
+                log::warn!(
+                    "🔍 PROPERTY MAPPING (ViewScan): '{}.{}' -> '{}'",
+                    prop.table_alias.0,
+                    prop.column.raw(),
+                    column
+                );
+                prop.column = PropertyValue::Column(column);
+            } else if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
                 log::warn!(
                     "🔍 PROPERTY MAPPING: Alias '{}' -> Label '{}', Property '{}' (before mapping)",
                     prop.table_alias.0,

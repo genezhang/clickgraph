@@ -44,12 +44,31 @@ impl<'a> SchemaPropertyFilter<'a> {
         let mut matching_labels = Vec::new();
 
         for (label, node_schema) in all_node_schemas {
-            // Check if this node schema has ALL required properties
-            let schema_properties: HashSet<String> = node_schema
+            // Collect all available properties from regular mappings
+            let mut schema_properties: HashSet<String> = node_schema
                 .property_mappings
                 .keys()
                 .map(|k| k.to_string())
                 .collect();
+
+            // For denormalized nodes, also include properties from from_properties and to_properties
+            // These are the actual property names (Cypher names), not column names
+            if let Some(from_props) = &node_schema.from_properties {
+                for cypher_prop in from_props.keys() {
+                    schema_properties.insert(cypher_prop.clone());
+                }
+            }
+            if let Some(to_props) = &node_schema.to_properties {
+                for cypher_prop in to_props.keys() {
+                    schema_properties.insert(cypher_prop.clone());
+                }
+            }
+
+            log::trace!(
+                "SchemaPropertyFilter: Node '{}' has properties: {:?}",
+                label,
+                schema_properties
+            );
 
             if required_properties.is_subset(&schema_properties) {
                 matching_labels.push(label.clone());

@@ -796,14 +796,45 @@ impl LogicalPlan {
 
             // A.4: Node-only query (MATCH (n:Label) RETURN n)
             if let Some(graph_node) = find_graph_node(&graph_joins.input) {
-                if let LogicalPlan::ViewScan(scan) = graph_node.input.as_ref() {
-                    log::info!("🎯 NODE-ONLY: Using node '{}' as FROM", graph_node.alias);
-                    let view_ref = ViewTableRef::new_table_with_alias(
-                        scan.as_ref().clone(),
-                        scan.source_table.clone(),
-                        graph_node.alias.clone(),
-                    );
-                    return Ok(Some(view_ref));
+                match graph_node.input.as_ref() {
+                    LogicalPlan::ViewScan(scan) => {
+                        log::info!("🎯 NODE-ONLY: Using node '{}' as FROM", graph_node.alias);
+                        let view_ref = ViewTableRef::new_table_with_alias(
+                            scan.as_ref().clone(),
+                            scan.source_table.clone(),
+                            graph_node.alias.clone(),
+                        );
+                        return Ok(Some(view_ref));
+                    }
+                    LogicalPlan::Union(union) => {
+                        // For denormalized virtual nodes, the GraphNode contains a Union of ViewScans
+                        // (one for FROM position, one for TO position in the edge table)
+                        // The FROM is handled at a higher level by iterating UNION branches
+                        // Here we return None to signal that this branch needs special handling
+                        log::info!(
+                            "🎯 DENORMALIZED NODE-ONLY: GraphNode '{}' contains Union of {} ViewScans - \
+                             each branch needs FROM from its ViewScan",
+                            graph_node.alias,
+                            union.inputs.len()
+                        );
+                        // Extract FROM from first ViewScan for this branch
+                        if let Some(first_input) = union.inputs.first() {
+                            if let LogicalPlan::ViewScan(scan) = first_input.as_ref() {
+                                log::info!(
+                                    "✅ Using first ViewScan table '{}' for alias '{}'",
+                                    scan.source_table,
+                                    graph_node.alias
+                                );
+                                let view_ref = ViewTableRef::new_table_with_alias(
+                                    scan.as_ref().clone(),
+                                    scan.source_table.clone(),
+                                    graph_node.alias.clone(),
+                                );
+                                return Ok(Some(view_ref));
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
 

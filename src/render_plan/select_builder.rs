@@ -518,27 +518,59 @@ impl SelectBuilder for LogicalPlan {
                             log::warn!("   → trying get_properties_with_table_alias...");
 
                             // For denormalized nodes in edges, we need to get the actual table alias
-                            // Try to get properties with actual table alias
-                            if let Ok((_properties, Some(actual_table_alias))) =
+                            // AND map the property name to the actual column name
+                            if let Ok((properties, table_alias_override)) =
                                 self.get_properties_with_table_alias(cypher_alias)
                             {
-                                log::warn!(
-                                    "🔍 Using actual table alias '{}' for {}.{}",
-                                    actual_table_alias,
-                                    cypher_alias,
-                                    col_name
-                                );
-                                select_items.push(SelectItem {
-                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: RenderTableAlias(actual_table_alias),
-                                        column: PropertyValue::Column(col_name.to_string()),
-                                    }),
-                                    col_alias: item
-                                        .col_alias
-                                        .as_ref()
-                                        .map(|ca| ColumnAlias(ca.0.clone())),
-                                });
-                                continue;
+                                // Look up the column name for this property
+                                let mapped_column = properties
+                                    .iter()
+                                    .find(|(prop_name, _)| prop_name == col_name)
+                                    .map(|(_, col)| col.clone());
+
+                                if let Some(actual_column) = mapped_column {
+                                    let table_alias_to_use = table_alias_override
+                                        .unwrap_or_else(|| cypher_alias.to_string());
+                                    log::warn!(
+                                        "🔍 Mapped property '{}.{}' to column '{}.{}'",
+                                        cypher_alias,
+                                        col_name,
+                                        table_alias_to_use,
+                                        actual_column
+                                    );
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: RenderTableAlias(table_alias_to_use),
+                                            column: PropertyValue::Column(actual_column),
+                                        }),
+                                        col_alias: item
+                                            .col_alias
+                                            .as_ref()
+                                            .map(|ca| ColumnAlias(ca.0.clone())),
+                                    });
+                                    continue;
+                                } else if table_alias_override.is_some() {
+                                    // Has actual_table_alias but property not found in mapping
+                                    // Use original column name with the overridden alias
+                                    let actual_table_alias = table_alias_override.unwrap();
+                                    log::warn!(
+                                        "🔍 Using actual table alias '{}' for {}.{} (property not in mapping)",
+                                        actual_table_alias,
+                                        cypher_alias,
+                                        col_name
+                                    );
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: RenderTableAlias(actual_table_alias),
+                                            column: PropertyValue::Column(col_name.to_string()),
+                                        }),
+                                        col_alias: item
+                                            .col_alias
+                                            .as_ref()
+                                            .map(|ca| ColumnAlias(ca.0.clone())),
+                                    });
+                                    continue;
+                                }
                             }
 
                             // Default handling: pass through the PropertyAccessExp as-is

@@ -9321,6 +9321,7 @@ pub(crate) fn replace_group_by_with_cte_reference(
                             from_label_column: None,
                             to_label_column: None,
                             schema_filter: None,
+                            node_label: None,
                         };
 
                         let cte_graph_node = LogicalPlan::GraphNode(GraphNode {
@@ -9386,6 +9387,7 @@ pub(crate) fn replace_group_by_with_cte_reference(
                             from_label_column: None,
                             to_label_column: None,
                             schema_filter: None,
+                            node_label: None,
                         };
 
                         let cte_graph_node = LogicalPlan::GraphNode(GraphNode {
@@ -10536,6 +10538,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                 from_label_column: None,
                 to_label_column: None,
                 schema_filter: None,
+                node_label: None,
             }))),
             alias: table_alias,
             label: None,
