@@ -1910,6 +1910,68 @@ impl RenderPlanBuilder for LogicalPlan {
             }
         }
 
+        // Helper to check if plan's core is Empty (all node types filtered out by Track C)
+        fn core_is_empty(plan: &LogicalPlan) -> bool {
+            let result = match plan {
+                LogicalPlan::Empty => true,
+                LogicalPlan::Limit(l) => core_is_empty(&l.input),
+                LogicalPlan::Skip(s) => core_is_empty(&s.input),
+                LogicalPlan::OrderBy(o) => core_is_empty(&o.input),
+                LogicalPlan::Filter(f) => core_is_empty(&f.input),
+                LogicalPlan::Projection(p) => core_is_empty(&p.input),
+                LogicalPlan::GraphJoins(gj) => core_is_empty(&gj.input),
+                LogicalPlan::GraphNode(gn) => {
+                    log::debug!("core_is_empty: GraphNode, checking input");
+                    core_is_empty(&gn.input)
+                }
+                _ => {
+                    log::debug!(
+                        "core_is_empty: unhandled variant {:?}",
+                        std::mem::discriminant(plan)
+                    );
+                    false
+                }
+            };
+            log::debug!(
+                "core_is_empty: {:?} -> {}",
+                std::mem::discriminant(plan),
+                result
+            );
+            result
+        }
+
+        // EARLY EXIT: If the plan's core is Empty (Track C filtered all types),
+        // return empty result immediately to avoid generating SQL without FROM clause
+        if core_is_empty(self) {
+            log::debug!(
+                "to_render_plan_with_ctx: Plan core is Empty (all types filtered) - generating empty result"
+            );
+            return Ok(RenderPlan {
+                ctes: CteItems(vec![]),
+                select: SelectItems {
+                    items: vec![SelectItem {
+                        expression: RenderExpr::Literal(super::render_expr::Literal::Integer(1)),
+                        col_alias: Some(ColumnAlias("_empty".to_string())),
+                    }],
+                    distinct: false,
+                },
+                from: FromTableItem(None),
+                joins: JoinItems(vec![]),
+                array_join: ArrayJoinItem(vec![]),
+                filters: FilterItems(Some(RenderExpr::Literal(
+                    super::render_expr::Literal::Boolean(false),
+                ))), // WHERE false
+                group_by: GroupByExpressions(vec![]),
+                having_clause: None,
+                order_by: OrderByItems(vec![]),
+                skip: SkipItem(None),
+                limit: LimitItem(None),
+                union: UnionItems(None),
+                fixed_path_info: None,
+                is_multi_label_scan: false,
+            });
+        }
+
         // Helper to check if plan contains Union (handles Limit, Skip, OrderBy wrappers)
         fn contains_union(plan: &LogicalPlan) -> bool {
             match plan {

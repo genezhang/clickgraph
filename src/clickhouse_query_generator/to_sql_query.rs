@@ -2365,17 +2365,20 @@ impl RenderExpr {
                 )
             }
             RenderExpr::MapLiteral(entries) => {
-                // Map literals are handled specially by function translator
-                // If we reach here directly, just format as key-value pairs for debugging
-                // In practice, duration({days: 5}) is handled by translate_scalar_function
-                let pairs: Vec<String> = entries
-                    .iter()
-                    .map(|(k, v)| {
-                        let val_sql = v.to_sql();
-                        format!("'{}': {}", k, val_sql)
-                    })
-                    .collect();
-                format!("{{{}}}", pairs.join(", "))
+                // Use ClickHouse map() function for map literals
+                // map('key1', val1, 'key2', val2, ...)
+                if entries.is_empty() {
+                    "map()".to_string()
+                } else {
+                    let args: Vec<String> = entries
+                        .iter()
+                        .flat_map(|(k, v)| {
+                            let val_sql = v.to_sql();
+                            vec![format!("'{}'", k), val_sql]
+                        })
+                        .collect();
+                    format!("map({})", args.join(", "))
+                }
             }
             RenderExpr::PatternCount(pc) => {
                 // Use the pre-generated SQL from PatternCount (correlated subquery)

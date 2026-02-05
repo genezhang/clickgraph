@@ -295,17 +295,17 @@ impl ToSql for LogicalExpr {
                 ))
             }
             LogicalExpr::MapLiteral(entries) => {
-                // Map literals are handled specially by function translator
-                // If we reach here directly, just format as key-value pairs for debugging
-                // In practice, duration({days: 5}) is handled by translate_scalar_function
-                let pairs: Result<Vec<String>, _> = entries
-                    .iter()
-                    .map(|(k, v)| {
-                        let val_sql = v.to_sql()?;
-                        Ok(format!("'{}': {}", k, val_sql))
-                    })
-                    .collect();
-                Ok(format!("{{{}}}", pairs?.join(", ")))
+                // Use ClickHouse map() function for map literals
+                // map('key1', val1, 'key2', val2, ...)
+                if entries.is_empty() {
+                    Ok("map()".to_string())
+                } else {
+                    let args: Result<Vec<String>, _> = entries
+                        .iter()
+                        .flat_map(|(k, v)| vec![Ok(format!("'{}'", k)), v.to_sql()])
+                        .collect();
+                    Ok(format!("map({})", args?.join(", ")))
+                }
             }
             LogicalExpr::LabelExpression { variable, label } => {
                 // Label expression should typically be resolved at planning time
