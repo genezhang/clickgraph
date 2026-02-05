@@ -267,7 +267,8 @@ fn process_with_clause_chain<'a>(
     );
 
     // Process the WITH projection itself - returns error if items lack required aliases
-    logical_plan = with_clause::evaluate_with_clause(with_clause_ast, logical_plan)?;
+    // Pass plan_ctx for pattern comprehension rewriting (e.g., [(a)--() | 1])
+    logical_plan = with_clause::evaluate_with_clause(with_clause_ast, logical_plan, plan_ctx)?;
 
     // Extract exported aliases from the WITH clause node
     let exported_aliases = if let LogicalPlan::WithClause(ref with_node) = *logical_plan {
