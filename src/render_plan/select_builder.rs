@@ -697,7 +697,11 @@ impl LogicalPlan {
             );
         }
 
-        match self.get_properties_with_table_alias(&actual_table_alias) {
+        // For FK-edge (denormalized nodes), first try the original alias to get projected_columns
+        // Then fall back to actual_table_alias for relationship tables
+        let lookup_alias = if is_fk_edge { alias } else { &actual_table_alias };
+        
+        match self.get_properties_with_table_alias(lookup_alias) {
             Ok((properties, _)) if !properties.is_empty() => {
                 let prop_count = properties.len();
                 for (prop_name, col_name) in properties {
@@ -710,8 +714,9 @@ impl LogicalPlan {
                     });
                 }
                 log::info!(
-                    "✅ Expanded base table '{}' (actual: '{}') to {} properties",
+                    "✅ Expanded base table '{}' (lookup: '{}', table: '{}') to {} properties",
                     alias,
+                    lookup_alias,
                     actual_table_alias,
                     prop_count
                 );
