@@ -1544,8 +1544,10 @@ pub(crate) fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Optio
 
 /// Get the relationship type for a given relationship alias by traversing the plan tree.
 /// Returns the first relationship type from GraphRel.labels if found.
-/// For UNION branches, this returns the type from the first matching branch (each branch
-/// should be processed independently for proper per-branch property mapping).
+///
+/// IMPORTANT: For UNION queries, callers should invoke this function on the specific
+/// branch plan they are working with, not the full UNION plan. Each UNION branch
+/// should be processed independently for proper per-branch property mapping.
 pub(crate) fn get_relationship_type_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
     match plan {
         LogicalPlan::GraphRel(rel) if rel.alias == alias => {
@@ -1553,8 +1555,18 @@ pub(crate) fn get_relationship_type_for_alias(alias: &str, plan: &LogicalPlan) -
             // Labels are stored as "TYPE::FromNode::ToNode", extract just the type
             rel.labels.as_ref().and_then(|labels| {
                 labels.first().map(|label| {
-                    // Split by "::" and take first part (the relationship type)
-                    label.split("::").next().unwrap_or(label).to_string()
+                    let rel_type = label.split("::").next().unwrap_or(label);
+                    if !label.contains("::") {
+                        // Log a warning to help diagnose schema inconsistencies where
+                        // a composite relationship label was expected but a simple one was found.
+                        log::warn!(
+                            "Expected composite relationship label 'TYPE::FromNode::ToNode' \
+                             for alias '{}', but got '{}'; using full label as relationship type",
+                            alias,
+                            label
+                        );
+                    }
+                    rel_type.to_string()
                 })
             })
         }
@@ -1570,10 +1582,12 @@ pub(crate) fn get_relationship_type_for_alias(alias: &str, plan: &LogicalPlan) -
         LogicalPlan::Limit(limit) => get_relationship_type_for_alias(alias, &limit.input),
         LogicalPlan::GroupBy(group_by) => get_relationship_type_for_alias(alias, &group_by.input),
         LogicalPlan::Cte(cte) => get_relationship_type_for_alias(alias, &cte.input),
-        LogicalPlan::Union(union) => {
-            // For Union, return the first matching branch's type
-            // Note: Each UNION branch should be processed independently for property mapping
-            for input in &union.inputs {
+        LogicalPlan::Union(_union) => {
+            // IMPORTANT: Do not resolve relationship aliases across UNION branches here.
+            // Each UNION input/branch must be processed independently, so callers should
+            // invoke this function on the specific branch plan they are working with.
+            // Returning first match here is only for backward compatibility with simple cases.
+            for input in &_union.inputs {
                 if let Some(rel_type) = get_relationship_type_for_alias(alias, input) {
                     return Some(rel_type);
                 }
@@ -4419,12 +4433,8 @@ pub fn extract_node_label_from_viewscan_with_schema(
         LogicalPlan::GraphJoins(gj) => {
             extract_node_label_from_viewscan_with_schema(&gj.input, schema)
         }
-        LogicalPlan::Limit(l) => {
-            extract_node_label_from_viewscan_with_schema(&l.input, schema)
-        }
-        LogicalPlan::Skip(s) => {
-            extract_node_label_from_viewscan_with_schema(&s.input, schema)
-        }
+        LogicalPlan::Limit(l) => extract_node_label_from_viewscan_with_schema(&l.input, schema),
+        LogicalPlan::Skip(s) => extract_node_label_from_viewscan_with_schema(&s.input, schema),
         _ => None,
     }
 }

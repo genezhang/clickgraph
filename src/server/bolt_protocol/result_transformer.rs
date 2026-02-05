@@ -546,7 +546,7 @@ fn transform_to_node(
     } else {
         labels.to_vec()
     };
-    
+
     Ok(Node {
         id: legacy_id,
         labels: final_labels,
@@ -556,7 +556,7 @@ fn transform_to_node(
 }
 
 /// Infer node label from properties by matching against schema
-/// 
+///
 /// Finds which node schema has the ID column present in the properties.
 /// This is used for unlabeled queries like `MATCH (n) RETURN n`.
 fn infer_node_label_from_properties(
@@ -566,12 +566,12 @@ fn infer_node_label_from_properties(
     // For each node schema, check if its ID column is present and non-null
     for (label, node_schema) in schema.all_node_schemas() {
         let id_columns = node_schema.node_id.id.columns();
-        
+
         // Check if ANY of the ID columns is present with a non-null value
-        let has_id = id_columns.iter().any(|col| {
-            properties.get(*col).map_or(false, |v| !v.is_null())
-        });
-        
+        let has_id = id_columns
+            .iter()
+            .any(|col| properties.get(*col).map_or(false, |v| !v.is_null()));
+
         if has_id {
             return Some(label.clone());
         }

@@ -297,7 +297,7 @@ impl ToSql for LogicalExpr {
             LogicalExpr::MapLiteral(entries) => {
                 // Use ClickHouse map() function for map literals
                 // map('key1', val1, 'key2', val2, ...)
-                // 
+                //
                 // IMPORTANT: ClickHouse requires all map values to be of the same type.
                 // Since Cypher maps can have mixed types (e.g., {name:'nodes', data:count(*)}),
                 // we cast all values to String to ensure type compatibility.
@@ -310,7 +310,7 @@ impl ToSql for LogicalExpr {
                             let val_result = v.to_sql();
                             vec![
                                 Ok(format!("'{}'", k)),
-                                val_result.map(|val| format!("toString({})", val))
+                                val_result.map(|val| format!("toString({})", val)),
                             ]
                         })
                         .collect();

@@ -1797,11 +1797,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     all_branches.extend(union_branches);
 
                     // Convert to JSON format with logical plans for explicit relationship type
-                    let json_branches =
-                        super::plan_builder_helpers::convert_path_branches_to_json(
-                            all_branches,
-                            Some(&union.inputs),
-                        );
+                    let json_branches = super::plan_builder_helpers::convert_path_branches_to_json(
+                        all_branches,
+                        Some(&union.inputs),
+                    );
 
                     // Split back into base + union branches
                     let mut iter = json_branches.into_iter();
@@ -2090,7 +2089,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                   branch_renders.len(), is_path_union, union.inputs.len());
                         branch_renders =
                             super::plan_builder_helpers::normalize_union_branches(branch_renders);
-                        
+
                         // Add __label__ column only for node-only UNION queries (no GraphRel)
                         // This is for MATCH (n) queries that expand to UNION of all node types
                         let has_graph_rel = union.inputs.iter().any(|input| {
@@ -2106,15 +2105,16 @@ impl RenderPlanBuilder for LogicalPlan {
                             }
                             contains_graph_rel(input.as_ref())
                         });
-                        
+
                         // Only add __label__ for pure node UNION queries (no relationships)
                         if !has_graph_rel {
                             log::info!("🏷️ Adding __label__ column for node-only UNION query");
-                            branch_renders = super::plan_builder_helpers::add_label_column_to_union_branches(
-                                branch_renders,
-                                &union.inputs,
-                                schema,
-                            );
+                            branch_renders =
+                                super::plan_builder_helpers::add_label_column_to_union_branches(
+                                    branch_renders,
+                                    &union.inputs,
+                                    schema,
+                                );
                         }
                     }
 
