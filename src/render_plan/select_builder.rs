@@ -1167,10 +1167,11 @@ impl LogicalPlan {
                                     rel_props
                                 );
                                 for (prop_name, db_column) in rel_props {
-                                    // Select from end node's table (since denormalized)
+                                    // For denormalized relationships, use the relationship alias
+                                    // (which points to the actual table) not the virtual node alias
                                     select_items.push(SelectItem {
                                         expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: RenderTableAlias(end_alias.clone()),
+                                            table_alias: RenderTableAlias(rel_alias.clone()),
                                             column: PropertyValue::Column(db_column),
                                         }),
                                         col_alias: Some(ColumnAlias(format!(
