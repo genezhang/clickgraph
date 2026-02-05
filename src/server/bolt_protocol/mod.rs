@@ -169,7 +169,7 @@ impl Default for BoltConfig {
             connection_timeout: 30,
             enable_auth: false, // Start with auth disabled for development
             default_user: Some("brahmand".to_string()),
-            server_agent: format!("Brahmand/{}", env!("CARGO_PKG_VERSION")),
+            server_agent: format!("ClickGraph/{}", env!("CARGO_PKG_VERSION")),
             host: "localhost".to_string(),
             port: 7687,
         }
