@@ -1103,9 +1103,24 @@ impl RenderPlanBuilder for LogicalPlan {
                 } else {
                     eprintln!("DEBUG Filter::to_render_plan: Normal filter handling");
                     // Normal filter handling
-                    // Convert the filter predicate to RenderExpr
-                    let mut filter_expr: RenderExpr = f.predicate.clone().try_into()?;
-                    apply_property_mapping_to_expr(&mut filter_expr, &f.input);
+
+                    // 🔧 FIX: Rewrite property names to DB column names BEFORE converting to RenderExpr
+                    // This uses the same function as WITH clause processing for consistency
+                    use crate::query_planner::logical_expr::expression_rewriter::{
+                        rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+                    };
+                    let rewrite_ctx = ExpressionRewriteContext::new(&f.input);
+                    let rewritten_predicate =
+                        rewrite_expression_with_property_mapping(&f.predicate, &rewrite_ctx);
+
+                    log::debug!(
+                        "Filter rewrite: {:?} → {:?}",
+                        f.predicate,
+                        rewritten_predicate
+                    );
+
+                    // Convert the rewritten predicate to RenderExpr
+                    let filter_expr: RenderExpr = rewritten_predicate.try_into()?;
 
                     // Combine with existing filters if any
                     render_plan.filters = match render_plan.filters.0 {
@@ -1811,6 +1826,40 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 Ok(base_plan)
             }
+            LogicalPlan::Empty => {
+                // Empty plan represents a pruned branch (e.g., no types matched a property filter)
+                // Return an empty RenderPlan that will generate no rows
+                // Must include at least one select item for valid SQL: SELECT 1 WHERE false
+                log::info!(
+                    "🔧 to_render_plan: Empty plan (pruned branch) - generating empty result"
+                );
+                Ok(RenderPlan {
+                    ctes: CteItems(vec![]),
+                    select: SelectItems {
+                        items: vec![SelectItem {
+                            expression: RenderExpr::Literal(super::render_expr::Literal::Integer(
+                                1,
+                            )),
+                            col_alias: Some(ColumnAlias("_empty".to_string())),
+                        }],
+                        distinct: false,
+                    },
+                    from: FromTableItem(None),
+                    joins: JoinItems(vec![]),
+                    array_join: ArrayJoinItem(vec![]),
+                    filters: FilterItems(Some(RenderExpr::Literal(
+                        super::render_expr::Literal::Boolean(false),
+                    ))), // WHERE false
+                    group_by: GroupByExpressions(vec![]),
+                    having_clause: None,
+                    order_by: OrderByItems(vec![]),
+                    skip: SkipItem(None),
+                    limit: LimitItem(None),
+                    union: UnionItems(None),
+                    fixed_path_info: None,
+                    is_multi_label_scan: false,
+                })
+            }
             _ => todo!(
                 "Render plan conversion not implemented for LogicalPlan variant: {:?}",
                 std::mem::discriminant(self)
@@ -1859,6 +1908,68 @@ impl RenderPlanBuilder for LogicalPlan {
                 LogicalPlan::Filter(f) => contains_graph_joins(&f.input),
                 _ => false,
             }
+        }
+
+        // Helper to check if plan's core is Empty (all node types filtered out by Track C)
+        fn core_is_empty(plan: &LogicalPlan) -> bool {
+            let result = match plan {
+                LogicalPlan::Empty => true,
+                LogicalPlan::Limit(l) => core_is_empty(&l.input),
+                LogicalPlan::Skip(s) => core_is_empty(&s.input),
+                LogicalPlan::OrderBy(o) => core_is_empty(&o.input),
+                LogicalPlan::Filter(f) => core_is_empty(&f.input),
+                LogicalPlan::Projection(p) => core_is_empty(&p.input),
+                LogicalPlan::GraphJoins(gj) => core_is_empty(&gj.input),
+                LogicalPlan::GraphNode(gn) => {
+                    log::debug!("core_is_empty: GraphNode, checking input");
+                    core_is_empty(&gn.input)
+                }
+                _ => {
+                    log::debug!(
+                        "core_is_empty: unhandled variant {:?}",
+                        std::mem::discriminant(plan)
+                    );
+                    false
+                }
+            };
+            log::debug!(
+                "core_is_empty: {:?} -> {}",
+                std::mem::discriminant(plan),
+                result
+            );
+            result
+        }
+
+        // EARLY EXIT: If the plan's core is Empty (Track C filtered all types),
+        // return empty result immediately to avoid generating SQL without FROM clause
+        if core_is_empty(self) {
+            log::debug!(
+                "to_render_plan_with_ctx: Plan core is Empty (all types filtered) - generating empty result"
+            );
+            return Ok(RenderPlan {
+                ctes: CteItems(vec![]),
+                select: SelectItems {
+                    items: vec![SelectItem {
+                        expression: RenderExpr::Literal(super::render_expr::Literal::Integer(1)),
+                        col_alias: Some(ColumnAlias("_empty".to_string())),
+                    }],
+                    distinct: false,
+                },
+                from: FromTableItem(None),
+                joins: JoinItems(vec![]),
+                array_join: ArrayJoinItem(vec![]),
+                filters: FilterItems(Some(RenderExpr::Literal(
+                    super::render_expr::Literal::Boolean(false),
+                ))), // WHERE false
+                group_by: GroupByExpressions(vec![]),
+                having_clause: None,
+                order_by: OrderByItems(vec![]),
+                skip: SkipItem(None),
+                limit: LimitItem(None),
+                union: UnionItems(None),
+                fixed_path_info: None,
+                is_multi_label_scan: false,
+            });
         }
 
         // Helper to check if plan contains Union (handles Limit, Skip, OrderBy wrappers)

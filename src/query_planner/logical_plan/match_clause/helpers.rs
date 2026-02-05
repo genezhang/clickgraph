@@ -133,8 +133,8 @@ pub fn generate_scan(
             }
         } else {
             // Multiple node types - create UNION ALL of ViewScans
-            log::info!(
-                "Creating UNION of {} node types for labelless query: {:?}",
+            log::warn!(
+                "🔍 Creating UNION of {} node types for labelless query: {:?}",
                 labels_to_use.len(),
                 labels_to_use
             );
@@ -142,7 +142,10 @@ pub fn generate_scan(
             let mut union_inputs = Vec::new();
             for label in &labels_to_use {
                 match super::try_generate_view_scan(&alias, label, plan_ctx)? {
-                    Some(view_scan) => union_inputs.push(view_scan),
+                    Some(view_scan) => {
+                        log::warn!("🔍 Added ViewScan for label '{}': {:?}", label, view_scan);
+                        union_inputs.push(view_scan);
+                    }
                     None => {
                         log::warn!("Skipping label '{}' - not found in schema", label);
                     }
@@ -396,11 +399,18 @@ pub fn register_node_in_context(
     node_props: Vec<Property>,
     is_explicitly_named: bool,
 ) {
+    // Use Some(vec![]) for unlabeled nodes instead of None
+    // This distinguishes unlabeled nodes from path variables (which use None)
+    let labels_for_ctx = match node_label {
+        Some(l) => Some(vec![l.clone()]),
+        None => Some(vec![]), // Explicitly empty = unlabeled node (not a path)
+    };
+
     plan_ctx.insert_table_ctx(
         node_alias.to_string(),
         TableCtx::build(
             node_alias.to_string(),
-            node_label.clone().map(|l| vec![l]),
+            labels_for_ctx,
             node_props,
             false, // is_rel
             is_explicitly_named,

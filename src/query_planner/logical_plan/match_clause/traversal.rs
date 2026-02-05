@@ -298,6 +298,27 @@ fn traverse_connected_pattern_with_mode<'a>(
             }
         };
 
+        // === HANDLE NO MATCHING RELATIONSHIP TYPES ===
+        // If property filtering removed all relationship types, return Empty plan
+        if rel_labels.is_none() {
+            log::warn!(
+                "🔀 No relationship types found for alias '{}' after property filtering - returning Empty",
+                rel_alias
+            );
+            // Register the relationship alias with empty labels to prevent downstream errors
+            plan_ctx.insert_table_ctx(
+                rel_alias.clone(),
+                crate::query_planner::plan_ctx::TableCtx::build(
+                    rel_alias.clone(),
+                    Some(vec![]), // Empty labels
+                    vec![],
+                    true,
+                    false,
+                ),
+            );
+            return Ok(Arc::new(LogicalPlan::Empty));
+        }
+
         // === FULLY UNTYPED MULTI-TYPE UNION EXPANSION ===
         // For patterns like ()-->() where BOTH nodes are untyped AND we have multiple relationship types,
         // generate a UNION where each branch processes as a typed pattern through the normal flow.
@@ -1356,10 +1377,42 @@ pub(super) fn traverse_node_pattern(
                 .iter()
                 .map(|branch| {
                     let is_denorm = is_denormalized_scan(branch);
+                    // For UNION branches from untyped patterns (MATCH (n)), extract the label
+                    // from the ViewScan source_table to enable property mapping in FilterTagging.
+                    // The ViewScan was created by generate_scan with a specific node type.
+                    let branch_label = if node_label.is_none() {
+                        // Extract label from ViewScan's source_table
+                        // The source_table format is "database.table_name" e.g. "brahmand.users_bench"
+                        if let LogicalPlan::ViewScan(vs) = branch.as_ref() {
+                            // Try to find the node label by looking up which node type uses this table
+                            let table_name = vs.source_table.split('.').last().unwrap_or(&vs.source_table);
+                            plan_ctx.schema().all_node_schemas()
+                                .iter()
+                                .find_map(|(label, schema)| {
+                                    // Check if this schema's table matches
+                                    let schema_table = schema.table_name.split('.').last().unwrap_or(&schema.table_name);
+                                    if schema_table == table_name {
+                                        Some(label.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                        } else {
+                            None
+                        }
+                    } else {
+                        node_label.clone().map(|s| s.to_string())
+                    };
+
+                    log::info!(
+                        "  ✓ Wrapping branch with alias='{}', label={:?} (original node_label={:?})",
+                        node_alias, branch_label, node_label
+                    );
+
                     Arc::new(LogicalPlan::GraphNode(GraphNode {
                         input: branch.clone(),
                         alias: node_alias.clone(),
-                        label: node_label.clone().map(|s| s.to_string()),
+                        label: branch_label,
                         is_denormalized: is_denorm,
                         projected_columns: None,
                     }))

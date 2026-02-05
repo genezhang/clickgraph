@@ -2363,6 +2363,35 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
             }
         }
         RenderExpr::PropertyAccessExp(prop) => {
+            // First, try to map the property name to the correct column name
+            // This is essential for queries like: WHERE n.name = ...
+            // where 'name' might map to 'full_name' in the schema
+            if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
+                log::warn!(
+                    "🔍 PROPERTY MAPPING: Alias '{}' -> Label '{}', Property '{}' (before mapping)",
+                    prop.table_alias.0,
+                    node_label,
+                    prop.column.raw()
+                );
+
+                // Map the property to the correct column
+                let mapped_column = crate::render_plan::cte_generation::map_property_to_column_with_relationship_context(
+                    prop.column.raw(),
+                    &node_label,
+                    None, // relationship_type
+                    None, // node_role
+                    None, // schema_name will be resolved from task-local
+                ).unwrap_or_else(|_| prop.column.raw().to_string());
+
+                log::warn!(
+                    "🔍 PROPERTY MAPPING: '{}' -> '{}'",
+                    prop.column.raw(),
+                    mapped_column
+                );
+
+                prop.column = PropertyValue::Column(mapped_column);
+            }
+
             // For denormalized nodes, remap the table alias to the edge alias
             // Example: PropertyAccess { table_alias: "src", column: "id.orig_h" }
             //       -> PropertyAccess { table_alias: "ad62047b83", column: "id.orig_h" }
@@ -2559,13 +2588,24 @@ pub(super) fn normalize_union_branches(
                 .collect();
 
             // Build normalized SELECT items in consistent order
+            // IMPORTANT: Wrap all expressions in toString() to ensure type compatibility across UNION branches
+            // This is needed because different node types may have different property types (e.g., Array vs Scalar)
             let normalized_items: Vec<SelectItem> = all_aliases
                 .iter()
                 .map(|alias| {
                     if let Some(item) = existing.get(alias) {
-                        item.clone()
+                        // Wrap the expression in toString() for type compatibility
+                        SelectItem {
+                            expression: RenderExpr::ScalarFnCall(
+                                super::render_expr::ScalarFnCall {
+                                    name: "toString".to_string(),
+                                    args: vec![item.expression.clone()],
+                                },
+                            ),
+                            col_alias: item.col_alias.clone(),
+                        }
                     } else {
-                        // Missing column - use NULL
+                        // Missing column - use NULL (which is compatible with any toString() result)
                         SelectItem {
                             expression: RenderExpr::Literal(Literal::Null),
                             col_alias: Some(super::ColumnAlias(alias.clone())),

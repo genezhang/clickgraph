@@ -1163,27 +1163,19 @@ impl BoltHandler {
 
         // Re-parse for planning (necessary for Send safety)
         // Use parse_cypher_statement which handles UNION properly
-        let parsed_query_for_planning = {
-            let parsed_stmt = open_cypher_parser::parse_cypher_statement(query)
+        let parsed_statement_for_planning = {
+            open_cypher_parser::parse_cypher_statement(query)
                 .map_err(|e| BoltError::query_error(format!("Query re-parse failed: {}", e)))?
-                .1;
-
-            match parsed_stmt {
-                CypherStatement::Query { query, .. } => query,
-                CypherStatement::ProcedureCall(_) => {
-                    return Err(BoltError::query_error(
-                        "Unexpected procedure call in regular query path".to_string(),
-                    ));
-                }
-            }
+                .1
         };
 
-        // Generate logical plan (returns both plan and context with VLP metadata)
-        let (logical_plan, plan_ctx) = match query_planner::evaluate_read_query(
-            parsed_query_for_planning,
+        // Generate logical plan using evaluate_read_statement (handles UNION properly)
+        let (logical_plan, plan_ctx) = match query_planner::evaluate_read_statement(
+            parsed_statement_for_planning,
             &graph_schema,
             tenant_id,
             view_parameters,
+            None, // max_inferred_types
         ) {
             Ok(result) => result,
             Err(e) => {

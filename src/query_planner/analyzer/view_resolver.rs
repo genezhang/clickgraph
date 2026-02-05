@@ -153,6 +153,20 @@ impl<'a> ViewResolver<'a> {
         from_node: Option<&str>,
         to_node: Option<&str>,
     ) -> Result<crate::graph_catalog::expression_parser::PropertyValue, AnalyzerError> {
+        // Handle empty type_name (from pruned/empty branches)
+        // Return property as-is - the branch will return 0 rows anyway
+        if type_name.is_empty() {
+            log::info!(
+                "ViewResolver: Empty relationship type - returning property '{}' as-is (branch was pruned)",
+                property
+            );
+            return Ok(
+                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                    property.to_string(),
+                ),
+            );
+        }
+
         log::debug!(
             "ViewResolver: Resolving rel property: type_name={}, property={}, from_node={:?}, to_node={:?}",
             type_name, property, from_node, to_node
