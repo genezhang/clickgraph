@@ -4196,6 +4196,7 @@ pub(super) fn get_graph_rel_from_plan(
 /// - `_rel_properties`: JSON with relationship properties
 pub(super) fn convert_path_branches_to_json(
     union_plans: Vec<super::RenderPlan>,
+    logical_plans: Option<&[std::sync::Arc<crate::query_planner::logical_plan::LogicalPlan>]>,
 ) -> Vec<super::RenderPlan> {
     use super::render_expr::{Literal, RenderExpr, ScalarFnCall};
     use super::{ColumnAlias, RenderPlan, SelectItem, SelectItems};
@@ -4209,6 +4210,15 @@ pub(super) fn convert_path_branches_to_json(
         .into_iter()
         .enumerate()
         .map(|(branch_idx, plan)| {
+            // Extract relationship type from logical plan (explicit, no guessing)
+            let rel_type: Option<String> = logical_plans.and_then(|lp| {
+                lp.get(branch_idx).and_then(|lp| {
+                    super::cte_extraction::extract_relationship_type_from_plan(lp.as_ref())
+                })
+            });
+            if let Some(ref rt) = rel_type {
+                log::warn!("  Branch {}: extracted relationship type = '{}'", branch_idx, rt);
+            }
             // First, find the path tuple and extract aliases from it
             let mut path_item = None;
             let mut start_alias = String::new();
@@ -4307,6 +4317,14 @@ pub(super) fn convert_path_branches_to_json(
                 new_items.push(SelectItem {
                     expression: RenderExpr::Literal(Literal::String("{}".to_string())),
                     col_alias: Some(ColumnAlias("_rel_properties".to_string())),
+                });
+            }
+
+            // 5. Add explicit relationship type column (no guessing!)
+            if let Some(ref rt) = rel_type {
+                new_items.push(SelectItem {
+                    expression: RenderExpr::Literal(Literal::String(rt.clone())),
+                    col_alias: Some(ColumnAlias("__rel_type__".to_string())),
                 });
             }
 

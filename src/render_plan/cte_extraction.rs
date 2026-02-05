@@ -4461,6 +4461,29 @@ pub fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
     }
 }
 
+/// Extract the relationship type from a plan containing a GraphRel.
+/// Returns the first relationship type found (for UNION branches, each branch has one type).
+pub fn extract_relationship_type_from_plan(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphRel(rel) => {
+            // Labels are stored as "TYPE::FromNode::ToNode", extract just the type
+            rel.labels.as_ref().and_then(|labels| {
+                labels.first().map(|label| {
+                    // Split by "::" and take first part (the relationship type)
+                    label.split("::").next().unwrap_or(label).to_string()
+                })
+            })
+        }
+        LogicalPlan::GraphNode(node) => extract_relationship_type_from_plan(&node.input),
+        LogicalPlan::Filter(filter) => extract_relationship_type_from_plan(&filter.input),
+        LogicalPlan::Projection(proj) => extract_relationship_type_from_plan(&proj.input),
+        LogicalPlan::GraphJoins(joins) => extract_relationship_type_from_plan(&joins.input),
+        LogicalPlan::Limit(limit) => extract_relationship_type_from_plan(&limit.input),
+        LogicalPlan::Skip(skip) => extract_relationship_type_from_plan(&skip.input),
+        _ => None,
+    }
+}
+
 /// Get node schema information by table name
 pub fn get_node_schema_by_table<'a>(
     schema: &'a GraphSchema,

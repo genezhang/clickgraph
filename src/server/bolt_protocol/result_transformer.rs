@@ -862,7 +862,23 @@ fn transform_path_from_json(
     // Infer node labels from properties (for UNION queries where each row can have different types)
     let start_label = infer_label_from_props(&start_props, start_labels);
     let end_label = infer_label_from_props(&end_props, end_labels);
-    let rel_type = infer_rel_type_from_props(&rel_props, rel_types);
+
+    // Get relationship type: PREFER explicit __rel_type__ column (no guessing!)
+    // Only fall back to inference if __rel_type__ is not available
+    let rel_type = match row.get("__rel_type__") {
+        Some(Value::String(explicit_type)) if !explicit_type.is_empty() => {
+            log::info!("📦 Using explicit __rel_type__: {}", explicit_type);
+            explicit_type.clone()
+        }
+        _ => {
+            // Fallback for non-UNION path queries that don't have __rel_type__
+            log::warn!(
+                "⚠️ No __rel_type__ column found, falling back to inference (rel_types: {:?})",
+                rel_types
+            );
+            infer_rel_type_from_props(&rel_props, rel_types)
+        }
+    };
 
     // Create start node with inferred label and properties
     let start_id = extract_id_from_props(&start_props, "user_id", "post_id", "id");

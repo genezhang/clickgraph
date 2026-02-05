@@ -1796,9 +1796,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     let mut all_branches = vec![base_plan];
                     all_branches.extend(union_branches);
 
-                    // Convert to JSON format
+                    // Convert to JSON format with logical plans for explicit relationship type
                     let json_branches =
-                        super::plan_builder_helpers::convert_path_branches_to_json(all_branches);
+                        super::plan_builder_helpers::convert_path_branches_to_json(
+                            all_branches,
+                            Some(&union.inputs),
+                        );
 
                     // Split back into base + union branches
                     let mut iter = json_branches.into_iter();
@@ -2076,9 +2079,10 @@ impl RenderPlanBuilder for LogicalPlan {
                             union.inputs.len()
                         );
 
-                        // Convert branches to JSON format: p, _start_properties, _end_properties, _rel_properties
+                        // Convert branches to JSON format: p, _start_properties, _end_properties, _rel_properties, __rel_type__
                         branch_renders = super::plan_builder_helpers::convert_path_branches_to_json(
                             branch_renders,
+                            Some(&union.inputs),
                         );
                     } else {
                         // Regular UNION - normalize with NULL padding
