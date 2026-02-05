@@ -1,0 +1,46 @@
+# Denormalized Flights Test Schema
+# Tests: denormalized node properties, string IDs, virtual nodes
+#
+# Airport nodes are "virtual" - their properties come from the flights table
+# via from_node_properties and to_node_properties mappings.
+
+name: flights_denorm_test
+version: "1.0"
+
+graph_schema:
+  nodes:
+    # Airport is a virtual node - all data comes from the flights table
+    - label: Airport
+      database: brahmand
+      table: flights_denorm
+      node_id: code  # Logical property name for the ID
+      property_mappings: {}  # Empty - all properties are denormalized
+      
+      # Properties when Airport appears as origin (from_node)
+      from_node_properties:
+        code: origin_code
+        city: origin_city
+        state: origin_state
+      
+      # Properties when Airport appears as destination (to_node)
+      to_node_properties:
+        code: dest_code
+        city: dest_city
+        state: dest_state
+
+  edges:
+    # FLIGHT relationship - connects two Airports
+    - type: FLIGHT
+      database: brahmand
+      table: flights_denorm
+      from_id: origin_code
+      to_id: dest_code
+      from_node: Airport
+      to_node: Airport
+      property_mappings:
+        flight_id: flight_id
+        flight_number: flight_number
+        carrier: carrier
+        departure_time: departure_time
+        arrival_time: arrival_time
+        distance: distance

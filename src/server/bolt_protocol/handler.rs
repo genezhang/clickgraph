@@ -1351,9 +1351,15 @@ impl BoltHandler {
             self.cached_results = Some(transformed_rows);
 
             // Update field names to match transformed structure
+            // Strip ".*" suffix for wildcard expansions (e.g., "a.*" → "a")
             field_names = return_metadata
                 .iter()
-                .map(|m| m.field_name.clone())
+                .map(|m| {
+                    m.field_name
+                        .strip_suffix(".*")
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| m.field_name.clone())
+                })
                 .collect();
 
             log::info!("After transformation: field_names: {:?}", field_names);

@@ -278,8 +278,47 @@ pub fn extract_return_metadata(
                     }
                 }
             }
+            LogicalExpr::PropertyAccessExp(prop) => {
+                // Check for node wildcard expansion (a.* means all properties of node a)
+                let is_wildcard = matches!(
+                    &prop.column,
+                    crate::graph_catalog::expression_parser::PropertyValue::Column(col) if col == "*"
+                );
+
+                if is_wildcard {
+                    // This is a node wildcard - look up the table alias as a node
+                    let var_name = prop.table_alias.to_string();
+                    log::debug!(
+                        "PropertyAccessExp wildcard: looking up '{}' in plan_ctx",
+                        var_name
+                    );
+                    match plan_ctx.lookup_variable(&var_name) {
+                        Some(TypedVariable::Node(node_var)) => {
+                            log::debug!("  Found Node with labels: {:?}", node_var.labels);
+                            ReturnItemType::Node {
+                                labels: node_var.labels.clone(),
+                            }
+                        }
+                        Some(TypedVariable::Relationship(rel_var)) => {
+                            log::debug!(
+                                "  Found Relationship with types: {:?}",
+                                rel_var.rel_types
+                            );
+                            ReturnItemType::Relationship {
+                                rel_types: rel_var.rel_types.clone(),
+                                from_label: rel_var.from_node_label.clone(),
+                                to_label: rel_var.to_node_label.clone(),
+                            }
+                        }
+                        _ => ReturnItemType::Scalar,
+                    }
+                } else {
+                    // Regular property access → Scalar
+                    ReturnItemType::Scalar
+                }
+            }
             _ => {
-                // Property access, function call, expression → Scalar
+                // Function call, other expressions → Scalar
                 ReturnItemType::Scalar
             }
         };
@@ -398,7 +437,9 @@ pub fn transform_row(
     for meta in metadata {
         match &meta.item_type {
             ReturnItemType::Node { labels } => {
-                let node = transform_to_node(&row, &meta.field_name, labels, schema)?;
+                // Strip ".*" suffix from field_name if present (wildcard expansion)
+                let var_name = meta.field_name.strip_suffix(".*").unwrap_or(&meta.field_name);
+                let node = transform_to_node(&row, var_name, labels, schema)?;
                 // Use the Node's packstream encoding
                 let packstream_bytes = node.to_packstream();
                 result.push(BoltValue::PackstreamBytes(packstream_bytes));
@@ -408,9 +449,11 @@ pub fn transform_row(
                 from_label,
                 to_label,
             } => {
+                // Strip ".*" suffix from field_name if present (wildcard expansion)
+                let var_name = meta.field_name.strip_suffix(".*").unwrap_or(&meta.field_name);
                 let rel = transform_to_relationship(
                     &row,
-                    &meta.field_name,
+                    var_name,
                     rel_types,
                     from_label.as_deref(),
                     to_label.as_deref(),
