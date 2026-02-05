@@ -752,10 +752,10 @@ fn transform_to_path(
     );
 
     // Check for JSON format first (UNION path queries)
-    // Format: _start_properties, _end_properties, _rel_properties
+    // Format: _start_properties, _end_properties, _rel_properties, __rel_type__
     if row.contains_key("_start_properties") && row.contains_key("_end_properties") {
-        log::trace!("🎯 Detected JSON format for path - parsing _start_properties, _end_properties, _rel_properties");
-        return transform_path_from_json(row, start_labels, end_labels, rel_types);
+        log::trace!("🎯 Detected JSON format for path - using explicit __rel_type__ column");
+        return transform_path_from_json(row, start_labels, end_labels);
     }
 
     // Original format: individual columns for each property
@@ -818,11 +818,11 @@ fn transform_to_path(
 
 /// Transform path from JSON format (UNION path queries)
 /// Parses _start_properties, _end_properties, _rel_properties JSON strings
+/// Used for UNION path queries where each row has explicit type columns
 fn transform_path_from_json(
     row: &HashMap<String, Value>,
     start_labels: &[String],
     end_labels: &[String],
-    rel_types: &[String],
 ) -> Result<Path, String> {
     // Parse start node properties from JSON
     let start_props: HashMap<String, Value> = match row.get("_start_properties") {
@@ -863,20 +863,14 @@ fn transform_path_from_json(
     let start_label = infer_label_from_props(&start_props, start_labels);
     let end_label = infer_label_from_props(&end_props, end_labels);
 
-    // Get relationship type: PREFER explicit __rel_type__ column (no guessing!)
-    // Only fall back to inference if __rel_type__ is not available
+    // Get relationship type from explicit __rel_type__ column (required for JSON format)
+    // JSON format is only used for UNION path queries, and we always add __rel_type__ there
     let rel_type = match row.get("__rel_type__") {
-        Some(Value::String(explicit_type)) if !explicit_type.is_empty() => {
-            log::info!("📦 Using explicit __rel_type__: {}", explicit_type);
-            explicit_type.clone()
-        }
+        Some(Value::String(explicit_type)) if !explicit_type.is_empty() => explicit_type.clone(),
         _ => {
-            // Fallback for non-UNION path queries that don't have __rel_type__
-            log::warn!(
-                "⚠️ No __rel_type__ column found, falling back to inference (rel_types: {:?})",
-                rel_types
+            return Err(
+                "Missing __rel_type__ column in path JSON format - this is a bug".to_string(),
             );
-            infer_rel_type_from_props(&rel_props, rel_types)
         }
     };
 
@@ -971,39 +965,6 @@ fn infer_label_from_props(props: &HashMap<String, Value>, fallback_labels: &[Str
         .first()
         .cloned()
         .unwrap_or_else(|| "Node".to_string())
-}
-
-/// Infer relationship type from properties
-fn infer_rel_type_from_props(props: &HashMap<String, Value>, fallback_types: &[String]) -> String {
-    let keys: Vec<&String> = props.keys().collect();
-
-    // Check for characteristic relationship properties
-    let has_follower = keys.iter().any(|k| k.contains("follower"));
-    let has_followed = keys.iter().any(|k| k.contains("followed"));
-    let has_like = keys
-        .iter()
-        .any(|k| k.contains("like") || k.contains("liked"));
-    let has_since = keys.iter().any(|k| k.contains("since"));
-
-    if has_follower && has_followed {
-        return "FOLLOWS".to_string();
-    }
-    if has_like {
-        return "LIKED".to_string();
-    }
-    if has_since && !has_follower {
-        return "FRIENDS_WITH".to_string();
-    }
-
-    // Empty props usually means denormalized relationship (AUTHORED)
-    if props.is_empty() {
-        return "AUTHORED".to_string();
-    }
-
-    fallback_types
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "RELATED_TO".to_string())
 }
 
 /// Clean property keys by removing:
