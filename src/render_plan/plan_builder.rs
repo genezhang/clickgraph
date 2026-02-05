@@ -2087,13 +2087,31 @@ impl RenderPlanBuilder for LogicalPlan {
                         branch_renders =
                             super::plan_builder_helpers::normalize_union_branches(branch_renders);
                         
-                        // Add __label__ column to each branch for node type identification
-                        // This is needed for Bolt protocol to construct proper Node objects
-                        branch_renders = super::plan_builder_helpers::add_label_column_to_union_branches(
-                            branch_renders,
-                            &union.inputs,
-                            schema,
-                        );
+                        // Add __label__ column only for node-only UNION queries (no GraphRel)
+                        // This is for MATCH (n) queries that expand to UNION of all node types
+                        let has_graph_rel = union.inputs.iter().any(|input| {
+                            fn contains_graph_rel(plan: &LogicalPlan) -> bool {
+                                match plan {
+                                    LogicalPlan::GraphRel(_) => true,
+                                    LogicalPlan::GraphNode(gn) => contains_graph_rel(&gn.input),
+                                    LogicalPlan::Projection(p) => contains_graph_rel(&p.input),
+                                    LogicalPlan::Filter(f) => contains_graph_rel(&f.input),
+                                    LogicalPlan::GraphJoins(gj) => contains_graph_rel(&gj.input),
+                                    _ => false,
+                                }
+                            }
+                            contains_graph_rel(input.as_ref())
+                        });
+                        
+                        // Only add __label__ for pure node UNION queries (no relationships)
+                        if !has_graph_rel {
+                            log::info!("🏷️ Adding __label__ column for node-only UNION query");
+                            branch_renders = super::plan_builder_helpers::add_label_column_to_union_branches(
+                                branch_renders,
+                                &union.inputs,
+                                schema,
+                            );
+                        }
                     }
 
                     // Use first branch as base and put rest in union.input

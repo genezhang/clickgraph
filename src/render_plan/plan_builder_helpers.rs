@@ -2678,6 +2678,16 @@ pub(super) fn add_label_column_to_union_branches(
         .into_iter()
         .zip(logical_branches.iter())
         .map(|(mut plan, logical_branch)| {
+            // Check if __label__ already exists - skip if so
+            let has_label = plan.select.items.iter().any(|item| {
+                item.col_alias.as_ref().map_or(false, |a| a.0 == "__label__")
+            });
+            
+            if has_label {
+                log::debug!("add_label_column_to_union_branches: __label__ already exists, skipping");
+                return plan;
+            }
+            
             // Extract label from the logical plan's ViewScan
             let full_label = extract_node_label_from_viewscan_with_schema(logical_branch, schema)
                 .unwrap_or_else(|| "Unknown".to_string());
