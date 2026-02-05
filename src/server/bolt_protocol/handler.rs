@@ -531,6 +531,24 @@ impl BoltHandler {
             (schema_name, tenant_id, role, view_parameters)
         };
 
+        // Rewrite id() predicates using session-scoped IdMapper
+        // This enables Neo4j Browser's double-click/expand functionality
+        let query = {
+            let context = lock_context!(self.context);
+            let rewrite_result = super::id_rewriter::rewrite_id_predicates(&query, &context.id_mapper);
+            
+            if rewrite_result.was_rewritten {
+                log::info!("🔄 Query rewritten for id() support:");
+                log::info!("   Original: {}", query.lines().next().unwrap_or(&query));
+                log::info!("   Rewritten: {}", rewrite_result.query.lines().next().unwrap_or(&rewrite_result.query));
+                if !rewrite_result.missing_ids.is_empty() {
+                    log::warn!("   Missing IDs (will return empty): {:?}", rewrite_result.missing_ids);
+                }
+            }
+            
+            rewrite_result.query
+        };
+
         log::info!("Executing Cypher query: {}", query);
         if let Some(ref schema) = schema_name {
             log::debug!("Query execution using schema: {}", schema);
@@ -541,7 +559,7 @@ impl BoltHandler {
         // Parse and execute the query
         match self
             .execute_cypher_query(
-                query,
+                &query,
                 parameters,
                 schema_name,
                 tenant_id,
