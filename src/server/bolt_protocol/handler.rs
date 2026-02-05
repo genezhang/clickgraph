@@ -1315,6 +1315,10 @@ impl BoltHandler {
             );
 
             let mut transformed_rows: Vec<Vec<BoltValue>> = Vec::new();
+            
+            // Get mutable access to id_mapper from context for session-scoped ID assignment
+            let mut context = lock_context!(self.context);
+            
             for row in &rows {
                 // Convert row Vec back to HashMap for transformation
                 let mut row_map = HashMap::new();
@@ -1328,6 +1332,7 @@ impl BoltHandler {
                     row_map,
                     &return_metadata,
                     &graph_schema,
+                    &mut context.id_mapper,
                 ) {
                     Ok(transformed) => {
                         log::debug!(
@@ -1346,6 +1351,9 @@ impl BoltHandler {
                     }
                 }
             }
+            
+            // Release lock before caching
+            drop(context);
 
             // Cache the transformed results
             self.cached_results = Some(transformed_rows);

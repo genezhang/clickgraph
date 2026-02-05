@@ -76,6 +76,9 @@ pub enum ConnectionState {
     Interrupted,
 }
 
+pub mod id_mapper;
+use id_mapper::IdMapper;
+
 /// Bolt connection context
 #[derive(Debug, Clone)]
 pub struct BoltContext {
@@ -91,6 +94,9 @@ pub struct BoltContext {
     pub tx_id: Option<String>,
     /// Selected graph schema/database name (defaults to "default")
     pub schema_name: Option<String>,
+    /// Session-scoped ID mapper for Neo4j Browser compatibility
+    /// Maps element_ids to monotonic integer IDs for id() function
+    pub id_mapper: IdMapper,
 }
 
 impl Default for BoltContext {
@@ -102,6 +108,7 @@ impl Default for BoltContext {
             metadata: HashMap::new(),
             tx_id: None,
             schema_name: None,
+            id_mapper: IdMapper::new(),
         }
     }
 }

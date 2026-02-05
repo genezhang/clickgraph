@@ -412,6 +412,7 @@ pub fn transform_row(
     row: HashMap<String, Value>,
     metadata: &[ReturnItemMetadata],
     schema: &GraphSchema,
+    id_mapper: &mut super::id_mapper::IdMapper,
 ) -> Result<Vec<BoltValue>, String> {
     log::info!(
         "🔍 transform_row called with {} columns: {:?}",
@@ -428,7 +429,7 @@ pub fn transform_row(
     );
 
     // Check for multi-label scan results (has {alias}_label, {alias}_id, {alias}_properties columns)
-    if let Some(transformed) = try_transform_multi_label_row(&row, metadata)? {
+    if let Some(transformed) = try_transform_multi_label_row(&row, metadata, id_mapper)? {
         return Ok(transformed);
     }
 
@@ -439,7 +440,9 @@ pub fn transform_row(
             ReturnItemType::Node { labels } => {
                 // Strip ".*" suffix from field_name if present (wildcard expansion)
                 let var_name = meta.field_name.strip_suffix(".*").unwrap_or(&meta.field_name);
-                let node = transform_to_node(&row, var_name, labels, schema)?;
+                let mut node = transform_to_node(&row, var_name, labels, schema)?;
+                // Assign session-scoped integer ID from id_mapper
+                node.id = id_mapper.get_or_assign(&node.element_id);
                 // Use the Node's packstream encoding
                 let packstream_bytes = node.to_packstream();
                 result.push(BoltValue::PackstreamBytes(packstream_bytes));
@@ -451,7 +454,7 @@ pub fn transform_row(
             } => {
                 // Strip ".*" suffix from field_name if present (wildcard expansion)
                 let var_name = meta.field_name.strip_suffix(".*").unwrap_or(&meta.field_name);
-                let rel = transform_to_relationship(
+                let mut rel = transform_to_relationship(
                     &row,
                     var_name,
                     rel_types,
@@ -459,6 +462,10 @@ pub fn transform_row(
                     to_label.as_deref(),
                     schema,
                 )?;
+                // Assign session-scoped integer IDs from id_mapper
+                rel.id = id_mapper.get_or_assign(&rel.element_id);
+                rel.start_node_id = id_mapper.get_or_assign(&rel.start_node_element_id);
+                rel.end_node_id = id_mapper.get_or_assign(&rel.end_node_element_id);
                 // Use the Relationship's packstream encoding
                 let packstream_bytes = rel.to_packstream();
                 result.push(BoltValue::PackstreamBytes(packstream_bytes));
@@ -486,7 +493,7 @@ pub fn transform_row(
                 }
 
                 // For fixed-hop paths, construct path using known metadata
-                let path = transform_to_path(
+                let mut path = transform_to_path(
                     &row,
                     &meta.field_name,
                     start_alias.as_deref(),
@@ -498,6 +505,16 @@ pub fn transform_row(
                     schema,
                     metadata,
                 )?;
+
+                // Assign session-scoped integer IDs to all nodes and relationships in path
+                for node in &mut path.nodes {
+                    node.id = id_mapper.get_or_assign(&node.element_id);
+                }
+                for rel in &mut path.relationships {
+                    rel.id = id_mapper.get_or_assign(&rel.element_id);
+                    rel.start_node_id = id_mapper.get_or_assign(&rel.start_node_element_id);
+                    rel.end_node_id = id_mapper.get_or_assign(&rel.end_node_element_id);
+                }
 
                 // Use the Path's packstream encoding
                 let packstream_bytes = path.to_packstream();
@@ -1537,6 +1554,7 @@ fn value_to_string(value: &Value) -> Option<String> {
 fn try_transform_multi_label_row(
     row: &HashMap<String, Value>,
     metadata: &[ReturnItemMetadata],
+    id_mapper: &mut super::id_mapper::IdMapper,
 ) -> Result<Option<Vec<BoltValue>>, String> {
     // Find return items that might be multi-label nodes
     // Multi-label results have columns: {alias}_label, {alias}_id, {alias}_properties
@@ -1582,11 +1600,11 @@ fn try_transform_multi_label_row(
             // Generate element_id
             let element_id = generate_node_element_id(&label, &[&id]);
 
-            // Try to parse ID as numeric for legacy `id` field
-            let legacy_id: i64 = id.parse().unwrap_or(0);
+            // Get session-scoped integer ID from id_mapper
+            let numeric_id = id_mapper.get_or_assign(&element_id);
 
-            // Create Node
-            let node = Node::new(legacy_id, vec![label], properties, element_id);
+            // Create Node with mapped integer ID
+            let node = Node::new(numeric_id, vec![label], properties, element_id);
             let packstream_bytes = node.to_packstream();
             result.push(BoltValue::PackstreamBytes(packstream_bytes));
         } else {
