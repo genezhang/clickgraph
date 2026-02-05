@@ -4494,6 +4494,73 @@ pub fn extract_relationship_type_from_plan(plan: &LogicalPlan) -> Option<String>
     }
 }
 
+/// Extract start and end node labels from a path plan containing GraphRel.
+/// Gets node labels from the left (start) and right (end) nodes in the GraphRel.
+pub fn extract_path_node_labels_from_plan(plan: &LogicalPlan) -> Option<(String, String)> {
+    match plan {
+        LogicalPlan::GraphRel(rel) => {
+            // First try: composite label format "TYPE::FromNode::ToNode"
+            if let Some(labels) = &rel.labels {
+                if let Some(label) = labels.first() {
+                    let parts: Vec<&str> = label.split("::").collect();
+                    if parts.len() >= 3 {
+                        return Some((parts[1].to_string(), parts[2].to_string()));
+                    }
+                }
+            }
+
+            // Second try: extract from left/right node ViewScans
+            let start_label = extract_node_label_from_plan(&rel.left);
+            let end_label = extract_node_label_from_plan(&rel.right);
+
+            if let (Some(sl), Some(el)) = (start_label, end_label) {
+                return Some((sl, el));
+            }
+
+            None
+        }
+        LogicalPlan::GraphNode(node) => extract_path_node_labels_from_plan(&node.input),
+        LogicalPlan::Filter(filter) => extract_path_node_labels_from_plan(&filter.input),
+        LogicalPlan::Projection(proj) => extract_path_node_labels_from_plan(&proj.input),
+        LogicalPlan::GraphJoins(joins) => extract_path_node_labels_from_plan(&joins.input),
+        LogicalPlan::Limit(limit) => extract_path_node_labels_from_plan(&limit.input),
+        LogicalPlan::Skip(skip) => extract_path_node_labels_from_plan(&skip.input),
+        _ => None,
+    }
+}
+
+/// Extract node label from a plan (typically a GraphNode or ViewScan)
+fn extract_node_label_from_plan(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphNode(node) => {
+            // GraphNode.label has the node type
+            if let Some(label) = &node.label {
+                return Some(label.clone());
+            }
+            // Otherwise recurse into input
+            extract_node_label_from_plan(&node.input)
+        }
+        LogicalPlan::ViewScan(scan) => {
+            // Try to get from table alias via global schema
+            if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+                if let Ok(schemas) = schemas_lock.try_read() {
+                    for schema in schemas.values() {
+                        if let Some((label, _)) =
+                            get_node_schema_by_table(schema, &scan.source_table)
+                        {
+                            return Some(label.to_string());
+                        }
+                    }
+                }
+            }
+            None
+        }
+        LogicalPlan::Filter(filter) => extract_node_label_from_plan(&filter.input),
+        LogicalPlan::Projection(proj) => extract_node_label_from_plan(&proj.input),
+        _ => None,
+    }
+}
+
 /// Get node schema information by table name
 pub fn get_node_schema_by_table<'a>(
     schema: &'a GraphSchema,

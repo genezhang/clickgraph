@@ -752,10 +752,10 @@ fn transform_to_path(
     );
 
     // Check for JSON format first (UNION path queries)
-    // Format: _start_properties, _end_properties, _rel_properties, __rel_type__
+    // Format: _start_properties, _end_properties, _rel_properties, __rel_type__, __start_label__, __end_label__
     if row.contains_key("_start_properties") && row.contains_key("_end_properties") {
-        log::trace!("🎯 Detected JSON format for path - using explicit __rel_type__ column");
-        return transform_path_from_json(row, start_labels, end_labels);
+        log::trace!("🎯 Detected JSON format for path - using explicit type/label columns");
+        return transform_path_from_json(row);
     }
 
     // Original format: individual columns for each property
@@ -818,12 +818,9 @@ fn transform_to_path(
 
 /// Transform path from JSON format (UNION path queries)
 /// Parses _start_properties, _end_properties, _rel_properties JSON strings
-/// Used for UNION path queries where each row has explicit type columns
-fn transform_path_from_json(
-    row: &HashMap<String, Value>,
-    start_labels: &[String],
-    end_labels: &[String],
-) -> Result<Path, String> {
+/// Used for UNION path queries where each row has explicit type columns:
+/// __start_label__, __end_label__, __rel_type__
+fn transform_path_from_json(row: &HashMap<String, Value>) -> Result<Path, String> {
     // Parse start node properties from JSON
     let start_props: HashMap<String, Value> = match row.get("_start_properties") {
         Some(Value::String(json_str)) => {
@@ -859,9 +856,23 @@ fn transform_path_from_json(
         rel_props.keys().collect::<Vec<_>>()
     );
 
-    // Infer node labels from properties (for UNION queries where each row can have different types)
-    let start_label = infer_label_from_props(&start_props, start_labels);
-    let end_label = infer_label_from_props(&end_props, end_labels);
+    // Get explicit node labels from __start_label__ and __end_label__ columns (required for JSON format)
+    let start_label = match row.get("__start_label__") {
+        Some(Value::String(explicit_label)) if !explicit_label.is_empty() => explicit_label.clone(),
+        _ => {
+            return Err(
+                "Missing __start_label__ column in path JSON format - this is a bug".to_string(),
+            );
+        }
+    };
+    let end_label = match row.get("__end_label__") {
+        Some(Value::String(explicit_label)) if !explicit_label.is_empty() => explicit_label.clone(),
+        _ => {
+            return Err(
+                "Missing __end_label__ column in path JSON format - this is a bug".to_string(),
+            );
+        }
+    };
 
     // Get relationship type from explicit __rel_type__ column (required for JSON format)
     // JSON format is only used for UNION path queries, and we always add __rel_type__ there
@@ -874,7 +885,7 @@ fn transform_path_from_json(
         }
     };
 
-    // Create start node with inferred label and properties
+    // Create start node with explicit label and properties
     let start_id = extract_id_from_props(&start_props, "user_id", "post_id", "id");
     let start_element_id = generate_node_element_id(&start_label, &[&start_id.to_string()]);
     // Clean property keys (remove table alias prefix like "t1_0.")
@@ -886,7 +897,7 @@ fn transform_path_from_json(
         start_element_id,
     );
 
-    // Create end node with inferred label and properties
+    // Create end node with explicit label and properties
     let end_id = extract_id_from_props(&end_props, "user_id", "post_id", "id");
     let end_element_id = generate_node_element_id(&end_label, &[&end_id.to_string()]);
     // Clean property keys
@@ -925,46 +936,6 @@ fn transform_path_from_json(
     );
 
     Ok(Path::single_hop(start_node, relationship, end_node))
-}
-
-/// Infer node label from properties
-/// Uses property names to determine if this is a User, Post, etc.
-fn infer_label_from_props(props: &HashMap<String, Value>, fallback_labels: &[String]) -> String {
-    // Check for characteristic properties to infer type
-    let keys: Vec<&String> = props.keys().collect();
-    let keys_str: Vec<&str> = keys.iter().map(|k| k.as_str()).collect();
-
-    // Check for post-specific properties (post_id, content, created_at with no user-specific props)
-    let has_post_id = keys_str.iter().any(|k| k.contains("post_id"));
-    let has_content = keys_str.iter().any(|k| k.contains("content"));
-
-    // Check for user-specific properties
-    let has_user_id = keys_str
-        .iter()
-        .any(|k| k.contains("user_id") && !k.contains("post"));
-    let has_full_name = keys_str
-        .iter()
-        .any(|k| k.contains("full_name") || k.contains("name"));
-    let has_email = keys_str.iter().any(|k| k.contains("email"));
-
-    if has_post_id && has_content {
-        return "Post".to_string();
-    }
-    if has_user_id && (has_full_name || has_email) {
-        return "User".to_string();
-    }
-    if has_post_id && !has_user_id {
-        return "Post".to_string();
-    }
-    if has_user_id {
-        return "User".to_string();
-    }
-
-    // Fall back to provided labels
-    fallback_labels
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "Node".to_string())
 }
 
 /// Clean property keys by removing:

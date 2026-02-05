@@ -4231,8 +4231,22 @@ pub(super) fn convert_path_branches_to_json(
                     super::cte_extraction::extract_relationship_type_from_plan(lp.as_ref())
                 })
             });
+
+            // Extract start/end node labels from logical plan (explicit, no guessing)
+            let node_labels: Option<(String, String)> = logical_plans.and_then(|lp| {
+                lp.get(branch_idx).and_then(|lp| {
+                    super::cte_extraction::extract_path_node_labels_from_plan(lp.as_ref())
+                })
+            });
+
             if let Some(ref rt) = rel_type {
                 log::warn!("  Branch {}: extracted relationship type = '{}'", branch_idx, rt);
+            }
+            if let Some((ref sl, ref el)) = node_labels {
+                log::warn!(
+                    "  Branch {}: extracted node labels = start='{}', end='{}'",
+                    branch_idx, sl, el
+                );
             }
             // First, find the path tuple and extract aliases from it
             let mut path_item = None;
@@ -4340,6 +4354,18 @@ pub(super) fn convert_path_branches_to_json(
                 new_items.push(SelectItem {
                     expression: RenderExpr::Literal(Literal::String(rt.clone())),
                     col_alias: Some(ColumnAlias("__rel_type__".to_string())),
+                });
+            }
+
+            // 6. Add explicit start/end node label columns (no guessing!)
+            if let Some((ref start_label, ref end_label)) = node_labels {
+                new_items.push(SelectItem {
+                    expression: RenderExpr::Literal(Literal::String(start_label.clone())),
+                    col_alias: Some(ColumnAlias("__start_label__".to_string())),
+                });
+                new_items.push(SelectItem {
+                    expression: RenderExpr::Literal(Literal::String(end_label.clone())),
+                    col_alias: Some(ColumnAlias("__end_label__".to_string())),
                 });
             }
 
