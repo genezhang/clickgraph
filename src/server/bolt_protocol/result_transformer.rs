@@ -929,8 +929,8 @@ fn transform_path_from_json(row: &HashMap<String, Value>) -> Result<Path, String
     };
 
     // Create start node - element_id is source of truth, integer id derived from it
-    let start_prop_id = extract_id_from_props(&start_props, "user_id", "post_id", "id");
-    let start_element_id = generate_node_element_id(&start_label, &[&start_prop_id.to_string()]);
+    let start_id_str = extract_id_string_from_props(&start_props);
+    let start_element_id = generate_node_element_id(&start_label, &[&start_id_str]);
     let start_id = generate_id_from_element_id(&start_element_id);
     // Clean property keys (remove table alias prefix like "t1_0.")
     let start_props_clean = clean_property_keys(start_props);
@@ -942,8 +942,8 @@ fn transform_path_from_json(row: &HashMap<String, Value>) -> Result<Path, String
     );
 
     // Create end node - element_id is source of truth, integer id derived from it
-    let end_prop_id = extract_id_from_props(&end_props, "user_id", "post_id", "id");
-    let end_element_id = generate_node_element_id(&end_label, &[&end_prop_id.to_string()]);
+    let end_id_str = extract_id_string_from_props(&end_props);
+    let end_element_id = generate_node_element_id(&end_label, &[&end_id_str]);
     let end_id = generate_id_from_element_id(&end_element_id);
     // Clean property keys
     let end_props_clean = clean_property_keys(end_props);
@@ -957,8 +957,8 @@ fn transform_path_from_json(row: &HashMap<String, Value>) -> Result<Path, String
     // Create relationship - element_id is source of truth, integer id derived from it
     let rel_element_id = generate_relationship_element_id(
         &rel_type,
-        &start_prop_id.to_string(),
-        &end_prop_id.to_string(),
+        &start_id_str,
+        &end_id_str,
     );
     let rel_id = generate_id_from_element_id(&rel_element_id);
     let rel_props_clean = clean_property_keys(rel_props);
@@ -1012,25 +1012,80 @@ fn clean_property_keys(props: HashMap<String, Value>) -> HashMap<String, Value> 
         .collect()
 }
 
-/// Extract ID from properties HashMap, trying multiple possible ID field names
-/// Also handles prefixed keys like "t1_0.user_id" or "_s_user_id" by checking if key ends with the ID field
-fn extract_id_from_props(props: &HashMap<String, Value>, id1: &str, id2: &str, id3: &str) -> i64 {
+/// Extract ID string from properties HashMap for element_id generation
+/// Tries common ID field names and returns the string representation
+fn extract_id_string_from_props(props: &HashMap<String, Value>) -> String {
+    // Common ID column names to check, in order of preference
+    let id_fields = [
+        "user_id", "post_id", "id", "code", "node_id", 
+        "origin_code", "dest_code", "airport_code", "flight_id"
+    ];
+    
     // First try exact match
-    for id_field in &[id1, id2, id3] {
+    for id_field in &id_fields {
         if let Some(val) = props.get(*id_field) {
-            if let Some(id) = value_to_i64(val) {
-                return id;
+            if let Some(str_val) = value_to_string(val) {
+                return str_val;
             }
         }
     }
 
     // Then try prefixed match (_s_, _e_, _r_ prefixes)
-    for id_field in &[id1, id2, id3] {
+    for id_field in &id_fields {
+        for prefix in &["_s_", "_e_", "_r_"] {
+            let prefixed_key = format!("{}{}", prefix, id_field);
+            if let Some(val) = props.get(&prefixed_key) {
+                if let Some(str_val) = value_to_string(val) {
+                    return str_val;
+                }
+            }
+        }
+    }
+
+    // Finally try any key that looks like an ID
+    for (key, val) in props {
+        let key_lower = key.to_lowercase();
+        if key_lower.ends_with("_id") || key_lower.ends_with("id") || key_lower == "code" {
+            if let Some(str_val) = value_to_string(val) {
+                return str_val;
+            }
+        }
+    }
+
+    "0".to_string()
+}
+
+/// Extract ID from properties HashMap, trying multiple possible ID field names
+/// Also handles prefixed keys like "t1_0.user_id" or "_s_user_id" by checking if key ends with the ID field
+fn extract_id_from_props(props: &HashMap<String, Value>, id1: &str, id2: &str, id3: &str) -> i64 {
+    // Common ID column names to check
+    let common_id_fields = [id1, id2, id3, "code", "node_id", "origin_code", "dest_code", "airport_code"];
+    
+    // First try exact match
+    for id_field in &common_id_fields {
+        if let Some(val) = props.get(*id_field) {
+            if let Some(id) = value_to_i64(val) {
+                return id;
+            }
+            // Also try string values (for string IDs like "LAX")
+            if let Some(str_id) = value_to_string(val) {
+                // Use hash of string ID as integer ID
+                return generate_id_from_element_id(&str_id);
+            }
+        }
+    }
+
+    // Then try prefixed match (_s_, _e_, _r_ prefixes)
+    for id_field in &common_id_fields {
         for prefix in &["_s_", "_e_", "_r_"] {
             let prefixed_key = format!("{}{}", prefix, id_field);
             if let Some(val) = props.get(&prefixed_key) {
                 if let Some(id) = value_to_i64(val) {
                     return id;
+                }
+                // Also try string values (for string IDs like "LAX")
+                if let Some(str_id) = value_to_string(val) {
+                    return generate_id_from_element_id(&str_id);
                 }
             }
         }
@@ -1038,10 +1093,14 @@ fn extract_id_from_props(props: &HashMap<String, Value>, id1: &str, id2: &str, i
 
     // Finally try suffix match (for table alias prefixed keys like "t1_0.user_id")
     for (key, val) in props {
-        for id_field in &[id1, id2, id3] {
+        for id_field in &common_id_fields {
             if key.ends_with(&format!(".{}", id_field)) || key.ends_with(id_field) {
                 if let Some(id) = value_to_i64(val) {
                     return id;
+                }
+                // Also try string values
+                if let Some(str_id) = value_to_string(val) {
+                    return generate_id_from_element_id(&str_id);
                 }
             }
         }

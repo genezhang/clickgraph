@@ -4309,6 +4309,28 @@ pub(super) fn convert_path_branches_to_json(
             log::warn!("  Branch {}: found {} start, {} end, {} rel items",
                       branch_idx, start_items.len(), end_items.len(), rel_items.len());
 
+            // Check if this is a denormalized schema (only one table in FROM clause)
+            // For denormalized schemas, virtual node aliases don't exist as tables
+            // so we need to use the relationship table alias for all column references
+            let denorm_table_alias = if let super::FromTableItem(Some(ref view_ref)) = plan.from {
+                // Check if the FROM table matches the relationship alias
+                // If we only have the relationship table, this is denormalized
+                if view_ref.alias.as_ref() == Some(&rel_alias) || 
+                   view_ref.name.ends_with(&rel_alias) {
+                    // For denormalized, use the actual table alias from FROM
+                    view_ref.alias.as_deref()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            
+            if denorm_table_alias.is_some() {
+                log::warn!("  Branch {}: denormalized schema detected, using table alias '{:?}'",
+                          branch_idx, denorm_table_alias);
+            }
+
             let mut new_items = Vec::new();
 
             // 1. Keep path tuple as-is
@@ -4318,7 +4340,7 @@ pub(super) fn convert_path_branches_to_json(
 
             // 2. Convert start node properties to JSON (prefix: _s_)
             if !start_items.is_empty() {
-                let json_expr = build_format_row_json(&start_items, "_s_");
+                let json_expr = build_format_row_json(&start_items, "_s_", denorm_table_alias);
                 new_items.push(SelectItem {
                     expression: json_expr,
                     col_alias: Some(ColumnAlias("_start_properties".to_string())),
@@ -4327,7 +4349,7 @@ pub(super) fn convert_path_branches_to_json(
 
             // 3. Convert end node properties to JSON (prefix: _e_)
             if !end_items.is_empty() {
-                let json_expr = build_format_row_json(&end_items, "_e_");
+                let json_expr = build_format_row_json(&end_items, "_e_", denorm_table_alias);
                 new_items.push(SelectItem {
                     expression: json_expr,
                     col_alias: Some(ColumnAlias("_end_properties".to_string())),
@@ -4336,7 +4358,7 @@ pub(super) fn convert_path_branches_to_json(
 
             // 4. Convert relationship properties to JSON (prefix: _r_) or empty object if none
             if !rel_items.is_empty() {
-                let json_expr = build_format_row_json(&rel_items, "_r_");
+                let json_expr = build_format_row_json(&rel_items, "_r_", denorm_table_alias);
                 new_items.push(SelectItem {
                     expression: json_expr,
                     col_alias: Some(ColumnAlias("_rel_properties".to_string())),
@@ -4384,7 +4406,17 @@ pub(super) fn convert_path_branches_to_json(
 /// Uses column aliases (AS prefix+clean_name) so JSON keys have unique prefixes
 /// to avoid ClickHouse alias collision when same property names appear in both nodes.
 /// The prefix (_s_, _e_, _r_) is stripped in the Bolt transformer.
-fn build_format_row_json(items: &[super::SelectItem], prefix: &str) -> RenderExpr {
+///
+/// # Arguments
+/// * `items` - Select items to convert to JSON
+/// * `prefix` - Prefix for property names (_s_, _e_, _r_)
+/// * `table_alias_override` - Optional table alias to use instead of item's table_alias
+///   (used for denormalized schemas where virtual node aliases don't exist as tables)
+fn build_format_row_json(
+    items: &[super::SelectItem],
+    prefix: &str,
+    table_alias_override: Option<&str>,
+) -> RenderExpr {
     use super::render_expr::{Literal, RenderExpr};
     use crate::graph_catalog::expression_parser::PropertyValue;
 
@@ -4408,7 +4440,9 @@ fn build_format_row_json(items: &[super::SelectItem], prefix: &str) -> RenderExp
             // Get the column expression
             if let RenderExpr::PropertyAccessExp(prop_access) = &item.expression {
                 if let PropertyValue::Column(col_name) = &prop_access.column {
-                    let col_expr = format!("{}.{}", prop_access.table_alias.0, col_name);
+                    // Use override table alias for denormalized schemas, or original alias
+                    let table_alias = table_alias_override.unwrap_or(&prop_access.table_alias.0);
+                    let col_expr = format!("{}.{}", table_alias, col_name);
                     // Use prefixed alias to avoid collision (e.g., _s_city, _e_city)
                     aliased_cols.push(format!("{} AS {}{}", col_expr, prefix, clean_name));
                 }
