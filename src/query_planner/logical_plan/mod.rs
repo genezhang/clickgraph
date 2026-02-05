@@ -140,10 +140,7 @@ fn is_empty_or_filtered_branch(plan: &LogicalPlan) -> bool {
         // Implicit empty: relationship filtered to 0 types by Track C
         // Check both None and empty vector cases for consistency with analyzer checks
         LogicalPlan::GraphRel(rel)
-            if rel
-                .labels
-                .as_ref()
-                .map_or(true, |labels| labels.is_empty()) =>
+            if rel.labels.as_ref().map_or(true, |labels| labels.is_empty()) =>
         {
             log::debug!(
                 "Detected filtered GraphRel (labels=None or empty) for alias '{}'",
