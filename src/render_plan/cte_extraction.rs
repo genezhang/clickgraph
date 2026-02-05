@@ -1542,6 +1542,48 @@ pub(crate) fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Optio
     }
 }
 
+/// Get the relationship type for a given relationship alias by traversing the plan tree.
+/// Returns the first relationship type from GraphRel.labels if found.
+/// For UNION branches, this returns the type from the first matching branch (each branch
+/// should be processed independently for proper per-branch property mapping).
+pub(crate) fn get_relationship_type_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphRel(rel) if rel.alias == alias => {
+            // Found matching GraphRel - return the first label
+            // Labels are stored as "TYPE::FromNode::ToNode", extract just the type
+            rel.labels.as_ref().and_then(|labels| {
+                labels.first().map(|label| {
+                    // Split by "::" and take first part (the relationship type)
+                    label.split("::").next().unwrap_or(label).to_string()
+                })
+            })
+        }
+        LogicalPlan::GraphRel(rel) => get_relationship_type_for_alias(alias, &rel.left)
+            .or_else(|| get_relationship_type_for_alias(alias, &rel.center))
+            .or_else(|| get_relationship_type_for_alias(alias, &rel.right)),
+        LogicalPlan::GraphNode(node) => get_relationship_type_for_alias(alias, &node.input),
+        LogicalPlan::Filter(filter) => get_relationship_type_for_alias(alias, &filter.input),
+        LogicalPlan::Projection(proj) => get_relationship_type_for_alias(alias, &proj.input),
+        LogicalPlan::GraphJoins(joins) => get_relationship_type_for_alias(alias, &joins.input),
+        LogicalPlan::OrderBy(order_by) => get_relationship_type_for_alias(alias, &order_by.input),
+        LogicalPlan::Skip(skip) => get_relationship_type_for_alias(alias, &skip.input),
+        LogicalPlan::Limit(limit) => get_relationship_type_for_alias(alias, &limit.input),
+        LogicalPlan::GroupBy(group_by) => get_relationship_type_for_alias(alias, &group_by.input),
+        LogicalPlan::Cte(cte) => get_relationship_type_for_alias(alias, &cte.input),
+        LogicalPlan::Union(union) => {
+            // For Union, return the first matching branch's type
+            // Note: Each UNION branch should be processed independently for property mapping
+            for input in &union.inputs {
+                if let Some(rel_type) = get_relationship_type_for_alias(alias, input) {
+                    return Some(rel_type);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// For denormalized schemas: get the relationship alias and ID column for a node alias
 /// Returns (rel_alias, id_column) if the node is denormalized, None otherwise
 fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option<(String, String)> {

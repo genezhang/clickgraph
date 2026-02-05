@@ -843,6 +843,66 @@ pub fn map_property_to_column_with_relationship_context(
     Ok(column.raw().to_string())
 }
 
+/// Map a relationship property to its corresponding column name in the schema.
+/// This is the relationship equivalent of map_property_to_column_with_schema.
+///
+/// # Arguments
+/// * `property` - The Cypher property name (e.g., "since_date")
+/// * `relationship_type` - The relationship type (e.g., "FRIENDS_WITH")
+///
+/// # Returns
+/// * `Ok(column_name)` - The mapped column name (e.g., "since")
+/// * `Err(msg)` - If the relationship type or property is not found
+pub fn map_relationship_property_to_column(
+    property: &str,
+    relationship_type: &str,
+) -> Result<String, String> {
+    // Try to get the schema from the global state
+    let schema_lock = crate::server::GLOBAL_SCHEMAS.get().ok_or_else(|| {
+        "GLOBAL_SCHEMAS not initialized".to_string()
+    })?;
+
+    let schemas = schema_lock.try_read().map_err(|_| {
+        "Failed to acquire read lock on GLOBAL_SCHEMAS".to_string()
+    })?;
+
+    // Try to get schema from task-local context
+    let resolved_schema_name = super::render_expr::get_current_schema_name();
+
+    let schema = if let Some(sname) = resolved_schema_name {
+        schemas.get(&sname).ok_or_else(|| {
+            format!("Schema '{}' not found", sname)
+        })?
+    } else {
+        // Search all schemas for this relationship type
+        schemas.values()
+            .find(|s| s.get_relationships_schemas().contains_key(relationship_type))
+            .ok_or_else(|| {
+                format!("Relationship type '{}' not found in any schema", relationship_type)
+            })?
+    };
+
+    // Get the relationship schema
+    let rel_schema = schema.get_relationships_schema_opt(relationship_type)
+        .ok_or_else(|| {
+            format!("Relationship type '{}' not found in schema", relationship_type)
+        })?;
+
+    // Look up the property in property_mappings
+    let column = rel_schema.property_mappings.get(property)
+        .ok_or_else(|| {
+            let available: Vec<String> = rel_schema.property_mappings.keys().cloned().collect();
+            format!(
+                "Property '{}' not found in relationship type '{}'. Available properties: {}",
+                property,
+                relationship_type,
+                available.join(", ")
+            )
+        })?;
+
+    Ok(column.raw().to_string())
+}
+
 /// Get node schema by table name
 fn get_node_schema_by_table<'a>(
     schema: &'a GraphSchema,

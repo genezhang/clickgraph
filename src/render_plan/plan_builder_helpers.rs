@@ -20,7 +20,7 @@ use super::render_expr::{
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
-use crate::render_plan::cte_extraction::get_node_label_for_alias;
+use crate::render_plan::cte_extraction::{get_node_label_for_alias, get_relationship_type_for_alias};
 use crate::render_plan::expression_utils::{
     flatten_addition_operands, has_string_operand, ExprVisitor,
 };
@@ -2385,6 +2385,28 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
 
                 log::warn!(
                     "🔍 PROPERTY MAPPING: '{}' -> '{}'",
+                    prop.column.raw(),
+                    mapped_column
+                );
+
+                prop.column = PropertyValue::Column(mapped_column);
+            } else if let Some(rel_type) = get_relationship_type_for_alias(&prop.table_alias.0, plan) {
+                // Alias is a relationship - map relationship property to column
+                log::warn!(
+                    "🔍 RELATIONSHIP PROPERTY MAPPING: Alias '{}' -> Type '{}', Property '{}' (before mapping)",
+                    prop.table_alias.0,
+                    rel_type,
+                    prop.column.raw()
+                );
+
+                // Map the relationship property to the correct column
+                let mapped_column = crate::render_plan::cte_generation::map_relationship_property_to_column(
+                    prop.column.raw(),
+                    &rel_type,
+                ).unwrap_or_else(|_| prop.column.raw().to_string());
+
+                log::warn!(
+                    "🔍 RELATIONSHIP PROPERTY MAPPING: '{}' -> '{}'",
                     prop.column.raw(),
                     mapped_column
                 );
