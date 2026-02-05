@@ -574,7 +574,24 @@ impl ProjectionTagging {
                 }
 
                 // Get label for property resolution
-                let label = table_ctx.get_label_opt().unwrap_or_default();
+                let label = match table_ctx.get_label_opt() {
+                    Some(l) => l,
+                    None => {
+                        // No label - untyped pattern filtered to 0 types by Track C
+                        // Skip property resolution - the query will return 0 rows
+                        log::info!(
+                            "🔧 ProjectionTagging: Skipping property resolution for untyped pattern '{}' with no matching types (filtered to 0 by Track C)",
+                            property_access.table_alias.0
+                        );
+                        // Return property as-is - the Empty plan will handle it
+                        let projection_item = ProjectionItem {
+                            expression: item.expression.clone(),
+                            col_alias: item.col_alias.clone(),
+                        };
+                        table_ctx.insert_projection(projection_item);
+                        return Ok(());
+                    }
+                };
                 let is_relation = table_ctx.is_relation();
 
                 // Resolve property to actual column name using ViewResolver

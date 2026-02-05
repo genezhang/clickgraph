@@ -125,6 +125,50 @@ pub fn evaluate_query(
     )
 }
 
+/// Helper function to detect empty or filtered UNION branches
+///
+/// Track C filters branches to 0 types, but creates different "empty" representations:
+/// - Explicit: LogicalPlan::Empty (for nodes filtered to 0 types)
+/// - Implicit: GraphRel{labels: None} (for relationships filtered to 0 types)
+///
+/// This function detects both forms and recursively checks wrapped plans.
+fn is_empty_or_filtered_branch(plan: &LogicalPlan) -> bool {
+    match plan {
+        // Explicit empty
+        LogicalPlan::Empty => true,
+
+        // Implicit empty: relationship filtered to 0 types by Track C
+        // Check both None and empty vector cases for consistency with analyzer checks
+        LogicalPlan::GraphRel(rel)
+            if rel.labels.as_ref().map_or(true, |labels| labels.is_empty()) =>
+        {
+            log::debug!(
+                "Detected filtered GraphRel (labels=None or empty) for alias '{}'",
+                rel.alias
+            );
+            true
+        }
+
+        // Check if wrapped plan contains Empty
+        LogicalPlan::GraphNode(node) => {
+            matches!(node.input.as_ref(), LogicalPlan::Empty)
+        }
+
+        // Recursively check wrapped plans (common UNION branch structures)
+        // Includes all wrapper types that could appear in UNION branches
+        LogicalPlan::Projection(proj) => is_empty_or_filtered_branch(&proj.input),
+        LogicalPlan::Filter(f) => is_empty_or_filtered_branch(&f.input),
+        LogicalPlan::GraphJoins(joins) => is_empty_or_filtered_branch(&joins.input),
+        LogicalPlan::Limit(limit) => is_empty_or_filtered_branch(&limit.input),
+        LogicalPlan::Skip(skip) => is_empty_or_filtered_branch(&skip.input),
+        LogicalPlan::OrderBy(order) => is_empty_or_filtered_branch(&order.input),
+        LogicalPlan::GroupBy(group) => is_empty_or_filtered_branch(&group.input),
+
+        // Not empty
+        _ => false,
+    }
+}
+
 /// Evaluate a complete Cypher statement which may contain UNION clauses
 pub fn evaluate_cypher_statement(
     statement: CypherStatement<'_>,
@@ -221,46 +265,47 @@ pub fn evaluate_cypher_statement(
                     view_parameter_values.clone(),
                     max_inferred_types,
                 )?;
-                // Only add non-empty branches
-                if !is_empty_or_filtered_branch(&plan) {
+
+                // Track C Property Optimization: Skip empty branches
+                // When Track C filters a branch to 0 matching types, detect and skip it
+                // This handles both explicit Empty and implicit GraphRel{labels: None}
+                if !is_empty_or_filtered_branch(plan.as_ref()) {
                     all_plans.push(plan);
+                    // Merge the context from this union branch into combined context
+                    if let Some(ref mut combined) = combined_ctx {
+                        combined.merge(ctx);
+                    }
                 } else {
                     log::info!(
                         "🔀 UNION branch filtered to 0 types by Track C - skipping empty branch"
                     );
                 }
-                // Merge the context from this union branch into combined context
-                if let Some(ref mut combined) = combined_ctx {
-                    combined.merge(ctx);
+            }
+
+            // Handle different scenarios based on non-empty branch count
+            let union_plan = match all_plans.len() {
+                0 => {
+                    // All branches filtered to 0 types - return empty result
+                    log::info!("🔀 All UNION branches empty - returning Empty plan (0 rows)");
+                    Arc::new(LogicalPlan::Empty)
                 }
-            }
-
-            // If all branches were filtered, return Empty
-            if all_plans.is_empty() {
-                log::info!("🔀 All UNION branches filtered to 0 types - returning Empty plan");
-                // combined_ctx should always have a value from first_ctx, but use expect for safety
-                return Ok((
-                    Arc::new(LogicalPlan::Empty),
-                    combined_ctx.expect("PlanCtx should exist after first query"),
-                ));
-            }
-
-            // If only one branch remains, return it directly (no UNION needed)
-            if all_plans.len() == 1 {
-                log::info!(
-                    "🔀 Only 1 UNION branch remains after filtering - returning single plan"
-                );
-                return Ok((
-                    all_plans.remove(0),
-                    combined_ctx.expect("PlanCtx should exist after first query"),
-                ));
-            }
-
-            // Create Union logical plan
-            let union_plan = Arc::new(LogicalPlan::Union(Union {
-                inputs: all_plans,
-                union_type,
-            }));
+                1 => {
+                    // Only one branch has data - no UNION needed
+                    log::info!("🔀 Only 1 non-empty UNION branch - skipping UNION wrapper");
+                    all_plans.into_iter().next().unwrap()
+                }
+                _ => {
+                    // Multiple branches with data - create UNION
+                    log::info!(
+                        "🔀 Creating UNION with {} non-empty branches",
+                        all_plans.len()
+                    );
+                    Arc::new(LogicalPlan::Union(Union {
+                        inputs: all_plans,
+                        union_type,
+                    }))
+                }
+            };
 
             let final_ctx = combined_ctx.ok_or_else(|| {
                 LogicalPlanError::QueryPlanningError(

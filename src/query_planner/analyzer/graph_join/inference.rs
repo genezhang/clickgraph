@@ -3561,6 +3561,22 @@ impl GraphJoinInference {
             right_is_referenced
         );
 
+        // Track C: Check if relationship has types (may be filtered to 0 by property-based pruning)
+        // If no types, skip join inference - the Empty plan handles this case
+        if let Ok(rel_ctx) = plan_ctx.get_rel_table_ctx(&graph_rel.alias) {
+            if rel_ctx
+                .get_labels()
+                .map_or(true, |labels| labels.is_empty())
+            {
+                log::info!(
+                    "🔧 GraphJoinInference: Skipping for relationship '{}' with no types (filtered by Track C)",
+                    graph_rel.alias
+                );
+                crate::debug_print!("    +- infer_graph_join EXIT (empty relationship)\n");
+                return Ok(());
+            }
+        }
+
         // Extract all necessary data from graph_context BEFORE passing plan_ctx mutably
         let (
             left_alias_str,
