@@ -487,18 +487,30 @@ fn transform_to_node(
 
     for (key, value) in row.iter() {
         if let Some(prop_name) = key.strip_prefix(&prefix) {
-            properties.insert(prop_name.to_string(), value.clone());
+            // Skip internal __label__ column from properties
+            if prop_name != "_label__" {
+                properties.insert(prop_name.to_string(), value.clone());
+            }
         }
     }
 
     // Get primary label
-    let label = labels
-        .first()
-        .ok_or_else(|| format!("No label for node variable: {}", var_name))?;
+    // Priority: 1. Use provided labels, 2. Check __label__ column, 3. Infer from properties
+    let label = if let Some(l) = labels.first() {
+        l.clone()
+    } else if let Some(label_value) = row.get("__label__") {
+        // For UNION queries, __label__ column contains the node type
+        value_to_string(label_value)
+            .ok_or_else(|| format!("Invalid __label__ value for node variable: {}", var_name))?
+    } else {
+        // Fallback: infer label from properties by matching schema ID columns
+        infer_node_label_from_properties(&properties, schema)
+            .ok_or_else(|| format!("No label for node variable: {}", var_name))?
+    };
 
     // Get node schema
     let node_schema = schema
-        .node_schema_opt(label)
+        .node_schema_opt(&label)
         .ok_or_else(|| format!("Node schema not found for label: {}", label))?;
 
     // Get ID column names from schema
@@ -517,7 +529,7 @@ fn transform_to_node(
 
     // Generate elementId using Phase 3 function
     let id_value_refs: Vec<&str> = id_values.iter().map(|s| s.as_str()).collect();
-    let element_id = generate_node_element_id(label, &id_value_refs);
+    let element_id = generate_node_element_id(&label, &id_value_refs);
 
     // Try to extract numeric ID for legacy `id` field
     // For single-column numeric IDs, parse as i64; otherwise use 0
@@ -528,12 +540,43 @@ fn transform_to_node(
     };
 
     // Create Node struct
+    // Use inferred label if original labels was empty
+    let final_labels = if labels.is_empty() {
+        vec![label]
+    } else {
+        labels.to_vec()
+    };
+    
     Ok(Node {
         id: legacy_id,
-        labels: labels.to_vec(),
+        labels: final_labels,
         properties,
         element_id,
     })
+}
+
+/// Infer node label from properties by matching against schema
+/// 
+/// Finds which node schema has the ID column present in the properties.
+/// This is used for unlabeled queries like `MATCH (n) RETURN n`.
+fn infer_node_label_from_properties(
+    properties: &HashMap<String, Value>,
+    schema: &GraphSchema,
+) -> Option<String> {
+    // For each node schema, check if its ID column is present and non-null
+    for (label, node_schema) in schema.all_node_schemas() {
+        let id_columns = node_schema.node_id.id.columns();
+        
+        // Check if ANY of the ID columns is present with a non-null value
+        let has_id = id_columns.iter().any(|col| {
+            properties.get(*col).map_or(false, |v| !v.is_null())
+        });
+        
+        if has_id {
+            return Some(label.clone());
+        }
+    }
+    None
 }
 
 /// Transform raw result row fields into a Relationship struct

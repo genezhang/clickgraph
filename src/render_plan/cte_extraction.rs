@@ -4413,6 +4413,18 @@ pub fn extract_node_label_from_viewscan_with_schema(
         LogicalPlan::Filter(filter) => {
             extract_node_label_from_viewscan_with_schema(&filter.input, schema)
         }
+        LogicalPlan::Projection(proj) => {
+            extract_node_label_from_viewscan_with_schema(&proj.input, schema)
+        }
+        LogicalPlan::GraphJoins(gj) => {
+            extract_node_label_from_viewscan_with_schema(&gj.input, schema)
+        }
+        LogicalPlan::Limit(l) => {
+            extract_node_label_from_viewscan_with_schema(&l.input, schema)
+        }
+        LogicalPlan::Skip(s) => {
+            extract_node_label_from_viewscan_with_schema(&s.input, schema)
+        }
         _ => None,
     }
 }

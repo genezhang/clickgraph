@@ -2086,6 +2086,14 @@ impl RenderPlanBuilder for LogicalPlan {
                                   branch_renders.len(), is_path_union, union.inputs.len());
                         branch_renders =
                             super::plan_builder_helpers::normalize_union_branches(branch_renders);
+                        
+                        // Add __label__ column to each branch for node type identification
+                        // This is needed for Bolt protocol to construct proper Node objects
+                        branch_renders = super::plan_builder_helpers::add_label_column_to_union_branches(
+                            branch_renders,
+                            &union.inputs,
+                            schema,
+                        );
                     }
 
                     // Use first branch as base and put rest in union.input

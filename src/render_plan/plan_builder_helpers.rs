@@ -2647,6 +2647,69 @@ pub(super) fn normalize_union_branches(
         .collect()
 }
 
+/// Add __label__ column to each UNION branch for node type identification.
+/// 
+/// For UNION queries across multiple node types (e.g., MATCH (n) RETURN n),
+/// we need to know which node type each row belongs to. This function:
+/// 1. Takes the normalized union branches
+/// 2. Extracts the label from each branch's logical plan
+/// 3. Adds a '__label__' column with the node type as a string literal
+/// 
+/// This enables the Bolt result transformer to construct proper Node objects
+/// with correct labels array even for unlabeled queries.
+pub(super) fn add_label_column_to_union_branches(
+    union_plans: Vec<super::RenderPlan>,
+    logical_branches: &[std::sync::Arc<LogicalPlan>],
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+) -> Vec<super::RenderPlan> {
+    use super::{ColumnAlias, SelectItem};
+    use crate::render_plan::cte_extraction::extract_node_label_from_viewscan_with_schema;
+    
+    if union_plans.len() != logical_branches.len() {
+        log::warn!(
+            "add_label_column_to_union_branches: mismatch {} render plans vs {} logical branches",
+            union_plans.len(),
+            logical_branches.len()
+        );
+        return union_plans;
+    }
+    
+    union_plans
+        .into_iter()
+        .zip(logical_branches.iter())
+        .map(|(mut plan, logical_branch)| {
+            // Extract label from the logical plan's ViewScan
+            let full_label = extract_node_label_from_viewscan_with_schema(logical_branch, schema)
+                .unwrap_or_else(|| "Unknown".to_string());
+            
+            // Extract just the base label (e.g., "User" from "brahmand::users_bench::User")
+            let base_label = if full_label.contains("::") {
+                full_label.split("::").last().unwrap_or(&full_label).to_string()
+            } else {
+                full_label
+            };
+            
+            log::debug!(
+                "add_label_column_to_union_branches: branch has label {:?}",
+                base_label
+            );
+            
+            // Add __label__ as the first column
+            let label_item = SelectItem {
+                expression: RenderExpr::Literal(Literal::String(base_label)),
+                col_alias: Some(ColumnAlias("__label__".to_string())),
+            };
+            
+            // Prepend __label__ to existing SELECT items
+            let mut new_items = vec![label_item];
+            new_items.extend(plan.select.items);
+            plan.select.items = new_items;
+            
+            plan
+        })
+        .collect()
+}
+
 /// Find a Union node nested inside a plan
 pub(super) fn find_nested_union(
     plan: &LogicalPlan,
