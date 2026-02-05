@@ -2,36 +2,40 @@
 //!
 //! Neo4j compatible procedure that lists all property keys across nodes and relationships.
 //! Used by Neo4j Browser and Neodash to discover available properties.
+//!
+//! Returns Cypher property names (keys from property_mappings), NOT database column names.
 
 use crate::graph_catalog::graph_schema::GraphSchema;
 use std::collections::{HashMap, HashSet};
 
 /// Execute db.propertyKeys() procedure
 ///
-/// Returns all unique property keys from both node and edge definitions.
+/// Returns all unique Cypher property keys from both node and edge definitions.
+/// These are the property names users can use in Cypher queries, not the underlying
+/// database column names.
 ///
 /// # Example Response
 /// ```json
 /// [
 ///   {"propertyKey": "id"},
 ///   {"propertyKey": "name"},
-///   {"propertyKey": "created_at"}
+///   {"propertyKey": "email"}
 /// ]
 /// ```
 pub fn execute(schema: &GraphSchema) -> Result<Vec<HashMap<String, serde_json::Value>>, String> {
     let mut keys = HashSet::new();
 
-    // Collect property keys from node schemas (use column names)
+    // Collect Cypher property keys from node schemas (keys from property_mappings)
     for node_schema in schema.all_node_schemas().values() {
-        for col in &node_schema.column_names {
-            keys.insert(col.clone());
+        for cypher_prop in node_schema.property_mappings.keys() {
+            keys.insert(cypher_prop.clone());
         }
     }
 
-    // Collect property keys from relationship schemas (use column names)
+    // Collect Cypher property keys from relationship schemas (keys from property_mappings)
     for rel_schema in schema.get_relationships_schemas().values() {
-        for col in &rel_schema.column_names {
-            keys.insert(col.clone());
+        for cypher_prop in rel_schema.property_mappings.keys() {
+            keys.insert(cypher_prop.clone());
         }
     }
 
