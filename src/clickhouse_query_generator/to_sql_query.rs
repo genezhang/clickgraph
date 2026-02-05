@@ -2367,6 +2367,10 @@ impl RenderExpr {
             RenderExpr::MapLiteral(entries) => {
                 // Use ClickHouse map() function for map literals
                 // map('key1', val1, 'key2', val2, ...)
+                // 
+                // IMPORTANT: ClickHouse requires all map values to be of the same type.
+                // Since Cypher maps can have mixed types (e.g., {name:'nodes', data:count(*)}),
+                // we cast all values to String to ensure type compatibility.
                 if entries.is_empty() {
                     "map()".to_string()
                 } else {
@@ -2374,7 +2378,9 @@ impl RenderExpr {
                         .iter()
                         .flat_map(|(k, v)| {
                             let val_sql = v.to_sql();
-                            vec![format!("'{}'", k), val_sql]
+                            // Cast value to String for type compatibility in ClickHouse maps
+                            let val_as_string = format!("toString({})", val_sql);
+                            vec![format!("'{}'", k), val_as_string]
                         })
                         .collect();
                     format!("map({})", args.join(", "))
