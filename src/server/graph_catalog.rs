@@ -8,6 +8,7 @@ use crate::graph_catalog::{
     config::{GraphSchemaConfig, GraphSchemaDefinition},
     graph_schema::{GraphSchema, GraphSchemaElement},
 };
+use crate::utils::id_encoding::IdEncoding;
 
 /// Indicates the source from which the schema was loaded
 #[derive(Debug, Clone)]
@@ -17,6 +18,24 @@ pub enum SchemaSource {
 }
 
 use super::{models::GraphCatalog, GLOBAL_SCHEMAS, GLOBAL_SCHEMA_CONFIG, GLOBAL_SCHEMA_CONFIGS};
+
+/// Pre-register all labels from a schema with the ID encoding registry.
+/// This enables id() decoding to work on first query without requiring
+/// prior node returns to populate the registry.
+fn preregister_schema_labels(schema: &GraphSchema) {
+    for (label, _) in schema.all_node_schemas() {
+        let code = IdEncoding::register_label(&label);
+        log::debug!("Pre-registered node label '{}' with code {}", label, code);
+    }
+    for (type_name, _) in schema.get_relationships_schemas() {
+        let code = IdEncoding::register_label(&type_name);
+        log::debug!(
+            "Pre-registered relationship type '{}' with code {}",
+            type_name,
+            code
+        );
+    }
+}
 
 /// Test basic ClickHouse connectivity
 async fn test_clickhouse_connection(client: Client) -> Result<(), String> {
@@ -228,12 +247,16 @@ pub async fn initialize_global_schema(
                         // Store to add after processing all schemas
                         schemas.insert("default".to_string(), schema.clone());
                         view_configs.insert("default".to_string(), config.clone());
+                        // Pre-register labels for id() decoding
+                        preregister_schema_labels(&schema);
                         log::info!("  ✓ Registered explicit default schema");
                         continue;
                     }
 
                     schemas.insert(schema_name.clone(), schema.clone());
                     view_configs.insert(schema_name.clone(), config.clone());
+                    // Pre-register labels for id() decoding
+                    preregister_schema_labels(&schema);
                     log::info!("  ✓ Registered schema: {}", schema_name);
 
                     // Legacy: Set first (non-default) schema as GLOBAL_SCHEMA_CONFIG

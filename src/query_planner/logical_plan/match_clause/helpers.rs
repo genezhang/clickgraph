@@ -143,8 +143,21 @@ pub fn generate_scan(
             for label in &labels_to_use {
                 match super::try_generate_view_scan(&alias, label, plan_ctx)? {
                     Some(view_scan) => {
-                        log::warn!("🔍 Added ViewScan for label '{}': {:?}", label, view_scan);
-                        union_inputs.push(view_scan);
+                        // Check if this is already a Union (denormalized nodes with FROM/TO positions)
+                        // If so, flatten it into our union_inputs
+                        if let LogicalPlan::Union(inner_union) = view_scan.as_ref() {
+                            log::warn!(
+                                "🔍 Flattening nested Union for label '{}' with {} branches",
+                                label,
+                                inner_union.inputs.len()
+                            );
+                            for inner_input in &inner_union.inputs {
+                                union_inputs.push(inner_input.clone());
+                            }
+                        } else {
+                            log::warn!("🔍 Added ViewScan for label '{}': {:?}", label, view_scan);
+                            union_inputs.push(view_scan);
+                        }
                     }
                     None => {
                         log::warn!("Skipping label '{}' - not found in schema", label);

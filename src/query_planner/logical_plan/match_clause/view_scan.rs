@@ -130,6 +130,7 @@ pub fn try_generate_view_scan(
                                 );
                                 from_scan.is_denormalized = true;
                                 from_scan.from_node_properties = Some(property_mapping);
+                                from_scan.node_label = Some(label.to_string());
                                 log::debug!(
                                     "FROM ViewScan properties: from={:?}, to={:?}",
                                     from_scan
@@ -202,6 +203,7 @@ pub fn try_generate_view_scan(
                                 );
                                 to_scan.is_denormalized = true;
                                 to_scan.to_node_properties = Some(property_mapping);
+                                to_scan.node_label = Some(label.to_string());
                                 log::debug!(
                                     "TO ViewScan properties: from={:?}, to={:?}",
                                     to_scan
@@ -286,11 +288,42 @@ pub fn try_generate_view_scan(
                 label
             );
 
+            // Extract base label from potentially qualified name
+            let base_label = if label.contains("::") {
+                label.split("::").last().unwrap_or(label)
+            } else {
+                label
+            };
+
+            // Build property_mapping from from_properties for FROM branch
+            let from_property_mapping: HashMap<String, PropertyValue> = node_schema
+                .from_properties
+                .as_ref()
+                .map(|props| {
+                    props
+                        .iter()
+                        .map(|(k, v)| (k.clone(), PropertyValue::Column(v.clone())))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Build property_mapping from to_properties for TO branch
+            let to_property_mapping: HashMap<String, PropertyValue> = node_schema
+                .to_properties
+                .as_ref()
+                .map(|props| {
+                    props
+                        .iter()
+                        .map(|(k, v)| (k.clone(), PropertyValue::Column(v.clone())))
+                        .collect()
+                })
+                .unwrap_or_default();
+
             // Create FROM position ViewScan
             let mut from_scan = ViewScan::new(
                 full_table_name.clone(),
                 None,
-                HashMap::new(),
+                from_property_mapping, // Use FROM properties as property_mapping
                 String::new(),
                 vec![],
                 vec![],
@@ -303,13 +336,14 @@ pub fn try_generate_view_scan(
                     .collect()
             });
             from_scan.schema_filter = node_schema.filter.clone();
+            from_scan.node_label = Some(base_label.to_string());
             // Note: to_node_properties is None - this is the FROM branch
 
             // Create TO position ViewScan
             let mut to_scan = ViewScan::new(
                 full_table_name,
                 None,
-                HashMap::new(),
+                to_property_mapping, // Use TO properties as property_mapping
                 String::new(),
                 vec![],
                 vec![],
@@ -322,6 +356,7 @@ pub fn try_generate_view_scan(
                     .collect()
             });
             to_scan.schema_filter = node_schema.filter.clone();
+            to_scan.node_label = Some(base_label.to_string());
             // Note: from_node_properties is None - this is the TO branch
 
             // Create Union of the two ViewScans
@@ -364,6 +399,13 @@ pub fn try_generate_view_scan(
                 .collect()
         });
         view_scan.schema_filter = node_schema.filter.clone();
+        // Extract base label from potentially qualified name (e.g., "brahmand::flights_denorm::Airport" -> "Airport")
+        let base_label = if label.contains("::") {
+            label.split("::").last().unwrap_or(label)
+        } else {
+            label
+        };
+        view_scan.node_label = Some(base_label.to_string());
 
         log::info!(
             "✓ Created denormalized ViewScan for '{}' (single position)",
@@ -404,6 +446,13 @@ pub fn try_generate_view_scan(
             );
 
             view_scan.schema_filter = other_schema.filter.clone();
+            // Extract base label from potentially qualified name
+            let base_label = if label.contains("::") {
+                label.split("::").last().unwrap_or(label)
+            } else {
+                label
+            };
+            view_scan.node_label = Some(base_label.to_string());
             log::debug!(
                 "Added ViewScan for '{}' from table '{}.{}'",
                 label,

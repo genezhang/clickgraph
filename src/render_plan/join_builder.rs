@@ -339,18 +339,24 @@ impl JoinBuilder for LogicalPlan {
                     }
                 }
 
-                // �🔧 FIX: For GraphJoins with CTE references, delegate to input.extract_joins()
-                // The analyzer creates joins that reference CTEs (like "with_friend_cte_1"),
-                // but they're in the input plan, not in the deprecated graph_joins.joins field.
-                // We need to delegate to the input to get the actual joins.
-                if !graph_joins.cte_references.is_empty() {
+                // 🔧 FIX: For GraphJoins with CTE references, check if we have pre-computed joins.
+                // The analyzer populates graph_joins.joins with CTE-aware join conditions.
+                // Only delegate to input.extract_joins() if graph_joins.joins is empty.
+                if !graph_joins.cte_references.is_empty() && !graph_joins.joins.is_empty() {
                     log::warn!(
-                        "🔧 GraphJoins has {} CTE references - delegating to input.extract_joins()",
-                        graph_joins.cte_references.len()
+                        "🔧 GraphJoins has {} CTE references AND {} pre-computed joins - using pre-computed joins",
+                        graph_joins.cte_references.len(),
+                        graph_joins.joins.len()
                     );
                     for (alias, cte_name) in &graph_joins.cte_references {
                         log::warn!("  CTE ref: {} → {}", alias, cte_name);
                     }
+                    // Fall through to use the pre-computed joins
+                } else if !graph_joins.cte_references.is_empty() {
+                    log::warn!(
+                        "🔧 GraphJoins has {} CTE references but NO pre-computed joins - delegating to input",
+                        graph_joins.cte_references.len()
+                    );
                     // Delegate to input to get the joins with CTE references
                     return <LogicalPlan as JoinBuilder>::extract_joins(&graph_joins.input, schema);
                 }
@@ -489,6 +495,24 @@ impl JoinBuilder for LogicalPlan {
                     }
 
                     let mut render_join: Join = logical_join.clone().try_into()?;
+
+                    // 🔧 CTE COLUMN REWRITING: When join conditions reference a CTE alias,
+                    // we need to rewrite the column names to use the CTE column naming convention.
+                    // E.g., o.user_id → o.o_user_id (because CTE exports columns as alias_column)
+                    if !graph_joins.cte_references.is_empty() && !render_join.joining_on.is_empty()
+                    {
+                        render_join.joining_on = render_join
+                            .joining_on
+                            .into_iter()
+                            .map(|op_app| {
+                                use crate::render_plan::plan_builder_utils::rewrite_operator_application_for_cte;
+                                rewrite_operator_application_for_cte(
+                                    &op_app,
+                                    &graph_joins.cte_references,
+                                )
+                            })
+                            .collect();
+                    }
 
                     // Compile edge constraints for relationship JOINs (if constraints defined in schema)
                     // Store them to apply to the final node JOIN (where both from/to tables are available)
@@ -1615,16 +1639,10 @@ impl JoinBuilder for LogicalPlan {
                 // the CTE alias (e.g., "a_b") instead of the node alias ("b")
                 let resolve_cte_reference = |node_alias: &str, column: &str| -> (String, String) {
                     if let Some(cte_name) = graph_rel.cte_references.get(node_alias) {
-                        // Calculate CTE alias: "with_a_b_cte_1" -> "a_b"
-                        // Strategy: strip "with_" prefix, then strip "_cte" or "_cte_N" suffix
-                        let after_prefix =
-                            cte_name.strip_prefix("with_").unwrap_or(cte_name.as_str());
-                        let cte_alias = after_prefix
-                            .strip_suffix("_cte")
-                            .or_else(|| after_prefix.strip_suffix("_cte_1"))
-                            .or_else(|| after_prefix.strip_suffix("_cte_2"))
-                            .or_else(|| after_prefix.strip_suffix("_cte_3"))
-                            .unwrap_or(after_prefix);
+                        // The node alias IS the table alias for the CTE
+                        // e.g., CTE is: with_o_cte_0 AS (...) and FROM uses: FROM with_o_cte_0 AS o
+                        // So we reference columns as: o.o_user_id
+                        let cte_alias = node_alias;
 
                         // Column name in CTE: node_alias_column (e.g., "b_user_id")
                         let cte_column = format!("{}_{}", node_alias, column);

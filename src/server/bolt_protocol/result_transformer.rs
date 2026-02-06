@@ -94,6 +94,13 @@ pub enum ReturnItemType {
         /// Whether this is a VLP (variable-length path)
         is_vlp: bool,
     },
+    /// Neo4j id() function - compute encoded ID from element_id at result time
+    IdFunction {
+        /// The variable alias (e.g., "u" in id(u))
+        alias: String,
+        /// Labels for the entity (if known)
+        labels: Vec<String>,
+    },
     /// Scalar value (property access, expression, aggregate) - return as-is
     Scalar,
 }
@@ -278,8 +285,73 @@ pub fn extract_return_metadata(
                     }
                 }
             }
+            LogicalExpr::PropertyAccessExp(prop) => {
+                // Check for node wildcard expansion (a.* means all properties of node a)
+                let is_wildcard = matches!(
+                    &prop.column,
+                    crate::graph_catalog::expression_parser::PropertyValue::Column(col) if col == "*"
+                );
+
+                if is_wildcard {
+                    // This is a node wildcard - look up the table alias as a node
+                    let var_name = prop.table_alias.to_string();
+                    log::debug!(
+                        "PropertyAccessExp wildcard: looking up '{}' in plan_ctx",
+                        var_name
+                    );
+                    match plan_ctx.lookup_variable(&var_name) {
+                        Some(TypedVariable::Node(node_var)) => {
+                            log::debug!("  Found Node with labels: {:?}", node_var.labels);
+                            ReturnItemType::Node {
+                                labels: node_var.labels.clone(),
+                            }
+                        }
+                        Some(TypedVariable::Relationship(rel_var)) => {
+                            log::debug!("  Found Relationship with types: {:?}", rel_var.rel_types);
+                            ReturnItemType::Relationship {
+                                rel_types: rel_var.rel_types.clone(),
+                                from_label: rel_var.from_node_label.clone(),
+                                to_label: rel_var.to_node_label.clone(),
+                            }
+                        }
+                        _ => ReturnItemType::Scalar,
+                    }
+                } else {
+                    // Regular property access → Scalar
+                    ReturnItemType::Scalar
+                }
+            }
+            LogicalExpr::ScalarFnCall(fn_call) => {
+                // Check for id() function - needs special handling
+                if fn_call.name.eq_ignore_ascii_case("id") && fn_call.args.len() == 1 {
+                    // Extract alias from argument
+                    if let LogicalExpr::TableAlias(alias) = &fn_call.args[0] {
+                        let alias_str = alias.to_string();
+                        // Look up labels from plan_ctx
+                        let labels = match plan_ctx.lookup_variable(&alias_str) {
+                            Some(TypedVariable::Node(node_var)) => node_var.labels.clone(),
+                            Some(TypedVariable::Relationship(rel_var)) => rel_var.rel_types.clone(),
+                            _ => vec![],
+                        };
+                        log::debug!(
+                            "IdFunction detected: id({}) with labels {:?}",
+                            alias_str,
+                            labels
+                        );
+                        ReturnItemType::IdFunction {
+                            alias: alias_str,
+                            labels,
+                        }
+                    } else {
+                        ReturnItemType::Scalar
+                    }
+                } else {
+                    // Other function calls → Scalar
+                    ReturnItemType::Scalar
+                }
+            }
             _ => {
-                // Property access, function call, expression → Scalar
+                // Other expressions → Scalar
                 ReturnItemType::Scalar
             }
         };
@@ -373,6 +445,7 @@ pub fn transform_row(
     row: HashMap<String, Value>,
     metadata: &[ReturnItemMetadata],
     schema: &GraphSchema,
+    id_mapper: &mut super::id_mapper::IdMapper,
 ) -> Result<Vec<BoltValue>, String> {
     log::info!(
         "🔍 transform_row called with {} columns: {:?}",
@@ -389,7 +462,7 @@ pub fn transform_row(
     );
 
     // Check for multi-label scan results (has {alias}_label, {alias}_id, {alias}_properties columns)
-    if let Some(transformed) = try_transform_multi_label_row(&row, metadata)? {
+    if let Some(transformed) = try_transform_multi_label_row(&row, metadata, id_mapper)? {
         return Ok(transformed);
     }
 
@@ -398,7 +471,14 @@ pub fn transform_row(
     for meta in metadata {
         match &meta.item_type {
             ReturnItemType::Node { labels } => {
-                let node = transform_to_node(&row, &meta.field_name, labels, schema)?;
+                // Strip ".*" suffix from field_name if present (wildcard expansion)
+                let var_name = meta
+                    .field_name
+                    .strip_suffix(".*")
+                    .unwrap_or(&meta.field_name);
+                let mut node = transform_to_node(&row, var_name, labels, schema)?;
+                // Assign session-scoped integer ID from id_mapper
+                node.id = id_mapper.get_or_assign(&node.element_id);
                 // Use the Node's packstream encoding
                 let packstream_bytes = node.to_packstream();
                 result.push(BoltValue::PackstreamBytes(packstream_bytes));
@@ -408,14 +488,23 @@ pub fn transform_row(
                 from_label,
                 to_label,
             } => {
-                let rel = transform_to_relationship(
+                // Strip ".*" suffix from field_name if present (wildcard expansion)
+                let var_name = meta
+                    .field_name
+                    .strip_suffix(".*")
+                    .unwrap_or(&meta.field_name);
+                let mut rel = transform_to_relationship(
                     &row,
-                    &meta.field_name,
+                    var_name,
                     rel_types,
                     from_label.as_deref(),
                     to_label.as_deref(),
                     schema,
                 )?;
+                // Assign session-scoped integer IDs from id_mapper
+                rel.id = id_mapper.get_or_assign(&rel.element_id);
+                rel.start_node_id = id_mapper.get_or_assign(&rel.start_node_element_id);
+                rel.end_node_id = id_mapper.get_or_assign(&rel.end_node_element_id);
                 // Use the Relationship's packstream encoding
                 let packstream_bytes = rel.to_packstream();
                 result.push(BoltValue::PackstreamBytes(packstream_bytes));
@@ -443,7 +532,7 @@ pub fn transform_row(
                 }
 
                 // For fixed-hop paths, construct path using known metadata
-                let path = transform_to_path(
+                let mut path = transform_to_path(
                     &row,
                     &meta.field_name,
                     start_alias.as_deref(),
@@ -456,9 +545,92 @@ pub fn transform_row(
                     metadata,
                 )?;
 
+                // Assign session-scoped integer IDs to all nodes and relationships in path
+                for node in &mut path.nodes {
+                    node.id = id_mapper.get_or_assign(&node.element_id);
+                }
+                for rel in &mut path.relationships {
+                    rel.id = id_mapper.get_or_assign(&rel.element_id);
+                    rel.start_node_id = id_mapper.get_or_assign(&rel.start_node_element_id);
+                    rel.end_node_id = id_mapper.get_or_assign(&rel.end_node_element_id);
+                }
+
                 // Use the Path's packstream encoding
                 let packstream_bytes = path.to_packstream();
                 result.push(BoltValue::PackstreamBytes(packstream_bytes));
+            }
+            ReturnItemType::IdFunction { alias, labels } => {
+                // For id() function, we need to compute the encoded ID from the element_id
+                // The element_id is constructed from the label and ID column value
+                log::debug!(
+                    "IdFunction handler: alias={}, labels={:?}, field_name={}",
+                    alias,
+                    labels,
+                    meta.field_name
+                );
+
+                // Find the node/relationship data in the row to build element_id
+                let label = labels
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "Unknown".to_string());
+
+                // First, try to get the id value from the field_name (the SQL column alias)
+                // When "id(u) as uid" is queried, SQL is "SELECT u.user_id AS uid"
+                // and row contains {"uid": 1}, so we look for field_name first
+                let element_id = if let Some(id_val) = row.get(&meta.field_name) {
+                    let id_str = match id_val {
+                        Value::Number(n) => n.to_string(),
+                        Value::String(s) => s.clone(),
+                        _ => format!("{:?}", id_val),
+                    };
+                    format!("{}:{}", label, id_str)
+                } else {
+                    // Fallback: try alias.id_col format (when node is also returned)
+                    let id_col = schema
+                        .node_schema(&label)
+                        .map(|ns| {
+                            ns.node_id
+                                .columns()
+                                .first()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| "id".to_string())
+                        })
+                        .unwrap_or_else(|_| "id".to_string());
+                    let id_column_key = format!("{}.{}", alias, id_col);
+
+                    if let Some(id_val) = row.get(&id_column_key) {
+                        let id_str = match id_val {
+                            Value::Number(n) => n.to_string(),
+                            Value::String(s) => s.clone(),
+                            _ => format!("{:?}", id_val),
+                        };
+                        format!("{}:{}", label, id_str)
+                    } else {
+                        // Last fallback: try to construct from any property that looks like an ID
+                        let prefix = format!("{}.", alias);
+                        let mut element_id = None;
+                        for (key, value) in row.iter() {
+                            if let Some(prop) = key.strip_prefix(&prefix) {
+                                if prop.ends_with("_id") || prop == "id" {
+                                    let id_str = match value {
+                                        Value::Number(n) => n.to_string(),
+                                        Value::String(s) => s.clone(),
+                                        _ => continue,
+                                    };
+                                    element_id = Some(format!("{}:{}", label, id_str));
+                                    break;
+                                }
+                            }
+                        }
+                        element_id.unwrap_or_else(|| format!("{}:unknown", label))
+                    }
+                };
+
+                // Use IdMapper's deterministic ID computation
+                let encoded_id = super::id_mapper::IdMapper::compute_deterministic_id(&element_id);
+                log::debug!("id() encoded: {} -> {}", element_id, encoded_id);
+                result.push(BoltValue::Json(Value::Number(encoded_id.into())));
             }
             ReturnItemType::Scalar => {
                 // For scalars, just extract the value and wrap in BoltValue::Json
@@ -533,6 +705,7 @@ fn transform_to_node(
 
     // Derive integer ID from element_id (ensures uniqueness across labels)
     let id: i64 = generate_id_from_element_id(&element_id);
+    log::debug!("🔢 Node created: element_id={}, id={}", element_id, id);
 
     // Create Node struct
     // Use inferred label if original labels was empty
@@ -759,30 +932,50 @@ fn transform_to_path(
     }
 
     // Original format: individual columns for each property
-    // Try to get start node data from row, or create with known label
+    // Extract start node - require either metadata lookup success or known labels
     let start_node =
         find_node_in_row_with_label(row, start_alias, start_labels, return_metadata, schema)
-            .unwrap_or_else(|| {
-                let label = start_labels
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "_Unknown".to_string());
-                log::trace!("Creating start node with label: {}", label);
-                create_node_with_label(&label, 0)
-            });
+            .or_else(|| {
+                // If we have a known label, create node with that label
+                start_labels.first().map(|label| {
+                    log::debug!("Creating start node with known label: {}", label);
+                    create_node_with_label(label, 0)
+                })
+            })
+            .ok_or_else(|| {
+                format!(
+                    "Internal error: Cannot resolve start node '{}' for path '{}'. \
+                     No label metadata available and node not found in row. \
+                     start_labels={:?}, row_keys={:?}",
+                    start_alias,
+                    path_name,
+                    start_labels,
+                    row.keys().collect::<Vec<_>>()
+                )
+            })?;
 
-    // Try to get end node data from row, or create with known label
+    // Extract end node - require either metadata lookup success or known labels
     let end_node = find_node_in_row_with_label(row, end_alias, end_labels, return_metadata, schema)
-        .unwrap_or_else(|| {
-            let label = end_labels
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "_Unknown".to_string());
-            log::trace!("Creating end node with label: {}", label);
-            create_node_with_label(&label, 1)
-        });
+        .or_else(|| {
+            // If we have a known label, create node with that label
+            end_labels.first().map(|label| {
+                log::debug!("Creating end node with known label: {}", label);
+                create_node_with_label(label, 1)
+            })
+        })
+        .ok_or_else(|| {
+            format!(
+                "Internal error: Cannot resolve end node '{}' for path '{}'. \
+                     No label metadata available and node not found in row. \
+                     end_labels={:?}, row_keys={:?}",
+                end_alias,
+                path_name,
+                end_labels,
+                row.keys().collect::<Vec<_>>()
+            )
+        })?;
 
-    // Try to get relationship data from row, or create with known type
+    // Extract relationship - require either metadata lookup success or known types
     let relationship = find_relationship_in_row_with_type(
         row,
         rel_alias,
@@ -794,14 +987,24 @@ fn transform_to_path(
         return_metadata,
         schema,
     )
-    .unwrap_or_else(|| {
-        let rel_type = rel_types
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "_UNKNOWN".to_string());
-        log::trace!("Creating relationship with type: {}", rel_type);
-        create_relationship_with_type(&rel_type, &start_node.element_id, &end_node.element_id)
-    });
+    .or_else(|| {
+        // If we have a known type, create relationship with that type
+        rel_types.first().map(|rel_type| {
+            log::debug!("Creating relationship with known type: {}", rel_type);
+            create_relationship_with_type(rel_type, &start_node.element_id, &end_node.element_id)
+        })
+    })
+    .ok_or_else(|| {
+        format!(
+            "Internal error: Cannot resolve relationship '{}' for path '{}'. \
+             No type metadata available and relationship not found in row. \
+             rel_types={:?}, row_keys={:?}",
+            rel_alias,
+            path_name,
+            rel_types,
+            row.keys().collect::<Vec<_>>()
+        )
+    })?;
 
     log::info!(
         "Path created: start_node.labels={:?}, end_node.labels={:?}, rel.type={}",
@@ -886,8 +1089,8 @@ fn transform_path_from_json(row: &HashMap<String, Value>) -> Result<Path, String
     };
 
     // Create start node - element_id is source of truth, integer id derived from it
-    let start_prop_id = extract_id_from_props(&start_props, "user_id", "post_id", "id");
-    let start_element_id = generate_node_element_id(&start_label, &[&start_prop_id.to_string()]);
+    let start_id_str = extract_id_string_from_props(&start_props);
+    let start_element_id = generate_node_element_id(&start_label, &[&start_id_str]);
     let start_id = generate_id_from_element_id(&start_element_id);
     // Clean property keys (remove table alias prefix like "t1_0.")
     let start_props_clean = clean_property_keys(start_props);
@@ -899,8 +1102,8 @@ fn transform_path_from_json(row: &HashMap<String, Value>) -> Result<Path, String
     );
 
     // Create end node - element_id is source of truth, integer id derived from it
-    let end_prop_id = extract_id_from_props(&end_props, "user_id", "post_id", "id");
-    let end_element_id = generate_node_element_id(&end_label, &[&end_prop_id.to_string()]);
+    let end_id_str = extract_id_string_from_props(&end_props);
+    let end_element_id = generate_node_element_id(&end_label, &[&end_id_str]);
     let end_id = generate_id_from_element_id(&end_element_id);
     // Clean property keys
     let end_props_clean = clean_property_keys(end_props);
@@ -912,11 +1115,7 @@ fn transform_path_from_json(row: &HashMap<String, Value>) -> Result<Path, String
     );
 
     // Create relationship - element_id is source of truth, integer id derived from it
-    let rel_element_id = generate_relationship_element_id(
-        &rel_type,
-        &start_prop_id.to_string(),
-        &end_prop_id.to_string(),
-    );
+    let rel_element_id = generate_relationship_element_id(&rel_type, &start_id_str, &end_id_str);
     let rel_id = generate_id_from_element_id(&rel_element_id);
     let rel_props_clean = clean_property_keys(rel_props);
     let relationship = Relationship::new(
@@ -969,25 +1168,96 @@ fn clean_property_keys(props: HashMap<String, Value>) -> HashMap<String, Value> 
         .collect()
 }
 
-/// Extract ID from properties HashMap, trying multiple possible ID field names
-/// Also handles prefixed keys like "t1_0.user_id" or "_s_user_id" by checking if key ends with the ID field
-fn extract_id_from_props(props: &HashMap<String, Value>, id1: &str, id2: &str, id3: &str) -> i64 {
+/// Extract ID string from properties HashMap for element_id generation
+/// Tries common ID field names and returns the string representation
+fn extract_id_string_from_props(props: &HashMap<String, Value>) -> String {
+    // Common ID column names to check, in order of preference
+    let id_fields = [
+        "user_id",
+        "post_id",
+        "id",
+        "code",
+        "node_id",
+        "origin_code",
+        "dest_code",
+        "airport_code",
+        "flight_id",
+    ];
+
     // First try exact match
-    for id_field in &[id1, id2, id3] {
+    for id_field in &id_fields {
         if let Some(val) = props.get(*id_field) {
-            if let Some(id) = value_to_i64(val) {
-                return id;
+            if let Some(str_val) = value_to_string(val) {
+                return str_val;
             }
         }
     }
 
     // Then try prefixed match (_s_, _e_, _r_ prefixes)
-    for id_field in &[id1, id2, id3] {
+    for id_field in &id_fields {
+        for prefix in &["_s_", "_e_", "_r_"] {
+            let prefixed_key = format!("{}{}", prefix, id_field);
+            if let Some(val) = props.get(&prefixed_key) {
+                if let Some(str_val) = value_to_string(val) {
+                    return str_val;
+                }
+            }
+        }
+    }
+
+    // Finally try any key that looks like an ID
+    for (key, val) in props {
+        let key_lower = key.to_lowercase();
+        if key_lower.ends_with("_id") || key_lower.ends_with("id") || key_lower == "code" {
+            if let Some(str_val) = value_to_string(val) {
+                return str_val;
+            }
+        }
+    }
+
+    "0".to_string()
+}
+
+/// Extract ID from properties HashMap, trying multiple possible ID field names
+/// Also handles prefixed keys like "t1_0.user_id" or "_s_user_id" by checking if key ends with the ID field
+fn extract_id_from_props(props: &HashMap<String, Value>, id1: &str, id2: &str, id3: &str) -> i64 {
+    // Common ID column names to check
+    let common_id_fields = [
+        id1,
+        id2,
+        id3,
+        "code",
+        "node_id",
+        "origin_code",
+        "dest_code",
+        "airport_code",
+    ];
+
+    // First try exact match
+    for id_field in &common_id_fields {
+        if let Some(val) = props.get(*id_field) {
+            if let Some(id) = value_to_i64(val) {
+                return id;
+            }
+            // Also try string values (for string IDs like "LAX")
+            if let Some(str_id) = value_to_string(val) {
+                // Use hash of string ID as integer ID
+                return generate_id_from_element_id(&str_id);
+            }
+        }
+    }
+
+    // Then try prefixed match (_s_, _e_, _r_ prefixes)
+    for id_field in &common_id_fields {
         for prefix in &["_s_", "_e_", "_r_"] {
             let prefixed_key = format!("{}{}", prefix, id_field);
             if let Some(val) = props.get(&prefixed_key) {
                 if let Some(id) = value_to_i64(val) {
                     return id;
+                }
+                // Also try string values (for string IDs like "LAX")
+                if let Some(str_id) = value_to_string(val) {
+                    return generate_id_from_element_id(&str_id);
                 }
             }
         }
@@ -995,10 +1265,14 @@ fn extract_id_from_props(props: &HashMap<String, Value>, id1: &str, id2: &str, i
 
     // Finally try suffix match (for table alias prefixed keys like "t1_0.user_id")
     for (key, val) in props {
-        for id_field in &[id1, id2, id3] {
+        for id_field in &common_id_fields {
             if key.ends_with(&format!(".{}", id_field)) || key.ends_with(id_field) {
                 if let Some(id) = value_to_i64(val) {
                     return id;
+                }
+                // Also try string values
+                if let Some(str_id) = value_to_string(val) {
+                    return generate_id_from_element_id(&str_id);
                 }
             }
         }
@@ -1009,14 +1283,11 @@ fn extract_id_from_props(props: &HashMap<String, Value>, id1: &str, id2: &str, i
 
 /// Generate a unique integer node ID from element_id
 /// This ensures round-trip: element_id is the source of truth, integer id is derived from it
+/// Generate a deterministic ID from an element_id using the single source of truth.
+/// This ensures "User:1" and "Post:1" have different IDs by encoding the label.
 fn generate_id_from_element_id(element_id: &str) -> i64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
-    element_id.hash(&mut hasher);
-    // Use absolute value and mask to ensure positive i64
-    (hasher.finish() as i64).abs()
+    // Delegate to IdMapper's compute_deterministic_id for consistent encoding
+    super::id_mapper::IdMapper::compute_deterministic_id(element_id)
 }
 
 fn value_to_i64(val: &Value) -> Option<i64> {
@@ -1347,36 +1618,6 @@ fn find_relationship_in_row(
     None
 }
 
-/// Create a placeholder node when we can't find actual data
-#[allow(dead_code)]
-fn create_placeholder_node(_alias: &str, id: i64) -> Node {
-    Node {
-        id,
-        labels: vec!["_Unknown".to_string()],
-        properties: std::collections::HashMap::new(),
-        element_id: format!("_Unknown:{}", id),
-    }
-}
-
-/// Create a placeholder relationship when we can't find actual data
-#[allow(dead_code)]
-fn create_placeholder_relationship(
-    _alias: &str,
-    start_element_id: &str,
-    end_element_id: &str,
-) -> Relationship {
-    Relationship {
-        id: 0,
-        start_node_id: 0,
-        end_node_id: 0,
-        rel_type: "_UNKNOWN".to_string(),
-        properties: std::collections::HashMap::new(),
-        element_id: format!("_UNKNOWN:{}:{}", start_element_id, end_element_id),
-        start_node_element_id: start_element_id.to_string(),
-        end_node_element_id: end_element_id.to_string(),
-    }
-}
-
 /// Create a node with a known label but no data
 fn create_node_with_label(label: &str, idx: i64) -> Node {
     let element_id = format!("{}:{}", label, idx);
@@ -1435,6 +1676,7 @@ fn value_to_string(value: &Value) -> Option<String> {
 fn try_transform_multi_label_row(
     row: &HashMap<String, Value>,
     metadata: &[ReturnItemMetadata],
+    id_mapper: &mut super::id_mapper::IdMapper,
 ) -> Result<Option<Vec<BoltValue>>, String> {
     // Find return items that might be multi-label nodes
     // Multi-label results have columns: {alias}_label, {alias}_id, {alias}_properties
@@ -1480,11 +1722,11 @@ fn try_transform_multi_label_row(
             // Generate element_id
             let element_id = generate_node_element_id(&label, &[&id]);
 
-            // Try to parse ID as numeric for legacy `id` field
-            let legacy_id: i64 = id.parse().unwrap_or(0);
+            // Get session-scoped integer ID from id_mapper
+            let numeric_id = id_mapper.get_or_assign(&element_id);
 
-            // Create Node
-            let node = Node::new(legacy_id, vec![label], properties, element_id);
+            // Create Node with mapped integer ID
+            let node = Node::new(numeric_id, vec![label], properties, element_id);
             let packstream_bytes = node.to_packstream();
             result.push(BoltValue::PackstreamBytes(packstream_bytes));
         } else {

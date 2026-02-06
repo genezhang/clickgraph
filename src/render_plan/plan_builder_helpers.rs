@@ -731,6 +731,8 @@ pub(super) fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::GraphRel(rel) => extract_id_column(&rel.center),
         LogicalPlan::Filter(filter) => extract_id_column(&filter.input),
         LogicalPlan::Projection(proj) => extract_id_column(&proj.input),
+        // For WithClause, recurse into input to get ID column from underlying node
+        LogicalPlan::WithClause(wc) => extract_id_column(&wc.input),
         // For Union (denormalized nodes), extract from first branch
         LogicalPlan::Union(union) => {
             if !union.inputs.is_empty() {
@@ -2339,6 +2341,87 @@ pub(super) fn plan_type_name(plan: &LogicalPlan) -> &'static str {
     }
 }
 
+/// Get property column mapping from ViewScan in the plan tree.
+///
+/// For denormalized virtual nodes, the ViewScan's property_mapping contains the
+/// position-specific column mappings (e.g., `code -> origin_code` for FROM position).
+/// This function traverses the plan tree to find the ViewScan for the given alias
+/// and looks up the property in its property_mapping.
+///
+/// Returns the mapped column name if found, None otherwise.
+fn get_property_from_viewscan(alias: &str, property: &str, plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphNode(node) if node.alias == alias => {
+            // Found the matching GraphNode - check its input for ViewScan
+            match node.input.as_ref() {
+                LogicalPlan::ViewScan(scan) => {
+                    // Look up property in the ViewScan's property_mapping
+                    if let Some(prop_value) = scan.property_mapping.get(property) {
+                        return Some(prop_value.raw().to_string());
+                    }
+                    // Also check from_node_properties and to_node_properties
+                    if let Some(from_props) = &scan.from_node_properties {
+                        if let Some(prop_value) = from_props.get(property) {
+                            return Some(prop_value.raw().to_string());
+                        }
+                    }
+                    if let Some(to_props) = &scan.to_node_properties {
+                        if let Some(prop_value) = to_props.get(property) {
+                            return Some(prop_value.raw().to_string());
+                        }
+                    }
+                    None
+                }
+                LogicalPlan::Union(_) => {
+                    // For denormalized nodes with Union, we need to get mapping from the specific branch
+                    // This shouldn't happen at filter level since filters are per-branch
+                    // But if it does, we can't determine which branch, so return None
+                    log::debug!(
+                        "get_property_from_viewscan: GraphNode '{}' has Union input - cannot determine branch",
+                        alias
+                    );
+                    None
+                }
+                _ => None,
+            }
+        }
+        LogicalPlan::GraphNode(node) => get_property_from_viewscan(alias, property, &node.input),
+        LogicalPlan::GraphRel(rel) => get_property_from_viewscan(alias, property, &rel.left)
+            .or_else(|| get_property_from_viewscan(alias, property, &rel.center))
+            .or_else(|| get_property_from_viewscan(alias, property, &rel.right)),
+        LogicalPlan::Filter(filter) => get_property_from_viewscan(alias, property, &filter.input),
+        LogicalPlan::Projection(proj) => get_property_from_viewscan(alias, property, &proj.input),
+        LogicalPlan::GraphJoins(joins) => get_property_from_viewscan(alias, property, &joins.input),
+        LogicalPlan::OrderBy(order_by) => {
+            get_property_from_viewscan(alias, property, &order_by.input)
+        }
+        LogicalPlan::Skip(skip) => get_property_from_viewscan(alias, property, &skip.input),
+        LogicalPlan::Limit(limit) => get_property_from_viewscan(alias, property, &limit.input),
+        LogicalPlan::GroupBy(group_by) => {
+            get_property_from_viewscan(alias, property, &group_by.input)
+        }
+        LogicalPlan::Cte(cte) => get_property_from_viewscan(alias, property, &cte.input),
+        LogicalPlan::ViewScan(scan) => {
+            // Direct ViewScan (not wrapped in GraphNode) - check property_mapping
+            if let Some(prop_value) = scan.property_mapping.get(property) {
+                return Some(prop_value.raw().to_string());
+            }
+            if let Some(from_props) = &scan.from_node_properties {
+                if let Some(prop_value) = from_props.get(property) {
+                    return Some(prop_value.raw().to_string());
+                }
+            }
+            if let Some(to_props) = &scan.to_node_properties {
+                if let Some(prop_value) = to_props.get(property) {
+                    return Some(prop_value.raw().to_string());
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Apply property mapping to an expression
 ///
 /// Main purpose: Convert TableAlias expressions to PropertyAccess for denormalized schemas.
@@ -2368,7 +2451,21 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
             // First, try to map the property name to the correct column name
             // This is essential for queries like: WHERE n.name = ...
             // where 'name' might map to 'full_name' in the schema
-            if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
+
+            // For denormalized virtual nodes, try to get property mapping from ViewScan first
+            // This is needed because denormalized nodes have position-specific mappings
+            // (from_node_properties vs to_node_properties)
+            if let Some(column) =
+                get_property_from_viewscan(&prop.table_alias.0, prop.column.raw(), plan)
+            {
+                log::warn!(
+                    "🔍 PROPERTY MAPPING (ViewScan): '{}.{}' -> '{}'",
+                    prop.table_alias.0,
+                    prop.column.raw(),
+                    column
+                );
+                prop.column = PropertyValue::Column(column);
+            } else if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
                 log::warn!(
                     "🔍 PROPERTY MAPPING: Alias '{}' -> Label '{}', Property '{}' (before mapping)",
                     prop.table_alias.0,
@@ -2608,6 +2705,22 @@ pub(super) fn normalize_union_branches(
     union_plans
         .into_iter()
         .map(|plan| {
+            // Collect valid table aliases from FROM and JOINs for this branch
+            let mut valid_aliases: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            if let Some(ref from_ref) = plan.from.0 {
+                if let Some(ref alias) = from_ref.alias {
+                    valid_aliases.insert(alias.clone());
+                }
+            }
+            for join in &plan.joins.0 {
+                valid_aliases.insert(join.table_alias.clone());
+            }
+            log::debug!(
+                "normalize_union_branches: valid table aliases for branch: {:?}",
+                valid_aliases
+            );
+
             // Build a map of existing column aliases in this branch
             let existing: std::collections::HashMap<String, SelectItem> = plan
                 .select
@@ -2623,12 +2736,18 @@ pub(super) fn normalize_union_branches(
                 .iter()
                 .map(|alias| {
                     if let Some(item) = existing.get(alias) {
+                        // CRITICAL FIX: For denormalized relationships, the SELECT may reference
+                        // a table alias (e.g., `r`) that doesn't exist in FROM/JOINs.
+                        // We need to fix the table alias to a valid one.
+                        let fixed_expr =
+                            fix_invalid_table_aliases(&item.expression, &valid_aliases, &plan);
+
                         // Wrap the expression in toString() for type compatibility
                         SelectItem {
                             expression: RenderExpr::ScalarFnCall(
                                 super::render_expr::ScalarFnCall {
                                     name: "toString".to_string(),
-                                    args: vec![item.expression.clone()],
+                                    args: vec![fixed_expr],
                                 },
                             ),
                             col_alias: item.col_alias.clone(),
@@ -2652,6 +2771,90 @@ pub(super) fn normalize_union_branches(
             }
         })
         .collect()
+}
+
+/// Fix invalid table aliases in expressions for UNION branches.
+///
+/// For denormalized relationships (e.g., AUTHORED stored on posts_bench),
+/// the SELECT may reference a relationship alias `r` that doesn't exist in
+/// FROM/JOINs. This function rewrites `r.column` to use the correct table
+/// alias that actually contains that column.
+///
+/// Strategy:
+/// 1. If table alias is valid, return expression unchanged
+/// 2. If table alias is invalid (not in FROM/JOINs), try to find the FROM table
+///    (for FK relationships, the FROM table usually has the relationship columns)
+fn fix_invalid_table_aliases(
+    expr: &RenderExpr,
+    valid_aliases: &std::collections::HashSet<String>,
+    plan: &super::RenderPlan,
+) -> RenderExpr {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            let table_alias = &prop.table_alias.0;
+            if valid_aliases.contains(table_alias) {
+                // Table alias is valid, no change needed
+                expr.clone()
+            } else {
+                // Table alias is invalid - this is a denormalized relationship
+                // For FK edges, the FROM table contains the relationship columns
+                log::info!(
+                    "🔧 fix_invalid_table_aliases: '{}' not in valid aliases {:?}, using FROM table",
+                    table_alias,
+                    valid_aliases
+                );
+
+                // Use the FROM table alias as the replacement
+                if let Some(ref from_ref) = plan.from.0 {
+                    if let Some(ref from_alias) = from_ref.alias {
+                        log::info!(
+                            "🔧 Rewriting {}.{} → {}.{}",
+                            table_alias,
+                            match &prop.column {
+                                PropertyValue::Column(c) => c.clone(),
+                                _ => "<expr>".to_string(),
+                            },
+                            from_alias,
+                            match &prop.column {
+                                PropertyValue::Column(c) => c.clone(),
+                                _ => "<expr>".to_string(),
+                            }
+                        );
+                        return RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(from_alias.clone()),
+                            column: prop.column.clone(),
+                        });
+                    }
+                }
+                // Fallback: return unchanged
+                expr.clone()
+            }
+        }
+        // Recursively fix nested expressions
+        RenderExpr::ScalarFnCall(fn_call) => {
+            let fixed_args: Vec<RenderExpr> = fn_call
+                .args
+                .iter()
+                .map(|arg| fix_invalid_table_aliases(arg, valid_aliases, plan))
+                .collect();
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: fn_call.name.clone(),
+                args: fixed_args,
+            })
+        }
+        RenderExpr::OperatorApplicationExp(op_app) => {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op_app.operator.clone(),
+                operands: op_app
+                    .operands
+                    .iter()
+                    .map(|arg| fix_invalid_table_aliases(arg, valid_aliases, plan))
+                    .collect(),
+            })
+        }
+        // Other expression types don't need fixing
+        _ => expr.clone(),
+    }
 }
 
 /// Add __label__ column to each UNION branch for node type identification.
@@ -4309,6 +4512,28 @@ pub(super) fn convert_path_branches_to_json(
             log::warn!("  Branch {}: found {} start, {} end, {} rel items",
                       branch_idx, start_items.len(), end_items.len(), rel_items.len());
 
+            // Check if this is a denormalized schema (only one table in FROM clause)
+            // For denormalized schemas, virtual node aliases don't exist as tables
+            // so we need to use the relationship table alias for all column references
+            let denorm_table_alias = if let super::FromTableItem(Some(ref view_ref)) = plan.from {
+                // Check if the FROM table matches the relationship alias
+                // If we only have the relationship table, this is denormalized
+                if view_ref.alias.as_ref() == Some(&rel_alias) ||
+                   view_ref.name.ends_with(&rel_alias) {
+                    // For denormalized, use the actual table alias from FROM
+                    view_ref.alias.as_deref()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if denorm_table_alias.is_some() {
+                log::warn!("  Branch {}: denormalized schema detected, using table alias '{:?}'",
+                          branch_idx, denorm_table_alias);
+            }
+
             let mut new_items = Vec::new();
 
             // 1. Keep path tuple as-is
@@ -4318,7 +4543,7 @@ pub(super) fn convert_path_branches_to_json(
 
             // 2. Convert start node properties to JSON (prefix: _s_)
             if !start_items.is_empty() {
-                let json_expr = build_format_row_json(&start_items, "_s_");
+                let json_expr = build_format_row_json(&start_items, "_s_", denorm_table_alias);
                 new_items.push(SelectItem {
                     expression: json_expr,
                     col_alias: Some(ColumnAlias("_start_properties".to_string())),
@@ -4327,7 +4552,7 @@ pub(super) fn convert_path_branches_to_json(
 
             // 3. Convert end node properties to JSON (prefix: _e_)
             if !end_items.is_empty() {
-                let json_expr = build_format_row_json(&end_items, "_e_");
+                let json_expr = build_format_row_json(&end_items, "_e_", denorm_table_alias);
                 new_items.push(SelectItem {
                     expression: json_expr,
                     col_alias: Some(ColumnAlias("_end_properties".to_string())),
@@ -4336,7 +4561,7 @@ pub(super) fn convert_path_branches_to_json(
 
             // 4. Convert relationship properties to JSON (prefix: _r_) or empty object if none
             if !rel_items.is_empty() {
-                let json_expr = build_format_row_json(&rel_items, "_r_");
+                let json_expr = build_format_row_json(&rel_items, "_r_", denorm_table_alias);
                 new_items.push(SelectItem {
                     expression: json_expr,
                     col_alias: Some(ColumnAlias("_rel_properties".to_string())),
@@ -4384,7 +4609,17 @@ pub(super) fn convert_path_branches_to_json(
 /// Uses column aliases (AS prefix+clean_name) so JSON keys have unique prefixes
 /// to avoid ClickHouse alias collision when same property names appear in both nodes.
 /// The prefix (_s_, _e_, _r_) is stripped in the Bolt transformer.
-fn build_format_row_json(items: &[super::SelectItem], prefix: &str) -> RenderExpr {
+///
+/// # Arguments
+/// * `items` - Select items to convert to JSON
+/// * `prefix` - Prefix for property names (_s_, _e_, _r_)
+/// * `table_alias_override` - Optional table alias to use instead of item's table_alias
+///   (used for denormalized schemas where virtual node aliases don't exist as tables)
+fn build_format_row_json(
+    items: &[super::SelectItem],
+    prefix: &str,
+    table_alias_override: Option<&str>,
+) -> RenderExpr {
     use super::render_expr::{Literal, RenderExpr};
     use crate::graph_catalog::expression_parser::PropertyValue;
 
@@ -4408,7 +4643,9 @@ fn build_format_row_json(items: &[super::SelectItem], prefix: &str) -> RenderExp
             // Get the column expression
             if let RenderExpr::PropertyAccessExp(prop_access) = &item.expression {
                 if let PropertyValue::Column(col_name) = &prop_access.column {
-                    let col_expr = format!("{}.{}", prop_access.table_alias.0, col_name);
+                    // Use override table alias for denormalized schemas, or original alias
+                    let table_alias = table_alias_override.unwrap_or(&prop_access.table_alias.0);
+                    let col_expr = format!("{}.{}", table_alias, col_name);
                     // Use prefixed alias to avoid collision (e.g., _s_city, _e_city)
                     aliased_cols.push(format!("{} AS {}{}", col_expr, prefix, clean_name));
                 }

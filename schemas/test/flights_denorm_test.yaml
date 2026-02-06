@@ -1,32 +1,35 @@
-# Test Schema for Denormalized Edge Table Integration Tests
-# Demonstrates denormalized node properties in edge table (OnTime-style)
+# Denormalized Flights Test Schema
+# Tests: denormalized node properties, string IDs, virtual nodes
+#
+# Airport nodes are "virtual" - their properties come from the flights table
+# via from_node_properties and to_node_properties mappings.
 
-name: denormalized_flights_test
+name: flights_denorm_test
 version: "1.0"
 
 graph_schema:
   nodes:
-    # Airport is a virtual node - all data comes from the flights_denorm table
+    # Airport is a virtual node - all data comes from the flights table
     - label: Airport
       database: brahmand
       table: flights_denorm
       node_id: code  # Logical property name for the ID
       property_mappings: {}  # Empty - all properties are denormalized
       
-      # Denormalized origin (from_node) properties
+      # Properties when Airport appears as origin (from_node)
       from_node_properties:
-        code: origin_code  # Airport.code (the ID) → flights_denorm.origin_code
+        code: origin_code
         city: origin_city
         state: origin_state
       
-      # Denormalized destination (to_node) properties
+      # Properties when Airport appears as destination (to_node)
       to_node_properties:
-        code: dest_code  # Airport.code (the ID) → flights_denorm.dest_code
+        code: dest_code
         city: dest_city
         state: dest_state
 
   edges:
-    # FLIGHT relationship - node properties declared above
+    # FLIGHT relationship - connects two Airports
     - type: FLIGHT
       database: brahmand
       table: flights_denorm
@@ -34,11 +37,6 @@ graph_schema:
       to_id: dest_code
       from_node: Airport
       to_node: Airport
-      
-      # Composite edge ID (flights can have same route multiple times per day)
-      edge_id: [flight_id, flight_number]
-      
-      # Edge properties
       property_mappings:
         flight_id: flight_id
         flight_number: flight_number

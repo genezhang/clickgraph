@@ -113,6 +113,7 @@ pub fn initial_analyzing(
     current_graph_schema: &GraphSchema,
 ) -> AnalyzerResult<Arc<LogicalPlan>> {
     log::info!("🔍 ANALYZER: Entering initial_analyzing");
+
     // Step 1: Schema Inference - infer missing schema information
     let schema_inference = SchemaInference::new();
     let plan = if let Ok(transformed_plan) =
@@ -252,6 +253,54 @@ pub fn initial_analyzing(
     let transformed_plan = group_by_building.analyze(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
 
+    match plan.as_ref() {
+        LogicalPlan::GraphJoins(gj) => {
+            log::warn!(
+                "🔍   GraphJoins! {} joins, input type: {:?}",
+                gj.joins.len(),
+                std::mem::discriminant(gj.input.as_ref())
+            );
+            match gj.input.as_ref() {
+                LogicalPlan::WithClause(wc) => {
+                    log::warn!(
+                        "🔍     WithClause! input type: {:?}",
+                        std::mem::discriminant(wc.input.as_ref())
+                    );
+                    if let LogicalPlan::Filter(f) = wc.input.as_ref() {
+                        log::warn!("🔍       ✅✅✅ Filter EXISTS at END of initial_analyzing!");
+                    }
+                }
+                LogicalPlan::Projection(proj) => {
+                    log::error!("🔥🔥🔥 BUG AT END OF initial_analyzing: GraphJoins → Projection (not WithClause)");
+                    log::warn!(
+                        "🔍       Projection.input type: {:?}",
+                        std::mem::discriminant(proj.input.as_ref())
+                    );
+                    // Check if Projection → WithClause → Filter
+                    if let LogicalPlan::WithClause(wc) = proj.input.as_ref() {
+                        log::warn!(
+                            "🔍         WithClause! input type: {:?}",
+                            std::mem::discriminant(wc.input.as_ref())
+                        );
+                        if let LogicalPlan::Filter(f) = wc.input.as_ref() {
+                            log::warn!(
+                                "🔍           ✅✅✅ Filter EXISTS in WithClause: {:?}",
+                                f.predicate
+                            );
+                        } else {
+                            log::error!(
+                                "🔥🔥🔥 FILTER LOST! WithClause.input is: {:?}",
+                                std::mem::discriminant(wc.input.as_ref())
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+
     Ok(plan)
 }
 
@@ -261,6 +310,47 @@ pub fn intermediate_analyzing(
     current_graph_schema: &GraphSchema,
 ) -> AnalyzerResult<Arc<LogicalPlan>> {
     // Note: SchemaInference and QueryValidation already ran in initial_analyzing
+
+    match plan.as_ref() {
+        LogicalPlan::GraphJoins(gj) => {
+            log::warn!(
+                "🔍   GraphJoins! {} joins, input type: {:?}",
+                gj.joins.len(),
+                std::mem::discriminant(gj.input.as_ref())
+            );
+            match gj.input.as_ref() {
+                LogicalPlan::WithClause(wc) => {
+                    log::warn!(
+                        "🔍     WithClause EXISTS! input type: {:?}",
+                        std::mem::discriminant(wc.input.as_ref())
+                    );
+                    if let LogicalPlan::Filter(f) = wc.input.as_ref() {
+                        log::warn!(
+                            "🔍       ✅✅✅ Filter exists with predicate: {:?}",
+                            f.predicate
+                        );
+                    } else {
+                        log::error!(
+                            "🔥 BUG: WithClause.input is NOT Filter! Type: {:?}",
+                            std::mem::discriminant(wc.input.as_ref())
+                        );
+                    }
+                }
+                LogicalPlan::Projection(proj) => {
+                    log::error!("🔥🔥🔥 BUG: GraphJoins.input is Projection (WHERE already lost!)");
+                    log::warn!(
+                        "🔍       Projection.input type: {:?}",
+                        std::mem::discriminant(proj.input.as_ref())
+                    );
+                }
+                _ => log::warn!(
+                    "🔍     GraphJoins.input type: {:?}",
+                    std::mem::discriminant(gj.input.as_ref())
+                ),
+            }
+        }
+        _ => log::warn!("🔍   NOT GraphJoins"),
+    }
     // This pass focuses on graph-specific planning and optimizations
 
     let graph_traversal_planning = GraphTRaversalPlanning::new();
@@ -290,7 +380,6 @@ pub fn intermediate_analyzing(
     let plan = transformed_plan.get_plan();
     log::info!("🔍 ANALYZER: VariableResolver.analyze() completed");
 
-    // DEBUG: Check cte_references RIGHT after VariableResolver
     fn count_cte_refs_here(p: &LogicalPlan) -> usize {
         match p {
             LogicalPlan::WithClause(wc) => wc.cte_references.len() + count_cte_refs_here(&wc.input),
@@ -366,6 +455,47 @@ pub fn intermediate_analyzing(
     // Trivial WITH Elimination - remove pass-through WITH clauses that add no value
     // Run after collect+UNWIND elimination to clean up any resulting trivial WITHs
     log::info!("🔍 Running Trivial WITH Elimination...");
+    log::warn!(
+        "🔍 BEFORE TrivialWithElimination: plan type: {:?}",
+        std::mem::discriminant(plan.as_ref())
+    );
+    match plan.as_ref() {
+        LogicalPlan::GraphJoins(gj) => {
+            log::warn!(
+                "🔍   It's GraphJoins! {} joins, input type: {:?}",
+                gj.joins.len(),
+                std::mem::discriminant(gj.input.as_ref())
+            );
+            match gj.input.as_ref() {
+                LogicalPlan::WithClause(wc) => {
+                    log::warn!(
+                        "🔍     WithClause! input type: {:?}",
+                        std::mem::discriminant(wc.input.as_ref())
+                    );
+                    if let LogicalPlan::Filter(f) = wc.input.as_ref() {
+                        log::warn!(
+                            "🔍       ✅ Filter exists with predicate: {:?}",
+                            f.predicate
+                        );
+                    } else {
+                        log::error!(
+                            "🔥🔥🔥 BUG FOUND: WithClause.input is NOT Filter! Type: {:?}",
+                            std::mem::discriminant(wc.input.as_ref())
+                        );
+                    }
+                }
+                _ => log::warn!(
+                    "🔍     GraphJoins.input is NOT WithClause: {:?}",
+                    std::mem::discriminant(gj.input.as_ref())
+                ),
+            }
+        }
+        _ => log::warn!(
+            "🔍   NOT GraphJoins (type: {:?})",
+            std::mem::discriminant(plan.as_ref())
+        ),
+    }
+
     let trivial_with_elimination = TrivialWithElimination;
     let plan = match trivial_with_elimination.optimize(plan.clone(), plan_ctx) {
         Ok(transformed) => transformed.get_plan(),
@@ -376,6 +506,28 @@ pub fn intermediate_analyzing(
         }
     };
     log::info!("✓ Trivial WITH Elimination completed");
+
+    log::warn!(
+        "🔍 AFTER TrivialWithElimination: plan type: {:?}",
+        std::mem::discriminant(plan.as_ref())
+    );
+    if let LogicalPlan::Projection(proj) = plan.as_ref() {
+        log::warn!(
+            "🔍   Projection.input type: {:?}",
+            std::mem::discriminant(proj.input.as_ref())
+        );
+        if let LogicalPlan::WithClause(wc) = proj.input.as_ref() {
+            log::warn!(
+                "🔍     WithClause.input type: {:?}",
+                std::mem::discriminant(wc.input.as_ref())
+            );
+        } else if let LogicalPlan::Filter(f) = proj.input.as_ref() {
+            log::warn!(
+                "🔍     Filter still exists with predicate: {:?}",
+                f.predicate
+            );
+        }
+    }
     eprintln!(
         "🔬 ANALYZER: After TrivialWithElimination: {} cte_references",
         count_cte_refs_here(&plan)

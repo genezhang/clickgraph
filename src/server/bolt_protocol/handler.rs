@@ -23,9 +23,16 @@ use crate::query_planner;
 /// Execution plan for procedure-only queries (extracted before async execution)
 #[derive(Debug)]
 enum ExecutionPlan {
-    SimpleProcedure { proc_name: String },
-    ProcedureWithReturn { proc_name: String },
-    Union { branches: Vec<ProcedureBranch> },
+    SimpleProcedure {
+        proc_name: String,
+    },
+    ProcedureWithReturn {
+        proc_name: String,
+        // Store index to look up in parsed statement after async
+    },
+    Union {
+        branches: Vec<ProcedureBranch>,
+    },
 }
 
 /// Branch information for UNION execution
@@ -54,6 +61,136 @@ fn bolt_value_to_string(value: &BoltValue) -> String {
         BoltValue::Json(v) => serde_json::to_string(v).unwrap_or_else(|_| format!("{:?}", v)),
         BoltValue::PackstreamBytes(bytes) => format!("<packstream: {} bytes>", bytes.len()),
     }
+}
+
+/// Decode id() parameters in a query
+///
+/// Neo4j Browser sends queries like `id(a) IN $existingNodeIds` with encoded IDs.
+/// This function detects which parameters are used with id() and decodes them.
+///
+/// Pattern detection: `id(alias) IN $paramName` or `id(alias) = $paramName`
+fn decode_id_parameters(
+    query: &str,
+    mut parameters: HashMap<String, Value>,
+) -> HashMap<String, Value> {
+    use super::id_mapper::IdMapper;
+    use regex::Regex;
+
+    // Pattern: id(alias) IN $paramName
+    let id_in_param = Regex::new(r"(?i)\bid\s*\(\s*\w+\s*\)\s+IN\s+\$(\w+)").unwrap();
+    // Pattern: id(alias) = $paramName
+    let id_eq_param = Regex::new(r"(?i)\bid\s*\(\s*\w+\s*\)\s*=\s*\$(\w+)").unwrap();
+
+    // Collect parameter names used with id()
+    let mut id_params: Vec<String> = Vec::new();
+
+    for cap in id_in_param.captures_iter(query) {
+        if let Some(param_name) = cap.get(1) {
+            id_params.push(param_name.as_str().to_string());
+        }
+    }
+    for cap in id_eq_param.captures_iter(query) {
+        if let Some(param_name) = cap.get(1) {
+            id_params.push(param_name.as_str().to_string());
+        }
+    }
+
+    if id_params.is_empty() {
+        return parameters;
+    }
+
+    log::info!(
+        "🔧 decode_id_parameters: Found id() parameters: {:?}",
+        id_params
+    );
+
+    // Decode each id() parameter
+    for param_name in id_params {
+        if let Some(value) = parameters.get_mut(&param_name) {
+            match value {
+                Value::Array(arr) => {
+                    // Decode each element in the array
+                    let decoded: Vec<Value> = arr
+                        .iter()
+                        .filter_map(|v| {
+                            if let Some(encoded_id) = v.as_i64() {
+                                // Use IdMapper to decode (tries cache first)
+                                if let Some((_label, raw_value)) =
+                                    IdMapper::decode_for_query(encoded_id)
+                                {
+                                    log::debug!(
+                                        "  Decoded {} -> {} (from cache)",
+                                        encoded_id,
+                                        raw_value
+                                    );
+                                    // Try to parse as integer, fallback to string
+                                    if let Ok(int_val) = raw_value.parse::<i64>() {
+                                        return Some(Value::Number(int_val.into()));
+                                    }
+                                    return Some(Value::String(raw_value));
+                                } else {
+                                    // Fallback: extract raw_value directly from bit pattern
+                                    // This handles cross-session IDs where cache doesn't have the mapping
+                                    // Use 47-bit mask (matching the JS-safe encoding in id_encoding.rs)
+                                    const ID_MASK: i64 = (1i64 << 47) - 1; // 0x7FFFFFFFFFFF
+                                    let raw_value = encoded_id & ID_MASK;
+                                    log::debug!(
+                                        "  Decoded {} -> {} (from bit pattern)",
+                                        encoded_id,
+                                        raw_value
+                                    );
+                                    return Some(Value::Number(raw_value.into()));
+                                }
+                            }
+                            // Keep original if not a number
+                            Some(v.clone())
+                        })
+                        .collect();
+
+                    log::info!(
+                        "🔧 Decoded parameter '{}': {} values (from {} original)",
+                        param_name,
+                        decoded.len(),
+                        arr.len()
+                    );
+                    *value = Value::Array(decoded);
+                }
+                Value::Number(n) => {
+                    // Single value
+                    if let Some(encoded_id) = n.as_i64() {
+                        if let Some((_label, raw_value)) = IdMapper::decode_for_query(encoded_id) {
+                            log::info!(
+                                "🔧 Decoded parameter '{}': {} -> {} (from cache)",
+                                param_name,
+                                encoded_id,
+                                raw_value
+                            );
+                            if let Ok(int_val) = raw_value.parse::<i64>() {
+                                *value = Value::Number(int_val.into());
+                            } else {
+                                *value = Value::String(raw_value);
+                            }
+                        } else {
+                            // Fallback: extract raw_value directly from bit pattern
+                            // Use 47-bit mask (matching the JS-safe encoding in id_encoding.rs)
+                            const ID_MASK: i64 = (1i64 << 47) - 1; // 0x7FFFFFFFFFFF
+                            let raw_value = encoded_id & ID_MASK;
+                            log::info!(
+                                "🔧 Decoded parameter '{}': {} -> {} (from bit pattern)",
+                                param_name,
+                                encoded_id,
+                                raw_value
+                            );
+                            *value = Value::Number(raw_value.into());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    parameters
 }
 
 /// Bolt protocol message handler
@@ -479,7 +616,11 @@ impl BoltHandler {
             .extract_query()
             .ok_or_else(|| BoltError::invalid_message("RUN message missing query"))?;
 
-        let parameters = message.extract_parameters().unwrap_or_default();
+        let mut parameters = message.extract_parameters().unwrap_or_default();
+
+        // Decode id() parameters: if query has `id(x) IN $paramName`, decode the parameter values
+        // Neo4j Browser sends encoded IDs in parameters like $existingNodeIds, $newNodeIds
+        parameters = decode_id_parameters(&query, parameters);
 
         // Get selected schema from context, or from RUN message metadata
         let (schema_name, tenant_id, role, view_parameters) = {
@@ -532,6 +673,7 @@ impl BoltHandler {
         };
 
         log::info!("Executing Cypher query: {}", query);
+
         if let Some(ref schema) = schema_name {
             log::debug!("Query execution using schema: {}", schema);
         } else {
@@ -539,9 +681,10 @@ impl BoltHandler {
         }
 
         // Parse and execute the query
+        // Note: id() predicates with encoded values are decoded in FilterTagging pass
         match self
             .execute_cypher_query(
-                query,
+                &query,
                 parameters,
                 schema_name,
                 tenant_id,
@@ -835,41 +978,45 @@ impl BoltHandler {
     ) -> BoltResult<HashMap<String, Value>> {
         use crate::open_cypher_parser::ast::CypherStatement;
 
-        // Parse and determine if this is a procedure call (synchronously, no await)
-        let (is_procedure, is_union, proc_name, effective_schema) = {
-            // Parse Cypher statement (could be query or procedure call)
-            let parsed_stmt = match open_cypher_parser::parse_cypher_statement(query) {
-                Ok((_, stmt)) => stmt,
-                Err(parse_error) => {
-                    return Err(BoltError::query_error(format!(
-                        "Statement parsing failed: {}",
-                        parse_error
-                    )));
-                }
-            };
+        // ============================================================
+        // PHASE 1: Parse and Transform (synchronous, single pass)
+        // ============================================================
 
-            // Check if this is a procedure-only statement (handles both ProcedureCall and Query AST)
-            let is_proc = crate::procedures::is_procedure_only_statement(&parsed_stmt);
-            let is_union_check = crate::procedures::is_procedure_union_query(&parsed_stmt);
+        // Parse Cypher statement once
+        let parsed_stmt = match open_cypher_parser::parse_cypher_statement(query) {
+            Ok((_, stmt)) => stmt,
+            Err(parse_error) => {
+                return Err(BoltError::query_error(format!(
+                    "Statement parsing failed: {}",
+                    parse_error
+                )));
+            }
+        };
 
-            // Extract procedure name for standalone procedures (non-UNION)
-            let proc_name_opt = if is_proc && !is_union_check {
-                match &parsed_stmt {
-                    CypherStatement::ProcedureCall(ref pc) => Some(pc.procedure_name.to_string()),
-                    CypherStatement::Query { query, .. } => {
-                        // Single procedure-only query (CALL...YIELD...RETURN without UNION)
-                        query
-                            .call_clause
-                            .as_ref()
-                            .map(|cc| cc.procedure_name.to_string())
-                    }
-                }
-            } else {
-                None
-            };
+        // Transform id() functions using IdMapper (AST-level transformation)
+        // Clone IdMapper snapshot for transformation (read-only access)
+        let id_mapper_snapshot = {
+            let context = lock_context!(self.context);
+            context.id_mapper.clone()
+        };
+
+        // ============================================================
+        // PHASE 2: Analyze Statement Type (synchronous)
+        // ============================================================
+
+        // Parse and transform in a limited scope to extract metadata
+        let (is_procedure, is_union, effective_schema, exec_plan, query_type) = {
+            let transformed_stmt = crate::query_planner::ast_transform::transform_id_functions(
+                parsed_stmt,
+                &id_mapper_snapshot,
+                None, // No schema available yet (loaded later)
+            );
+
+            let is_procedure = crate::procedures::is_procedure_only_statement(&transformed_stmt);
+            let is_union = crate::procedures::is_procedure_union_query(&transformed_stmt);
 
             // Determine effective schema
-            let eff_schema = match &parsed_stmt {
+            let effective_schema = match &transformed_stmt {
                 CypherStatement::Query { query, .. } => {
                     if let Some(ref use_clause) = query.use_clause {
                         use_clause.database_name.to_string()
@@ -878,32 +1025,20 @@ impl BoltHandler {
                     }
                 }
                 CypherStatement::ProcedureCall(_) => {
-                    // Procedures use connection's schema (Bolt is connection-bound)
                     schema_name.as_deref().unwrap_or("default").to_string()
                 }
             };
 
-            (is_proc, is_union_check, proc_name_opt, eff_schema)
-        }; // parsed_stmt is dropped here!
+            log::debug!("Query execution using schema: {}", effective_schema);
+            log::debug!(
+                "Routing decision: is_procedure={}, is_union={}",
+                is_procedure,
+                is_union
+            );
 
-        log::debug!("Statement execution using schema: {}", effective_schema);
-        log::debug!(
-            "Routing decision: is_procedure={}, is_union={}, proc_name={:?}",
-            is_procedure,
-            is_union,
-            proc_name
-        );
-
-        // Handle procedure-only queries (including UNION)
-        if is_procedure {
-            // Re-parse and extract all needed data synchronously (in its own scope)
-            let exec_plan = {
-                let parsed_stmt = open_cypher_parser::parse_cypher_statement(query)
-                    .map_err(|e| BoltError::query_error(format!("Re-parse failed: {}", e)))?
-                    .1;
-
-                // Extract execution plan synchronously
-                match &parsed_stmt {
+            // Extract execution plan for procedures
+            let exec_plan = if is_procedure {
+                Some(match &transformed_stmt {
                     CypherStatement::ProcedureCall(proc_call) => ExecutionPlan::SimpleProcedure {
                         proc_name: proc_call.procedure_name.to_string(),
                     },
@@ -912,7 +1047,7 @@ impl BoltHandler {
                         union_clauses,
                     } => {
                         if !union_clauses.is_empty() {
-                            // Extract data from all branches
+                            // Extract branch metadata
                             let mut branches = Vec::new();
 
                             // Main branch
@@ -937,8 +1072,14 @@ impl BoltHandler {
                         } else {
                             // Single procedure with possible RETURN
                             if let Some(call_clause) = &query_ast.call_clause {
-                                ExecutionPlan::ProcedureWithReturn {
-                                    proc_name: call_clause.procedure_name.to_string(),
+                                if query_ast.return_clause.is_some() {
+                                    ExecutionPlan::ProcedureWithReturn {
+                                        proc_name: call_clause.procedure_name.to_string(),
+                                    }
+                                } else {
+                                    ExecutionPlan::SimpleProcedure {
+                                        proc_name: call_clause.procedure_name.to_string(),
+                                    }
                                 }
                             } else {
                                 return Err(BoltError::query_error(
@@ -947,8 +1088,60 @@ impl BoltHandler {
                             }
                         }
                     }
+                })
+            } else {
+                None
+            };
+
+            // Extract query type for regular queries
+            let query_type = match &transformed_stmt {
+                CypherStatement::Query {
+                    query,
+                    union_clauses,
+                } => {
+                    // Check main query type
+                    let main_type = query_planner::get_query_type(query);
+
+                    // For UNION queries, all branches must be Read queries
+                    if !union_clauses.is_empty() {
+                        // Check each union branch
+                        for union_clause in union_clauses {
+                            let branch_type = query_planner::get_query_type(&union_clause.query);
+                            if branch_type != query_planner::types::QueryType::Read {
+                                log::debug!("UNION branch has non-Read type: {:?}", branch_type);
+                                return Err(BoltError::query_error(
+                                    "Only read queries are currently supported via Bolt protocol"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                    }
+
+                    main_type
                 }
-            }; // parsed_stmt dropped here at end of scope
+                CypherStatement::ProcedureCall(_) => {
+                    // Procedures are handled above, this shouldn't happen
+                    query_planner::types::QueryType::Read // dummy value
+                }
+            };
+
+            // transformed_stmt is dropped here at end of scope!
+            (
+                is_procedure,
+                is_union,
+                effective_schema,
+                exec_plan,
+                query_type,
+            )
+        };
+
+        // ============================================================
+        // PHASE 3: Route to Procedure or Regular Query Handler
+        // ============================================================
+
+        // Handle procedure-only queries (including UNION)
+        if is_procedure {
+            let exec_plan = exec_plan.expect("exec_plan must be Some when is_procedure=true");
 
             // Now execute based on exec_plan (no AST references remain)
             let registry = crate::procedures::ProcedureRegistry::new();
@@ -978,27 +1171,28 @@ impl BoltHandler {
                     .await
                     .map_err(|e| BoltError::query_error(e))?;
 
-                    // Re-parse JUST to get return clause (AST not held across await)
-                    let (_, reparsed) =
-                        open_cypher_parser::parse_cypher_statement(query).map_err(|e| {
-                            BoltError::query_error(format!("Re-parse for RETURN failed: {}", e))
-                        })?;
-
-                    if let CypherStatement::Query { query, .. } = reparsed {
-                        if let Some(return_clause) = &query.return_clause {
-                            crate::procedures::return_evaluator::apply_return_clause(
-                                raw_results,
-                                return_clause,
-                            )
-                            .map_err(|e| {
-                                BoltError::query_error(format!("RETURN evaluation failed: {}", e))
+                    // Parse original query to get RETURN clause (procedures don't have id() in RETURN)
+                    let return_clause = match open_cypher_parser::parse_cypher_statement(query) {
+                        Ok((_, CypherStatement::Query { query, .. })) => {
+                            query.return_clause.ok_or_else(|| {
+                                BoltError::query_error("Expected RETURN clause".to_string())
                             })?
-                        } else {
-                            raw_results
                         }
-                    } else {
-                        raw_results
-                    }
+                        _ => {
+                            return Err(BoltError::query_error(
+                                "Failed to parse RETURN clause".to_string(),
+                            ))
+                        }
+                    };
+
+                    // Apply RETURN clause
+                    crate::procedures::return_evaluator::apply_return_clause(
+                        raw_results,
+                        &return_clause,
+                    )
+                    .map_err(|e| {
+                        BoltError::query_error(format!("RETURN evaluation failed: {}", e))
+                    })?
                 }
                 ExecutionPlan::Union { branches } => {
                     log::info!(
@@ -1018,39 +1212,40 @@ impl BoltHandler {
                         .await
                         .map_err(|e| BoltError::query_error(e))?;
 
-                        // Apply RETURN if this branch had one
+                        // Apply RETURN clause if branch has one
                         let transformed_results = if branch.has_return {
-                            // Re-parse to get the specific return clause for this branch
-                            let (_, reparsed) = open_cypher_parser::parse_cypher_statement(query)
-                                .map_err(|e| {
-                                BoltError::query_error(format!("Re-parse failed: {}", e))
-                            })?;
-
-                            if let CypherStatement::Query {
-                                query: main_q,
-                                union_clauses,
-                            } = reparsed
-                            {
-                                let return_clause = if idx == 0 {
-                                    &main_q.return_clause
-                                } else {
-                                    &union_clauses[idx - 1].query.return_clause
+                            // Parse to get return clause for this branch (after await - safe)
+                            let return_clause =
+                                match open_cypher_parser::parse_cypher_statement(query) {
+                                    Ok((
+                                        _,
+                                        CypherStatement::Query {
+                                            query: main_q,
+                                            union_clauses,
+                                        },
+                                    )) => {
+                                        if idx == 0 {
+                                            main_q.return_clause
+                                        } else {
+                                            union_clauses
+                                                .get(idx - 1)
+                                                .and_then(|uc| uc.query.return_clause.clone())
+                                        }
+                                    }
+                                    _ => None,
                                 };
 
-                                if let Some(ret_clause) = return_clause {
-                                    crate::procedures::return_evaluator::apply_return_clause(
-                                        raw_results,
-                                        ret_clause,
-                                    )
-                                    .map_err(|e| {
-                                        BoltError::query_error(format!(
-                                            "RETURN evaluation failed: {}",
-                                            e
-                                        ))
-                                    })?
-                                } else {
-                                    raw_results
-                                }
+                            if let Some(ref rc) = return_clause {
+                                crate::procedures::return_evaluator::apply_return_clause(
+                                    raw_results,
+                                    rc,
+                                )
+                                .map_err(|e| {
+                                    BoltError::query_error(format!(
+                                        "RETURN evaluation failed: {}",
+                                        e
+                                    ))
+                                })?
                             } else {
                                 raw_results
                             }
@@ -1102,50 +1297,7 @@ impl BoltHandler {
             return Ok(metadata);
         }
 
-        // Handle regular queries - parse again for query type check (no await yet)
-        let query_type = {
-            // Use parse_cypher_statement which handles UNION properly
-            let parsed_stmt = open_cypher_parser::parse_cypher_statement(query)
-                .map_err(|e| {
-                    BoltError::query_error(format!("Query type check parse failed: {}", e))
-                })?
-                .1;
-
-            // Extract the main query and union clauses from the statement
-            match parsed_stmt {
-                CypherStatement::Query {
-                    query,
-                    union_clauses,
-                } => {
-                    // Check main query type
-                    let main_type = query_planner::get_query_type(&query);
-
-                    // For UNION queries, all branches must be Read queries
-                    if !union_clauses.is_empty() {
-                        // Check each union branch
-                        for union_clause in &union_clauses {
-                            let branch_type = query_planner::get_query_type(&union_clause.query);
-                            if branch_type != query_planner::types::QueryType::Read {
-                                log::debug!("UNION branch has non-Read type: {:?}", branch_type);
-                                return Err(BoltError::query_error(
-                                    "Only read queries are currently supported via Bolt protocol"
-                                        .to_string(),
-                                ));
-                            }
-                        }
-                    }
-
-                    main_type
-                }
-                CypherStatement::ProcedureCall(_) => {
-                    // This shouldn't happen as we already handled procedures above
-                    return Err(BoltError::query_error(
-                        "Unexpected procedure call in regular query path".to_string(),
-                    ));
-                }
-            }
-        };
-
+        // Handle regular queries
         // Check query type
         if query_type != query_planner::types::QueryType::Read {
             return Err(BoltError::query_error(
@@ -1161,17 +1313,29 @@ impl BoltHandler {
             }
         };
 
-        // Re-parse for planning (necessary for Send safety)
-        // Use parse_cypher_statement which handles UNION properly
-        let parsed_statement_for_planning = {
-            open_cypher_parser::parse_cypher_statement(query)
-                .map_err(|e| BoltError::query_error(format!("Query re-parse failed: {}", e)))?
-                .1
+        // Re-parse and transform for planning (after async boundary)
+        // Note: This is unavoidable due to Rc<RefCell<>> in AST not being Send
+        let parsed_stmt_for_planning = match open_cypher_parser::parse_cypher_statement(query) {
+            Ok((_, stmt)) => stmt,
+            Err(e) => {
+                return Err(BoltError::query_error(format!("Re-parse failed: {}", e)));
+            }
         };
 
-        // Generate logical plan using evaluate_read_statement (handles UNION properly)
+        let id_mapper_snapshot = {
+            let context = lock_context!(self.context);
+            context.id_mapper.clone()
+        };
+
+        let transformed_for_planning = crate::query_planner::ast_transform::transform_id_functions(
+            parsed_stmt_for_planning,
+            &id_mapper_snapshot,
+            Some(&graph_schema), // Pass schema for node_id property lookup
+        );
+
+        // Generate logical plan using transformed statement
         let (logical_plan, plan_ctx) = match query_planner::evaluate_read_statement(
-            parsed_statement_for_planning,
+            transformed_for_planning,
             &graph_schema,
             tenant_id,
             view_parameters,
@@ -1185,7 +1349,7 @@ impl BoltHandler {
                 )));
             }
         };
-        // parsed_query is now dropped - no more Rc<RefCell<>> held!
+        // transformed_for_planning is now dropped
 
         // Extract return metadata for result transformation
         let return_metadata = match extract_return_metadata(&logical_plan, &plan_ctx) {
@@ -1201,6 +1365,7 @@ impl BoltHandler {
                 super::result_transformer::ReturnItemType::Node { .. }
                     | super::result_transformer::ReturnItemType::Relationship { .. }
                     | super::result_transformer::ReturnItemType::Path { .. }
+                    | super::result_transformer::ReturnItemType::IdFunction { .. }
             )
         });
 
@@ -1315,6 +1480,10 @@ impl BoltHandler {
             );
 
             let mut transformed_rows: Vec<Vec<BoltValue>> = Vec::new();
+
+            // Get mutable access to id_mapper from context for session-scoped ID assignment
+            let mut context = lock_context!(self.context);
+
             for row in &rows {
                 // Convert row Vec back to HashMap for transformation
                 let mut row_map = HashMap::new();
@@ -1328,6 +1497,7 @@ impl BoltHandler {
                     row_map,
                     &return_metadata,
                     &graph_schema,
+                    &mut context.id_mapper,
                 ) {
                     Ok(transformed) => {
                         log::debug!(
@@ -1347,13 +1517,22 @@ impl BoltHandler {
                 }
             }
 
+            // Release lock before caching
+            drop(context);
+
             // Cache the transformed results
             self.cached_results = Some(transformed_rows);
 
             // Update field names to match transformed structure
+            // Strip ".*" suffix for wildcard expansions (e.g., "a.*" → "a")
             field_names = return_metadata
                 .iter()
-                .map(|m| m.field_name.clone())
+                .map(|m| {
+                    m.field_name
+                        .strip_suffix(".*")
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| m.field_name.clone())
+                })
                 .collect();
 
             log::info!("After transformation: field_names: {:?}", field_names);

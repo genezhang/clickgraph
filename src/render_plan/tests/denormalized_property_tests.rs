@@ -645,6 +645,7 @@ fn test_analyzer_denormalized_property_integration() {
         from_label_column: None,
         to_label_column: None,
         schema_filter: None,
+        node_label: Some("Airport".to_string()),
     })));
 
     let origin_node = Arc::new(LogicalPlan::GraphNode(
@@ -679,6 +680,7 @@ fn test_analyzer_denormalized_property_integration() {
         from_label_column: None,
         to_label_column: None,
         schema_filter: None,
+        node_label: Some("Airport".to_string()),
     })));
 
     let dest_node = Arc::new(LogicalPlan::GraphNode(

@@ -62,8 +62,9 @@ fn traverse_connected_pattern_with_mode<'a>(
     is_optional: bool,
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
     log::info!(
-        "🔍 TRAVERSE_CONNECTED_PATTERN called with {} patterns",
-        connected_patterns.len()
+        "🔍 TRAVERSE_CONNECTED_PATTERN called with {} patterns, path_variable={:?}",
+        connected_patterns.len(),
+        path_variable
     );
 
     crate::debug_print!("\n╔════════════════════════════════════════");
@@ -456,10 +457,11 @@ fn traverse_connected_pattern_with_mode<'a>(
                         };
 
                         log::debug!(
-                            "🔍 Creating GraphRel for branch {}: rel_alias='{}', rel_type='{}'",
+                            "🔍 Creating GraphRel for branch {}: rel_alias='{}', rel_type='{}', path_variable={:?}",
                             union_branches.len(),
                             &rel_alias,
-                            rel_type
+                            rel_type,
+                            path_variable
                         );
 
                         let graph_rel_node = GraphRel {

@@ -244,6 +244,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 from_label_column: view_scan.from_label_column.clone(),
                                 to_label_column: view_scan.to_label_column.clone(),
                                 schema_filter: view_scan.schema_filter.clone(),
+                                node_label: view_scan.node_label.clone(),
                             },
                         )));
 
@@ -297,6 +298,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             from_label_column: view_scan.from_label_column.clone(),
                             to_label_column: view_scan.to_label_column.clone(),
                             schema_filter: view_scan.schema_filter.clone(),
+                            node_label: view_scan.node_label.clone(),
                         },
                     )));
 
@@ -378,6 +380,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                         from_label_column: view_scan.from_label_column.clone(),
                                         to_label_column: view_scan.to_label_column.clone(),
                                         schema_filter: view_scan.schema_filter.clone(),
+                                        node_label: view_scan.node_label.clone(),
                                     },
                                 )));
 
@@ -560,6 +563,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                     from_label_column: view_scan.from_label_column.clone(),
                                     to_label_column: view_scan.to_label_column.clone(),
                                     schema_filter: view_scan.schema_filter.clone(),
+                                    node_label: view_scan.node_label.clone(),
                                 },
                             )));
 
@@ -680,6 +684,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                                         .to_label_column
                                                         .clone(),
                                                     schema_filter: view_scan.schema_filter.clone(),
+                                                    node_label: view_scan.node_label.clone(),
                                                 },
                                             )));
 

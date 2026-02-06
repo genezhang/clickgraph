@@ -64,12 +64,26 @@ impl CteReferencePopulator {
             }
 
             LogicalPlan::GraphRel(rel) => {
+                // First, collect CTE exports from left child if it's a WithClause
+                // This ensures the GraphRel can reference CTEs from its own left child
+                let mut child_ctes = available_ctes.clone();
+                if let LogicalPlan::WithClause(wc) = rel.left.as_ref() {
+                    if let Some(cte_name) = &wc.cte_name {
+                        for alias in &wc.exported_aliases {
+                            log::info!("🔍 CteReferencePopulator: Adding left WithClause export '{}' -> '{}'",
+                                       alias, cte_name);
+                            child_ctes.insert(alias.clone(), cte_name.clone());
+                        }
+                    }
+                }
+
                 // Check if left_connection or right_connection are in available CTEs
+                // Use child_ctes which includes exports from left WithClause
                 let mut cte_refs = rel.cte_references.clone();
                 let mut found_new_refs = false;
 
-                if available_ctes.contains_key(&rel.left_connection) {
-                    if let Some(cte_name) = available_ctes.get(&rel.left_connection) {
+                if child_ctes.contains_key(&rel.left_connection) {
+                    if let Some(cte_name) = child_ctes.get(&rel.left_connection) {
                         log::info!("🔍 CteReferencePopulator: GraphRel '{}' left_connection '{}' -> CTE '{}'",
                                    rel.alias, rel.left_connection, cte_name);
                         cte_refs.insert(rel.left_connection.clone(), cte_name.clone());
@@ -77,22 +91,12 @@ impl CteReferencePopulator {
                     }
                 }
 
-                if available_ctes.contains_key(&rel.right_connection) {
-                    if let Some(cte_name) = available_ctes.get(&rel.right_connection) {
+                if child_ctes.contains_key(&rel.right_connection) {
+                    if let Some(cte_name) = child_ctes.get(&rel.right_connection) {
                         log::info!("🔍 CteReferencePopulator: GraphRel '{}' right_connection '{}' -> CTE '{}'",
                                    rel.alias, rel.right_connection, cte_name);
                         cte_refs.insert(rel.right_connection.clone(), cte_name.clone());
                         found_new_refs = true;
-                    }
-                }
-
-                // Process children with updated CTE context (add this WITH's exports if left is a WITH)
-                let mut child_ctes = available_ctes.clone();
-                if let LogicalPlan::WithClause(wc) = rel.left.as_ref() {
-                    if let Some(cte_name) = &wc.cte_name {
-                        for alias in &wc.exported_aliases {
-                            child_ctes.insert(alias.clone(), cte_name.clone());
-                        }
                     }
                 }
 

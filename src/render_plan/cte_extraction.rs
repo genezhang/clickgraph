@@ -1320,6 +1320,8 @@ fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::GraphNode(node) => extract_id_column(&node.input),
         LogicalPlan::Filter(filter) => extract_id_column(&filter.input),
         LogicalPlan::Projection(proj) => extract_id_column(&proj.input),
+        // For WithClause, recurse into input to get ID column from underlying node
+        LogicalPlan::WithClause(wc) => extract_id_column(&wc.input),
         _ => None,
     }
 }
@@ -4410,7 +4412,11 @@ pub fn extract_node_label_from_viewscan_with_schema(
 ) -> Option<String> {
     match plan {
         LogicalPlan::ViewScan(view_scan) => {
-            // Look up node label from the provided schema using table name
+            // First check if ViewScan has explicit node_label (for denormalized nodes)
+            if let Some(label) = &view_scan.node_label {
+                return Some(label.clone());
+            }
+            // Otherwise, look up node label from the provided schema using table name
             if let Some((label, _)) = get_node_schema_by_table(schema, &view_scan.source_table) {
                 return Some(label.to_string());
             }
@@ -4432,6 +4438,13 @@ pub fn extract_node_label_from_viewscan_with_schema(
         }
         LogicalPlan::GraphJoins(gj) => {
             extract_node_label_from_viewscan_with_schema(&gj.input, schema)
+        }
+        LogicalPlan::Union(u) => {
+            // For UNION of denormalized nodes, try to get label from first input
+            if let Some(first) = u.inputs.first() {
+                return extract_node_label_from_viewscan_with_schema(first, schema);
+            }
+            None
         }
         LogicalPlan::Limit(l) => extract_node_label_from_viewscan_with_schema(&l.input, schema),
         LogicalPlan::Skip(s) => extract_node_label_from_viewscan_with_schema(&s.input, schema),

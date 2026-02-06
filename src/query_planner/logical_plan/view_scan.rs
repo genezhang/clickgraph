@@ -78,6 +78,11 @@ pub struct ViewScan {
     /// Applied automatically to all scans of this node/relationship type
     /// Example: "ts >= now() - INTERVAL 7 DAY AND proto = 'tcp'"
     pub schema_filter: Option<SchemaFilter>,
+
+    // ===== Node label for denormalized nodes =====
+    /// The node label this ViewScan represents (e.g., "Airport", "User")
+    /// Essential for denormalized nodes where label cannot be derived from table name
+    pub node_label: Option<String>,
 }
 
 impl ViewScan {
@@ -111,6 +116,7 @@ impl ViewScan {
             from_label_column: None,
             to_label_column: None,
             schema_filter: None, // Default: no schema-level filter
+            node_label: None,    // Default: no explicit label
         }
     }
 
@@ -145,6 +151,7 @@ impl ViewScan {
             from_label_column: None,
             to_label_column: None,
             schema_filter: None, // Default: no schema-level filter
+            node_label: None,    // Default: no explicit label
         }
     }
 
@@ -180,6 +187,7 @@ impl ViewScan {
             from_label_column: None,
             to_label_column: None,
             schema_filter: None, // Default: no schema-level filter
+            node_label: None,    // Not used for relationships
         }
     }
 
@@ -216,6 +224,7 @@ impl ViewScan {
             from_label_column: None,
             to_label_column: None,
             schema_filter: None, // Default: no schema-level filter
+            node_label: None,    // Not used for relationships
         }
     }
 
@@ -260,6 +269,7 @@ impl ViewScan {
             from_label_column: self.from_label_column.clone(),
             to_label_column: self.to_label_column.clone(),
             schema_filter: self.schema_filter.clone(), // Preserve schema filter
+            node_label: self.node_label.clone(),       // Preserve node label
         }
     }
 

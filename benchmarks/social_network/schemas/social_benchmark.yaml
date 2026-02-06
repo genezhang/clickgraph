@@ -62,13 +62,12 @@ graph_schema:
     - type: AUTHORED
       database: brahmand
       table: posts_bench
-      from_id: user_id  # FIXED: Actual column is user_id, not author_id
+      from_id: user_id  # Actual column in the database (not author_id)
       to_id: post_id
       edge_id: post_id
       from_node: User
       to_node: Post
-      property_mappings:
-        post_date: created_at
+      property_mappings: {}  # No properties for this relationship
     
     - type: LIKED
       database: brahmand

@@ -424,8 +424,11 @@ impl GraphJoinInference {
 
                 // Now register this WithClause's CTE references (will overwrite inner ones for same alias)
                 // Found a WITH clause - register exported aliases as CTE references
-                // CTE name format: with_{sorted_aliases}_cte (no counter - render phase adds it)
-                let cte_name = generate_cte_base_name(&wc.exported_aliases);
+                // Use the CTE name from the analyzer (CteSchemaResolver sets this with proper counter)
+                let cte_name = wc.cte_name.clone().unwrap_or_else(|| {
+                    log::error!("⚠️ BUG: WithClause.cte_name is None in graph_join/inference.rs");
+                    generate_cte_base_name(&wc.exported_aliases)
+                });
 
                 log::info!(
                     "🔍 register_with_cte_references: Found WITH exporting {:?} → CTE '{}'",

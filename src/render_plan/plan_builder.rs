@@ -394,6 +394,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                 }
             }
+            LogicalPlan::WithClause(wc) => {
+                // For WITH clause, check if the alias is exported and get its ID column from input
+                if wc.exported_aliases.contains(&alias.to_string()) {
+                    return wc.input.find_id_column_for_alias(alias);
+                }
+            }
             _ => {}
         }
         Err(RenderBuildError::InvalidRenderPlan(format!(
@@ -1252,13 +1258,22 @@ impl RenderPlanBuilder for LogicalPlan {
                 })
             }
             LogicalPlan::WithClause(with) => {
+                log::warn!("🔍 Rendering WithClause");
+                log::warn!(
+                    "🔍 WithClause input type: {:?}",
+                    std::mem::discriminant(with.input.as_ref())
+                );
+
                 // Handle WithClause by building a CTE from the input and creating a render plan with the CTE
                 let has_aggregation = with
                     .items
                     .iter()
                     .any(|item| matches!(item.expression, LogicalExpr::AggregateFnCall(_)));
 
+                log::warn!("🔍 Calling extract_filters on WithClause input...");
                 let mut cte_filters = FilterBuilder::extract_filters(with.input.as_ref())?;
+                log::warn!("🔍 extract_filters returned: {:?}", cte_filters);
+
                 let mut cte_having = with.input.extract_having()?;
 
                 if let Some(where_clause) = &with.where_clause {
@@ -1379,12 +1394,16 @@ impl RenderPlanBuilder for LogicalPlan {
                     // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
                 }));
 
-                // Generate CTE base name using centralized utility
-                // Note: to_render_plan doesn't have access to counter, so we use base name.
-                // This creates names like "with_p_cte" (without counter suffix).
-                // The counter is only added during query planning when available.
-                // This is safe because base names are still recognized by is_generated_cte_name().
-                let cte_name = generate_cte_base_name(&with.exported_aliases);
+                // Use CTE name from analyzer (includes counter for uniqueness)
+                // The analyzer set this name using CteSchemaResolver with proper counter tracking
+                // Format: "with_{sorted_aliases}_cte_{counter}" (e.g., "with_o_cte_0")
+                let cte_name = with.cte_name.clone().unwrap_or_else(|| {
+                    // FALLBACK: If analyzer didn't set cte_name (shouldn't happen after CteSchemaResolver)
+                    log::warn!(
+                        "⚠️ WithClause.cte_name is None, generating base name without counter"
+                    );
+                    generate_cte_base_name(&with.exported_aliases)
+                });
                 let cte = Cte::new(cte_name.clone(), cte_content, false);
                 let ctes = CteItems(vec![cte]);
 

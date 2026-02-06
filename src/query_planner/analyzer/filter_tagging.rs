@@ -9,6 +9,7 @@
 //! - **Property Mapping**: Convert Cypher properties to database column names
 //! - **Edge-list Tagging**: Mark filters that apply to relationships
 //! - **Projection Alias Detection**: Handle aggregation results and HAVING clauses
+//! - **id() Decoding**: Transform encoded Neo4j integer IDs in comparisons to raw values
 //!
 //! ## Architecture
 //!
@@ -17,6 +18,7 @@
 //! 2. Tags filters with their owning table for later optimization
 //! 3. Handles denormalized patterns where node data is in edge tables
 //! 4. Preserves multi-table conditions for proper JOIN ordering
+//! 5. Decodes encoded id() values in WHERE clauses (e.g., `id(n) = 72057594037927937`)
 
 use std::{collections::HashSet, sync::Arc};
 
@@ -34,6 +36,7 @@ use crate::{
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
+    server::bolt_protocol::id_mapper::IdMapper,
 };
 
 pub struct FilterTagging;
@@ -179,6 +182,35 @@ impl AnalyzerPass for FilterTagging {
                     }
                 }
 
+                // CRITICAL FIX: Check if child is a leaf node (GraphNode/ViewScan)
+                // Filters on leaf nodes should be preserved in the plan, not extracted,
+                // because they may be inside WITH clauses that need the filter in the CTE.
+                // Extracting these filters to plan_ctx would lose them when rendering the CTE.
+                //
+                // Note: This conservative approach preserves ALL filters on leaf nodes, not just
+                // those inside WITH clauses. This is intentional because:
+                // 1. Detecting "inside WITH clause" requires complex context tracking
+                // 2. Preserving filters is safe (correctness) even if suboptimal for non-WITH cases
+                // 3. In practice, most leaf node filters come from WHERE clauses that get
+                //    pushed down anyway during rendering, so the performance impact is minimal
+                //
+                // Future optimization: Add WITH-clause context tracking to only preserve
+                // filters that are actually inside WITH clauses.
+                //
+                // Note: GraphRel is NOT included - relationship filters use different logic.
+                let is_leaf_node = matches!(
+                    child_plan_ref,
+                    LogicalPlan::GraphNode(_) | LogicalPlan::ViewScan(_)
+                );
+
+                if is_leaf_node {
+                    println!("FilterTagging: Child is leaf node - PRESERVING Filter in plan (may be inside WITH clause)");
+                    return Ok(Transformed::Yes(Arc::new(LogicalPlan::Filter(Filter {
+                        input: child_tf.get_plan().clone(),
+                        predicate: mapped_predicate,
+                    }))));
+                }
+
                 // call filter tagging and get new filter
                 let final_filter_opt = self.extract_filters(mapped_predicate, plan_ctx)?;
                 println!("FilterTagging: Final filter option: {:?}", final_filter_opt);
@@ -223,9 +255,10 @@ impl AnalyzerPass for FilterTagging {
                     Transformed::Yes(plan) | Transformed::No(plan) => plan.as_ref(),
                 };
                 // Apply property mapping to projection expressions
+                // Use the projection variant to preserve id() functions
                 let mut mapped_items = Vec::new();
                 for item in &projection.items {
-                    let mapped_expr = self.apply_property_mapping(
+                    let mapped_expr = self.apply_property_mapping_for_projection(
                         item.expression.clone(),
                         plan_ctx,
                         graph_schema,
@@ -545,6 +578,184 @@ impl FilterTagging {
         plan_ctx: &PlanCtx,
         graph_schema: &GraphSchema,
         plan: Option<&LogicalPlan>,
+    ) -> AnalyzerResult<LogicalExpr> {
+        self.apply_property_mapping_internal(expr, plan_ctx, graph_schema, plan, false)
+    }
+
+    /// Apply property mapping for projection items - preserves id() function
+    pub fn apply_property_mapping_for_projection(
+        &self,
+        expr: LogicalExpr,
+        plan_ctx: &PlanCtx,
+        graph_schema: &GraphSchema,
+        plan: Option<&LogicalPlan>,
+    ) -> AnalyzerResult<LogicalExpr> {
+        self.apply_property_mapping_internal(expr, plan_ctx, graph_schema, plan, true)
+    }
+
+    // ========================================================================
+    // id() Comparison Transformation (Neo4j Browser Compatibility)
+    // ========================================================================
+
+    /// Try to transform id(var) = <encoded_value> patterns
+    ///
+    /// When Neo4j Browser sends queries like `MATCH (a) WHERE id(a) = 72057594037927937`,
+    /// we need to:
+    /// 1. Decode the encoded ID to get the label and raw value
+    /// 2. Transform id(a) to a.id_column (the actual ID column from schema)
+    /// 3. Transform the literal to the raw value
+    /// 4. Optionally add label constraint to the pattern
+    ///
+    /// Returns Some(transformed_expr) if this is an id() comparison, None otherwise.
+    fn try_transform_id_comparison(
+        &self,
+        op: &OperatorApplication,
+        plan_ctx: &PlanCtx,
+        graph_schema: &GraphSchema,
+        plan: Option<&LogicalPlan>,
+    ) -> AnalyzerResult<Option<LogicalExpr>> {
+        // Check for id(var) = N pattern (id function on left, literal on right)
+        let (id_fn_call, literal_value, id_on_left) = match (&op.operands[0], &op.operands[1]) {
+            (LogicalExpr::ScalarFnCall(fn_call), LogicalExpr::Literal(lit))
+                if fn_call.name.to_lowercase() == "id" =>
+            {
+                (fn_call, lit.clone(), true)
+            }
+            (LogicalExpr::Literal(lit), LogicalExpr::ScalarFnCall(fn_call))
+                if fn_call.name.to_lowercase() == "id" =>
+            {
+                (fn_call, lit.clone(), false)
+            }
+            _ => return Ok(None), // Not an id() comparison
+        };
+
+        // Extract the variable alias from id(var)
+        let var_alias = match id_fn_call.args.get(0) {
+            Some(LogicalExpr::TableAlias(alias)) => alias.0.clone(),
+            _ => return Ok(None), // id() without variable
+        };
+
+        // Get the literal as i64
+        let encoded_id = match &literal_value {
+            crate::query_planner::logical_expr::Literal::Integer(n) => *n,
+            _ => return Ok(None), // Not an integer literal
+        };
+
+        // Check if this is an encoded ID (has label code in high bits)
+        if !IdMapper::is_encoded_id(encoded_id) {
+            log::debug!(
+                "FilterTagging: id({}) = {} is not encoded, skipping decode",
+                var_alias,
+                encoded_id
+            );
+            return Ok(None); // Raw value, not encoded
+        }
+
+        // Decode the encoded ID to get label and raw value
+        let (label, raw_value) = match IdMapper::decode_for_query(encoded_id) {
+            Some((label, raw_value)) => (label, raw_value),
+            None => {
+                log::warn!(
+                    "FilterTagging: Failed to decode id({}) = {} - label not in registry",
+                    var_alias,
+                    encoded_id
+                );
+                return Ok(None); // Can't decode - label not registered yet
+            }
+        };
+
+        log::info!(
+            "FilterTagging: Decoded id({}) = {} → {}:{} (raw_value={})",
+            var_alias,
+            encoded_id,
+            label,
+            raw_value,
+            raw_value
+        );
+
+        // Get the ID column for this label from the schema
+        let id_column = if let Ok(node_schema) = graph_schema.node_schema(&label) {
+            node_schema.node_id.columns().first().map(|s| s.to_string())
+        } else if let Ok(rel_schema) = graph_schema.get_rel_schema(&label) {
+            // For relationships, use edge_id if defined, else from_id
+            if let Some(ref edge_id) = rel_schema.edge_id {
+                edge_id.columns().first().map(|s| s.to_string())
+            } else {
+                Some(rel_schema.from_id.clone())
+            }
+        } else {
+            log::warn!(
+                "FilterTagging: No schema found for label '{}' in id() decode",
+                label
+            );
+            None
+        };
+
+        let id_column = match id_column {
+            Some(col) => col,
+            None => {
+                log::warn!(
+                    "FilterTagging: Could not determine ID column for label '{}'",
+                    label
+                );
+                return Ok(None);
+            }
+        };
+
+        // Note: We don't update the pattern's label in plan_ctx here because:
+        // 1. The label is used to determine the ID column (which we've already done)
+        // 2. For untyped patterns (MATCH (a) WHERE id(a) = N), the query will match
+        //    based on the raw ID value, which is globally unique within the label's table
+        // 3. Adding label constraints would require modifying the plan structure
+        //
+        // The decoded label is used to look up the correct schema and ID column.
+
+        // Build the transformed expression: var.id_column = raw_value
+        use crate::graph_catalog::expression_parser::PropertyValue;
+        use crate::query_planner::logical_expr::Literal;
+
+        let property_access = LogicalExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias(var_alias.clone()),
+            column: PropertyValue::Column(id_column.clone()),
+        });
+
+        // Parse raw_value as integer, or use as string if not numeric
+        let raw_literal = if let Ok(int_val) = raw_value.parse::<i64>() {
+            LogicalExpr::Literal(Literal::Integer(int_val))
+        } else {
+            LogicalExpr::Literal(Literal::String(raw_value.clone()))
+        };
+
+        let (left, right) = if id_on_left {
+            (property_access, raw_literal)
+        } else {
+            (raw_literal, property_access)
+        };
+
+        let transformed = LogicalExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Equal,
+            operands: vec![left, right],
+        });
+
+        log::info!(
+            "FilterTagging: Transformed id({}) = {} → {}.{} = {}",
+            var_alias,
+            encoded_id,
+            var_alias,
+            id_column,
+            raw_value
+        );
+
+        Ok(Some(transformed))
+    }
+
+    fn apply_property_mapping_internal(
+        &self,
+        expr: LogicalExpr,
+        plan_ctx: &PlanCtx,
+        graph_schema: &GraphSchema,
+        plan: Option<&LogicalPlan>,
+        preserve_id_function: bool,
     ) -> AnalyzerResult<LogicalExpr> {
         match expr {
             LogicalExpr::PropertyAccessExp(property_access) => {
@@ -936,14 +1147,25 @@ impl FilterTagging {
                 }))
             }
             LogicalExpr::OperatorApplicationExp(mut op) => {
+                // Special handling for id(var) = <encoded_value> patterns
+                // This decodes Neo4j-encoded integer IDs to raw database values
+                if op.operator == Operator::Equal && op.operands.len() == 2 {
+                    if let Some(transformed) =
+                        self.try_transform_id_comparison(&op, plan_ctx, graph_schema, plan)?
+                    {
+                        return Ok(transformed);
+                    }
+                }
+
                 // Recursively apply property mapping to operands
                 let mut mapped_operands = Vec::new();
                 for operand in op.operands {
-                    mapped_operands.push(self.apply_property_mapping(
+                    mapped_operands.push(self.apply_property_mapping_internal(
                         operand,
                         plan_ctx,
                         graph_schema,
                         plan,
+                        preserve_id_function,
                     )?);
                 }
                 op.operands = mapped_operands;
@@ -953,7 +1175,15 @@ impl FilterTagging {
                 let fn_name_lower = fn_call.name.to_lowercase();
 
                 // Handle id() function - resolve to actual ID column for WHERE clause usage
+                // For projections (preserve_id_function=true), keep the function so result
+                // transformer can compute the proper encoded ID
                 if fn_name_lower == "id" && fn_call.args.len() == 1 {
+                    if preserve_id_function {
+                        // In projection context: keep id() as-is, result transformer handles it
+                        return Ok(LogicalExpr::ScalarFnCall(fn_call));
+                    }
+
+                    // In WHERE clause context: transform to column comparison
                     // Extract the alias from the argument
                     if let LogicalExpr::TableAlias(ref alias) = fn_call.args[0] {
                         let alias_str = &alias.0;
@@ -1072,11 +1302,12 @@ impl FilterTagging {
                 if matches!(fn_name_lower.as_str(), "type" | "labels" | "label") {
                     let mut mapped_args = Vec::new();
                     for arg in fn_call.args {
-                        mapped_args.push(self.apply_property_mapping(
+                        mapped_args.push(self.apply_property_mapping_internal(
                             arg,
                             plan_ctx,
                             graph_schema,
                             plan,
+                            preserve_id_function,
                         )?);
                     }
                     return Ok(LogicalExpr::ScalarFnCall(ScalarFnCall {
@@ -1088,11 +1319,12 @@ impl FilterTagging {
                 // For other scalar functions, recursively apply property mapping to arguments
                 let mut mapped_args = Vec::new();
                 for arg in fn_call.args {
-                    mapped_args.push(self.apply_property_mapping(
+                    mapped_args.push(self.apply_property_mapping_internal(
                         arg,
                         plan_ctx,
                         graph_schema,
                         plan,
+                        preserve_id_function,
                     )?);
                 }
                 Ok(LogicalExpr::ScalarFnCall(ScalarFnCall {
@@ -1104,11 +1336,12 @@ impl FilterTagging {
                 // Recursively apply property mapping to aggregate function arguments
                 let mut mapped_args = Vec::new();
                 for arg in agg_call.args {
-                    mapped_args.push(self.apply_property_mapping(
+                    mapped_args.push(self.apply_property_mapping_internal(
                         arg,
                         plan_ctx,
                         graph_schema,
                         plan,
+                        preserve_id_function,
                     )?);
                 }
                 agg_call.args = mapped_args;
@@ -1118,11 +1351,12 @@ impl FilterTagging {
                 // Recursively apply property mapping to list elements
                 let mut mapped_elements = Vec::new();
                 for element in list {
-                    mapped_elements.push(self.apply_property_mapping(
+                    mapped_elements.push(self.apply_property_mapping_internal(
                         element,
                         plan_ctx,
                         graph_schema,
                         plan,
+                        preserve_id_function,
                     )?);
                 }
                 Ok(LogicalExpr::List(mapped_elements))
@@ -1130,24 +1364,31 @@ impl FilterTagging {
             LogicalExpr::ArraySlicing { array, from, to } => {
                 // Recursively apply property mapping to array slicing components
                 // This is important for expressions like collect(n.name)[0..10]
-                let mapped_array =
-                    self.apply_property_mapping(*array, plan_ctx, graph_schema, plan)?;
+                let mapped_array = self.apply_property_mapping_internal(
+                    *array,
+                    plan_ctx,
+                    graph_schema,
+                    plan,
+                    preserve_id_function,
+                )?;
                 let mapped_from = if let Some(f) = from {
-                    Some(Box::new(self.apply_property_mapping(
+                    Some(Box::new(self.apply_property_mapping_internal(
                         *f,
                         plan_ctx,
                         graph_schema,
                         plan,
+                        preserve_id_function,
                     )?))
                 } else {
                     None
                 };
                 let mapped_to = if let Some(t) = to {
-                    Some(Box::new(self.apply_property_mapping(
+                    Some(Box::new(self.apply_property_mapping_internal(
                         *t,
                         plan_ctx,
                         graph_schema,
                         plan,
+                        preserve_id_function,
                     )?))
                 } else {
                     None

@@ -518,27 +518,59 @@ impl SelectBuilder for LogicalPlan {
                             log::warn!("   → trying get_properties_with_table_alias...");
 
                             // For denormalized nodes in edges, we need to get the actual table alias
-                            // Try to get properties with actual table alias
-                            if let Ok((_properties, Some(actual_table_alias))) =
+                            // AND map the property name to the actual column name
+                            if let Ok((properties, table_alias_override)) =
                                 self.get_properties_with_table_alias(cypher_alias)
                             {
-                                log::warn!(
-                                    "🔍 Using actual table alias '{}' for {}.{}",
-                                    actual_table_alias,
-                                    cypher_alias,
-                                    col_name
-                                );
-                                select_items.push(SelectItem {
-                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: RenderTableAlias(actual_table_alias),
-                                        column: PropertyValue::Column(col_name.to_string()),
-                                    }),
-                                    col_alias: item
-                                        .col_alias
-                                        .as_ref()
-                                        .map(|ca| ColumnAlias(ca.0.clone())),
-                                });
-                                continue;
+                                // Look up the column name for this property
+                                let mapped_column = properties
+                                    .iter()
+                                    .find(|(prop_name, _)| prop_name == col_name)
+                                    .map(|(_, col)| col.clone());
+
+                                if let Some(actual_column) = mapped_column {
+                                    let table_alias_to_use = table_alias_override
+                                        .unwrap_or_else(|| cypher_alias.to_string());
+                                    log::warn!(
+                                        "🔍 Mapped property '{}.{}' to column '{}.{}'",
+                                        cypher_alias,
+                                        col_name,
+                                        table_alias_to_use,
+                                        actual_column
+                                    );
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: RenderTableAlias(table_alias_to_use),
+                                            column: PropertyValue::Column(actual_column),
+                                        }),
+                                        col_alias: item
+                                            .col_alias
+                                            .as_ref()
+                                            .map(|ca| ColumnAlias(ca.0.clone())),
+                                    });
+                                    continue;
+                                } else if table_alias_override.is_some() {
+                                    // Has actual_table_alias but property not found in mapping
+                                    // Use original column name with the overridden alias
+                                    let actual_table_alias = table_alias_override.unwrap();
+                                    log::warn!(
+                                        "🔍 Using actual table alias '{}' for {}.{} (property not in mapping)",
+                                        actual_table_alias,
+                                        cypher_alias,
+                                        col_name
+                                    );
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: RenderTableAlias(actual_table_alias),
+                                            column: PropertyValue::Column(col_name.to_string()),
+                                        }),
+                                        col_alias: item
+                                            .col_alias
+                                            .as_ref()
+                                            .map(|ca| ColumnAlias(ca.0.clone())),
+                                    });
+                                    continue;
+                                }
                             }
 
                             // Default handling: pass through the PropertyAccessExp as-is
@@ -552,10 +584,108 @@ impl SelectBuilder for LogicalPlan {
                             });
                         }
 
-                        // Case 5: Other regular expressions (function call, literals, etc.)
+                        // Case 5: id() function - transform to ID column access
+                        // The id() function needs special handling because:
+                        // 1. We preserve ScalarFnCall("id") in LogicalPlan for metadata extraction
+                        // 2. But for SQL we need the actual ID column value to compute encoded ID
+                        LogicalExpr::ScalarFnCall(fn_call)
+                            if fn_call.name.eq_ignore_ascii_case("id")
+                                && fn_call.args.len() == 1 =>
+                        {
+                            if let LogicalExpr::TableAlias(ref alias) = fn_call.args[0] {
+                                log::info!(
+                                    "🔍 SelectBuilder: id({}) - transforming to ID column access",
+                                    alias.0
+                                );
+
+                                // Get schema from plan_ctx to find the ID column
+                                if let Some(ctx) = plan_ctx {
+                                    if let Some(typed_var) = ctx.lookup_variable(&alias.0) {
+                                        let id_column = match typed_var {
+                                            TypedVariable::Node(node_var) => {
+                                                if let Some(label) = node_var.labels.first() {
+                                                    ctx.schema()
+                                                        .node_schema(label)
+                                                        .ok()
+                                                        .map(|ns| {
+                                                            ns.node_id
+                                                                .columns()
+                                                                .first()
+                                                                .map(|s| s.to_string())
+                                                        })
+                                                        .flatten()
+                                                } else {
+                                                    None
+                                                }
+                                            }
+                                            TypedVariable::Relationship(rel_var) => {
+                                                if let Some(rel_type) = rel_var.rel_types.first() {
+                                                    ctx.schema()
+                                                        .get_rel_schema(rel_type)
+                                                        .ok()
+                                                        .map(|rs| {
+                                                            if let Some(ref edge_id) = rs.edge_id {
+                                                                edge_id
+                                                                    .columns()
+                                                                    .first()
+                                                                    .map(|s| s.to_string())
+                                                            } else {
+                                                                Some(rs.from_id.clone())
+                                                            }
+                                                        })
+                                                        .flatten()
+                                                } else {
+                                                    None
+                                                }
+                                            }
+                                            _ => None,
+                                        };
+
+                                        if let Some(id_col) = id_column {
+                                            log::info!(
+                                                "🔍 SelectBuilder: id({}) -> {}.{}",
+                                                alias.0,
+                                                alias.0,
+                                                id_col
+                                            );
+                                            select_items.push(SelectItem {
+                                                expression: RenderExpr::PropertyAccessExp(
+                                                    PropertyAccess {
+                                                        table_alias: RenderTableAlias(
+                                                            alias.0.clone(),
+                                                        ),
+                                                        column: PropertyValue::Column(id_col),
+                                                    },
+                                                ),
+                                                col_alias: item
+                                                    .col_alias
+                                                    .as_ref()
+                                                    .map(|ca| ColumnAlias(ca.0.clone())),
+                                            });
+                                            continue;
+                                        }
+                                    }
+                                }
+
+                                // Fallback: couldn't resolve ID column, pass through as-is
+                                log::warn!("🔍 SelectBuilder: id({}) - couldn't resolve ID column, passing through", alias.0);
+                            }
+
+                            // Fallback for non-alias argument or failed resolution
+                            select_items.push(SelectItem {
+                                expression: item.expression.clone().try_into()?,
+                                col_alias: item
+                                    .col_alias
+                                    .as_ref()
+                                    .map(|ca| ca.clone().try_into())
+                                    .transpose()?,
+                            });
+                        }
+
+                        // Case 6: Other regular expressions (function call, literals, etc.)
                         _ => {
                             log::warn!(
-                                "🔍 SelectBuilder Case 5 (Other): Expression type = {:?}",
+                                "🔍 SelectBuilder Case 6 (Other): Expression type = {:?}",
                                 item.expression
                             );
                             select_items.push(SelectItem {
@@ -697,7 +827,15 @@ impl LogicalPlan {
             );
         }
 
-        match self.get_properties_with_table_alias(&actual_table_alias) {
+        // For FK-edge (denormalized nodes), first try the original alias to get projected_columns
+        // Then fall back to actual_table_alias for relationship tables
+        let lookup_alias = if is_fk_edge {
+            alias
+        } else {
+            &actual_table_alias
+        };
+
+        match self.get_properties_with_table_alias(lookup_alias) {
             Ok((properties, _)) if !properties.is_empty() => {
                 let prop_count = properties.len();
                 for (prop_name, col_name) in properties {
@@ -710,8 +848,9 @@ impl LogicalPlan {
                     });
                 }
                 log::info!(
-                    "✅ Expanded base table '{}' (actual: '{}') to {} properties",
+                    "✅ Expanded base table '{}' (lookup: '{}', table: '{}') to {} properties",
                     alias,
+                    lookup_alias,
                     actual_table_alias,
                     prop_count
                 );
@@ -1167,10 +1306,11 @@ impl LogicalPlan {
                                     rel_props
                                 );
                                 for (prop_name, db_column) in rel_props {
-                                    // Select from end node's table (since denormalized)
+                                    // For denormalized relationships, use the relationship alias
+                                    // (which points to the actual table) not the virtual node alias
                                     select_items.push(SelectItem {
                                         expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: RenderTableAlias(end_alias.clone()),
+                                            table_alias: RenderTableAlias(rel_alias.clone()),
                                             column: PropertyValue::Column(db_column),
                                         }),
                                         col_alias: Some(ColumnAlias(format!(

@@ -862,6 +862,46 @@ fn rewrite_expr_for_fixed_path(
     }
 }
 
+/// Extract column references from ORDER BY expressions for UNION queries
+/// Returns (original_expr, union_column_alias) pairs
+/// Returns empty if any expression contains id() function (not supported in UNION)
+fn extract_order_by_columns_for_union(order_by: &OrderByItems) -> Vec<(RenderExpr, String)> {
+    let mut columns = Vec::new();
+
+    for (idx, item) in order_by.0.iter().enumerate() {
+        // Check if this is an id() function call (not supported in UNION ORDER BY)
+        if matches!(&item.expression, RenderExpr::ScalarFnCall(f) if f.name == "id") {
+            log::warn!("⚠️  ORDER BY id() not supported in UNION queries - removing ORDER BY");
+            return Vec::new(); // Empty vector = skip ORDER BY entirely
+        }
+
+        // Generate a unique alias for this ORDER BY column
+        let col_alias = format!("__order_col_{}", idx);
+        columns.push((item.expression.clone(), col_alias));
+    }
+
+    columns
+}
+
+/// Add ORDER BY columns to a RenderPlan's SELECT (for UNION branches)
+fn add_order_by_columns_to_select(
+    mut plan: RenderPlan,
+    order_columns: &[(RenderExpr, String)],
+) -> RenderPlan {
+    use crate::render_plan::render_expr::ColumnAlias;
+    use crate::render_plan::SelectItem;
+
+    for (expr, alias) in order_columns {
+        // Add this column to the SELECT with the given alias
+        plan.select.items.push(SelectItem {
+            expression: expr.clone(),
+            col_alias: Some(ColumnAlias(alias.clone())),
+        });
+    }
+
+    plan
+}
+
 /// Generate SQL from RenderPlan with configurable CTE depth limit
 pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
     // Extract fixed path information if not already set
@@ -893,6 +933,37 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
     // the last branch, not the combined result. Wrapping in a subquery fixes this.
     if plan.union.0.is_some() {
         sql.push_str(&plan.ctes.to_sql());
+
+        // Extract ORDER BY columns that need to be added to UNION branches
+        let order_by_columns = if !plan.order_by.0.is_empty() {
+            extract_order_by_columns_for_union(&plan.order_by)
+        } else {
+            Vec::new()
+        };
+
+        // If we have ORDER BY, add those columns to all UNION branches
+        let mut modified_plan = plan.clone();
+        if !order_by_columns.is_empty() {
+            log::info!(
+                "🔄 UNION with ORDER BY: Adding {} ordering columns to branches",
+                order_by_columns.len()
+            );
+
+            // Add to the first branch (which is the base plan)
+            modified_plan = add_order_by_columns_to_select(modified_plan, &order_by_columns);
+
+            // Add to remaining branches
+            if let Some(union) = &mut modified_plan.union.0 {
+                union.input = union
+                    .input
+                    .iter()
+                    .map(|branch| add_order_by_columns_to_select(branch.clone(), &order_by_columns))
+                    .collect();
+            }
+        }
+
+        // Use the modified plan for SQL generation
+        plan = modified_plan;
 
         // Check if SELECT items contain aggregation (e.g., count(*), sum(), etc.)
         let has_aggregation = plan
@@ -1018,7 +1089,31 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
             sql.push_str(&plan.group_by.to_sql());
 
             // Add ORDER BY after GROUP BY if present
-            sql.push_str(&plan.order_by.to_sql());
+            // If we have UNION + ORDER BY, reference the __union columns we added
+            if !plan.order_by.0.is_empty() && !order_by_columns.is_empty() {
+                sql.push_str("ORDER BY ");
+                let order_clauses: Vec<String> = plan
+                    .order_by
+                    .0
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, item)| {
+                        let col_alias = &order_by_columns[idx].1;
+                        let order_str = match item.order {
+                            OrderByOrder::Asc => "ASC",
+                            OrderByOrder::Desc => "DESC",
+                        };
+                        format!("__union.`{}` {}", col_alias, order_str)
+                    })
+                    .collect();
+                sql.push_str(&order_clauses.join(", "));
+                sql.push('\n');
+            } else if order_by_columns.is_empty() && !plan.order_by.0.is_empty() {
+                // ORDER BY was removed due to unsupported id() function
+                log::info!("  ORDER BY removed (contains unsupported id() in UNION context)");
+            } else {
+                sql.push_str(&plan.order_by.to_sql());
+            }
 
             // Add LIMIT after ORDER BY if present
             if let Some(m) = plan.limit.0 {

@@ -62,14 +62,26 @@ pub fn strip_comments(input: &str) -> String {
         // Now handle comments (only when NOT in a string/identifier)
 
         // Check for line comment (-- or //)
-        // BUT: `-->` and `<--` are NOT comments (they're Cypher relationship patterns!)
+        // BUT: `-->`, `<--`, `--(`, and `--[` are NOT comments (they're Cypher relationship patterns!)
         if ch == '-' && chars.peek() == Some(&'-') {
-            // Peek ahead to check if this is `-->` or part of `<--` (relationship patterns, not comments)
+            // Peek ahead to check if this is a relationship pattern, not a comment
             let mut lookahead = chars.clone();
             lookahead.next(); // skip second '-'
 
-            // Check for `-->`  (outgoing relationship)
+            // Check for `-->` (outgoing relationship)
             if lookahead.peek() == Some(&'>') {
+                result.push(ch);
+                continue;
+            }
+
+            // Check for `--(` (undirected relationship to a node)
+            if lookahead.peek() == Some(&'(') {
+                result.push(ch);
+                continue;
+            }
+
+            // Check for `--[` (undirected relationship with properties/types)
+            if lookahead.peek() == Some(&'[') {
                 result.push(ch);
                 continue;
             }
@@ -439,6 +451,30 @@ mod tests {
         assert_eq!(
             strip_comments("WHERE n.`prop-with-dashes` = 1 RETURN n"),
             "WHERE n.`prop-with-dashes` = 1 RETURN n"
+        );
+
+        // Undirected relationship patterns (should NOT be treated as comments!)
+        // These patterns caused a bug where `--(` was treated as a comment
+        assert_eq!(
+            strip_comments("MATCH (a)--(b) RETURN a"),
+            "MATCH (a)--(b) RETURN a"
+        );
+
+        assert_eq!(
+            strip_comments("MATCH (a)--() RETURN a"),
+            "MATCH (a)--() RETURN a"
+        );
+
+        // Pattern comprehension with undirected relationship
+        assert_eq!(
+            strip_comments("WITH a, size([(a)--() | 1]) AS cnt RETURN cnt"),
+            "WITH a, size([(a)--() | 1]) AS cnt RETURN cnt"
+        );
+
+        // Undirected relationship with type
+        assert_eq!(
+            strip_comments("MATCH (a)-[:KNOWS]-(b) RETURN a"),
+            "MATCH (a)-[:KNOWS]-(b) RETURN a"
         );
     }
 }
