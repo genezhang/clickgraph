@@ -1385,12 +1385,16 @@ impl RenderPlanBuilder for LogicalPlan {
                     // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
                 }));
 
-                // Generate CTE base name using centralized utility
-                // Note: to_render_plan doesn't have access to counter, so we use base name.
-                // This creates names like "with_p_cte" (without counter suffix).
-                // The counter is only added during query planning when available.
-                // This is safe because base names are still recognized by is_generated_cte_name().
-                let cte_name = generate_cte_base_name(&with.exported_aliases);
+                // Use CTE name from analyzer (includes counter for uniqueness)
+                // The analyzer set this name using CteSchemaResolver with proper counter tracking
+                // Format: "with_{sorted_aliases}_cte_{counter}" (e.g., "with_o_cte_1")
+                let cte_name = with.cte_name.clone().unwrap_or_else(|| {
+                    // FALLBACK: If analyzer didn't set cte_name (shouldn't happen after CteSchemaResolver)
+                    let fallback_name = generate_cte_base_name(&with.exported_aliases);
+                    log::error!("⚠️ BUG: WithClause.cte_name is None for aliases {:?}, using fallback: {}", with.exported_aliases, fallback_name);
+                    fallback_name
+                });
+                log::info!("✅ Using CTE name: '{}' for exported aliases: {:?}", cte_name, with.exported_aliases);
                 let cte = Cte::new(cte_name.clone(), cte_content, false);
                 let ctes = CteItems(vec![cte]);
 
