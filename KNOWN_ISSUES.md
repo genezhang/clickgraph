@@ -185,7 +185,7 @@ UNION different number of columns in queries
 
 **Priority**: Low (not from Neo4j Browser usage patterns)
 
-## Denormalized Relationships in UNION Queries (2026-02-06)
+## Denormalized Relationships in UNION Queries (2026-02-06) ✅ FIXED
 
 **Issue**: Neo4j Browser relationship fetch queries fail for denormalized (FK-based) relationships
 
@@ -194,7 +194,7 @@ UNION different number of columns in queries
 MATCH (a)-[r]->(b) WHERE id(a) IN $existingNodeIds AND id(b) IN $newNodeIds RETURN r;
 ```
 
-**Error**:
+**Error (before fix)**:
 ```
 Unknown expression or function identifier `r.user_id` in scope SELECT ... FROM posts_bench AS b_1 ...
 ```
@@ -205,14 +205,15 @@ Unknown expression or function identifier `r.user_id` in scope SELECT ... FROM p
 - SELECT clause incorrectly references `r.user_id`, `r.post_id` which don't exist
 - The relationship alias `r` doesn't correspond to a table in denormalized branches
 
-**Workaround**:
-- Use typed relationship patterns: `MATCH (a)-[:FOLLOWS]->(b)`
-- Or use a schema without denormalized relationships
+**Solution** (2026-02-06):
+- Added `fix_invalid_table_aliases()` in `normalize_union_branches()`
+- Collects valid table aliases from FROM/JOINs for each branch
+- Detects PropertyAccess expressions using invalid aliases
+- Rewrites them to use the FROM table alias (which contains FK columns)
+- Example: `r.user_id` → `b_1.user_id`
 
-**Status**: Active bug blocking Neo4j Browser relationship fetching
-
-**Priority**: High (blocks Neo4j Browser interactive features)
+**Status**: ✅ Fixed in commit 2b9e579
 
 **Affected Files**:
-- `src/render_plan/plan_builder_helpers.rs` - UNION branch SELECT generation
+- `src/render_plan/plan_builder_helpers.rs` - Added `fix_invalid_table_aliases()` function
 
