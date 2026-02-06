@@ -248,20 +248,35 @@ impl<'a> IdFunctionTransformer<'a> {
     }
 
     /// Rewrite `id(var) = N` to `(var:Label AND var.id = 'value')`
+    ///
+    /// For cross-session id() lookups (when the integer ID isn't in the session cache),
+    /// we generate a predicate that checks all possible node types with that ID.
     fn rewrite_id_equals(&self, var: &'a str, id_value: i64) -> Expression<'a> {
+        // Try to lookup from cache (local + global for cross-session support)
         if let Some(element_id) = self.id_mapper.get_element_id(id_value) {
-            if let Ok((label, id_parts)) = parse_node_element_id(element_id) {
+            if let Ok((label, id_parts)) = parse_node_element_id(&element_id) {
                 let id_str = id_parts.join("|");
+                log::info!(
+                    "id() transform: id({}) = {} → {}:{} (from cache)",
+                    var,
+                    id_value,
+                    label,
+                    id_str
+                );
                 return self.build_label_and_id_check(var, &label, &id_str);
             }
         }
 
-        // ID not found - return false (1 = 0)
+        // ID not in cache - this happens when looking up an ID never seen before
+        // We cannot resolve it without knowing which table/label it belongs to
         log::warn!(
-            "id() transform: id({}) = {} not found in session",
+            "id() transform: id({}) = {} cannot be resolved (not in global cache)",
             var,
             id_value
         );
+        
+        // Return false to indicate no match
+        // The user should use label filters like MATCH (n:User) WHERE id(n) = X
         Expression::Literal(Literal::Boolean(false))
     }
 
@@ -270,18 +285,21 @@ impl<'a> IdFunctionTransformer<'a> {
         let mut filters = Vec::new();
 
         for id_value in ids {
+            // Try lookup from cache (local + global)
             if let Some(element_id) = self.id_mapper.get_element_id(id_value) {
-                if let Ok((label, id_parts)) = parse_node_element_id(element_id) {
+                if let Ok((label, id_parts)) = parse_node_element_id(&element_id) {
                     let id_str = id_parts.join("|");
                     filters.push(self.build_label_and_id_check(var, &label, &id_str));
+                    continue;
                 }
-            } else {
-                log::warn!(
-                    "id() transform: id({}) = {} not found in session",
-                    var,
-                    id_value
-                );
             }
+
+            // ID not found in cache - skip with warning
+            log::warn!(
+                "id() transform: id({}) = {} cannot be resolved (not in global cache)",
+                var,
+                id_value
+            );
         }
 
         if filters.is_empty() {
@@ -322,7 +340,10 @@ impl<'a> IdFunctionTransformer<'a> {
     }
 
     /// Build property check expression: `var.id_property = 'value'`
-    /// Note: We don't include label check because UNION branching handles that
+    /// 
+    /// For `MATCH (n) WHERE id(n) = X` (no label), we only check the id property.
+    /// The UNION branching handles routing to the correct table.
+    /// For `MATCH (n:Label) WHERE id(n) = X`, the label is already in the MATCH pattern.
     fn build_label_and_id_check(
         &self,
         var: &'a str,
@@ -358,6 +379,7 @@ impl<'a> IdFunctionTransformer<'a> {
         );
 
         // Property check: var.id_property = 'value'
+        // We don't include label check because UNION branching handles table routing
         let id_value_static: &'a str = Box::leak(id_value.to_string().into_boxed_str());
         let id_property_static: &'a str = Box::leak(id_property.to_string().into_boxed_str());
 

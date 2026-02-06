@@ -148,7 +148,7 @@ fn rewrite_id_equals(
     for (start, end, alias, id) in matches.into_iter().rev() {
         if let Some(element_id) = id_mapper.get_element_id(id) {
             // Parse element_id and generate filter
-            if let Some((_label, filter)) = element_id_to_filter(element_id, &alias) {
+            if let Some((_label, filter)) = element_id_to_filter(&element_id, &alias) {
                 result.replace_range(start..end, &filter);
                 *was_rewritten = true;
                 log::info!("id() rewrite: id({}) = {} → {}", alias, id, filter);
@@ -219,7 +219,7 @@ fn rewrite_id_in(
         let mut filters: Vec<String> = Vec::new();
         for id in &ids {
             if let Some(element_id) = id_mapper.get_element_id(*id) {
-                if let Some((_label, filter)) = element_id_to_filter(element_id, &alias) {
+                if let Some((_label, filter)) = element_id_to_filter(&element_id, &alias) {
                     filters.push(filter);
                 }
             } else {
@@ -293,11 +293,11 @@ mod tests {
 
     fn setup_mapper() -> IdMapper {
         let mut mapper = IdMapper::new();
-        // Simulate nodes that were returned in previous queries
-        mapper.get_or_assign("Airport:LAX"); // id=1
-        mapper.get_or_assign("Airport:JFK"); // id=2
-        mapper.get_or_assign("Airport:SFO"); // id=3
-        mapper.get_or_assign("User:alice"); // id=4
+        // Use numeric IDs so they're deterministic (not hashed)
+        mapper.get_or_assign("Airport:1"); // id=1
+        mapper.get_or_assign("Airport:2"); // id=2
+        mapper.get_or_assign("Airport:3"); // id=3
+        mapper.get_or_assign("User:4"); // id=4
         mapper
     }
 
@@ -309,7 +309,7 @@ mod tests {
 
         assert!(result.was_rewritten);
         assert!(result.query.contains("a:Airport"));
-        assert!(result.query.contains("a.id = 'LAX'"));
+        assert!(result.query.contains("a.id = '1'"));
         assert!(result.missing_ids.is_empty());
     }
 
@@ -332,9 +332,9 @@ mod tests {
 
         assert!(result.was_rewritten);
         assert!(result.query.contains("a:Airport"));
-        assert!(result.query.contains("a.id = 'LAX'"));
-        assert!(result.query.contains("a.id = 'JFK'"));
-        assert!(result.query.contains("a.id = 'SFO'"));
+        assert!(result.query.contains("a.id = '1'"));
+        assert!(result.query.contains("a.id = '2'"));
+        assert!(result.query.contains("a.id = '3'"));
     }
 
     #[test]
@@ -370,7 +370,7 @@ LIMIT 97"#;
 
         assert!(result.was_rewritten);
         assert!(result.query.contains("a:Airport"));
-        assert!(result.query.contains("a.id = 'JFK'"));
+        assert!(result.query.contains("a.id = '2'")); // Airport:2 -> id 2
         assert!(result.query.contains("NOT ("));
         assert!(result.query.contains("ORDER BY o.id"));
     }
