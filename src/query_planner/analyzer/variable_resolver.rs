@@ -282,20 +282,14 @@ impl VariableResolver {
                 let input_resolved = self.resolve(wc.input.clone(), scope, plan_ctx)?;
                 let new_input = input_resolved.get_plan();
 
-                // Step 2: Get CTE name for this WITH
+                // Get CTE name for this WITH
                 // Use the name already set by CteSchemaResolver (from WithClause.cte_name)
                 // This ensures consistency across all analyzer passes
                 let cte_name = wc.cte_name.clone().unwrap_or_else(|| {
                     // FALLBACK: If cte_name not set (shouldn't happen after CteSchemaResolver)
-                    log::error!("⚠️ BUG: WithClause.cte_name is None in VariableResolver");
+                    log::warn!("⚠️ WithClause.cte_name is None in VariableResolver, generating new name");
                     self.gen_cte_name(&wc.exported_aliases)
                 });
-
-                log::warn!(
-                    "🔍 DEBUG VariableResolver: Building cte_references for WITH exporting {:?}: {{\"o\": \"{}\"}}",
-                    wc.exported_aliases,
-                    cte_name
-                );
 
                 // Step 3: Create NEW scope for downstream
                 // Exported aliases from this WITH are visible downstream

@@ -7322,11 +7322,9 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 .first()
                 .and_then(|plan| match plan {
                     LogicalPlan::WithClause(wc) => {
-                        // **PRIMARY PATH**: Use the CTE name set by CteSchemaResolver in analysis phase
+                        // Use the CTE name set by CteSchemaResolver in analysis phase
                         // This is the single source of truth for the WITH clause's CTE name
-                        let name = wc.cte_name.clone();
-                        log::warn!("🔍 CTE NAME FROM ANALYZER: {:?} for aliases: {:?}", name, wc.exported_aliases);
-                        name
+                        wc.cte_name.clone()
                     }
                     _ => None,
                 })

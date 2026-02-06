@@ -1387,14 +1387,12 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 // Use CTE name from analyzer (includes counter for uniqueness)
                 // The analyzer set this name using CteSchemaResolver with proper counter tracking
-                // Format: "with_{sorted_aliases}_cte_{counter}" (e.g., "with_o_cte_1")
+                // Format: "with_{sorted_aliases}_cte_{counter}" (e.g., "with_o_cte_0")
                 let cte_name = with.cte_name.clone().unwrap_or_else(|| {
                     // FALLBACK: If analyzer didn't set cte_name (shouldn't happen after CteSchemaResolver)
-                    let fallback_name = generate_cte_base_name(&with.exported_aliases);
-                    log::error!("⚠️ BUG: WithClause.cte_name is None for aliases {:?}, using fallback: {}", with.exported_aliases, fallback_name);
-                    fallback_name
+                    log::warn!("⚠️ WithClause.cte_name is None, generating base name without counter");
+                    generate_cte_base_name(&with.exported_aliases)
                 });
-                log::info!("✅ Using CTE name: '{}' for exported aliases: {:?}", cte_name, with.exported_aliases);
                 let cte = Cte::new(cte_name.clone(), cte_content, false);
                 let ctes = CteItems(vec![cte]);
 
