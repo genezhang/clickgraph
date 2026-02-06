@@ -822,30 +822,51 @@ fn transform_to_path(
     }
 
     // Original format: individual columns for each property
-    // Try to get start node data from row, or create with known label
+    // Extract start node - require either metadata lookup success or known labels
     let start_node =
         find_node_in_row_with_label(row, start_alias, start_labels, return_metadata, schema)
-            .unwrap_or_else(|| {
-                let label = start_labels
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "_Unknown".to_string());
-                log::trace!("Creating start node with label: {}", label);
-                create_node_with_label(&label, 0)
-            });
+            .or_else(|| {
+                // If we have a known label, create node with that label
+                start_labels.first().map(|label| {
+                    log::debug!("Creating start node with known label: {}", label);
+                    create_node_with_label(label, 0)
+                })
+            })
+            .ok_or_else(|| {
+                format!(
+                    "Internal error: Cannot resolve start node '{}' for path '{}'. \
+                     No label metadata available and node not found in row. \
+                     start_labels={:?}, row_keys={:?}",
+                    start_alias,
+                    path_name,
+                    start_labels,
+                    row.keys().collect::<Vec<_>>()
+                )
+            })?;
 
-    // Try to get end node data from row, or create with known label
-    let end_node = find_node_in_row_with_label(row, end_alias, end_labels, return_metadata, schema)
-        .unwrap_or_else(|| {
-            let label = end_labels
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "_Unknown".to_string());
-            log::trace!("Creating end node with label: {}", label);
-            create_node_with_label(&label, 1)
-        });
+    // Extract end node - require either metadata lookup success or known labels
+    let end_node =
+        find_node_in_row_with_label(row, end_alias, end_labels, return_metadata, schema)
+            .or_else(|| {
+                // If we have a known label, create node with that label
+                end_labels.first().map(|label| {
+                    log::debug!("Creating end node with known label: {}", label);
+                    create_node_with_label(label, 1)
+                })
+            })
+            .ok_or_else(|| {
+                format!(
+                    "Internal error: Cannot resolve end node '{}' for path '{}'. \
+                     No label metadata available and node not found in row. \
+                     end_labels={:?}, row_keys={:?}",
+                    end_alias,
+                    path_name,
+                    end_labels,
+                    row.keys().collect::<Vec<_>>()
+                )
+            })?;
 
-    // Try to get relationship data from row, or create with known type
+    // Extract relationship - require either metadata lookup success or known types
     let relationship = find_relationship_in_row_with_type(
         row,
         rel_alias,
@@ -857,14 +878,24 @@ fn transform_to_path(
         return_metadata,
         schema,
     )
-    .unwrap_or_else(|| {
-        let rel_type = rel_types
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "_UNKNOWN".to_string());
-        log::trace!("Creating relationship with type: {}", rel_type);
-        create_relationship_with_type(&rel_type, &start_node.element_id, &end_node.element_id)
-    });
+    .or_else(|| {
+        // If we have a known type, create relationship with that type
+        rel_types.first().map(|rel_type| {
+            log::debug!("Creating relationship with known type: {}", rel_type);
+            create_relationship_with_type(rel_type, &start_node.element_id, &end_node.element_id)
+        })
+    })
+    .ok_or_else(|| {
+        format!(
+            "Internal error: Cannot resolve relationship '{}' for path '{}'. \
+             No type metadata available and relationship not found in row. \
+             rel_types={:?}, row_keys={:?}",
+            rel_alias,
+            path_name,
+            rel_types,
+            row.keys().collect::<Vec<_>>()
+        )
+    })?;
 
     log::info!(
         "Path created: start_node.labels={:?}, end_node.labels={:?}, rel.type={}",
@@ -1479,36 +1510,6 @@ fn find_relationship_in_row(
     }
 
     None
-}
-
-/// Create a placeholder node when we can't find actual data
-#[allow(dead_code)]
-fn create_placeholder_node(_alias: &str, id: i64) -> Node {
-    Node {
-        id,
-        labels: vec!["_Unknown".to_string()],
-        properties: std::collections::HashMap::new(),
-        element_id: format!("_Unknown:{}", id),
-    }
-}
-
-/// Create a placeholder relationship when we can't find actual data
-#[allow(dead_code)]
-fn create_placeholder_relationship(
-    _alias: &str,
-    start_element_id: &str,
-    end_element_id: &str,
-) -> Relationship {
-    Relationship {
-        id: 0,
-        start_node_id: 0,
-        end_node_id: 0,
-        rel_type: "_UNKNOWN".to_string(),
-        properties: std::collections::HashMap::new(),
-        element_id: format!("_UNKNOWN:{}:{}", start_element_id, end_element_id),
-        start_node_element_id: start_element_id.to_string(),
-        end_node_element_id: end_element_id.to_string(),
-    }
 }
 
 /// Create a node with a known label but no data
