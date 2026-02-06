@@ -9,6 +9,7 @@
 //! - **Property Mapping**: Convert Cypher properties to database column names
 //! - **Edge-list Tagging**: Mark filters that apply to relationships
 //! - **Projection Alias Detection**: Handle aggregation results and HAVING clauses
+//! - **id() Decoding**: Transform encoded Neo4j integer IDs in comparisons to raw values
 //!
 //! ## Architecture
 //!
@@ -17,6 +18,7 @@
 //! 2. Tags filters with their owning table for later optimization
 //! 3. Handles denormalized patterns where node data is in edge tables
 //! 4. Preserves multi-table conditions for proper JOIN ordering
+//! 5. Decodes encoded id() values in WHERE clauses (e.g., `id(n) = 72057594037927937`)
 
 use std::{collections::HashSet, sync::Arc};
 
@@ -34,6 +36,7 @@ use crate::{
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
+    utils::id_encoding::IdEncoding,
 };
 
 pub struct FilterTagging;
@@ -579,6 +582,161 @@ impl FilterTagging {
         self.apply_property_mapping_internal(expr, plan_ctx, graph_schema, plan, true)
     }
 
+    // ========================================================================
+    // id() Comparison Transformation (Neo4j Browser Compatibility)
+    // ========================================================================
+
+    /// Try to transform id(var) = <encoded_value> patterns
+    ///
+    /// When Neo4j Browser sends queries like `MATCH (a) WHERE id(a) = 72057594037927937`,
+    /// we need to:
+    /// 1. Decode the encoded ID to get the label and raw value
+    /// 2. Transform id(a) to a.id_column (the actual ID column from schema)
+    /// 3. Transform the literal to the raw value
+    /// 4. Optionally add label constraint to the pattern
+    ///
+    /// Returns Some(transformed_expr) if this is an id() comparison, None otherwise.
+    fn try_transform_id_comparison(
+        &self,
+        op: &OperatorApplication,
+        plan_ctx: &PlanCtx,
+        graph_schema: &GraphSchema,
+        plan: Option<&LogicalPlan>,
+    ) -> AnalyzerResult<Option<LogicalExpr>> {
+        // Check for id(var) = N pattern (id function on left, literal on right)
+        let (id_fn_call, literal_value, id_on_left) = match (&op.operands[0], &op.operands[1]) {
+            (LogicalExpr::ScalarFnCall(fn_call), LogicalExpr::Literal(lit))
+                if fn_call.name.to_lowercase() == "id" =>
+            {
+                (fn_call, lit.clone(), true)
+            }
+            (LogicalExpr::Literal(lit), LogicalExpr::ScalarFnCall(fn_call))
+                if fn_call.name.to_lowercase() == "id" =>
+            {
+                (fn_call, lit.clone(), false)
+            }
+            _ => return Ok(None), // Not an id() comparison
+        };
+
+        // Extract the variable alias from id(var)
+        let var_alias = match id_fn_call.args.get(0) {
+            Some(LogicalExpr::TableAlias(alias)) => alias.0.clone(),
+            _ => return Ok(None), // id() without variable
+        };
+
+        // Get the literal as i64
+        let encoded_id = match &literal_value {
+            crate::query_planner::logical_expr::Literal::Integer(n) => *n,
+            _ => return Ok(None), // Not an integer literal
+        };
+
+        // Check if this is an encoded ID (has label code in high bits)
+        if !IdEncoding::is_encoded(encoded_id) {
+            log::debug!(
+                "FilterTagging: id({}) = {} is not encoded, skipping decode",
+                var_alias,
+                encoded_id
+            );
+            return Ok(None); // Raw value, not encoded
+        }
+
+        // Decode the encoded ID to get label and raw value
+        let (label, raw_value) = match IdEncoding::decode_with_label(encoded_id) {
+            Some((label, raw_value)) => (label, raw_value),
+            None => {
+                log::warn!(
+                    "FilterTagging: Failed to decode id({}) = {} - label not in registry",
+                    var_alias,
+                    encoded_id
+                );
+                return Ok(None); // Can't decode - label not registered yet
+            }
+        };
+
+        log::info!(
+            "FilterTagging: Decoded id({}) = {} → {}:{} (raw_value={})",
+            var_alias,
+            encoded_id,
+            label,
+            raw_value,
+            raw_value
+        );
+
+        // Get the ID column for this label from the schema
+        let id_column = if let Ok(node_schema) = graph_schema.node_schema(&label) {
+            node_schema
+                .node_id
+                .columns()
+                .first()
+                .map(|s| s.to_string())
+        } else if let Ok(rel_schema) = graph_schema.get_rel_schema(&label) {
+            // For relationships, use edge_id if defined, else from_id
+            if let Some(ref edge_id) = rel_schema.edge_id {
+                edge_id.columns().first().map(|s| s.to_string())
+            } else {
+                Some(rel_schema.from_id.clone())
+            }
+        } else {
+            log::warn!(
+                "FilterTagging: No schema found for label '{}' in id() decode",
+                label
+            );
+            None
+        };
+
+        let id_column = match id_column {
+            Some(col) => col,
+            None => {
+                log::warn!(
+                    "FilterTagging: Could not determine ID column for label '{}'",
+                    label
+                );
+                return Ok(None);
+            }
+        };
+
+        // Note: We don't update the pattern's label in plan_ctx here because:
+        // 1. The label is used to determine the ID column (which we've already done)
+        // 2. For untyped patterns (MATCH (a) WHERE id(a) = N), the query will match
+        //    based on the raw ID value, which is globally unique within the label's table
+        // 3. Adding label constraints would require modifying the plan structure
+        //
+        // The decoded label is used to look up the correct schema and ID column.
+
+        // Build the transformed expression: var.id_column = raw_value
+        use crate::graph_catalog::expression_parser::PropertyValue;
+        use crate::query_planner::logical_expr::Literal;
+        
+        let property_access = LogicalExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias(var_alias.clone()),
+            column: PropertyValue::Column(id_column.clone()),
+        });
+
+        let raw_literal = LogicalExpr::Literal(Literal::Integer(raw_value));
+
+        let (left, right) = if id_on_left {
+            (property_access, raw_literal)
+        } else {
+            (raw_literal, property_access)
+        };
+
+        let transformed = LogicalExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Equal,
+            operands: vec![left, right],
+        });
+
+        log::info!(
+            "FilterTagging: Transformed id({}) = {} → {}.{} = {}",
+            var_alias,
+            encoded_id,
+            var_alias,
+            id_column,
+            raw_value
+        );
+
+        Ok(Some(transformed))
+    }
+
     fn apply_property_mapping_internal(
         &self,
         expr: LogicalExpr,
@@ -977,6 +1135,19 @@ impl FilterTagging {
                 }))
             }
             LogicalExpr::OperatorApplicationExp(mut op) => {
+                // Special handling for id(var) = <encoded_value> patterns
+                // This decodes Neo4j-encoded integer IDs to raw database values
+                if op.operator == Operator::Equal && op.operands.len() == 2 {
+                    if let Some(transformed) = self.try_transform_id_comparison(
+                        &op,
+                        plan_ctx,
+                        graph_schema,
+                        plan,
+                    )? {
+                        return Ok(transformed);
+                    }
+                }
+                
                 // Recursively apply property mapping to operands
                 let mut mapped_operands = Vec::new();
                 for operand in op.operands {

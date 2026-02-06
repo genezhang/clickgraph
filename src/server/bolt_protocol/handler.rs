@@ -539,6 +539,7 @@ impl BoltHandler {
         };
 
         log::info!("Executing Cypher query: {}", query);
+        
         if let Some(ref schema) = schema_name {
             log::debug!("Query execution using schema: {}", schema);
         } else {
@@ -546,6 +547,7 @@ impl BoltHandler {
         }
 
         // Parse and execute the query
+        // Note: id() predicates with encoded values are decoded in FilterTagging pass
         match self
             .execute_cypher_query(
                 &query,

@@ -28,57 +28,18 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
+// Use shared ID encoding utilities
+use crate::utils::id_encoding::{IdEncoding, LABEL_CODE_REGISTRY};
+
 lazy_static! {
     /// Registry of active session caches for cross-session lookups
     /// Maps connection_id → Arc<RwLock<SessionCache>>
     static ref ACTIVE_SESSION_CACHES: RwLock<HashMap<u64, Arc<RwLock<SessionCache>>>> =
         RwLock::new(HashMap::new());
-
-    /// Global registry of label names to label codes
-    /// Assigns sequential codes to new labels as they're encountered
-    static ref LABEL_CODE_REGISTRY: RwLock<LabelCodeRegistry> =
-        RwLock::new(LabelCodeRegistry::new());
 }
 
 /// Counter for generating unique connection IDs
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
-
-/// Registry that assigns unique 8-bit codes to label/type names
-#[derive(Debug)]
-struct LabelCodeRegistry {
-    /// Label name → code (0-255)
-    label_to_code: HashMap<String, u8>,
-    /// Next code to assign
-    next_code: u8,
-}
-
-impl LabelCodeRegistry {
-    fn new() -> Self {
-        LabelCodeRegistry {
-            label_to_code: HashMap::new(),
-            // Start at 1, not 0, so ALL encoded IDs are distinguishable from raw values.
-            // With code=0, User:1 would become just 1, defeating the encoding purpose.
-            next_code: 1,
-        }
-    }
-
-    /// Get or assign a code for a label (1-255)
-    /// Returns 255 if we've exhausted all codes (overflow)
-    fn get_or_assign(&mut self, label: &str) -> u8 {
-        if let Some(&code) = self.label_to_code.get(label) {
-            return code;
-        }
-
-        // Assign new code (starts at 1)
-        let code = self.next_code;
-        if self.next_code < 255 {
-            self.next_code += 1;
-        }
-        // At 255, we stop incrementing (overflow protection)
-        self.label_to_code.insert(label.to_string(), code);
-        code
-    }
-}
 
 /// Session-local cache storing ID mappings for one connection
 #[derive(Debug, Default)]
@@ -318,6 +279,97 @@ impl IdMapper {
     #[allow(dead_code)]
     pub fn connection_id(&self) -> u64 {
         self.connection_id
+    }
+
+    /// Static function to look up element_id from encoded ID across all sessions
+    ///
+    /// This can be called from anywhere (e.g., FilterTagging) without needing
+    /// an IdMapper instance. Searches all active session caches.
+    pub fn static_lookup_element_id(encoded_id: i64) -> Option<String> {
+        if let Ok(registry) = ACTIVE_SESSION_CACHES.read() {
+            for (_conn_id, session_cache) in registry.iter() {
+                if let Ok(cache) = session_cache.read() {
+                    if let Some(element_id) = cache.int_to_element.get(&encoded_id) {
+                        return Some(element_id.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Decode an encoded ID to extract the label code and raw id value
+    ///
+    /// Returns (label_code, id_hash) where:
+    /// - label_code is the 8-bit label identifier (1-255)
+    /// - id_hash is the 56-bit value (could be raw ID or hash)
+    ///
+    /// For simple numeric IDs, id_hash IS the raw ID value.
+    /// For complex IDs, id_hash is a hash and requires cache lookup.
+    pub fn decode_id(encoded_id: i64) -> (u8, i64) {
+        IdEncoding::decode(encoded_id)
+    }
+
+    /// Get the label name from a label code
+    ///
+    /// Returns the label string if found in the registry.
+    pub fn get_label_from_code(label_code: u8) -> Option<String> {
+        if let Ok(registry) = LABEL_CODE_REGISTRY.read() {
+            registry.get_label(label_code)
+        } else {
+            None
+        }
+    }
+
+    /// Check if an ID value appears to be an encoded ID (has label code in high bits)
+    ///
+    /// Returns true if the value has a non-zero label code (> 2^56)
+    pub fn is_encoded_id(value: i64) -> bool {
+        IdEncoding::is_encoded(value)
+    }
+
+    /// Try to decode an encoded ID to get the raw ID value for database lookup
+    ///
+    /// This is the key function for WHERE clause rewriting. Given an encoded ID,
+    /// it returns the raw ID value that should be used in SQL comparisons.
+    ///
+    /// Priority:
+    /// 1. Cache lookup - get exact element_id from session caches
+    /// 2. Direct extraction - if id_hash looks like a simple numeric ID
+    ///
+    /// Returns (label, raw_id_value) if decodable, None otherwise.
+    pub fn decode_for_query(encoded_id: i64) -> Option<(String, String)> {
+        // First try cache lookup
+        if let Some(element_id) = Self::static_lookup_element_id(encoded_id) {
+            // Parse "Label:value" format
+            if let Some(colon_pos) = element_id.find(':') {
+                let label = element_id[..colon_pos].to_string();
+                let value = element_id[colon_pos + 1..].to_string();
+                return Some((label, value));
+            }
+        }
+
+        // Fall back to direct extraction
+        let (label_code, id_hash) = Self::decode_id(encoded_id);
+        
+        // If label_code is 0, this isn't an encoded ID
+        if label_code == 0 {
+            return None;
+        }
+
+        // Get the label name from the code
+        let label = Self::get_label_from_code(label_code)?;
+
+        // For simple numeric IDs (common case), id_hash IS the raw value
+        // We can't distinguish hashed vs raw values, but for small numbers
+        // (< 2^31), it's almost certainly the raw value
+        if id_hash > 0 && id_hash < (1i64 << 31) {
+            return Some((label, id_hash.to_string()));
+        }
+
+        // Large values might be hashed - we can't decode without cache
+        // Return None and let the caller handle it
+        None
     }
 
     /// Try to construct an element_id from an integer ID without prior mapping

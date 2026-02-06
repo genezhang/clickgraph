@@ -100,20 +100,32 @@ pub fn rewrite_id_predicates(query: &str, id_mapper: &IdMapper) -> IdRewriteResu
 
 /// Parse element_id and generate a property filter expression
 /// Returns (label, filter_expr) or None if parsing fails
+///
+/// Uses __node_id__ as a marker property that FilterTagging will recognize
+/// and transform to the actual ID column from the schema.
 fn element_id_to_filter(element_id: &str, alias: &str) -> Option<(String, String)> {
     match parse_node_element_id(element_id) {
         Ok((label, id_values)) => {
-            // For single ID: alias:Label AND alias.id = 'value'
-            // For composite ID: alias:Label AND alias.id = 'v1|v2|v3'
+            // For single ID: (alias:Label AND alias.__node_id__ = value)
+            // For composite ID: (alias:Label AND alias.__node_id__ = 'v1|v2|v3')
             let id_value = id_values.join("|");
 
-            // Use "id" as the generic primary key property name
-            // The schema defines node_id which maps to the actual column
-            // Escape single quotes in id_value
-            let escaped_id = id_value.replace('\'', "''");
+            // Determine if value is numeric (no quotes needed) or string
+            let value_expr = if id_values.len() == 1 {
+                if let Ok(_) = id_values[0].parse::<i64>() {
+                    id_values[0].clone() // Numeric - no quotes
+                } else {
+                    let escaped = id_value.replace('\'', "''");
+                    format!("'{}'", escaped) // String - with quotes
+                }
+            } else {
+                let escaped = id_value.replace('\'', "''");
+                format!("'{}'", escaped) // Composite - with quotes
+            };
 
-            // Generate: (alias:Label AND alias.id = 'value')
-            let filter = format!("({}:{} AND {}.id = '{}')", alias, label, alias, escaped_id);
+            // Generate: (alias:Label AND alias.__node_id__ = value)
+            // FilterTagging will transform __node_id__ to actual column
+            let filter = format!("({}:{} AND {}.__node_id__ = {})", alias, label, alias, value_expr);
             Some((label, filter))
         }
         Err(e) => {
@@ -309,7 +321,7 @@ mod tests {
 
         assert!(result.was_rewritten);
         assert!(result.query.contains("a:Airport"));
-        assert!(result.query.contains("a.id = '1'"));
+        assert!(result.query.contains("a.__node_id__ = 1"));
         assert!(result.missing_ids.is_empty());
     }
 
@@ -332,9 +344,9 @@ mod tests {
 
         assert!(result.was_rewritten);
         assert!(result.query.contains("a:Airport"));
-        assert!(result.query.contains("a.id = '1'"));
-        assert!(result.query.contains("a.id = '2'"));
-        assert!(result.query.contains("a.id = '3'"));
+        assert!(result.query.contains("a.__node_id__ = 1"));
+        assert!(result.query.contains("a.__node_id__ = 2"));
+        assert!(result.query.contains("a.__node_id__ = 3"));
     }
 
     #[test]
@@ -373,7 +385,7 @@ LIMIT 97"#,
 
         assert!(result.was_rewritten);
         assert!(result.query.contains("a:Airport"));
-        assert!(result.query.contains("a.id = '2'")); // Airport:2 -> id 2
+        assert!(result.query.contains("a.__node_id__ = 2")); // Airport:2 -> id 2
         assert!(result.query.contains("NOT ("));
         assert!(result.query.contains("ORDER BY o.id"));
     }
