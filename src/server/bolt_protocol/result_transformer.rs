@@ -94,6 +94,13 @@ pub enum ReturnItemType {
         /// Whether this is a VLP (variable-length path)
         is_vlp: bool,
     },
+    /// Neo4j id() function - compute encoded ID from element_id at result time
+    IdFunction {
+        /// The variable alias (e.g., "u" in id(u))
+        alias: String,
+        /// Labels for the entity (if known)
+        labels: Vec<String>,
+    },
     /// Scalar value (property access, expression, aggregate) - return as-is
     Scalar,
 }
@@ -314,8 +321,33 @@ pub fn extract_return_metadata(
                     ReturnItemType::Scalar
                 }
             }
+            LogicalExpr::ScalarFnCall(fn_call) => {
+                // Check for id() function - needs special handling
+                if fn_call.name.eq_ignore_ascii_case("id") && fn_call.args.len() == 1 {
+                    // Extract alias from argument
+                    if let LogicalExpr::TableAlias(alias) = &fn_call.args[0] {
+                        let alias_str = alias.to_string();
+                        // Look up labels from plan_ctx
+                        let labels = match plan_ctx.lookup_variable(&alias_str) {
+                            Some(TypedVariable::Node(node_var)) => node_var.labels.clone(),
+                            Some(TypedVariable::Relationship(rel_var)) => rel_var.rel_types.clone(),
+                            _ => vec![],
+                        };
+                        log::debug!("IdFunction detected: id({}) with labels {:?}", alias_str, labels);
+                        ReturnItemType::IdFunction {
+                            alias: alias_str,
+                            labels,
+                        }
+                    } else {
+                        ReturnItemType::Scalar
+                    }
+                } else {
+                    // Other function calls → Scalar
+                    ReturnItemType::Scalar
+                }
+            }
             _ => {
-                // Function call, other expressions → Scalar
+                // Other expressions → Scalar
                 ReturnItemType::Scalar
             }
         };
@@ -522,6 +554,64 @@ pub fn transform_row(
                 // Use the Path's packstream encoding
                 let packstream_bytes = path.to_packstream();
                 result.push(BoltValue::PackstreamBytes(packstream_bytes));
+            }
+            ReturnItemType::IdFunction { alias, labels } => {
+                // For id() function, we need to compute the encoded ID from the element_id
+                // The element_id is constructed from the label and ID column value
+                log::debug!("IdFunction handler: alias={}, labels={:?}, field_name={}", alias, labels, meta.field_name);
+                
+                // Find the node/relationship data in the row to build element_id
+                let label = labels.first().cloned().unwrap_or_else(|| "Unknown".to_string());
+                
+                // First, try to get the id value from the field_name (the SQL column alias)
+                // When "id(u) as uid" is queried, SQL is "SELECT u.user_id AS uid"
+                // and row contains {"uid": 1}, so we look for field_name first
+                let element_id = if let Some(id_val) = row.get(&meta.field_name) {
+                    let id_str = match id_val {
+                        Value::Number(n) => n.to_string(),
+                        Value::String(s) => s.clone(),
+                        _ => format!("{:?}", id_val),
+                    };
+                    format!("{}:{}", label, id_str)
+                } else {
+                    // Fallback: try alias.id_col format (when node is also returned)
+                    let id_col = schema.node_schema(&label)
+                        .map(|ns| ns.node_id.columns().first().map(|s| s.to_string()).unwrap_or_else(|| "id".to_string()))
+                        .unwrap_or_else(|_| "id".to_string());
+                    let id_column_key = format!("{}.{}", alias, id_col);
+                    
+                    if let Some(id_val) = row.get(&id_column_key) {
+                        let id_str = match id_val {
+                            Value::Number(n) => n.to_string(),
+                            Value::String(s) => s.clone(),
+                            _ => format!("{:?}", id_val),
+                        };
+                        format!("{}:{}", label, id_str)
+                    } else {
+                        // Last fallback: try to construct from any property that looks like an ID
+                        let prefix = format!("{}.", alias);
+                        let mut element_id = None;
+                        for (key, value) in row.iter() {
+                            if let Some(prop) = key.strip_prefix(&prefix) {
+                                if prop.ends_with("_id") || prop == "id" {
+                                    let id_str = match value {
+                                        Value::Number(n) => n.to_string(),
+                                        Value::String(s) => s.clone(),
+                                        _ => continue,
+                                    };
+                                    element_id = Some(format!("{}:{}", label, id_str));
+                                    break;
+                                }
+                            }
+                        }
+                        element_id.unwrap_or_else(|| format!("{}:unknown", label))
+                    }
+                };
+                
+                // Use IdMapper's deterministic ID computation
+                let encoded_id = super::id_mapper::IdMapper::compute_deterministic_id(&element_id);
+                log::debug!("id() encoded: {} -> {}", element_id, encoded_id);
+                result.push(BoltValue::Json(Value::Number(encoded_id.into())));
             }
             ReturnItemType::Scalar => {
                 // For scalars, just extract the value and wrap in BoltValue::Json
@@ -1174,14 +1264,11 @@ fn extract_id_from_props(props: &HashMap<String, Value>, id1: &str, id2: &str, i
 
 /// Generate a unique integer node ID from element_id
 /// This ensures round-trip: element_id is the source of truth, integer id is derived from it
+/// Generate a deterministic ID from an element_id using the single source of truth.
+/// This ensures "User:1" and "Post:1" have different IDs by encoding the label.
 fn generate_id_from_element_id(element_id: &str) -> i64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
-    element_id.hash(&mut hasher);
-    // Use absolute value and mask to ensure positive i64
-    (hasher.finish() as i64).abs()
+    // Delegate to IdMapper's compute_deterministic_id for consistent encoding
+    super::id_mapper::IdMapper::compute_deterministic_id(element_id)
 }
 
 fn value_to_i64(val: &Value) -> Option<i64> {

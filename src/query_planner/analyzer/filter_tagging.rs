@@ -241,9 +241,10 @@ impl AnalyzerPass for FilterTagging {
                     Transformed::Yes(plan) | Transformed::No(plan) => plan.as_ref(),
                 };
                 // Apply property mapping to projection expressions
+                // Use the projection variant to preserve id() functions
                 let mut mapped_items = Vec::new();
                 for item in &projection.items {
-                    let mapped_expr = self.apply_property_mapping(
+                    let mapped_expr = self.apply_property_mapping_for_projection(
                         item.expression.clone(),
                         plan_ctx,
                         graph_schema,
@@ -563,6 +564,28 @@ impl FilterTagging {
         plan_ctx: &PlanCtx,
         graph_schema: &GraphSchema,
         plan: Option<&LogicalPlan>,
+    ) -> AnalyzerResult<LogicalExpr> {
+        self.apply_property_mapping_internal(expr, plan_ctx, graph_schema, plan, false)
+    }
+
+    /// Apply property mapping for projection items - preserves id() function
+    pub fn apply_property_mapping_for_projection(
+        &self,
+        expr: LogicalExpr,
+        plan_ctx: &PlanCtx,
+        graph_schema: &GraphSchema,
+        plan: Option<&LogicalPlan>,
+    ) -> AnalyzerResult<LogicalExpr> {
+        self.apply_property_mapping_internal(expr, plan_ctx, graph_schema, plan, true)
+    }
+
+    fn apply_property_mapping_internal(
+        &self,
+        expr: LogicalExpr,
+        plan_ctx: &PlanCtx,
+        graph_schema: &GraphSchema,
+        plan: Option<&LogicalPlan>,
+        preserve_id_function: bool,
     ) -> AnalyzerResult<LogicalExpr> {
         match expr {
             LogicalExpr::PropertyAccessExp(property_access) => {
@@ -957,11 +980,12 @@ impl FilterTagging {
                 // Recursively apply property mapping to operands
                 let mut mapped_operands = Vec::new();
                 for operand in op.operands {
-                    mapped_operands.push(self.apply_property_mapping(
+                    mapped_operands.push(self.apply_property_mapping_internal(
                         operand,
                         plan_ctx,
                         graph_schema,
                         plan,
+                        preserve_id_function,
                     )?);
                 }
                 op.operands = mapped_operands;
@@ -971,7 +995,15 @@ impl FilterTagging {
                 let fn_name_lower = fn_call.name.to_lowercase();
 
                 // Handle id() function - resolve to actual ID column for WHERE clause usage
+                // For projections (preserve_id_function=true), keep the function so result
+                // transformer can compute the proper encoded ID
                 if fn_name_lower == "id" && fn_call.args.len() == 1 {
+                    if preserve_id_function {
+                        // In projection context: keep id() as-is, result transformer handles it
+                        return Ok(LogicalExpr::ScalarFnCall(fn_call));
+                    }
+                    
+                    // In WHERE clause context: transform to column comparison
                     // Extract the alias from the argument
                     if let LogicalExpr::TableAlias(ref alias) = fn_call.args[0] {
                         let alias_str = &alias.0;
@@ -1090,11 +1122,12 @@ impl FilterTagging {
                 if matches!(fn_name_lower.as_str(), "type" | "labels" | "label") {
                     let mut mapped_args = Vec::new();
                     for arg in fn_call.args {
-                        mapped_args.push(self.apply_property_mapping(
+                        mapped_args.push(self.apply_property_mapping_internal(
                             arg,
                             plan_ctx,
                             graph_schema,
                             plan,
+                            preserve_id_function,
                         )?);
                     }
                     return Ok(LogicalExpr::ScalarFnCall(ScalarFnCall {
@@ -1106,11 +1139,12 @@ impl FilterTagging {
                 // For other scalar functions, recursively apply property mapping to arguments
                 let mut mapped_args = Vec::new();
                 for arg in fn_call.args {
-                    mapped_args.push(self.apply_property_mapping(
+                    mapped_args.push(self.apply_property_mapping_internal(
                         arg,
                         plan_ctx,
                         graph_schema,
                         plan,
+                        preserve_id_function,
                     )?);
                 }
                 Ok(LogicalExpr::ScalarFnCall(ScalarFnCall {
@@ -1122,11 +1156,12 @@ impl FilterTagging {
                 // Recursively apply property mapping to aggregate function arguments
                 let mut mapped_args = Vec::new();
                 for arg in agg_call.args {
-                    mapped_args.push(self.apply_property_mapping(
+                    mapped_args.push(self.apply_property_mapping_internal(
                         arg,
                         plan_ctx,
                         graph_schema,
                         plan,
+                        preserve_id_function,
                     )?);
                 }
                 agg_call.args = mapped_args;
@@ -1136,11 +1171,12 @@ impl FilterTagging {
                 // Recursively apply property mapping to list elements
                 let mut mapped_elements = Vec::new();
                 for element in list {
-                    mapped_elements.push(self.apply_property_mapping(
+                    mapped_elements.push(self.apply_property_mapping_internal(
                         element,
                         plan_ctx,
                         graph_schema,
                         plan,
+                        preserve_id_function,
                     )?);
                 }
                 Ok(LogicalExpr::List(mapped_elements))
@@ -1149,23 +1185,25 @@ impl FilterTagging {
                 // Recursively apply property mapping to array slicing components
                 // This is important for expressions like collect(n.name)[0..10]
                 let mapped_array =
-                    self.apply_property_mapping(*array, plan_ctx, graph_schema, plan)?;
+                    self.apply_property_mapping_internal(*array, plan_ctx, graph_schema, plan, preserve_id_function)?;
                 let mapped_from = if let Some(f) = from {
-                    Some(Box::new(self.apply_property_mapping(
+                    Some(Box::new(self.apply_property_mapping_internal(
                         *f,
                         plan_ctx,
                         graph_schema,
                         plan,
+                        preserve_id_function,
                     )?))
                 } else {
                     None
                 };
                 let mapped_to = if let Some(t) = to {
-                    Some(Box::new(self.apply_property_mapping(
+                    Some(Box::new(self.apply_property_mapping_internal(
                         *t,
                         plan_ctx,
                         graph_schema,
                         plan,
+                        preserve_id_function,
                     )?))
                 } else {
                     None

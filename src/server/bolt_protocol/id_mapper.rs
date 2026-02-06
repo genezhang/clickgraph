@@ -56,18 +56,20 @@ impl LabelCodeRegistry {
     fn new() -> Self {
         LabelCodeRegistry {
             label_to_code: HashMap::new(),
-            next_code: 0,
+            // Start at 1, not 0, so ALL encoded IDs are distinguishable from raw values.
+            // With code=0, User:1 would become just 1, defeating the encoding purpose.
+            next_code: 1,
         }
     }
 
-    /// Get or assign a code for a label (0-255)
+    /// Get or assign a code for a label (1-255)
     /// Returns 255 if we've exhausted all codes (overflow)
     fn get_or_assign(&mut self, label: &str) -> u8 {
         if let Some(&code) = self.label_to_code.get(label) {
             return code;
         }
 
-        // Assign new code
+        // Assign new code (starts at 1)
         let code = self.next_code;
         if self.next_code < 255 {
             self.next_code += 1;
@@ -179,7 +181,10 @@ impl IdMapper {
     ///
     /// Encodes the label in the high 8 bits and the id hash in the lower 56 bits.
     /// This ensures "User:1" and "Post:1" have different IDs.
-    fn compute_deterministic_id(element_id: &str) -> i64 {
+    ///
+    /// This is a public static method so result_transformer can use it as the single
+    /// source of truth for ID generation across the codebase.
+    pub fn compute_deterministic_id(element_id: &str) -> i64 {
         // Parse "Label:id_value" format
         let (label, id_part) = if let Some(colon_pos) = element_id.find(':') {
             (&element_id[..colon_pos], &element_id[colon_pos + 1..])

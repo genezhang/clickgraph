@@ -1229,6 +1229,7 @@ impl BoltHandler {
                 super::result_transformer::ReturnItemType::Node { .. }
                     | super::result_transformer::ReturnItemType::Relationship { .. }
                     | super::result_transformer::ReturnItemType::Path { .. }
+                    | super::result_transformer::ReturnItemType::IdFunction { .. }
             )
         });
 

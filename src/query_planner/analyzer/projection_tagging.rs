@@ -855,78 +855,15 @@ impl ProjectionTagging {
                                 // type() on a node doesn't make sense in standard Cypher, keep as-is
                             }
                             "id" => {
-                                // For id(n): return the id column(s) as PropertyAccessExp or Tuple
+                                // For id(n): PRESERVE as ScalarFnCall so result transformer
+                                // can compute the proper Neo4j-encoded ID at result time.
+                                // DO NOT transform to PropertyAccessExp - that returns raw DB column values.
                                 // If no explicit alias, use "id(r)" or "id(n)" as the column alias
                                 if item.col_alias.is_none() {
                                     item.col_alias = Some(ColumnAlias(format!("id({})", alias)));
                                 }
-                                if let Ok(label) = table_ctx.get_label_str() {
-                                    if table_ctx.is_relation() {
-                                        // Relationship ID - may be single or composite
-                                        if let Ok(rel_schema) = graph_schema.get_rel_schema(&label)
-                                        {
-                                            if let Some(ref edge_id) = rel_schema.edge_id {
-                                                let columns = edge_id.columns();
-                                                if columns.len() == 1 {
-                                                    // Single column edge ID
-                                                    item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                                        table_alias: TableAlias(alias.clone()),
-                                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(columns[0].to_string()),
-                                                    });
-                                                } else {
-                                                    // Composite edge ID - return as tuple (List)
-                                                    // This enables round-trip: id(r) returns (col1, col2, ...)
-                                                    // and WHERE id(r) = (val1, val2, ...) works
-                                                    let tuple_exprs: Vec<LogicalExpr> = columns.iter()
-                                                        .map(|col| LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                                            table_alias: TableAlias(alias.clone()),
-                                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(col.to_string()),
-                                                        }))
-                                                        .collect();
-                                                    item.expression =
-                                                        LogicalExpr::List(tuple_exprs);
-                                                }
-                                            } else {
-                                                // No edge_id defined - use from_id as default
-                                                item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                                    table_alias: TableAlias(alias.clone()),
-                                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(rel_schema.from_id.clone()),
-                                                });
-                                            }
-                                            return Ok(());
-                                        }
-                                        // Fallback for unknown relationship
-                                        item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: TableAlias(alias.clone()),
-                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column("id".to_string()),
-                                        });
-                                        return Ok(());
-                                    } else {
-                                        // Node ID column - use first column for composite IDs
-                                        let id_column = if let Ok(node_schema) =
-                                            graph_schema.node_schema(&label)
-                                        {
-                                            node_schema
-                                                .node_id
-                                                .columns()
-                                                .first()
-                                                .ok_or_else(|| AnalyzerError::SchemaNotFound(
-                                                    format!("Node schema for label '{}' has no ID columns defined", label)
-                                                ))?
-                                                .to_string()
-                                        } else {
-                                            return Err(AnalyzerError::SchemaNotFound(format!(
-                                                "Node schema not found for label '{}'",
-                                                label
-                                            )));
-                                        };
-                                        item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: TableAlias(alias.clone()),
-                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_column),
-                                        });
-                                        return Ok(());
-                                    }
-                                }
+                                // Keep the expression as ScalarFnCall - handled by result_transformer
+                                return Ok(());
                             }
                             "labels" => {
                                 // For labels(n): return an array literal with the node's label(s)
