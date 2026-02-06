@@ -732,6 +732,7 @@ pub fn extract_join_from_logical_equality(
 }
 
 /// Rewrite an OperatorApplication for CTE JOIN conditions.
+/// Rewrite a RenderExpr to use CTE column names where applicable.
 /// Converts property access expressions to use CTE column naming convention.
 /// E.g., a.user_id becomes a_b.a_user_id (where a_b is the CTE alias)
 fn rewrite_operator_application_for_cte_join(
@@ -752,6 +753,62 @@ fn rewrite_operator_application_for_cte_join(
     }
 }
 
+/// Public version for use by join_builder
+/// Rewrites operator application to use CTE column names.
+/// The table alias is kept (e.g., "o" stays "o") but column becomes "o_user_id".
+pub fn rewrite_operator_application_for_cte(
+    op_app: &OperatorApplication,
+    cte_references: &HashMap<String, String>,
+) -> OperatorApplication {
+    // Rewrite operands to use CTE column names
+    let rewritten_operands: Vec<RenderExpr> = op_app
+        .operands
+        .iter()
+        .map(|operand| rewrite_render_expr_for_cte_simple(operand, cte_references))
+        .collect();
+
+    OperatorApplication {
+        operator: op_app.operator,
+        operands: rewritten_operands,
+    }
+}
+
+/// Simple CTE expression rewriting - just prefixes column names, keeps table alias the same.
+/// E.g., o.user_id -> o.o_user_id (when "o" is in cte_references)
+fn rewrite_render_expr_for_cte_simple(
+    expr: &RenderExpr,
+    cte_references: &HashMap<String, String>,
+) -> RenderExpr {
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            // Check if this alias is from a CTE
+            if cte_references.contains_key(&pa.table_alias.0) {
+                // Rewrite column to use CTE naming: alias_column
+                // Keep the same table alias (e.g., "o" stays "o")
+                let cte_column = format!("{}_{}", pa.table_alias.0, pa.column.raw());
+                log::info!(
+                    "🔧 Rewriting CTE column: {}.{} -> {}.{}",
+                    pa.table_alias.0,
+                    pa.column.raw(),
+                    pa.table_alias.0,
+                    cte_column
+                );
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: pa.table_alias.clone(), // Keep same table alias
+                    column: PropertyValue::Column(cte_column),
+                })
+            } else {
+                // Not a CTE reference, keep as-is
+                expr.clone()
+            }
+        }
+        RenderExpr::OperatorApplicationExp(inner_op) => RenderExpr::OperatorApplicationExp(
+            rewrite_operator_application_for_cte(inner_op, cte_references),
+        ),
+        _ => expr.clone(),
+    }
+}
+
 /// Rewrite a RenderExpr operand to use CTE column names where applicable.
 /// Helper function that avoids needing cte_schemas parameter.
 fn rewrite_render_expr_for_cte_operand(
@@ -766,7 +823,7 @@ fn rewrite_render_expr_for_cte_operand(
                 // Rewrite to use CTE alias and column naming
                 // E.g., a.user_id -> a_b.a_user_id
                 let cte_column = format!("{}_{}", pa.table_alias.0, pa.column.raw());
-                log::warn!(
+                log::info!(
                     "🔧 Rewriting property access: {}.{} -> {}.{}",
                     pa.table_alias.0,
                     pa.column.raw(),

@@ -394,6 +394,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                 }
             }
+            LogicalPlan::WithClause(wc) => {
+                // For WITH clause, check if the alias is exported and get its ID column from input
+                if wc.exported_aliases.contains(&alias.to_string()) {
+                    return wc.input.find_id_column_for_alias(alias);
+                }
+            }
             _ => {}
         }
         Err(RenderBuildError::InvalidRenderPlan(format!(
