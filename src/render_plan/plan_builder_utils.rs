@@ -3396,13 +3396,20 @@ pub fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
         match plan {
             LogicalPlan::GraphRel(gr) => {
                 log::warn!(
-                    "🔍 check_graph_rel_right: Found GraphRel, checking right side: {:?}",
+                    "🔍 check_graph_rel: Found GraphRel, checking left: {:?}, right: {:?}",
+                    std::mem::discriminant(&*gr.left),
                     std::mem::discriminant(&*gr.right)
                 );
+                // Check BOTH left and right sides for WITH clauses
+                let has_in_left = has_with_clause_in_tree(&gr.left);
                 let has_in_right = has_with_clause_in_tree(&gr.right);
-                let recursive_result = check_graph_rel_right(&gr.right);
-                log::warn!("🔍 check_graph_rel_right: GraphRel right side - has_in_right: {}, recursive: {}", has_in_right, recursive_result);
-                has_in_right || recursive_result
+                let recursive_left = check_graph_rel_right(&gr.left);
+                let recursive_right = check_graph_rel_right(&gr.right);
+                log::warn!(
+                    "🔍 check_graph_rel: has_in_left: {}, has_in_right: {}, recursive_left: {}, recursive_right: {}",
+                    has_in_left, has_in_right, recursive_left, recursive_right
+                );
+                has_in_left || has_in_right || recursive_left || recursive_right
             }
             LogicalPlan::GraphJoins(gj) => {
                 log::warn!(

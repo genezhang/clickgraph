@@ -1320,6 +1320,8 @@ fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::GraphNode(node) => extract_id_column(&node.input),
         LogicalPlan::Filter(filter) => extract_id_column(&filter.input),
         LogicalPlan::Projection(proj) => extract_id_column(&proj.input),
+        // For WithClause, recurse into input to get ID column from underlying node
+        LogicalPlan::WithClause(wc) => extract_id_column(&wc.input),
         _ => None,
     }
 }

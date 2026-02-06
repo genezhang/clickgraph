@@ -682,21 +682,39 @@ impl PlanCtx {
     /// Get the CTE column name for a property
     ///
     /// # Arguments
-    /// * `cte_name` - The CTE name
+    /// * `cte_name` - The CTE name or alias (e.g., "with_o_cte_0" or "o")
     /// * `property` - The graph property name (e.g., "firstName")
     ///
     /// # Returns
     /// The CTE column name (e.g., "p_firstName") or None if not found
     pub fn get_cte_column(&self, cte_name: &str, property: &str) -> Option<&str> {
-        self.cte_columns
-            .get(cte_name)?
-            .get(property)
-            .map(|s| s.as_str())
+        // Try direct lookup first
+        if let Some(columns) = self.cte_columns.get(cte_name) {
+            if let Some(col) = columns.get(property) {
+                return Some(col.as_str());
+            }
+        }
+        // Try alias lookup
+        if let Some((_original_alias, actual_cte_name)) = self.cte_alias_sources.get(cte_name) {
+            if let Some(columns) = self.cte_columns.get(actual_cte_name) {
+                return columns.get(property).map(|s| s.as_str());
+            }
+        }
+        None
     }
 
     /// Check if a table name is a CTE reference
+    /// This works with both CTE names (e.g., "with_o_cte_0") and aliases (e.g., "o")
     pub fn is_cte(&self, name: &str) -> bool {
-        self.cte_columns.contains_key(name)
+        // Check if it's directly a CTE name
+        if self.cte_columns.contains_key(name) {
+            return true;
+        }
+        // Check if it's an alias that maps to a CTE
+        if let Some((_original_alias, cte_name)) = self.cte_alias_sources.get(name) {
+            return self.cte_columns.contains_key(cte_name);
+        }
+        false
     }
 
     /// Register entity types for aliases exported by a CTE

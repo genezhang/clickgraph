@@ -1615,16 +1615,10 @@ impl JoinBuilder for LogicalPlan {
                 // the CTE alias (e.g., "a_b") instead of the node alias ("b")
                 let resolve_cte_reference = |node_alias: &str, column: &str| -> (String, String) {
                     if let Some(cte_name) = graph_rel.cte_references.get(node_alias) {
-                        // Calculate CTE alias: "with_a_b_cte_1" -> "a_b"
-                        // Strategy: strip "with_" prefix, then strip "_cte" or "_cte_N" suffix
-                        let after_prefix =
-                            cte_name.strip_prefix("with_").unwrap_or(cte_name.as_str());
-                        let cte_alias = after_prefix
-                            .strip_suffix("_cte")
-                            .or_else(|| after_prefix.strip_suffix("_cte_1"))
-                            .or_else(|| after_prefix.strip_suffix("_cte_2"))
-                            .or_else(|| after_prefix.strip_suffix("_cte_3"))
-                            .unwrap_or(after_prefix);
+                        // The node alias IS the table alias for the CTE
+                        // e.g., CTE is: with_o_cte_0 AS (...) and FROM uses: FROM with_o_cte_0 AS o
+                        // So we reference columns as: o.o_user_id
+                        let cte_alias = node_alias;
 
                         // Column name in CTE: node_alias_column (e.g., "b_user_id")
                         let cte_column = format!("{}_{}", node_alias, column);

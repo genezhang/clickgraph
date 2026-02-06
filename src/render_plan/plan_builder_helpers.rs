@@ -731,6 +731,8 @@ pub(super) fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::GraphRel(rel) => extract_id_column(&rel.center),
         LogicalPlan::Filter(filter) => extract_id_column(&filter.input),
         LogicalPlan::Projection(proj) => extract_id_column(&proj.input),
+        // For WithClause, recurse into input to get ID column from underlying node
+        LogicalPlan::WithClause(wc) => extract_id_column(&wc.input),
         // For Union (denormalized nodes), extract from first branch
         LogicalPlan::Union(union) => {
             if !union.inputs.is_empty() {
