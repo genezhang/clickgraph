@@ -8,19 +8,20 @@
 //! 2. Session cache chaining: Cross-session lookups search other active sessions
 //! 3. Automatic cleanup: Session caches are removed when connections close
 //!
-//! # ID Encoding
+//! # ID Encoding (JavaScript-Safe)
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────┐
-//! │  64-bit ID layout                                │
+//! │  53-bit ID layout (within JS MAX_SAFE_INTEGER)   │
 //! ├──────────┬───────────────────────────────────────┤
-//! │  8 bits  │           56 bits                     │
-//! │  label   │    hash(id_value) & 0x00FFFFFFFFFFFF  │
-//! │  code    │                                       │
+//! │  6 bits  │           47 bits                     │
+//! │  label   │    id_value (raw or hash)             │
+//! │  code    │    max: 140 trillion                  │
 //! └──────────┴───────────────────────────────────────┘
 //! ```
 //!
-//! This ensures "User:1" and "Post:1" have different IDs (different label codes).
+//! This ensures "User:1" and "Post:1" have different IDs (different label codes),
+//! while keeping all IDs within JavaScript's safe integer range (2^53 - 1).
 
 use lazy_static::lazy_static;
 use std::collections::HashMap;
@@ -146,6 +147,14 @@ impl IdMapper {
     /// This is a public static method so result_transformer can use it as the single
     /// source of truth for ID generation across the codebase.
     pub fn compute_deterministic_id(element_id: &str) -> i64 {
+        // JavaScript's MAX_SAFE_INTEGER is 2^53 - 1 = 9007199254740991
+        // We use 6 bits for label (64 labels) + 47 bits for id (140 trillion)
+        // Total: 53 bits, safely within JavaScript's precision
+        const LABEL_BITS: u32 = 6;
+        const ID_BITS: u32 = 47;
+        const ID_MASK: i64 = (1i64 << ID_BITS) - 1; // 0x7FFFFFFFFFFF (47 bits)
+        const MAX_LABEL_CODE: u8 = (1 << LABEL_BITS) - 1; // 63
+
         // Parse "Label:id_value" format
         let (label, id_part) = if let Some(colon_pos) = element_id.find(':') {
             (&element_id[..colon_pos], &element_id[colon_pos + 1..])
@@ -154,44 +163,43 @@ impl IdMapper {
             ("", element_id)
         };
 
-        // Get or assign a label code (0-255)
+        // Get or assign a label code (0-63)
         let label_code = if let Ok(mut registry) = LABEL_CODE_REGISTRY.write() {
-            registry.get_or_assign(label)
+            registry.get_or_assign(label).min(MAX_LABEL_CODE)
         } else {
             0 // Fallback if lock fails
         };
 
-        // Compute the id_value hash (56 bits)
-        let id_hash = Self::compute_id_value_hash(id_part);
+        // Compute the id_value (47 bits)
+        let id_value = Self::compute_id_value_hash(id_part, ID_MASK);
 
-        // Combine: label_code in high 8 bits, id_hash in low 56 bits
-        // Ensure positive by masking the sign bit
-        let combined = ((label_code as i64) << 56) | (id_hash & 0x00FFFFFFFFFFFFFF);
-        combined.abs().max(1)
+        // Combine: label_code in high 6 bits, id_value in low 47 bits
+        let combined = ((label_code as i64) << ID_BITS) | (id_value & ID_MASK);
+        combined.max(1)
     }
 
-    /// Compute a 56-bit hash for the id_value portion
+    /// Compute a 47-bit value for the id_value portion
     ///
-    /// For simple numeric IDs, use the number directly (if it fits in 56 bits).
+    /// For simple numeric IDs, use the number directly (if it fits in 47 bits).
     /// For strings/composite keys, use a hash.
-    fn compute_id_value_hash(id_part: &str) -> i64 {
+    fn compute_id_value_hash(id_part: &str, id_mask: i64) -> i64 {
         // Check for composite key format "part1|part2"
         if id_part.contains('|') {
-            return Self::hash_string(id_part);
+            return Self::hash_string(id_part) & id_mask;
         }
 
         // Try to parse as integer
         if let Ok(numeric_id) = id_part.parse::<i64>() {
-            // Use the numeric ID directly if it fits in 56 bits
-            if numeric_id >= 0 && numeric_id <= 0x00FFFFFFFFFFFFFF {
+            // Use the numeric ID directly if it fits in 47 bits
+            if numeric_id >= 0 && numeric_id <= id_mask {
                 return numeric_id.max(1);
             }
             // Large number, use hash
-            return Self::hash_string(id_part);
+            return Self::hash_string(id_part) & id_mask;
         }
 
         // For non-numeric IDs (like "LAX"), use a hash
-        Self::hash_string(id_part)
+        Self::hash_string(id_part) & id_mask
     }
 
     /// Hash a string to a positive 56-bit value
@@ -384,8 +392,9 @@ impl IdMapper {
             return vec![element_id];
         }
 
-        // Extract the id_value from the lower 56 bits
-        let id_value = id & 0x00FFFFFFFFFFFFFF;
+        // Extract the id_value from the lower 47 bits (JS-safe encoding)
+        const ID_MASK: i64 = (1i64 << 47) - 1; // 0x7FFFFFFFFFFF
+        let id_value = id & ID_MASK;
 
         // Generate candidates: try each label with the ID value
         labels

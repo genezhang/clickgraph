@@ -686,6 +686,7 @@ fn transform_to_node(
 
     // Derive integer ID from element_id (ensures uniqueness across labels)
     let id: i64 = generate_id_from_element_id(&element_id);
+    log::debug!("🔢 Node created: element_id={}, id={}", element_id, id);
 
     // Create Node struct
     // Use inferred label if original labels was empty

@@ -6,31 +6,34 @@
 //!
 //! ## Encoding Scheme
 //!
-//! 64-bit ID layout:
+//! 53-bit ID layout (fits within JavaScript's MAX_SAFE_INTEGER):
 //! ```text
-//! [8-bit label_code][56-bit id_value]
+//! [6-bit label_code][47-bit id_value]
 //! ```
 //!
-//! - **label_code** (bits 56-63): Identifies the node label or relationship type (1-255)
-//! - **id_value** (bits 0-55): The actual ID value (raw for simple IDs, hash for complex)
+//! - **label_code** (bits 47-52): Identifies the node label or relationship type (1-63)
+//! - **id_value** (bits 0-46): The actual ID value (raw for simple IDs, hash for complex)
+//!
+//! This scheme ensures all IDs are within JavaScript's safe integer range (2^53 - 1),
+//! preventing precision loss when Neo4j Browser processes the IDs.
 //!
 //! Label codes start at 1 (not 0) so ALL encoded IDs are distinguishable from raw values.
-//! A raw value like `1` stays `1`, while an encoded User:1 becomes `(1 << 56) | 1`.
+//! A raw value like `1` stays `1`, while an encoded User:1 becomes `(1 << 47) | 1`.
 //!
 //! ## Usage
 //!
 //! ```ignore
 //! // Encode: label "User" with code 1, raw id 42
 //! let encoded = IdEncoding::encode(1, 42);
-//! assert_eq!(encoded, 72057594037927978); // (1 << 56) | 42
+//! assert_eq!(encoded, 140737488355370); // (1 << 47) | 42
 //!
 //! // Decode: extract label_code and id_value
-//! let (label_code, id_value) = IdEncoding::decode(72057594037927978);
+//! let (label_code, id_value) = IdEncoding::decode(140737488355370);
 //! assert_eq!(label_code, 1);
 //! assert_eq!(id_value, 42);
 //!
 //! // Check if a value is encoded (has non-zero high bits)
-//! assert!(IdEncoding::is_encoded(72057594037927978));
+//! assert!(IdEncoding::is_encoded(140737488355370));
 //! assert!(!IdEncoding::is_encoded(42));
 //! ```
 
@@ -48,10 +51,10 @@ lazy_static! {
         RwLock::new(LabelCodeRegistry::new());
 }
 
-/// Registry that assigns unique 8-bit codes to label/type names
+/// Registry that assigns unique 6-bit codes to label/type names (max 63 labels)
 #[derive(Debug)]
 pub struct LabelCodeRegistry {
-    /// Label name → code (1-255)
+    /// Label name → code (1-63)
     label_to_code: HashMap<String, u8>,
     /// Code → label name (reverse lookup)
     code_to_label: HashMap<u8, String>,
@@ -109,42 +112,50 @@ impl Default for LabelCodeRegistry {
 /// ID encoding/decoding utilities
 pub struct IdEncoding;
 
+/// Constants for the 53-bit JavaScript-safe ID encoding
+/// 6 bits for label (64 labels) + 47 bits for id (140 trillion)
+const LABEL_BITS: u32 = 6;
+const ID_BITS: u32 = 47;
+const ID_MASK: i64 = (1i64 << ID_BITS) - 1; // 0x7FFFFFFFFFFF (47 bits)
+const MAX_LABEL_CODE: u8 = (1 << LABEL_BITS) - 1; // 63
+
 impl IdEncoding {
-    /// Encode a label code and ID value into a single 64-bit integer
+    /// Encode a label code and ID value into a single 53-bit integer
     ///
     /// # Arguments
-    /// * `label_code` - 8-bit label identifier (1-255)
-    /// * `id_value` - 56-bit ID value (raw ID or hash)
+    /// * `label_code` - 6-bit label identifier (1-63)
+    /// * `id_value` - 47-bit ID value (raw ID or hash)
     ///
     /// # Returns
-    /// Encoded 64-bit ID with label code in high bits
+    /// Encoded 53-bit ID with label code in high bits (fits in JavaScript's MAX_SAFE_INTEGER)
     #[inline]
     pub fn encode(label_code: u8, id_value: i64) -> i64 {
-        ((label_code as i64) << 56) | (id_value & 0x00FFFFFFFFFFFFFF)
+        let safe_label = label_code.min(MAX_LABEL_CODE);
+        ((safe_label as i64) << ID_BITS) | (id_value & ID_MASK)
     }
 
     /// Decode an encoded ID to extract label code and ID value
     ///
     /// # Arguments
-    /// * `encoded_id` - The encoded 64-bit ID
+    /// * `encoded_id` - The encoded 53-bit ID
     ///
     /// # Returns
     /// Tuple of (label_code, id_value) where:
-    /// - label_code is 1-255 for encoded IDs, 0 for raw values
-    /// - id_value is the lower 56 bits
+    /// - label_code is 1-63 for encoded IDs, 0 for raw values
+    /// - id_value is the lower 47 bits
     #[inline]
     pub fn decode(encoded_id: i64) -> (u8, i64) {
-        let label_code = ((encoded_id >> 56) & 0xFF) as u8;
-        let id_value = encoded_id & 0x00FFFFFFFFFFFFFF;
+        let label_code = ((encoded_id >> ID_BITS) & (MAX_LABEL_CODE as i64)) as u8;
+        let id_value = encoded_id & ID_MASK;
         (label_code, id_value)
     }
 
     /// Check if a value appears to be an encoded ID (has label code in high bits)
     ///
-    /// Returns true if the value has a non-zero label code (value > 2^56)
+    /// Returns true if the value has a non-zero label code (value > 2^47)
     #[inline]
     pub fn is_encoded(value: i64) -> bool {
-        value > 0 && (value >> 56) > 0
+        value > 0 && (value >> ID_BITS) > 0
     }
 
     /// Get the label name for an encoded ID using the global registry

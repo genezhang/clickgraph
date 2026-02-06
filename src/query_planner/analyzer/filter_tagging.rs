@@ -36,7 +36,7 @@ use crate::{
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
-    utils::id_encoding::IdEncoding,
+    server::bolt_protocol::id_mapper::IdMapper,
 };
 
 pub struct FilterTagging;
@@ -631,7 +631,7 @@ impl FilterTagging {
         };
 
         // Check if this is an encoded ID (has label code in high bits)
-        if !IdEncoding::is_encoded(encoded_id) {
+        if !IdMapper::is_encoded_id(encoded_id) {
             log::debug!(
                 "FilterTagging: id({}) = {} is not encoded, skipping decode",
                 var_alias,
@@ -641,7 +641,7 @@ impl FilterTagging {
         }
 
         // Decode the encoded ID to get label and raw value
-        let (label, raw_value) = match IdEncoding::decode_with_label(encoded_id) {
+        let (label, raw_value) = match IdMapper::decode_for_query(encoded_id) {
             Some((label, raw_value)) => (label, raw_value),
             None => {
                 log::warn!(
@@ -712,7 +712,12 @@ impl FilterTagging {
             column: PropertyValue::Column(id_column.clone()),
         });
 
-        let raw_literal = LogicalExpr::Literal(Literal::Integer(raw_value));
+        // Parse raw_value as integer, or use as string if not numeric
+        let raw_literal = if let Ok(int_val) = raw_value.parse::<i64>() {
+            LogicalExpr::Literal(Literal::Integer(int_val))
+        } else {
+            LogicalExpr::Literal(Literal::String(raw_value.clone()))
+        };
 
         let (left, right) = if id_on_left {
             (property_access, raw_literal)
