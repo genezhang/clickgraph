@@ -499,7 +499,8 @@ impl JoinBuilder for LogicalPlan {
                     // 🔧 CTE COLUMN REWRITING: When join conditions reference a CTE alias,
                     // we need to rewrite the column names to use the CTE column naming convention.
                     // E.g., o.user_id → o.o_user_id (because CTE exports columns as alias_column)
-                    if !graph_joins.cte_references.is_empty() && !render_join.joining_on.is_empty() {
+                    if !graph_joins.cte_references.is_empty() && !render_join.joining_on.is_empty()
+                    {
                         render_join.joining_on = render_join
                             .joining_on
                             .into_iter()

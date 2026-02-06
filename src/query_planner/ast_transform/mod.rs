@@ -7,7 +7,10 @@ pub mod id_function;
 
 pub use id_function::IdFunctionTransformer;
 
-use crate::open_cypher_parser::ast::{CypherStatement, Expression, Literal, MatchClause, OpenCypherQueryAst, ReadingClause, WithClause};
+use crate::open_cypher_parser::ast::{
+    CypherStatement, Expression, Literal, MatchClause, OpenCypherQueryAst, ReadingClause,
+    WithClause,
+};
 use crate::server::bolt_protocol::id_mapper::IdMapper;
 
 /// Transform all id() function calls in a CypherStatement
@@ -20,8 +23,14 @@ pub fn transform_id_functions<'a>(
     let transformer = IdFunctionTransformer::new(id_mapper, schema);
 
     match stmt {
-        CypherStatement::Query { query, union_clauses } => {
-            log::debug!("  Transforming main query with {} MATCH clauses", query.match_clauses.len());
+        CypherStatement::Query {
+            query,
+            union_clauses,
+        } => {
+            log::debug!(
+                "  Transforming main query with {} MATCH clauses",
+                query.match_clauses.len()
+            );
             let transformed = CypherStatement::Query {
                 query: transform_query(query, &transformer),
                 union_clauses: union_clauses
@@ -68,11 +77,11 @@ fn transform_query<'a>(
         .into_iter()
         .map(|omc| crate::open_cypher_parser::ast::OptionalMatchClause {
             path_patterns: omc.path_patterns,
-            where_clause: omc.where_clause.map(|wc| {
-                crate::open_cypher_parser::ast::WhereClause {
+            where_clause: omc
+                .where_clause
+                .map(|wc| crate::open_cypher_parser::ast::WhereClause {
                     conditions: transformer.transform_where(wc.conditions),
-                }
-            }),
+                }),
         })
         .collect();
 
@@ -81,7 +90,9 @@ fn transform_query<'a>(
         .reading_clauses
         .into_iter()
         .map(|rc| match rc {
-            ReadingClause::Match(mc) => ReadingClause::Match(transform_match_clause(mc, transformer)),
+            ReadingClause::Match(mc) => {
+                ReadingClause::Match(transform_match_clause(mc, transformer))
+            }
             ReadingClause::OptionalMatch(omc) => {
                 ReadingClause::OptionalMatch(crate::open_cypher_parser::ast::OptionalMatchClause {
                     path_patterns: omc.path_patterns,
@@ -96,11 +107,16 @@ fn transform_query<'a>(
         .collect();
 
     // Transform WITH clause (it can contain subsequent MATCH/OPTIONAL MATCH)
-    query.with_clause = query.with_clause.map(|wc| transform_with_clause(wc, transformer));
+    query.with_clause = query
+        .with_clause
+        .map(|wc| transform_with_clause(wc, transformer));
 
     // Transform ORDER BY clause (it's separate from RETURN)
     if let Some(order_by_clause) = query.order_by_clause {
-        log::debug!("  Transforming ORDER BY with {} items", order_by_clause.order_by_items.len());
+        log::debug!(
+            "  Transforming ORDER BY with {} items",
+            order_by_clause.order_by_items.len()
+        );
         let transformed_items = transformer.transform_order_by(order_by_clause.order_by_items);
         for (idx, item) in transformed_items.iter().enumerate() {
             log::debug!("    ORDER BY[{}]: {:?}", idx, item.expression);
@@ -142,23 +158,23 @@ fn transform_with_clause<'a>(
     transformer: &IdFunctionTransformer<'a>,
 ) -> WithClause<'a> {
     // Transform WHERE in WITH clause itself
-    wc.where_clause = wc.where_clause.map(|where_clause| {
-        crate::open_cypher_parser::ast::WhereClause {
-            conditions: transformer.transform_where(where_clause.conditions),
-        }
-    });
+    wc.where_clause =
+        wc.where_clause
+            .map(|where_clause| crate::open_cypher_parser::ast::WhereClause {
+                conditions: transformer.transform_where(where_clause.conditions),
+            });
 
     // Transform ORDER BY in WITH clause
-    wc.order_by = wc.order_by.map(|order_by| {
-        crate::open_cypher_parser::ast::OrderByClause {
+    wc.order_by = wc
+        .order_by
+        .map(|order_by| crate::open_cypher_parser::ast::OrderByClause {
             order_by_items: transformer.transform_order_by(order_by.order_by_items),
-        }
-    });
+        });
 
     // Transform subsequent MATCH after WITH
-    wc.subsequent_match = wc.subsequent_match.map(|mc| {
-        Box::new(transform_match_clause(*mc, transformer))
-    });
+    wc.subsequent_match = wc
+        .subsequent_match
+        .map(|mc| Box::new(transform_match_clause(*mc, transformer)));
 
     // Transform subsequent OPTIONAL MATCH after WITH
     wc.subsequent_optional_matches = wc
@@ -175,9 +191,9 @@ fn transform_with_clause<'a>(
         .collect();
 
     // Recursively transform subsequent WITH (for chained WITH...MATCH...WITH)
-    wc.subsequent_with = wc.subsequent_with.map(|nested_wc| {
-        Box::new(transform_with_clause(*nested_wc, transformer))
-    });
+    wc.subsequent_with = wc
+        .subsequent_with
+        .map(|nested_wc| Box::new(transform_with_clause(*nested_wc, transformer)));
 
     wc
 }

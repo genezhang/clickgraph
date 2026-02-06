@@ -287,7 +287,9 @@ impl VariableResolver {
                 // This ensures consistency across all analyzer passes
                 let cte_name = wc.cte_name.clone().unwrap_or_else(|| {
                     // FALLBACK: If cte_name not set (shouldn't happen after CteSchemaResolver)
-                    log::warn!("⚠️ WithClause.cte_name is None in VariableResolver, generating new name");
+                    log::warn!(
+                        "⚠️ WithClause.cte_name is None in VariableResolver, generating new name"
+                    );
                     self.gen_cte_name(&wc.exported_aliases)
                 });
 

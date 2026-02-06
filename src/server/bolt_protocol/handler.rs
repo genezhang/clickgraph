@@ -23,15 +23,15 @@ use crate::query_planner;
 /// Execution plan for procedure-only queries (extracted before async execution)
 #[derive(Debug)]
 enum ExecutionPlan {
-    SimpleProcedure { 
-        proc_name: String 
+    SimpleProcedure {
+        proc_name: String,
     },
-    ProcedureWithReturn { 
+    ProcedureWithReturn {
         proc_name: String,
         // Store index to look up in parsed statement after async
     },
-    Union { 
-        branches: Vec<ProcedureBranch> 
+    Union {
+        branches: Vec<ProcedureBranch>,
     },
 }
 
@@ -845,7 +845,7 @@ impl BoltHandler {
         // ============================================================
         // PHASE 1: Parse and Transform (synchronous, single pass)
         // ============================================================
-        
+
         // Parse Cypher statement once
         let parsed_stmt = match open_cypher_parser::parse_cypher_statement(query) {
             Ok((_, stmt)) => stmt,
@@ -863,19 +863,19 @@ impl BoltHandler {
             let context = lock_context!(self.context);
             context.id_mapper.clone()
         };
-        
+
         // ============================================================
         // PHASE 2: Analyze Statement Type (synchronous)
         // ============================================================
-        
+
         // Parse and transform in a limited scope to extract metadata
         let (is_procedure, is_union, effective_schema, exec_plan, query_type) = {
             let transformed_stmt = crate::query_planner::ast_transform::transform_id_functions(
                 parsed_stmt,
                 &id_mapper_snapshot,
-                None,  // No schema available yet (loaded later)
+                None, // No schema available yet (loaded later)
             );
-            
+
             let is_procedure = crate::procedures::is_procedure_only_statement(&transformed_stmt);
             let is_union = crate::procedures::is_procedure_union_query(&transformed_stmt);
 
@@ -990,7 +990,13 @@ impl BoltHandler {
             };
 
             // transformed_stmt is dropped here at end of scope!
-            (is_procedure, is_union, effective_schema, exec_plan, query_type)
+            (
+                is_procedure,
+                is_union,
+                effective_schema,
+                exec_plan,
+                query_type,
+            )
         };
 
         // ============================================================
@@ -1073,16 +1079,25 @@ impl BoltHandler {
                         // Apply RETURN clause if branch has one
                         let transformed_results = if branch.has_return {
                             // Parse to get return clause for this branch (after await - safe)
-                            let return_clause = match open_cypher_parser::parse_cypher_statement(query) {
-                                Ok((_, CypherStatement::Query { query: main_q, union_clauses })) => {
-                                    if idx == 0 {
-                                        main_q.return_clause
-                                    } else {
-                                        union_clauses.get(idx - 1).and_then(|uc| uc.query.return_clause.clone())
+                            let return_clause =
+                                match open_cypher_parser::parse_cypher_statement(query) {
+                                    Ok((
+                                        _,
+                                        CypherStatement::Query {
+                                            query: main_q,
+                                            union_clauses,
+                                        },
+                                    )) => {
+                                        if idx == 0 {
+                                            main_q.return_clause
+                                        } else {
+                                            union_clauses
+                                                .get(idx - 1)
+                                                .and_then(|uc| uc.query.return_clause.clone())
+                                        }
                                     }
-                                }
-                                _ => None,
-                            };
+                                    _ => None,
+                                };
 
                             if let Some(ref rc) = return_clause {
                                 crate::procedures::return_evaluator::apply_return_clause(
@@ -1179,7 +1194,7 @@ impl BoltHandler {
         let transformed_for_planning = crate::query_planner::ast_transform::transform_id_functions(
             parsed_stmt_for_planning,
             &id_mapper_snapshot,
-            Some(&graph_schema),  // Pass schema for node_id property lookup
+            Some(&graph_schema), // Pass schema for node_id property lookup
         );
 
         // Generate logical plan using transformed statement
@@ -1328,10 +1343,10 @@ impl BoltHandler {
             );
 
             let mut transformed_rows: Vec<Vec<BoltValue>> = Vec::new();
-            
+
             // Get mutable access to id_mapper from context for session-scoped ID assignment
             let mut context = lock_context!(self.context);
-            
+
             for row in &rows {
                 // Convert row Vec back to HashMap for transformation
                 let mut row_map = HashMap::new();
@@ -1364,7 +1379,7 @@ impl BoltHandler {
                     }
                 }
             }
-            
+
             // Release lock before caching
             drop(context);
 

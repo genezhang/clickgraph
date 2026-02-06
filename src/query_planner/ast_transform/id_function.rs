@@ -22,7 +22,9 @@
 
 use crate::{
     graph_catalog::element_id::parse_node_element_id,
-    open_cypher_parser::ast::{Expression, FunctionCall, Literal, Operator, OperatorApplication, OrderByItem},
+    open_cypher_parser::ast::{
+        Expression, FunctionCall, Literal, Operator, OperatorApplication, OrderByItem,
+    },
     server::bolt_protocol::id_mapper::IdMapper,
 };
 
@@ -33,7 +35,10 @@ pub struct IdFunctionTransformer<'a> {
 }
 
 impl<'a> IdFunctionTransformer<'a> {
-    pub fn new(id_mapper: &'a IdMapper, schema: Option<&'a crate::graph_catalog::GraphSchema>) -> Self {
+    pub fn new(
+        id_mapper: &'a IdMapper,
+        schema: Option<&'a crate::graph_catalog::GraphSchema>,
+    ) -> Self {
         Self { id_mapper, schema }
     }
 
@@ -61,7 +66,10 @@ impl<'a> IdFunctionTransformer<'a> {
         match expr {
             // Transform operator applications (=, IN, NOT, etc.)
             Expression::OperatorApplicationExp(op_app) => {
-                log::debug!("    Transforming OperatorApplication: {:?}", op_app.operator);
+                log::debug!(
+                    "    Transforming OperatorApplication: {:?}",
+                    op_app.operator
+                );
                 self.transform_operator_application(op_app)
             }
 
@@ -70,14 +78,21 @@ impl<'a> IdFunctionTransformer<'a> {
                 log::debug!("    Found FunctionCall: {}", func.name);
                 Expression::FunctionCallExp(FunctionCall {
                     name: func.name.clone(),
-                    args: func.args.into_iter().map(|arg| self.transform_expression(arg)).collect(),
+                    args: func
+                        .args
+                        .into_iter()
+                        .map(|arg| self.transform_expression(arg))
+                        .collect(),
                 })
             }
 
             // Recursively transform lists
-            Expression::List(items) => {
-                Expression::List(items.into_iter().map(|item| self.transform_expression(item)).collect())
-            }
+            Expression::List(items) => Expression::List(
+                items
+                    .into_iter()
+                    .map(|item| self.transform_expression(item))
+                    .collect(),
+            ),
 
             // Recursively transform property access
             Expression::PropertyAccessExp(prop) => {
@@ -86,19 +101,22 @@ impl<'a> IdFunctionTransformer<'a> {
             }
 
             // Recursively transform CASE expressions
-            Expression::Case(case) => {
-                Expression::Case(crate::open_cypher_parser::ast::Case {
-                    expr: case.expr.map(|e| Box::new(self.transform_expression(*e))),
-                    when_then: case
-                        .when_then
-                        .into_iter()
-                        .map(|(when, then)| {
-                            (self.transform_expression(when), self.transform_expression(then))
-                        })
-                        .collect(),
-                    else_expr: case.else_expr.map(|e| Box::new(self.transform_expression(*e))),
-                })
-            }
+            Expression::Case(case) => Expression::Case(crate::open_cypher_parser::ast::Case {
+                expr: case.expr.map(|e| Box::new(self.transform_expression(*e))),
+                when_then: case
+                    .when_then
+                    .into_iter()
+                    .map(|(when, then)| {
+                        (
+                            self.transform_expression(when),
+                            self.transform_expression(then),
+                        )
+                    })
+                    .collect(),
+                else_expr: case
+                    .else_expr
+                    .map(|e| Box::new(self.transform_expression(*e))),
+            }),
 
             // For all other expression types, return as-is
             _ => expr,
@@ -192,7 +210,11 @@ impl<'a> IdFunctionTransformer<'a> {
     /// Extract variable name from id(var) function call
     fn extract_id_function(&self, expr: &Expression<'a>) -> Option<&'a str> {
         if let Expression::FunctionCallExp(func) = expr {
-            log::debug!("        Checking function: {}, args: {}", func.name, func.args.len());
+            log::debug!(
+                "        Checking function: {}, args: {}",
+                func.name,
+                func.args.len()
+            );
             if func.name.eq_ignore_ascii_case("id") && func.args.len() == 1 {
                 if let Expression::Variable(var) = &func.args[0] {
                     log::debug!("        ✅ Matched id({}) pattern", var);
@@ -235,7 +257,11 @@ impl<'a> IdFunctionTransformer<'a> {
         }
 
         // ID not found - return false (1 = 0)
-        log::warn!("id() transform: id({}) = {} not found in session", var, id_value);
+        log::warn!(
+            "id() transform: id({}) = {} not found in session",
+            var,
+            id_value
+        );
         Expression::Literal(Literal::Boolean(false))
     }
 
@@ -250,7 +276,11 @@ impl<'a> IdFunctionTransformer<'a> {
                     filters.push(self.build_label_and_id_check(var, &label, &id_str));
                 }
             } else {
-                log::warn!("id() transform: id({}) = {} not found in session", var, id_value);
+                log::warn!(
+                    "id() transform: id({}) = {} not found in session",
+                    var,
+                    id_value
+                );
             }
         }
 
@@ -293,7 +323,12 @@ impl<'a> IdFunctionTransformer<'a> {
 
     /// Build property check expression: `var.id_property = 'value'`
     /// Note: We don't include label check because UNION branching handles that
-    fn build_label_and_id_check(&self, var: &'a str, label: &str, id_value: &str) -> Expression<'a> {
+    fn build_label_and_id_check(
+        &self,
+        var: &'a str,
+        label: &str,
+        id_value: &str,
+    ) -> Expression<'a> {
         // Determine which property to use for ID check
         let id_property = if let Some(schema) = self.schema {
             // Look up the node_id property from schema
@@ -315,12 +350,17 @@ impl<'a> IdFunctionTransformer<'a> {
             "id"
         };
 
-        log::debug!("        Generating predicate: {}.{} = '{}'", var, id_property, id_value);
+        log::debug!(
+            "        Generating predicate: {}.{} = '{}'",
+            var,
+            id_property,
+            id_value
+        );
 
         // Property check: var.id_property = 'value'
         let id_value_static: &'a str = Box::leak(id_value.to_string().into_boxed_str());
         let id_property_static: &'a str = Box::leak(id_property.to_string().into_boxed_str());
-        
+
         Expression::OperatorApplicationExp(OperatorApplication {
             operator: Operator::Equal,
             operands: vec![
@@ -376,7 +416,10 @@ mod tests {
 
         // NOT id(a) IN [] → true
         let result = transformer.rewrite_id_in("a", vec![], true);
-        assert!(matches!(result, Expression::Literal(Literal::Boolean(true))));
+        assert!(matches!(
+            result,
+            Expression::Literal(Literal::Boolean(true))
+        ));
     }
 
     #[test]
@@ -386,6 +429,9 @@ mod tests {
 
         // id(a) IN [] → false
         let result = transformer.rewrite_id_in("a", vec![], false);
-        assert!(matches!(result, Expression::Literal(Literal::Boolean(false))));
+        assert!(matches!(
+            result,
+            Expression::Literal(Literal::Boolean(false))
+        ));
     }
 }

@@ -867,27 +867,30 @@ fn rewrite_expr_for_fixed_path(
 /// Returns empty if any expression contains id() function (not supported in UNION)
 fn extract_order_by_columns_for_union(order_by: &OrderByItems) -> Vec<(RenderExpr, String)> {
     let mut columns = Vec::new();
-    
+
     for (idx, item) in order_by.0.iter().enumerate() {
         // Check if this is an id() function call (not supported in UNION ORDER BY)
         if matches!(&item.expression, RenderExpr::ScalarFnCall(f) if f.name == "id") {
             log::warn!("⚠️  ORDER BY id() not supported in UNION queries - removing ORDER BY");
             return Vec::new(); // Empty vector = skip ORDER BY entirely
         }
-        
+
         // Generate a unique alias for this ORDER BY column
         let col_alias = format!("__order_col_{}", idx);
         columns.push((item.expression.clone(), col_alias));
     }
-    
+
     columns
 }
 
 /// Add ORDER BY columns to a RenderPlan's SELECT (for UNION branches)
-fn add_order_by_columns_to_select(mut plan: RenderPlan, order_columns: &[(RenderExpr, String)]) -> RenderPlan {
-    use crate::render_plan::SelectItem;
+fn add_order_by_columns_to_select(
+    mut plan: RenderPlan,
+    order_columns: &[(RenderExpr, String)],
+) -> RenderPlan {
     use crate::render_plan::render_expr::ColumnAlias;
-    
+    use crate::render_plan::SelectItem;
+
     for (expr, alias) in order_columns {
         // Add this column to the SELECT with the given alias
         plan.select.items.push(SelectItem {
@@ -895,7 +898,7 @@ fn add_order_by_columns_to_select(mut plan: RenderPlan, order_columns: &[(Render
             col_alias: Some(ColumnAlias(alias.clone())),
         });
     }
-    
+
     plan
 }
 
@@ -937,24 +940,28 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
         } else {
             Vec::new()
         };
-        
+
         // If we have ORDER BY, add those columns to all UNION branches
         let mut modified_plan = plan.clone();
         if !order_by_columns.is_empty() {
-            log::info!("🔄 UNION with ORDER BY: Adding {} ordering columns to branches", order_by_columns.len());
-            
+            log::info!(
+                "🔄 UNION with ORDER BY: Adding {} ordering columns to branches",
+                order_by_columns.len()
+            );
+
             // Add to the first branch (which is the base plan)
             modified_plan = add_order_by_columns_to_select(modified_plan, &order_by_columns);
-            
+
             // Add to remaining branches
             if let Some(union) = &mut modified_plan.union.0 {
-                union.input = union.input
+                union.input = union
+                    .input
                     .iter()
                     .map(|branch| add_order_by_columns_to_select(branch.clone(), &order_by_columns))
                     .collect();
             }
         }
-        
+
         // Use the modified plan for SQL generation
         plan = modified_plan;
 
@@ -1085,14 +1092,20 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
             // If we have UNION + ORDER BY, reference the __union columns we added
             if !plan.order_by.0.is_empty() && !order_by_columns.is_empty() {
                 sql.push_str("ORDER BY ");
-                let order_clauses: Vec<String> = plan.order_by.0.iter().enumerate().map(|(idx, item)| {
-                    let col_alias = &order_by_columns[idx].1;
-                    let order_str = match item.order {
-                        OrderByOrder::Asc => "ASC",
-                        OrderByOrder::Desc => "DESC",
-                    };
-                    format!("__union.`{}` {}", col_alias, order_str)
-                }).collect();
+                let order_clauses: Vec<String> = plan
+                    .order_by
+                    .0
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, item)| {
+                        let col_alias = &order_by_columns[idx].1;
+                        let order_str = match item.order {
+                            OrderByOrder::Asc => "ASC",
+                            OrderByOrder::Desc => "DESC",
+                        };
+                        format!("__union.`{}` {}", col_alias, order_str)
+                    })
+                    .collect();
                 sql.push_str(&order_clauses.join(", "));
                 sql.push('\n');
             } else if order_by_columns.is_empty() && !plan.order_by.0.is_empty() {

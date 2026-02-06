@@ -71,10 +71,22 @@ pub fn rewrite_id_predicates(query: &str, id_mapper: &IdMapper) -> IdRewriteResu
     result = rewrite_id_equals(&result, id_mapper, &mut was_rewritten, &mut missing_ids);
 
     // Rewrite id(alias) IN [...] patterns
-    result = rewrite_id_in(&result, id_mapper, &mut was_rewritten, &mut missing_ids, false);
+    result = rewrite_id_in(
+        &result,
+        id_mapper,
+        &mut was_rewritten,
+        &mut missing_ids,
+        false,
+    );
 
     // Rewrite NOT id(alias) IN [...] patterns
-    result = rewrite_id_in(&result, id_mapper, &mut was_rewritten, &mut missing_ids, true);
+    result = rewrite_id_in(
+        &result,
+        id_mapper,
+        &mut was_rewritten,
+        &mut missing_ids,
+        true,
+    );
 
     // Rewrite ORDER BY id(alias) patterns
     result = rewrite_order_by_id(&result, &mut was_rewritten);
@@ -94,12 +106,12 @@ fn element_id_to_filter(element_id: &str, alias: &str) -> Option<(String, String
             // For single ID: alias:Label AND alias.id = 'value'
             // For composite ID: alias:Label AND alias.id = 'v1|v2|v3'
             let id_value = id_values.join("|");
-            
+
             // Use "id" as the generic primary key property name
             // The schema defines node_id which maps to the actual column
             // Escape single quotes in id_value
             let escaped_id = id_value.replace('\'', "''");
-            
+
             // Generate: (alias:Label AND alias.id = 'value')
             let filter = format!("({}:{} AND {}.id = '{}')", alias, label, alias, escaped_id);
             Some((label, filter))
@@ -128,12 +140,7 @@ fn rewrite_id_equals(
             let alias = cap.get(1).unwrap().as_str();
             let id_str = cap.get(2).unwrap().as_str();
             let id: i64 = id_str.parse().unwrap_or(0);
-            (
-                full_match.start(),
-                full_match.end(),
-                alias.to_string(),
-                id,
-            )
+            (full_match.start(), full_match.end(), alias.to_string(), id)
         })
         .collect();
 
@@ -144,15 +151,10 @@ fn rewrite_id_equals(
             if let Some((_label, filter)) = element_id_to_filter(element_id, &alias) {
                 result.replace_range(start..end, &filter);
                 *was_rewritten = true;
-                log::info!(
-                    "id() rewrite: id({}) = {} → {}",
-                    alias,
-                    id,
-                    filter
-                );
+                log::info!("id() rewrite: id({}) = {} → {}", alias, id, filter);
             } else {
                 // Fallback: use element_id string comparison
-                let replacement = format!("1 = 0", );
+                let replacement = format!("1 = 0",);
                 result.replace_range(start..end, &replacement);
                 *was_rewritten = true;
             }

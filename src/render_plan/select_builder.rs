@@ -731,8 +731,12 @@ impl LogicalPlan {
 
         // For FK-edge (denormalized nodes), first try the original alias to get projected_columns
         // Then fall back to actual_table_alias for relationship tables
-        let lookup_alias = if is_fk_edge { alias } else { &actual_table_alias };
-        
+        let lookup_alias = if is_fk_edge {
+            alias
+        } else {
+            &actual_table_alias
+        };
+
         match self.get_properties_with_table_alias(lookup_alias) {
             Ok((properties, _)) if !properties.is_empty() => {
                 let prop_count = properties.len();

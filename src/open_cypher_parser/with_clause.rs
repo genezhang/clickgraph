@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn test_parse_with_clause_size_pattern_comprehension() {
         use crate::open_cypher_parser::ast::Expression;
-        
+
         let input = "WITH a, size([(a)--() | 1]) AS cnt";
         let res = parse_with_clause(input);
         match res {
@@ -253,7 +253,12 @@ mod tests {
                 println!("Remaining: '{}'", remaining);
                 println!("Items count: {}", with_clause.with_items.len());
                 for (i, item) in with_clause.with_items.iter().enumerate() {
-                    println!("  Item[{}]: alias={:?}, expr={:?}", i, item.alias, std::mem::discriminant(&item.expression));
+                    println!(
+                        "  Item[{}]: alias={:?}, expr={:?}",
+                        i,
+                        item.alias,
+                        std::mem::discriminant(&item.expression)
+                    );
                     if let Expression::FunctionCallExp(ref f) = item.expression {
                         println!("    Function: {}", f.name);
                         println!("    Args: {} args", f.args.len());
@@ -269,7 +274,10 @@ mod tests {
                     assert_eq!(f.name, "size");
                     assert!(matches!(f.args[0], Expression::PatternComprehension(_)));
                 } else {
-                    panic!("Expected FunctionCallExp, got {:?}", with_clause.with_items[1].expression);
+                    panic!(
+                        "Expected FunctionCallExp, got {:?}",
+                        with_clause.with_items[1].expression
+                    );
                 }
             }
             Err(e) => panic!("Expected successful parse, got error: {:?}", e),
@@ -278,8 +286,8 @@ mod tests {
 
     #[test]
     fn test_parse_full_query_with_size_pattern_comprehension() {
-        use crate::open_cypher_parser::{parse_query_with_nom, ast::Expression};
-        
+        use crate::open_cypher_parser::{ast::Expression, parse_query_with_nom};
+
         let input = "MATCH (a:User) WHERE a.user_id = 4 WITH a, size([(a)--() | 1]) AS cnt RETURN a.name, cnt";
         let res = parse_query_with_nom(input);
         match res {
@@ -289,7 +297,12 @@ mod tests {
                 if let Some(ref wc) = query.with_clause {
                     println!("WITH items count: {}", wc.with_items.len());
                     for (i, item) in wc.with_items.iter().enumerate() {
-                        println!("  Item[{}]: alias={:?}, expr={:?}", i, item.alias, std::mem::discriminant(&item.expression));
+                        println!(
+                            "  Item[{}]: alias={:?}, expr={:?}",
+                            i,
+                            item.alias,
+                            std::mem::discriminant(&item.expression)
+                        );
                         if let Expression::FunctionCallExp(ref f) = item.expression {
                             println!("    Function: {}", f.name);
                             println!("    Args: {} args", f.args.len());
@@ -304,7 +317,10 @@ mod tests {
                         assert_eq!(f.name, "size");
                         assert!(matches!(f.args[0], Expression::PatternComprehension(_)));
                     } else {
-                        panic!("Expected FunctionCallExp, got {:?}", wc.with_items[1].expression);
+                        panic!(
+                            "Expected FunctionCallExp, got {:?}",
+                            wc.with_items[1].expression
+                        );
                     }
                 } else {
                     panic!("Expected WITH clause in query");

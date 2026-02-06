@@ -300,10 +300,7 @@ pub fn extract_return_metadata(
                             }
                         }
                         Some(TypedVariable::Relationship(rel_var)) => {
-                            log::debug!(
-                                "  Found Relationship with types: {:?}",
-                                rel_var.rel_types
-                            );
+                            log::debug!("  Found Relationship with types: {:?}", rel_var.rel_types);
                             ReturnItemType::Relationship {
                                 rel_types: rel_var.rel_types.clone(),
                                 from_label: rel_var.from_node_label.clone(),
@@ -439,7 +436,10 @@ pub fn transform_row(
         match &meta.item_type {
             ReturnItemType::Node { labels } => {
                 // Strip ".*" suffix from field_name if present (wildcard expansion)
-                let var_name = meta.field_name.strip_suffix(".*").unwrap_or(&meta.field_name);
+                let var_name = meta
+                    .field_name
+                    .strip_suffix(".*")
+                    .unwrap_or(&meta.field_name);
                 let mut node = transform_to_node(&row, var_name, labels, schema)?;
                 // Assign session-scoped integer ID from id_mapper
                 node.id = id_mapper.get_or_assign(&node.element_id);
@@ -453,7 +453,10 @@ pub fn transform_row(
                 to_label,
             } => {
                 // Strip ".*" suffix from field_name if present (wildcard expansion)
-                let var_name = meta.field_name.strip_suffix(".*").unwrap_or(&meta.field_name);
+                let var_name = meta
+                    .field_name
+                    .strip_suffix(".*")
+                    .unwrap_or(&meta.field_name);
                 let mut rel = transform_to_relationship(
                     &row,
                     var_name,
@@ -972,11 +975,7 @@ fn transform_path_from_json(row: &HashMap<String, Value>) -> Result<Path, String
     );
 
     // Create relationship - element_id is source of truth, integer id derived from it
-    let rel_element_id = generate_relationship_element_id(
-        &rel_type,
-        &start_id_str,
-        &end_id_str,
-    );
+    let rel_element_id = generate_relationship_element_id(&rel_type, &start_id_str, &end_id_str);
     let rel_id = generate_id_from_element_id(&rel_element_id);
     let rel_props_clean = clean_property_keys(rel_props);
     let relationship = Relationship::new(
@@ -1034,10 +1033,17 @@ fn clean_property_keys(props: HashMap<String, Value>) -> HashMap<String, Value> 
 fn extract_id_string_from_props(props: &HashMap<String, Value>) -> String {
     // Common ID column names to check, in order of preference
     let id_fields = [
-        "user_id", "post_id", "id", "code", "node_id", 
-        "origin_code", "dest_code", "airport_code", "flight_id"
+        "user_id",
+        "post_id",
+        "id",
+        "code",
+        "node_id",
+        "origin_code",
+        "dest_code",
+        "airport_code",
+        "flight_id",
     ];
-    
+
     // First try exact match
     for id_field in &id_fields {
         if let Some(val) = props.get(*id_field) {
@@ -1076,8 +1082,17 @@ fn extract_id_string_from_props(props: &HashMap<String, Value>) -> String {
 /// Also handles prefixed keys like "t1_0.user_id" or "_s_user_id" by checking if key ends with the ID field
 fn extract_id_from_props(props: &HashMap<String, Value>, id1: &str, id2: &str, id3: &str) -> i64 {
     // Common ID column names to check
-    let common_id_fields = [id1, id2, id3, "code", "node_id", "origin_code", "dest_code", "airport_code"];
-    
+    let common_id_fields = [
+        id1,
+        id2,
+        id3,
+        "code",
+        "node_id",
+        "origin_code",
+        "dest_code",
+        "airport_code",
+    ];
+
     // First try exact match
     for id_field in &common_id_fields {
         if let Some(val) = props.get(*id_field) {

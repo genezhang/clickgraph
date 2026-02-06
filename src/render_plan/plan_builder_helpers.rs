@@ -2342,7 +2342,7 @@ pub(super) fn plan_type_name(plan: &LogicalPlan) -> &'static str {
 }
 
 /// Get property column mapping from ViewScan in the plan tree.
-/// 
+///
 /// For denormalized virtual nodes, the ViewScan's property_mapping contains the
 /// position-specific column mappings (e.g., `code -> origin_code` for FROM position).
 /// This function traverses the plan tree to find the ViewScan for the given alias
@@ -2392,10 +2392,14 @@ fn get_property_from_viewscan(alias: &str, property: &str, plan: &LogicalPlan) -
         LogicalPlan::Filter(filter) => get_property_from_viewscan(alias, property, &filter.input),
         LogicalPlan::Projection(proj) => get_property_from_viewscan(alias, property, &proj.input),
         LogicalPlan::GraphJoins(joins) => get_property_from_viewscan(alias, property, &joins.input),
-        LogicalPlan::OrderBy(order_by) => get_property_from_viewscan(alias, property, &order_by.input),
+        LogicalPlan::OrderBy(order_by) => {
+            get_property_from_viewscan(alias, property, &order_by.input)
+        }
         LogicalPlan::Skip(skip) => get_property_from_viewscan(alias, property, &skip.input),
         LogicalPlan::Limit(limit) => get_property_from_viewscan(alias, property, &limit.input),
-        LogicalPlan::GroupBy(group_by) => get_property_from_viewscan(alias, property, &group_by.input),
+        LogicalPlan::GroupBy(group_by) => {
+            get_property_from_viewscan(alias, property, &group_by.input)
+        }
         LogicalPlan::Cte(cte) => get_property_from_viewscan(alias, property, &cte.input),
         LogicalPlan::ViewScan(scan) => {
             // Direct ViewScan (not wrapped in GraphNode) - check property_mapping
@@ -2447,11 +2451,13 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
             // First, try to map the property name to the correct column name
             // This is essential for queries like: WHERE n.name = ...
             // where 'name' might map to 'full_name' in the schema
-            
+
             // For denormalized virtual nodes, try to get property mapping from ViewScan first
             // This is needed because denormalized nodes have position-specific mappings
             // (from_node_properties vs to_node_properties)
-            if let Some(column) = get_property_from_viewscan(&prop.table_alias.0, prop.column.raw(), plan) {
+            if let Some(column) =
+                get_property_from_viewscan(&prop.table_alias.0, prop.column.raw(), plan)
+            {
                 log::warn!(
                     "🔍 PROPERTY MAPPING (ViewScan): '{}.{}' -> '{}'",
                     prop.table_alias.0,
@@ -4406,7 +4412,7 @@ pub(super) fn convert_path_branches_to_json(
             let denorm_table_alias = if let super::FromTableItem(Some(ref view_ref)) = plan.from {
                 // Check if the FROM table matches the relationship alias
                 // If we only have the relationship table, this is denormalized
-                if view_ref.alias.as_ref() == Some(&rel_alias) || 
+                if view_ref.alias.as_ref() == Some(&rel_alias) ||
                    view_ref.name.ends_with(&rel_alias) {
                     // For denormalized, use the actual table alias from FROM
                     view_ref.alias.as_deref()
@@ -4416,7 +4422,7 @@ pub(super) fn convert_path_branches_to_json(
             } else {
                 None
             };
-            
+
             if denorm_table_alias.is_some() {
                 log::warn!("  Branch {}: denormalized schema detected, using table alias '{:?}'",
                           branch_idx, denorm_table_alias);
