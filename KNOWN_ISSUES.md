@@ -185,3 +185,34 @@ UNION different number of columns in queries
 
 **Priority**: Low (not from Neo4j Browser usage patterns)
 
+## Denormalized Relationships in UNION Queries (2026-02-06)
+
+**Issue**: Neo4j Browser relationship fetch queries fail for denormalized (FK-based) relationships
+
+**Example Query** (sent by Neo4j Browser):
+```cypher
+MATCH (a)-[r]->(b) WHERE id(a) IN $existingNodeIds AND id(b) IN $newNodeIds RETURN r;
+```
+
+**Error**:
+```
+Unknown expression or function identifier `r.user_id` in scope SELECT ... FROM posts_bench AS b_1 ...
+```
+
+**Root Cause**:
+- Untyped relationship patterns `(a)-[r]->(b)` generate UNION branches for each relationship type
+- For denormalized relationships (e.g., AUTHORED uses posts_bench as relationship table), the FK columns are on the node table, not a separate `r` table
+- SELECT clause incorrectly references `r.user_id`, `r.post_id` which don't exist
+- The relationship alias `r` doesn't correspond to a table in denormalized branches
+
+**Workaround**:
+- Use typed relationship patterns: `MATCH (a)-[:FOLLOWS]->(b)`
+- Or use a schema without denormalized relationships
+
+**Status**: Active bug blocking Neo4j Browser relationship fetching
+
+**Priority**: High (blocks Neo4j Browser interactive features)
+
+**Affected Files**:
+- `src/render_plan/plan_builder_helpers.rs` - UNION branch SELECT generation
+
