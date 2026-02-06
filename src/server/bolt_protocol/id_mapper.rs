@@ -470,21 +470,18 @@ mod tests {
     }
 
     #[test]
-    fn test_session_cleanup() {
-        let initial_count = ACTIVE_SESSION_CACHES.read().unwrap().len();
+    fn test_session_registration() {
+        // Create a mapper and verify it has a valid connection_id
+        let mapper = IdMapper::new();
+        let conn_id = mapper.connection_id();
+        assert!(conn_id > 0);
 
-        {
-            // Create a mapper in a scope
-            let mut mapper = IdMapper::new();
-            mapper.get_or_assign("Temp:1");
-
-            // Should be registered
-            let count = ACTIVE_SESSION_CACHES.read().unwrap().len();
-            assert!(count > initial_count);
-        }
-
-        // After drop, should be unregistered (eventually)
-        // Note: Due to Arc, cleanup happens when strong_count drops to 1
+        // Verify the mapper is registered in the session cache
+        let registered = {
+            let registry = ACTIVE_SESSION_CACHES.read().unwrap();
+            registry.contains_key(&conn_id)
+        };
+        assert!(registered, "IdMapper should be registered in ACTIVE_SESSION_CACHES");
     }
 
     #[test]
