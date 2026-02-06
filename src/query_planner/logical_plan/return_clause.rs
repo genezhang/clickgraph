@@ -239,7 +239,32 @@ fn rewrite_expression_pattern_comprehensions<'a>(
             )
         }
         Expression::FunctionCallExp(func) => {
-            // Recursively process function arguments
+            // Special case: size(PatternComprehension) should become count(*)
+            // NOT size(collect(projection)) which is semantically wrong
+            let func_lower = func.name.to_lowercase();
+            if func_lower == "size" || func_lower == "length" {
+                if func.args.len() == 1 {
+                    if let Expression::PatternComprehension(pc) = &func.args[0] {
+                        log::info!("🔄 Found size/length(PatternComprehension), replacing with count(*)");
+                        // Replace size([(pattern) | proj]) with count(*)
+                        // The pattern will be added as OPTIONAL MATCH
+                        let count_call = Expression::FunctionCallExp(FunctionCall {
+                            name: "count".to_string(),
+                            args: vec![Expression::Literal(Literal::String("*"))],
+                        });
+                        return (
+                            count_call,
+                            vec![(
+                                (*pc.pattern).clone(),
+                                pc.where_clause.clone(),
+                                pc.projection.clone(),
+                            )],
+                        );
+                    }
+                }
+            }
+            
+            // Default: Recursively process function arguments
             let mut all_pcs = Vec::new();
             let new_args: Vec<Expression<'a>> = func
                 .args

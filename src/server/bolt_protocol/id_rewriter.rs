@@ -24,16 +24,16 @@ static ID_EQUALS_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\bid\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)\s*=\s*(\d+)").unwrap()
 });
 
-/// Regex to match id(alias) IN [...] pattern
-/// Captures: (1) alias, (2) the list content
+/// Regex to match id(alias) IN [...] pattern (including empty lists)
+/// Captures: (1) alias, (2) the list content (may be empty)
 static ID_IN_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bid\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)\s+IN\s*\[\s*([^\]]+)\s*\]").unwrap()
+    Regex::new(r"(?i)\bid\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)\s+IN\s*\[\s*([^\]]*)\s*\]").unwrap()
 });
 
-/// Regex to match NOT id(alias) IN [...] pattern
-/// Captures: (1) alias, (2) the list content
+/// Regex to match NOT id(alias) IN [...] pattern (including empty lists)
+/// Captures: (1) alias, (2) the list content (may be empty)
 static NOT_ID_IN_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bNOT\s+id\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)\s+IN\s*\[\s*([^\]]+)\s*\]")
+    Regex::new(r"(?i)\bNOT\s+id\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)\s+IN\s*\[\s*([^\]]*)\s*\]")
         .unwrap()
 });
 
@@ -152,14 +152,14 @@ fn rewrite_id_equals(
                 );
             } else {
                 // Fallback: use element_id string comparison
-                let replacement = format!("1 = 0 /* id({}) = {} parse failed */", alias, id);
+                let replacement = format!("1 = 0", );
                 result.replace_range(start..end, &replacement);
                 *was_rewritten = true;
             }
         } else {
             // ID not found - this node doesn't exist in this session
             // Replace with impossible condition
-            let replacement = format!("1 = 0 /* id({}) = {} not found */", alias, id);
+            let replacement = format!("1 = 0");
             result.replace_range(start..end, &replacement);
             *was_rewritten = true;
             missing_ids.push(id);
@@ -228,9 +228,9 @@ fn rewrite_id_in(
         if filters.is_empty() {
             // All IDs missing - use impossible/tautology condition
             let replacement = if is_negated {
-                format!("1 = 1 /* NOT id({}) IN [...] all not found */", alias)
+                "1 = 1".to_string()
             } else {
-                format!("1 = 0 /* id({}) IN [...] all not found */", alias)
+                "1 = 0".to_string()
             };
             result.replace_range(start..end, &replacement);
         } else {

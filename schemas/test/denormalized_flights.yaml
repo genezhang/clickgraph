@@ -6,43 +6,43 @@ version: "1.0"
 
 graph_schema:
   nodes:
-    # Airport is a virtual node - all data comes from the flights table
+    # Airport is a virtual node - all data comes from the flights_denorm table
     - label: Airport
-      database: test_integration
-      table: flights
+      database: brahmand
+      table: flights_denorm
       node_id: code  # Logical property name for the ID
       property_mappings: {}  # Empty - all properties are denormalized
       
       # Denormalized origin (from_node) properties
       from_node_properties:
-        code: Origin  # Airport.code (the ID) → flights.Origin
-        city: OriginCityName
-        state: OriginState
+        code: origin_code  # Airport.code (the ID) → flights_denorm.origin_code
+        city: origin_city
+        state: origin_state
       
       # Denormalized destination (to_node) properties
       to_node_properties:
-        code: Dest  # Airport.code (the ID) → flights.Dest
-        city: DestCityName
-        state: DestState
+        code: dest_code  # Airport.code (the ID) → flights_denorm.dest_code
+        city: dest_city
+        state: dest_state
 
   edges:
     # FLIGHT relationship - node properties declared above
     - type: FLIGHT
-      database: test_integration
-      table: flights
-      from_id: Origin
-      to_id: Dest
+      database: brahmand
+      table: flights_denorm
+      from_id: origin_code
+      to_id: dest_code
       from_node: Airport
       to_node: Airport
       
       # Composite edge ID (flights can have same route multiple times per day)
-      # This demonstrates cycle prevention with composite IDs
       edge_id: [flight_id, flight_number]
       
       # Edge properties
       property_mappings:
-        flight_num: flight_number
-        carrier: airline
-        departure_time: dep_time
-        arrival_time: arr_time
-        distance: distance_miles
+        flight_id: flight_id
+        flight_number: flight_number
+        carrier: carrier
+        departure_time: departure_time
+        arrival_time: arrival_time
+        distance: distance

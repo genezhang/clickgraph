@@ -241,4 +241,76 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_parse_with_clause_size_pattern_comprehension() {
+        use crate::open_cypher_parser::ast::Expression;
+        
+        let input = "WITH a, size([(a)--() | 1]) AS cnt";
+        let res = parse_with_clause(input);
+        match res {
+            Ok((remaining, with_clause)) => {
+                println!("Remaining: '{}'", remaining);
+                println!("Items count: {}", with_clause.with_items.len());
+                for (i, item) in with_clause.with_items.iter().enumerate() {
+                    println!("  Item[{}]: alias={:?}, expr={:?}", i, item.alias, std::mem::discriminant(&item.expression));
+                    if let Expression::FunctionCallExp(ref f) = item.expression {
+                        println!("    Function: {}", f.name);
+                        println!("    Args: {} args", f.args.len());
+                        for (j, arg) in f.args.iter().enumerate() {
+                            println!("      Arg[{}]: {:?}", j, std::mem::discriminant(arg));
+                        }
+                    }
+                }
+                assert_eq!(remaining, "");
+                assert_eq!(with_clause.with_items.len(), 2);
+                // Second item should be a FunctionCall (size) containing PatternComprehension
+                if let Expression::FunctionCallExp(ref f) = with_clause.with_items[1].expression {
+                    assert_eq!(f.name, "size");
+                    assert!(matches!(f.args[0], Expression::PatternComprehension(_)));
+                } else {
+                    panic!("Expected FunctionCallExp, got {:?}", with_clause.with_items[1].expression);
+                }
+            }
+            Err(e) => panic!("Expected successful parse, got error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_full_query_with_size_pattern_comprehension() {
+        use crate::open_cypher_parser::{parse_query_with_nom, ast::Expression};
+        
+        let input = "MATCH (a:User) WHERE a.user_id = 4 WITH a, size([(a)--() | 1]) AS cnt RETURN a.name, cnt";
+        let res = parse_query_with_nom(input);
+        match res {
+            Ok((remaining, query)) => {
+                println!("Remaining: '{}'", remaining);
+                println!("Has WITH clause: {}", query.with_clause.is_some());
+                if let Some(ref wc) = query.with_clause {
+                    println!("WITH items count: {}", wc.with_items.len());
+                    for (i, item) in wc.with_items.iter().enumerate() {
+                        println!("  Item[{}]: alias={:?}, expr={:?}", i, item.alias, std::mem::discriminant(&item.expression));
+                        if let Expression::FunctionCallExp(ref f) = item.expression {
+                            println!("    Function: {}", f.name);
+                            println!("    Args: {} args", f.args.len());
+                            for (j, arg) in f.args.iter().enumerate() {
+                                println!("      Arg[{}]: {:?}", j, std::mem::discriminant(arg));
+                            }
+                        }
+                    }
+                    assert_eq!(wc.with_items.len(), 2, "Should have 2 WITH items");
+                    // Second item should be a FunctionCall (size) containing PatternComprehension
+                    if let Expression::FunctionCallExp(ref f) = wc.with_items[1].expression {
+                        assert_eq!(f.name, "size");
+                        assert!(matches!(f.args[0], Expression::PatternComprehension(_)));
+                    } else {
+                        panic!("Expected FunctionCallExp, got {:?}", wc.with_items[1].expression);
+                    }
+                } else {
+                    panic!("Expected WITH clause in query");
+                }
+            }
+            Err(e) => panic!("Expected successful parse, got error: {:?}", e),
+        }
+    }
 }

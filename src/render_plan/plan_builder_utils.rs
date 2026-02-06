@@ -6730,10 +6730,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             log::warn!("🐛 DEBUG: wc.items[{}]: {:?}", i, item);
                         }
                         log::warn!("�🔧 build_chained_with_match_cte_plan: Unwrapping WithClause, rendering input");
-                        log::info!(
-                            "🔧 build_chained_with_match_cte_plan: wc.input type: {:?}",
-                            std::mem::discriminant(wc.input.as_ref())
-                        );
 
                         // Use CTE references from this WithClause (populated by analyzer)
                         let input_cte_refs = wc.cte_references.clone();

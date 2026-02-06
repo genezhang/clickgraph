@@ -178,6 +178,24 @@ impl AnalyzerPass for FilterTagging {
                         }
                     }
                 }
+                
+                // CRITICAL FIX: Check if child is a leaf node (GraphNode/ViewScan)
+                // Filters on leaf nodes should be preserved in the plan, not extracted,
+                // because they may be inside WITH clauses that need the filter in the CTE.
+                // Extracting these filters to plan_ctx would lose them when rendering the CTE.
+                // Note: GraphRel is NOT included - relationship filters use different logic.
+                let is_leaf_node = matches!(
+                    child_plan_ref,
+                    LogicalPlan::GraphNode(_) | LogicalPlan::ViewScan(_)
+                );
+                
+                if is_leaf_node {
+                    println!("FilterTagging: Child is leaf node - PRESERVING Filter in plan (may be inside WITH clause)");
+                    return Ok(Transformed::Yes(Arc::new(LogicalPlan::Filter(Filter {
+                        input: child_tf.get_plan().clone(),
+                        predicate: mapped_predicate,
+                    }))));
+                }
 
                 // call filter tagging and get new filter
                 let final_filter_opt = self.extract_filters(mapped_predicate, plan_ctx)?;

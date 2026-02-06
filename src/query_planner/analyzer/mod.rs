@@ -113,6 +113,8 @@ pub fn initial_analyzing(
     current_graph_schema: &GraphSchema,
 ) -> AnalyzerResult<Arc<LogicalPlan>> {
     log::info!("🔍 ANALYZER: Entering initial_analyzing");
+    
+    
     // Step 1: Schema Inference - infer missing schema information
     let schema_inference = SchemaInference::new();
     let plan = if let Ok(transformed_plan) =
@@ -122,6 +124,7 @@ pub fn initial_analyzing(
     } else {
         plan
     };
+    
 
     // Step 2: Type Inference - infer missing node labels AND edge types from schema
     // This runs early to ensure all downstream passes have complete type information
@@ -135,6 +138,7 @@ pub fn initial_analyzing(
     } else {
         plan
     };
+    
 
     // Step 2.5: VLP Transitivity Check - validate variable-length path patterns
     // This runs after TypeInference to ensure we have relationship types resolved
@@ -145,6 +149,7 @@ pub fn initial_analyzing(
     let plan = vlp_transitivity_check
         .analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)?
         .get_plan();
+    
 
     // Step 3: CTE Schema Resolver - register CTE schemas in plan_ctx for analyzer/planner
     // This runs after SchemaInference to ensure property mappings are available
@@ -158,6 +163,7 @@ pub fn initial_analyzing(
     } else {
         plan
     };
+    
 
     // Step 3.5: BidirectionalUnion - Transform undirected patterns (Direction::Either) into UNION ALL
     // CRITICAL: This MUST run BEFORE GraphJoinInference to avoid OR-based JOINs that ClickHouse handles incorrectly
@@ -178,6 +184,7 @@ pub fn initial_analyzing(
             plan
         }
     };
+    
 
     // Step 4: Graph Join Inference - analyze graph patterns and create PatternSchemaContext
     // MOVED UP from Step 15 to make PatternSchemaContext available for downstream passes
@@ -193,6 +200,7 @@ pub fn initial_analyzing(
         log::warn!("⚠️  GraphJoinInference failed, continuing with original plan");
         plan
     };
+    
 
     // Step 5: Projected Columns Resolver - pre-compute projected columns for GraphNodes
     // Now can use PatternSchemaContext from PlanCtx for explicit role information
@@ -207,6 +215,7 @@ pub fn initial_analyzing(
     } else {
         plan
     };
+    
 
     // Step 6: Query Validation - VALIDATE EARLY before any transformations
     // This prevents invalid queries from being processed further
@@ -223,6 +232,7 @@ pub fn initial_analyzing(
     let transformed_plan =
         filter_tagging.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)?;
     let plan = transformed_plan.get_plan();
+    
 
     // Step 3.5: CartesianJoinExtraction - extract cross-pattern filters into join_condition
     // CRITICAL: This runs AFTER FilterTagging to get property-mapped predicates.
@@ -237,6 +247,7 @@ pub fn initial_analyzing(
             });
         }
     };
+    
 
     // Step 4: Projection Tagging - tag projections into plan_ctx (NO mapping, just tagging)
     let projection_tagging = ProjectionTagging::new();
@@ -246,11 +257,42 @@ pub fn initial_analyzing(
         current_graph_schema,
     )?;
     let plan = transformed_plan.get_plan();
+    
 
     // Step 5: Group By Building
     let group_by_building = GroupByBuilding::new();
     let transformed_plan = group_by_building.analyze(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
+    
+
+    match plan.as_ref() {
+        LogicalPlan::GraphJoins(gj) => {
+            log::warn!("🔍   GraphJoins! {} joins, input type: {:?}", gj.joins.len(), std::mem::discriminant(gj.input.as_ref()));
+            match gj.input.as_ref() {
+                LogicalPlan::WithClause(wc) => {
+                    log::warn!("🔍     WithClause! input type: {:?}", std::mem::discriminant(wc.input.as_ref()));
+                    if let LogicalPlan::Filter(f) = wc.input.as_ref() {
+                        log::warn!("🔍       ✅✅✅ Filter EXISTS at END of initial_analyzing!");
+                    }
+                }
+                LogicalPlan::Projection(proj) => {
+                    log::error!("🔥🔥🔥 BUG AT END OF initial_analyzing: GraphJoins → Projection (not WithClause)");
+                    log::warn!("🔍       Projection.input type: {:?}", std::mem::discriminant(proj.input.as_ref()));
+                    // Check if Projection → WithClause → Filter
+                    if let LogicalPlan::WithClause(wc) = proj.input.as_ref() {
+                        log::warn!("🔍         WithClause! input type: {:?}", std::mem::discriminant(wc.input.as_ref()));
+                        if let LogicalPlan::Filter(f) = wc.input.as_ref() {
+                            log::warn!("🔍           ✅✅✅ Filter EXISTS in WithClause: {:?}", f.predicate);
+                        } else {
+                            log::error!("🔥🔥🔥 FILTER LOST! WithClause.input is: {:?}", std::mem::discriminant(wc.input.as_ref()));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
 
     Ok(plan)
 }
@@ -261,6 +303,28 @@ pub fn intermediate_analyzing(
     current_graph_schema: &GraphSchema,
 ) -> AnalyzerResult<Arc<LogicalPlan>> {
     // Note: SchemaInference and QueryValidation already ran in initial_analyzing
+    
+    match plan.as_ref() {
+        LogicalPlan::GraphJoins(gj) => {
+            log::warn!("🔍   GraphJoins! {} joins, input type: {:?}", gj.joins.len(), std::mem::discriminant(gj.input.as_ref()));
+            match gj.input.as_ref() {
+                LogicalPlan::WithClause(wc) => {
+                    log::warn!("🔍     WithClause EXISTS! input type: {:?}", std::mem::discriminant(wc.input.as_ref()));
+                    if let LogicalPlan::Filter(f) = wc.input.as_ref() {
+                        log::warn!("🔍       ✅✅✅ Filter exists with predicate: {:?}", f.predicate);
+                    } else {
+                        log::error!("🔥 BUG: WithClause.input is NOT Filter! Type: {:?}", std::mem::discriminant(wc.input.as_ref()));
+                    }
+                }
+                LogicalPlan::Projection(proj) => {
+                    log::error!("🔥🔥🔥 BUG: GraphJoins.input is Projection (WHERE already lost!)");
+                    log::warn!("🔍       Projection.input type: {:?}", std::mem::discriminant(proj.input.as_ref()));
+                }
+                _ => log::warn!("🔍     GraphJoins.input type: {:?}", std::mem::discriminant(gj.input.as_ref())),
+            }
+        }
+        _ => log::warn!("🔍   NOT GraphJoins"),
+    }
     // This pass focuses on graph-specific planning and optimizations
 
     let graph_traversal_planning = GraphTRaversalPlanning::new();
@@ -290,7 +354,6 @@ pub fn intermediate_analyzing(
     let plan = transformed_plan.get_plan();
     log::info!("🔍 ANALYZER: VariableResolver.analyze() completed");
 
-    // DEBUG: Check cte_references RIGHT after VariableResolver
     fn count_cte_refs_here(p: &LogicalPlan) -> usize {
         match p {
             LogicalPlan::WithClause(wc) => wc.cte_references.len() + count_cte_refs_here(&wc.input),
@@ -366,6 +429,25 @@ pub fn intermediate_analyzing(
     // Trivial WITH Elimination - remove pass-through WITH clauses that add no value
     // Run after collect+UNWIND elimination to clean up any resulting trivial WITHs
     log::info!("🔍 Running Trivial WITH Elimination...");
+    log::warn!("🔍 BEFORE TrivialWithElimination: plan type: {:?}", std::mem::discriminant(plan.as_ref()));
+    match plan.as_ref() {
+        LogicalPlan::GraphJoins(gj) => {
+            log::warn!("🔍   It's GraphJoins! {} joins, input type: {:?}", gj.joins.len(), std::mem::discriminant(gj.input.as_ref()));
+            match gj.input.as_ref() {
+                LogicalPlan::WithClause(wc) => {
+                    log::warn!("🔍     WithClause! input type: {:?}", std::mem::discriminant(wc.input.as_ref()));
+                    if let LogicalPlan::Filter(f) = wc.input.as_ref() {
+                        log::warn!("🔍       ✅ Filter exists with predicate: {:?}", f.predicate);
+                    } else {
+                        log::error!("🔥🔥🔥 BUG FOUND: WithClause.input is NOT Filter! Type: {:?}", std::mem::discriminant(wc.input.as_ref()));
+                    }
+                }
+                _ => log::warn!("🔍     GraphJoins.input is NOT WithClause: {:?}", std::mem::discriminant(gj.input.as_ref())),
+            }
+        }
+        _ => log::warn!("🔍   NOT GraphJoins (type: {:?})", std::mem::discriminant(plan.as_ref())),
+    }
+
     let trivial_with_elimination = TrivialWithElimination;
     let plan = match trivial_with_elimination.optimize(plan.clone(), plan_ctx) {
         Ok(transformed) => transformed.get_plan(),
@@ -376,6 +458,16 @@ pub fn intermediate_analyzing(
         }
     };
     log::info!("✓ Trivial WITH Elimination completed");
+
+    log::warn!("🔍 AFTER TrivialWithElimination: plan type: {:?}", std::mem::discriminant(plan.as_ref()));
+    if let LogicalPlan::Projection(proj) = plan.as_ref() {
+        log::warn!("🔍   Projection.input type: {:?}", std::mem::discriminant(proj.input.as_ref()));
+        if let LogicalPlan::WithClause(wc) = proj.input.as_ref() {
+            log::warn!("🔍     WithClause.input type: {:?}", std::mem::discriminant(wc.input.as_ref()));
+        } else if let LogicalPlan::Filter(f) = proj.input.as_ref() {
+            log::warn!("🔍     Filter still exists with predicate: {:?}", f.predicate);
+        }
+    }
     eprintln!(
         "🔬 ANALYZER: After TrivialWithElimination: {} cte_references",
         count_cte_refs_here(&plan)

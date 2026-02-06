@@ -295,19 +295,16 @@ impl FilterBuilder for LogicalPlan {
                 graph_joins.input.extract_filters()?
             }
             LogicalPlan::Filter(filter) => {
-                println!(
-                    "DEBUG: extract_filters - Found Filter node with predicate: {:?}",
-                    filter.predicate
-                );
-                println!(
-                    "DEBUG: extract_filters - Filter input type: {:?}",
-                    std::mem::discriminant(&*filter.input)
-                );
+                log::warn!("🔍 extract_filters: Found Filter node");
+                log::warn!("🔍 extract_filters: Filter predicate: {:?}", filter.predicate);
+                log::warn!("🔍 extract_filters: Filter input type: {:?}", std::mem::discriminant(&*filter.input));
 
                 // 🔧 BUG #10 FIX: For VLP/shortest path queries, filters on start/end nodes
                 // are already pushed into the CTE during extraction. Don't duplicate them
                 // in the outer SELECT WHERE clause.
                 let has_vlp_or_shortest_path = has_variable_length_or_shortest_path(&filter.input);
+                
+                log::warn!("🔍 extract_filters: has_vlp_or_shortest_path = {}", has_vlp_or_shortest_path);
 
                 println!(
                     "DEBUG: has_vlp_or_shortest_path = {}",

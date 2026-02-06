@@ -28,6 +28,16 @@ pub struct IdMapper {
     int_to_element: HashMap<i64, String>,
 }
 
+impl Clone for IdMapper {
+    fn clone(&self) -> Self {
+        IdMapper {
+            next_id: AtomicI64::new(self.next_id.load(Ordering::SeqCst)),
+            element_to_int: self.element_to_int.clone(),
+            int_to_element: self.int_to_element.clone(),
+        }
+    }
+}
+
 impl IdMapper {
     /// Create a new IdMapper starting from ID 1
     pub fn new() -> Self {
@@ -86,16 +96,6 @@ impl IdMapper {
         self.element_to_int.clear();
         self.int_to_element.clear();
         // Don't reset next_id to maintain uniqueness across clears
-    }
-}
-
-impl Clone for IdMapper {
-    fn clone(&self) -> Self {
-        IdMapper {
-            next_id: AtomicI64::new(self.next_id.load(Ordering::SeqCst)),
-            element_to_int: self.element_to_int.clone(),
-            int_to_element: self.int_to_element.clone(),
-        }
     }
 }
 

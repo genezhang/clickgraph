@@ -1252,13 +1252,19 @@ impl RenderPlanBuilder for LogicalPlan {
                 })
             }
             LogicalPlan::WithClause(with) => {
+                log::warn!("🔍 Rendering WithClause");
+                log::warn!("🔍 WithClause input type: {:?}", std::mem::discriminant(with.input.as_ref()));
+                
                 // Handle WithClause by building a CTE from the input and creating a render plan with the CTE
                 let has_aggregation = with
                     .items
                     .iter()
                     .any(|item| matches!(item.expression, LogicalExpr::AggregateFnCall(_)));
 
+                log::warn!("🔍 Calling extract_filters on WithClause input...");
                 let mut cte_filters = FilterBuilder::extract_filters(with.input.as_ref())?;
+                log::warn!("🔍 extract_filters returned: {:?}", cte_filters);
+                
                 let mut cte_having = with.input.extract_having()?;
 
                 if let Some(where_clause) = &with.where_clause {

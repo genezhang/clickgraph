@@ -69,17 +69,32 @@ pub fn evaluate_with_clause<'a>(
     plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
 ) -> Result<Arc<LogicalPlan>, LogicalPlanError> {
+    log::warn!("🔍 evaluate_with_clause: Starting");
+    log::warn!("🔍 evaluate_with_clause: Input plan type = {:?}", std::mem::discriminant(&*plan));
+    
+    // Print the full plan structure to understand what we're receiving
+    if let LogicalPlan::Filter(f) = plan.as_ref() {
+        log::warn!("🔍 evaluate_with_clause: Input is Filter with predicate: {:?}", f.predicate);
+        log::warn!("🔍 evaluate_with_clause: Filter input type: {:?}", std::mem::discriminant(&*f.input));
+    }
+    
+    log::debug!("evaluate_with_clause: Starting with {} items", with_clause.with_items.len());
+    
     // Rewrite pattern comprehensions before converting to ProjectionItems
     // This handles patterns like: WITH a, size([(a)--() | 1]) AS neighborCount
     let (rewritten_with_items, plan) =
-        rewrite_with_pattern_comprehensions(with_clause.with_items.clone(), plan, plan_ctx);
+        rewrite_with_pattern_comprehensions(with_clause.with_items.clone(), plan, plan_ctx)?;
+
+    log::warn!("🔍 evaluate_with_clause: After pattern comprehension rewrite, plan type = {:?}", std::mem::discriminant(&*plan));
+
+    log::debug!("evaluate_with_clause: After rewrite, have {} items", rewritten_with_items.len());
 
     let projection_items: Vec<ProjectionItem> = rewritten_with_items
         .iter()
         .map(|item| ProjectionItem::try_from(item.clone()))
         .collect::<Result<Vec<_>, _>>()?;
 
-    println!(
+    log::debug!(
         "WITH clause: Creating WithClause with {} items, distinct={}, order_by={:?}, skip={:?}, limit={:?}",
         projection_items.len(),
         with_clause.distinct,
@@ -144,13 +159,21 @@ fn rewrite_with_pattern_comprehensions<'a>(
     with_items: Vec<WithItem<'a>>,
     mut plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
-) -> (Vec<WithItem<'a>>, Arc<LogicalPlan>) {
+) -> Result<(Vec<WithItem<'a>>, Arc<LogicalPlan>), LogicalPlanError> {
     let mut rewritten_items = Vec::new();
+    log::debug!("rewrite_with_pattern_comprehensions: Processing {} items", with_items.len());
+    log::warn!("🔍 rewrite_with_pattern_comprehensions: Input plan type = {:?}", std::mem::discriminant(&*plan));
 
-    for item in with_items {
+    for (idx, item) in with_items.into_iter().enumerate() {
+        log::debug!("rewrite_with_pattern_comprehensions: Item[{}] alias={:?}, expr_type={:?}", 
+                   idx, item.alias, std::mem::discriminant(&item.expression));
+        
         // Recursively rewrite pattern comprehensions in the expression
         let (rewritten_expr, pattern_comprehensions) =
-            rewrite_expression_pattern_comprehensions(item.expression);
+            rewrite_expression_pattern_comprehensions(item.expression.clone());
+        
+        log::debug!("rewrite_with_pattern_comprehensions: Item[{}] found {} pattern comprehensions", 
+                   idx, pattern_comprehensions.len());
 
         // Add OPTIONAL MATCH nodes for each pattern comprehension found
         for (pattern, where_clause, _projection) in pattern_comprehensions {
@@ -166,11 +189,15 @@ fn rewrite_with_pattern_comprehensions<'a>(
             plan = match evaluate_optional_match_clause(&optional_match, plan.clone(), plan_ctx) {
                 Ok(new_plan) => new_plan,
                 Err(e) => {
+                    // Don't silently fail - propagate the error
+                    // Pattern comprehension requires the OPTIONAL MATCH to work correctly
                     log::error!(
-                        "Failed to evaluate OPTIONAL MATCH for pattern comprehension in WITH: {:?}",
+                        "Pattern comprehension OPTIONAL MATCH failed: {:?}",
                         e
                     );
-                    continue;
+                    return Err(LogicalPlanError::QueryPlanningError(
+                        format!("Failed to plan pattern comprehension: {}", e)
+                    ));
                 }
             };
         }
@@ -183,7 +210,7 @@ fn rewrite_with_pattern_comprehensions<'a>(
         rewritten_items.push(new_item);
     }
 
-    (rewritten_items, plan)
+    Ok((rewritten_items, plan))
 }
 
 /// Recursively rewrite pattern comprehensions in an expression.
@@ -193,8 +220,11 @@ fn rewrite_expression_pattern_comprehensions<'a>(
 ) -> (Expression<'a>, Vec<PatternComprehension<'a>>) {
     use crate::open_cypher_parser::ast::*;
 
+    log::debug!("🔄 rewrite_expression_pattern_comprehensions: expr_type={:?}", std::mem::discriminant(&expr));
+
     match expr {
         Expression::PatternComprehension(pc) => {
+            log::info!("🔄 Found PatternComprehension, replacing with collect()");
             // Found a pattern comprehension - collect it and replace with collect(projection)
             let collect_call = Expression::FunctionCallExp(FunctionCall {
                 name: "collect".to_string(),
@@ -210,7 +240,35 @@ fn rewrite_expression_pattern_comprehensions<'a>(
             )
         }
         Expression::FunctionCallExp(func) => {
-            // Recursively process function arguments
+            log::debug!("🔄 Checking FunctionCallExp '{}' for size(PatternComprehension)", func.name);
+            // Special case: size(PatternComprehension) should become count(*)
+            // NOT size(collect(projection)) which is semantically wrong
+            let func_lower = func.name.to_lowercase();
+            if func_lower == "size" || func_lower == "length" {
+                log::debug!("🔄 Found size/length with {} args", func.args.len());
+                if func.args.len() == 1 {
+                    log::debug!("🔄 Checking if arg is PatternComprehension: {:?}", std::mem::discriminant(&func.args[0]));
+                    if let Expression::PatternComprehension(pc) = &func.args[0] {
+                        log::info!("🔄 size(PatternComprehension) detected, replacing with count(*)");
+                        // Replace size([(pattern) | proj]) with count(*)
+                        // The pattern will be added as OPTIONAL MATCH
+                        let count_call = Expression::FunctionCallExp(FunctionCall {
+                            name: "count".to_string(),
+                            args: vec![Expression::Literal(crate::open_cypher_parser::ast::Literal::String("*"))],
+                        });
+                        return (
+                            count_call,
+                            vec![(
+                                (*pc.pattern).clone(),
+                                pc.where_clause.clone(),
+                                pc.projection.clone(),
+                            )],
+                        );
+                    }
+                }
+            }
+            
+            // Default: Recursively process function arguments
             let mut all_pcs = Vec::new();
             let new_args: Vec<Expression<'a>> = func
                 .args
