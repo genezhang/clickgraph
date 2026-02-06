@@ -115,8 +115,10 @@ pub struct IdEncoding;
 /// Constants for the 53-bit JavaScript-safe ID encoding
 /// 6 bits for label (64 labels) + 47 bits for id (140 trillion)
 const LABEL_BITS: u32 = 6;
-const ID_BITS: u32 = 47;
-const ID_MASK: i64 = (1i64 << ID_BITS) - 1; // 0x7FFFFFFFFFFF (47 bits)
+/// Number of bits for the ID value (public for testing)
+pub const ID_BITS: u32 = 47;
+/// Mask to extract the 47-bit ID value (public for testing)
+pub const ID_MASK: i64 = (1i64 << ID_BITS) - 1; // 0x7FFFFFFFFFFF (47 bits)
 const MAX_LABEL_CODE: u8 = (1 << LABEL_BITS) - 1; // 63
 
 impl IdEncoding {
@@ -265,12 +267,12 @@ mod tests {
 
     #[test]
     fn test_max_id_value() {
-        // Ensure 56-bit max value is handled correctly
-        let max_56bit = 0x00FFFFFFFFFFFFFFi64;
-        let encoded = IdEncoding::encode(1, max_56bit);
+        // Ensure 47-bit max value is handled correctly (JS-safe encoding)
+        let max_47bit = ID_MASK; // 0x7FFFFFFFFFFF (47 bits)
+        let encoded = IdEncoding::encode(1, max_47bit);
         let (code, value) = IdEncoding::decode(encoded);
 
         assert_eq!(code, 1);
-        assert_eq!(value, max_56bit);
+        assert_eq!(value, max_47bit);
     }
 }

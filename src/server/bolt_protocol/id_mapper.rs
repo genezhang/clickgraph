@@ -208,8 +208,8 @@ impl IdMapper {
         let mut hasher = DefaultHasher::new();
         s.hash(&mut hasher);
         let hash = hasher.finish();
-        // Mask to 56 bits and ensure positive
-        ((hash & 0x00FFFFFFFFFFFFFF) as i64).abs().max(1)
+        // Mask to 47 bits for JS-safe encoding and ensure positive
+        ((hash & 0x7FFFFFFFFFFF) as i64).abs().max(1)
     }
 
     /// Lookup element_id by integer ID (reverse lookup)
@@ -413,21 +413,22 @@ impl Default for IdMapper {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::id_encoding::{ID_BITS, ID_MASK};
 
-    /// Helper to extract label code from encoded ID
+    /// Helper to extract label code from encoded ID (6 bits at position 47-52)
     fn get_label_code(id: i64) -> u8 {
-        ((id >> 56) & 0xFF) as u8
+        ((id >> ID_BITS) & 0x3F) as u8
     }
 
-    /// Helper to extract id_value from encoded ID
+    /// Helper to extract id_value from encoded ID (47 low bits)
     fn get_id_value(id: i64) -> i64 {
-        id & 0x00FFFFFFFFFFFFFF
+        id & ID_MASK
     }
 
     #[test]
     fn test_get_or_assign_new_numeric() {
-        // For numeric IDs like "User:1", the label code is in high byte
-        // and id_value (1) is in low 56 bits
+        // For numeric IDs like "User:1", the label code is in bits 47-52
+        // and id_value (1) is in low 47 bits
         let mut mapper = IdMapper::new();
         let id = mapper.get_or_assign("User:1");
 
