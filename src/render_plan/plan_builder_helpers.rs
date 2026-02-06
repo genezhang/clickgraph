@@ -2705,6 +2705,21 @@ pub(super) fn normalize_union_branches(
     union_plans
         .into_iter()
         .map(|plan| {
+            // Collect valid table aliases from FROM and JOINs for this branch
+            let mut valid_aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+            if let Some(ref from_ref) = plan.from.0 {
+                if let Some(ref alias) = from_ref.alias {
+                    valid_aliases.insert(alias.clone());
+                }
+            }
+            for join in &plan.joins.0 {
+                valid_aliases.insert(join.table_alias.clone());
+            }
+            log::debug!(
+                "normalize_union_branches: valid table aliases for branch: {:?}",
+                valid_aliases
+            );
+
             // Build a map of existing column aliases in this branch
             let existing: std::collections::HashMap<String, SelectItem> = plan
                 .select
@@ -2720,12 +2735,17 @@ pub(super) fn normalize_union_branches(
                 .iter()
                 .map(|alias| {
                     if let Some(item) = existing.get(alias) {
+                        // CRITICAL FIX: For denormalized relationships, the SELECT may reference
+                        // a table alias (e.g., `r`) that doesn't exist in FROM/JOINs.
+                        // We need to fix the table alias to a valid one.
+                        let fixed_expr = fix_invalid_table_aliases(&item.expression, &valid_aliases, &plan);
+                        
                         // Wrap the expression in toString() for type compatibility
                         SelectItem {
                             expression: RenderExpr::ScalarFnCall(
                                 super::render_expr::ScalarFnCall {
                                     name: "toString".to_string(),
-                                    args: vec![item.expression.clone()],
+                                    args: vec![fixed_expr],
                                 },
                             ),
                             col_alias: item.col_alias.clone(),
@@ -2749,6 +2769,90 @@ pub(super) fn normalize_union_branches(
             }
         })
         .collect()
+}
+
+/// Fix invalid table aliases in expressions for UNION branches.
+///
+/// For denormalized relationships (e.g., AUTHORED stored on posts_bench),
+/// the SELECT may reference a relationship alias `r` that doesn't exist in
+/// FROM/JOINs. This function rewrites `r.column` to use the correct table
+/// alias that actually contains that column.
+///
+/// Strategy:
+/// 1. If table alias is valid, return expression unchanged
+/// 2. If table alias is invalid (not in FROM/JOINs), try to find the FROM table
+///    (for FK relationships, the FROM table usually has the relationship columns)
+fn fix_invalid_table_aliases(
+    expr: &RenderExpr,
+    valid_aliases: &std::collections::HashSet<String>,
+    plan: &super::RenderPlan,
+) -> RenderExpr {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            let table_alias = &prop.table_alias.0;
+            if valid_aliases.contains(table_alias) {
+                // Table alias is valid, no change needed
+                expr.clone()
+            } else {
+                // Table alias is invalid - this is a denormalized relationship
+                // For FK edges, the FROM table contains the relationship columns
+                log::info!(
+                    "🔧 fix_invalid_table_aliases: '{}' not in valid aliases {:?}, using FROM table",
+                    table_alias,
+                    valid_aliases
+                );
+                
+                // Use the FROM table alias as the replacement
+                if let Some(ref from_ref) = plan.from.0 {
+                    if let Some(ref from_alias) = from_ref.alias {
+                        log::info!(
+                            "🔧 Rewriting {}.{} → {}.{}",
+                            table_alias,
+                            match &prop.column {
+                                PropertyValue::Column(c) => c.clone(),
+                                _ => "<expr>".to_string(),
+                            },
+                            from_alias,
+                            match &prop.column {
+                                PropertyValue::Column(c) => c.clone(),
+                                _ => "<expr>".to_string(),
+                            }
+                        );
+                        return RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(from_alias.clone()),
+                            column: prop.column.clone(),
+                        });
+                    }
+                }
+                // Fallback: return unchanged
+                expr.clone()
+            }
+        }
+        // Recursively fix nested expressions
+        RenderExpr::ScalarFnCall(fn_call) => {
+            let fixed_args: Vec<RenderExpr> = fn_call
+                .args
+                .iter()
+                .map(|arg| fix_invalid_table_aliases(arg, valid_aliases, plan))
+                .collect();
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: fn_call.name.clone(),
+                args: fixed_args,
+            })
+        }
+        RenderExpr::OperatorApplicationExp(op_app) => {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op_app.operator.clone(),
+                operands: op_app
+                    .operands
+                    .iter()
+                    .map(|arg| fix_invalid_table_aliases(arg, valid_aliases, plan))
+                    .collect(),
+            })
+        }
+        // Other expression types don't need fixing
+        _ => expr.clone(),
+    }
 }
 
 /// Add __label__ column to each UNION branch for node type identification.
