@@ -29,7 +29,11 @@ fn preregister_schema_labels(schema: &GraphSchema) {
     }
     for (type_name, _) in schema.get_relationships_schemas() {
         let code = IdEncoding::register_label(&type_name);
-        log::debug!("Pre-registered relationship type '{}' with code {}", type_name, code);
+        log::debug!(
+            "Pre-registered relationship type '{}' with code {}",
+            type_name,
+            code
+        );
     }
 }
 

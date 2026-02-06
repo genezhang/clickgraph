@@ -333,7 +333,11 @@ pub fn extract_return_metadata(
                             Some(TypedVariable::Relationship(rel_var)) => rel_var.rel_types.clone(),
                             _ => vec![],
                         };
-                        log::debug!("IdFunction detected: id({}) with labels {:?}", alias_str, labels);
+                        log::debug!(
+                            "IdFunction detected: id({}) with labels {:?}",
+                            alias_str,
+                            labels
+                        );
                         ReturnItemType::IdFunction {
                             alias: alias_str,
                             labels,
@@ -558,11 +562,19 @@ pub fn transform_row(
             ReturnItemType::IdFunction { alias, labels } => {
                 // For id() function, we need to compute the encoded ID from the element_id
                 // The element_id is constructed from the label and ID column value
-                log::debug!("IdFunction handler: alias={}, labels={:?}, field_name={}", alias, labels, meta.field_name);
-                
+                log::debug!(
+                    "IdFunction handler: alias={}, labels={:?}, field_name={}",
+                    alias,
+                    labels,
+                    meta.field_name
+                );
+
                 // Find the node/relationship data in the row to build element_id
-                let label = labels.first().cloned().unwrap_or_else(|| "Unknown".to_string());
-                
+                let label = labels
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "Unknown".to_string());
+
                 // First, try to get the id value from the field_name (the SQL column alias)
                 // When "id(u) as uid" is queried, SQL is "SELECT u.user_id AS uid"
                 // and row contains {"uid": 1}, so we look for field_name first
@@ -575,11 +587,18 @@ pub fn transform_row(
                     format!("{}:{}", label, id_str)
                 } else {
                     // Fallback: try alias.id_col format (when node is also returned)
-                    let id_col = schema.node_schema(&label)
-                        .map(|ns| ns.node_id.columns().first().map(|s| s.to_string()).unwrap_or_else(|| "id".to_string()))
+                    let id_col = schema
+                        .node_schema(&label)
+                        .map(|ns| {
+                            ns.node_id
+                                .columns()
+                                .first()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| "id".to_string())
+                        })
                         .unwrap_or_else(|_| "id".to_string());
                     let id_column_key = format!("{}.{}", alias, id_col);
-                    
+
                     if let Some(id_val) = row.get(&id_column_key) {
                         let id_str = match id_val {
                             Value::Number(n) => n.to_string(),
@@ -607,7 +626,7 @@ pub fn transform_row(
                         element_id.unwrap_or_else(|| format!("{}:unknown", label))
                     }
                 };
-                
+
                 // Use IdMapper's deterministic ID computation
                 let encoded_id = super::id_mapper::IdMapper::compute_deterministic_id(&element_id);
                 log::debug!("id() encoded: {} -> {}", element_id, encoded_id);
@@ -936,26 +955,25 @@ fn transform_to_path(
             })?;
 
     // Extract end node - require either metadata lookup success or known labels
-    let end_node =
-        find_node_in_row_with_label(row, end_alias, end_labels, return_metadata, schema)
-            .or_else(|| {
-                // If we have a known label, create node with that label
-                end_labels.first().map(|label| {
-                    log::debug!("Creating end node with known label: {}", label);
-                    create_node_with_label(label, 1)
-                })
+    let end_node = find_node_in_row_with_label(row, end_alias, end_labels, return_metadata, schema)
+        .or_else(|| {
+            // If we have a known label, create node with that label
+            end_labels.first().map(|label| {
+                log::debug!("Creating end node with known label: {}", label);
+                create_node_with_label(label, 1)
             })
-            .ok_or_else(|| {
-                format!(
-                    "Internal error: Cannot resolve end node '{}' for path '{}'. \
+        })
+        .ok_or_else(|| {
+            format!(
+                "Internal error: Cannot resolve end node '{}' for path '{}'. \
                      No label metadata available and node not found in row. \
                      end_labels={:?}, row_keys={:?}",
-                    end_alias,
-                    path_name,
-                    end_labels,
-                    row.keys().collect::<Vec<_>>()
-                )
-            })?;
+                end_alias,
+                path_name,
+                end_labels,
+                row.keys().collect::<Vec<_>>()
+            )
+        })?;
 
     // Extract relationship - require either metadata lookup success or known types
     let relationship = find_relationship_in_row_with_type(

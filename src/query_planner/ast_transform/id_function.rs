@@ -19,6 +19,19 @@
 //! - `id(a) IN [1, 2]` → `((a:L1 AND a.id = 'v1') OR (a:L2 AND a.id = 'v2'))`
 //! - `NOT id(a) IN []` → `true` (tautology for empty exclusion list)
 //! - `ORDER BY id(a)` → `ORDER BY a.id_property`
+//!
+//! # Memory Management
+//!
+//! This module uses `Box::leak` to create static string references that satisfy the
+//! `Expression<'a>` lifetime requirements. This intentionally leaks memory for:
+//! - ID property names (e.g., "user_id") - typically a few bytes per query
+//! - ID values (e.g., "42") - a few bytes per id() call
+//!
+//! **Trade-off rationale**: The AST uses `&'a str` references throughout, and changing
+//! to `Cow<'a, str>` or `Arc<str>` would require extensive refactoring of the parser
+//! and all downstream consumers. The leaked memory is small (< 1KB per typical query)
+//! and acceptable for the current use case. Future optimization could use an arena
+//! allocator (e.g., `bumpalo`) cleared after query execution.
 
 use crate::{
     graph_catalog::element_id::parse_node_element_id,
@@ -274,7 +287,7 @@ impl<'a> IdFunctionTransformer<'a> {
             var,
             id_value
         );
-        
+
         // Return false to indicate no match
         // The user should use label filters like MATCH (n:User) WHERE id(n) = X
         Expression::Literal(Literal::Boolean(false))
@@ -340,7 +353,7 @@ impl<'a> IdFunctionTransformer<'a> {
     }
 
     /// Build property check expression: `var.id_property = 'value'`
-    /// 
+    ///
     /// For `MATCH (n) WHERE id(n) = X` (no label), we only check the id property.
     /// The UNION branching handles routing to the correct table.
     /// For `MATCH (n:Label) WHERE id(n) = X`, the label is already in the MATCH pattern.

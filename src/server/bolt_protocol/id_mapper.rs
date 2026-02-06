@@ -133,7 +133,12 @@ impl IdMapper {
             cache.int_to_element.insert(id, element_id.to_string());
         }
 
-        log::debug!("IdMapper: {} -> {} (session {})", element_id, id, self.connection_id);
+        log::debug!(
+            "IdMapper: {} -> {} (session {})",
+            element_id,
+            id,
+            self.connection_id
+        );
         id
     }
 
@@ -359,7 +364,7 @@ impl IdMapper {
 
         // Fall back to direct extraction
         let (label_code, id_hash) = Self::decode_id(encoded_id);
-        
+
         // If label_code is 0, this isn't an encoded ID
         if label_code == 0 {
             return None;
@@ -548,7 +553,10 @@ mod tests {
             let registry = ACTIVE_SESSION_CACHES.read().unwrap();
             registry.contains_key(&conn_id)
         };
-        assert!(registered, "IdMapper should be registered in ACTIVE_SESSION_CACHES");
+        assert!(
+            registered,
+            "IdMapper should be registered in ACTIVE_SESSION_CACHES"
+        );
     }
 
     #[test]

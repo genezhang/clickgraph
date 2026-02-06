@@ -2706,7 +2706,8 @@ pub(super) fn normalize_union_branches(
         .into_iter()
         .map(|plan| {
             // Collect valid table aliases from FROM and JOINs for this branch
-            let mut valid_aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut valid_aliases: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
             if let Some(ref from_ref) = plan.from.0 {
                 if let Some(ref alias) = from_ref.alias {
                     valid_aliases.insert(alias.clone());
@@ -2738,8 +2739,9 @@ pub(super) fn normalize_union_branches(
                         // CRITICAL FIX: For denormalized relationships, the SELECT may reference
                         // a table alias (e.g., `r`) that doesn't exist in FROM/JOINs.
                         // We need to fix the table alias to a valid one.
-                        let fixed_expr = fix_invalid_table_aliases(&item.expression, &valid_aliases, &plan);
-                        
+                        let fixed_expr =
+                            fix_invalid_table_aliases(&item.expression, &valid_aliases, &plan);
+
                         // Wrap the expression in toString() for type compatibility
                         SelectItem {
                             expression: RenderExpr::ScalarFnCall(
@@ -2801,7 +2803,7 @@ fn fix_invalid_table_aliases(
                     table_alias,
                     valid_aliases
                 );
-                
+
                 // Use the FROM table alias as the replacement
                 if let Some(ref from_ref) = plan.from.0 {
                     if let Some(ref from_alias) = from_ref.alias {

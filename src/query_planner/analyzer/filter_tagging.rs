@@ -186,6 +186,17 @@ impl AnalyzerPass for FilterTagging {
                 // Filters on leaf nodes should be preserved in the plan, not extracted,
                 // because they may be inside WITH clauses that need the filter in the CTE.
                 // Extracting these filters to plan_ctx would lose them when rendering the CTE.
+                //
+                // Note: This conservative approach preserves ALL filters on leaf nodes, not just
+                // those inside WITH clauses. This is intentional because:
+                // 1. Detecting "inside WITH clause" requires complex context tracking
+                // 2. Preserving filters is safe (correctness) even if suboptimal for non-WITH cases
+                // 3. In practice, most leaf node filters come from WHERE clauses that get
+                //    pushed down anyway during rendering, so the performance impact is minimal
+                //
+                // Future optimization: Add WITH-clause context tracking to only preserve
+                // filters that are actually inside WITH clauses.
+                //
                 // Note: GraphRel is NOT included - relationship filters use different logic.
                 let is_leaf_node = matches!(
                     child_plan_ref,
@@ -664,11 +675,7 @@ impl FilterTagging {
 
         // Get the ID column for this label from the schema
         let id_column = if let Ok(node_schema) = graph_schema.node_schema(&label) {
-            node_schema
-                .node_id
-                .columns()
-                .first()
-                .map(|s| s.to_string())
+            node_schema.node_id.columns().first().map(|s| s.to_string())
         } else if let Ok(rel_schema) = graph_schema.get_rel_schema(&label) {
             // For relationships, use edge_id if defined, else from_id
             if let Some(ref edge_id) = rel_schema.edge_id {
@@ -706,7 +713,7 @@ impl FilterTagging {
         // Build the transformed expression: var.id_column = raw_value
         use crate::graph_catalog::expression_parser::PropertyValue;
         use crate::query_planner::logical_expr::Literal;
-        
+
         let property_access = LogicalExpr::PropertyAccessExp(PropertyAccess {
             table_alias: TableAlias(var_alias.clone()),
             column: PropertyValue::Column(id_column.clone()),
@@ -1143,16 +1150,13 @@ impl FilterTagging {
                 // Special handling for id(var) = <encoded_value> patterns
                 // This decodes Neo4j-encoded integer IDs to raw database values
                 if op.operator == Operator::Equal && op.operands.len() == 2 {
-                    if let Some(transformed) = self.try_transform_id_comparison(
-                        &op,
-                        plan_ctx,
-                        graph_schema,
-                        plan,
-                    )? {
+                    if let Some(transformed) =
+                        self.try_transform_id_comparison(&op, plan_ctx, graph_schema, plan)?
+                    {
                         return Ok(transformed);
                     }
                 }
-                
+
                 // Recursively apply property mapping to operands
                 let mut mapped_operands = Vec::new();
                 for operand in op.operands {
@@ -1178,7 +1182,7 @@ impl FilterTagging {
                         // In projection context: keep id() as-is, result transformer handles it
                         return Ok(LogicalExpr::ScalarFnCall(fn_call));
                     }
-                    
+
                     // In WHERE clause context: transform to column comparison
                     // Extract the alias from the argument
                     if let LogicalExpr::TableAlias(ref alias) = fn_call.args[0] {
@@ -1360,8 +1364,13 @@ impl FilterTagging {
             LogicalExpr::ArraySlicing { array, from, to } => {
                 // Recursively apply property mapping to array slicing components
                 // This is important for expressions like collect(n.name)[0..10]
-                let mapped_array =
-                    self.apply_property_mapping_internal(*array, plan_ctx, graph_schema, plan, preserve_id_function)?;
+                let mapped_array = self.apply_property_mapping_internal(
+                    *array,
+                    plan_ctx,
+                    graph_schema,
+                    plan,
+                    preserve_id_function,
+                )?;
                 let mapped_from = if let Some(f) = from {
                     Some(Box::new(self.apply_property_mapping_internal(
                         *f,

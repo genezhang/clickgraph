@@ -57,7 +57,7 @@ pub fn evaluate_where_clause<'a>(
             .map(|branch| {
                 // Extract alias mappings from this branch (e.g., "o" -> "o_0")
                 let alias_mappings = extract_branch_alias_mappings(branch.as_ref());
-                
+
                 // Rewrite the predicate to use branch-specific aliases
                 let branch_predicate = if alias_mappings.is_empty() {
                     predicates.clone()
@@ -68,7 +68,7 @@ pub fn evaluate_where_clause<'a>(
                     );
                     rewrite_predicate_aliases(&predicates, &alias_mappings)
                 };
-                
+
                 Arc::new(LogicalPlan::Filter(Filter {
                     input: branch.clone(),
                     predicate: branch_predicate,
@@ -89,11 +89,11 @@ pub fn evaluate_where_clause<'a>(
 }
 
 /// Extract alias mappings from a UNION branch.
-/// 
+///
 /// UNION branches created for untyped patterns (e.g., `(a)--(o)`) use suffixed aliases
 /// like `o_0`, `o_1` to avoid conflicts. This function detects these and returns
 /// a mapping from base alias → branch alias.
-/// 
+///
 /// Example: If branch contains `GraphNode { alias: "o_0", ... }`, returns `{"o" -> "o_0"}`
 fn extract_branch_alias_mappings(plan: &LogicalPlan) -> HashMap<String, String> {
     let mut mappings = HashMap::new();
@@ -140,7 +140,7 @@ fn collect_branch_aliases(plan: &LogicalPlan, mappings: &mut HashMap<String, Str
 }
 
 /// Extract base alias from a branch-suffixed alias.
-/// 
+///
 /// Returns Some(base) if alias matches pattern `{base}_{digit}`, else None.
 /// Example: "o_0" → Some("o"), "o_10" → Some("o"), "user" → None
 fn extract_base_alias(alias: &str) -> Option<String> {
@@ -162,13 +162,16 @@ fn extract_base_alias(alias: &str) -> Option<String> {
 }
 
 /// Rewrite a predicate's aliases using the provided mapping.
-/// 
+///
 /// For predicates like `o.post_id = '3'`, rewrites `o` → `o_0` based on mappings.
-fn rewrite_predicate_aliases(expr: &LogicalExpr, mappings: &HashMap<String, String>) -> LogicalExpr {
+fn rewrite_predicate_aliases(
+    expr: &LogicalExpr,
+    mappings: &HashMap<String, String>,
+) -> LogicalExpr {
     use crate::query_planner::logical_expr::{
-        OperatorApplication, PropertyAccess, ScalarFnCall, TableAlias, AggregateFnCall, LogicalCase,
+        AggregateFnCall, LogicalCase, OperatorApplication, PropertyAccess, ScalarFnCall, TableAlias,
     };
-    
+
     match expr {
         LogicalExpr::PropertyAccessExp(pa) => {
             // Rewrite table_alias if it's in the mapping
@@ -193,7 +196,9 @@ fn rewrite_predicate_aliases(expr: &LogicalExpr, mappings: &HashMap<String, Stri
             // Recursively rewrite operands
             let rewritten = OperatorApplication {
                 operator: op.operator.clone(),
-                operands: op.operands.iter()
+                operands: op
+                    .operands
+                    .iter()
                     .map(|o| rewrite_predicate_aliases(o, mappings))
                     .collect(),
             };
@@ -208,33 +213,47 @@ fn rewrite_predicate_aliases(expr: &LogicalExpr, mappings: &HashMap<String, Stri
             // Recursively rewrite function arguments
             LogicalExpr::ScalarFnCall(ScalarFnCall {
                 name: fc.name.clone(),
-                args: fc.args.iter()
+                args: fc
+                    .args
+                    .iter()
                     .map(|a| rewrite_predicate_aliases(a, mappings))
                     .collect(),
             })
         }
-        LogicalExpr::AggregateFnCall(afc) => {
-            LogicalExpr::AggregateFnCall(AggregateFnCall {
-                name: afc.name.clone(),
-                args: afc.args.iter()
-                    .map(|a| rewrite_predicate_aliases(a, mappings))
-                    .collect(),
-            })
-        }
-        LogicalExpr::Case(case) => {
-            LogicalExpr::Case(LogicalCase {
-                expr: case.expr.as_ref().map(|e| Box::new(rewrite_predicate_aliases(e, mappings))),
-                when_then: case.when_then.iter()
-                    .map(|(w, t)| (rewrite_predicate_aliases(w, mappings), rewrite_predicate_aliases(t, mappings)))
-                    .collect(),
-                else_expr: case.else_expr.as_ref().map(|e| Box::new(rewrite_predicate_aliases(e, mappings))),
-            })
-        }
-        LogicalExpr::List(items) => {
-            LogicalExpr::List(items.iter()
+        LogicalExpr::AggregateFnCall(afc) => LogicalExpr::AggregateFnCall(AggregateFnCall {
+            name: afc.name.clone(),
+            args: afc
+                .args
+                .iter()
+                .map(|a| rewrite_predicate_aliases(a, mappings))
+                .collect(),
+        }),
+        LogicalExpr::Case(case) => LogicalExpr::Case(LogicalCase {
+            expr: case
+                .expr
+                .as_ref()
+                .map(|e| Box::new(rewrite_predicate_aliases(e, mappings))),
+            when_then: case
+                .when_then
+                .iter()
+                .map(|(w, t)| {
+                    (
+                        rewrite_predicate_aliases(w, mappings),
+                        rewrite_predicate_aliases(t, mappings),
+                    )
+                })
+                .collect(),
+            else_expr: case
+                .else_expr
+                .as_ref()
+                .map(|e| Box::new(rewrite_predicate_aliases(e, mappings))),
+        }),
+        LogicalExpr::List(items) => LogicalExpr::List(
+            items
+                .iter()
                 .map(|i| rewrite_predicate_aliases(i, mappings))
-                .collect())
-        }
+                .collect(),
+        ),
         // Literals and other expressions don't contain aliases to rewrite
         _ => expr.clone(),
     }

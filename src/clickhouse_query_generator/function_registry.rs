@@ -841,7 +841,7 @@ lazy_static::lazy_static! {
 
         // type(relationship) - handled specially in code
         // labels(node) - handled specially in code
-        
+
         // id(node/relationship) - Neo4j internal integer ID
         // The actual ID is computed at result transformation time from element_id.
         // Here we return 0 as a placeholder that won't break SQL execution.

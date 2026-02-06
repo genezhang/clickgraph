@@ -588,10 +588,16 @@ impl SelectBuilder for LogicalPlan {
                         // The id() function needs special handling because:
                         // 1. We preserve ScalarFnCall("id") in LogicalPlan for metadata extraction
                         // 2. But for SQL we need the actual ID column value to compute encoded ID
-                        LogicalExpr::ScalarFnCall(fn_call) if fn_call.name.eq_ignore_ascii_case("id") && fn_call.args.len() == 1 => {
+                        LogicalExpr::ScalarFnCall(fn_call)
+                            if fn_call.name.eq_ignore_ascii_case("id")
+                                && fn_call.args.len() == 1 =>
+                        {
                             if let LogicalExpr::TableAlias(ref alias) = fn_call.args[0] {
-                                log::info!("🔍 SelectBuilder: id({}) - transforming to ID column access", alias.0);
-                                
+                                log::info!(
+                                    "🔍 SelectBuilder: id({}) - transforming to ID column access",
+                                    alias.0
+                                );
+
                                 // Get schema from plan_ctx to find the ID column
                                 if let Some(ctx) = plan_ctx {
                                     if let Some(typed_var) = ctx.lookup_variable(&alias.0) {
@@ -601,10 +607,14 @@ impl SelectBuilder for LogicalPlan {
                                                     ctx.schema()
                                                         .node_schema(label)
                                                         .ok()
-                                                        .map(|ns| ns.node_id.columns().first().map(|s| s.to_string()))
+                                                        .map(|ns| {
+                                                            ns.node_id
+                                                                .columns()
+                                                                .first()
+                                                                .map(|s| s.to_string())
+                                                        })
                                                         .flatten()
-                                                }
-                                                else {
+                                                } else {
                                                     None
                                                 }
                                             }
@@ -615,27 +625,38 @@ impl SelectBuilder for LogicalPlan {
                                                         .ok()
                                                         .map(|rs| {
                                                             if let Some(ref edge_id) = rs.edge_id {
-                                                                edge_id.columns().first().map(|s| s.to_string())
+                                                                edge_id
+                                                                    .columns()
+                                                                    .first()
+                                                                    .map(|s| s.to_string())
                                                             } else {
                                                                 Some(rs.from_id.clone())
                                                             }
                                                         })
                                                         .flatten()
-                                                }
-                                                else {
+                                                } else {
                                                     None
                                                 }
                                             }
                                             _ => None,
                                         };
-                                        
+
                                         if let Some(id_col) = id_column {
-                                            log::info!("🔍 SelectBuilder: id({}) -> {}.{}", alias.0, alias.0, id_col);
+                                            log::info!(
+                                                "🔍 SelectBuilder: id({}) -> {}.{}",
+                                                alias.0,
+                                                alias.0,
+                                                id_col
+                                            );
                                             select_items.push(SelectItem {
-                                                expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                                                    table_alias: RenderTableAlias(alias.0.clone()),
-                                                    column: PropertyValue::Column(id_col),
-                                                }),
+                                                expression: RenderExpr::PropertyAccessExp(
+                                                    PropertyAccess {
+                                                        table_alias: RenderTableAlias(
+                                                            alias.0.clone(),
+                                                        ),
+                                                        column: PropertyValue::Column(id_col),
+                                                    },
+                                                ),
                                                 col_alias: item
                                                     .col_alias
                                                     .as_ref()
@@ -645,11 +666,11 @@ impl SelectBuilder for LogicalPlan {
                                         }
                                     }
                                 }
-                                
+
                                 // Fallback: couldn't resolve ID column, pass through as-is
                                 log::warn!("🔍 SelectBuilder: id({}) - couldn't resolve ID column, passing through", alias.0);
                             }
-                            
+
                             // Fallback for non-alias argument or failed resolution
                             select_items.push(SelectItem {
                                 expression: item.expression.clone().try_into()?,

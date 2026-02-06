@@ -125,7 +125,10 @@ fn element_id_to_filter(element_id: &str, alias: &str) -> Option<(String, String
 
             // Generate: (alias:Label AND alias.__node_id__ = value)
             // FilterTagging will transform __node_id__ to actual column
-            let filter = format!("({}:{} AND {}.__node_id__ = {})", alias, label, alias, value_expr);
+            let filter = format!(
+                "({}:{} AND {}.__node_id__ = {})",
+                alias, label, alias, value_expr
+            );
             Some((label, filter))
         }
         Err(e) => {
@@ -339,7 +342,10 @@ mod tests {
     #[test]
     fn test_id_in_list() {
         let (mapper, id1, id2, id3, _) = setup_mapper();
-        let query = format!("MATCH (a) WHERE id(a) IN [{}, {}, {}] RETURN a", id1, id2, id3);
+        let query = format!(
+            "MATCH (a) WHERE id(a) IN [{}, {}, {}] RETURN a",
+            id1, id2, id3
+        );
         let result = rewrite_id_predicates(&query, &mapper);
 
         assert!(result.was_rewritten);
@@ -352,7 +358,10 @@ mod tests {
     #[test]
     fn test_not_id_in_list() {
         let (mapper, id1, id2, _, _) = setup_mapper();
-        let query = format!("MATCH (a)--(o) WHERE NOT id(o) IN [{}, {}] RETURN o", id1, id2);
+        let query = format!(
+            "MATCH (a)--(o) WHERE NOT id(o) IN [{}, {}] RETURN o",
+            id1, id2
+        );
         let result = rewrite_id_predicates(&query, &mapper);
 
         assert!(result.was_rewritten);
