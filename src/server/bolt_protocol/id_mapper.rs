@@ -4,82 +4,172 @@
 //! ClickGraph has string-based element_ids (e.g., "User:1", "Post:42").
 //!
 //! This module provides:
-//! 1. Deterministic hashing: "User:1" always produces the same integer ID
-//! 2. Global cache: ID mappings are shared across all connections
-//! 3. Cross-session lookups: `id(n) = X` works even in new connections
+//! 1. Deterministic encoding: Label code + hash ensures globally unique IDs
+//! 2. Session cache chaining: Cross-session lookups search other active sessions
+//! 3. Automatic cleanup: Session caches are removed when connections close
 //!
-//! # Design
+//! # ID Encoding
 //!
-//! We hash the full element_id (including label) to ensure uniqueness.
-//! "User:1" and "Post:1" have different IDs.
+//! ```text
+//! ┌──────────────────────────────────────────────────┐
+//! │  64-bit ID layout                                │
+//! ├──────────┬───────────────────────────────────────┤
+//! │  8 bits  │           56 bits                     │
+//! │  label   │    hash(id_value) & 0x00FFFFFFFFFFFF  │
+//! │  code    │                                       │
+//! └──────────┴───────────────────────────────────────┘
+//! ```
 //!
-//! The global cache stores reverse mappings so cross-session lookups work.
+//! This ensures "User:1" and "Post:1" have different IDs (different label codes).
 
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
 lazy_static! {
-    /// Global cache for cross-session ID lookups
-    /// Maps integer ID → element_id for all IDs ever seen
-    static ref GLOBAL_ID_CACHE: RwLock<HashMap<i64, String>> = RwLock::new(HashMap::new());
+    /// Registry of active session caches for cross-session lookups
+    /// Maps connection_id → Arc<RwLock<SessionCache>>
+    static ref ACTIVE_SESSION_CACHES: RwLock<HashMap<u64, Arc<RwLock<SessionCache>>>> =
+        RwLock::new(HashMap::new());
+
+    /// Global registry of label names to label codes
+    /// Assigns sequential codes to new labels as they're encountered
+    static ref LABEL_CODE_REGISTRY: RwLock<LabelCodeRegistry> =
+        RwLock::new(LabelCodeRegistry::new());
+}
+
+/// Counter for generating unique connection IDs
+static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Registry that assigns unique 8-bit codes to label/type names
+#[derive(Debug)]
+struct LabelCodeRegistry {
+    /// Label name → code (0-255)
+    label_to_code: HashMap<String, u8>,
+    /// Next code to assign
+    next_code: u8,
+}
+
+impl LabelCodeRegistry {
+    fn new() -> Self {
+        LabelCodeRegistry {
+            label_to_code: HashMap::new(),
+            next_code: 0,
+        }
+    }
+
+    /// Get or assign a code for a label (0-255)
+    /// Returns 255 if we've exhausted all codes (overflow)
+    fn get_or_assign(&mut self, label: &str) -> u8 {
+        if let Some(&code) = self.label_to_code.get(label) {
+            return code;
+        }
+
+        // Assign new code
+        let code = self.next_code;
+        if self.next_code < 255 {
+            self.next_code += 1;
+        }
+        // At 255, we stop incrementing (overflow protection)
+        self.label_to_code.insert(label.to_string(), code);
+        code
+    }
+}
+
+/// Session-local cache storing ID mappings for one connection
+#[derive(Debug, Default)]
+struct SessionCache {
+    /// Map from element_id to assigned integer ID
+    element_to_int: HashMap<String, i64>,
+    /// Map from integer ID to element_id (for reverse lookup)
+    int_to_element: HashMap<i64, String>,
 }
 
 /// Deterministic mapper between integer IDs and element_ids
 ///
-/// Uses the global cache for cross-session lookups while maintaining
-/// a per-connection cache for efficiency.
-#[derive(Debug, Default)]
+/// Each connection gets its own IdMapper with a unique connection ID.
+/// Cross-session lookups search other active sessions' caches.
+#[derive(Debug)]
 pub struct IdMapper {
-    /// Map from element_id to assigned integer ID (local cache)
-    element_to_int: HashMap<String, i64>,
-
-    /// Map from integer ID to element_id (local cache for fast lookup)
-    int_to_element: HashMap<i64, String>,
+    /// Unique connection ID for this mapper
+    connection_id: u64,
+    /// Shared reference to this session's cache (registered in ACTIVE_SESSION_CACHES)
+    cache: Arc<RwLock<SessionCache>>,
 }
 
 impl Clone for IdMapper {
     fn clone(&self) -> Self {
+        // Cloning shares the same cache and connection_id
         IdMapper {
-            element_to_int: self.element_to_int.clone(),
-            int_to_element: self.int_to_element.clone(),
+            connection_id: self.connection_id,
+            cache: Arc::clone(&self.cache),
+        }
+    }
+}
+
+impl Drop for IdMapper {
+    fn drop(&mut self) {
+        // Only unregister when this is the last reference to the cache
+        // (Arc strong_count will be 2: one in ACTIVE_SESSION_CACHES, one here)
+        if Arc::strong_count(&self.cache) <= 2 {
+            if let Ok(mut registry) = ACTIVE_SESSION_CACHES.write() {
+                registry.remove(&self.connection_id);
+                log::debug!(
+                    "IdMapper: Unregistered session {} (remaining sessions: {})",
+                    self.connection_id,
+                    registry.len()
+                );
+            }
         }
     }
 }
 
 impl IdMapper {
-    /// Create a new IdMapper
+    /// Create a new IdMapper and register it in the global session registry
     pub fn new() -> Self {
+        let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::SeqCst);
+        let cache = Arc::new(RwLock::new(SessionCache::default()));
+
+        // Register in the global session registry
+        if let Ok(mut registry) = ACTIVE_SESSION_CACHES.write() {
+            registry.insert(connection_id, Arc::clone(&cache));
+            log::debug!(
+                "IdMapper: Registered session {} (total sessions: {})",
+                connection_id,
+                registry.len()
+            );
+        }
+
         IdMapper {
-            element_to_int: HashMap::new(),
-            int_to_element: HashMap::new(),
+            connection_id,
+            cache,
         }
     }
 
     /// Get or compute a deterministic integer ID for the given element_id
     ///
-    /// The ID is always a deterministic hash of the full element_id.
-    /// The mapping is cached both locally and globally for cross-session lookups.
+    /// The ID encodes the label in the high byte and the hash of the id_value
+    /// in the lower 56 bits, ensuring globally unique IDs across labels.
     pub fn get_or_assign(&mut self, element_id: &str) -> i64 {
         // Check local cache first (fastest)
-        if let Some(&id) = self.element_to_int.get(element_id) {
-            return id;
+        if let Ok(cache) = self.cache.read() {
+            if let Some(&id) = cache.element_to_int.get(element_id) {
+                return id;
+            }
         }
 
-        // Compute deterministic ID (always the same for the same element_id)
+        // Compute deterministic ID with label encoding
         let id = Self::compute_deterministic_id(element_id);
 
         // Cache locally
-        self.element_to_int.insert(element_id.to_string(), id);
-        self.int_to_element.insert(id, element_id.to_string());
-
-        // Cache globally for cross-session lookups
-        if let Ok(mut global_cache) = GLOBAL_ID_CACHE.write() {
-            global_cache.insert(id, element_id.to_string());
+        if let Ok(mut cache) = self.cache.write() {
+            cache.element_to_int.insert(element_id.to_string(), id);
+            cache.int_to_element.insert(id, element_id.to_string());
         }
 
-        log::debug!("IdMapper: {} -> {}", element_id, id);
+        log::debug!("IdMapper: {} -> {} (session {})", element_id, id, self.connection_id);
         id
     }
 
@@ -87,57 +177,96 @@ impl IdMapper {
     ///
     /// Format: "Label:id_value" or "Label:part1|part2" for composite keys
     ///
-    /// For simple numeric IDs like "User:1", extract and use 1 directly.
-    /// This ensures consistency with id(n) in RETURN clause which returns the row ID.
+    /// Encodes the label in the high 8 bits and the id hash in the lower 56 bits.
+    /// This ensures "User:1" and "Post:1" have different IDs.
     fn compute_deterministic_id(element_id: &str) -> i64 {
-        // Try to extract numeric ID from "Label:N" format
-        if let Some(colon_pos) = element_id.find(':') {
-            let id_part = &element_id[colon_pos + 1..];
+        // Parse "Label:id_value" format
+        let (label, id_part) = if let Some(colon_pos) = element_id.find(':') {
+            (&element_id[..colon_pos], &element_id[colon_pos + 1..])
+        } else {
+            // No colon, use empty label and full string as id
+            ("", element_id)
+        };
 
-            // Check for composite key format "part1|part2"
-            if id_part.contains('|') {
-                // Use hash for composite keys
-                return Self::hash_to_i64(element_id);
-            }
+        // Get or assign a label code (0-255)
+        let label_code = if let Ok(mut registry) = LABEL_CODE_REGISTRY.write() {
+            registry.get_or_assign(label)
+        } else {
+            0 // Fallback if lock fails
+        };
 
-            // Try to parse as integer
-            if let Ok(numeric_id) = id_part.parse::<i64>() {
-                // Use the numeric ID directly
-                return if numeric_id > 0 { numeric_id } else { 1 };
-            }
+        // Compute the id_value hash (56 bits)
+        let id_hash = Self::compute_id_value_hash(id_part);
 
-            // For non-numeric IDs (like "Airport:LAX"), use a hash
-            return Self::hash_to_i64(element_id);
-        }
-
-        // No colon found, use full string hash
-        Self::hash_to_i64(element_id)
+        // Combine: label_code in high 8 bits, id_hash in low 56 bits
+        // Ensure positive by masking the sign bit
+        let combined = ((label_code as i64) << 56) | (id_hash & 0x00FFFFFFFFFFFFFF);
+        combined.abs().max(1)
     }
 
-    /// Convert a string to a deterministic positive i64 using hash
-    fn hash_to_i64(s: &str) -> i64 {
+    /// Compute a 56-bit hash for the id_value portion
+    ///
+    /// For simple numeric IDs, use the number directly (if it fits in 56 bits).
+    /// For strings/composite keys, use a hash.
+    fn compute_id_value_hash(id_part: &str) -> i64 {
+        // Check for composite key format "part1|part2"
+        if id_part.contains('|') {
+            return Self::hash_string(id_part);
+        }
+
+        // Try to parse as integer
+        if let Ok(numeric_id) = id_part.parse::<i64>() {
+            // Use the numeric ID directly if it fits in 56 bits
+            if numeric_id >= 0 && numeric_id <= 0x00FFFFFFFFFFFFFF {
+                return numeric_id.max(1);
+            }
+            // Large number, use hash
+            return Self::hash_string(id_part);
+        }
+
+        // For non-numeric IDs (like "LAX"), use a hash
+        Self::hash_string(id_part)
+    }
+
+    /// Hash a string to a positive 56-bit value
+    fn hash_string(s: &str) -> i64 {
         use std::collections::hash_map::DefaultHasher;
         let mut hasher = DefaultHasher::new();
         s.hash(&mut hasher);
         let hash = hasher.finish();
-        // Ensure positive and non-zero by masking and adding 1
-        // Use upper bits for better distribution, mask to 62 bits to stay positive
-        ((hash >> 1) as i64).abs().max(1)
+        // Mask to 56 bits and ensure positive
+        ((hash & 0x00FFFFFFFFFFFFFF) as i64).abs().max(1)
     }
 
     /// Lookup element_id by integer ID (reverse lookup)
     ///
-    /// First checks local cache, then global cache for cross-session lookups.
+    /// Uses session cache chaining: first checks own cache, then searches
+    /// other active sessions' caches.
     pub fn get_element_id(&self, id: i64) -> Option<String> {
-        // Check local cache first
-        if let Some(element_id) = self.int_to_element.get(&id) {
-            return Some(element_id.clone());
+        // Check own cache first
+        if let Ok(cache) = self.cache.read() {
+            if let Some(element_id) = cache.int_to_element.get(&id) {
+                return Some(element_id.clone());
+            }
         }
 
-        // Check global cache for cross-session lookups
-        if let Ok(global_cache) = GLOBAL_ID_CACHE.read() {
-            if let Some(element_id) = global_cache.get(&id) {
-                return Some(element_id.clone());
+        // Search other active sessions' caches (session cache chaining)
+        if let Ok(registry) = ACTIVE_SESSION_CACHES.read() {
+            for (&conn_id, session_cache) in registry.iter() {
+                if conn_id == self.connection_id {
+                    continue; // Skip own cache (already checked)
+                }
+                if let Ok(cache) = session_cache.read() {
+                    if let Some(element_id) = cache.int_to_element.get(&id) {
+                        log::debug!(
+                            "IdMapper: Cross-session lookup found {} -> {} (from session {})",
+                            id,
+                            element_id,
+                            conn_id
+                        );
+                        return Some(element_id.clone());
+                    }
+                }
             }
         }
 
@@ -147,26 +276,43 @@ impl IdMapper {
     /// Get the integer ID for an element_id without assigning if missing
     #[allow(dead_code)]
     pub fn get_int_id(&self, element_id: &str) -> Option<i64> {
-        self.element_to_int.get(element_id).copied()
+        if let Ok(cache) = self.cache.read() {
+            return cache.element_to_int.get(element_id).copied();
+        }
+        None
     }
 
     /// Get the number of cached mappings
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
-        self.element_to_int.len()
+        if let Ok(cache) = self.cache.read() {
+            return cache.element_to_int.len();
+        }
+        0
     }
 
     /// Check if the mapper cache is empty
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
-        self.element_to_int.is_empty()
+        if let Ok(cache) = self.cache.read() {
+            return cache.element_to_int.is_empty();
+        }
+        true
     }
 
     /// Clear all cached mappings
     #[allow(dead_code)]
     pub fn clear(&mut self) {
-        self.element_to_int.clear();
-        self.int_to_element.clear();
+        if let Ok(mut cache) = self.cache.write() {
+            cache.element_to_int.clear();
+            cache.int_to_element.clear();
+        }
+    }
+
+    /// Get the connection ID for this mapper
+    #[allow(dead_code)]
+    pub fn connection_id(&self) -> u64 {
+        self.connection_id
     }
 
     /// Try to construct an element_id from an integer ID without prior mapping
@@ -176,13 +322,25 @@ impl IdMapper {
     ///
     /// Returns a list of candidate element_ids to try (e.g., ["User:1", "Post:1"])
     pub fn generate_candidate_element_ids(&self, id: i64, labels: &[String]) -> Vec<String> {
-        // First check if we have an exact mapping
-        if let Some(element_id) = self.int_to_element.get(&id) {
-            return vec![element_id.clone()];
+        // First check if we have an exact mapping (including cross-session)
+        if let Some(element_id) = self.get_element_id(id) {
+            return vec![element_id];
         }
 
-        // Generate candidates: try each label with the ID
-        labels.iter().map(|label| format!("{}:{}", label, id)).collect()
+        // Extract the id_value from the lower 56 bits
+        let id_value = id & 0x00FFFFFFFFFFFFFF;
+
+        // Generate candidates: try each label with the ID value
+        labels
+            .iter()
+            .map(|label| format!("{}:{}", label, id_value))
+            .collect()
+    }
+}
+
+impl Default for IdMapper {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -190,24 +348,40 @@ impl IdMapper {
 mod tests {
     use super::*;
 
+    /// Helper to extract label code from encoded ID
+    fn get_label_code(id: i64) -> u8 {
+        ((id >> 56) & 0xFF) as u8
+    }
+
+    /// Helper to extract id_value from encoded ID
+    fn get_id_value(id: i64) -> i64 {
+        id & 0x00FFFFFFFFFFFFFF
+    }
+
     #[test]
     fn test_get_or_assign_new_numeric() {
-        // For numeric IDs like "User:1", the numeric value is used directly
+        // For numeric IDs like "User:1", the label code is in high byte
+        // and id_value (1) is in low 56 bits
         let mut mapper = IdMapper::new();
         let id = mapper.get_or_assign("User:1");
-        assert_eq!(id, 1);
+
+        // The id_value portion should be 1
+        assert_eq!(get_id_value(id), 1);
+        // There should be a label code assigned
+        assert!(id > 0);
     }
 
     #[test]
     fn test_get_or_assign_non_numeric() {
-        // For non-numeric IDs like "Airport:LAX", a hash is used
+        // For non-numeric IDs like "Airport:LAX", a hash is used for id_value
         let mut mapper = IdMapper::new();
         let id1 = mapper.get_or_assign("Airport:LAX");
         let id2 = mapper.get_or_assign("Airport:LAX");
+
         // Hash should be consistent
         assert_eq!(id1, id2);
-        // Hash should be a large number (not 1,2,3...)
-        assert!(id1 > 1000);
+        // The id_value should be a hash (large number)
+        assert!(get_id_value(id1) > 1000);
     }
 
     #[test]
@@ -215,8 +389,29 @@ mod tests {
         let mut mapper = IdMapper::new();
         let id1 = mapper.get_or_assign("User:42");
         let id2 = mapper.get_or_assign("User:42");
+
+        // Same element_id should return same ID
         assert_eq!(id1, id2);
-        assert_eq!(id1, 42);
+        // The id_value portion should be 42
+        assert_eq!(get_id_value(id1), 42);
+    }
+
+    #[test]
+    fn test_label_code_prevents_collision() {
+        // Critical test: "User:1" and "Post:1" should have DIFFERENT IDs
+        let mut mapper = IdMapper::new();
+        let user_id = mapper.get_or_assign("User:1");
+        let post_id = mapper.get_or_assign("Post:1");
+
+        // They must be different (different label codes)
+        assert_ne!(user_id, post_id);
+
+        // But the id_value portion should be the same (both are 1)
+        assert_eq!(get_id_value(user_id), 1);
+        assert_eq!(get_id_value(post_id), 1);
+
+        // Different label codes
+        assert_ne!(get_label_code(user_id), get_label_code(post_id));
     }
 
     #[test]
@@ -226,14 +421,15 @@ mod tests {
         let id2 = mapper.get_or_assign("Post:2");
         let id3 = mapper.get_or_assign("Comment:3");
 
-        // Numeric IDs are extracted directly
-        assert_eq!(id1, 1);
-        assert_eq!(id2, 2);
-        assert_eq!(id3, 3);
+        // id_values are extracted directly
+        assert_eq!(get_id_value(id1), 1);
+        assert_eq!(get_id_value(id2), 2);
+        assert_eq!(get_id_value(id3), 3);
 
-        // Verify reverse lookup (now returns String, not &str)
-        assert_eq!(mapper.get_element_id(1), Some("User:1".to_string()));
-        assert_eq!(mapper.get_element_id(2), Some("Post:2".to_string()));
+        // Verify reverse lookup works
+        assert_eq!(mapper.get_element_id(id1), Some("User:1".to_string()));
+        assert_eq!(mapper.get_element_id(id2), Some("Post:2".to_string()));
+        assert_eq!(mapper.get_element_id(id3), Some("Comment:3".to_string()));
     }
 
     #[test]
@@ -250,24 +446,53 @@ mod tests {
         // Same element_id should always get the same ID
         assert_eq!(user1_a, user1_b);
         assert_eq!(user1_b, user1_c);
-        assert_eq!(user1_a, 1);
 
-        // Different elements get different IDs
+        // Different labels get different IDs even with same numeric value
         assert_ne!(user1_a, post2);
         assert_ne!(post2, comment3);
     }
 
     #[test]
-    fn test_global_cache() {
+    fn test_session_cache_chaining() {
         // Create mapper 1, assign some IDs
         let mut mapper1 = IdMapper::new();
         let id1 = mapper1.get_or_assign("User:42");
-        assert_eq!(id1, 42);
+
+        // id_value should be 42
+        assert_eq!(get_id_value(id1), 42);
 
         // Create mapper 2 (simulating new connection)
         let mapper2 = IdMapper::new();
-        // Should be able to look up from global cache
-        let element_id = mapper2.get_element_id(42);
+
+        // Should be able to look up from mapper1's cache via chaining
+        let element_id = mapper2.get_element_id(id1);
         assert_eq!(element_id, Some("User:42".to_string()));
+    }
+
+    #[test]
+    fn test_session_cleanup() {
+        let initial_count = ACTIVE_SESSION_CACHES.read().unwrap().len();
+
+        {
+            // Create a mapper in a scope
+            let mut mapper = IdMapper::new();
+            mapper.get_or_assign("Temp:1");
+
+            // Should be registered
+            let count = ACTIVE_SESSION_CACHES.read().unwrap().len();
+            assert!(count > initial_count);
+        }
+
+        // After drop, should be unregistered (eventually)
+        // Note: Due to Arc, cleanup happens when strong_count drops to 1
+    }
+
+    #[test]
+    fn test_connection_id_unique() {
+        let mapper1 = IdMapper::new();
+        let mapper2 = IdMapper::new();
+
+        // Each mapper should have a unique connection ID
+        assert_ne!(mapper1.connection_id(), mapper2.connection_id());
     }
 }

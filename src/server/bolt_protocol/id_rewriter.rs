@@ -291,21 +291,21 @@ fn rewrite_order_by_id(query: &str, was_rewritten: &mut bool) -> String {
 mod tests {
     use super::*;
 
-    fn setup_mapper() -> IdMapper {
+    fn setup_mapper() -> (IdMapper, i64, i64, i64, i64) {
         let mut mapper = IdMapper::new();
-        // Use numeric IDs so they're deterministic (not hashed)
-        mapper.get_or_assign("Airport:1"); // id=1
-        mapper.get_or_assign("Airport:2"); // id=2
-        mapper.get_or_assign("Airport:3"); // id=3
-        mapper.get_or_assign("User:4"); // id=4
-        mapper
+        // Get the actual encoded IDs (include label byte)
+        let id1 = mapper.get_or_assign("Airport:1");
+        let id2 = mapper.get_or_assign("Airport:2");
+        let id3 = mapper.get_or_assign("Airport:3");
+        let id4 = mapper.get_or_assign("User:4");
+        (mapper, id1, id2, id3, id4)
     }
 
     #[test]
     fn test_id_equals_found() {
-        let mapper = setup_mapper();
-        let query = "MATCH (a) WHERE id(a) = 1 RETURN a";
-        let result = rewrite_id_predicates(query, &mapper);
+        let (mapper, id1, _, _, _) = setup_mapper();
+        let query = format!("MATCH (a) WHERE id(a) = {} RETURN a", id1);
+        let result = rewrite_id_predicates(&query, &mapper);
 
         assert!(result.was_rewritten);
         assert!(result.query.contains("a:Airport"));
@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn test_id_equals_not_found() {
-        let mapper = setup_mapper();
+        let (mapper, _, _, _, _) = setup_mapper();
         let query = "MATCH (a) WHERE id(a) = 999 RETURN a";
         let result = rewrite_id_predicates(query, &mapper);
 
@@ -326,9 +326,9 @@ mod tests {
 
     #[test]
     fn test_id_in_list() {
-        let mapper = setup_mapper();
-        let query = "MATCH (a) WHERE id(a) IN [1, 2, 3] RETURN a";
-        let result = rewrite_id_predicates(query, &mapper);
+        let (mapper, id1, id2, id3, _) = setup_mapper();
+        let query = format!("MATCH (a) WHERE id(a) IN [{}, {}, {}] RETURN a", id1, id2, id3);
+        let result = rewrite_id_predicates(&query, &mapper);
 
         assert!(result.was_rewritten);
         assert!(result.query.contains("a:Airport"));
@@ -339,9 +339,9 @@ mod tests {
 
     #[test]
     fn test_not_id_in_list() {
-        let mapper = setup_mapper();
-        let query = "MATCH (a)--(o) WHERE NOT id(o) IN [1, 2] RETURN o";
-        let result = rewrite_id_predicates(query, &mapper);
+        let (mapper, id1, id2, _, _) = setup_mapper();
+        let query = format!("MATCH (a)--(o) WHERE NOT id(o) IN [{}, {}] RETURN o", id1, id2);
+        let result = rewrite_id_predicates(&query, &mapper);
 
         assert!(result.was_rewritten);
         assert!(result.query.contains("NOT ("));
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn test_order_by_id() {
-        let mapper = setup_mapper();
+        let (mapper, _, _, _, _) = setup_mapper();
         let query = "MATCH (a) RETURN a ORDER BY id(a) LIMIT 10";
         let result = rewrite_id_predicates(query, &mapper);
 
@@ -359,14 +359,17 @@ mod tests {
 
     #[test]
     fn test_complex_query() {
-        let mapper = setup_mapper();
-        let query = r#"MATCH (a) WHERE id(a) = 2
+        let (mapper, id1, id2, id3, _) = setup_mapper();
+        let query = format!(
+            r#"MATCH (a) WHERE id(a) = {}
 WITH a
-MATCH path = (a)--(o) WHERE NOT id(o) IN [1, 3]
+MATCH path = (a)--(o) WHERE NOT id(o) IN [{}, {}]
 RETURN path
 ORDER BY id(o)
-LIMIT 97"#;
-        let result = rewrite_id_predicates(query, &mapper);
+LIMIT 97"#,
+            id2, id1, id3
+        );
+        let result = rewrite_id_predicates(&query, &mapper);
 
         assert!(result.was_rewritten);
         assert!(result.query.contains("a:Airport"));
@@ -377,7 +380,7 @@ LIMIT 97"#;
 
     #[test]
     fn test_no_id_predicates() {
-        let mapper = setup_mapper();
+        let (mapper, _, _, _, _) = setup_mapper();
         let query = "MATCH (n:User) RETURN n.name";
         let result = rewrite_id_predicates(query, &mapper);
 
