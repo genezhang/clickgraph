@@ -51,20 +51,38 @@ pub fn extract_labels_from_id_where<'a>(
     where_clause: &ast::WhereClause<'a>,
 ) -> HashMap<String, HashSet<String>> {
     let mut label_constraints = HashMap::new();
-    extract_from_ast_expr(&where_clause.conditions, &mut label_constraints);
+    extract_from_ast_expr(&where_clause.conditions, &mut label_constraints, false);
     label_constraints
 }
 
 /// Recursively traverse AST WHERE expression to find `id(var) IN [...]` or `id(var) = X` patterns
+/// Recursively extract label constraints from AST expressions
+///
+/// # Parameters
+/// - `expr`: The expression to analyze
+/// - `constraints`: Map to accumulate variable -> label constraints
+/// - `negated`: Whether we're inside a NOT operator (excludes extraction)
 fn extract_from_ast_expr<'a>(
     expr: &ast::Expression<'a>,
     constraints: &mut HashMap<String, HashSet<String>>,
+    negated: bool,
 ) {
     match expr {
-        // Handle operator applications: IN, =, AND, OR
+        // Handle operator applications: IN, =, AND, OR, NOT
         ast::Expression::OperatorApplicationExp(op_app) => {
             match op_app.operator {
+                // NOT operator - flip negation flag and recurse
+                ast::Operator::Not => {
+                    for operand in &op_app.operands {
+                        extract_from_ast_expr(operand, constraints, !negated);
+                    }
+                }
                 ast::Operator::In => {
+                    // Skip extraction if we're inside a NOT (e.g., NOT id(a) IN [...])
+                    if negated {
+                        return;
+                    }
+
                     // Check if first operand is id(var)
                     if let Some(ast::Expression::FunctionCallExp(func)) = op_app.operands.get(0) {
                         if func.name == "id" && func.args.len() == 1 {
@@ -93,6 +111,11 @@ fn extract_from_ast_expr<'a>(
                     }
                 }
                 ast::Operator::Equal => {
+                    // Skip extraction if we're inside a NOT
+                    if negated {
+                        return;
+                    }
+
                     // Handle: id(var) = X
                     if let Some(ast::Expression::FunctionCallExp(func)) = op_app.operands.get(0) {
                         if func.name == "id" && func.args.len() == 1 {
@@ -115,15 +138,15 @@ fn extract_from_ast_expr<'a>(
                     }
                 }
                 ast::Operator::And | ast::Operator::Or => {
-                    // Recursively check all operands
+                    // Recursively check all operands, preserving negation state
                     for operand in &op_app.operands {
-                        extract_from_ast_expr(operand, constraints);
+                        extract_from_ast_expr(operand, constraints, negated);
                     }
                 }
                 _ => {
-                    // For other operators, recurse into operands
+                    // For other operators, recurse into operands with negation state
                     for operand in &op_app.operands {
-                        extract_from_ast_expr(operand, constraints);
+                        extract_from_ast_expr(operand, constraints, negated);
                     }
                 }
             }
