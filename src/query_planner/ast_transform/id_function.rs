@@ -490,12 +490,14 @@ impl<'a> IdFunctionTransformer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::query_planner::ast_transform::StringArena;
     use crate::server::bolt_protocol::id_mapper::IdMapper;
 
     #[test]
     fn test_extract_id_function() {
+        let arena = StringArena::new();
         let id_mapper = IdMapper::new();
-        let transformer = IdFunctionTransformer::new(&id_mapper, None);
+        let transformer = IdFunctionTransformer::new(&arena, &id_mapper, None);
 
         // id(a) function call
         let func = Expression::FunctionCallExp(FunctionCall {
@@ -508,8 +510,9 @@ mod tests {
 
     #[test]
     fn test_extract_id_equals() {
+        let arena = StringArena::new();
         let id_mapper = IdMapper::new();
-        let transformer = IdFunctionTransformer::new(&id_mapper, None);
+        let transformer = IdFunctionTransformer::new(&arena, &id_mapper, None);
 
         let operands = vec![
             Expression::FunctionCallExp(FunctionCall {
@@ -524,8 +527,9 @@ mod tests {
 
     #[test]
     fn test_rewrite_empty_list_negated() {
+        let arena = StringArena::new();
         let id_mapper = IdMapper::new();
-        let mut transformer = IdFunctionTransformer::new(&id_mapper, None);
+        let mut transformer = IdFunctionTransformer::new(&arena, &id_mapper, None);
 
         // NOT id(a) IN [] → true
         let result = transformer.rewrite_id_in("a", vec![], true);
@@ -537,8 +541,9 @@ mod tests {
 
     #[test]
     fn test_rewrite_empty_list_non_negated() {
+        let arena = StringArena::new();
         let id_mapper = IdMapper::new();
-        let mut transformer = IdFunctionTransformer::new(&id_mapper, None);
+        let mut transformer = IdFunctionTransformer::new(&arena, &id_mapper, None);
 
         // id(a) IN [] → false
         let result = transformer.rewrite_id_in("a", vec![], false);
