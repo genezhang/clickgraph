@@ -22,12 +22,9 @@
 //!
 //! # Memory Management
 //!
-//! This module uses `Box::leak` to create static string references that satisfy the
-//! `Expression<'a>` lifetime requirements. This intentionally leaks memory for:
-//! - ID property names (e.g., "user_id") - typically a few bytes per query
-//! - ID values (e.g., "42") - a few bytes per id() call
-//!
-//! **Trade-off rationale**: The AST uses `&'a str` references throughout, and changing
+//! This module uses a `StringArena` to allocate string references for AST nodes.
+//! The arena is owned by the caller and dropped after query planning, ensuring
+//! proper memory cleanup.
 //! to `Cow<'a, str>` or `Arc<str>` would require extensive refactoring of the parser
 //! and all downstream consumers. The leaked memory is small (< 1KB per typical query)
 //! and acceptable for the current use case. Future optimization could use an arena
@@ -44,6 +41,7 @@ use std::collections::{HashMap, HashSet};
 
 /// Transforms id() function calls in Cypher AST using session's IdMapper
 pub struct IdFunctionTransformer<'a> {
+    arena: &'a crate::query_planner::ast_transform::StringArena,
     id_mapper: &'a IdMapper,
     schema: Option<&'a crate::graph_catalog::GraphSchema>,
     /// Extracted label constraints for UNION pruning (variable → set of labels)
@@ -54,10 +52,12 @@ pub struct IdFunctionTransformer<'a> {
 
 impl<'a> IdFunctionTransformer<'a> {
     pub fn new(
+        arena: &'a crate::query_planner::ast_transform::StringArena,
         id_mapper: &'a IdMapper,
         schema: Option<&'a crate::graph_catalog::GraphSchema>,
     ) -> Self {
         Self {
+            arena,
             id_mapper,
             schema,
             label_constraints: HashMap::new(),
@@ -470,8 +470,8 @@ impl<'a> IdFunctionTransformer<'a> {
 
         // Build: var.id_property = 'value'
         // Label will be added to MATCH pattern during split_query_by_labels()
-        let id_value_static: &'a str = Box::leak(id_value.to_string().into_boxed_str());
-        let id_property_static: &'a str = Box::leak(id_property.to_string().into_boxed_str());
+        let id_value_static: &'a str = self.arena.alloc_str(&id_value);
+        let id_property_static: &'a str = self.arena.alloc_str(&id_property);
 
         // ID check: var.id_property = 'value'
         Expression::OperatorApplicationExp(OperatorApplication {

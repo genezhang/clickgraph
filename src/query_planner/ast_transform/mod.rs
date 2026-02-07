@@ -4,8 +4,10 @@
 //! This includes rewriting functions like `id()` that need session context.
 
 pub mod id_function;
+pub mod string_arena;
 
 pub use id_function::IdFunctionTransformer;
+pub use string_arena::StringArena;
 
 use crate::open_cypher_parser::ast::{
     CypherStatement, Expression, Literal, MatchClause, OpenCypherQueryAst, Operator,
@@ -15,13 +17,20 @@ use crate::server::bolt_protocol::id_mapper::IdMapper;
 use std::collections::{HashMap, HashSet};
 
 /// Transform all id() function calls in a CypherStatement
+///
+/// # Parameters
+/// - `arena`: String arena for allocating transformed string literals (prevents leaks)
+/// - `stmt`: The AST statement to transform
+/// - `id_mapper`: ID mapper for decoding encoded IDs
+/// - `schema`: Optional schema for property lookups
 pub fn transform_id_functions<'a>(
+    arena: &'a StringArena,
     stmt: CypherStatement<'a>,
     id_mapper: &'a IdMapper,
     schema: Option<&'a crate::graph_catalog::GraphSchema>,
 ) -> (CypherStatement<'a>, HashMap<String, HashSet<String>>) {
     log::info!("🔄 AST id() transformation starting");
-    let mut transformer = IdFunctionTransformer::new(id_mapper, schema);
+    let mut transformer = IdFunctionTransformer::new(arena, id_mapper, schema);
 
     let transformed_stmt = match stmt {
         CypherStatement::Query {
@@ -59,6 +68,7 @@ pub fn transform_id_functions<'a>(
     // Apply UNION splitting if we have label constraints AND a schema
     let result = if !label_constraints.is_empty() && schema.is_some() {
         split_query_by_labels(
+            arena,
             transformed_stmt,
             &label_constraints,
             &id_values_by_label,
@@ -239,6 +249,7 @@ fn transform_with_clause<'a>(
 /// SELECT ... FROM posts WHERE post_id IN ('2')
 /// ```
 fn split_query_by_labels<'a>(
+    arena: &'a StringArena,
     stmt: CypherStatement<'a>,
     label_constraints: &HashMap<String, HashSet<String>>,
     id_values_by_label: &HashMap<String, HashMap<String, Vec<String>>>,
@@ -289,6 +300,7 @@ fn split_query_by_labels<'a>(
 
                         // Clone and modify the query to add the label
                         modified_query = clone_query_with_label(
+                            arena,
                             &modified_query,
                             var_name,
                             label,
@@ -322,7 +334,8 @@ fn split_query_by_labels<'a>(
                     .and_then(|by_label| by_label.get(label))
                     .cloned();
 
-                let cloned = clone_query_with_label(&query, var_name, label, id_values, schema);
+                let cloned =
+                    clone_query_with_label(arena, &query, var_name, label, id_values, schema);
                 queries.push(cloned);
             }
 
@@ -358,13 +371,14 @@ fn split_query_by_labels<'a>(
 
 /// Clone a query and add label constraint + IN clause for a specific variable
 fn clone_query_with_label<'a>(
+    arena: &'a StringArena,
     query: &OpenCypherQueryAst<'a>,
     var_name: &str,
     label: &str,
     id_values: Option<Vec<String>>,
     schema: Option<&'a crate::graph_catalog::GraphSchema>,
 ) -> OpenCypherQueryAst<'a> {
-    let label_static: &'a str = Box::leak(label.to_string().into_boxed_str());
+    let label_static: &'a str = arena.alloc_str(label);
     log::debug!(
         "  Cloning query for label '{}' on variable '{}'",
         label,
@@ -405,6 +419,7 @@ fn clone_query_with_label<'a>(
                 .where_clause
                 .map(|wc| crate::open_cypher_parser::ast::WhereClause {
                     conditions: replace_id_expressions_with_in(
+                        arena,
                         wc.conditions,
                         var_name,
                         label,
@@ -420,6 +435,7 @@ fn clone_query_with_label<'a>(
 /// Replace id() transformed expressions with a single IN clause
 /// Removes OR chains of property equality checks and replaces with: var.id_property IN [values]
 fn replace_id_expressions_with_in<'a>(
+    arena: &'a StringArena,
     expr: Expression<'a>,
     var_name: &str,
     label: &str,
@@ -452,6 +468,7 @@ fn replace_id_expressions_with_in<'a>(
                             label
                         );
                         return build_property_in_clause(
+                            arena,
                             var_name,
                             label,
                             id_values.to_vec(),
@@ -467,7 +484,7 @@ fn replace_id_expressions_with_in<'a>(
                             .into_iter()
                             .map(|o| {
                                 replace_id_expressions_with_in(
-                                    o, var_name, label, id_values, schema,
+                                    arena, o, var_name, label, id_values, schema,
                                 )
                             })
                             .collect(),
@@ -480,7 +497,7 @@ fn replace_id_expressions_with_in<'a>(
                         .into_iter()
                         .filter_map(|operand| {
                             let processed = replace_id_expressions_with_in(
-                                operand, var_name, label, id_values, schema,
+                                arena, operand, var_name, label, id_values, schema,
                             );
                             // Skip TRUE literals (filtered out conditions)
                             match processed {
@@ -509,6 +526,7 @@ fn replace_id_expressions_with_in<'a>(
 
 /// Build a property IN clause: var.id_property IN [values]
 fn build_property_in_clause<'a>(
+    arena: &'a StringArena,
     var_name: &str,
     label: &str,
     id_values: Vec<String>,
@@ -535,9 +553,9 @@ fn build_property_in_clause<'a>(
         id_values.join(", ")
     );
 
-    // Create static references for var_name and id_property
-    let var_name_static: &'a str = Box::leak(var_name.to_string().into_boxed_str());
-    let id_property_static: &'a str = Box::leak(id_property.to_string().into_boxed_str());
+    // Create static references using arena
+    let var_name_static: &'a str = arena.alloc_str(var_name);
+    let id_property_static: &'a str = arena.alloc_str(id_property);
 
     // Create the property access: var.id_property
     let property_expr =
@@ -551,7 +569,7 @@ fn build_property_in_clause<'a>(
         id_values
             .into_iter()
             .map(|v| {
-                let v_static: &'a str = Box::leak(v.into_boxed_str());
+                let v_static: &'a str = arena.alloc_format(v);
                 Expression::Literal(Literal::String(v_static))
             })
             .collect(),

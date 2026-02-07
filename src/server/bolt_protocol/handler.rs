@@ -1038,9 +1038,11 @@ impl BoltHandler {
         // ============================================================
 
         // Parse and transform in a limited scope to extract metadata
+        let ast_arena = crate::query_planner::ast_transform::StringArena::new();
         let (is_procedure, is_union, effective_schema, exec_plan, query_type, label_constraints) = {
             let (transformed_stmt, label_constraints) =
                 crate::query_planner::ast_transform::transform_id_functions(
+                    &ast_arena,
                     parsed_stmt,
                     &id_mapper_snapshot,
                     None, // No schema available yet (loaded later)
@@ -1364,6 +1366,7 @@ impl BoltHandler {
 
         let (transformed_for_planning, label_constraints_from_second_pass) =
             crate::query_planner::ast_transform::transform_id_functions(
+                &ast_arena, // Reuse same arena
                 parsed_stmt_for_planning,
                 &id_mapper_snapshot,
                 Some(&graph_schema), // Pass schema for node_id property lookup
