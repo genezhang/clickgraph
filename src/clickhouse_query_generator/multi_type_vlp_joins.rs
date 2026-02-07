@@ -464,7 +464,8 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         {
             if !node_schema.property_mappings.is_empty() {
                 // Use formatRowNoNewline without aliases to avoid conflicts
-                let json_sql = generate_json_properties_from_schema_without_aliases(node_schema, node_alias);
+                let json_sql =
+                    generate_json_properties_from_schema_without_aliases(node_schema, node_alias);
                 items.push(format!("{} AS end_properties", json_sql));
             } else {
                 // No properties - empty JSON object
@@ -482,7 +483,10 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 .ok_or("Node not found")
             {
                 if !node_schema.property_mappings.is_empty() {
-                    let json_sql = generate_json_properties_from_schema_without_aliases(node_schema, start_alias_sql);
+                    let json_sql = generate_json_properties_from_schema_without_aliases(
+                        node_schema,
+                        start_alias_sql,
+                    );
                     items.push(format!("{} AS start_properties", json_sql));
                 } else {
                     items.push("'{}' AS start_properties".to_string());
@@ -504,15 +508,19 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         // 🔧 FIX: Add rel_properties for RETURN r support
         // Generate array of JSON objects containing relationship properties for each hop
         use crate::clickhouse_query_generator::json_builder::generate_json_properties_sql;
-        
+
         let rel_props: Vec<String> = hops
             .iter()
             .enumerate()
             .map(|(hop_idx, hop)| {
                 let hop_num = hop_idx + 1;
-                
+
                 // Get relationship schema to access property mappings
-                match self.schema.get_rel_schema_with_nodes(&hop.rel_type, Some(&hop.from_node_type), Some(&hop.to_node_type)) {
+                match self.schema.get_rel_schema_with_nodes(
+                    &hop.rel_type,
+                    Some(&hop.from_node_type),
+                    Some(&hop.to_node_type),
+                ) {
                     Ok(rel_schema) => {
                         // Check if this is FK-edge pattern (rel table == target node table)
                         let rel_table = if rel_schema.database.is_empty() {
@@ -520,28 +528,33 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                         } else {
                             format!("{}.{}", rel_schema.database, rel_schema.table_name)
                         };
-                        
+
                         let end_table = match self.get_node_table_with_db(&hop.to_node_type) {
                             Ok(t) => t,
                             Err(_) => return "'{}'".to_string(), // Empty JSON
                         };
-                        
+
                         let is_fk_edge = rel_table == end_table;
-                        
+
                         // Reconstruct the relationship alias used in FROM clause
                         let rel_alias = if is_fk_edge {
                             // FK-edge: alias is the end node alias
-                            format!("{}{}",
-                                if hop.to_node_type == "User" { "u" }
-                                else if hop.to_node_type == "Post" { "p" }
-                                else { "n" },
+                            format!(
+                                "{}{}",
+                                if hop.to_node_type == "User" {
+                                    "u"
+                                } else if hop.to_node_type == "Post" {
+                                    "p"
+                                } else {
+                                    "n"
+                                },
                                 hop_num + 1
                             )
                         } else {
                             // Standard: alias is r{hop_num}
                             format!("r{}", hop_num)
                         };
-                        
+
                         // Generate JSON object with relationship properties
                         if rel_schema.property_mappings.is_empty() {
                             "'{}'".to_string() // Empty JSON object

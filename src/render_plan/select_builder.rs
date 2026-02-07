@@ -833,12 +833,12 @@ impl LogicalPlan {
                     alias,
                     labels.len()
                 );
-                
+
                 // For RETURN r on multi-type relationships, select from CTE columns
                 // The CTE has columns: end_type, end_id, start_id, end_properties, hop_count, path_relationships, rel_properties
                 // We select these columns and alias them as r.*
                 let cte_alias = "t"; // Multi-type CTEs always use 't' as alias (VLP_CTE_FROM_ALIAS)
-                
+
                 // Add all CTE columns needed to reconstruct the relationship
                 select_items.push(SelectItem {
                     expression: RenderExpr::PropertyAccessExp(PropertyAccess {
@@ -847,7 +847,7 @@ impl LogicalPlan {
                     }),
                     col_alias: Some(ColumnAlias(format!("{}.type", alias))),
                 });
-                
+
                 select_items.push(SelectItem {
                     expression: RenderExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: RenderTableAlias(cte_alias.to_string()),
@@ -855,7 +855,7 @@ impl LogicalPlan {
                     }),
                     col_alias: Some(ColumnAlias(format!("{}.properties", alias))),
                 });
-                
+
                 select_items.push(SelectItem {
                     expression: RenderExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: RenderTableAlias(cte_alias.to_string()),
@@ -863,7 +863,7 @@ impl LogicalPlan {
                     }),
                     col_alias: Some(ColumnAlias(format!("{}.start_id", alias))),
                 });
-                
+
                 select_items.push(SelectItem {
                     expression: RenderExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: RenderTableAlias(cte_alias.to_string()),
@@ -871,7 +871,7 @@ impl LogicalPlan {
                     }),
                     col_alias: Some(ColumnAlias(format!("{}.end_id", alias))),
                 });
-                
+
                 log::info!(
                     "✅ Expanded multi-type relationship '{}' to {} CTE columns",
                     alias,
@@ -971,27 +971,32 @@ impl LogicalPlan {
 
         // 🔧 FIX: Check if this is a multi-type CTE (uses JSON columns)
         if cte_name.starts_with("vlp_multi_type_") {
-            log::info!("🎯 Multi-type CTE detected: '{}', using JSON columns", cte_name);
-            
+            log::info!(
+                "🎯 Multi-type CTE detected: '{}', using JSON columns",
+                cte_name
+            );
+
             // Multi-type CTEs use JSON columns instead of individual property columns:
             // - start_properties (JSON) for start node
             // - end_properties (JSON) for end node
             // We need to select the appropriate JSON column
-            
+
             let from_alias = self.compute_from_alias_from_cte_name(cte_name);
-            
+
             // Determine which JSON column to use based on alias position in CTE name
             // CTE name format: vlp_multi_type_{start}_{end}
-            let json_column = if cte_name.contains(&format!("_{}_", alias)) || cte_name.ends_with(&format!("_{}", alias)) {
+            let json_column = if cte_name.contains(&format!("_{}_", alias))
+                || cte_name.ends_with(&format!("_{}", alias))
+            {
                 // This is the end node
                 "end_properties"
             } else {
                 // This is the start node
                 "start_properties"
             };
-            
+
             log::info!("🔍 Node '{}' maps to JSON column '{}'", alias, json_column);
-            
+
             // Select the JSON column and also the ID column
             select_items.push(SelectItem {
                 expression: RenderExpr::PropertyAccessExp(PropertyAccess {
@@ -1000,7 +1005,7 @@ impl LogicalPlan {
                 }),
                 col_alias: Some(ColumnAlias(format!("{}.properties", alias))),
             });
-            
+
             // Also select the ID
             let id_column = if json_column == "end_properties" {
                 "end_id"
@@ -1014,7 +1019,7 @@ impl LogicalPlan {
                 }),
                 col_alias: Some(ColumnAlias(format!("{}.id", alias))),
             });
-            
+
             log::info!("✅ Expanded multi-type node '{}' to JSON column", alias);
             return;
         }
@@ -1210,7 +1215,7 @@ impl LogicalPlan {
                 if let Some((cte_name, _)) = ctx.get_cte_alias_source(path_alias) {
                     if cte_name.starts_with("vlp_multi_type_") {
                         log::info!("🎯 Multi-type VLP path detected: '{}'", cte_name);
-                        
+
                         // For multi-type paths, we construct the path from individual components
                         // tuple(start_properties, end_properties, rel_properties, hop_count)
                         select_items.push(SelectItem {
@@ -1219,7 +1224,9 @@ impl LogicalPlan {
                                 args: vec![
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: RenderTableAlias(cte_alias.to_string()),
-                                        column: PropertyValue::Column("start_properties".to_string()),
+                                        column: PropertyValue::Column(
+                                            "start_properties".to_string(),
+                                        ),
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: RenderTableAlias(cte_alias.to_string()),
@@ -1231,7 +1238,9 @@ impl LogicalPlan {
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: RenderTableAlias(cte_alias.to_string()),
-                                        column: PropertyValue::Column("path_relationships".to_string()),
+                                        column: PropertyValue::Column(
+                                            "path_relationships".to_string(),
+                                        ),
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: RenderTableAlias(cte_alias.to_string()),

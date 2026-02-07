@@ -157,7 +157,10 @@ impl<'a> IdFunctionTransformer<'a> {
     }
 
     /// Transform operator applications - this is where id() magic happens
-    fn transform_operator_application(&mut self, op_app: OperatorApplication<'a>) -> Expression<'a> {
+    fn transform_operator_application(
+        &mut self,
+        op_app: OperatorApplication<'a>,
+    ) -> Expression<'a> {
         match op_app.operator {
             // id(a) = 5 → (a:Label AND a.id = 'value')
             Operator::Equal => {
@@ -315,7 +318,11 @@ impl<'a> IdFunctionTransformer<'a> {
 
     /// Rewrite `id(var) IN [...]` or `NOT id(var) IN [...]`
     fn rewrite_id_in(&mut self, var: &'a str, ids: Vec<i64>, is_negated: bool) -> Expression<'a> {
-        log::info!("🔍 rewrite_id_in: Processing {} IDs for variable '{}'", ids.len(), var);
+        log::info!(
+            "🔍 rewrite_id_in: Processing {} IDs for variable '{}'",
+            ids.len(),
+            var
+        );
         let mut filters = Vec::new();
         let mut labels_for_var = HashSet::new();
         let mut ids_by_label: HashMap<String, Vec<String>> = HashMap::new();
@@ -326,7 +333,8 @@ impl<'a> IdFunctionTransformer<'a> {
                 if let Ok((label, id_parts)) = parse_node_element_id(&element_id) {
                     let id_str = id_parts.join("|");
                     labels_for_var.insert(label.to_string());
-                    ids_by_label.entry(label.to_string())
+                    ids_by_label
+                        .entry(label.to_string())
                         .or_insert_with(Vec::new)
                         .push(id_str.clone());
                     filters.push(self.build_label_and_id_check(var, &label, &id_str));
@@ -340,10 +348,16 @@ impl<'a> IdFunctionTransformer<'a> {
             if label_code > 0 {
                 if let Ok(registry) = LABEL_CODE_REGISTRY.read() {
                     if let Some(label) = registry.get_label(label_code) {
-                        log::info!("  🎯 Decoded from bit pattern: {} -> label='{}', raw_id={}", id_value, label, raw_id);
+                        log::info!(
+                            "  🎯 Decoded from bit pattern: {} -> label='{}', raw_id={}",
+                            id_value,
+                            label,
+                            raw_id
+                        );
                         labels_for_var.insert(label.clone());
                         let id_str = raw_id.to_string();
-                        ids_by_label.entry(label.clone())
+                        ids_by_label
+                            .entry(label.clone())
                             .or_insert_with(Vec::new)
                             .push(id_str.clone());
                         filters.push(self.build_label_and_id_check(var, &label, &id_str));
@@ -361,10 +375,21 @@ impl<'a> IdFunctionTransformer<'a> {
         }
 
         // Store extracted labels and ID values for UNION splitting
-        if !labels_for_var.is_empty() {
-            log::info!("🎯 UNION Pruning: Extracted labels for '{}': {:?}", var, labels_for_var);
-            self.label_constraints.insert(var.to_string(), labels_for_var);
-            self.id_values_by_label.insert(var.to_string(), ids_by_label);
+        // 🔧 CRITICAL: Only store for non-negated IN clauses!
+        // For "NOT id(o) IN [...]", the list represents exclusions, not the type of o.
+        // o can be ANY type except those specific IDs.
+        if !labels_for_var.is_empty() && !is_negated {
+            log::info!(
+                "🎯 UNION Pruning: Extracted labels for '{}': {:?}",
+                var,
+                labels_for_var
+            );
+            self.label_constraints
+                .insert(var.to_string(), labels_for_var);
+            self.id_values_by_label
+                .insert(var.to_string(), ids_by_label);
+        } else if !labels_for_var.is_empty() && is_negated {
+            log::info!("🔧 SKIPPING label extraction for '{}' (negated IN clause - exclusion list, not type constraint)", var);
         }
 
         if filters.is_empty() {

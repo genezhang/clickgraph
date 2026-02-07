@@ -30,7 +30,6 @@
 use crate::{open_cypher_parser::ast, utils::id_encoding::IdEncoding};
 use std::collections::{HashMap, HashSet};
 
-
 /// Extract node labels from WHERE clause containing `id(var) IN [...]` patterns
 ///
 /// # Arguments
@@ -71,11 +70,18 @@ fn extract_from_ast_expr<'a>(
                         if func.name == "id" && func.args.len() == 1 {
                             if let ast::Expression::Variable(var_name) = &func.args[0] {
                                 // Extract IDs from second operand (list)
-                                if let Some(ast::Expression::List(id_list)) = op_app.operands.get(1) {
+                                if let Some(ast::Expression::List(id_list)) = op_app.operands.get(1)
+                                {
                                     for item in id_list {
-                                        if let ast::Expression::Literal(ast::Literal::Integer(id_value)) = item {
-                                            if let Some((label, _)) = IdEncoding::decode_with_label(*id_value) {
-                                                constraints.entry(var_name.to_string())
+                                        if let ast::Expression::Literal(ast::Literal::Integer(
+                                            id_value,
+                                        )) = item
+                                        {
+                                            if let Some((label, _)) =
+                                                IdEncoding::decode_with_label(*id_value)
+                                            {
+                                                constraints
+                                                    .entry(var_name.to_string())
                                                     .or_insert_with(HashSet::new)
                                                     .insert(label);
                                             }
@@ -91,9 +97,15 @@ fn extract_from_ast_expr<'a>(
                     if let Some(ast::Expression::FunctionCallExp(func)) = op_app.operands.get(0) {
                         if func.name == "id" && func.args.len() == 1 {
                             if let ast::Expression::Variable(var_name) = &func.args[0] {
-                                if let Some(ast::Expression::Literal(ast::Literal::Integer(id_value))) = op_app.operands.get(1) {
-                                    if let Some((label, _)) = IdEncoding::decode_with_label(*id_value) {
-                                        constraints.entry(var_name.to_string())
+                                if let Some(ast::Expression::Literal(ast::Literal::Integer(
+                                    id_value,
+                                ))) = op_app.operands.get(1)
+                                {
+                                    if let Some((label, _)) =
+                                        IdEncoding::decode_with_label(*id_value)
+                                    {
+                                        constraints
+                                            .entry(var_name.to_string())
                                             .or_insert_with(HashSet::new)
                                             .insert(label);
                                     }

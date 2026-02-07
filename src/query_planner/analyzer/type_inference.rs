@@ -147,29 +147,43 @@ impl TypeInference {
                     graph_schema,
                 )?;
 
-                // **PART 2A: Multi-Type VLP End Node Inference**
-                // For variable-length paths with multiple relationship types:
+                // **PART 2A: Multi-Type End Node Inference**
+                // For patterns with multiple relationship types (VLP or non-VLP):
                 // If end node has no label, infer possible labels from relationship schemas
-                // Example: (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)
-                //   FOLLOWS: User → User
-                //   AUTHORED: User → Post
-                //   Therefore: x can be User OR Post → infer x.labels = [User, Post]
                 //
-                // NOTE: We include single-hop patterns (*1) because they can still have multiple
-                // relationship types, which means the end node can be of multiple types.
+                // Examples:
+                // 1. VLP: (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)
+                //    FOLLOWS: User → User
+                //    AUTHORED: User → Post
+                //    Therefore: x can be User OR Post → infer x.labels = [User, Post]
+                //
+                // 2. Non-VLP multi-type: (u:User)--(x)  [undirected = multiple types]
+                //    FOLLOWS: User → User
+                //    AUTHORED: User → Post
+                //    Therefore: x can be User OR Post → infer x.labels = [User, Post]
+                //
+                // 3. Non-VLP explicit multi-type: (u:User)-[:FOLLOWS|AUTHORED]->(x)
+                //
+                // EXTENDED: Now handles both VLP and non-VLP patterns with multiple types
                 let inferred_multi_labels = if right_label.is_none()
-                    && rel.variable_length.is_some()
                     && edge_types.as_ref().is_some_and(|types| types.len() > 1)
                 {
-                    log::debug!(
-                        "🎯 TypeInference: Multi-type VLP candidate detected for '{}': VLP={:?}, edge_types={:?}",
+                    log::info!(
+                        "🎯 TypeInference: Multi-type pattern detected for '{}': VLP={:?}, edge_types={:?}, direction={:?}",
                         rel.right_connection,
                         rel.variable_length,
-                        edge_types
+                        edge_types,
+                        rel.direction
                     );
 
                     // Collect to_node from each relationship type
+                    // For bi-directional patterns (--), also include from_node as possibilities
                     let mut to_node_labels = std::collections::HashSet::new();
+                    let is_bidirectional = matches!(
+                        rel.direction,
+                        crate::query_planner::logical_expr::Direction::Either
+                    );
+
                     if let Some(ref types) = edge_types {
                         for rel_type in types {
                             // Use get_all_rel_schemas_by_type to handle composite keys
@@ -180,7 +194,18 @@ impl TypeInference {
                                 rel_type
                             );
                             for rel_schema in rel_schemas {
+                                // Always include to_node (forward direction)
                                 to_node_labels.insert(rel_schema.to_node.clone());
+
+                                // For bi-directional patterns, also include from_node (reverse direction)
+                                if is_bidirectional {
+                                    to_node_labels.insert(rel_schema.from_node.clone());
+                                    log::debug!(
+                                        "🎯 TypeInference: Bi-directional pattern - added both from_node='{}' and to_node='{}'",
+                                        rel_schema.from_node,
+                                        rel_schema.to_node
+                                    );
+                                }
                             }
                         }
                     }

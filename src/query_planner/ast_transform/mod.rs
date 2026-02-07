@@ -8,8 +8,8 @@ pub mod id_function;
 pub use id_function::IdFunctionTransformer;
 
 use crate::open_cypher_parser::ast::{
-    CypherStatement, Expression, Literal, MatchClause, OpenCypherQueryAst, ReadingClause,
-    WithClause, Operator, OperatorApplication,
+    CypherStatement, Expression, Literal, MatchClause, OpenCypherQueryAst, Operator,
+    OperatorApplication, ReadingClause, WithClause,
 };
 use crate::server::bolt_protocol::id_mapper::IdMapper;
 use std::collections::{HashMap, HashSet};
@@ -33,7 +33,7 @@ pub fn transform_id_functions<'a>(
                 query.match_clauses.len()
             );
             let transformed_query = transform_query(query, &mut transformer);
-            
+
             CypherStatement::Query {
                 query: transformed_query,
                 union_clauses: union_clauses
@@ -51,18 +51,23 @@ pub fn transform_id_functions<'a>(
             CypherStatement::ProcedureCall(pc)
         }
     };
-    
+
     // Get collected label constraints and id values
     let label_constraints = transformer.get_label_constraints();
     let id_values_by_label = transformer.get_id_values_by_label();
-    
+
     // Apply UNION splitting if we have label constraints AND a schema
     let result = if !label_constraints.is_empty() && schema.is_some() {
-        split_query_by_labels(transformed_stmt, &label_constraints, &id_values_by_label, schema)
+        split_query_by_labels(
+            transformed_stmt,
+            &label_constraints,
+            &id_values_by_label,
+            schema,
+        )
     } else {
         transformed_stmt
     };
-    
+
     log::info!("✅ AST id() transformation complete");
     (result, label_constraints)
 }
@@ -240,71 +245,94 @@ fn split_query_by_labels<'a>(
     schema: Option<&'a crate::graph_catalog::GraphSchema>,
 ) -> CypherStatement<'a> {
     log::info!("🔀 Splitting query by labels: {:?}", label_constraints);
-    
+
     match stmt {
-        CypherStatement::Query { query, union_clauses } => {
+        CypherStatement::Query {
+            query,
+            union_clauses,
+        } => {
             // For now, only split if there are no existing UNION clauses
             if !union_clauses.is_empty() {
                 log::debug!("  Skipping split - query already has UNION clauses");
-                return CypherStatement::Query { query, union_clauses };
+                return CypherStatement::Query {
+                    query,
+                    union_clauses,
+                };
             }
-            
+
             // Find variables with multiple labels
             let multi_label_vars: Vec<_> = label_constraints
                 .iter()
                 .filter(|(_, labels)| labels.len() > 1)
                 .collect();
-            
+
             if multi_label_vars.is_empty() {
                 log::debug!("  No multi-label variables - checking for single-label injection");
-                
+
                 // Even without splits, inject single labels into the query
                 // This ensures type inference works correctly
                 let mut modified_query = query;
                 for (var_name, labels) in label_constraints {
                     if labels.len() == 1 {
                         let label = labels.iter().next().unwrap();
-                        log::info!("  Injecting single label '{}' into variable '{}'", label, var_name);
-                        
+                        log::info!(
+                            "  Injecting single label '{}' into variable '{}'",
+                            label,
+                            var_name
+                        );
+
                         // Get ID values for IN clause generation
                         let id_values = id_values_by_label
                             .get(var_name.as_str())
                             .and_then(|by_label| by_label.get(label))
                             .cloned();
-                        
+
                         // Clone and modify the query to add the label
-                        modified_query = clone_query_with_label(&modified_query, var_name, label, id_values, schema);
+                        modified_query = clone_query_with_label(
+                            &modified_query,
+                            var_name,
+                            label,
+                            id_values,
+                            schema,
+                        );
                     }
                 }
-                
-                return CypherStatement::Query { 
-                    query: modified_query, 
-                    union_clauses 
+
+                return CypherStatement::Query {
+                    query: modified_query,
+                    union_clauses,
                 };
             }
-            
+
             // For simplicity, split on the first multi-label variable
             let (var_name, labels) = multi_label_vars[0];
-            log::info!("  Splitting on variable '{}' with labels: {:?}", var_name, labels);
-            
+            log::info!(
+                "  Splitting on variable '{}' with labels: {:?}",
+                var_name,
+                labels
+            );
+
             // Get ID values for this variable
             let var_id_values = id_values_by_label.get(var_name.as_str());
-            
+
             // Create a query for each label
             let mut queries = Vec::new();
             for label in labels {
                 let id_values = var_id_values
                     .and_then(|by_label| by_label.get(label))
                     .cloned();
-                
+
                 let cloned = clone_query_with_label(&query, var_name, label, id_values, schema);
                 queries.push(cloned);
             }
-            
+
             if queries.is_empty() {
-                return CypherStatement::Query { query, union_clauses };
+                return CypherStatement::Query {
+                    query,
+                    union_clauses,
+                };
             }
-            
+
             // First query is the main query, rest become UNION ALL clauses
             let main_query = queries.remove(0);
             let new_union_clauses: Vec<crate::open_cypher_parser::ast::UnionClause<'a>> = queries
@@ -314,8 +342,11 @@ fn split_query_by_labels<'a>(
                     query: q,
                 })
                 .collect();
-            
-            log::info!("✅ Split complete - {} UNION branches", new_union_clauses.len() + 1);
+
+            log::info!(
+                "✅ Split complete - {} UNION branches",
+                new_union_clauses.len() + 1
+            );
             CypherStatement::Query {
                 query: main_query,
                 union_clauses: new_union_clauses,
@@ -334,48 +365,55 @@ fn clone_query_with_label<'a>(
     schema: Option<&'a crate::graph_catalog::GraphSchema>,
 ) -> OpenCypherQueryAst<'a> {
     let label_static: &'a str = Box::leak(label.to_string().into_boxed_str());
-    log::debug!("  Cloning query for label '{}' on variable '{}'", label, var_name);
-    
+    log::debug!(
+        "  Cloning query for label '{}' on variable '{}'",
+        label,
+        var_name
+    );
+
     let mut cloned = query.clone();
-    
+
     // Add label to MATCH clauses
     cloned.match_clauses = cloned
         .match_clauses
         .into_iter()
         .map(|mc| add_label_to_match_clause(mc, var_name, label_static))
         .collect();
-    
+
     // Add label to reading_clauses
     cloned.reading_clauses = cloned
         .reading_clauses
         .into_iter()
         .map(|rc| match rc {
             crate::open_cypher_parser::ast::ReadingClause::Match(mc) => {
-                crate::open_cypher_parser::ast::ReadingClause::Match(
-                    add_label_to_match_clause(mc, var_name, label_static)
-                )
+                crate::open_cypher_parser::ast::ReadingClause::Match(add_label_to_match_clause(
+                    mc,
+                    var_name,
+                    label_static,
+                ))
             }
             crate::open_cypher_parser::ast::ReadingClause::OptionalMatch(omc) => {
                 crate::open_cypher_parser::ast::ReadingClause::OptionalMatch(omc)
             }
         })
         .collect();
-    
+
     // Replace id() expressions in WHERE clause with IN clause
     if let Some(id_values) = id_values {
-        cloned.where_clause = cloned.where_clause.map(|wc| {
-            crate::open_cypher_parser::ast::WhereClause {
-                conditions: replace_id_expressions_with_in(
-                    wc.conditions,
-                    var_name,
-                    label,
-                    &id_values,
-                    schema
-                ),
-            }
-        });
+        cloned.where_clause =
+            cloned
+                .where_clause
+                .map(|wc| crate::open_cypher_parser::ast::WhereClause {
+                    conditions: replace_id_expressions_with_in(
+                        wc.conditions,
+                        var_name,
+                        label,
+                        &id_values,
+                        schema,
+                    ),
+                });
     }
-    
+
     cloned
 }
 
@@ -388,8 +426,8 @@ fn replace_id_expressions_with_in<'a>(
     id_values: &[String],
     schema: Option<&'a crate::graph_catalog::GraphSchema>,
 ) -> Expression<'a> {
-    use crate::open_cypher_parser::ast::{Literal, Operator, OperatorApplication, PropertyAccess};
-    
+    use crate::open_cypher_parser::ast::{Literal, Operator, OperatorApplication};
+
     match expr {
         Expression::OperatorApplicationExp(op_app) => {
             match op_app.operator {
@@ -398,33 +436,52 @@ fn replace_id_expressions_with_in<'a>(
                     // Check if this looks like an id() transformed OR chain
                     // (multiple property equality checks)
                     let is_id_chain = op_app.operands.iter().all(|operand| {
-                        matches!(operand, 
+                        matches!(operand,
                             Expression::OperatorApplicationExp(OperatorApplication {
                                 operator: Operator::Equal,
                                 operands,
                             }) if operands.iter().any(|o| matches!(o, Expression::PropertyAccessExp(_)))
                         )
                     });
-                    
+
                     if is_id_chain {
                         // Replace with IN clause
-                        log::debug!("  Replacing OR chain with IN clause for {}.{}", var_name, label);
-                        return build_property_in_clause(var_name, label, id_values.to_vec(), schema);
+                        log::debug!(
+                            "  Replacing OR chain with IN clause for {}.{}",
+                            var_name,
+                            label
+                        );
+                        return build_property_in_clause(
+                            var_name,
+                            label,
+                            id_values.to_vec(),
+                            schema,
+                        );
                     }
-                    
+
                     // Not an id() chain, recursively process
                     Expression::OperatorApplicationExp(OperatorApplication {
                         operator: Operator::Or,
-                        operands: op_app.operands.into_iter()
-                            .map(|o| replace_id_expressions_with_in(o, var_name, label, id_values, schema))
+                        operands: op_app
+                            .operands
+                            .into_iter()
+                            .map(|o| {
+                                replace_id_expressions_with_in(
+                                    o, var_name, label, id_values, schema,
+                                )
+                            })
                             .collect(),
                     })
                 }
                 // AND might contain id() expressions, recursively process
                 Operator::And => {
-                    let filtered: Vec<_> = op_app.operands.into_iter()
+                    let filtered: Vec<_> = op_app
+                        .operands
+                        .into_iter()
                         .filter_map(|operand| {
-                            let processed = replace_id_expressions_with_in(operand, var_name, label, id_values, schema);
+                            let processed = replace_id_expressions_with_in(
+                                operand, var_name, label, id_values, schema,
+                            );
                             // Skip TRUE literals (filtered out conditions)
                             match processed {
                                 Expression::Literal(Literal::Boolean(true)) => None,
@@ -432,7 +489,7 @@ fn replace_id_expressions_with_in<'a>(
                             }
                         })
                         .collect();
-                    
+
                     match filtered.len() {
                         0 => Expression::Literal(Literal::Boolean(true)),
                         1 => filtered.into_iter().next().unwrap(),
@@ -470,21 +527,25 @@ fn build_property_in_clause<'a>(
             }
         })
         .unwrap_or("id");
-    
-    log::info!("  Building IN clause: {}.{} IN [{}]", var_name, id_property, id_values.join(", "));
-    
+
+    log::info!(
+        "  Building IN clause: {}.{} IN [{}]",
+        var_name,
+        id_property,
+        id_values.join(", ")
+    );
+
     // Create static references for var_name and id_property
     let var_name_static: &'a str = Box::leak(var_name.to_string().into_boxed_str());
     let id_property_static: &'a str = Box::leak(id_property.to_string().into_boxed_str());
-    
+
     // Create the property access: var.id_property
-    let property_expr = Expression::PropertyAccessExp(
-        crate::open_cypher_parser::ast::PropertyAccess {
+    let property_expr =
+        Expression::PropertyAccessExp(crate::open_cypher_parser::ast::PropertyAccess {
             base: var_name_static,
             key: id_property_static,
-        }
-    );
-    
+        });
+
     // Create the list of values
     let value_list = Expression::List(
         id_values
@@ -493,9 +554,9 @@ fn build_property_in_clause<'a>(
                 let v_static: &'a str = Box::leak(v.into_boxed_str());
                 Expression::Literal(Literal::String(v_static))
             })
-            .collect()
+            .collect(),
     );
-    
+
     // Create the IN expression: var.id_property IN [values]
     Expression::OperatorApplicationExp(OperatorApplication {
         operator: Operator::In,
@@ -510,7 +571,7 @@ fn add_label_to_match_clause<'a>(
     label: &'a str,
 ) -> crate::open_cypher_parser::ast::MatchClause<'a> {
     use crate::open_cypher_parser::ast::PathPattern;
-    
+
     mc.path_patterns = mc
         .path_patterns
         .into_iter()
@@ -535,7 +596,7 @@ fn add_label_to_match_clause<'a>(
                                     start.labels = Some(vec![label]);
                                 }
                             }
-                            
+
                             // Update end_node if it matches
                             {
                                 let mut end = cp.end_node.borrow_mut();
@@ -543,21 +604,21 @@ fn add_label_to_match_clause<'a>(
                                     end.labels = Some(vec![label]);
                                 }
                             }
-                            
+
                             cp
                         })
                         .collect();
-                    
+
                     PathPattern::ConnectedPattern(updated_patterns)
                 }
                 // Pass through shortest path patterns unchanged
                 PathPattern::ShortestPath(inner) => PathPattern::ShortestPath(inner),
                 PathPattern::AllShortestPaths(inner) => PathPattern::AllShortestPaths(inner),
             };
-            
+
             (path_var, updated_pattern)
         })
         .collect();
-    
+
     mc
 }

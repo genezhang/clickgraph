@@ -16,7 +16,7 @@ use super::group_by_builder::GroupByBuilder;
 use super::join_builder::JoinBuilder;
 use super::properties_builder::PropertiesBuilder;
 use super::render_expr::{
-    AggregateFnCall, Column, ColumnAlias, Operator, OperatorApplication, PropertyAccess,
+    AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess,
     RenderExpr, TableAlias,
 };
 use super::select_builder::SelectBuilder;
@@ -1083,6 +1083,37 @@ impl RenderPlanBuilder for LogicalPlan {
                 Ok(render_plan)
             }
             LogicalPlan::Filter(f) => {
+                // 🚀 OPTIMIZER: Detect Filter(Empty) early and short-circuit
+                // This handles cases like `id(b) IN []` which produces Empty plan
+                // Instead of generating complex SQL that returns 0 rows, return immediately
+                // Why Neo4j Browser sends this: It's looking for edges between existing nodes
+                // and new nodes. When there are no new nodes, newNodeIds=[], so IN [] is correct.
+                if matches!(f.input.as_ref(), LogicalPlan::Empty) {
+                    log::info!("🚀 OPTIMIZER: Filter(Empty) detected - short-circuiting to empty result (Neo4j Browser: no new nodes to connect)");
+                    return Ok(RenderPlan {
+                        ctes: CteItems(vec![]),
+                        select: SelectItems {
+                            items: vec![SelectItem {
+                                expression: RenderExpr::Literal(Literal::Integer(1)),
+                                col_alias: Some(ColumnAlias("_empty".to_string())),
+                            }],
+                            distinct: false,
+                        },
+                        from: FromTableItem(None),
+                        joins: JoinItems(vec![]),
+                        array_join: ArrayJoinItem(vec![]),
+                        filters: FilterItems(Some(RenderExpr::Literal(Literal::Boolean(false)))),
+                        group_by: GroupByExpressions(vec![]),
+                        having_clause: None,
+                        order_by: OrderByItems(vec![]),
+                        skip: SkipItem(None),
+                        limit: LimitItem(None),
+                        union: UnionItems(None),
+                        fixed_path_info: None,
+                        is_multi_label_scan: false,
+                    });
+                }
+
                 // For Filter, convert the input plan and combine filters
                 let mut render_plan = f.input.to_render_plan(schema)?;
 

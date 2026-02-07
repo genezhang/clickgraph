@@ -786,33 +786,44 @@ fn transform_to_relationship(
     // 🔧 FIX: Check for multi-type CTE column pattern
     // Multi-type CTEs return: r.type, r.properties, r.start_id, r.end_id
     // where r.type and r.properties are ARRAYS that need unwrapping
-    let has_cte_columns = properties.contains_key("type") 
+    let has_cte_columns = properties.contains_key("type")
         && properties.contains_key("properties")
         && properties.contains_key("start_id")
         && properties.contains_key("end_id");
 
     let rel_type = if has_cte_columns {
         // Multi-type CTE case: extract from arrays
-        log::info!("🎯 Detected multi-type CTE columns for relationship '{}'", var_name);
-        
+        log::info!(
+            "🎯 Detected multi-type CTE columns for relationship '{}'",
+            var_name
+        );
+
         // Extract relationship type from array: ['FOLLOWS'] → "FOLLOWS"
-        let type_value = properties.get("type")
+        let type_value = properties
+            .get("type")
             .ok_or_else(|| format!("Missing type column for CTE relationship '{}'", var_name))?;
-        
-        let rel_type_str = extract_first_from_array(type_value)
-            .ok_or_else(|| format!("Could not extract relationship type from array: {:?}", type_value))?;
-        
+
+        let rel_type_str = extract_first_from_array(type_value).ok_or_else(|| {
+            format!(
+                "Could not extract relationship type from array: {:?}",
+                type_value
+            )
+        })?;
+
         // Parse relationship properties from JSON array: ['{"follow_date":"..."}'] → {follow_date: ...}
         // Save start_id and end_id before parsing
         let start_id = properties.get("start_id").cloned();
         let end_id = properties.get("end_id").cloned();
-        
+
         if let Some(props_value) = properties.get("properties") {
             if let Some(json_str) = extract_first_from_array(props_value) {
                 // Parse JSON string to get actual properties
                 match serde_json::from_str::<HashMap<String, Value>>(&json_str) {
                     Ok(parsed_props) => {
-                        log::info!("✅ Parsed {} relationship properties from CTE JSON", parsed_props.len());
+                        log::info!(
+                            "✅ Parsed {} relationship properties from CTE JSON",
+                            parsed_props.len()
+                        );
                         // Replace properties with parsed ones
                         properties = parsed_props;
                     }
@@ -824,7 +835,7 @@ fn transform_to_relationship(
                 }
             }
         }
-        
+
         // Add back start_id and end_id (they were not in the JSON properties)
         if let Some(sid) = start_id {
             properties.insert("start_id".to_string(), sid);
@@ -868,7 +879,7 @@ fn transform_to_relationship(
             properties
                 .get(*col_name)
                 .or_else(|| properties.get("start_id")) // For CTE: use generic start_id
-                .or_else(|| properties.get("from_id"))  // Fallback to generic name for single column
+                .or_else(|| properties.get("from_id")) // Fallback to generic name for single column
                 .and_then(value_to_string)
                 .ok_or_else(|| {
                     format!(
@@ -886,8 +897,8 @@ fn transform_to_relationship(
         .map(|col_name| {
             properties
                 .get(*col_name)
-                .or_else(|| properties.get("end_id"))   // For CTE: use generic end_id
-                .or_else(|| properties.get("to_id"))    // Fallback to generic name for single column
+                .or_else(|| properties.get("end_id")) // For CTE: use generic end_id
+                .or_else(|| properties.get("to_id")) // Fallback to generic name for single column
                 .and_then(value_to_string)
                 .ok_or_else(|| {
                     format!(
@@ -1356,17 +1367,17 @@ fn value_to_i64(val: &Value) -> Option<i64> {
 }
 
 /// Extract first element from a ClickHouse array value
-/// 
+///
 /// Multi-type CTE queries return arrays with single elements:
 /// - ['FOLLOWS'] → "FOLLOWS"
 /// - ['{"follow_date":"2024-02-11"}'] → "{\"follow_date\":\"2024-02-11\"}"
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `val` - JSON Value that should be an array
-/// 
+///
 /// # Returns
-/// 
+///
 /// First element as String, or None if not an array or empty
 fn extract_first_from_array(val: &Value) -> Option<String> {
     match val {

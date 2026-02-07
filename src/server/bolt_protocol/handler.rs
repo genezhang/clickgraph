@@ -72,24 +72,22 @@ fn bolt_value_to_string(value: &BoltValue) -> String {
 /// Substitute Cypher parameters into query string, keeping encoded IDs intact
 /// This replaces $paramName with actual values so parser sees literals
 /// Used for id() parameters to preserve encoded IDs for label extraction
-fn substitute_cypher_parameters(
-    query: &str,
-    parameters: &HashMap<String, Value>,
-) -> String {
+fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>) -> String {
     let mut result = query.to_string();
-    
+
     // Replace each parameter in the query
     for (param_name, param_value) in parameters {
         let pattern = format!("${}", param_name);
         let replacement = match param_value {
             Value::Array(arr) => {
-                let values: Vec<String> = arr.iter().map(|v| {
-                    match v {
+                let values: Vec<String> = arr
+                    .iter()
+                    .map(|v| match v {
                         Value::Number(n) => n.to_string(),
                         Value::String(s) => format!("'{}'", s),
                         _ => format!("{:?}", v),
-                    }
-                }).collect();
+                    })
+                    .collect();
                 format!("[{}]", values.join(", "))
             }
             Value::Number(n) => n.to_string(),
@@ -98,7 +96,7 @@ fn substitute_cypher_parameters(
         };
         result = result.replace(&pattern, &replacement);
     }
-    
+
     log::info!("🔄 Substituted parameters: {} -> {}", query, result);
     result
 }
@@ -1041,11 +1039,12 @@ impl BoltHandler {
 
         // Parse and transform in a limited scope to extract metadata
         let (is_procedure, is_union, effective_schema, exec_plan, query_type, label_constraints) = {
-            let (transformed_stmt, label_constraints) = crate::query_planner::ast_transform::transform_id_functions(
-                parsed_stmt,
-                &id_mapper_snapshot,
-                None, // No schema available yet (loaded later)
-            );
+            let (transformed_stmt, label_constraints) =
+                crate::query_planner::ast_transform::transform_id_functions(
+                    parsed_stmt,
+                    &id_mapper_snapshot,
+                    None, // No schema available yet (loaded later)
+                );
 
             let is_procedure = crate::procedures::is_procedure_only_statement(&transformed_stmt);
             let is_union = crate::procedures::is_procedure_union_query(&transformed_stmt);
@@ -1363,14 +1362,18 @@ impl BoltHandler {
             context.id_mapper.clone()
         };
 
-        let (transformed_for_planning, label_constraints_from_second_pass) = crate::query_planner::ast_transform::transform_id_functions(
-            parsed_stmt_for_planning,
-            &id_mapper_snapshot,
-            Some(&graph_schema), // Pass schema for node_id property lookup
-        );
+        let (transformed_for_planning, label_constraints_from_second_pass) =
+            crate::query_planner::ast_transform::transform_id_functions(
+                parsed_stmt_for_planning,
+                &id_mapper_snapshot,
+                Some(&graph_schema), // Pass schema for node_id property lookup
+            );
 
         // Use label_constraints from the second pass (not first) since it has schema context
-        log::info!("🎯 Passing {} label constraints to query planner (from second pass)", label_constraints_from_second_pass.len());
+        log::info!(
+            "🎯 Passing {} label constraints to query planner (from second pass)",
+            label_constraints_from_second_pass.len()
+        );
 
         // Generate logical plan using transformed statement
         let (logical_plan, mut plan_ctx) = match query_planner::evaluate_read_statement(
@@ -1388,12 +1391,12 @@ impl BoltHandler {
                 )));
             }
         };
-        
+
         // Inject label constraints into plan_ctx for UNION pruning
         if !label_constraints_from_second_pass.is_empty() {
             plan_ctx.set_where_label_constraints(label_constraints_from_second_pass);
         }
-        
+
         // transformed_for_planning is now dropped
 
         // Extract return metadata for result transformation

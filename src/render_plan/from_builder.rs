@@ -522,14 +522,19 @@ impl LogicalPlan {
 
         // STEP 1: Find FROM marker (Join with empty joining_on)
         // This is the authoritative source - it was set by graph_join_inference
-        // 
+        //
         // 🔧 CRITICAL: Check for multi-type relationships BEFORE using FROM marker!
         // Multi-type patterns create a FROM marker join but should use the CTE instead.
         log::info!("🔍 Checking for multi-type relationship before processing FROM marker...");
         if let Some(graph_rel) = find_multi_type_graph_rel(&graph_joins.input) {
             let start_alias = &graph_rel.left_connection;
             let end_alias = &graph_rel.right_connection;
-            let cte_name = format!("vlp_multi_type_{}_{}", start_alias, end_alias);
+            // 🔧 FIX: Normalize alias order for undirected patterns (alphabetical)
+            let cte_name = if start_alias <= end_alias {
+                format!("vlp_multi_type_{}_{}", start_alias, end_alias)
+            } else {
+                format!("vlp_multi_type_{}_{}", end_alias, start_alias)
+            };
 
             log::info!(
                 "🎯 MULTI-TYPE: Using CTE '{}' as FROM (relationship types: {:?})",
@@ -545,7 +550,7 @@ impl LogicalPlan {
             }));
         }
         log::info!("🔍 No multi-type found, proceeding with FROM marker...");
-        
+
         for join in &graph_joins.joins {
             if join.joining_on.is_empty() {
                 // 🔧 PARAMETERIZED VIEW FIX: Use parameterized table reference if available
@@ -894,7 +899,12 @@ impl LogicalPlan {
         if let Some(graph_rel) = find_multi_type_graph_rel(&graph_joins.input) {
             let start_alias = &graph_rel.left_connection;
             let end_alias = &graph_rel.right_connection;
-            let cte_name = format!("vlp_multi_type_{}_{}", start_alias, end_alias);
+            // 🔧 FIX: Normalize alias order for undirected patterns (alphabetical)
+            let cte_name = if start_alias <= end_alias {
+                format!("vlp_multi_type_{}_{}", start_alias, end_alias)
+            } else {
+                format!("vlp_multi_type_{}_{}", end_alias, start_alias)
+            };
 
             log::info!(
                 "🎯 MULTI-TYPE: Using CTE '{}' as FROM (relationship types: {:?})",
