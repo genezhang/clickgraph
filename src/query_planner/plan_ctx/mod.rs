@@ -132,6 +132,12 @@ pub struct PlanCtx {
     /// Enables pruning of UNION branches that don't have required properties
     /// Example: `WHERE n.bytes_sent IS NOT NULL` → {"n": {"bytes_sent"}}
     where_property_requirements: HashMap<String, HashSet<String>>,
+
+    /// Extracted from WHERE clause `id(var) IN [...]` patterns for UNION pruning optimization
+    /// Map: alias (e.g., "a", "b") → set of node labels extracted from encoded IDs
+    /// Enables pruning of UNION branches to only include relevant relationship types
+    /// Example: `WHERE id(a) IN [<user-ids>]` → {"a": {"User"}}
+    where_label_constraints: HashMap<String, HashSet<String>>,
 }
 
 impl PlanCtx {
@@ -444,6 +450,7 @@ impl PlanCtx {
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
+            where_label_constraints: HashMap::new(),
         }
     }
 
@@ -470,6 +477,7 @@ impl PlanCtx {
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
+            where_label_constraints: HashMap::new(),
         }
     }
 
@@ -510,6 +518,7 @@ impl PlanCtx {
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
+            where_label_constraints: HashMap::new(),
         }
     }
 
@@ -546,6 +555,7 @@ impl PlanCtx {
             variables: VariableRegistry::new(), // Fresh variable registry for new scope
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
+            where_label_constraints: HashMap::new(),
         }
     }
 
@@ -575,6 +585,7 @@ impl PlanCtx {
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
+            where_label_constraints: HashMap::new(),
         }
     }
 
@@ -857,6 +868,28 @@ impl PlanCtx {
     /// Check if alias has any WHERE property requirements
     pub fn has_where_property_requirements(&self, alias: &str) -> bool {
         self.where_property_requirements.contains_key(alias)
+    }
+
+    // ========================================================================
+    // WHERE Label Constraints (UNION Pruning Optimization)
+    // ========================================================================
+
+    /// Set label constraints extracted from WHERE clause id() patterns
+    /// Used for UNION branch pruning optimization
+    pub fn set_where_label_constraints(&mut self, constraints: HashMap<String, HashSet<String>>) {
+        log::debug!("Setting WHERE label constraints: {:?}", constraints);
+        self.where_label_constraints = constraints;
+    }
+
+    /// Get label constraints for a specific alias from WHERE clause
+    /// Returns None if no constraints for this alias
+    pub fn get_where_label_constraints(&self, alias: &str) -> Option<&HashSet<String>> {
+        self.where_label_constraints.get(alias)
+    }
+
+    /// Check if alias has any WHERE label constraints
+    pub fn has_where_label_constraints(&self, alias: &str) -> bool {
+        self.where_label_constraints.contains_key(alias)
     }
 }
 

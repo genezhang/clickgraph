@@ -59,6 +59,7 @@ mod filter_push_down;
 pub mod optimizer_pass;
 mod projection_push_down;
 pub mod trivial_with_elimination;
+pub mod union_pruning;
 mod view_optimizer;
 
 // Helper to recursively print plan structure for debugging (TRACE level)
