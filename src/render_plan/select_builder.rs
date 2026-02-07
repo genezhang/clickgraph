@@ -969,6 +969,56 @@ impl LogicalPlan {
             cte_name
         );
 
+        // 🔧 FIX: Check if this is a multi-type CTE (uses JSON columns)
+        if cte_name.starts_with("vlp_multi_type_") {
+            log::info!("🎯 Multi-type CTE detected: '{}', using JSON columns", cte_name);
+            
+            // Multi-type CTEs use JSON columns instead of individual property columns:
+            // - start_properties (JSON) for start node
+            // - end_properties (JSON) for end node
+            // We need to select the appropriate JSON column
+            
+            let from_alias = self.compute_from_alias_from_cte_name(cte_name);
+            
+            // Determine which JSON column to use based on alias position in CTE name
+            // CTE name format: vlp_multi_type_{start}_{end}
+            let json_column = if cte_name.contains(&format!("_{}_", alias)) || cte_name.ends_with(&format!("_{}", alias)) {
+                // This is the end node
+                "end_properties"
+            } else {
+                // This is the start node
+                "start_properties"
+            };
+            
+            log::info!("🔍 Node '{}' maps to JSON column '{}'", alias, json_column);
+            
+            // Select the JSON column and also the ID column
+            select_items.push(SelectItem {
+                expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: RenderTableAlias(from_alias.clone()),
+                    column: PropertyValue::Column(json_column.to_string()),
+                }),
+                col_alias: Some(ColumnAlias(format!("{}.properties", alias))),
+            });
+            
+            // Also select the ID
+            let id_column = if json_column == "end_properties" {
+                "end_id"
+            } else {
+                "start_id"
+            };
+            select_items.push(SelectItem {
+                expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: RenderTableAlias(from_alias),
+                    column: PropertyValue::Column(id_column.to_string()),
+                }),
+                col_alias: Some(ColumnAlias(format!("{}.id", alias))),
+            });
+            
+            log::info!("✅ Expanded multi-type node '{}' to JSON column", alias);
+            return;
+        }
+
         // Parse CTE name to get aliases and compute FROM alias
         let from_alias = self.compute_from_alias_from_cte_name(cte_name);
         log::trace!("🔍 CTE '{}' → FROM alias '{}'", cte_name, from_alias);
@@ -1154,7 +1204,57 @@ impl LogicalPlan {
                 cte_alias
             );
 
-            // Create a tuple expression wrapping all path components
+            // 🔧 FIX: Check if this is a multi-type CTE (doesn't have path_nodes/path_edges)
+            // Multi-type CTEs use different columns: start_properties, end_properties, rel_properties
+            if let Some(ctx) = plan_ctx {
+                if let Some((cte_name, _)) = ctx.get_cte_alias_source(path_alias) {
+                    if cte_name.starts_with("vlp_multi_type_") {
+                        log::info!("🎯 Multi-type VLP path detected: '{}'", cte_name);
+                        
+                        // For multi-type paths, we construct the path from individual components
+                        // tuple(start_properties, end_properties, rel_properties, hop_count)
+                        select_items.push(SelectItem {
+                            expression: RenderExpr::ScalarFnCall(ScalarFnCall {
+                                name: "tuple".to_string(),
+                                args: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: RenderTableAlias(cte_alias.to_string()),
+                                        column: PropertyValue::Column("start_properties".to_string()),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: RenderTableAlias(cte_alias.to_string()),
+                                        column: PropertyValue::Column("end_properties".to_string()),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: RenderTableAlias(cte_alias.to_string()),
+                                        column: PropertyValue::Column("rel_properties".to_string()),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: RenderTableAlias(cte_alias.to_string()),
+                                        column: PropertyValue::Column("path_relationships".to_string()),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: RenderTableAlias(cte_alias.to_string()),
+                                        column: PropertyValue::Column("start_id".to_string()),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: RenderTableAlias(cte_alias.to_string()),
+                                        column: PropertyValue::Column("end_id".to_string()),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: RenderTableAlias(cte_alias.to_string()),
+                                        column: PropertyValue::Column("hop_count".to_string()),
+                                    }),
+                                ],
+                            }),
+                            col_alias: Some(ColumnAlias(path_alias.to_string())),
+                        });
+                        return;
+                    }
+                }
+            }
+
+            // Standard VLP with path_nodes and path_edges
             // tuple(t.path_nodes, t.path_edges, t.path_relationships, t.hop_count)
             select_items.push(SelectItem {
                 expression: RenderExpr::ScalarFnCall(ScalarFnCall {

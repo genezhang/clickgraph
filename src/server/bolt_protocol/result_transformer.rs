@@ -783,14 +783,69 @@ fn transform_to_relationship(
         }
     }
 
-    // Get primary relationship type
-    let rel_type = rel_types
-        .first()
-        .ok_or_else(|| format!("No relationship type for variable: {}", var_name))?;
+    // 🔧 FIX: Check for multi-type CTE column pattern
+    // Multi-type CTEs return: r.type, r.properties, r.start_id, r.end_id
+    // where r.type and r.properties are ARRAYS that need unwrapping
+    let has_cte_columns = properties.contains_key("type") 
+        && properties.contains_key("properties")
+        && properties.contains_key("start_id")
+        && properties.contains_key("end_id");
+
+    let rel_type = if has_cte_columns {
+        // Multi-type CTE case: extract from arrays
+        log::info!("🎯 Detected multi-type CTE columns for relationship '{}'", var_name);
+        
+        // Extract relationship type from array: ['FOLLOWS'] → "FOLLOWS"
+        let type_value = properties.get("type")
+            .ok_or_else(|| format!("Missing type column for CTE relationship '{}'", var_name))?;
+        
+        let rel_type_str = extract_first_from_array(type_value)
+            .ok_or_else(|| format!("Could not extract relationship type from array: {:?}", type_value))?;
+        
+        // Parse relationship properties from JSON array: ['{"follow_date":"..."}'] → {follow_date: ...}
+        // Save start_id and end_id before parsing
+        let start_id = properties.get("start_id").cloned();
+        let end_id = properties.get("end_id").cloned();
+        
+        if let Some(props_value) = properties.get("properties") {
+            if let Some(json_str) = extract_first_from_array(props_value) {
+                // Parse JSON string to get actual properties
+                match serde_json::from_str::<HashMap<String, Value>>(&json_str) {
+                    Ok(parsed_props) => {
+                        log::info!("✅ Parsed {} relationship properties from CTE JSON", parsed_props.len());
+                        // Replace properties with parsed ones
+                        properties = parsed_props;
+                    }
+                    Err(e) => {
+                        log::warn!("⚠️ Failed to parse relationship properties JSON: {}", e);
+                        // Clear properties on parse error
+                        properties.clear();
+                    }
+                }
+            }
+        }
+        
+        // Add back start_id and end_id (they were not in the JSON properties)
+        if let Some(sid) = start_id {
+            properties.insert("start_id".to_string(), sid);
+        }
+        if let Some(eid) = end_id {
+            properties.insert("end_id".to_string(), eid);
+        }
+        rel_type_str
+    } else {
+        // Standard case: relationship type from rel_types parameter
+        rel_types
+            .first()
+            .ok_or_else(|| format!("No relationship type for variable: {}", var_name))?
+            .clone()
+    };
+
+    // Get primary relationship type (already extracted above for CTE case)
 
     // Get relationship schema
     let rel_schema = schema
-        .get_relationships_schema_opt(rel_type)
+        .get_relationships_schema_opt(&rel_type)
         .ok_or_else(|| format!("Relationship schema not found for type: {}", rel_type))?;
 
     // Get from/to node labels (use provided or schema defaults)
@@ -812,7 +867,8 @@ fn transform_to_relationship(
         .map(|col_name| {
             properties
                 .get(*col_name)
-                .or_else(|| properties.get("from_id")) // Fallback to generic name for single column
+                .or_else(|| properties.get("start_id")) // For CTE: use generic start_id
+                .or_else(|| properties.get("from_id"))  // Fallback to generic name for single column
                 .and_then(value_to_string)
                 .ok_or_else(|| {
                     format!(
@@ -830,7 +886,8 @@ fn transform_to_relationship(
         .map(|col_name| {
             properties
                 .get(*col_name)
-                .or_else(|| properties.get("to_id")) // Fallback to generic name for single column
+                .or_else(|| properties.get("end_id"))   // For CTE: use generic end_id
+                .or_else(|| properties.get("to_id"))    // Fallback to generic name for single column
                 .and_then(value_to_string)
                 .ok_or_else(|| {
                     format!(
@@ -846,7 +903,7 @@ fn transform_to_relationship(
     let to_id_str = to_id_values.join("|");
 
     // Generate relationship elementId: "FOLLOWS:1->2" or "BELONGS_TO:tenant1|user1->tenant1|org1"
-    let element_id = generate_relationship_element_id(rel_type, &from_id_str, &to_id_str);
+    let element_id = generate_relationship_element_id(&rel_type, &from_id_str, &to_id_str);
 
     // Generate node elementIds for start and end nodes (with composite ID support)
     let from_id_refs: Vec<&str> = from_id_values.iter().map(|s| s.as_str()).collect();
@@ -1294,6 +1351,34 @@ fn value_to_i64(val: &Value) -> Option<i64> {
     match val {
         Value::Number(n) => n.as_i64(),
         Value::String(s) => s.parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+/// Extract first element from a ClickHouse array value
+/// 
+/// Multi-type CTE queries return arrays with single elements:
+/// - ['FOLLOWS'] → "FOLLOWS"
+/// - ['{"follow_date":"2024-02-11"}'] → "{\"follow_date\":\"2024-02-11\"}"
+/// 
+/// # Arguments
+/// 
+/// * `val` - JSON Value that should be an array
+/// 
+/// # Returns
+/// 
+/// First element as String, or None if not an array or empty
+fn extract_first_from_array(val: &Value) -> Option<String> {
+    match val {
+        Value::Array(arr) if !arr.is_empty() => {
+            // Get first element
+            match &arr[0] {
+                Value::String(s) => Some(s.clone()),
+                Value::Number(n) => Some(n.to_string()),
+                Value::Bool(b) => Some(b.to_string()),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
