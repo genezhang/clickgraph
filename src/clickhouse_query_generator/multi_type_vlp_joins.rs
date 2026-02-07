@@ -375,6 +375,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
     /// - `end_properties`: JSON string containing all node properties
     /// - `hop_count`: Number of hops in the path (for length(p) function)
     /// - `path_relationships`: Array of relationship types (for relationships(p) function)
+    /// - `rel_properties`: JSON array of relationship properties for each hop
     fn generate_select_items(
         &self,
         node_alias: &str,
@@ -479,6 +480,61 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             .map(|hop| format!("'{}'", hop.rel_type))
             .collect();
         items.push(format!("[{}] AS path_relationships", rel_types.join(", ")));
+
+        // 🔧 FIX: Add rel_properties for RETURN r support
+        // Generate array of JSON objects containing relationship properties for each hop
+        use crate::clickhouse_query_generator::json_builder::generate_json_properties_sql;
+        
+        let rel_props: Vec<String> = hops
+            .iter()
+            .enumerate()
+            .map(|(hop_idx, hop)| {
+                let hop_num = hop_idx + 1;
+                
+                // Get relationship schema to access property mappings
+                match self.schema.get_rel_schema_with_nodes(&hop.rel_type, Some(&hop.from_node_type), Some(&hop.to_node_type)) {
+                    Ok(rel_schema) => {
+                        // Check if this is FK-edge pattern (rel table == target node table)
+                        let rel_table = if rel_schema.database.is_empty() {
+                            rel_schema.table_name.clone()
+                        } else {
+                            format!("{}.{}", rel_schema.database, rel_schema.table_name)
+                        };
+                        
+                        let end_table = match self.get_node_table_with_db(&hop.to_node_type) {
+                            Ok(t) => t,
+                            Err(_) => return "'{}'".to_string(), // Empty JSON
+                        };
+                        
+                        let is_fk_edge = rel_table == end_table;
+                        
+                        // Reconstruct the relationship alias used in FROM clause
+                        let rel_alias = if is_fk_edge {
+                            // FK-edge: alias is the end node alias
+                            format!("{}{}",
+                                if hop.to_node_type == "User" { "u" }
+                                else if hop.to_node_type == "Post" { "p" }
+                                else { "n" },
+                                hop_num + 1
+                            )
+                        } else {
+                            // Standard: alias is r{hop_num}
+                            format!("r{}", hop_num)
+                        };
+                        
+                        // Generate JSON object with relationship properties
+                        if rel_schema.property_mappings.is_empty() {
+                            "'{}'".to_string() // Empty JSON object
+                        } else {
+                            // Use formatRowNoNewline for type-preserving JSON (same as node properties)
+                            generate_json_properties_sql(&rel_schema.property_mappings, &rel_alias)
+                        }
+                    }
+                    Err(_) => "'{}'".to_string(), // Empty JSON if schema not found
+                }
+            })
+            .collect();
+        items.push(format!("[{}] AS rel_properties", rel_props.join(", ")));
 
         items
     }

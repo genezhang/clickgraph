@@ -14,6 +14,7 @@
 //! - Manage collect() function expansion
 
 use crate::graph_catalog::expression_parser::PropertyValue;
+use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
 use crate::query_planner::logical_expr::{LogicalExpr, TableAlias};
 use crate::query_planner::logical_plan::{LogicalPlan, ProjectionItem};
 use crate::query_planner::typed_variable::{TypedVariable, VariableSource};
@@ -813,11 +814,72 @@ impl LogicalPlan {
         log::info!("✅ Expanding base table entity '{}' to properties", alias);
 
         // Get labels from TypedVariable
-        let _labels = match typed_var {
+        let labels = match typed_var {
             TypedVariable::Node(node) => &node.labels,
             TypedVariable::Relationship(rel) => &rel.rel_types,
             _ => return, // Should not happen
         };
+
+        // 🔧 FIX: Check if this is a multi-type relationship (multiple labels) that uses a CTE
+        // Multi-type relationships generate a vlp_multi_type_{start}_{end} CTE with columns:
+        // - path_relationships: array of relationship types
+        // - rel_properties: array of relationship property JSON objects
+        // - end_type, end_id, start_id, end_properties, hop_count
+        if let TypedVariable::Relationship(_) = typed_var {
+            if labels.len() > 1 {
+                // This is a multi-type relationship - properties come from CTE, not base table
+                log::info!(
+                    "🎯 Multi-type relationship '{}' detected ({} types), using CTE columns",
+                    alias,
+                    labels.len()
+                );
+                
+                // For RETURN r on multi-type relationships, select from CTE columns
+                // The CTE has columns: end_type, end_id, start_id, end_properties, hop_count, path_relationships, rel_properties
+                // We select these columns and alias them as r.*
+                let cte_alias = "t"; // Multi-type CTEs always use 't' as alias (VLP_CTE_FROM_ALIAS)
+                
+                // Add all CTE columns needed to reconstruct the relationship
+                select_items.push(SelectItem {
+                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: RenderTableAlias(cte_alias.to_string()),
+                        column: PropertyValue::Column("path_relationships".to_string()),
+                    }),
+                    col_alias: Some(ColumnAlias(format!("{}.type", alias))),
+                });
+                
+                select_items.push(SelectItem {
+                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: RenderTableAlias(cte_alias.to_string()),
+                        column: PropertyValue::Column("rel_properties".to_string()),
+                    }),
+                    col_alias: Some(ColumnAlias(format!("{}.properties", alias))),
+                });
+                
+                select_items.push(SelectItem {
+                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: RenderTableAlias(cte_alias.to_string()),
+                        column: PropertyValue::Column(VLP_START_ID_COLUMN.to_string()),
+                    }),
+                    col_alias: Some(ColumnAlias(format!("{}.start_id", alias))),
+                });
+                
+                select_items.push(SelectItem {
+                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: RenderTableAlias(cte_alias.to_string()),
+                        column: PropertyValue::Column(VLP_END_ID_COLUMN.to_string()),
+                    }),
+                    col_alias: Some(ColumnAlias(format!("{}.end_id", alias))),
+                });
+                
+                log::info!(
+                    "✅ Expanded multi-type relationship '{}' to {} CTE columns",
+                    alias,
+                    select_items.len()
+                );
+                return;
+            }
+        }
 
         // CRITICAL: Check if this alias is a FK-edge (denormalized on another table)
         // For FK-edge patterns like (u)-[r:AUTHORED]->(po), relationship r is stored ON po table
