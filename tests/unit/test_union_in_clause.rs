@@ -24,7 +24,7 @@ fn test_split_generates_in_clause() {
     // For this test, we're just checking the structure
     
     // Transform (this will extract label constraints if id_mapper has the data)
-    let transformed = ast_transform::transform_id_functions(
+    let (transformed, _label_constraints) = ast_transform::transform_id_functions(
         parsed_stmt,
         &id_mapper,
         None // No schema for this simple test
@@ -55,7 +55,7 @@ fn test_build_property_in_clause_structure() {
         .expect("Failed to parse query");
     
     let id_mapper = IdMapper::new();
-    let transformed = ast_transform::transform_id_functions(
+    let (transformed, _label_constraints) = ast_transform::transform_id_functions(
         parsed_stmt,
         &id_mapper,
         None
