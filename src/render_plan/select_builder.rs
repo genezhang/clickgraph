@@ -119,6 +119,37 @@ impl SelectBuilder for LogicalPlan {
                         }),
                         col_alias: Some(ColumnAlias(path_var.clone())),
                     });
+
+                    // CRITICAL FIX: For path queries, also include node and relationship properties
+                    // Neo4j Browser (and Bolt protocol) expects full properties in path objects
+                    // This enables convert_path_branches_to_json() to build _start_properties, _end_properties
+                    log::warn!(
+                        "🔍 Path query: expanding properties for left='{}', right='{}', rel='{}'",
+                        graph_rel.left_connection,
+                        graph_rel.right_connection,
+                        graph_rel.alias
+                    );
+
+                    // Add left node properties with prefixed aliases (e.g., "a_0.user_id")
+                    self.add_node_properties_for_path(
+                        &graph_rel.left,
+                        &graph_rel.left_connection,
+                        &mut items,
+                    )?;
+
+                    // Add right node properties with prefixed aliases (e.g., "o_0.post_id")
+                    self.add_node_properties_for_path(
+                        &graph_rel.right,
+                        &graph_rel.right_connection,
+                        &mut items,
+                    )?;
+
+                    // Add relationship properties with prefixed aliases (e.g., "t20.follow_date")
+                    self.add_relationship_properties_for_path(
+                        &graph_rel.center,
+                        &graph_rel.alias,
+                        &mut items,
+                    )?;
                 }
 
                 log::warn!(
@@ -1401,5 +1432,73 @@ impl LogicalPlan {
             }),
             col_alias: Some(ColumnAlias(path_alias.to_string())),
         }
+    }
+
+    /// Add node properties for path queries with prefixed aliases
+    ///
+    /// For path queries like `MATCH path = (a)-[r]->(b) RETURN path`,
+    /// we need to include node properties with aliases like "a.user_id", "a.full_name"
+    /// so that convert_path_branches_to_json() can build _start_properties JSON.
+    fn add_node_properties_for_path(
+        &self,
+        node_plan: &std::sync::Arc<LogicalPlan>,
+        alias: &str,
+        items: &mut Vec<SelectItem>,
+    ) -> Result<(), RenderBuildError> {
+        // Get properties from the node plan (typically GraphNode wrapping ViewScan)
+        let (properties, _table_alias) =
+            PropertiesBuilder::get_properties_with_table_alias(node_plan.as_ref(), alias)?;
+
+        log::debug!(
+            "🔍 add_node_properties_for_path: node '{}' has {} properties",
+            alias,
+            properties.len()
+        );
+
+        // Add each property as a SELECT item with prefixed alias
+        for (prop_name, col_name) in properties {
+            items.push(SelectItem {
+                expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: RenderTableAlias(alias.to_string()),
+                    column: PropertyValue::Column(col_name),
+                }),
+                col_alias: Some(ColumnAlias(format!("{}.{}", alias, prop_name))),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Add relationship properties for path queries with prefixed aliases
+    ///
+    /// Similar to node properties, but for the relationship in the path.
+    fn add_relationship_properties_for_path(
+        &self,
+        rel_plan: &std::sync::Arc<LogicalPlan>,
+        alias: &str,
+        items: &mut Vec<SelectItem>,
+    ) -> Result<(), RenderBuildError> {
+        // Get properties from the relationship plan (ViewScan)
+        let (properties, _table_alias) =
+            PropertiesBuilder::get_properties_with_table_alias(rel_plan.as_ref(), alias)?;
+
+        log::debug!(
+            "🔍 add_relationship_properties_for_path: rel '{}' has {} properties",
+            alias,
+            properties.len()
+        );
+
+        // Add each property as a SELECT item with prefixed alias
+        for (prop_name, col_name) in properties {
+            items.push(SelectItem {
+                expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: RenderTableAlias(alias.to_string()),
+                    column: PropertyValue::Column(col_name),
+                }),
+                col_alias: Some(ColumnAlias(format!("{}.{}", alias, prop_name))),
+            });
+        }
+
+        Ok(())
     }
 }
