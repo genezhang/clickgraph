@@ -351,8 +351,10 @@ fn traverse_connected_pattern_with_mode<'a>(
 
                     // === UNION PRUNING OPTIMIZATION ===
                     // If WHERE clause contains id() constraints, use them to prune branches
+                    log::info!("🔍 Checking UNION pruning for start='{}', end='{}'", start_node_alias, end_node_alias);
                     let start_label_constraints = plan_ctx.get_where_label_constraints(&start_node_alias);
                     let end_label_constraints = plan_ctx.get_where_label_constraints(&end_node_alias);
+                    log::info!("  start_constraints: {:?}, end_constraints: {:?}", start_label_constraints, end_label_constraints);
 
                     if start_label_constraints.is_some() || end_label_constraints.is_some() {
                         let original_count = relationship_node_types.len();

@@ -69,6 +69,40 @@ fn bolt_value_to_string(value: &BoltValue) -> String {
 /// This function detects which parameters are used with id() and decodes them.
 ///
 /// Pattern detection: `id(alias) IN $paramName` or `id(alias) = $paramName`
+/// Substitute Cypher parameters into query string, keeping encoded IDs intact
+/// This replaces $paramName with actual values so parser sees literals
+/// Used for id() parameters to preserve encoded IDs for label extraction
+fn substitute_cypher_parameters(
+    query: &str,
+    parameters: &HashMap<String, Value>,
+) -> String {
+    let mut result = query.to_string();
+    
+    // Replace each parameter in the query
+    for (param_name, param_value) in parameters {
+        let pattern = format!("${}", param_name);
+        let replacement = match param_value {
+            Value::Array(arr) => {
+                let values: Vec<String> = arr.iter().map(|v| {
+                    match v {
+                        Value::Number(n) => n.to_string(),
+                        Value::String(s) => format!("'{}'", s),
+                        _ => format!("{:?}", v),
+                    }
+                }).collect();
+                format!("[{}]", values.join(", "))
+            }
+            Value::Number(n) => n.to_string(),
+            Value::String(s) => format!("'{}'", s),
+            _ => format!("{:?}", param_value),
+        };
+        result = result.replace(&pattern, &replacement);
+    }
+    
+    log::info!("🔄 Substituted parameters: {} -> {}", query, result);
+    result
+}
+
 fn decode_id_parameters(
     query: &str,
     mut parameters: HashMap<String, Value>,
@@ -616,11 +650,12 @@ impl BoltHandler {
             .extract_query()
             .ok_or_else(|| BoltError::invalid_message("RUN message missing query"))?;
 
-        let mut parameters = message.extract_parameters().unwrap_or_default();
+        let parameters = message.extract_parameters().unwrap_or_default();
 
-        // Decode id() parameters: if query has `id(x) IN $paramName`, decode the parameter values
-        // Neo4j Browser sends encoded IDs in parameters like $existingNodeIds, $newNodeIds
-        parameters = decode_id_parameters(&query, parameters);
+        // Substitute Cypher parameters into query string (keeping encoded IDs)
+        // This allows parser to see actual values as literals while preserving encoding
+        // The AST transformer will then extract labels from encoded IDs for UNION pruning
+        let query = substitute_cypher_parameters(&query, &parameters);
 
         // Get selected schema from context, or from RUN message metadata
         let (schema_name, tenant_id, role, view_parameters) = {
@@ -1005,8 +1040,8 @@ impl BoltHandler {
         // ============================================================
 
         // Parse and transform in a limited scope to extract metadata
-        let (is_procedure, is_union, effective_schema, exec_plan, query_type) = {
-            let transformed_stmt = crate::query_planner::ast_transform::transform_id_functions(
+        let (is_procedure, is_union, effective_schema, exec_plan, query_type, label_constraints) = {
+            let (transformed_stmt, label_constraints) = crate::query_planner::ast_transform::transform_id_functions(
                 parsed_stmt,
                 &id_mapper_snapshot,
                 None, // No schema available yet (loaded later)
@@ -1132,6 +1167,7 @@ impl BoltHandler {
                 effective_schema,
                 exec_plan,
                 query_type,
+                label_constraints,
             )
         };
 
@@ -1327,19 +1363,22 @@ impl BoltHandler {
             context.id_mapper.clone()
         };
 
-        let transformed_for_planning = crate::query_planner::ast_transform::transform_id_functions(
+        let (transformed_for_planning, label_constraints_from_second_pass) = crate::query_planner::ast_transform::transform_id_functions(
             parsed_stmt_for_planning,
             &id_mapper_snapshot,
             Some(&graph_schema), // Pass schema for node_id property lookup
         );
 
+        // Use label_constraints from the second pass (not first) since it has schema context
+        log::info!("🎯 Passing {} label constraints to query planner (from second pass)", label_constraints_from_second_pass.len());
+
         // Generate logical plan using transformed statement
-        let (logical_plan, plan_ctx) = match query_planner::evaluate_read_statement(
+        let (logical_plan, mut plan_ctx) = match query_planner::evaluate_read_statement(
             transformed_for_planning,
             &graph_schema,
             tenant_id,
             view_parameters,
-            None, // max_inferred_types
+            Some(20), // max_inferred_types - increased for UNION branches
         ) {
             Ok(result) => result,
             Err(e) => {
@@ -1349,6 +1388,12 @@ impl BoltHandler {
                 )));
             }
         };
+        
+        // Inject label constraints into plan_ctx for UNION pruning
+        if !label_constraints_from_second_pass.is_empty() {
+            plan_ctx.set_where_label_constraints(label_constraints_from_second_pass);
+        }
+        
         // transformed_for_planning is now dropped
 
         // Extract return metadata for result transformation
@@ -1385,20 +1430,9 @@ impl BoltHandler {
         let max_cte_depth = 1000; // Use default from config
         let ch_sql = clickhouse_query_generator::generate_sql(render_plan, max_cte_depth);
 
-        // Substitute parameters if provided
-        let final_sql = if !parameters.is_empty() {
-            match parameter_substitution::substitute_parameters(&ch_sql, &parameters) {
-                Ok(sql) => sql,
-                Err(e) => {
-                    return Err(BoltError::query_error(format!(
-                        "Parameter substitution failed: {}",
-                        e
-                    )));
-                }
-            }
-        } else {
-            ch_sql.clone()
-        };
+        // Parameters already substituted into Cypher query (line 623)
+        // SQL generation doesn't need them
+        let final_sql = ch_sql.clone();
 
         log::debug!("Executing SQL: {}", final_sql);
 

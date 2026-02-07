@@ -40,11 +40,16 @@ use crate::{
     },
     server::bolt_protocol::id_mapper::IdMapper,
 };
+use std::collections::{HashMap, HashSet};
 
 /// Transforms id() function calls in Cypher AST using session's IdMapper
 pub struct IdFunctionTransformer<'a> {
     id_mapper: &'a IdMapper,
     schema: Option<&'a crate::graph_catalog::GraphSchema>,
+    /// Extracted label constraints for UNION pruning (variable → set of labels)
+    pub label_constraints: HashMap<String, HashSet<String>>,
+    /// ID values grouped by variable and label: variable → label → [id_values]
+    pub id_values_by_label: HashMap<String, HashMap<String, Vec<String>>>,
 }
 
 impl<'a> IdFunctionTransformer<'a> {
@@ -52,11 +57,26 @@ impl<'a> IdFunctionTransformer<'a> {
         id_mapper: &'a IdMapper,
         schema: Option<&'a crate::graph_catalog::GraphSchema>,
     ) -> Self {
-        Self { id_mapper, schema }
+        Self {
+            id_mapper,
+            schema,
+            label_constraints: HashMap::new(),
+            id_values_by_label: HashMap::new(),
+        }
+    }
+
+    /// Get extracted label constraints for UNION pruning
+    pub fn get_label_constraints(&self) -> HashMap<String, HashSet<String>> {
+        self.label_constraints.clone()
+    }
+
+    /// Get ID values grouped by label for IN clause generation
+    pub fn get_id_values_by_label(&self) -> HashMap<String, HashMap<String, Vec<String>>> {
+        self.id_values_by_label.clone()
     }
 
     /// Transform all id() calls in a WHERE expression
-    pub fn transform_where(&self, expr: Expression<'a>) -> Expression<'a> {
+    pub fn transform_where(&mut self, expr: Expression<'a>) -> Expression<'a> {
         log::debug!("  transform_where called");
         let result = self.transform_expression(expr);
         log::debug!("  transform_where complete");
@@ -64,7 +84,7 @@ impl<'a> IdFunctionTransformer<'a> {
     }
 
     /// Transform all id() calls in ORDER BY items
-    pub fn transform_order_by(&self, items: Vec<OrderByItem<'a>>) -> Vec<OrderByItem<'a>> {
+    pub fn transform_order_by(&mut self, items: Vec<OrderByItem<'a>>) -> Vec<OrderByItem<'a>> {
         items
             .into_iter()
             .map(|item| OrderByItem {
@@ -75,7 +95,7 @@ impl<'a> IdFunctionTransformer<'a> {
     }
 
     /// Recursively transform an expression
-    fn transform_expression(&self, expr: Expression<'a>) -> Expression<'a> {
+    fn transform_expression(&mut self, expr: Expression<'a>) -> Expression<'a> {
         match expr {
             // Transform operator applications (=, IN, NOT, etc.)
             Expression::OperatorApplicationExp(op_app) => {
@@ -137,7 +157,7 @@ impl<'a> IdFunctionTransformer<'a> {
     }
 
     /// Transform operator applications - this is where id() magic happens
-    fn transform_operator_application(&self, op_app: OperatorApplication<'a>) -> Expression<'a> {
+    fn transform_operator_application(&mut self, op_app: OperatorApplication<'a>) -> Expression<'a> {
         match op_app.operator {
             // id(a) = 5 → (a:Label AND a.id = 'value')
             Operator::Equal => {
@@ -264,7 +284,7 @@ impl<'a> IdFunctionTransformer<'a> {
     ///
     /// For cross-session id() lookups (when the integer ID isn't in the session cache),
     /// we generate a predicate that checks all possible node types with that ID.
-    fn rewrite_id_equals(&self, var: &'a str, id_value: i64) -> Expression<'a> {
+    fn rewrite_id_equals(&mut self, var: &'a str, id_value: i64) -> Expression<'a> {
         // Try to lookup from cache (local + global for cross-session support)
         if let Some(element_id) = self.id_mapper.get_element_id(id_value) {
             if let Ok((label, id_parts)) = parse_node_element_id(&element_id) {
@@ -294,16 +314,41 @@ impl<'a> IdFunctionTransformer<'a> {
     }
 
     /// Rewrite `id(var) IN [...]` or `NOT id(var) IN [...]`
-    fn rewrite_id_in(&self, var: &'a str, ids: Vec<i64>, is_negated: bool) -> Expression<'a> {
+    fn rewrite_id_in(&mut self, var: &'a str, ids: Vec<i64>, is_negated: bool) -> Expression<'a> {
+        log::info!("🔍 rewrite_id_in: Processing {} IDs for variable '{}'", ids.len(), var);
         let mut filters = Vec::new();
+        let mut labels_for_var = HashSet::new();
+        let mut ids_by_label: HashMap<String, Vec<String>> = HashMap::new();
 
         for id_value in ids {
             // Try lookup from cache (local + global)
             if let Some(element_id) = self.id_mapper.get_element_id(id_value) {
                 if let Ok((label, id_parts)) = parse_node_element_id(&element_id) {
                     let id_str = id_parts.join("|");
+                    labels_for_var.insert(label.to_string());
+                    ids_by_label.entry(label.to_string())
+                        .or_insert_with(Vec::new)
+                        .push(id_str.clone());
                     filters.push(self.build_label_and_id_check(var, &label, &id_str));
                     continue;
+                }
+            }
+
+            // Fallback: Decode label from bit pattern (for IDs not in cache)
+            use crate::utils::id_encoding::{IdEncoding, LABEL_CODE_REGISTRY};
+            let (label_code, raw_id) = IdEncoding::decode(id_value);
+            if label_code > 0 {
+                if let Ok(registry) = LABEL_CODE_REGISTRY.read() {
+                    if let Some(label) = registry.get_label(label_code) {
+                        log::info!("  🎯 Decoded from bit pattern: {} -> label='{}', raw_id={}", id_value, label, raw_id);
+                        labels_for_var.insert(label.clone());
+                        let id_str = raw_id.to_string();
+                        ids_by_label.entry(label.clone())
+                            .or_insert_with(Vec::new)
+                            .push(id_str.clone());
+                        filters.push(self.build_label_and_id_check(var, &label, &id_str));
+                        continue;
+                    }
                 }
             }
 
@@ -313,6 +358,13 @@ impl<'a> IdFunctionTransformer<'a> {
                 var,
                 id_value
             );
+        }
+
+        // Store extracted labels and ID values for UNION splitting
+        if !labels_for_var.is_empty() {
+            log::info!("🎯 UNION Pruning: Extracted labels for '{}': {:?}", var, labels_for_var);
+            self.label_constraints.insert(var.to_string(), labels_for_var);
+            self.id_values_by_label.insert(var.to_string(), ids_by_label);
         }
 
         if filters.is_empty() {
@@ -354,9 +406,8 @@ impl<'a> IdFunctionTransformer<'a> {
 
     /// Build property check expression: `var.id_property = 'value'`
     ///
-    /// For `MATCH (n) WHERE id(n) = X` (no label), we only check the id property.
-    /// The UNION branching handles routing to the correct table.
-    /// For `MATCH (n:Label) WHERE id(n) = X`, the label is already in the MATCH pattern.
+    /// Returns just the ID property check. Label information is tracked separately
+    /// and will be added to the MATCH pattern by split_query_by_labels().
     fn build_label_and_id_check(
         &self,
         var: &'a str,
@@ -385,17 +436,19 @@ impl<'a> IdFunctionTransformer<'a> {
         };
 
         log::debug!(
-            "        Generating predicate: {}.{} = '{}'",
+            "        Generating predicate: {}.{} = '{}' (label '{}' tracked separately)",
             var,
             id_property,
-            id_value
+            id_value,
+            label
         );
 
-        // Property check: var.id_property = 'value'
-        // We don't include label check because UNION branching handles table routing
+        // Build: var.id_property = 'value'
+        // Label will be added to MATCH pattern during split_query_by_labels()
         let id_value_static: &'a str = Box::leak(id_value.to_string().into_boxed_str());
         let id_property_static: &'a str = Box::leak(id_property.to_string().into_boxed_str());
 
+        // ID check: var.id_property = 'value'
         Expression::OperatorApplicationExp(OperatorApplication {
             operator: Operator::Equal,
             operands: vec![
@@ -447,7 +500,7 @@ mod tests {
     #[test]
     fn test_rewrite_empty_list_negated() {
         let id_mapper = IdMapper::new();
-        let transformer = IdFunctionTransformer::new(&id_mapper, None);
+        let mut transformer = IdFunctionTransformer::new(&id_mapper, None);
 
         // NOT id(a) IN [] → true
         let result = transformer.rewrite_id_in("a", vec![], true);
@@ -460,7 +513,7 @@ mod tests {
     #[test]
     fn test_rewrite_empty_list_non_negated() {
         let id_mapper = IdMapper::new();
-        let transformer = IdFunctionTransformer::new(&id_mapper, None);
+        let mut transformer = IdFunctionTransformer::new(&id_mapper, None);
 
         // id(a) IN [] → false
         let result = transformer.rewrite_id_in("a", vec![], false);
