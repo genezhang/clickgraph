@@ -183,6 +183,9 @@ fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>
     result
 }
 
+/// Legacy function - replaced by substitute_cypher_parameters
+/// Kept for potential future use but currently unused
+#[allow(dead_code)]
 fn decode_id_parameters(
     query: &str,
     mut parameters: HashMap<String, Value>,
