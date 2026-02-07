@@ -7,7 +7,11 @@ based on id() constraints in the WHERE clause.
 """
 
 import sys
-sys.path.insert(0, '/home/gene/clickgraph/benchmarks/social_network')
+import os
+
+# Add project paths relative to script location
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(project_root, 'benchmarks', 'social_network'))
 
 from neo4j import GraphDatabase
 from datetime import datetime

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Test path queries with Bolt protocol"""
 
+import os
 from neo4j import GraphDatabase
 import json
 
-# Connect to ClickGraph
-driver = GraphDatabase.driver("bolt://localhost:7687", auth=("", ""))
+# Connect to ClickGraph with configurable port
+bolt_port = os.getenv("CLICKGRAPH_BOLT_PORT", "7688")
+driver = GraphDatabase.driver(f"bolt://localhost:{bolt_port}", auth=("", ""))
 
 try:
     with driver.session() as session:
