@@ -1616,21 +1616,25 @@ impl LogicalPlan {
         alias: &str,
         items: &mut Vec<SelectItem>,
     ) -> Result<(), RenderBuildError> {
-        // Get properties from the node plan (typically GraphNode wrapping ViewScan)
-        let (properties, _table_alias) =
+        // Get properties from the node plan (ViewScan or denormalized)
+        let (properties, actual_table_alias) =
             PropertiesBuilder::get_properties_with_table_alias(node_plan.as_ref(), alias)?;
 
         log::debug!(
-            "🔍 add_node_properties_for_path: node '{}' has {} properties",
+            "🔍 add_node_properties_for_path: node '{}' has {} properties (table: {:?})",
             alias,
-            properties.len()
+            properties.len(),
+            actual_table_alias
         );
+
+        // Use actual_table_alias for denormalized properties, fallback to alias
+        let table_alias_str = actual_table_alias.unwrap_or_else(|| alias.to_string());
 
         // Add each property as a SELECT item with prefixed alias
         for (prop_name, col_name) in properties {
             items.push(SelectItem {
                 expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: RenderTableAlias(alias.to_string()),
+                    table_alias: RenderTableAlias(table_alias_str.clone()),
                     column: PropertyValue::Column(col_name),
                 }),
                 col_alias: Some(ColumnAlias(format!("{}.{}", alias, prop_name))),
@@ -1649,21 +1653,25 @@ impl LogicalPlan {
         alias: &str,
         items: &mut Vec<SelectItem>,
     ) -> Result<(), RenderBuildError> {
-        // Get properties from the relationship plan (ViewScan)
-        let (properties, _table_alias) =
+        // Get properties from the relationship plan (ViewScan or denormalized)
+        let (properties, actual_table_alias) =
             PropertiesBuilder::get_properties_with_table_alias(rel_plan.as_ref(), alias)?;
 
         log::debug!(
-            "🔍 add_relationship_properties_for_path: rel '{}' has {} properties",
+            "🔍 add_relationship_properties_for_path: rel '{}' has {} properties (table: {:?})",
             alias,
-            properties.len()
+            properties.len(),
+            actual_table_alias
         );
+
+        // Use actual_table_alias for denormalized properties, fallback to alias
+        let table_alias_str = actual_table_alias.unwrap_or_else(|| alias.to_string());
 
         // Add each property as a SELECT item with prefixed alias
         for (prop_name, col_name) in properties {
             items.push(SelectItem {
                 expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: RenderTableAlias(alias.to_string()),
+                    table_alias: RenderTableAlias(table_alias_str.clone()),
                     column: PropertyValue::Column(col_name),
                 }),
                 col_alias: Some(ColumnAlias(format!("{}.{}", alias, prop_name))),
