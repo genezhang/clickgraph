@@ -72,32 +72,114 @@ fn bolt_value_to_string(value: &BoltValue) -> String {
 /// Substitute Cypher parameters into query string, keeping encoded IDs intact
 /// This replaces $paramName with actual values so parser sees literals
 /// Used for id() parameters to preserve encoded IDs for label extraction
+/// This replaces only $paramName values used with id() so the parser sees literals
+/// Used for id() parameters to preserve encoded IDs for label extraction
+///
+/// SECURITY:
+/// - Uses regex with word boundaries to prevent partial matches ($id vs $ids)
+/// - Escapes quotes and backslashes in string values
+/// - Skips string literals to prevent injection
+///
+/// LIMITATION: This is a lexical approach that may have edge cases with complex
+/// nested strings or comments. For production, consider AST-level parameter binding.
 fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>) -> String {
-    let mut result = query.to_string();
+    use regex::Regex;
 
-    // Replace each parameter in the query
-    for (param_name, param_value) in parameters {
-        let pattern = format!("${}", param_name);
-        let replacement = match param_value {
+    // Helper to check if position is inside a string literal
+    fn is_inside_string(query: &str, pos: usize) -> bool {
+        let before = &query[..pos];
+        let single_quotes = before.matches('\'').count();
+        let double_quotes = before.matches('"').count();
+
+        // Odd number of quotes means we're inside a string
+        // This is simplified - doesn't handle escaped quotes perfectly
+        (single_quotes % 2 == 1) || (double_quotes % 2 == 1)
+    }
+
+    fn escape_cypher_string(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for ch in s.chars() {
+            match ch {
+                '\'' => {
+                    out.push('\\');
+                    out.push('\'');
+                }
+                '\\' => {
+                    out.push('\\');
+                    out.push('\\');
+                }
+                _ => out.push(ch),
+            }
+        }
+        out
+    }
+
+    fn value_to_cypher_literal(value: &Value) -> String {
+        match value {
             Value::Array(arr) => {
-                let values: Vec<String> = arr
-                    .iter()
-                    .map(|v| match v {
-                        Value::Number(n) => n.to_string(),
-                        Value::String(s) => format!("'{}'", s),
-                        _ => format!("{:?}", v),
-                    })
-                    .collect();
+                let values: Vec<String> =
+                    arr.iter()
+                        .map(|v| match v {
+                            Value::Number(n) => n.to_string(),
+                            Value::String(s) => format!("'{}'", escape_cypher_string(s)),
+                            other => serde_json::to_string(other)
+                                .unwrap_or_else(|_| format!("{:?}", other)),
+                        })
+                        .collect();
                 format!("[{}]", values.join(", "))
             }
             Value::Number(n) => n.to_string(),
-            Value::String(s) => format!("'{}'", s),
-            _ => format!("{:?}", param_value),
-        };
-        result = result.replace(&pattern, &replacement);
+            Value::String(s) => format!("'{}'", escape_cypher_string(s)),
+            other => serde_json::to_string(other).unwrap_or_else(|_| format!("{:?}", other)),
+        }
     }
 
-    log::info!("🔄 Substituted parameters: {} -> {}", query, result);
+    // Regex to find id()-based predicates with a parameter
+    let re = Regex::new(
+        r"(?i)\bid\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s*\)\s*(?:IN|=)\s*\$([A-Za-z_][A-Za-z0-9_]*)",
+    )
+    .expect("regex for id() parameter substitution must compile");
+
+    let mut result = query.to_string();
+    let mut offset: isize = 0;
+
+    // Collect all matches first to avoid modification-during-iteration issues
+    let matches: Vec<_> = re.captures_iter(query).collect();
+
+    for cap in matches {
+        let full_match = cap.get(0).unwrap();
+        let match_start = full_match.start();
+        let param_name = &cap[1];
+
+        // Skip if inside string literal
+        if is_inside_string(query, match_start) {
+            log::debug!(
+                "⏭️  Skipping parameter ${} inside string literal",
+                param_name
+            );
+            continue;
+        }
+
+        if let Some(param_value) = parameters.get(param_name) {
+            let literal = value_to_cypher_literal(param_value);
+            let pattern = format!("${}", param_name);
+            let replacement = full_match.as_str().replacen(&pattern, &literal, 1);
+
+            // Calculate position with offset adjustment
+            let adjusted_start = (match_start as isize + offset) as usize;
+            let adjusted_end = adjusted_start + full_match.as_str().len();
+
+            result.replace_range(adjusted_start..adjusted_end, &replacement);
+
+            // Update offset for subsequent replacements
+            offset += replacement.len() as isize - full_match.as_str().len() as isize;
+        }
+    }
+
+    log::debug!(
+        "🔧 Parameter substitution: {} parameters processed",
+        parameters.len()
+    );
     result
 }
 
