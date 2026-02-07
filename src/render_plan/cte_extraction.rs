@@ -2446,7 +2446,7 @@ pub fn extract_ctes_with_context(
                     log::info!("🔍 VLP: Variable-length or shortest path detected (not using chained JOINs)");
 
                     // 🎯 CHECK FOR MULTI-TYPE VLP (Part 1D implementation)
-                    let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
+                    let mut rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
                     log::info!("🔍 VLP: rel_types={:?}", rel_types);
 
                     let is_multi_type_check =
@@ -2484,11 +2484,45 @@ pub fn extract_ctes_with_context(
                         // If only one label or no labels, collect all possible end types from relationships
                         if end_labels.len() <= 1 {
                             let mut possible_end_types = std::collections::HashSet::new();
+                            
+                            // 🔧 FIX: If rel_types is empty (unlabeled relationship pattern),
+                            // query schema for ALL relationships from start node
+                            if rel_types.is_empty() {
+                                log::info!("🔍 CTE: No relationship types specified, inferring from schema");
+                                // Get all relationships that involve the start node type(s)
+                                let mut all_rel_types = std::collections::HashSet::new();
+                                
+                                for start_label in &start_labels {
+                                    // Iterate through all relationships in schema
+                                    for (rel_name, rel_schema) in schema.get_relationships_schemas() {
+                                        // Check if this relationship connects from or to the start node
+                                        if rel_schema.from_node == *start_label || rel_schema.to_node == *start_label {
+                                            all_rel_types.insert(rel_name.clone());
+                                        }
+                                    }
+                                }
+                                
+                                rel_types = all_rel_types.into_iter().collect();
+                                log::info!("🎯 CTE: Inferred {} relationship types: {:?}", rel_types.len(), rel_types);
+                            }
+                            
                             for rel_type in &rel_types {
                                 if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
-                                    possible_end_types.insert(rel_schema.to_node.clone());
+                                    // For undirected patterns, we need to consider both directions
+                                    // But we should add the OTHER node in each relationship, not both blindly
+                                    for start_label in &start_labels {
+                                        // If relationship goes FROM start_label, add to_node as possible end
+                                        if rel_schema.from_node == *start_label {
+                                            possible_end_types.insert(rel_schema.to_node.clone());
+                                        }
+                                        // If relationship goes TO start_label, add from_node as possible end
+                                        if rel_schema.to_node == *start_label {
+                                            possible_end_types.insert(rel_schema.from_node.clone());
+                                        }
+                                    }
                                 }
                             }
+                            
                             if possible_end_types.len() > 1 {
                                 // Multiple possible end types - use all of them
                                 end_labels = possible_end_types.into_iter().collect();
@@ -2496,8 +2530,15 @@ pub fn extract_ctes_with_context(
                                     "🎯 CTE: Expanded end_labels from relationships: {:?}",
                                     end_labels
                                 );
+                            } else if end_labels.is_empty() && possible_end_types.len() == 1 {
+                                // Single possible type
+                                end_labels = possible_end_types.into_iter().collect();
+                                log::info!(
+                                    "🎯 CTE: Found single end_label: {:?}",
+                                    end_labels
+                                );
                             } else if end_labels.is_empty() {
-                                // Fallback: extract from ViewScan
+                                // Last resort fallback: extract from ViewScan
                                 end_labels = vec![extract_node_label_from_viewscan_with_schema(
                                     &graph_rel.right,
                                     schema,
