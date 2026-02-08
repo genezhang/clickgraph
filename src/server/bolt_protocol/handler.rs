@@ -1521,9 +1521,17 @@ impl BoltHandler {
         let max_cte_depth = 1000; // Use default from config
         let ch_sql = clickhouse_query_generator::generate_sql(render_plan, max_cte_depth);
 
-        // Parameters already substituted into Cypher query (line 623)
-        // SQL generation doesn't need them
-        let final_sql = ch_sql.clone();
+        // Substitute parameters in SQL (for non-id() parameters like $name, $age, etc.)
+        // Note: id() parameters were already handled in Cypher query substitution (line 741)
+        let final_sql = match parameter_substitution::substitute_parameters(&ch_sql, &parameters) {
+            Ok(sql) => sql,
+            Err(e) => {
+                return Err(BoltError::query_error(format!(
+                    "Parameter substitution failed: {}",
+                    e
+                )));
+            }
+        };
 
         log::debug!("Executing SQL: {}", final_sql);
 
