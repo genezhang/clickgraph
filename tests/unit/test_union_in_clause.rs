@@ -24,7 +24,10 @@ fn test_split_generates_in_clause() {
     // For this test, we're just checking the structure
     
     // Transform (this will extract label constraints if id_mapper has the data)
+    // Create arena for AST transformation
+    let arena = clickgraph::query_planner::ast_transform::StringArena::new();
     let (transformed, _label_constraints) = ast_transform::transform_id_functions(
+        &arena,
         parsed_stmt,
         &id_mapper,
         None // No schema for this simple test
@@ -54,8 +57,11 @@ fn test_build_property_in_clause_structure() {
     let (_remaining, parsed_stmt) = open_cypher_parser::parse_cypher_statement(cypher)
         .expect("Failed to parse query");
     
+    // Create arena for AST transformation
+    let arena = clickgraph::query_planner::ast_transform::StringArena::new();
     let id_mapper = IdMapper::new();
     let (transformed, _label_constraints) = ast_transform::transform_id_functions(
+        &arena,
         parsed_stmt,
         &id_mapper,
         None
