@@ -165,29 +165,32 @@ mod tests {
     fn test_extract_labels_from_id_where_exists() {
         // Basic smoke test - the function exists and is callable
         // Full functional tests require complex AST construction or are covered by integration tests
-        
+
         // Create a minimal WHERE clause with a variable (simplest expression)
         let where_clause = ast::WhereClause {
             conditions: ast::Expression::Variable("x"),
         };
 
         let result = extract_labels_from_id_where(&where_clause);
-        
+
         // Should return empty map for non-id() expressions
-        assert!(result.is_empty(), "Non-id() expression should return empty constraints");
+        assert!(
+            result.is_empty(),
+            "Non-id() expression should return empty constraints"
+        );
     }
 
     #[test]
     fn test_extract_from_ast_expr_with_negation() {
         // Test the negation parameter propagation
         // This is a white-box test of the internal recursion
-        
+
         let mut constraints = HashMap::new();
-        
+
         // Test with simple variable (won't extract anything)
         extract_from_ast_expr(&ast::Expression::Variable("a"), &mut constraints, false);
         assert!(constraints.is_empty());
-        
+
         // Test with negated=true (won't extract anything from variable either)
         extract_from_ast_expr(&ast::Expression::Variable("b"), &mut constraints, true);
         assert!(constraints.is_empty());
@@ -198,22 +201,22 @@ mod tests {
         // Integration-style test showing negation behavior
         // When negated=true, id() constraints should NOT be extracted
         // This is the key fix from Comment 6
-        
+
         let mut constraints = HashMap::new();
-        
+
         // A simple Variable expression (not an id() call, but tests the path)
         let var_expr = ast::Expression::Variable("x");
-        
+
         // Call with negated=false
         extract_from_ast_expr(&var_expr, &mut constraints, false);
         let count_non_negated = constraints.len();
-        
+
         constraints.clear();
-        
+
         // Call with negated=true
         extract_from_ast_expr(&var_expr, &mut constraints, true);
         let count_negated = constraints.len();
-        
+
         // Both should be zero for non-id() expressions
         assert_eq!(count_non_negated, 0);
         assert_eq!(count_negated, 0);
