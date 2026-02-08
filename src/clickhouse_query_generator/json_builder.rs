@@ -95,6 +95,58 @@ pub fn generate_json_properties_from_schema(node_schema: &NodeSchema, table_alia
     generate_json_properties_sql(&node_schema.property_mappings, table_alias)
 }
 
+/// Generate SQL for type-preserving JSON without aliases (for CTEs)
+///
+/// Similar to generate_json_properties_sql but omits AS clauses to avoid
+/// alias conflicts when multiple formatRowNoNewline calls are in the same SELECT.
+///
+/// ClickHouse's formatRowNoNewline('JSONEachRow', ...) automatically uses column
+/// names as JSON keys, so aliases are not needed.
+///
+/// # Arguments
+///
+/// * `property_mappings` - Map of Cypher property names to PropertyValue
+/// * `table_alias` - SQL table alias to use for column references
+///
+/// # Returns
+///
+/// SQL expression without aliases: `formatRowNoNewline('JSONEachRow', t.col1, t.col2, ...)`
+pub fn generate_json_properties_without_aliases(
+    property_mappings: &HashMap<String, PropertyValue>,
+    table_alias: &str,
+) -> String {
+    if property_mappings.is_empty() {
+        return "'{}'".to_string();
+    }
+
+    let mut columns = Vec::new();
+    for (_cypher_prop, prop_value) in property_mappings {
+        let column_name = match prop_value {
+            PropertyValue::Column(col) => col.clone(),
+            _ => continue,
+        };
+
+        // Just table_alias.column_name, no AS clause
+        columns.push(format!("{}.{}", table_alias, column_name));
+    }
+
+    if columns.is_empty() {
+        return "'{}'".to_string();
+    }
+
+    format!("formatRowNoNewline('JSONEachRow', {})", columns.join(", "))
+}
+
+/// Generate SQL for type-preserving JSON from NodeSchema without aliases (for CTEs)
+///
+/// Convenience wrapper for generate_json_properties_without_aliases.
+pub fn generate_json_properties_from_schema_without_aliases(
+    node_schema: &NodeSchema,
+    table_alias: &str,
+) -> String {
+    generate_json_properties_without_aliases(&node_schema.property_mappings, table_alias)
+}
+
 /// Generate SQL for a UNION query across all node types
 ///
 /// Creates a UNION ALL query that returns (_label, _id, _properties) for all node types.

@@ -333,7 +333,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                     );
 
                     // Extract node types for each relationship from schema
-                    let relationship_node_types: Vec<(String, String, String)> = {
+                    let mut relationship_node_types: Vec<(String, String, String)> = {
                         let graph_schema = plan_ctx.schema();
                         types
                             .iter()
@@ -348,6 +348,54 @@ fn traverse_connected_pattern_with_mode<'a>(
                             })
                             .collect()
                     };
+
+                    // === UNION PRUNING OPTIMIZATION ===
+                    // If WHERE clause contains id() constraints, use them to prune branches
+                    log::info!(
+                        "🔍 Checking UNION pruning for start='{}', end='{}'",
+                        start_node_alias,
+                        end_node_alias
+                    );
+                    let start_label_constraints =
+                        plan_ctx.get_where_label_constraints(&start_node_alias);
+                    let end_label_constraints =
+                        plan_ctx.get_where_label_constraints(&end_node_alias);
+                    log::info!(
+                        "  start_constraints: {:?}, end_constraints: {:?}",
+                        start_label_constraints,
+                        end_label_constraints
+                    );
+
+                    if start_label_constraints.is_some() || end_label_constraints.is_some() {
+                        let original_count = relationship_node_types.len();
+
+                        relationship_node_types.retain(|(rel_type, from_node, to_node)| {
+                            let start_matches = start_label_constraints
+                                .map(|labels| labels.contains(from_node))
+                                .unwrap_or(true);
+                            let end_matches = end_label_constraints
+                                .map(|labels| labels.contains(to_node))
+                                .unwrap_or(true);
+
+                            let keep = start_matches && end_matches;
+
+                            if !keep {
+                                log::info!(
+                                    "  ✂️  Pruning branch: {}->{}->{}  (start_match={}, end_match={})",
+                                    from_node, rel_type, to_node, start_matches, end_matches
+                                );
+                            }
+
+                            keep
+                        });
+
+                        log::info!(
+                            "🎯 UNION pruning: {} → {} branches (removed {})",
+                            original_count,
+                            relationship_node_types.len(),
+                            original_count - relationship_node_types.len()
+                        );
+                    }
 
                     if relationship_node_types.is_empty() {
                         return Err(LogicalPlanError::QueryPlanningError(
@@ -1514,6 +1562,18 @@ pub fn evaluate_match_clause_with_optional<'a>(
 
         // Store in PlanCtx for use during scan generation
         plan_ctx.set_where_property_requirements(required_properties);
+
+        // Extract label constraints from id() patterns for UNION pruning
+        use crate::query_planner::optimizer::union_pruning::extract_labels_from_id_where;
+        let label_constraints = extract_labels_from_id_where(where_clause);
+
+        log::debug!(
+            "Extracted label constraints from WHERE clause: {:?}",
+            label_constraints
+        );
+
+        // Store in PlanCtx for use during UNION generation
+        plan_ctx.set_where_label_constraints(label_constraints);
     }
 
     for (idx, (path_variable, path_pattern)) in match_clause.path_patterns.iter().enumerate() {

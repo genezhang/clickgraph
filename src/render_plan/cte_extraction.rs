@@ -2007,195 +2007,242 @@ pub fn extract_ctes_with_context(
                     categorized_filters_opt,
                 ) = if let Some(where_predicate) = &graph_rel.where_predicate {
                     log::info!("🔍 GraphRel has where_predicate: {:?}", where_predicate);
-                    // Convert LogicalExpr to RenderExpr
-                    let render_expr =
-                        RenderExpr::try_from(where_predicate.clone()).map_err(|e| {
+
+                    // 🔧 CRITICAL FIX: Strip LabelExpression from where_predicate BEFORE conversion
+                    // LabelExpression becomes `false` in RenderExpr, causing WHERE ... AND false
+                    // For multi-type VLP, type info is encoded in UNION structure, not WHERE
+                    use crate::query_planner::logical_expr::LogicalExpr;
+                    fn strip_label_expr_from_logical(expr: &LogicalExpr) -> Option<LogicalExpr> {
+                        match expr {
+                            LogicalExpr::LabelExpression { .. } => {
+                                log::info!("🔧 Stripping LabelExpression from WHERE predicate");
+                                None // Remove label expressions
+                            }
+                            LogicalExpr::Operator(op) => {
+                                use crate::query_planner::logical_expr::Operator as LogicalOperator;
+                                if matches!(op.operator, LogicalOperator::And | LogicalOperator::Or)
+                                {
+                                    // Recursively strip from operands
+                                    let stripped: Vec<LogicalExpr> = op
+                                        .operands
+                                        .iter()
+                                        .filter_map(strip_label_expr_from_logical)
+                                        .collect();
+                                    match stripped.len() {
+                                        0 => None, // All were labels
+                                        1 => Some(stripped[0].clone()), // Unwrap single operand
+                                        _ => Some(LogicalExpr::Operator(
+                                            crate::query_planner::logical_expr::OperatorApplication {
+                                                operator: op.operator.clone(),
+                                                operands: stripped,
+                                            }
+                                        ))
+                                    }
+                                } else {
+                                    Some(expr.clone()) // Keep other operators
+                                }
+                            }
+                            _ => Some(expr.clone()), // Keep everything else
+                        }
+                    }
+
+                    let cleaned_predicate = strip_label_expr_from_logical(where_predicate);
+
+                    if cleaned_predicate.is_none() {
+                        log::info!("🔧 WHERE predicate contained only label expressions - cleared");
+                        (None, None, None, None)
+                    } else {
+                        let cleaned_predicate = cleaned_predicate.unwrap();
+
+                        // Convert LogicalExpr to RenderExpr
+                        let render_expr = RenderExpr::try_from(cleaned_predicate).map_err(|e| {
                             RenderBuildError::UnsupportedFeature(format!(
                                 "Failed to convert LogicalExpr to RenderExpr: {}",
                                 e
                             ))
                         })?;
 
-                    // ⚠️ CRITICAL FIX (Jan 10, 2026): Schema-aware categorization for ALL schema variations!
-                    //
-                    // Problem: After property mapping, denormalized filters ALL have rel_alias:
-                    //   origin.code → f.Origin (f = relationship alias)
-                    //   dest.code → f.Dest (f = relationship alias)
-                    //
-                    // We can't categorize by table alias alone! Must check COLUMN NAME against schema.
-                    //
-                    // Solution: Pass schema and rel_labels so categorize_filters can check:
-                    //   - Is column in from_node_properties? → start_node_filter
-                    //   - Is column in to_node_properties? → end_node_filter
-                    //   - Is column in property_mappings? → relationship_filter
-                    let rel_labels = graph_rel.labels.clone().unwrap_or_default();
-                    let categorized = categorize_filters(
-                        Some(&render_expr),
-                        &start_alias,
-                        &end_alias,
-                        &rel_alias,
-                        schema,
-                        &rel_labels,
-                    );
-                    log::info!("🔍 Categorized filters (BEFORE property mapping):");
-                    log::info!(
-                        "  start_alias: {}, end_alias: {}, rel_alias: {}",
-                        start_alias,
-                        end_alias,
-                        rel_alias
-                    );
-                    log::info!("  start_node_filters: {:?}", categorized.start_node_filters);
-                    log::info!("  end_node_filters: {:?}", categorized.end_node_filters);
-                    log::info!(
-                        "  relationship_filters: {:?}",
-                        categorized.relationship_filters
-                    );
+                        // ⚠️ CRITICAL FIX (Jan 10, 2026): Schema-aware categorization for ALL schema variations!
+                        //
+                        // Problem: After property mapping, denormalized filters ALL have rel_alias:
+                        //   origin.code → f.Origin (f = relationship alias)
+                        //   dest.code → f.Dest (f = relationship alias)
+                        //
+                        // We can't categorize by table alias alone! Must check COLUMN NAME against schema.
+                        //
+                        // Solution: Pass schema and rel_labels so categorize_filters can check:
+                        //   - Is column in from_node_properties? → start_node_filter
+                        //   - Is column in to_node_properties? → end_node_filter
+                        //   - Is column in property_mappings? → relationship_filter
+                        let rel_labels = graph_rel.labels.clone().unwrap_or_default();
+                        let categorized = categorize_filters(
+                            Some(&render_expr),
+                            &start_alias,
+                            &end_alias,
+                            &rel_alias,
+                            schema,
+                            &rel_labels,
+                        );
+                        log::info!("🔍 Categorized filters (BEFORE property mapping):");
+                        log::info!(
+                            "  start_alias: {}, end_alias: {}, rel_alias: {}",
+                            start_alias,
+                            end_alias,
+                            rel_alias
+                        );
+                        log::info!("  start_node_filters: {:?}", categorized.start_node_filters);
+                        log::info!("  end_node_filters: {:?}", categorized.end_node_filters);
+                        log::info!(
+                            "  relationship_filters: {:?}",
+                            categorized.relationship_filters
+                        );
 
-                    // Now apply property mapping to each categorized filter separately with relationship context
-                    let rel_type = rel_labels.first().map(|s| s.as_str());
-                    let mut mapped_start = categorized.start_node_filters.clone();
-                    let mut mapped_end = categorized.end_node_filters.clone();
-                    let mut mapped_rel = categorized.relationship_filters.clone();
-                    let mut mapped_path = categorized.path_function_filters.clone();
+                        // Now apply property mapping to each categorized filter separately with relationship context
+                        let rel_type = rel_labels.first().map(|s| s.as_str());
+                        let mut mapped_start = categorized.start_node_filters.clone();
+                        let mut mapped_end = categorized.end_node_filters.clone();
+                        let mut mapped_rel = categorized.relationship_filters.clone();
+                        let mut mapped_path = categorized.path_function_filters.clone();
 
-                    if let Some(ref mut expr) = mapped_start {
-                        apply_property_mapping_to_expr_with_context(
-                            expr,
-                            &LogicalPlan::GraphRel(graph_rel.clone()),
-                            rel_type,
-                            Some(crate::render_plan::cte_generation::NodeRole::From),
-                        );
-                    }
-                    if let Some(ref mut expr) = mapped_end {
-                        apply_property_mapping_to_expr_with_context(
-                            expr,
-                            &LogicalPlan::GraphRel(graph_rel.clone()),
-                            rel_type,
-                            Some(crate::render_plan::cte_generation::NodeRole::To),
-                        );
-                    }
-                    if let Some(ref mut expr) = mapped_rel {
-                        apply_property_mapping_to_expr(
-                            expr,
-                            &LogicalPlan::GraphRel(graph_rel.clone()),
-                        );
-                    }
-                    if let Some(ref mut expr) = mapped_path {
-                        apply_property_mapping_to_expr(
-                            expr,
-                            &LogicalPlan::GraphRel(graph_rel.clone()),
-                        );
-                    }
-
-                    // 🔧 FIX: Create alias mapping based on schema type
-                    // For denormalized (SingleTableScan): both nodes map to relationship alias
-                    // For traditional: nodes map to start_node/end_node
-                    let pattern_ctx_for_mapping =
-                        recreate_pattern_schema_context(graph_rel, schema).ok();
-                    let (start_target_alias, end_target_alias) = if let Some(ref ctx) =
-                        pattern_ctx_for_mapping
-                    {
-                        match &ctx.join_strategy {
-                            JoinStrategy::SingleTableScan { .. } => {
-                                // Denormalized: both nodes accessed via relationship table alias
-                                log::info!("🔧 VLP Denormalized: Mapping start/end aliases to relationship table");
-                                (rel_alias.clone(), rel_alias.clone())
-                            }
-                            _ => {
-                                // Traditional/FK-Edge/etc: use start_node/end_node
-                                ("start_node".to_string(), "end_node".to_string())
-                            }
+                        if let Some(ref mut expr) = mapped_start {
+                            apply_property_mapping_to_expr_with_context(
+                                expr,
+                                &LogicalPlan::GraphRel(graph_rel.clone()),
+                                rel_type,
+                                Some(crate::render_plan::cte_generation::NodeRole::From),
+                            );
                         }
-                    } else {
-                        // Fallback if pattern_ctx recreation fails
-                        ("start_node".to_string(), "end_node".to_string())
-                    };
-
-                    // Create alias mapping for node aliases
-                    let alias_mapping = [
-                        (start_alias.clone(), start_target_alias),
-                        (end_alias.clone(), end_target_alias),
-                    ];
-
-                    // 🔧 HOLISTIC FIX: Create alias mapping for relationship based on schema pattern
-                    // - Standard pattern (3-way join): Maps to "rel" alias (separate edge table)
-                    // - FK-edge pattern (2-way join): Maps to "start_node" alias (edge IS start node table)
-                    let rel_target_alias = if is_fk_edge_early {
-                        log::info!("🔧 VLP FK-edge: Mapping relationship properties to 'start_node' (no separate rel table)");
-                        "start_node".to_string()
-                    } else {
-                        "rel".to_string()
-                    };
-                    let rel_alias_mapping = [(rel_alias.clone(), rel_target_alias.clone())];
-
-                    // ⚠️ CRITICAL FIX (Jan 10, 2026): Choose correct alias mapping based on expression content!
-                    //
-                    // For STANDARD schemas: Filter uses node alias (e.g., `a.name = 'Alice'`)
-                    //   → Use alias_mapping: a → start_node
-                    //
-                    // For DENORMALIZED schemas: Filter uses rel alias (e.g., `f.Origin = 'LAX'`)
-                    //   → Use rel_alias_mapping: f → rel
-                    //
-                    // We detect by checking if the filter expression references the rel_alias or node alias.
-
-                    // Helper to check if expression uses a specific table alias
-                    fn expr_uses_alias(expr: &RenderExpr, alias: &str) -> bool {
-                        match expr {
-                            RenderExpr::PropertyAccessExp(prop) => prop.table_alias.0 == alias,
-                            RenderExpr::OperatorApplicationExp(op) => {
-                                op.operands.iter().any(|o| expr_uses_alias(o, alias))
-                            }
-                            _ => false,
+                        if let Some(ref mut expr) = mapped_end {
+                            apply_property_mapping_to_expr_with_context(
+                                expr,
+                                &LogicalPlan::GraphRel(graph_rel.clone()),
+                                rel_type,
+                                Some(crate::render_plan::cte_generation::NodeRole::To),
+                            );
                         }
-                    }
+                        if let Some(ref mut expr) = mapped_rel {
+                            apply_property_mapping_to_expr(
+                                expr,
+                                &LogicalPlan::GraphRel(graph_rel.clone()),
+                            );
+                        }
+                        if let Some(ref mut expr) = mapped_path {
+                            apply_property_mapping_to_expr(
+                                expr,
+                                &LogicalPlan::GraphRel(graph_rel.clone()),
+                            );
+                        }
 
-                    // Choose mapping based on which alias the filter uses
-                    let start_sql = mapped_start.as_ref().map(|expr| {
-                        if expr_uses_alias(expr, &rel_alias) {
-                            // Denormalized: filter uses rel_alias after property mapping
-                            render_expr_to_sql_string(expr, &rel_alias_mapping)
+                        // 🔧 FIX: Create alias mapping based on schema type
+                        // For denormalized (SingleTableScan): both nodes map to relationship alias
+                        // For traditional: nodes map to start_node/end_node
+                        let pattern_ctx_for_mapping =
+                            recreate_pattern_schema_context(graph_rel, schema).ok();
+                        let (start_target_alias, end_target_alias) = if let Some(ref ctx) =
+                            pattern_ctx_for_mapping
+                        {
+                            match &ctx.join_strategy {
+                                JoinStrategy::SingleTableScan { .. } => {
+                                    // Denormalized: both nodes accessed via relationship table alias
+                                    log::info!("🔧 VLP Denormalized: Mapping start/end aliases to relationship table");
+                                    (rel_alias.clone(), rel_alias.clone())
+                                }
+                                _ => {
+                                    // Traditional/FK-Edge/etc: use start_node/end_node
+                                    ("start_node".to_string(), "end_node".to_string())
+                                }
+                            }
                         } else {
-                            // Standard: filter uses node alias
-                            render_expr_to_sql_string(expr, &alias_mapping)
-                        }
-                    });
-                    let end_sql = mapped_end.as_ref().map(|expr| {
-                        if expr_uses_alias(expr, &rel_alias) {
-                            // Denormalized: filter uses rel_alias after property mapping
-                            render_expr_to_sql_string(expr, &rel_alias_mapping)
+                            // Fallback if pattern_ctx recreation fails
+                            ("start_node".to_string(), "end_node".to_string())
+                        };
+
+                        // Create alias mapping for node aliases
+                        let alias_mapping = [
+                            (start_alias.clone(), start_target_alias),
+                            (end_alias.clone(), end_target_alias),
+                        ];
+
+                        // 🔧 HOLISTIC FIX: Create alias mapping for relationship based on schema pattern
+                        // - Standard pattern (3-way join): Maps to "rel" alias (separate edge table)
+                        // - FK-edge pattern (2-way join): Maps to "start_node" alias (edge IS start node table)
+                        let rel_target_alias = if is_fk_edge_early {
+                            log::info!("🔧 VLP FK-edge: Mapping relationship properties to 'start_node' (no separate rel table)");
+                            "start_node".to_string()
                         } else {
-                            // Standard: filter uses node alias
-                            render_expr_to_sql_string(expr, &alias_mapping)
+                            "rel".to_string()
+                        };
+                        let rel_alias_mapping = [(rel_alias.clone(), rel_target_alias.clone())];
+
+                        // ⚠️ CRITICAL FIX (Jan 10, 2026): Choose correct alias mapping based on expression content!
+                        //
+                        // For STANDARD schemas: Filter uses node alias (e.g., `a.name = 'Alice'`)
+                        //   → Use alias_mapping: a → start_node
+                        //
+                        // For DENORMALIZED schemas: Filter uses rel alias (e.g., `f.Origin = 'LAX'`)
+                        //   → Use rel_alias_mapping: f → rel
+                        //
+                        // We detect by checking if the filter expression references the rel_alias or node alias.
+
+                        // Helper to check if expression uses a specific table alias
+                        fn expr_uses_alias(expr: &RenderExpr, alias: &str) -> bool {
+                            match expr {
+                                RenderExpr::PropertyAccessExp(prop) => prop.table_alias.0 == alias,
+                                RenderExpr::OperatorApplicationExp(op) => {
+                                    op.operands.iter().any(|o| expr_uses_alias(o, alias))
+                                }
+                                _ => false,
+                            }
                         }
-                    });
-                    // ✅ Relationship filters always use rel_alias_mapping
-                    let rel_sql_rendered = mapped_rel
-                        .as_ref()
-                        .map(|expr| render_expr_to_sql_string(expr, &rel_alias_mapping));
 
-                    // Build CategorizedFilters with both RenderExpr and pre-rendered SQL
-                    // The pre-rendered SQL is used by VariableLengthCteGenerator (backward compat)
-                    // while RenderExpr is used by CteManager (new path)
-                    let mapped_categorized = CategorizedFilters {
-                        start_node_filters: mapped_start,
-                        end_node_filters: mapped_end,
-                        relationship_filters: mapped_rel,
-                        path_function_filters: mapped_path,
-                        start_sql: start_sql.clone(),
-                        end_sql: end_sql.clone(),
-                        relationship_sql: rel_sql_rendered.clone(),
-                    };
+                        // Choose mapping based on which alias the filter uses
+                        let start_sql = mapped_start.as_ref().map(|expr| {
+                            if expr_uses_alias(expr, &rel_alias) {
+                                // Denormalized: filter uses rel_alias after property mapping
+                                render_expr_to_sql_string(expr, &rel_alias_mapping)
+                            } else {
+                                // Standard: filter uses node alias
+                                render_expr_to_sql_string(expr, &alias_mapping)
+                            }
+                        });
+                        let end_sql = mapped_end.as_ref().map(|expr| {
+                            if expr_uses_alias(expr, &rel_alias) {
+                                // Denormalized: filter uses rel_alias after property mapping
+                                render_expr_to_sql_string(expr, &rel_alias_mapping)
+                            } else {
+                                // Standard: filter uses node alias
+                                render_expr_to_sql_string(expr, &alias_mapping)
+                            }
+                        });
+                        // ✅ Relationship filters always use rel_alias_mapping
+                        let rel_sql_rendered = mapped_rel
+                            .as_ref()
+                            .map(|expr| render_expr_to_sql_string(expr, &rel_alias_mapping));
 
-                    // Note: End node filters are placed INSIDE the CTE (via end_sql above).
-                    // Chained pattern filters (nodes outside VLP) are handled separately in
-                    // plan_builder.rs via references_only_vlp_aliases check.
+                        // Build CategorizedFilters with both RenderExpr and pre-rendered SQL
+                        // The pre-rendered SQL is used by VariableLengthCteGenerator (backward compat)
+                        // while RenderExpr is used by CteManager (new path)
+                        let mapped_categorized = CategorizedFilters {
+                            start_node_filters: mapped_start,
+                            end_node_filters: mapped_end,
+                            relationship_filters: mapped_rel,
+                            path_function_filters: mapped_path,
+                            start_sql: start_sql.clone(),
+                            end_sql: end_sql.clone(),
+                            relationship_sql: rel_sql_rendered.clone(),
+                        };
 
-                    (
-                        start_sql,
-                        end_sql,
-                        rel_sql_rendered,
-                        Some(mapped_categorized),
-                    )
+                        // Note: End node filters are placed INSIDE the CTE (via end_sql above).
+                        // Chained pattern filters (nodes outside VLP) are handled separately in
+                        // plan_builder.rs via references_only_vlp_aliases check.
+
+                        (
+                            start_sql,
+                            end_sql,
+                            rel_sql_rendered,
+                            Some(mapped_categorized),
+                        )
+                    } // End of else block for cleaned_predicate.is_none()
                 } else {
                     (None, None, None, None)
                 };
@@ -2446,7 +2493,7 @@ pub fn extract_ctes_with_context(
                     log::info!("🔍 VLP: Variable-length or shortest path detected (not using chained JOINs)");
 
                     // 🎯 CHECK FOR MULTI-TYPE VLP (Part 1D implementation)
-                    let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
+                    let mut rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
                     log::info!("🔍 VLP: rel_types={:?}", rel_types);
 
                     let is_multi_type_check =
@@ -2484,11 +2531,52 @@ pub fn extract_ctes_with_context(
                         // If only one label or no labels, collect all possible end types from relationships
                         if end_labels.len() <= 1 {
                             let mut possible_end_types = std::collections::HashSet::new();
+
+                            // 🔧 FIX: If rel_types is empty (unlabeled relationship pattern),
+                            // query schema for ALL relationships from start node
+                            if rel_types.is_empty() {
+                                log::info!("🔍 CTE: No relationship types specified, inferring from schema");
+                                // Get all relationships that involve the start node type(s)
+                                let mut all_rel_types = std::collections::HashSet::new();
+
+                                for start_label in &start_labels {
+                                    // Iterate through all relationships in schema
+                                    for (rel_name, rel_schema) in schema.get_relationships_schemas()
+                                    {
+                                        // Check if this relationship connects from or to the start node
+                                        if rel_schema.from_node == *start_label
+                                            || rel_schema.to_node == *start_label
+                                        {
+                                            all_rel_types.insert(rel_name.clone());
+                                        }
+                                    }
+                                }
+
+                                rel_types = all_rel_types.into_iter().collect();
+                                log::info!(
+                                    "🎯 CTE: Inferred {} relationship types: {:?}",
+                                    rel_types.len(),
+                                    rel_types
+                                );
+                            }
+
                             for rel_type in &rel_types {
                                 if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
-                                    possible_end_types.insert(rel_schema.to_node.clone());
+                                    // For undirected patterns, we need to consider both directions
+                                    // But we should add the OTHER node in each relationship, not both blindly
+                                    for start_label in &start_labels {
+                                        // If relationship goes FROM start_label, add to_node as possible end
+                                        if rel_schema.from_node == *start_label {
+                                            possible_end_types.insert(rel_schema.to_node.clone());
+                                        }
+                                        // If relationship goes TO start_label, add from_node as possible end
+                                        if rel_schema.to_node == *start_label {
+                                            possible_end_types.insert(rel_schema.from_node.clone());
+                                        }
+                                    }
                                 }
                             }
+
                             if possible_end_types.len() > 1 {
                                 // Multiple possible end types - use all of them
                                 end_labels = possible_end_types.into_iter().collect();
@@ -2496,8 +2584,12 @@ pub fn extract_ctes_with_context(
                                     "🎯 CTE: Expanded end_labels from relationships: {:?}",
                                     end_labels
                                 );
+                            } else if end_labels.is_empty() && possible_end_types.len() == 1 {
+                                // Single possible type
+                                end_labels = possible_end_types.into_iter().collect();
+                                log::info!("🎯 CTE: Found single end_label: {:?}", end_labels);
                             } else if end_labels.is_empty() {
-                                // Fallback: extract from ViewScan
+                                // Last resort fallback: extract from ViewScan
                                 end_labels = vec![extract_node_label_from_viewscan_with_schema(
                                     &graph_rel.right,
                                     schema,
@@ -2546,7 +2638,12 @@ pub fn extract_ctes_with_context(
 
                         // Generate CTE name - use vlp_ prefix for proper detection
                         // The plan_builder.rs looks for CTEs starting with "vlp_" or "chained_path_"
-                        let cte_name = format!("vlp_multi_type_{}_{}", start_alias, end_alias);
+                        // 🔧 FIX: Normalize alias order for undirected patterns (alphabetical)
+                        let cte_name = if start_alias <= end_alias {
+                            format!("vlp_multi_type_{}_{}", start_alias, end_alias)
+                        } else {
+                            format!("vlp_multi_type_{}_{}", end_alias, start_alias)
+                        };
 
                         // Generate SQL
                         match generator.generate_cte_sql(&cte_name) {

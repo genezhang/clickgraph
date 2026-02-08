@@ -206,6 +206,7 @@ impl PlanCtxBuilder {
             variables: self.variables,
             cte_alias_sources: self.cte_alias_sources,
             where_property_requirements: self.where_property_requirements,
+            where_label_constraints: HashMap::new(),
         }
     }
 }

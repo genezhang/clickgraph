@@ -69,6 +69,123 @@ fn bolt_value_to_string(value: &BoltValue) -> String {
 /// This function detects which parameters are used with id() and decodes them.
 ///
 /// Pattern detection: `id(alias) IN $paramName` or `id(alias) = $paramName`
+/// Substitute Cypher parameters into query string, keeping encoded IDs intact
+/// This replaces $paramName with actual values so parser sees literals
+/// Used for id() parameters to preserve encoded IDs for label extraction
+/// This replaces only $paramName values used with id() so the parser sees literals
+/// Used for id() parameters to preserve encoded IDs for label extraction
+///
+/// SECURITY:
+/// - Uses regex with word boundaries to prevent partial matches ($id vs $ids)
+/// - Escapes quotes and backslashes in string values
+/// - Skips string literals to prevent injection
+///
+/// LIMITATION: This is a lexical approach that may have edge cases with complex
+/// nested strings or comments. For production, consider AST-level parameter binding.
+fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>) -> String {
+    use regex::Regex;
+
+    // Helper to check if position is inside a string literal
+    fn is_inside_string(query: &str, pos: usize) -> bool {
+        let before = &query[..pos];
+        let single_quotes = before.matches('\'').count();
+        let double_quotes = before.matches('"').count();
+
+        // Odd number of quotes means we're inside a string
+        // This is simplified - doesn't handle escaped quotes perfectly
+        (single_quotes % 2 == 1) || (double_quotes % 2 == 1)
+    }
+
+    fn escape_cypher_string(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for ch in s.chars() {
+            match ch {
+                '\'' => {
+                    out.push('\\');
+                    out.push('\'');
+                }
+                '\\' => {
+                    out.push('\\');
+                    out.push('\\');
+                }
+                _ => out.push(ch),
+            }
+        }
+        out
+    }
+
+    fn value_to_cypher_literal(value: &Value) -> String {
+        match value {
+            Value::Array(arr) => {
+                let values: Vec<String> =
+                    arr.iter()
+                        .map(|v| match v {
+                            Value::Number(n) => n.to_string(),
+                            Value::String(s) => format!("'{}'", escape_cypher_string(s)),
+                            other => serde_json::to_string(other)
+                                .unwrap_or_else(|_| format!("{:?}", other)),
+                        })
+                        .collect();
+                format!("[{}]", values.join(", "))
+            }
+            Value::Number(n) => n.to_string(),
+            Value::String(s) => format!("'{}'", escape_cypher_string(s)),
+            other => serde_json::to_string(other).unwrap_or_else(|_| format!("{:?}", other)),
+        }
+    }
+
+    // Regex to find id()-based predicates with a parameter
+    let re = Regex::new(
+        r"(?i)\bid\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s*\)\s*(?:IN|=)\s*\$([A-Za-z_][A-Za-z0-9_]*)",
+    )
+    .expect("regex for id() parameter substitution must compile");
+
+    let mut result = query.to_string();
+    let mut offset: isize = 0;
+
+    // Collect all matches first to avoid modification-during-iteration issues
+    let matches: Vec<_> = re.captures_iter(query).collect();
+
+    for cap in matches {
+        let full_match = cap.get(0).unwrap();
+        let match_start = full_match.start();
+        let param_name = &cap[1];
+
+        // Skip if inside string literal
+        if is_inside_string(query, match_start) {
+            log::debug!(
+                "⏭️  Skipping parameter ${} inside string literal",
+                param_name
+            );
+            continue;
+        }
+
+        if let Some(param_value) = parameters.get(param_name) {
+            let literal = value_to_cypher_literal(param_value);
+            let pattern = format!("${}", param_name);
+            let replacement = full_match.as_str().replacen(&pattern, &literal, 1);
+
+            // Calculate position with offset adjustment
+            let adjusted_start = (match_start as isize + offset) as usize;
+            let adjusted_end = adjusted_start + full_match.as_str().len();
+
+            result.replace_range(adjusted_start..adjusted_end, &replacement);
+
+            // Update offset for subsequent replacements
+            offset += replacement.len() as isize - full_match.as_str().len() as isize;
+        }
+    }
+
+    log::debug!(
+        "🔧 Parameter substitution: {} parameters processed",
+        parameters.len()
+    );
+    result
+}
+
+/// Legacy function - replaced by substitute_cypher_parameters
+/// Kept for potential future use but currently unused
+#[allow(dead_code)]
 fn decode_id_parameters(
     query: &str,
     mut parameters: HashMap<String, Value>,
@@ -616,11 +733,12 @@ impl BoltHandler {
             .extract_query()
             .ok_or_else(|| BoltError::invalid_message("RUN message missing query"))?;
 
-        let mut parameters = message.extract_parameters().unwrap_or_default();
+        let parameters = message.extract_parameters().unwrap_or_default();
 
-        // Decode id() parameters: if query has `id(x) IN $paramName`, decode the parameter values
-        // Neo4j Browser sends encoded IDs in parameters like $existingNodeIds, $newNodeIds
-        parameters = decode_id_parameters(&query, parameters);
+        // Substitute Cypher parameters into query string (keeping encoded IDs)
+        // This allows parser to see actual values as literals while preserving encoding
+        // The AST transformer will then extract labels from encoded IDs for UNION pruning
+        let query = substitute_cypher_parameters(&query, &parameters);
 
         // Get selected schema from context, or from RUN message metadata
         let (schema_name, tenant_id, role, view_parameters) = {
@@ -1005,12 +1123,15 @@ impl BoltHandler {
         // ============================================================
 
         // Parse and transform in a limited scope to extract metadata
-        let (is_procedure, is_union, effective_schema, exec_plan, query_type) = {
-            let transformed_stmt = crate::query_planner::ast_transform::transform_id_functions(
-                parsed_stmt,
-                &id_mapper_snapshot,
-                None, // No schema available yet (loaded later)
-            );
+        let ast_arena = crate::query_planner::ast_transform::StringArena::new();
+        let (is_procedure, is_union, effective_schema, exec_plan, query_type, label_constraints) = {
+            let (transformed_stmt, label_constraints) =
+                crate::query_planner::ast_transform::transform_id_functions(
+                    &ast_arena,
+                    parsed_stmt,
+                    &id_mapper_snapshot,
+                    None, // No schema available yet (loaded later)
+                );
 
             let is_procedure = crate::procedures::is_procedure_only_statement(&transformed_stmt);
             let is_union = crate::procedures::is_procedure_union_query(&transformed_stmt);
@@ -1132,6 +1253,7 @@ impl BoltHandler {
                 effective_schema,
                 exec_plan,
                 query_type,
+                label_constraints,
             )
         };
 
@@ -1327,19 +1449,27 @@ impl BoltHandler {
             context.id_mapper.clone()
         };
 
-        let transformed_for_planning = crate::query_planner::ast_transform::transform_id_functions(
-            parsed_stmt_for_planning,
-            &id_mapper_snapshot,
-            Some(&graph_schema), // Pass schema for node_id property lookup
+        let (transformed_for_planning, label_constraints_from_second_pass) =
+            crate::query_planner::ast_transform::transform_id_functions(
+                &ast_arena, // Reuse same arena
+                parsed_stmt_for_planning,
+                &id_mapper_snapshot,
+                Some(&graph_schema), // Pass schema for node_id property lookup
+            );
+
+        // Use label_constraints from the second pass (not first) since it has schema context
+        log::info!(
+            "🎯 Passing {} label constraints to query planner (from second pass)",
+            label_constraints_from_second_pass.len()
         );
 
         // Generate logical plan using transformed statement
-        let (logical_plan, plan_ctx) = match query_planner::evaluate_read_statement(
+        let (logical_plan, mut plan_ctx) = match query_planner::evaluate_read_statement(
             transformed_for_planning,
             &graph_schema,
             tenant_id,
             view_parameters,
-            None, // max_inferred_types
+            Some(20), // max_inferred_types - increased for UNION branches
         ) {
             Ok(result) => result,
             Err(e) => {
@@ -1349,6 +1479,12 @@ impl BoltHandler {
                 )));
             }
         };
+
+        // Inject label constraints into plan_ctx for UNION pruning
+        if !label_constraints_from_second_pass.is_empty() {
+            plan_ctx.set_where_label_constraints(label_constraints_from_second_pass);
+        }
+
         // transformed_for_planning is now dropped
 
         // Extract return metadata for result transformation
@@ -1385,19 +1521,16 @@ impl BoltHandler {
         let max_cte_depth = 1000; // Use default from config
         let ch_sql = clickhouse_query_generator::generate_sql(render_plan, max_cte_depth);
 
-        // Substitute parameters if provided
-        let final_sql = if !parameters.is_empty() {
-            match parameter_substitution::substitute_parameters(&ch_sql, &parameters) {
-                Ok(sql) => sql,
-                Err(e) => {
-                    return Err(BoltError::query_error(format!(
-                        "Parameter substitution failed: {}",
-                        e
-                    )));
-                }
+        // Substitute parameters in SQL (for non-id() parameters like $name, $age, etc.)
+        // Note: id() parameters were already handled in Cypher query substitution (line 741)
+        let final_sql = match parameter_substitution::substitute_parameters(&ch_sql, &parameters) {
+            Ok(sql) => sql,
+            Err(e) => {
+                return Err(BoltError::query_error(format!(
+                    "Parameter substitution failed: {}",
+                    e
+                )));
             }
-        } else {
-            ch_sql.clone()
         };
 
         log::debug!("Executing SQL: {}", final_sql);
