@@ -48,7 +48,7 @@ fn create_test_schema() -> GraphSchema {
 
     // Create FOLLOWS relationship
     rels.insert(
-        "FOLLOWS::Person::Person".to_string(),
+        "FOLLOWS".to_string(),
         RelationshipSchema {
             database: "test".to_string(),
             table_name: "follows".to_string(),

@@ -827,17 +827,27 @@ impl GraphSchema {
             );
         }
 
-        // Use prefix search to find composite keys matching the relationship type
-        // This supports simple key lookups by finding TYPE::* patterns
-        let prefix = format!("{}::", rel_type);
-        for (key, schema) in &self.relationships {
-            if key.starts_with(&prefix) {
-                log::debug!(
-                    "get_rel_schema_with_nodes: Found schema for composite key '{}' when looking for type '{}'",
-                    key, rel_type
-                );
-                return Ok(schema);
+        // Use rel_type_index for O(1) lookup (replaces slower prefix search)
+        // This finds composite keys matching the relationship type (e.g., "FOLLOWS::User::User")
+        if let Some(composite_keys) = self.rel_type_index.get(rel_type) {
+            if let Some(key) = composite_keys.first() {
+                if let Some(schema) = self.relationships.get(key) {
+                    log::debug!(
+                        "get_rel_schema_with_nodes: Found schema for composite key '{}' when looking for type '{}'",
+                        key, rel_type
+                    );
+                    return Ok(schema);
+                }
             }
+        }
+
+        // Fallback: Try simple key lookup (for backward compatibility with integration tests)
+        if let Some(schema) = self.relationships.get(rel_type) {
+            log::debug!(
+                "get_rel_schema_with_nodes: Found schema for simple key '{}'",
+                rel_type
+            );
+            return Ok(schema);
         }
 
         Err(GraphSchemaError::Relation {

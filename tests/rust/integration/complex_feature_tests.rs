@@ -127,7 +127,7 @@ fn create_test_schema() -> GraphSchema {
 
     // Create FOLLOWS relationship
     relationships.insert(
-        "FOLLOWS::User::User".to_string(),
+        "FOLLOWS".to_string(),
         RelationshipSchema {
             database: "test".to_string(),
             table_name: "user_follows".to_string(),
@@ -172,7 +172,7 @@ fn create_test_schema() -> GraphSchema {
 
     // Create AUTHORED relationship
     relationships.insert(
-        "AUTHORED::User::Post".to_string(),
+        "AUTHORED".to_string(),
         RelationshipSchema {
             database: "test".to_string(),
             table_name: "post_authors".to_string(),
