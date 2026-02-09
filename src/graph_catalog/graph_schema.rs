@@ -754,37 +754,30 @@ impl GraphSchema {
             rel_label
         );
 
-        // First try exact match (simple key for backward compatibility)
+        // First try exact match (composite key lookup)
         if let Some(schema) = self.relationships.get(rel_label) {
-            log::debug!("get_rel_schema: Found simple key '{}'", rel_label);
+            log::debug!("get_rel_schema: Found exact match for '{}'", rel_label);
             return Ok(schema);
         }
 
-        // Check if this is a composite key (TYPE::FROM::TO)
-        if rel_label.contains("::") {
-            // It's a composite key - try to decompose and look up
-            log::debug!(
-                "get_rel_schema: Input '{}' is a composite key, attempting lookup",
-                rel_label
-            );
-
-            // Composite keys are stored as-is in the HashMap, so try direct lookup
-            if let Some(schema) = self.relationships.get(rel_label) {
-                return Ok(schema);
+        // If not found and it's a simple type name (no "::"), try to find relationships of that type
+        if !rel_label.contains("::") {
+            let schemas = self.rel_schemas_for_type(rel_label);
+            if schemas.len() == 1 {
+                log::debug!("get_rel_schema: Found single relationship of type '{}'", rel_label);
+                return Ok(schemas[0]);
+            } else if schemas.len() > 1 {
+                log::warn!(
+                    "get_rel_schema: Multiple relationships found for type '{}' ({} variants), returning first one. Consider using get_rel_schema_with_nodes() for precise lookup.",
+                    rel_label, schemas.len()
+                );
+                return Ok(schemas[0]);
             }
-
-            // If direct lookup failed, the composite key doesn't exist
-            // This might happen if code passes a composite key that wasn't registered
-            log::warn!(
-                "get_rel_schema: Composite key '{}' not found in schema",
-                rel_label
-            );
         }
 
-        // If not found, it might be a composite key query from old code
-        // Return error - caller should use get_rel_schema_with_nodes for composite lookups
+        // If not found, return error
         log::error!(
-            "❌ get_rel_schema (OLD METHOD): No relationship schema found for '{}'. Caller should use get_rel_schema_with_nodes!",
+            "❌ get_rel_schema: No relationship schema found for '{}'",
             rel_label
         );
         Err(GraphSchemaError::Relation {
