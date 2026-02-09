@@ -95,7 +95,7 @@ fn setup_denormalized_schema() -> GraphSchema {
     );
 
     relationships.insert(
-        "FLIGHT".to_string(),
+        "FLIGHT::Airport::Airport".to_string(),
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "flights".to_string(),
@@ -495,7 +495,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
     );
 
     relationships.insert(
-        "FLIGHT".to_string(),
+        "FLIGHT::Airport::Airport".to_string(),
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "flights".to_string(), // ✅ Same table as node!

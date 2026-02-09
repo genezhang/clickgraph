@@ -106,7 +106,6 @@ mod tests {
             edge_id_types: None,
         };
 
-        relationships.insert("FOLLOWS".to_string(), follows_schema.clone());
         relationships.insert("FOLLOWS::User::User".to_string(), follows_schema);
 
         // AUTHORED relationship: User → Post
@@ -141,7 +140,6 @@ mod tests {
             edge_id_types: None,
         };
 
-        relationships.insert("AUTHORED".to_string(), authored_schema.clone());
         relationships.insert("AUTHORED::User::Post".to_string(), authored_schema);
 
         GraphSchema::build(

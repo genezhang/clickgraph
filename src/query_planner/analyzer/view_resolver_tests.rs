@@ -67,7 +67,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
         };
-        relationships.insert("FOLLOWS".to_string(), rel_schema);
+        relationships.insert("FOLLOWS::User::User".to_string(), rel_schema);
 
         GraphSchema::build(1, "test_db".to_string(), nodes, relationships)
     }

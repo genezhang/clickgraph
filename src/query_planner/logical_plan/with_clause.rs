@@ -25,7 +25,7 @@
 //! - Has ORDER BY, SKIP, LIMIT, WHERE as part of its syntax
 
 use crate::{
-    open_cypher_parser::ast::{Case, Expression, WithClause as AstWithClause, WithItem},
+    open_cypher_parser::ast::{Expression, WithClause as AstWithClause, WithItem},
     query_planner::{
         logical_expr::LogicalExpr,
         logical_plan::{
@@ -399,3 +399,12 @@ fn rewrite_expression_pattern_comprehensions<'a>(
         _ => (expr, vec![]),
     }
 }
+
+// NOTE: WITH clause CTE column and alias tracking is handled exclusively via
+// `PlanCtx`'s internal CTE registry when the logical plan is constructed, based on
+// the actual WITH projection items. Previous attempt to build mappings here by
+// introspecting node schemas was unsafe because it:
+// 1. Assumed all properties were projected
+// 2. Hard-coded node type-specific id columns (e.g., `user_id`)
+// 3. Wrote to render-time context during logical planning
+// 4. Could diverge from actual columns/aliases produced during SQL rendering

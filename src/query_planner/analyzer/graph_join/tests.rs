@@ -78,7 +78,7 @@ fn create_test_graph_schema() -> GraphSchema {
 
     // Create FOLLOWS relationship schema (edge list)
     relationships.insert(
-        "FOLLOWS".to_string(),
+        "FOLLOWS::Person::Person".to_string(),
         RelationshipSchema {
             database: "default".to_string(),
             table_name: "FOLLOWS".to_string(),
@@ -116,7 +116,7 @@ fn create_test_graph_schema() -> GraphSchema {
 
     // Create WORKS_AT relationship schema (edge list)
     relationships.insert(
-        "WORKS_AT".to_string(),
+        "WORKS_AT::Person::Company".to_string(),
         RelationshipSchema {
             database: "default".to_string(),
             table_name: "WORKS_AT".to_string(),
@@ -1115,10 +1115,16 @@ fn test_standard_edge_is_not_fk_pattern() {
     // Verify standard edge tables are NOT marked as FK pattern
     let schema = create_test_graph_schema();
 
-    let follows = schema.get_relationships_schemas().get("FOLLOWS").unwrap();
+    let follows = schema
+        .get_relationships_schemas()
+        .get("FOLLOWS::Person::Person")
+        .unwrap();
     assert!(!follows.is_fk_edge, "FOLLOWS should NOT be FK-edge pattern");
 
-    let works_at = schema.get_relationships_schemas().get("WORKS_AT").unwrap();
+    let works_at = schema
+        .get_relationships_schemas()
+        .get("WORKS_AT::Person::Company")
+        .unwrap();
     assert!(
         !works_at.is_fk_edge,
         "WORKS_AT should NOT be FK-edge pattern"

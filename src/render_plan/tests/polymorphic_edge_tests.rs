@@ -107,7 +107,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
 
     // FOLLOWS relationship (User -> User)
     relationships.insert(
-        "FOLLOWS".to_string(),
+        "FOLLOWS::User::User".to_string(),
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "interactions".to_string(),
@@ -148,7 +148,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
 
     // LIKES relationship (User -> Post)
     relationships.insert(
-        "LIKES".to_string(),
+        "LIKES::User::Post".to_string(),
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "interactions".to_string(),
@@ -189,7 +189,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
 
     // AUTHORED relationship (User -> Post)
     relationships.insert(
-        "AUTHORED".to_string(),
+        "AUTHORED::User::Post".to_string(),
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "interactions".to_string(),
@@ -394,7 +394,7 @@ fn test_non_polymorphic_relationship() {
 
     // Non-polymorphic FOLLOWS relationship (dedicated table)
     relationships.insert(
-        "FOLLOWS".to_string(),
+        "FOLLOWS::User::User".to_string(),
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "user_follows".to_string(),
@@ -516,7 +516,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
     // - from_label_column: None (fixed to Group)
     // - to_label_column: "member_type" (polymorphic target)
     relationships.insert(
-        "PARENT_OF".to_string(),
+        "PARENT_OF::Group::$any".to_string(),
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "memberships".to_string(),

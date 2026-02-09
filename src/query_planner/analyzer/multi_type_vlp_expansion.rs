@@ -224,8 +224,21 @@ fn find_edges_from_node<'a>(
 ) -> Vec<&'a RelationshipSchema> {
     let mut edges = Vec::new();
 
+    log::debug!(
+        "🔍 find_edges_from_node: looking for rel_type='{}' from_node_type='{}'",
+        rel_type,
+        from_node_type
+    );
+
     // Check all relationships in the schema
     for (key, rel_schema) in schema.get_relationships_schemas() {
+        log::debug!(
+            "  Checking relationship key='{}': {} -> {}",
+            key,
+            rel_schema.from_node,
+            rel_schema.to_node
+        );
+
         // Match by relationship type (handle both simple and composite keys)
         let matches_type = if key.contains("::") {
             // Composite key: "TYPE::FROM::TO"
@@ -235,12 +248,27 @@ fn find_edges_from_node<'a>(
             key == rel_type
         };
 
+        log::debug!(
+            "    matches_type={} (key.contains('::')={}, key.split('::').next()={:?})",
+            matches_type,
+            key.contains("::"),
+            key.split("::").next()
+        );
+
         // Check if this edge starts from the specified node type
         if matches_type && rel_schema.from_node == from_node_type {
+            log::debug!("    ✅ Found matching edge!");
             edges.push(rel_schema);
+        } else {
+            log::debug!(
+                "    ❌ No match: matches_type={}, from_node matches={}",
+                matches_type,
+                rel_schema.from_node == from_node_type
+            );
         }
     }
 
+    log::debug!("  Returning {} edges", edges.len());
     edges
 }
 

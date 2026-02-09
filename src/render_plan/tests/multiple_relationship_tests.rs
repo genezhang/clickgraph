@@ -46,7 +46,7 @@ fn setup_test_schema() {
 
     // FOLLOWS -> user_follows
     relationships.insert(
-        "FOLLOWS".to_string(),
+        "FOLLOWS::User::User".to_string(),
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "user_follows".to_string(),
@@ -80,7 +80,7 @@ fn setup_test_schema() {
 
     // FRIENDS_WITH -> friendships
     relationships.insert(
-        "FRIENDS_WITH".to_string(),
+        "FRIENDS_WITH::User::User".to_string(),
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "friendships".to_string(),
@@ -114,7 +114,7 @@ fn setup_test_schema() {
 
     // PURCHASED -> orders
     relationships.insert(
-        "PURCHASED".to_string(),
+        "PURCHASED::Customer::Product".to_string(),
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "orders".to_string(),
@@ -148,7 +148,7 @@ fn setup_test_schema() {
 
     // PLACED_ORDER -> orders (same table for this test)
     relationships.insert(
-        "PLACED_ORDER".to_string(),
+        "PLACED_ORDER::Customer::Order".to_string(),
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "orders".to_string(),
@@ -182,7 +182,7 @@ fn setup_test_schema() {
 
     // ORDER_CONTAINS -> order_items
     relationships.insert(
-        "ORDER_CONTAINS".to_string(),
+        "ORDER_CONTAINS::Order::Product".to_string(),
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "order_items".to_string(),

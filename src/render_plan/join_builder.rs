@@ -794,6 +794,22 @@ impl JoinBuilder for LogicalPlan {
                     }
                 }
 
+                // 🚀 MULTI-TYPE VLP: Check if this is a multi-type variable-length pattern
+                // Multi-type VLPs (e.g., [:FOLLOWS|AUTHORED*2]) also use CTE as FROM
+                if graph_rel.variable_length.is_some() {
+                    if let Some(ref labels) = graph_rel.labels {
+                        if labels.len() > 1 {
+                            log::info!(
+                                "✓ Multi-type VLP {:?} - using CTE vlp_multi_type_{}_{}, no joins needed (RETURNING EMPTY)",
+                                labels,
+                                graph_rel.left_connection,
+                                graph_rel.right_connection
+                            );
+                            return Ok(Vec::new());
+                        }
+                    }
+                }
+
                 // 🚀 FIXED-LENGTH VLP: Use consolidated VlpContext for all schema types
                 if let Some(vlp_ctx) = build_vlp_context(graph_rel, schema) {
                     let exact_hops = vlp_ctx.exact_hops.unwrap_or(1);
