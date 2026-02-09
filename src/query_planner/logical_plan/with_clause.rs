@@ -163,7 +163,6 @@ pub fn evaluate_with_clause<'a>(
         with_node = with_node.with_where(predicate);
     }
 
-
     Ok(Arc::new(LogicalPlan::WithClause(with_node)))
 }
 
@@ -401,9 +400,9 @@ fn rewrite_expression_pattern_comprehensions<'a>(
     }
 }
 
-// NOTE: WITH clause CTE column and alias tracking is handled exclusively via 
-// `PlanCtx`'s internal CTE registry when the logical plan is constructed, based on 
-// the actual WITH projection items. Previous attempt to build mappings here by 
+// NOTE: WITH clause CTE column and alias tracking is handled exclusively via
+// `PlanCtx`'s internal CTE registry when the logical plan is constructed, based on
+// the actual WITH projection items. Previous attempt to build mappings here by
 // introspecting node schemas was unsafe because it:
 // 1. Assumed all properties were projected
 // 2. Hard-coded node type-specific id columns (e.g., `user_id`)
