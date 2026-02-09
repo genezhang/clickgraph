@@ -133,18 +133,33 @@ pub fn infer_relationship_type_from_nodes(
                 )
             })?
             .clone();
+        // Extract base type from composite key if needed
+        let base_rel_type = if rel_type.contains("::") {
+            rel_type.split("::").next().unwrap().to_string()
+        } else {
+            rel_type
+        };
         log::info!(
             "Relationship inference: Schema has only one relationship type '{}', using it",
-            rel_type
+            base_rel_type
         );
-        return Ok(Some(vec![rel_type]));
+        return Ok(Some(vec![base_rel_type]));
     }
 
     // Case 2: Both nodes untyped - expand to ALL relationship types (UNION ALL)
     // This enables Neo4j Browser's "dot" feature: MATCH ()-->() RETURN p
     // Each UNION branch becomes a typed query we already support
     if start_label.is_none() && end_label.is_none() {
-        let all_rel_types: Vec<String> = rel_schemas.keys().cloned().collect();
+        let all_rel_types: Vec<String> = rel_schemas.keys()
+            .map(|key| {
+                // Extract base type from composite key
+                if key.contains("::") {
+                    key.split("::").next().unwrap().to_string()
+                } else {
+                    key.clone()
+                }
+            })
+            .collect();
         log::info!(
             "Relationship type inference: Both nodes untyped, expanding to all {} relationship types for UNION",
             all_rel_types.len()
@@ -271,7 +286,14 @@ pub fn infer_relationship_type_from_nodes(
                 }
             }
         })
-        .map(|(type_name, _)| type_name.clone())
+        .map(|(type_name, _)| {
+            // Extract base type from composite key (TYPE::FROM::TO -> TYPE)
+            if type_name.contains("::") {
+                type_name.split("::").next().unwrap().to_string()
+            } else {
+                type_name.clone()
+            }
+        })
         .collect();
 
     if matching_types.is_empty() {

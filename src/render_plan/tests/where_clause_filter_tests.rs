@@ -149,7 +149,7 @@ fn setup_test_graph_schema() -> GraphSchema {
         constraints: None,
         edge_id_types: None,
     };
-    relationships.insert("FOLLOWS".to_string(), follows_rel);
+    relationships.insert("FOLLOWS::User::User".to_string(), follows_rel);
 
     GraphSchema::build(1, "test_db".to_string(), nodes, relationships)
 }

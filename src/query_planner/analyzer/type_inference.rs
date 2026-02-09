@@ -692,16 +692,15 @@ impl TypeInference {
         )> = rel_schemas
             .iter()
             .filter(|(key, rel_schema)| {
-                // Skip composite keys (those with "::") to avoid duplicates
-                // We only want simple type keys for matching
-                if key.contains("::") {
-                    return false;
-                }
+                // Extract base type name from key (handle both simple and composite keys)
+                let base_type = if key.contains("::") {
+                    key.split("::").next().unwrap_or(key)
+                } else {
+                    key
+                };
 
                 // Check edge type constraint (if known)
                 if let Some(ref types) = known_edge_types {
-                    // Extract base type name for comparison
-                    let base_type = key.split("::").next().unwrap_or(key);
                     if !types.iter().any(|t| t == base_type || t == *key) {
                         return false;
                     }

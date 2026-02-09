@@ -653,7 +653,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
         },
     );
     rels.insert(
-        "LIKES".to_string(),
+        "LIKES::User::Post".to_string(),
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "likes".to_string(),
@@ -685,7 +685,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
         },
     );
     rels.insert(
-        "FOLLOWS".to_string(),
+        "FOLLOWS::User::User".to_string(),
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "follows".to_string(),
@@ -831,7 +831,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
 
     // Add missing relationships for tests
     rels.insert(
-        "WORKS_AT".to_string(),
+        "WORKS_AT::Person::Organization".to_string(),
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "works_at".to_string(),
@@ -863,7 +863,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
         },
     );
     rels.insert(
-        "ASSIGNED_TO".to_string(),
+        "ASSIGNED_TO::Employee::Project".to_string(),
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "assigned_to".to_string(),
@@ -895,7 +895,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
         },
     );
     rels.insert(
-        "MANAGES".to_string(),
+        "MANAGES::User::System".to_string(),
         RelationshipSchema {
             database: "test_db".to_string(),
             table_name: "manages".to_string(),

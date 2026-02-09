@@ -612,18 +612,20 @@ impl GraphSchema {
     ) -> HashMap<String, ProcessedNodeMetadata> {
         let mut metadata_map: HashMap<String, ProcessedNodeMetadata> = HashMap::new();
 
-        // Collect all actual relationship types (not composite keys)
-        // When both "TYPE" and "TYPE::FROM::TO" exist, we only want to process once
+        // Collect all actual relationship types (extract from composite keys)
+        // Composite keys are in format "TYPE::FROM::TO"
         let mut processed_rels = std::collections::HashSet::new();
 
         for (rel_key, rel_schema) in relationships {
-            // Skip composite keys (those with ::) - they're duplicates of the simple key
-            if rel_key.contains("::") {
-                continue;
-            }
+            // Extract relationship type from composite key (TYPE::FROM::TO -> TYPE)
+            let rel_type = if rel_key.contains("::") {
+                rel_key.split("::").next().unwrap().to_string()
+            } else {
+                rel_key.clone()
+            };
 
             // Process this relationship type
-            if !processed_rels.insert(rel_key.clone()) {
+            if !processed_rels.insert(rel_type.clone()) {
                 continue; // Already processed this type
             }
 
@@ -639,7 +641,7 @@ impl GraphSchema {
                     metadata.add_property_source(
                         prop_name.clone(),
                         PropertySource {
-                            relationship_type: rel_key.clone(),
+                            relationship_type: rel_type.clone(),
                             side: "from".to_string(),
                             column_name: col_name.clone(),
                         },
@@ -648,7 +650,7 @@ impl GraphSchema {
 
                 // Add ID source
                 metadata.add_id_source(
-                    rel_key.clone(),
+                    rel_type.clone(),
                     "from".to_string(),
                     rel_schema.from_id.clone(),
                 );
@@ -666,7 +668,7 @@ impl GraphSchema {
                     metadata.add_property_source(
                         prop_name.clone(),
                         PropertySource {
-                            relationship_type: rel_key.clone(),
+                            relationship_type: rel_type.clone(),
                             side: "to".to_string(),
                             column_name: col_name.clone(),
                         },
@@ -674,7 +676,7 @@ impl GraphSchema {
                 }
 
                 // Add ID source
-                metadata.add_id_source(rel_key.clone(), "to".to_string(), rel_schema.to_id.clone());
+                metadata.add_id_source(rel_type.clone(), "to".to_string(), rel_schema.to_id.clone());
             }
         }
 
@@ -760,22 +762,28 @@ impl GraphSchema {
             return Ok(schema);
         }
 
-        // If not found and it's a simple type name (no "::"), try to find relationships of that type
+        // If not found and it's a simple type name (no "::"), use rel_type_index for O(1) lookup
         if !rel_label.contains("::") {
-            let schemas = self.rel_schemas_for_type(rel_label);
-            if schemas.len() == 1 {
-                log::debug!(
-                    "get_rel_schema: Found single relationship of type '{}'",
-                    rel_label
-                );
-                return Ok(schemas[0]);
-            } else if schemas.len() > 1 {
-                log::warn!(
-                    "get_rel_schema: Multiple relationships found for type '{}' ({} variants), returning first one. Consider using get_rel_schema_with_nodes() for precise lookup.",
-                    rel_label, schemas.len()
-                );
-                return Ok(schemas[0]);
+            if let Some(composite_keys) = self.rel_type_index.get(rel_label) {
+                if let Some(first_key) = composite_keys.first() {
+                    if let Some(schema) = self.relationships.get(first_key) {
+                        log::debug!(
+                            "get_rel_schema: Found relationship '{}' for type '{}' using rel_type_index",
+                            first_key, rel_label
+                        );
+                        return Ok(schema);
+                    }
+                }
             }
+
+            // If no matches found with rel_type_index
+            log::error!(
+                "❌ get_rel_schema: No relationship schema found for type '{}' in rel_type_index",
+                rel_label
+            );
+            return Err(GraphSchemaError::Relation {
+                rel_label: rel_label.to_string(),
+            });
         }
 
         // If not found, return error
@@ -810,34 +818,27 @@ impl GraphSchema {
                 return Ok(schema);
             }
             log::debug!(
-                "get_rel_schema_with_nodes: Composite key '{}' not found, trying simple key '{}'",
-                composite_key,
-                rel_type
+                "get_rel_schema_with_nodes: Composite key '{}' not found",
+                composite_key
             );
         }
 
-        // Fall back to simple key (for relationships that don't have node-specific variants)
-        match self.relationships.get(rel_type) {
-            Some(schema) => Ok(schema),
-            None => {
-                // If simple key not found and we have from_node, try to find a composite key
-                if let Some(from) = from_node {
-                    let prefix = format!("{}::{}::", rel_type, from);
-                    for (key, schema) in &self.relationships {
-                        if key.starts_with(&prefix) {
-                            log::debug!(
-                                "get_rel_schema_with_nodes: Found schema for composite key '{}' when looking for simple key '{}'",
-                                key, rel_type
-                            );
-                            return Ok(schema);
-                        }
-                    }
-                }
-                Err(GraphSchemaError::Relation {
-                    rel_label: rel_type.to_string(),
-                })
+        // Use prefix search to find composite keys matching the relationship type
+        // This supports simple key lookups by finding TYPE::* patterns
+        let prefix = format!("{}::", rel_type);
+        for (key, schema) in &self.relationships {
+            if key.starts_with(&prefix) {
+                log::debug!(
+                    "get_rel_schema_with_nodes: Found schema for composite key '{}' when looking for type '{}'",
+                    key, rel_type
+                );
+                return Ok(schema);
             }
         }
+
+        Err(GraphSchemaError::Relation {
+            rel_label: rel_type.to_string(),
+        })
     }
 
     /// Get all relationship schemas matching a type name
@@ -1151,7 +1152,28 @@ impl GraphSchema {
     }
 
     pub fn get_relationships_schema_opt(&self, rel_label: &str) -> Option<&RelationshipSchema> {
-        self.relationships.get(rel_label)
+        // First try exact match (composite key lookup)
+        if let Some(schema) = self.relationships.get(rel_label) {
+            return Some(schema);
+        }
+
+        // If not found and it's a simple type name (no "::"), use rel_type_index for O(1) lookup
+        if !rel_label.contains("::") {
+            if let Some(composite_keys) = self.rel_type_index.get(rel_label) {
+                if let Some(first_key) = composite_keys.first() {
+                    if let Some(schema) = self.relationships.get(first_key) {
+                        return Some(schema);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Get the rel_type_index for debugging purposes
+    pub fn get_rel_type_index(&self) -> &HashMap<String, Vec<String>> {
+        &self.rel_type_index
     }
 
     /// Get properties for a node label as (property_name, column_or_expr) pairs
@@ -1529,7 +1551,7 @@ mod tests {
             edge_id_types: None,
         };
 
-        relationships.insert("FLIGHT".to_string(), flight_rel);
+        relationships.insert("FLIGHT::Airport::Airport".to_string(), flight_rel);
 
         // Build schema
         let schema = GraphSchema::build(1, "default".to_string(), nodes, relationships);
@@ -1596,7 +1618,7 @@ mod tests {
             edge_id_types: None,
         };
 
-        relationships.insert("AUTHORED".to_string(), authored_rel);
+        relationships.insert("AUTHORED::User::Post".to_string(), authored_rel);
 
         let schema = GraphSchema::build(1, "default".to_string(), HashMap::new(), relationships);
 
@@ -2341,8 +2363,8 @@ mod tests {
             edge_id_types: None,
         };
 
-        relationships.insert("REQUESTED".to_string(), requested);
-        relationships.insert("RESOLVED_TO".to_string(), resolved_to);
+        relationships.insert("REQUESTED::IP::Domain".to_string(), requested);
+        relationships.insert("RESOLVED_TO::Domain::ResolvedIP".to_string(), resolved_to);
 
         let schema = GraphSchema::build(1, "zeek".to_string(), HashMap::new(), relationships);
 
@@ -2425,8 +2447,8 @@ mod tests {
             edge_id_types: None,
         };
 
-        relationships.insert("REL1".to_string(), edge1);
-        relationships.insert("REL2".to_string(), edge2);
+        relationships.insert("REL1::A::B".to_string(), edge1);
+        relationships.insert("REL2::B::C".to_string(), edge2);
 
         let schema = GraphSchema::build(1, "db".to_string(), HashMap::new(), relationships);
 
@@ -2500,8 +2522,8 @@ mod tests {
             edge_id_types: None,
         };
 
-        relationships.insert("REL1".to_string(), edge1);
-        relationships.insert("REL2".to_string(), edge2);
+        relationships.insert("REL1::A::B".to_string(), edge1);
+        relationships.insert("REL2::C::D".to_string(), edge2);
 
         let schema = GraphSchema::build(1, "db".to_string(), HashMap::new(), relationships);
 
