@@ -676,7 +676,11 @@ impl GraphSchema {
                 }
 
                 // Add ID source
-                metadata.add_id_source(rel_type.clone(), "to".to_string(), rel_schema.to_id.clone());
+                metadata.add_id_source(
+                    rel_type.clone(),
+                    "to".to_string(),
+                    rel_schema.to_id.clone(),
+                );
             }
         }
 

@@ -150,7 +150,8 @@ pub fn infer_relationship_type_from_nodes(
     // This enables Neo4j Browser's "dot" feature: MATCH ()-->() RETURN p
     // Each UNION branch becomes a typed query we already support
     if start_label.is_none() && end_label.is_none() {
-        let all_rel_types: Vec<String> = rel_schemas.keys()
+        let all_rel_types: Vec<String> = rel_schemas
+            .keys()
             .map(|key| {
                 // Extract base type from composite key
                 if key.contains("::") {

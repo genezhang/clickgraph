@@ -1115,10 +1115,16 @@ fn test_standard_edge_is_not_fk_pattern() {
     // Verify standard edge tables are NOT marked as FK pattern
     let schema = create_test_graph_schema();
 
-    let follows = schema.get_relationships_schemas().get("FOLLOWS::Person::Person").unwrap();
+    let follows = schema
+        .get_relationships_schemas()
+        .get("FOLLOWS::Person::Person")
+        .unwrap();
     assert!(!follows.is_fk_edge, "FOLLOWS should NOT be FK-edge pattern");
 
-    let works_at = schema.get_relationships_schemas().get("WORKS_AT::Person::Company").unwrap();
+    let works_at = schema
+        .get_relationships_schemas()
+        .get("WORKS_AT::Person::Company")
+        .unwrap();
     assert!(
         !works_at.is_fk_edge,
         "WORKS_AT should NOT be FK-edge pattern"
