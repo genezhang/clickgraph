@@ -433,7 +433,7 @@ fn extract_bound_node_filter(
 
 /// Extract node labels from a GraphNode plan (supports multi-label nodes)
 /// Returns Vec of labels, or None if no labels found
-fn extract_node_labels(plan: &LogicalPlan) -> Option<Vec<String>> {
+pub(crate) fn extract_node_labels(plan: &LogicalPlan) -> Option<Vec<String>> {
     match plan {
         LogicalPlan::GraphNode(node) => {
             // Check if node has a label

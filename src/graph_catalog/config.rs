@@ -1707,7 +1707,9 @@ impl GraphSchemaConfig {
                 &rel_schema.from_node,
                 &rel_schema.to_node,
             );
-            relationships.insert(composite_key, rel_schema);
+            relationships.insert(composite_key, rel_schema.clone());
+            // Also register with simple key for backward compatibility
+            relationships.insert(rel_def.type_name.clone(), rel_schema);
         }
 
         // Convert edge definitions (new format) using shared builders
@@ -1721,9 +1723,13 @@ impl GraphSchemaConfig {
                         &rel_schema.from_node,
                         &rel_schema.to_node,
                     );
-                    log::debug!("📋 config::to_graph_schema: Inserting edge with composite_key='{}'", 
-                               composite_key);
-                    relationships.insert(composite_key, rel_schema);
+                    log::debug!(
+                        "📋 config::to_graph_schema: Inserting edge with composite_key='{}'",
+                        composite_key
+                    );
+                    relationships.insert(composite_key, rel_schema.clone());
+                    // Also register with simple key for backward compatibility
+                    relationships.insert(std_edge.type_name.clone(), rel_schema);
                 }
                 EdgeDefinition::Polymorphic(poly_edge) => {
                     let poly_schemas = build_polymorphic_edge_schemas(poly_edge, &no_discovery)?;

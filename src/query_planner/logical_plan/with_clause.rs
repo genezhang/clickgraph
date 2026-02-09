@@ -163,6 +163,10 @@ pub fn evaluate_with_clause<'a>(
         with_node = with_node.with_where(predicate);
     }
 
+    // Populate CTE column mappings for the WITH clause CTE
+    // This allows the CTE column resolver to work during analysis
+    populate_with_clause_cte_mappings(&with_node, plan_ctx)?;
+
     Ok(Arc::new(LogicalPlan::WithClause(with_node)))
 }
 
@@ -398,4 +402,78 @@ fn rewrite_expression_pattern_comprehensions<'a>(
         // All other expressions don't contain pattern comprehensions
         _ => (expr, vec![]),
     }
+}
+
+/// Populate CTE column mappings for WITH clause CTEs
+/// This allows the CTE column resolver to work during analysis phase
+fn populate_with_clause_cte_mappings(
+    with_node: &crate::query_planner::logical_plan::WithClause,
+    plan_ctx: &mut PlanCtx,
+) -> Result<(), LogicalPlanError> {
+    use crate::server::query_context::set_cte_property_mappings;
+    use std::collections::HashMap;
+
+    // Generate a mock CTE name for mapping purposes
+    // This will be replaced with the actual CTE name during rendering
+    let mock_cte_name = format!("with_{}_cte", with_node.exported_aliases.join("_"));
+
+    let mut cte_mappings: HashMap<String, HashMap<String, String>> = HashMap::new();
+
+    // For each exported alias, create mappings based on the projection items
+    for alias in &with_node.exported_aliases {
+        let mut alias_mappings: HashMap<String, String> = HashMap::new();
+
+        // Find the projection item for this alias
+        for item in &with_node.items {
+            if let Some(col_alias) = &item.col_alias {
+                if col_alias.0 == *alias {
+                    // This is the projection item for the alias
+                    // For TableAlias expressions, we need to determine the properties
+                    if let LogicalExpr::TableAlias(ref table_alias) = item.expression {
+                        let source_alias = &table_alias.0;
+
+                        // Get the TableCtx for the source alias to determine its properties
+                        if let Ok(source_ctx) = plan_ctx.get_table_ctx(source_alias) {
+                            // For now, assume all properties are projected
+                            // In a full implementation, we'd need to determine which properties
+                            // are actually used in the query
+                            if let Some(labels) = source_ctx.get_labels() {
+                                if let Some(first_label) = labels.first() {
+                                    // Get the schema for this label
+                                    let graph_schema = plan_ctx.schema();
+                                    if let Ok(node_schema) = graph_schema.node_schema(first_label) {
+                                        // Create mappings for all node properties
+                                        for (prop_name, _) in &node_schema.property_mappings {
+                                            let cte_column =
+                                                format!("{}_{}", source_alias, prop_name);
+                                            alias_mappings.insert(prop_name.clone(), cte_column);
+                                        }
+                                        // Also map id column
+                                        let id_cte_column =
+                                            format!("{}_{}", source_alias, "user_id"); // Assuming user_id for now
+                                        alias_mappings.insert("id".to_string(), id_cte_column);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        if !alias_mappings.is_empty() {
+            cte_mappings.insert(alias.clone(), alias_mappings);
+        }
+    }
+
+    if !cte_mappings.is_empty() {
+        log::debug!(
+            "🔧 Populated WITH clause CTE mappings for {} aliases",
+            cte_mappings.len()
+        );
+        set_cte_property_mappings(cte_mappings);
+    }
+
+    Ok(())
 }

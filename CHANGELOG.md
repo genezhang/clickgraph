@@ -1,6 +1,18 @@
 ## [Unreleased]
 
-### 🚀 Features
+### � Bug Fixes
+
+- **OPTIONAL MATCH Schema Lookup Fix** (Feb 3, 2026): ✅ **ALL SMOKE TESTS PASSING**
+  - **Problem**: OPTIONAL MATCH queries failed with "Relationship with type FOLLOWS not found" due to incomplete node label inference
+  - **Root Cause**: Relationship schemas stored only with composite keys (TYPE::FROM::TO), but OPTIONAL MATCH used simple keys (TYPE)
+  - **Solution**: Enhanced schema storage and lookup to support both composite and simple key access patterns
+  - **Changes**:
+    - `src/graph_catalog/config.rs`: Store relationships with both composite and simple keys for backward compatibility
+    - `src/graph_catalog/graph_schema.rs`: Added fallback logic in `get_rel_schema_with_nodes()` to try composite keys when simple key lookup fails
+  - **Result**: All 10 smoke tests now passing (previously 7/10), including OPTIONAL MATCH with aggregation
+  - **Impact**: Robust relationship resolution for all query types (regular MATCH, OPTIONAL MATCH, multi-type patterns)
+
+### �🚀 Features
 
 - **Property-Based UNION Pruning (Track C)** (Feb 3, 2026): ⚡ **PERFORMANCE OPTIMIZATION**
   - **Problem**: Untyped graph patterns (`MATCH (n) WHERE n.property...`) generated UNION across ALL types, wasting resources

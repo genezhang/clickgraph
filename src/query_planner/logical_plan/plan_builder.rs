@@ -330,13 +330,25 @@ fn process_with_clause_chain<'a>(
                 );
 
                 // Rebuild the TableCtx with the new alias but preserve all other properties
-                let renamed_ctx = crate::query_planner::plan_ctx::TableCtx::build(
+                let mut renamed_ctx = crate::query_planner::plan_ctx::TableCtx::build(
                     alias.clone(),                          // New alias
                     source_table_ctx.get_labels().cloned(), // Preserved labels!
                     vec![],                                 // Properties will be resolved later
                     source_table_ctx.is_relation(),         // Preserved: is_relation
                     true,                                   // Explicit alias from WITH
                 );
+
+                // Copy CTE reference from source alias if it exists
+                if let Some(cte_ref) = source_table_ctx.get_cte_name() {
+                    renamed_ctx.set_cte_reference(Some(cte_ref.clone()));
+                    log::debug!(
+                        "process_with_clause_chain: Copied CTE reference '{}' from '{}' to renamed alias '{}'",
+                        cte_ref,
+                        source_alias,
+                        alias
+                    );
+                }
+
                 child_ctx.insert_table_ctx(alias.clone(), renamed_ctx);
                 continue;
             }

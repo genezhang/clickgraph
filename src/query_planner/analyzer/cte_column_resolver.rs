@@ -36,24 +36,54 @@ impl CteColumnResolver {
     fn resolve_property_access(prop_access: &PropertyAccess, plan_ctx: &PlanCtx) -> PropertyAccess {
         let table_alias = &prop_access.table_alias.0;
 
-        // Check if this table alias refers to a CTE
-        if !plan_ctx.is_cte(table_alias) {
-            // Not a CTE reference, return as-is
-            return prop_access.clone();
-        }
-
-        log::debug!("🔧 CteColumnResolver: '{}' IS a CTE reference! This should not happen for anchor nodes in OPTIONAL VLP", table_alias);
-
         // Get the property name from the column
         let property_name = match &prop_access.column {
             crate::graph_catalog::expression_parser::PropertyValue::Column(col) => col,
             crate::graph_catalog::expression_parser::PropertyValue::Expression(expr) => expr,
         };
 
+        // Check if this table alias refers to a CTE
+        let is_cte_ref = if plan_ctx.is_cte(table_alias) {
+            true
+        } else if let Ok(table_ctx) = plan_ctx.get_table_ctx(table_alias) {
+            table_ctx.get_cte_name().is_some()
+        } else {
+            false
+        };
+
+        if !is_cte_ref {
+            // Not a CTE reference, return as-is
+            return prop_access.clone();
+        }
+
+        log::debug!(
+            "🔧 CteColumnResolver: '{}' IS a CTE reference!",
+            table_alias
+        );
+
         // Look up the CTE column name
+        // First try direct lookup with table_alias (for FROM aliases)
         if let Some(cte_column) = plan_ctx.get_cte_column(table_alias, property_name) {
             log::debug!(
-                "🔧 CteColumnResolver: Resolved {}.{} → {}.{} (CTE column)",
+                "🔧 CteColumnResolver: Resolved {}.{} → {}.{} (direct CTE lookup)",
+                table_alias,
+                property_name,
+                table_alias,
+                cte_column
+            );
+
+            // Create a new PropertyAccess with the resolved column name
+            PropertyAccess {
+                table_alias: prop_access.table_alias.clone(),
+                column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                    cte_column.to_string(),
+                ),
+            }
+        } else if let Some(cte_column) =
+            crate::server::query_context::get_cte_property_mapping(table_alias, property_name)
+        {
+            log::debug!(
+                "🔧 CteColumnResolver: Resolved {}.{} → {}.{} (task-local context lookup)",
                 table_alias,
                 property_name,
                 table_alias,
@@ -68,13 +98,49 @@ impl CteColumnResolver {
                 ),
             }
         } else {
-            // CTE column not found (shouldn't happen), return as-is
-            log::warn!(
-                "🔧 CteColumnResolver: Could not resolve {}.{} - property not in CTE mapping",
-                table_alias,
-                property_name
-            );
-            prop_access.clone()
+            // Try to get CTE name from TableCtx and look up that way
+            if let Ok(table_ctx) = plan_ctx.get_table_ctx(table_alias) {
+                if let Some(cte_name) = table_ctx.get_cte_name() {
+                    if let Some(cte_column) = plan_ctx.get_cte_column(cte_name, property_name) {
+                        log::debug!(
+                            "🔧 CteColumnResolver: Resolved {}.{} → {}.{} (via TableCtx.cte_reference '{}')",
+                            table_alias,
+                            property_name,
+                            table_alias,
+                            cte_column,
+                            cte_name
+                        );
+
+                        // Create a new PropertyAccess with the resolved column name
+                        PropertyAccess {
+                            table_alias: prop_access.table_alias.clone(),
+                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                cte_column.to_string(),
+                            ),
+                        }
+                    } else {
+                        log::warn!(
+                            "🔧 CteColumnResolver: Could not resolve {}.{} - property not in CTE '{}' mapping",
+                            table_alias,
+                            property_name,
+                            cte_name
+                        );
+                        prop_access.clone()
+                    }
+                } else {
+                    log::warn!(
+                        "🔧 CteColumnResolver: TableCtx for '{}' has no cte_reference",
+                        table_alias
+                    );
+                    prop_access.clone()
+                }
+            } else {
+                log::warn!(
+                    "🔧 CteColumnResolver: Could not get TableCtx for '{}'",
+                    table_alias
+                );
+                prop_access.clone()
+            }
         }
     }
 

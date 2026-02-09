@@ -39,6 +39,7 @@ use crate::utils::cte_naming::{extract_cte_base_name, is_generated_cte_name};
 use log::debug;
 use std::sync::Arc;
 
+use super::cte_extraction::extract_node_labels;
 use super::errors::RenderBuildError;
 use super::plan_builder_helpers::{
     extract_rel_and_node_tables, extract_table_name, find_anchor_node, find_table_name_for_alias,
@@ -285,14 +286,32 @@ impl LogicalPlan {
             // Non-optional VLP: Use CTE as FROM
             log::debug!("✓ VARIABLE-LENGTH pattern: using CTE as FROM");
 
-            // TODO: Extract CTE naming logic to shared utility function
-            // Current duplication: plan_builder.rs (here and lines 1285-1304),
-            // plan_builder_utils.rs (lines 1152-1167 with multi-type support)
-            // Note: This handles single-type VLP only. Multi-type VLP uses
-            // vlp_multi_type_{start}_{end} format (see plan_builder_utils.rs)
+            // Check if this is a multi-type VLP that requires special CTE naming
             let start_alias = &graph_rel.left_connection;
             let end_alias = &graph_rel.right_connection;
-            let cte_name = format!("vlp_{}_{}", start_alias, end_alias);
+
+            // First try multi-type VLP CTE name format
+            let multi_type_cte_name = if start_alias <= end_alias {
+                format!("vlp_multi_type_{}_{}", start_alias, end_alias)
+            } else {
+                format!("vlp_multi_type_{}_{}", end_alias, start_alias)
+            };
+
+            // Check if multi-type CTE exists (we'd need to check context, but for now assume it might exist)
+            // For now, prefer multi-type if the pattern suggests it (multiple rel types or end labels)
+            let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
+            let end_labels = extract_node_labels(&graph_rel.right).unwrap_or_default();
+
+            let use_multi_type = rel_types.len() > 1 || end_labels.len() > 1;
+            let cte_name = if use_multi_type {
+                log::debug!("✓ Using multi-type VLP CTE: {}", multi_type_cte_name);
+                multi_type_cte_name
+            } else {
+                // Fall back to single-type VLP CTE name
+                let single_type_cte_name = format!("vlp_{}_{}", start_alias, end_alias);
+                log::debug!("✓ Using single-type VLP CTE: {}", single_type_cte_name);
+                single_type_cte_name
+            };
 
             log::debug!(
                 "✓ Using CTE '{}' as FROM for variable-length path",
@@ -619,34 +638,22 @@ impl LogicalPlan {
         // NOTE: Only returns multi-type if it's non-VLP or implicit *1
         // True VLP multi-type (like [:A|B]*2..5) is handled by find_vlp_graph_rel
         fn find_multi_type_graph_rel(plan: &LogicalPlan) -> Option<&GraphRel> {
+            log::debug!(
+                "🔍 find_multi_type_graph_rel: Checking plan type {:?}",
+                std::mem::discriminant(plan)
+            );
             match plan {
                 LogicalPlan::GraphRel(gr) => {
                     // Check if this GraphRel has multiple relationship types
                     if let Some(ref labels) = gr.labels {
                         if labels.len() > 1 {
-                            // Check if it's VLP (but not implicit *1)
-                            let is_implicit_one_hop = gr
-                                .variable_length
-                                .as_ref()
-                                .map(|spec| spec.min_hops == Some(1) && spec.max_hops == Some(1))
-                                .unwrap_or(false);
-                            let is_no_vlp_or_implicit =
-                                gr.variable_length.is_none() || is_implicit_one_hop;
-
-                            if is_no_vlp_or_implicit {
-                                log::debug!(
-                                    "🔍 find_multi_type_graph_rel: Found multi-type GraphRel (non-VLP or implicit *1) with {} labels: {:?}",
-                                    labels.len(),
-                                    labels
-                                );
-                                return Some(gr);
-                            } else {
-                                log::debug!(
-                                    "🔍 find_multi_type_graph_rel: Skipping multi-type GraphRel (true VLP) with {} labels: {:?}",
-                                    labels.len(),
-                                    labels
-                                );
-                            }
+                            log::debug!(
+                                "🔍 find_multi_type_graph_rel: Found multi-type GraphRel with {} labels: {:?}, is_vlp={}",
+                                labels.len(),
+                                labels,
+                                gr.variable_length.is_some()
+                            );
+                            return Some(gr);
                         }
                     }
                     // Check left side
@@ -656,13 +663,37 @@ impl LogicalPlan {
                     // Check right side
                     find_multi_type_graph_rel(&gr.right)
                 }
-                LogicalPlan::Projection(proj) => find_multi_type_graph_rel(&proj.input),
-                LogicalPlan::Filter(filter) => find_multi_type_graph_rel(&filter.input),
-                LogicalPlan::GroupBy(group_by) => find_multi_type_graph_rel(&group_by.input),
-                LogicalPlan::Unwind(u) => find_multi_type_graph_rel(&u.input),
-                LogicalPlan::GraphJoins(gj) => find_multi_type_graph_rel(&gj.input),
-                LogicalPlan::GraphNode(gn) => find_multi_type_graph_rel(&gn.input),
-                _ => None,
+                LogicalPlan::Projection(proj) => {
+                    log::debug!("🔍 find_multi_type_graph_rel: Checking Projection input");
+                    find_multi_type_graph_rel(&proj.input)
+                }
+                LogicalPlan::Filter(filter) => {
+                    log::debug!("🔍 find_multi_type_graph_rel: Checking Filter input");
+                    find_multi_type_graph_rel(&filter.input)
+                }
+                LogicalPlan::GroupBy(group_by) => {
+                    log::debug!("🔍 find_multi_type_graph_rel: Checking GroupBy input");
+                    find_multi_type_graph_rel(&group_by.input)
+                }
+                LogicalPlan::Unwind(u) => {
+                    log::debug!("🔍 find_multi_type_graph_rel: Checking Unwind input");
+                    find_multi_type_graph_rel(&u.input)
+                }
+                LogicalPlan::GraphJoins(gj) => {
+                    log::debug!("🔍 find_multi_type_graph_rel: Checking GraphJoins input");
+                    find_multi_type_graph_rel(&gj.input)
+                }
+                LogicalPlan::GraphNode(gn) => {
+                    log::debug!("🔍 find_multi_type_graph_rel: Checking GraphNode input");
+                    find_multi_type_graph_rel(&gn.input)
+                }
+                _ => {
+                    log::debug!(
+                        "🔍 find_multi_type_graph_rel: No match for plan type {:?}",
+                        std::mem::discriminant(plan)
+                    );
+                    None
+                }
             }
         }
 

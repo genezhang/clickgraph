@@ -764,7 +764,10 @@ impl GraphSchema {
         if !rel_label.contains("::") {
             let schemas = self.rel_schemas_for_type(rel_label);
             if schemas.len() == 1 {
-                log::debug!("get_rel_schema: Found single relationship of type '{}'", rel_label);
+                log::debug!(
+                    "get_rel_schema: Found single relationship of type '{}'",
+                    rel_label
+                );
                 return Ok(schemas[0]);
             } else if schemas.len() > 1 {
                 log::warn!(
@@ -814,17 +817,27 @@ impl GraphSchema {
         }
 
         // Fall back to simple key (for relationships that don't have node-specific variants)
-        self.relationships
-            .get(rel_type)
-            .ok_or_else(|| {
-                log::error!(
-                    "❌ get_rel_schema_with_nodes: No relationship schema found for '{}' (from_node={:?}, to_node={:?})",
-                    rel_type, from_node, to_node
-                );
-                GraphSchemaError::Relation {
-                    rel_label: rel_type.to_string(),
+        match self.relationships.get(rel_type) {
+            Some(schema) => Ok(schema),
+            None => {
+                // If simple key not found and we have from_node, try to find a composite key
+                if let Some(from) = from_node {
+                    let prefix = format!("{}::{}::", rel_type, from);
+                    for (key, schema) in &self.relationships {
+                        if key.starts_with(&prefix) {
+                            log::debug!(
+                                "get_rel_schema_with_nodes: Found schema for composite key '{}' when looking for simple key '{}'",
+                                key, rel_type
+                            );
+                            return Ok(schema);
+                        }
+                    }
                 }
-            })
+                Err(GraphSchemaError::Relation {
+                    rel_label: rel_type.to_string(),
+                })
+            }
+        }
     }
 
     /// Get all relationship schemas matching a type name

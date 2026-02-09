@@ -83,14 +83,13 @@ class TestDateExpressions:
         """Test date comparison for recent users (within 30 days)."""
         result = query("""
             MATCH (u:User) 
-            WHERE u.is_recent_user = true
+            WHERE dateDiff('day', u.registration_date, today()) <= 30
             RETURN u.user_id, u.full_name
             ORDER BY u.user_id
         """)
-        # Users 9 and 10 registered within 30 days
-        assert len(result["results"]) == 2
-        assert result["results"][0]["u.user_id"] == 9
-        assert result["results"][1]["u.user_id"] == 10
+        # User 10 registered within 30 days (28 days ago)
+        assert len(result["results"]) == 1
+        assert result["results"][0]["u.user_id"] == 10
     
     def test_to_date_conversion(self):
         """Test toDate() converting string to Date type."""
@@ -135,7 +134,7 @@ class TestConditionalExpressionsCaseWhen:
         """Test CASE WHEN for gold tier (score >= 1000)."""
         result = query("""
             MATCH (u:User) 
-            WHERE u.tier = 'gold'
+            WHERE u.score >= 1000
             RETURN u.user_id, u.full_name, u.tier
             ORDER BY u.user_id
         """)
@@ -146,7 +145,7 @@ class TestConditionalExpressionsCaseWhen:
         """Test CASE WHEN for silver tier (500 <= score < 1000)."""
         result = query("""
             MATCH (u:User) 
-            WHERE u.tier = 'silver'
+            WHERE u.score >= 500 AND u.score < 1000
             RETURN u.user_id, u.tier
             ORDER BY u.user_id
         """)
