@@ -184,7 +184,7 @@ pub async fn query_handler(
 
     // Handle procedure calls early (before query context)
     // Parse to check if it's a procedure call or procedure-only query
-    let (is_procedure, is_union, proc_name_opt) =
+    let (_is_procedure, is_union, proc_name_opt) =
         if let Ok((_, parsed_stmt)) = open_cypher_parser::parse_cypher_statement(&clean_query) {
             log::debug!("Parse succeeded for query: {}", &clean_query);
 

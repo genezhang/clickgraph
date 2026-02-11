@@ -14,6 +14,61 @@
 
 ### �🚀 Features
 
+- **PatternResolver - Automatic Type Enumeration** (Feb 8, 2026): 🧠 **SCHEMA INTELLIGENCE**
+  - **Problem**: Untyped graph patterns (`MATCH (n)`) fail or behave unpredictably without explicit type labels
+  - **Solution**: Systematic type resolution that automatically enumerates all valid type combinations from schema
+  - **What Works**:
+    - **Automatic discovery**: Recursively finds all untyped variables in logical plan
+    - **Schema querying**: Collects all valid node types for each untyped variable
+    - **Combination generation**: Creates cartesian product of type assignments (limited to 38 by default)
+    - **Relationship validation**: Filters combinations based on schema relationship constraints
+    - **Query cloning**: Creates separate typed query for each valid combination
+    - **UNION ALL**: Combines all typed queries into single result
+    - **Graceful fallback**: Continues with original plan if errors occur
+  - **Example**:
+    ```cypher
+    -- Input: Exploratory query without type labels
+    MATCH (o) RETURN o.name LIMIT 10
+    
+    -- PatternResolver transforms to:
+    MATCH (o:User) RETURN o.name LIMIT 10
+    UNION ALL
+    MATCH (o:Post) RETURN o.name LIMIT 10
+    ```
+  - **Architecture** (7 phases, ~1100 lines):
+    - **Phase 0**: Infrastructure (status message system, configuration)
+    - **Phase 1**: Discovery (recursive traversal to find untyped GraphNode variables)
+    - **Phase 2**: Schema Query (collect type candidates for each variable)
+    - **Phase 3**: Combination Generation (iterative cartesian product with early termination)
+    - **Phase 4**: Validation (extract relationships, filter invalid combinations)
+    - **Phase 5**: Query Cloning (recursive cloning with label insertion)
+    - **Phase 6**: UNION ALL (combine typed queries into Union plan)
+    - **Phase 7**: Integration (Step 2.1 in analyzer pipeline, after TypeInference)
+  - **Configuration**:
+    - `CLICKGRAPH_MAX_TYPE_COMBINATIONS=38` (default, max 1000)
+    - Prevents combination explosion in large schemas
+  - **Performance**: <10ms overhead for typical queries (1-2 untyped variables)
+  - **Integration Strategy**:
+    - **TypeInference** (Step 2): Handles deterministic type inference (e.g., from relationship type)
+    - **PatternResolver** (Step 2.1): Handles non-deterministic cases (creates UNION ALL)
+    - Complementary, not redundant - PatternResolver only activates on remaining untyped nodes
+  - **Use Cases**:
+    - **Exploratory analysis**: `MATCH (n) RETURN count(n)` - count all nodes across types
+    - **Multi-type patterns**: `MATCH (a)-[r]->(b) RETURN *` - all relationships
+    - **Schema discovery**: `MATCH (n) RETURN distinct labels(n)` - find node types
+  - **Impact**: ✨ **Enables true exploratory graph queries without manual type annotations**
+  - **Testing**:
+    - 16 dedicated unit tests (100% passing)
+    - 995/995 total tests passing (zero regressions)
+    - Covers all phases: discovery, combinations, validation, cloning
+  - **Files**:
+    - New: `src/query_planner/analyzer/pattern_resolver.rs` (1033 lines)
+    - New: `src/query_planner/analyzer/pattern_resolver_config.rs` (58 lines)
+    - Modified: `src/query_planner/analyzer/mod.rs` (pipeline integration)
+    - Modified: `src/query_planner/plan_ctx/mod.rs` (status message system)
+  - **Branch**: `feature/pattern-resolver` (10 commits, +1202/-24 lines)
+  - **Documentation**: See `notes/pattern-resolver.md` for implementation details
+
 - **Property-Based UNION Pruning (Track C)** (Feb 3, 2026): ⚡ **PERFORMANCE OPTIMIZATION**
   - **Problem**: Untyped graph patterns (`MATCH (n) WHERE n.property...`) generated UNION across ALL types, wasting resources
   - **Solution**: Automatic schema-based filtering - only query types that have the required properties

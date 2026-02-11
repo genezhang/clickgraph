@@ -132,6 +132,7 @@ impl AnalyzerPass for GroupByBuilding {
                             input: analyzed_child.clone(),
                             items: projection.items.clone(),
                             distinct: projection.distinct,
+                            pattern_comprehensions: projection.pattern_comprehensions.clone(),
                         }));
 
                         Transformed::Yes(Arc::new(LogicalPlan::GroupBy(GroupBy {
@@ -150,6 +151,7 @@ impl AnalyzerPass for GroupByBuilding {
                             input: analyzed_child,
                             items: projection.items.clone(),
                             distinct: projection.distinct,
+                            pattern_comprehensions: projection.pattern_comprehensions.clone(),
                         }));
 
                         println!(
@@ -362,6 +364,7 @@ impl AnalyzerPass for GroupByBuilding {
                             where_clause: with_clause.where_clause.clone(),
                             exported_aliases: with_clause.exported_aliases.clone(),
                             cte_references: with_clause.cte_references.clone(),
+                            pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
                         };
                         Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
                     }
@@ -426,6 +429,7 @@ mod tests {
                 },
             ],
             distinct: false,
+            pattern_comprehensions: vec![],
         }));
 
         let result = analyzer.analyze(projection.clone(), &mut plan_ctx).unwrap();
@@ -475,6 +479,7 @@ mod tests {
                 },
             ],
             distinct: false,
+            pattern_comprehensions: vec![],
         }));
 
         let result = analyzer.analyze(projection.clone(), &mut plan_ctx).unwrap();
@@ -508,6 +513,7 @@ mod tests {
                 },
             ],
             distinct: false,
+            pattern_comprehensions: vec![],
         }));
 
         let result = analyzer.analyze(projection.clone(), &mut plan_ctx).unwrap();
@@ -545,6 +551,7 @@ mod tests {
                 },
             ],
             distinct: false,
+            pattern_comprehensions: vec![],
         }));
 
         let result = analyzer.analyze(projection.clone(), &mut plan_ctx).unwrap();
@@ -590,6 +597,7 @@ mod tests {
             input: scan,
             items: vec![],
             distinct: false,
+            pattern_comprehensions: vec![],
         }));
 
         let result = analyzer.analyze(projection.clone(), &mut plan_ctx).unwrap();

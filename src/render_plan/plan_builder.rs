@@ -162,6 +162,7 @@ pub(crate) trait RenderPlanBuilder {
         last_node_alias: &str,
         context: &mut CteGenerationContext,
         schema: &crate::graph_catalog::graph_schema::GraphSchema,
+        plan_ctx: Option<&PlanCtx>,
     ) -> RenderPlanBuilderResult<Vec<Cte>>;
 
     /// Find the ID column for a given table alias by traversing the logical plan
@@ -577,8 +578,9 @@ impl RenderPlanBuilder for LogicalPlan {
         last_node_alias: &str,
         context: &mut CteGenerationContext,
         schema: &GraphSchema,
+        plan_ctx: Option<&PlanCtx>,
     ) -> RenderPlanBuilderResult<Vec<Cte>> {
-        extract_ctes_with_context(self, last_node_alias, context, schema)
+        extract_ctes_with_context(self, last_node_alias, context, schema, plan_ctx)
     }
 
     fn extract_select_items(
@@ -765,8 +767,25 @@ impl RenderPlanBuilder for LogicalPlan {
                     items: <LogicalPlan as SelectBuilder>::extract_select_items(self, None)?,
                     distinct: FilterBuilder::extract_distinct(self),
                 };
+
+                // Extract CTEs FIRST - this registers CTE names in task-local QueryContext
+                let mut context = super::cte_generation::CteGenerationContext::new();
+                let ctes = CteItems(extract_ctes_with_context(
+                    &gj.input,
+                    "",
+                    &mut context,
+                    schema,
+                    None,
+                )?);
+
+                // NOW extract FROM with context so multi-type VLP can look up registered CTE names
+                use crate::render_plan::from_builder::FromBuilder;
                 let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
-                let joins = JoinItems(RenderPlanBuilder::extract_joins(self, schema)?);
+
+                // Now extract joins WITH the context so multi-type relationships can look up their CTE names
+                let joins = JoinItems(<LogicalPlan as JoinBuilder>::extract_joins_with_context(
+                    self, schema, &context,
+                )?);
                 let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
                 let filters = FilterItems(FilterBuilder::extract_filters(self)?);
                 let group_by =
@@ -783,15 +802,6 @@ impl RenderPlanBuilder for LogicalPlan {
                 let skip = SkipItem(self.extract_skip());
                 let limit = LimitItem(self.extract_limit());
                 let union = UnionItems(self.extract_union(schema)?);
-
-                // Extract CTEs from the input plan
-                let mut context = super::cte_generation::CteGenerationContext::new();
-                let ctes = CteItems(extract_ctes_with_context(
-                    &gj.input,
-                    "",
-                    &mut context,
-                    schema,
-                )?);
 
                 let mut render_plan = RenderPlan {
                     ctes,
@@ -819,6 +829,105 @@ impl RenderPlanBuilder for LogicalPlan {
                 // JOIN conditions that reference Cypher aliases to use VLP CTE columns
                 rewrite_vlp_union_branch_aliases(&mut render_plan)?;
 
+                // Handle RETURN-context pattern comprehensions nested inside GroupBy->Projection
+                let pattern_comps = find_pattern_comprehensions_in_plan(&gj.input);
+                if !pattern_comps.is_empty() {
+                    log::info!(
+                        "🔧 GraphJoins: Found {} pattern comprehension(s) in nested Projection",
+                        pattern_comps.len()
+                    );
+                    for (pc_idx, pc_meta) in pattern_comps.iter().enumerate() {
+                        let pc_cte_name =
+                            format!("pattern_comp_{}_{}", pc_meta.correlation_var, pc_idx);
+
+                        if let Some(pc_sql) =
+                            super::plan_builder_utils::build_pattern_comprehension_sql(
+                                &pc_meta.correlation_label,
+                                &pc_meta.direction,
+                                &pc_meta.rel_types,
+                                &pc_meta.agg_type,
+                                schema,
+                            )
+                        {
+                            let pc_cte = super::Cte::new(
+                                pc_cte_name.clone(),
+                                super::CteContent::RawSql(pc_sql),
+                                false,
+                            );
+                            render_plan.ctes.0.push(pc_cte);
+
+                            let id_column =
+                                super::plan_builder_utils::find_node_id_column_from_schema(
+                                    &pc_meta.correlation_var,
+                                    &pc_meta.correlation_label,
+                                    schema,
+                                );
+
+                            let from_alias = render_plan
+                                .from
+                                .0
+                                .as_ref()
+                                .map(|f| f.alias.clone().unwrap_or_else(|| f.name.clone()))
+                                .unwrap_or_else(|| pc_meta.correlation_var.clone());
+
+                            let pc_alias = format!("__pc_{}", pc_idx);
+                            let on_clause = OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(from_alias),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_column),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(pc_alias.clone()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column("node_id".to_string()),
+                                    }),
+                                ],
+                            };
+
+                            render_plan.joins.0.push(super::Join {
+                                table_name: pc_cte_name.clone(),
+                                table_alias: pc_alias.clone(),
+                                joining_on: vec![on_clause],
+                                join_type: super::JoinType::Left,
+                                pre_filter: None,
+                                from_id_column: None,
+                                to_id_column: None,
+                                graph_rel: None,
+                            });
+
+                            // Replace count(*) with coalesce(__pc_N.result, 0)
+                            let result_alias = pc_meta.result_alias.clone();
+                            let coalesce_expr = RenderExpr::ScalarFnCall(
+                                super::render_expr::ScalarFnCall {
+                                    name: "coalesce".to_string(),
+                                    args: vec![
+                                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(pc_alias),
+                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column("result".to_string()),
+                                        }),
+                                        RenderExpr::Literal(Literal::Integer(0)),
+                                    ],
+                                }
+                            );
+
+                            for item in &mut render_plan.select.items {
+                                if let Some(ref alias) = item.col_alias {
+                                    if alias.0 == result_alias {
+                                        item.expression = coalesce_expr.clone();
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // Remove GROUP BY — CTE+JOIN doesn't need it
+                            render_plan.group_by.0.clear();
+
+                            log::info!("✅ Added pattern comp CTE '{}' with LEFT JOIN (GraphJoins context)", pc_cte_name);
+                        }
+                    }
+                }
+
                 Ok(render_plan)
             }
             LogicalPlan::GraphRel(gr) => {
@@ -837,6 +946,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         &gr.right_connection,
                         &mut context,
                         schema,
+                        None,
                     )?);
 
                     // For optional VLP, FROM should be the start node table
@@ -932,6 +1042,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         &gr.right_connection,
                         &mut context,
                         schema,
+                        None,
                     )?);
 
                     // Create temporary render plan to populate CTE registry
@@ -1069,9 +1180,6 @@ impl RenderPlanBuilder for LogicalPlan {
                     if let LogicalPlan::GraphRel(gr) = p.input.as_ref() {
                         if gr.variable_length.is_some() && gr.is_optional.unwrap_or(false) {
                             log::info!("🎯 Projection over optional VLP: aggregations handled by LEFT JOIN with COUNT(*)");
-
-                            // ClickHouse returns 0 (not NULL) for COUNT(*) with empty groups in LEFT JOIN + GROUP BY
-                            // So no COALESCE wrapper needed - aggregations work correctly as-is
                         }
                     }
 
@@ -1080,6 +1188,126 @@ impl RenderPlanBuilder for LogicalPlan {
                         distinct: p.distinct,
                     };
                 }
+
+                // RETURN-context pattern comprehensions: generate CTE+JOIN (same as WITH context)
+                if !p.pattern_comprehensions.is_empty() {
+                    log::info!(
+                        "🔧 RETURN pattern comprehension: generating {} CTE+JOIN(s)",
+                        p.pattern_comprehensions.len()
+                    );
+                    for (pc_idx, pc_meta) in p.pattern_comprehensions.iter().enumerate() {
+                        let pc_cte_name =
+                            format!("pattern_comp_{}_{}", pc_meta.correlation_var, pc_idx);
+
+                        if let Some(pc_sql) =
+                            super::plan_builder_utils::build_pattern_comprehension_sql(
+                                &pc_meta.correlation_label,
+                                &pc_meta.direction,
+                                &pc_meta.rel_types,
+                                &pc_meta.agg_type,
+                                schema,
+                            )
+                        {
+                            // Add the pattern comp CTE
+                            let pc_cte = super::Cte::new(
+                                pc_cte_name.clone(),
+                                super::CteContent::RawSql(pc_sql),
+                                false,
+                            );
+                            render_plan.ctes.0.push(pc_cte);
+
+                            // Find the ID column for the correlation variable
+                            let id_column =
+                                super::plan_builder_utils::find_node_id_column_from_schema(
+                                    &pc_meta.correlation_var,
+                                    &pc_meta.correlation_label,
+                                    schema,
+                                );
+
+                            // Determine the FROM table alias for the correlation variable
+                            let from_alias = render_plan
+                                .from
+                                .0
+                                .as_ref()
+                                .map(|f| f.alias.clone().unwrap_or_else(|| f.name.clone()))
+                                .unwrap_or_else(|| pc_meta.correlation_var.clone());
+
+                            // Add LEFT JOIN to the render plan
+                            let pc_alias = format!("__pc_{}", pc_idx);
+                            let on_clause = super::render_expr::OperatorApplication {
+                                operator: super::render_expr::Operator::Equal,
+                                operands: vec![
+                                    RenderExpr::PropertyAccessExp(super::render_expr::PropertyAccess {
+                                        table_alias: super::render_expr::TableAlias(from_alias),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_column),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(super::render_expr::PropertyAccess {
+                                        table_alias: super::render_expr::TableAlias(pc_alias.clone()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column("node_id".to_string()),
+                                    }),
+                                ],
+                            };
+
+                            render_plan.joins.0.push(super::Join {
+                                table_name: pc_cte_name.clone(),
+                                table_alias: pc_alias.clone(),
+                                joining_on: vec![on_clause],
+                                join_type: super::JoinType::Left,
+                                pre_filter: None,
+                                from_id_column: None,
+                                to_id_column: None,
+                                graph_rel: None,
+                            });
+
+                            // Replace the count(*) select item with coalesce(__pc_N.result, 0)
+                            let result_alias = pc_meta.result_alias.clone();
+                            let coalesce_expr = RenderExpr::ScalarFnCall(
+                                super::render_expr::ScalarFnCall {
+                                    name: "coalesce".to_string(),
+                                    args: vec![
+                                        RenderExpr::PropertyAccessExp(super::render_expr::PropertyAccess {
+                                            table_alias: super::render_expr::TableAlias(pc_alias),
+                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column("result".to_string()),
+                                        }),
+                                        RenderExpr::Literal(Literal::Integer(0)),
+                                    ],
+                                }
+                            );
+
+                            // Find and replace the count(*) item that has the matching alias
+                            let mut replaced = false;
+                            for item in &mut render_plan.select.items {
+                                if let Some(ref alias) = item.col_alias {
+                                    if alias.0 == result_alias {
+                                        item.expression = coalesce_expr.clone();
+                                        replaced = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if !replaced {
+                                // Add as new select item
+                                render_plan.select.items.push(SelectItem {
+                                    expression: coalesce_expr,
+                                    col_alias: Some(ColumnAlias(result_alias)),
+                                });
+                            }
+
+                            // Remove GROUP BY if it was only for the count(*) aggregation
+                            // With CTE+JOIN, we don't need GROUP BY anymore
+                            if !render_plan.group_by.0.is_empty() {
+                                log::info!("🔧 Removing GROUP BY (pattern comp uses CTE+JOIN, not aggregation)");
+                                render_plan.group_by.0.clear();
+                            }
+
+                            log::info!(
+                                "✅ Added pattern comp CTE '{}' with LEFT JOIN for RETURN context",
+                                pc_cte_name
+                            );
+                        }
+                    }
+                }
+
                 Ok(render_plan)
             }
             LogicalPlan::Filter(f) => {
@@ -1392,6 +1620,13 @@ impl RenderPlanBuilder for LogicalPlan {
                     cte_select_items = remap_select_item_aliases(cte_select_items, &alias_mapping);
                 }
 
+                let mut temp_context = super::cte_generation::CteGenerationContext::new();
+                // Extract CTEs from WITH.input to populate context with CTE names
+                let _temp_ctes =
+                    extract_ctes_with_context(&with.input, "", &mut temp_context, schema, None)?;
+
+                // Now extract FROM with context so VLP CTEs can be looked up
+                use crate::render_plan::from_builder::FromBuilder;
                 let cte_from = FromTableItem(with.input.extract_from()?.and_then(|ft| ft.table));
                 let cte_joins = JoinItems(RenderPlanBuilder::extract_joins(
                     with.input.as_ref(),
@@ -1807,7 +2042,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 let is_path_union = has_graph_patterns && has_path_variable;
 
-                log::warn!("🔍 Path UNION detection: has_graph_patterns={}, has_path_variable={}, is_path_union={}", 
+                log::warn!("🔍 Path UNION detection: has_graph_patterns={}, has_path_variable={}, is_path_union={}",
                           has_graph_patterns, has_path_variable, is_path_union);
 
                 // Convert first branch to get the base plan
@@ -1938,11 +2173,14 @@ impl RenderPlanBuilder for LogicalPlan {
 
         let has_with_clause = has_with_clause_in_graph_rel(self);
         log::debug!(
-            "to_render_plan_with_ctx: has_with_clause={}",
-            has_with_clause
+            "to_render_plan_with_ctx: has_with_clause={}, plan_ctx available: {}, plan discriminant: {:?}",
+            has_with_clause,
+            plan_ctx.is_some(),
+            std::mem::discriminant(self)
         );
 
         if has_with_clause {
+            log::debug!("to_render_plan_with_ctx: Calling build_chained_with_match_cte_plan with plan_ctx={}", plan_ctx.is_some());
             return build_chained_with_match_cte_plan(self, schema, plan_ctx);
         }
 
@@ -2119,7 +2357,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
                     let is_path_union = has_graph_patterns && has_path_variable;
 
-                    log::warn!("🔍 Path UNION detection (ctx): has_graph_patterns={}, has_path_variable={}, is_path_union={}", 
+                    log::warn!("🔍 Path UNION detection (ctx): has_graph_patterns={}, has_path_variable={}, is_path_union={}",
                               has_graph_patterns, has_path_variable, is_path_union);
 
                     if is_path_union && union.inputs.len() > 1 {
@@ -2135,7 +2373,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         );
                     } else {
                         // Regular UNION - normalize with NULL padding
-                        log::warn!("🔀 Normalizing {} UNION branches for consistent column schema (is_path_union={}, inputs.len={})", 
+                        log::warn!("🔀 Normalizing {} UNION branches for consistent column schema (is_path_union={}, inputs.len={})",
                                   branch_renders.len(), is_path_union, union.inputs.len());
                         branch_renders =
                             super::plan_builder_helpers::normalize_union_branches(branch_renders);
@@ -2169,15 +2407,155 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
 
                     // Use first branch as base and put rest in union.input
-                    let mut branch_iter = branch_renders.into_iter();
-                    let mut base_render = branch_iter.next().unwrap();
+                    let mut all_renders: Vec<RenderPlan> = branch_renders.into_iter().collect();
 
-                    // Set union field if there are multiple branches
-                    if union.inputs.len() > 1 {
-                        let remaining_renders: Vec<RenderPlan> = branch_iter.collect();
+                    // Collect ALL CTEs from all branches first
+                    // When multiple branches produce CTEs with the same name (e.g., both
+                    // User→Post and User→User branches create vlp_multi_type_a_b), rename
+                    // the duplicate and update the branch's FROM reference to match.
+                    let mut all_ctes: Vec<super::Cte> = Vec::new();
+                    for render in all_renders.iter_mut() {
+                        let mut renamed = Vec::new(); // (old_name, new_name)
+                        for cte in &render.ctes.0 {
+                            if let Some(existing_idx) =
+                                all_ctes.iter().position(|e| e.cte_name == cte.cte_name)
+                            {
+                                // If existing CTE is empty and this one isn't, replace it
+                                let existing_empty = matches!(&all_ctes[existing_idx].content,
+                                    super::CteContent::RawSql(s) if s.contains("WHERE 0 = 1"));
+                                let new_empty = matches!(&cte.content,
+                                    super::CteContent::RawSql(s) if s.contains("WHERE 0 = 1"));
+                                if existing_empty && !new_empty {
+                                    log::info!(
+                                        "🔀 UNION: Replacing empty CTE '{}' with non-empty version",
+                                        cte.cte_name
+                                    );
+                                    all_ctes[existing_idx] = cte.clone();
+                                } else if !new_empty {
+                                    // Both non-empty with same name: rename the new one
+                                    let mut suffix = 2;
+                                    let base_name = cte.cte_name.clone();
+                                    let mut new_name = format!("{}_{}", base_name, suffix);
+                                    while all_ctes.iter().any(|e| e.cte_name == new_name) {
+                                        suffix += 1;
+                                        new_name = format!("{}_{}", base_name, suffix);
+                                    }
+                                    log::debug!(
+                                        "UNION: Renaming duplicate CTE '{}' → '{}'",
+                                        base_name,
+                                        new_name
+                                    );
+                                    let mut renamed_cte = cte.clone();
+                                    renamed_cte.cte_name = new_name.clone();
+                                    renamed.push((base_name, new_name));
+                                    all_ctes.push(renamed_cte);
+                                }
+                            } else {
+                                log::debug!("UNION: Collecting CTE '{}'", cte.cte_name);
+                                all_ctes.push(cte.clone());
+                            }
+                        }
+                        // Update FROM reference for renamed CTEs
+                        for (old_name, new_name) in renamed {
+                            if let Some(ref mut from_ref) = render.from.0 {
+                                if from_ref.name == old_name {
+                                    log::debug!(
+                                        "UNION: Updating FROM '{}' → '{}'",
+                                        old_name,
+                                        new_name
+                                    );
+                                    from_ref.name = new_name;
+                                }
+                            }
+                        }
+                    }
 
+                    // Filter out branches reading from empty VLP CTEs (WHERE 0 = 1)
+                    // and dedup identical VLP branches
+                    if all_renders.len() > 1 {
+                        let mut kept_renders: Vec<RenderPlan> = Vec::new();
+                        for render in all_renders {
+                            let from_name = render.from.0.as_ref().map(|f| f.name.as_str());
+
+                            // Skip branches reading from empty VLP CTEs
+                            if let Some(name) = from_name {
+                                if name.starts_with("vlp_multi_type_") {
+                                    let is_empty = all_ctes.iter().any(|cte| {
+                                        cte.cte_name == name
+                                            && matches!(&cte.content, super::CteContent::RawSql(s) if s.contains("WHERE 0 = 1"))
+                                    });
+                                    if is_empty {
+                                        log::info!(
+                                            "🔀 UNION: Skipping branch reading from empty CTE '{}'",
+                                            name
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            // Skip branches reading from reverse VLP CTE when forward CTE
+                            // already includes incoming edges (undirected).
+                            // Only skip if the forward branch is ALREADY in kept_renders.
+                            if let Some(name) = from_name {
+                                if let Some(suffix) = name.strip_prefix("vlp_multi_type_") {
+                                    if let Some(sep_pos) = suffix.find('_') {
+                                        let start = &suffix[..sep_pos];
+                                        let end = &suffix[sep_pos + 1..];
+                                        let forward_name =
+                                            format!("vlp_multi_type_{}_{}", end, start);
+                                        // Only skip if the forward CTE exists AND is already kept
+                                        let forward_kept = kept_renders.iter().any(|kept| {
+                                            kept.from
+                                                .0
+                                                .as_ref()
+                                                .is_some_and(|f| f.name == forward_name)
+                                        });
+                                        if forward_kept {
+                                            log::info!("🔀 UNION: Skipping redundant reverse VLP branch '{}' (forward '{}' already kept)", name, forward_name);
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Dedup: skip if identical to an already-kept branch
+                            let is_dup = kept_renders.iter().any(|kept| {
+                                let kept_from = kept.from.0.as_ref().map(|f| f.name.as_str());
+                                if from_name == kept_from
+                                    && from_name.is_some_and(|n| n.starts_with("vlp_multi_type_"))
+                                    && render.select.items.len() == kept.select.items.len()
+                                {
+                                    render
+                                        .select
+                                        .items
+                                        .iter()
+                                        .zip(kept.select.items.iter())
+                                        .all(|(a, b)| a.col_alias == b.col_alias)
+                                } else {
+                                    false
+                                }
+                            });
+                            if is_dup {
+                                log::info!(
+                                    "🔀 UNION: Deduplicating identical VLP branch from '{}'",
+                                    from_name.unwrap_or("?")
+                                );
+                                continue;
+                            }
+
+                            kept_renders.push(render);
+                        }
+                        all_renders = kept_renders;
+                    }
+
+                    // Take first as base, rest become union inputs
+                    let mut base_render = all_renders.remove(0);
+                    base_render.ctes.0 = all_ctes;
+
+                    if !all_renders.is_empty() {
                         base_render.union = UnionItems(Some(super::Union {
-                            input: remaining_renders,
+                            input: all_renders,
                             union_type: super::UnionType::All,
                         }));
                     }
@@ -2244,6 +2622,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 "",
                 &mut context,
                 schema,
+                plan_ctx,
             )?);
 
             let mut render_plan = RenderPlan {
@@ -2264,6 +2643,135 @@ impl RenderPlanBuilder for LogicalPlan {
             };
 
             rewrite_vlp_union_branch_aliases(&mut render_plan)?;
+
+            // Handle RETURN-context pattern comprehensions (same logic as GraphJoins match arm)
+            let gj_input = match self {
+                LogicalPlan::GraphJoins(gj) => Some(&gj.input),
+                LogicalPlan::Limit(l) => {
+                    if let LogicalPlan::GraphJoins(gj) = l.input.as_ref() {
+                        Some(&gj.input)
+                    } else {
+                        None
+                    }
+                }
+                LogicalPlan::Skip(s) => {
+                    if let LogicalPlan::GraphJoins(gj) = s.input.as_ref() {
+                        Some(&gj.input)
+                    } else {
+                        None
+                    }
+                }
+                LogicalPlan::OrderBy(o) => {
+                    if let LogicalPlan::GraphJoins(gj) = o.input.as_ref() {
+                        Some(&gj.input)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            if let Some(gj_input) = gj_input {
+                let pattern_comps = find_pattern_comprehensions_in_plan(gj_input);
+                if !pattern_comps.is_empty() {
+                    log::info!(
+                        "🔧 GraphJoins(with_ctx): Found {} pattern comprehension(s) in nested plan",
+                        pattern_comps.len()
+                    );
+                    for (pc_idx, pc_meta) in pattern_comps.iter().enumerate() {
+                        let pc_cte_name =
+                            format!("pattern_comp_{}_{}", pc_meta.correlation_var, pc_idx);
+
+                        if let Some(pc_sql) =
+                            super::plan_builder_utils::build_pattern_comprehension_sql(
+                                &pc_meta.correlation_label,
+                                &pc_meta.direction,
+                                &pc_meta.rel_types,
+                                &pc_meta.agg_type,
+                                schema,
+                            )
+                        {
+                            let pc_cte = super::Cte::new(
+                                pc_cte_name.clone(),
+                                super::CteContent::RawSql(pc_sql),
+                                false,
+                            );
+                            render_plan.ctes.0.push(pc_cte);
+
+                            let id_column =
+                                super::plan_builder_utils::find_node_id_column_from_schema(
+                                    &pc_meta.correlation_var,
+                                    &pc_meta.correlation_label,
+                                    schema,
+                                );
+
+                            let from_alias = render_plan
+                                .from
+                                .0
+                                .as_ref()
+                                .map(|f| f.alias.clone().unwrap_or_else(|| f.name.clone()))
+                                .unwrap_or_else(|| pc_meta.correlation_var.clone());
+
+                            let pc_alias = format!("__pc_{}", pc_idx);
+                            let on_clause = OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(from_alias),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_column),
+                                    }),
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(pc_alias.clone()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column("node_id".to_string()),
+                                    }),
+                                ],
+                            };
+
+                            render_plan.joins.0.push(super::Join {
+                                table_name: pc_cte_name.clone(),
+                                table_alias: pc_alias.clone(),
+                                joining_on: vec![on_clause],
+                                join_type: super::JoinType::Left,
+                                pre_filter: None,
+                                from_id_column: None,
+                                to_id_column: None,
+                                graph_rel: None,
+                            });
+
+                            // Replace count(*) with coalesce(__pc_N.result, 0)
+                            let result_alias = pc_meta.result_alias.clone();
+                            let coalesce_expr = RenderExpr::ScalarFnCall(
+                                super::render_expr::ScalarFnCall {
+                                    name: "coalesce".to_string(),
+                                    args: vec![
+                                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(pc_alias),
+                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column("result".to_string()),
+                                        }),
+                                        RenderExpr::Literal(Literal::Integer(0)),
+                                    ],
+                                }
+                            );
+
+                            for item in &mut render_plan.select.items {
+                                if let Some(ref alias) = item.col_alias {
+                                    if alias.0 == result_alias {
+                                        item.expression = coalesce_expr.clone();
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // Remove GROUP BY — CTE+JOIN doesn't need it
+                            render_plan.group_by.0.clear();
+
+                            log::info!(
+                                "✅ Added pattern comp CTE '{}' with LEFT JOIN (with_ctx path)",
+                                pc_cte_name
+                            );
+                        }
+                    }
+                }
+            }
 
             return Ok(render_plan);
         }
@@ -2345,16 +2853,62 @@ impl RenderPlanBuilder for LogicalPlan {
             return Ok(render_plan);
         }
 
+        // Filter WITH plan_ctx - need to extract CTEs with plan_ctx before delegating
+        if let LogicalPlan::Filter(filter) = self {
+            // Check if the filter contains GraphRel (VLP) which needs plan_ctx for CTE generation
+            if matches!(filter.input.as_ref(), LogicalPlan::GraphRel(_)) {
+                log::debug!(
+                    "to_render_plan_with_ctx: Filter(GraphRel), extracting CTEs with plan_ctx"
+                );
+
+                // Extract CTEs WITH plan_ctx so VLP generator gets property requirements
+                let mut context = super::cte_generation::CteGenerationContext::new();
+                let ctes = CteItems(extract_ctes_with_context(
+                    &filter.input,
+                    "",
+                    &mut context,
+                    schema,
+                    plan_ctx,
+                )?);
+
+                // Now render the rest using standard path
+                let mut render_plan = self.to_render_plan(schema)?;
+
+                // Replace CTEs with the ones we extracted with plan_ctx
+                render_plan.ctes = ctes;
+
+                return Ok(render_plan);
+            }
+        }
+
         // GraphRel WITH plan_ctx (for UNION branches with path variables)
         if let LogicalPlan::GraphRel(graph_rel) = self {
-            log::warn!("🔀 to_render_plan_with_ctx: GraphRel, rendering with plan_ctx for path variable '{:?}'", graph_rel.path_variable);
+            log::debug!(
+                "to_render_plan_with_ctx: GraphRel MATCHED, path_variable='{:?}'",
+                graph_rel.path_variable
+            );
 
-            // First render without plan_ctx to get base structure
+            // Extract CTEs WITH plan_ctx so VLP generator gets property requirements
+            let mut context = super::cte_generation::CteGenerationContext::new();
+            let ctes = CteItems(extract_ctes_with_context(
+                self,
+                "",
+                &mut context,
+                schema,
+                plan_ctx,
+            )?);
+
+            // Now render the rest using standard path
             let mut render_plan = self.to_render_plan(schema)?;
+
+            // Replace CTEs with the ones we extracted with plan_ctx
+            render_plan.ctes = ctes;
 
             // Then extract select items WITH plan_ctx for path variable expansion
             if graph_rel.path_variable.is_some() {
-                log::warn!("🔀 GraphRel: extracting select items with plan_ctx for path variable expansion");
+                log::debug!(
+                    "GraphRel: extracting select items with plan_ctx for path variable expansion"
+                );
                 let select_items =
                     <LogicalPlan as SelectBuilder>::extract_select_items(self, plan_ctx)?;
                 render_plan.select = SelectItems {
@@ -2368,8 +2922,8 @@ impl RenderPlanBuilder for LogicalPlan {
 
         // GraphJoins WITH plan_ctx (for UNION branches that wrap GraphRel)
         if let LogicalPlan::GraphJoins(_gj) = self {
-            log::warn!(
-                "🔀 to_render_plan_with_ctx: GraphJoins, passing plan_ctx to extract_select_items"
+            log::debug!(
+                "to_render_plan_with_ctx: GraphJoins, passing plan_ctx to extract_select_items"
             );
 
             // Use standard GraphJoins rendering but with plan_ctx for select items
@@ -2399,6 +2953,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 "",
                 &mut context,
                 schema,
+                None,
             )?);
 
             return Ok(RenderPlan {
@@ -2419,13 +2974,33 @@ impl RenderPlanBuilder for LogicalPlan {
             });
         }
 
+        // WithClause WITH plan_ctx
+        if let LogicalPlan::WithClause(with) = self {
+            log::debug!("to_render_plan_with_ctx: WithClause, passing plan_ctx to extract_ctes");
+
+            // Extract CTEs from WITH.input WITH plan_ctx so VLP CTEs get property info
+            let mut temp_context = super::cte_generation::CteGenerationContext::new();
+            let _temp_ctes = extract_ctes_with_context(
+                &with.input,
+                "",
+                &mut temp_context,
+                schema,
+                plan_ctx, // ✅ Pass plan_ctx here!
+            )?;
+
+            // Now delegate to old to_render_plan for the rest of WITH processing
+            // (which will reuse the CTEs we just generated)
+            return self.to_render_plan(schema);
+        }
+
         // For all other cases, log what type we're delegating
         log::debug!(
-            "🔀 to_render_plan_with_ctx: delegating {:?} to to_render_plan (no special handler)",
+            "to_render_plan_with_ctx: delegating {:?} to old to_render_plan (no special handler, plan_ctx LOST)",
             std::mem::discriminant(self)
         );
 
         // For all other cases, delegate to the standard to_render_plan
+        // TODO: This loses plan_ctx - each case should have a proper handler
         self.to_render_plan(schema)
     }
 }
@@ -2565,4 +3140,20 @@ fn remap_select_item_aliases(
         remapped.push(item);
     }
     remapped
+}
+
+/// Find PatternComprehensionMeta in a nested plan tree (e.g., inside GroupBy -> Projection).
+fn find_pattern_comprehensions_in_plan(
+    plan: &LogicalPlan,
+) -> Vec<crate::query_planner::logical_plan::PatternComprehensionMeta> {
+    match plan {
+        LogicalPlan::Projection(p) => p.pattern_comprehensions.clone(),
+        LogicalPlan::GroupBy(gb) => find_pattern_comprehensions_in_plan(&gb.input),
+        LogicalPlan::Filter(f) => find_pattern_comprehensions_in_plan(&f.input),
+        LogicalPlan::OrderBy(o) => find_pattern_comprehensions_in_plan(&o.input),
+        LogicalPlan::Skip(s) => find_pattern_comprehensions_in_plan(&s.input),
+        LogicalPlan::Limit(l) => find_pattern_comprehensions_in_plan(&l.input),
+        LogicalPlan::GraphNode(gn) => find_pattern_comprehensions_in_plan(&gn.input),
+        _ => vec![],
+    }
 }

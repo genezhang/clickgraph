@@ -1267,9 +1267,9 @@ fn test_infer_relationship_type_too_many_matches_error() {
     }
 
     let schema = GraphSchema::build(1, "test_db".to_string(), nodes, rels);
-    let plan_ctx = PlanCtx::new(Arc::new(schema.clone()));
+    let plan_ctx = PlanCtx::with_all_parameters(Arc::new(schema.clone()), None, None, 5);
 
-    // (u:User)-[r]->() should fail with TooManyInferredTypes error
+    // (u:User)-[r]->() should fail with TooManyInferredTypes error (max set to 5)
     let result = infer_relationship_type_from_nodes(
         &Some("User".to_string()),
         &None,

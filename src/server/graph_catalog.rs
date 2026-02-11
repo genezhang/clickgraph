@@ -23,12 +23,17 @@ use super::{models::GraphCatalog, GLOBAL_SCHEMAS, GLOBAL_SCHEMA_CONFIG, GLOBAL_S
 /// This enables id() decoding to work on first query without requiring
 /// prior node returns to populate the registry.
 fn preregister_schema_labels(schema: &GraphSchema) {
-    for (label, _) in schema.all_node_schemas() {
-        let code = IdEncoding::register_label(&label);
+    // Sort labels alphabetically for deterministic code assignment across restarts
+    let mut node_labels: Vec<_> = schema.all_node_schemas().keys().cloned().collect();
+    node_labels.sort();
+    for label in &node_labels {
+        let code = IdEncoding::register_label(label);
         log::debug!("Pre-registered node label '{}' with code {}", label, code);
     }
-    for (type_name, _) in schema.get_relationships_schemas() {
-        let code = IdEncoding::register_label(&type_name);
+    let mut rel_types: Vec<_> = schema.get_relationships_schemas().keys().collect();
+    rel_types.sort();
+    for type_name in &rel_types {
+        let code = IdEncoding::register_label(type_name);
         log::debug!(
             "Pre-registered relationship type '{}' with code {}",
             type_name,

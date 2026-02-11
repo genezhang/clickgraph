@@ -48,6 +48,7 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
                     input: new_input.clone(),
                     items: vec![], // Temporary, will be replaced
                     distinct: p.distinct,
+                    pattern_comprehensions: p.pattern_comprehensions.clone(),
                 },
             ));
 
@@ -71,6 +72,7 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
                     input: new_input,
                     items: new_items,
                     distinct: p.distinct,
+                    pattern_comprehensions: p.pattern_comprehensions.clone(),
                 },
             ))
         }

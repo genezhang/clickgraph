@@ -390,6 +390,7 @@ impl VariableResolver {
                     exported_aliases: wc.exported_aliases.clone(),
                     where_clause: wc.where_clause.clone(),
                     cte_references,
+                    pattern_comprehensions: wc.pattern_comprehensions.clone(),
                 };
 
                 log::info!(
@@ -569,6 +570,7 @@ impl VariableResolver {
                         input: new_input,
                         items: resolved_items,
                         distinct: proj.distinct,
+                        pattern_comprehensions: proj.pattern_comprehensions.clone(),
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
                         new_proj,
@@ -744,6 +746,7 @@ impl VariableResolver {
                         label: gn.label.clone(),
                         is_denormalized: gn.is_denormalized,
                         projected_columns: None,
+                        node_types: None,
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(new_gn))))
                 } else {
@@ -859,6 +862,8 @@ impl VariableResolver {
                         is_optional: rel.is_optional,
                         anchor_connection: rel.anchor_connection.clone(),
                         cte_references: cte_refs,
+                        pattern_combinations: rel.pattern_combinations.clone(),
+                        was_undirected: rel.was_undirected,
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphRel(new_rel))))
                 } else {

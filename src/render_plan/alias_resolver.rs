@@ -676,7 +676,8 @@ mod tests {
             label: Some("User".to_string()),
             is_denormalized: false,
             projected_columns: None,
-        });
+                        node_types: None,
+                        });
 
         let context = AliasResolverContext::from_logical_plan(&node);
 
@@ -694,7 +695,8 @@ mod tests {
             label: Some("Airport".to_string()),
             is_denormalized: true,
             projected_columns: None,
-        });
+                        node_types: None,
+                        });
 
         let right_node = LogicalPlan::GraphNode(GraphNode {
             input: Arc::new(LogicalPlan::Empty),
@@ -702,7 +704,8 @@ mod tests {
             label: Some("Airport".to_string()),
             is_denormalized: true,
             projected_columns: None,
-        });
+                        node_types: None,
+                        });
 
         let graph_rel = LogicalPlan::GraphRel(GraphRel {
             left: Arc::new(left_node),
@@ -721,6 +724,7 @@ mod tests {
             is_optional: None,
             anchor_connection: None,
             cte_references: std::collections::HashMap::new(),
+                        pattern_combinations: None
         });
 
         let context = AliasResolverContext::from_logical_plan(&graph_rel);

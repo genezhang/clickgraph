@@ -101,8 +101,26 @@ impl PropertyRequirementsAnalyzer {
                 log::info!("🔍 PropertyRequirementsAnalyzer: Analyzing WITH clause");
 
                 // Extract requirements from WITH projections
+                // IMPORTANT: When WITH items contain bare TableAlias (e.g., `WITH a, count(*)`),
+                // we must NOT mark it as require_all. The actual property requirements come from
+                // the RETURN clause above which was already analyzed. A bare `WITH a` just means
+                // "pass through a for grouping/correlation" - NOT "return the whole node".
                 for item in &with_clause.items {
-                    Self::analyze_expression(&item.expression, requirements);
+                    match &item.expression {
+                        LogicalExpr::TableAlias(table_alias) => {
+                            // Bare alias in WITH (e.g., `WITH a, ...`)
+                            // Skip - don't mark as require_all.
+                            // Requirements were already set by RETURN clause above.
+                            log::info!(
+                                "🔍 WITH clause has bare TableAlias '{}' - skipping (requirements come from RETURN)",
+                                table_alias.0
+                            );
+                        }
+                        other => {
+                            // Other expressions (PropertyAccess, aggregates, etc.) - analyze normally
+                            Self::analyze_expression(other, requirements);
+                        }
+                    }
                 }
 
                 // Continue to input (requirements propagate downstream)
@@ -420,7 +438,38 @@ impl AnalyzerPass for PropertyRequirementsAnalyzer {
         log::debug!("📊 Plan structure: {:?}", plan);
 
         // Analyze the plan to extract property requirements
-        let requirements = Self::analyze_plan(&plan);
+        let mut requirements = Self::analyze_plan(&plan);
+
+        // Post-process: expand path variable requirements to their node aliases.
+        // When RETURN path is used, the path variable's start/end nodes need all properties
+        // so the VLP CTE generator includes start_properties/end_properties columns.
+        let path_aliases: Vec<String> = requirements
+            .aliases()
+            .filter(|a| requirements.requires_all(a))
+            .cloned()
+            .collect();
+        for alias in &path_aliases {
+            if let Some(typed_var) = plan_ctx.lookup_variable(alias) {
+                if let Some(path_var) = typed_var.as_path() {
+                    if let Some(ref start) = path_var.start_node {
+                        log::info!(
+                            "📋 Path variable '{}': marking start node '{}' as require_all",
+                            alias,
+                            start
+                        );
+                        requirements.require_all(start);
+                    }
+                    if let Some(ref end) = path_var.end_node {
+                        log::info!(
+                            "📋 Path variable '{}': marking end node '{}' as require_all",
+                            alias,
+                            end
+                        );
+                        requirements.require_all(end);
+                    }
+                }
+            }
+        }
 
         // Log what we found (always at INFO level for validation)
         let alias_count = requirements.len();
@@ -565,6 +614,7 @@ mod tests {
                 col_alias: None,
             }],
             distinct: false,
+            pattern_comprehensions: vec![],
         });
 
         // Analyze the plan
@@ -757,6 +807,7 @@ mod tests {
                 col_alias: None,
             }],
             distinct: false,
+            pattern_comprehensions: vec![],
         });
 
         let mut reqs = PropertyRequirements::new();
@@ -797,6 +848,7 @@ mod tests {
                 },
             ],
             distinct: false,
+            pattern_comprehensions: vec![],
         });
 
         let mut reqs = PropertyRequirements::new();
@@ -831,6 +883,7 @@ mod tests {
                 },
             ],
             distinct: false,
+            pattern_comprehensions: vec![],
         });
 
         let mut reqs = PropertyRequirements::new();
@@ -877,6 +930,7 @@ mod tests {
                 col_alias: None,
             }],
             distinct: false,
+            pattern_comprehensions: vec![],
         });
 
         let mut reqs = PropertyRequirements::new();
@@ -987,6 +1041,7 @@ mod tests {
                 col_alias: None,
             }],
             distinct: false,
+            pattern_comprehensions: vec![],
         });
 
         let mut reqs = PropertyRequirements::new();
@@ -1027,6 +1082,7 @@ mod tests {
                 },
             ],
             distinct: false,
+            pattern_comprehensions: vec![],
         });
 
         let mut reqs = PropertyRequirements::new();

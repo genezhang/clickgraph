@@ -255,6 +255,7 @@ fn create_graph_node(
         label: None,
         is_denormalized,
         projected_columns: None,
+        node_types: None,
     }))
 }
 
@@ -285,6 +286,8 @@ fn create_graph_rel(
         is_optional: None,
         anchor_connection: None,
         cte_references: std::collections::HashMap::new(),
+        pattern_combinations: None,
+        was_undirected: None,
     }))
 }
 
@@ -352,6 +355,7 @@ fn test_edge_list_same_node_type_outgoing_direction() {
             col_alias: None,
         }],
         distinct: false,
+        pattern_comprehensions: vec![],
     }));
 
     let result = analyzer
@@ -432,6 +436,7 @@ fn test_edge_list_different_node_types() {
             col_alias: None,
         }],
         distinct: false,
+        pattern_comprehensions: vec![],
     }));
 
     let result = analyzer
@@ -522,6 +527,7 @@ fn test_bitmap_traversal() {
             col_alias: None,
         }],
         distinct: false,
+        pattern_comprehensions: vec![],
     }));
 
     let result = analyzer
@@ -616,6 +622,7 @@ fn test_standalone_relationship_edge_list() {
             col_alias: None,
         }],
         distinct: false,
+        pattern_comprehensions: vec![],
     }));
 
     let result = analyzer
@@ -704,6 +711,7 @@ fn test_incoming_direction_edge_list() {
             col_alias: None,
         }],
         distinct: false,
+        pattern_comprehensions: vec![],
     }));
 
     let result = analyzer
@@ -800,6 +808,7 @@ fn test_complex_nested_plan_with_multiple_graph_rels() {
             col_alias: None,
         }],
         distinct: false,
+        pattern_comprehensions: vec![],
     }));
 
     let result = analyzer

@@ -1,7 +1,7 @@
 //! WebSocket transport layer for Bolt protocol
 
-use futures_util::sink::{Sink, SinkExt};
-use futures_util::stream::{Stream, StreamExt};
+use futures_util::sink::Sink;
+use futures_util::stream::Stream;
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -96,7 +96,7 @@ impl AsyncRead for WebSocketBoltAdapter {
             }
             Poll::Ready(Some(Err(e))) => {
                 log::error!("WebSocket error: {}", e);
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e)))
+                Poll::Ready(Err(io::Error::other(e)))
             }
             Poll::Ready(None) => {
                 log::debug!("WebSocket stream ended");
@@ -126,10 +126,10 @@ impl AsyncWrite for WebSocketBoltAdapter {
                 }
                 Err(e) => {
                     log::error!("WebSocket write error: {}", e);
-                    Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e)))
+                    Poll::Ready(Err(io::Error::other(e)))
                 }
             },
-            Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e))),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -137,20 +137,18 @@ impl AsyncWrite for WebSocketBoltAdapter {
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.ws_stream)
             .poll_flush(cx)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            .map_err(io::Error::other)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.ws_stream)
             .poll_close(cx)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            .map_err(io::Error::other)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_adapter_creation() {
         assert!(true);

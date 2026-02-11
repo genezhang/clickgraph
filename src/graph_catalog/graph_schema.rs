@@ -1190,6 +1190,20 @@ impl GraphSchema {
         &self.rel_type_index
     }
 
+    /// Get unique relationship type names (without node type suffixes).
+    /// Returns only base type names like "FOLLOWS", not "FOLLOWS::User::User".
+    ///
+    /// This is the standard helper for iterating relationship types without duplicates.
+    /// The schema stores both simple keys ("FOLLOWS") and composite keys ("FOLLOWS::User::User")
+    /// for backward compatibility, but most code should use this function to avoid duplicates.
+    pub fn get_unique_relationship_types(&self) -> Vec<String> {
+        self.relationships
+            .keys()
+            .filter(|key| !key.contains("::"))
+            .cloned()
+            .collect()
+    }
+
     /// Get properties for a node label as (property_name, column_or_expr) pairs
     pub fn get_node_properties(&self, labels: &[String]) -> Vec<(String, String)> {
         if let Some(label) = labels.first() {

@@ -36,6 +36,9 @@ pub struct PathHop {
     pub from_node_type: String,
     /// Ending node type (e.g., "User", "Post")
     pub to_node_type: String,
+    /// Whether this hop traverses the edge in reverse direction
+    /// (i.e., we're going from to_node to from_node in the schema)
+    pub reversed: bool,
 }
 
 /// Represents a complete path enumeration (sequence of hops)
@@ -110,12 +113,58 @@ pub fn enumerate_vlp_paths(
     max_hops: usize,
     schema: &GraphSchema,
 ) -> Vec<PathEnumeration> {
+    enumerate_vlp_paths_with_direction(
+        start_labels,
+        rel_types,
+        end_labels,
+        min_hops,
+        max_hops,
+        schema,
+        false,
+    )
+}
+
+/// Enumerate paths including both outgoing and incoming edges (for undirected patterns)
+pub fn enumerate_vlp_paths_undirected(
+    start_labels: &[String],
+    rel_types: &[String],
+    end_labels: &[String],
+    min_hops: usize,
+    max_hops: usize,
+    schema: &GraphSchema,
+) -> Vec<PathEnumeration> {
+    enumerate_vlp_paths_with_direction(
+        start_labels,
+        rel_types,
+        end_labels,
+        min_hops,
+        max_hops,
+        schema,
+        true,
+    )
+}
+
+fn enumerate_vlp_paths_with_direction(
+    start_labels: &[String],
+    rel_types: &[String],
+    end_labels: &[String],
+    min_hops: usize,
+    max_hops: usize,
+    schema: &GraphSchema,
+    include_incoming: bool,
+) -> Vec<PathEnumeration> {
     let mut all_paths = Vec::new();
 
     // Generate paths for each length from min_hops to max_hops
     for length in min_hops..=max_hops {
-        let paths_of_length =
-            generate_paths_of_length(start_labels, rel_types, end_labels, length, schema);
+        let paths_of_length = generate_paths_of_length(
+            start_labels,
+            rel_types,
+            end_labels,
+            length,
+            schema,
+            include_incoming,
+        );
         all_paths.extend(paths_of_length);
     }
 
@@ -131,6 +180,7 @@ fn generate_paths_of_length(
     end_labels: &[String],
     length: usize,
     schema: &GraphSchema,
+    include_incoming: bool,
 ) -> Vec<PathEnumeration> {
     let mut result = Vec::new();
 
@@ -144,6 +194,7 @@ fn generate_paths_of_length(
             length,
             Vec::new(),
             schema,
+            include_incoming,
         );
         result.extend(paths);
     }
@@ -167,6 +218,7 @@ fn generate_paths_recursive(
     remaining_hops: usize,
     path_so_far: Vec<PathHop>,
     schema: &GraphSchema,
+    include_incoming: bool,
 ) -> Vec<PathEnumeration> {
     // Base case: no more hops needed
     if remaining_hops == 0 {
@@ -182,22 +234,20 @@ fn generate_paths_recursive(
 
     // Try each relationship type
     for rel_type in rel_types {
-        // Find all edges of this type that start from current_node_type
+        // Find outgoing edges (from current node)
         let valid_edges = find_edges_from_node(schema, rel_type, current_node_type);
 
-        for edge in valid_edges {
-            // Create a hop for this edge
+        for edge in &valid_edges {
             let hop = PathHop {
                 rel_type: rel_type.clone(),
                 from_node_type: edge.from_node.clone(),
                 to_node_type: edge.to_node.clone(),
+                reversed: false,
             };
 
-            // Build new path with this hop
             let mut new_path = path_so_far.clone();
-            new_path.push(hop.clone());
+            new_path.push(hop);
 
-            // Recursively continue from the destination node
             let sub_paths = generate_paths_recursive(
                 &edge.to_node,
                 rel_types,
@@ -205,9 +255,39 @@ fn generate_paths_recursive(
                 remaining_hops - 1,
                 new_path,
                 schema,
+                include_incoming,
             );
-
             result.extend(sub_paths);
+        }
+
+        // Also find incoming edges (to current node) for undirected patterns
+        if include_incoming {
+            let incoming_edges = find_edges_to_node(schema, rel_type, current_node_type);
+
+            for edge in incoming_edges {
+                // Create a reversed hop: we traverse FROM current TO edge.from_node
+                // but through the edge table where current is the to_node
+                let hop = PathHop {
+                    rel_type: rel_type.clone(),
+                    from_node_type: edge.to_node.clone(), // current node (which is the edge's to_node)
+                    to_node_type: edge.from_node.clone(), // destination (which is the edge's from_node)
+                    reversed: true,
+                };
+
+                let mut new_path = path_so_far.clone();
+                new_path.push(hop);
+
+                let sub_paths = generate_paths_recursive(
+                    &edge.from_node, // Continue from the edge's from_node
+                    rel_types,
+                    end_labels,
+                    remaining_hops - 1,
+                    new_path,
+                    schema,
+                    include_incoming,
+                );
+                result.extend(sub_paths);
+            }
         }
     }
 
@@ -269,6 +349,36 @@ fn find_edges_from_node<'a>(
     }
 
     log::debug!("  Returning {} edges", edges.len());
+    edges
+}
+
+/// Find all edges of a given type where the TO node matches (for incoming/reverse traversal)
+fn find_edges_to_node<'a>(
+    schema: &'a GraphSchema,
+    rel_type: &str,
+    to_node_type: &str,
+) -> Vec<&'a RelationshipSchema> {
+    let mut edges = Vec::new();
+
+    for (key, rel_schema) in schema.get_relationships_schemas() {
+        let matches_type = if key.contains("::") {
+            key.split("::").next() == Some(rel_type)
+        } else {
+            key == rel_type
+        };
+
+        if matches_type && rel_schema.to_node == to_node_type {
+            log::debug!(
+                "🔍 find_edges_to_node: found rel '{}' where {} -> {} (incoming to {})",
+                key,
+                rel_schema.from_node,
+                rel_schema.to_node,
+                to_node_type
+            );
+            edges.push(rel_schema);
+        }
+    }
+
     edges
 }
 

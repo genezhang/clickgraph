@@ -137,6 +137,51 @@ impl TypeInference {
                 let right_transformed =
                     self.infer_labels_recursive(rel.right.clone(), plan_ctx, graph_schema)?;
 
+                // Connected Pattern Detection (Optimization - WIP)
+                // Detect if left child is GraphRel → means we have connected patterns
+                // Example: (a)-[r1]->(b)-[r2]->(c) where b is shared
+                //
+                // Plan tree structure:
+                //   GraphRel(r2, alias="r2")
+                //     ├─ left: GraphRel(r1, alias="r1")  ← DETECT THIS!
+                //     │    ├─ left_connection: "a"
+                //     │    └─ right_connection: "b"
+                //     └─ right: GraphNode(c)
+                //        ├─ left_connection: "b"  ← SHARED with r1.right_connection!
+                //        └─ right_connection: "c"
+                //
+                // Strategy: If left child is GraphRel, check if its right_connection
+                // matches our left_connection → that's the shared variable!
+                //
+                // Store connection info to process AFTER infer_pattern_types completes
+                let connected_pattern_info = match &left_transformed {
+                    Transformed::Yes(plan) | Transformed::No(plan) => {
+                        if let LogicalPlan::GraphRel(left_rel) = plan.as_ref() {
+                            // Check for shared variable
+                            if left_rel.right_connection == rel.left_connection {
+                                let shared_var = rel.left_connection.clone();
+                                log::info!(
+                                    "🔗 Connected Pattern Optimization: Detected connected patterns! r1='{}' → {} ← r2='{}' (shared var: '{}')",
+                                    left_rel.alias,
+                                    shared_var,
+                                    rel.alias,
+                                    shared_var
+                                );
+                                Some((
+                                    left_rel.alias.clone(),
+                                    left_rel.left_connection.clone(),
+                                    left_rel.right_connection.clone(),
+                                    shared_var,
+                                ))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                };
+
                 // NOW infer labels for THIS level using updated plan_ctx from children
                 // Use UNIFIED constraint-based inference: gather all known facts, query schema together
                 let (edge_types, left_label, mut right_label) = self.infer_pattern_types(
@@ -146,6 +191,79 @@ impl TypeInference {
                     plan_ctx,
                     graph_schema,
                 )?;
+
+                // Group Optimization for Connected Patterns (WIP)
+                // If we detected a connection earlier, now both patterns have been processed
+                // and their combinations are stored in plan_ctx. Time to optimize!
+                if let Some((r1_alias, r1_left, r1_right, _shared_var)) = connected_pattern_info {
+                    log::info!("🔗 Connected Pattern Optimization: Starting group optimization for r1='{}' + r2='{}'", r1_alias, rel.alias);
+
+                    // Get combinations for both patterns from plan_ctx
+                    let r1_combos = plan_ctx.get_pattern_combinations(&r1_left, &r1_right);
+                    let r2_combos = plan_ctx
+                        .get_pattern_combinations(&rel.left_connection, &rel.right_connection);
+
+                    log::info!(
+                        "  📊 r1 has {} combinations, r2 has {} combinations",
+                        r1_combos.as_ref().map(|v| v.len()).unwrap_or(0),
+                        r2_combos.as_ref().map(|v| v.len()).unwrap_or(0)
+                    );
+
+                    // If BOTH patterns have combinations, do the optimization
+                    if let (Some(r1_combos), Some(r2_combos)) = (r1_combos, r2_combos) {
+                        log::info!("  🎯 Both patterns have combinations! Applying shared variable constraint...");
+
+                        // Filter: Only keep combinations where shared variable has matching type
+                        // r1: (a:?)-[r1:?]->(b:?) where b = shared_var (r1.to_label)
+                        // r2: (b:?)-[r2:?]->(c:?) where b = shared_var (r2.from_label)
+                        // Constraint: r1.to_label must equal r2.from_label
+
+                        use crate::query_planner::plan_ctx::GroupCombination;
+                        use std::collections::HashMap;
+                        let mut group_combos = Vec::new();
+
+                        for r1_combo in r1_combos {
+                            for r2_combo in r2_combos {
+                                // Check constraint: shared variable type must match
+                                if r1_combo.to_label == r2_combo.from_label {
+                                    // Valid combination! Create GroupCombination
+                                    let mut pattern_types = HashMap::new();
+                                    pattern_types.insert(
+                                        (r1_left.clone(), r1_right.clone()),
+                                        r1_combo.clone(),
+                                    );
+                                    pattern_types.insert(
+                                        (rel.left_connection.clone(), rel.right_connection.clone()),
+                                        r2_combo.clone(),
+                                    );
+
+                                    group_combos.push(GroupCombination { pattern_types });
+                                }
+                            }
+                        }
+
+                        log::info!(
+                            "  ✅ Group optimization reduced {} × {} = {} combinations to {} valid combinations!",
+                            r1_combos.len(),
+                            r2_combos.len(),
+                            r1_combos.len() * r2_combos.len(),
+                            group_combos.len()
+                        );
+
+                        // Store group combinations
+                        let group_id = format!("{}_{}", r1_alias, rel.alias);
+                        plan_ctx.store_group_combinations(group_id.clone(), group_combos.clone());
+
+                        // TODO(future): Distribute back to individual patterns for more efficient queries
+                        log::info!(
+                            "  📦 Stored {} group combinations with group_id='{}'",
+                            group_combos.len(),
+                            group_id
+                        );
+                    } else {
+                        log::info!("  ⚠️ Skipping group optimization: one or both patterns have no combinations");
+                    }
+                }
 
                 // **PART 2A: Multi-Type End Node Inference**
                 // For patterns with multiple relationship types (VLP or non-VLP):
@@ -301,6 +419,8 @@ impl TypeInference {
                         is_optional: rel.is_optional,
                         anchor_connection: rel.anchor_connection.clone(),
                         cte_references: rel.cte_references.clone(),
+                        pattern_combinations: None, // TODO(future): Will be set by group optimization
+                        was_undirected: rel.was_undirected,
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphRel(new_rel))))
                 } else {
@@ -325,6 +445,7 @@ impl TypeInference {
                         exported_aliases: wc.exported_aliases.clone(),
                         where_clause: wc.where_clause.clone(),
                         cte_references: wc.cte_references.clone(),
+                        pattern_comprehensions: wc.pattern_comprehensions.clone(),
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_wc))))
                 } else {
@@ -340,6 +461,7 @@ impl TypeInference {
                         input: input_transformed.get_plan().clone(),
                         items: proj.items.clone(),
                         distinct: proj.distinct,
+                        pattern_comprehensions: proj.pattern_comprehensions.clone(),
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
                         new_proj,
@@ -389,8 +511,76 @@ impl TypeInference {
                 if node.label.is_none() {
                     // Try to get inferred label from plan_ctx
                     if let Ok(table_ctx) = plan_ctx.get_table_ctx(&node.alias) {
-                        if let Some(labels) = &table_ctx.get_labels() {
-                            if let Some(label) = labels.first() {
+                        if let Some(labels) = table_ctx.get_labels() {
+                            let labels_vec = labels.to_vec(); // Clone to avoid borrow issues
+
+                            // Check if we have multiple labels → multi-type node
+                            if labels_vec.len() > 1 {
+                                log::info!(
+                                    "🎯 TypeInference: GraphNode '{}' has {} possible types: {:?} → Will generate UNION",
+                                    node.alias,
+                                    labels_vec.len(),
+                                    labels_vec
+                                );
+
+                                // Store for CTE generation
+                                plan_ctx.store_node_combinations(&node.alias, labels_vec.clone());
+
+                                // Use first label for compatibility (downstream analyzers expect single type)
+                                let first_label = labels_vec.first().unwrap();
+
+                                if let Ok(node_schema) = graph_schema.node_schema(first_label) {
+                                    let full_table_name = format!(
+                                        "{}.{}",
+                                        node_schema.database, node_schema.table_name
+                                    );
+                                    let id_column = node_schema
+                                        .node_id
+                                        .columns()
+                                        .first()
+                                        .ok_or_else(|| AnalyzerError::SchemaNotFound(
+                                            format!("Node schema for label '{}' has no ID columns defined", first_label)
+                                        ))?
+                                        .to_string();
+
+                                    let mut view_scan = ViewScan::new(
+                                        full_table_name,
+                                        None,
+                                        node_schema.property_mappings.clone(),
+                                        id_column,
+                                        vec!["id".to_string()],
+                                        vec![],
+                                    );
+
+                                    // Copy denormalization metadata from node_schema
+                                    view_scan.is_denormalized = node_schema.is_denormalized;
+                                    view_scan.from_node_properties = node_schema.from_properties.as_ref().map(|props| {
+                                        props.iter().map(|(k, v)| {
+                                            (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone()))
+                                        }).collect()
+                                    });
+                                    view_scan.to_node_properties = node_schema.to_properties.as_ref().map(|props| {
+                                        props.iter().map(|(k, v)| {
+                                            (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone()))
+                                        }).collect()
+                                    });
+
+                                    // Create new GraphNode with ViewScan input and FIRST label
+                                    let new_node = GraphNode {
+                                        input: Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))),
+                                        alias: node.alias.clone(),
+                                        label: Some(first_label.clone()),
+                                        is_denormalized: node_schema.is_denormalized,
+                                        projected_columns: None,
+                                        node_types: Some(labels_vec.clone()), // Store all types
+                                    };
+
+                                    return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(
+                                        new_node,
+                                    ))));
+                                }
+                            } else if let Some(label) = labels.first() {
+                                // Single label - existing logic
                                 log::info!("🏷️ TypeInference: Creating ViewScan for GraphNode '{}' with inferred label '{}'", node.alias, label);
 
                                 // Get node schema to create ViewScan
@@ -437,12 +627,105 @@ impl TypeInference {
                                         label: Some(label.clone()),
                                         is_denormalized: node_schema.is_denormalized,
                                         projected_columns: None,
+                                        node_types: None, // Single type, no multi-type
                                     };
 
                                     return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(
                                         new_node,
                                     ))));
                                 }
+                            }
+                        }
+                    } else {
+                        // ⭐ NEW: No context at all → infer ALL possible node types
+                        let node_schemas = graph_schema.all_node_schemas();
+                        let all_labels: Vec<String> = node_schemas.keys().cloned().collect();
+
+                        if all_labels.is_empty() {
+                            log::warn!(
+                                "⚠️ TypeInference: No node schemas found for GraphNode '{}'",
+                                node.alias
+                            );
+                        } else if all_labels.len() > plan_ctx.max_inferred_types {
+                            return Err(AnalyzerError::InvalidPlan(format!(
+                                "Too many node types ({}) for untyped node '{}'. Max allowed is {}. Please specify explicit node label.",
+                                all_labels.len(),
+                                node.alias,
+                                plan_ctx.max_inferred_types
+                            )));
+                        } else {
+                            log::info!(
+                                "🎯 TypeInference: GraphNode '{}' has no context → inferring {} possible types: {:?}",
+                                node.alias,
+                                all_labels.len(),
+                                all_labels
+                            );
+
+                            // Store combinations for CTE generation
+                            plan_ctx.store_node_combinations(&node.alias, all_labels.clone());
+
+                            // Create TableCtx with all labels
+                            use crate::query_planner::plan_ctx::TableCtx;
+                            let table_ctx = TableCtx::build(
+                                node.alias.clone(),
+                                Some(all_labels.clone()),
+                                vec![],
+                                false, // is_rel
+                                false, // explicit_alias
+                            );
+                            plan_ctx.insert_table_ctx(node.alias.clone(), table_ctx);
+
+                            // Use first label for ViewScan (backward compatibility)
+                            let first_label = &all_labels[0];
+                            if let Ok(node_schema) = graph_schema.node_schema(first_label) {
+                                let full_table_name =
+                                    format!("{}.{}", node_schema.database, node_schema.table_name);
+                                let id_column = node_schema
+                                    .node_id
+                                    .columns()
+                                    .first()
+                                    .ok_or_else(|| {
+                                        AnalyzerError::SchemaNotFound(format!(
+                                            "Node schema for label '{}' has no ID columns defined",
+                                            first_label
+                                        ))
+                                    })?
+                                    .to_string();
+
+                                let mut view_scan = ViewScan::new(
+                                    full_table_name,
+                                    None,
+                                    node_schema.property_mappings.clone(),
+                                    id_column,
+                                    vec!["id".to_string()],
+                                    vec![],
+                                );
+
+                                // Copy denormalization metadata
+                                view_scan.is_denormalized = node_schema.is_denormalized;
+                                view_scan.from_node_properties = node_schema.from_properties.as_ref().map(|props| {
+                                    props.iter().map(|(k, v)| {
+                                        (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone()))
+                                    }).collect()
+                                });
+                                view_scan.to_node_properties = node_schema.to_properties.as_ref().map(|props| {
+                                    props.iter().map(|(k, v)| {
+                                        (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone()))
+                                    }).collect()
+                                });
+
+                                let new_node = GraphNode {
+                                    input: Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))),
+                                    alias: node.alias.clone(),
+                                    label: Some(first_label.clone()),
+                                    is_denormalized: node_schema.is_denormalized,
+                                    projected_columns: None,
+                                    node_types: Some(all_labels.clone()), // Store all inferred types
+                                };
+
+                                return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(
+                                    new_node,
+                                ))));
                             }
                         }
                     }
@@ -673,6 +956,10 @@ impl TypeInference {
 
         let known_edge_types = current_edge_types.clone();
 
+        // Clone for later use (to avoid borrow issues)
+        let known_left_clone = known_left_label.clone();
+        let known_right_clone = known_right_label.clone();
+
         log::debug!(
             "🔍 TypeInference: Constraints - left='{}' ({:?}), edge={:?}, right='{}' ({:?})",
             left_connection,
@@ -686,23 +973,29 @@ impl TypeInference {
         let rel_schemas = graph_schema.get_relationships_schemas();
 
         // Find all relationships that match ALL known constraints
+        // IMPORTANT: Iterate ONLY composite keys (those with "::") to avoid duplicates
+        // Schema stores both "FOLLOWS" and "FOLLOWS::User::User" for backward compatibility,
+        // but we only want to process each unique (type, from_node, to_node) once.
         let matches: Vec<(
-            &String,
+            String,
             &crate::graph_catalog::graph_schema::RelationshipSchema,
         )> = rel_schemas
             .iter()
-            .filter(|(key, rel_schema)| {
-                // Extract base type name from key (handle both simple and composite keys)
-                let base_type = if key.contains("::") {
-                    key.split("::").next().unwrap_or(key)
-                } else {
-                    key
-                };
+            .filter(|(full_key, _)| {
+                // Only process composite keys - they have complete type information
+                full_key.contains("::")
+            })
+            .filter_map(|(full_key, rel_schema)| {
+                // Extract base type for matching
+                let base_type = full_key.split("::").next().unwrap_or(full_key);
+                let type_key = base_type;
 
                 // Check edge type constraint (if known)
                 if let Some(ref types) = known_edge_types {
-                    if !types.iter().any(|t| t == base_type || t == *key) {
-                        return false;
+                    // Extract base type name for comparison
+                    let base_type = type_key.split("::").next().unwrap_or(type_key);
+                    if !types.iter().any(|t| t == base_type || t == type_key) {
+                        return None;
                     }
                 }
 
@@ -713,7 +1006,7 @@ impl TypeInference {
                         &rel_schema.from_node,
                         &rel_schema.from_label_values,
                     ) {
-                        return false;
+                        return None;
                     }
                 }
 
@@ -724,11 +1017,11 @@ impl TypeInference {
                         &rel_schema.to_node,
                         &rel_schema.to_label_values,
                     ) {
-                        return false;
+                        return None;
                     }
                 }
 
-                true
+                Some((base_type.to_string(), rel_schema))
             })
             .collect();
 
@@ -789,7 +1082,7 @@ impl TypeInference {
             known_left_label
         } else if matches.len() == 1 {
             let label = matches[0].1.from_node.clone();
-            self.update_node_label_in_ctx(left_connection, &label, "from", matches[0].0, plan_ctx);
+            self.update_node_label_in_ctx(left_connection, &label, "from", &matches[0].0, plan_ctx);
             Some(label)
         } else {
             // Multiple matches - check if they all have same from_node
@@ -806,7 +1099,15 @@ impl TypeInference {
                 );
                 Some(label)
             } else {
-                None // Ambiguous, can't infer
+                // ⭐ NEW: Ambiguous from_node → collect candidates for combination generation
+                log::info!(
+                    "🎯 TypeInference: Ambiguous from_node for '{}' → {} candidates: {:?}",
+                    left_connection,
+                    from_nodes.len(),
+                    from_nodes
+                );
+                // Will generate combinations after inferring to_node
+                None // Ambiguous, can't infer single type
             }
         };
 
@@ -815,7 +1116,7 @@ impl TypeInference {
             known_right_label
         } else if matches.len() == 1 {
             let label = matches[0].1.to_node.clone();
-            self.update_node_label_in_ctx(right_connection, &label, "to", matches[0].0, plan_ctx);
+            self.update_node_label_in_ctx(right_connection, &label, "to", &matches[0].0, plan_ctx);
             Some(label)
         } else {
             // Multiple matches - check if they all have same to_node
@@ -832,9 +1133,113 @@ impl TypeInference {
                 );
                 Some(label)
             } else {
-                None // Ambiguous, can't infer
+                // ⭐ NEW: Ambiguous to_node → collect candidates for combination generation
+                log::info!(
+                    "🎯 TypeInference: Ambiguous to_node for '{}' → {} candidates: {:?}",
+                    right_connection,
+                    to_nodes.len(),
+                    to_nodes
+                );
+                // Will generate combinations below
+                None // Ambiguous, can't infer single type
             }
         };
+
+        // ⭐ NEW: Generate and store pattern combinations if we have ambiguous nodes
+        if (inferred_left_label.is_none() && known_left_clone.is_none())
+            || (inferred_right_label.is_none() && known_right_clone.is_none())
+        {
+            // Collect all possible combinations from matches
+            use crate::query_planner::plan_ctx::TypeCombination;
+            let mut combinations = Vec::new();
+
+            for (rel_type_key, rel_schema) in &matches {
+                // rel_type_key is already a base type from earlier extraction
+
+                combinations.push(TypeCombination {
+                    from_label: rel_schema.from_node.clone(),
+                    rel_type: rel_type_key.clone(),
+                    to_label: rel_schema.to_node.clone(),
+                });
+
+                // Apply 38 combination limit
+                if combinations.len() >= 38 {
+                    log::warn!(
+                        "⚠️ Pattern combinations limited to 38 for '{}' -> '{}' (found {} total matches)",
+                        left_connection,
+                        right_connection,
+                        matches.len()
+                    );
+                    break;
+                }
+            }
+
+            log::debug!(
+                "TypeInference: Before dedup - {} combinations for '{}' -> '{}'",
+                combinations.len(),
+                left_connection,
+                right_connection
+            );
+
+            // Debug: print all combinations before dedup
+            for (i, combo) in combinations.iter().enumerate() {
+                log::debug!(
+                    "  Combo {}: {} -[{}]-> {}",
+                    i,
+                    combo.from_label,
+                    combo.rel_type,
+                    combo.to_label
+                );
+            }
+
+            // Deduplicate combinations by (from_label, rel_type, to_label)
+            // This prevents duplicates when schema has both simple and composite keys
+            if !combinations.is_empty() {
+                let mut seen = std::collections::HashSet::new();
+                combinations.retain(|combo| {
+                    let key = (
+                        combo.from_label.clone(),
+                        combo.rel_type.clone(),
+                        combo.to_label.clone(),
+                    );
+                    seen.insert(key)
+                });
+
+                log::info!(
+                    "🎯 TypeInference: Generated {} unique pattern combinations for '{}' -> '{}'",
+                    combinations.len(),
+                    left_connection,
+                    right_connection
+                );
+                plan_ctx.store_pattern_combinations(
+                    left_connection,
+                    right_connection,
+                    combinations.clone(),
+                );
+
+                // Set first combination types in TableCtx for backward compatibility
+                if let Some(first_combo) = combinations.first() {
+                    if inferred_left_label.is_none() && known_left_clone.is_none() {
+                        self.update_node_label_in_ctx(
+                            left_connection,
+                            &first_combo.from_label,
+                            "from",
+                            "multi-type pattern",
+                            plan_ctx,
+                        );
+                    }
+                    if inferred_right_label.is_none() && known_right_clone.is_none() {
+                        self.update_node_label_in_ctx(
+                            right_connection,
+                            &first_combo.to_label,
+                            "to",
+                            "multi-type pattern",
+                            plan_ctx,
+                        );
+                    }
+                }
+            }
+        }
 
         log::info!(
             "🔍 TypeInference: Result - '{}' ({:?}) -[{:?}]-> '{}' ({:?})",

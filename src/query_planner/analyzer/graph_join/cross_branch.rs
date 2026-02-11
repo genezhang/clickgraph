@@ -393,7 +393,7 @@ fn create_cross_branch_join_from_edges(
     };
 
     // Create the cross-branch join using JoinBuilder
-    let join = helpers::JoinBuilder::new(&rel2_schema.full_table_name(), &edge2.alias)
+    let join = helpers::JoinBuilder::new(rel2_schema.full_table_name(), &edge2.alias)
         .add_condition(&edge2.alias, edge2_col, &edge1.alias, edge1_col)
         .build();
 

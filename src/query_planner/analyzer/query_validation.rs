@@ -323,6 +323,7 @@ impl AnalyzerPass for QueryValidation {
                             where_clause: with_clause.where_clause.clone(),
                             exported_aliases: with_clause.exported_aliases.clone(),
                             cte_references: with_clause.cte_references.clone(),
+                            pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
                         };
                         Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
                     }

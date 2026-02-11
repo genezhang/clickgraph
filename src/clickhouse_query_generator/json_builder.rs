@@ -95,13 +95,18 @@ pub fn generate_json_properties_from_schema(node_schema: &NodeSchema, table_alia
     generate_json_properties_sql(&node_schema.property_mappings, table_alias)
 }
 
+/// Generate JSON properties with prefixed aliases to avoid conflicts in UNION ALL
+///
 /// Generate SQL for type-preserving JSON without aliases (for CTEs)
 ///
-/// Similar to generate_json_properties_sql but omits AS clauses to avoid
-/// alias conflicts when multiple formatRowNoNewline calls are in the same SELECT.
+/// Uses unqualified column references without AS aliases. When the SELECT has
+/// JOINs with same-named columns, ClickHouse may prefix the table alias in the
+/// JSON key (e.g., `a_1.user_id` instead of `user_id`). The result transformer
+/// handles this by stripping table alias prefixes.
 ///
-/// ClickHouse's formatRowNoNewline('JSONEachRow', ...) automatically uses column
-/// names as JSON keys, so aliases are not needed.
+/// We avoid AS aliases here because ClickHouse treats AS inside formatRowNoNewline
+/// as SELECT-level aliases, which conflict when both start_properties and
+/// end_properties reference same-named columns (User→User JOINs).
 ///
 /// # Arguments
 ///
@@ -110,7 +115,7 @@ pub fn generate_json_properties_from_schema(node_schema: &NodeSchema, table_alia
 ///
 /// # Returns
 ///
-/// SQL expression without aliases: `formatRowNoNewline('JSONEachRow', t.col1, t.col2, ...)`
+/// SQL expression: `formatRowNoNewline('JSONEachRow', t.col1, t.col2, ...)`
 pub fn generate_json_properties_without_aliases(
     property_mappings: &HashMap<String, PropertyValue>,
     table_alias: &str,
@@ -120,13 +125,13 @@ pub fn generate_json_properties_without_aliases(
     }
 
     let mut columns = Vec::new();
-    for (_cypher_prop, prop_value) in property_mappings {
+    for prop_value in property_mappings.values() {
         let column_name = match prop_value {
             PropertyValue::Column(col) => col.clone(),
             _ => continue,
         };
 
-        // Just table_alias.column_name, no AS clause
+        // No AS clause — see doc comment for why
         columns.push(format!("{}.{}", table_alias, column_name));
     }
 

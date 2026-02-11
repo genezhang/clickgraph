@@ -180,6 +180,7 @@ impl ProjectedColumnsResolver {
                         label: node.label.clone(),
                         is_denormalized: node.is_denormalized,
                         projected_columns,
+                        node_types: node.node_types.clone(),
                     },
                 ))))
             } else {
@@ -234,6 +235,7 @@ impl AnalyzerPass for ProjectedColumnsResolver {
                         label: node.label.clone(),
                         is_denormalized: node.is_denormalized,
                         projected_columns,
+                        node_types: node.node_types.clone(),
                     })))
                 } else {
                     Transformed::No(logical_plan.clone())

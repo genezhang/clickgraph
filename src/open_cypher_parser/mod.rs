@@ -1,8 +1,7 @@
 use ast::{
     CallClause, CreateClause, CypherStatement, DeleteClause, MatchClause, OpenCypherQueryAst,
-    OptionalMatchClause, ReadingClause, RemoveClause, ReturnClause, SetClause,
-    StandaloneProcedureCall, UnionClause, UnionType, UnwindClause, UseClause, WhereClause,
-    WithClause,
+    OptionalMatchClause, ReadingClause, RemoveClause, ReturnClause, SetClause, UnionClause,
+    UnionType, UnwindClause, UseClause, WhereClause, WithClause,
 };
 pub use common::strip_comments;
 use common::ws;

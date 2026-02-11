@@ -140,7 +140,7 @@ fn is_empty_or_filtered_branch(plan: &LogicalPlan) -> bool {
         // Implicit empty: relationship filtered to 0 types by Track C
         // Check both None and empty vector cases for consistency with analyzer checks
         LogicalPlan::GraphRel(rel)
-            if rel.labels.as_ref().map_or(true, |labels| labels.is_empty()) =>
+            if rel.labels.as_ref().is_none_or(|labels| labels.is_empty()) =>
         {
             log::debug!(
                 "Detected filtered GraphRel (labels=None or empty) for alias '{}'",
@@ -181,10 +181,10 @@ pub fn evaluate_cypher_statement(
     match statement {
         CypherStatement::ProcedureCall(proc_call) => {
             // Procedure calls should be handled separately
-            return Err(LogicalPlanError::QueryPlanningError(format!(
+            Err(LogicalPlanError::QueryPlanningError(format!(
                 "Standalone procedure call '{}' should be handled by procedures module, not query planner",
                 proc_call.procedure_name
-            )));
+            )))
         }
         CypherStatement::Query {
             query,
@@ -239,12 +239,16 @@ pub fn evaluate_cypher_statement(
             // Only add non-empty branches
             if !is_empty_or_filtered_branch(&first_plan) {
                 all_plans.push(first_plan);
+                combined_ctx = Some(first_ctx);
             } else {
                 log::info!(
                     "🔀 UNION first branch filtered to 0 types by Track C - skipping empty branch"
                 );
+                // Don't use empty branch's context as base — it has incomplete variable info
+                // (e.g., relationship aliases registered with empty labels).
+                // The first non-empty branch's context will be used instead.
+                combined_ctx = None;
             }
-            combined_ctx = Some(first_ctx);
 
             // Track the union type (all must be the same for simplicity, or we use the first UNION's type)
             let union_type = if let Some(first_union) = union_clauses.first() {
@@ -274,6 +278,9 @@ pub fn evaluate_cypher_statement(
                     // Merge the context from this union branch into combined context
                     if let Some(ref mut combined) = combined_ctx {
                         combined.merge(ctx);
+                    } else {
+                        // First non-empty branch becomes the base context
+                        combined_ctx = Some(ctx);
                     }
                 } else {
                     log::info!(
@@ -372,6 +379,35 @@ where
 /// Returns true if any child transformation occurred.
 fn any_transformed(transformations: &[&Transformed<Arc<LogicalPlan>>]) -> bool {
     transformations.iter().any(|tf| tf.is_yes())
+}
+
+/// Aggregation type for pattern comprehensions
+#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
+pub enum AggregationType {
+    Count,
+    GroupArray,
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+/// Metadata for a pattern comprehension extracted during logical planning.
+/// Consumed at render time to generate CTE + LEFT JOIN SQL.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PatternComprehensionMeta {
+    /// Correlation variable from outer scope (e.g., "a" in `[(a)--() | 1]`)
+    pub correlation_var: String,
+    /// Label of the correlation variable's node (e.g., "User")
+    pub correlation_label: String,
+    /// Relationship direction: Outgoing, Incoming, or Either (both)
+    pub direction: crate::open_cypher_parser::ast::Direction,
+    /// Optional relationship type filter (e.g., "FOLLOWS")
+    pub rel_types: Option<Vec<String>>,
+    /// Aggregation function to apply
+    pub agg_type: AggregationType,
+    /// The alias assigned to this pattern comprehension result in the WITH clause
+    pub result_alias: String,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -500,6 +536,11 @@ pub struct WithClause {
     /// Example: {"b": "with_a_b_cte"} means variable `b` comes from CTE `with_a_b_cte`.
     /// This allows render phase to be "dumb" - no searching, just lookup.
     pub cte_references: std::collections::HashMap<String, String>,
+
+    /// Pattern comprehensions extracted during logical planning.
+    /// Each entry describes a pattern comprehension that needs to be rendered as
+    /// a CTE + LEFT JOIN at SQL generation time.
+    pub pattern_comprehensions: Vec<PatternComprehensionMeta>,
 }
 
 impl WithClause {
@@ -543,6 +584,7 @@ impl WithClause {
             exported_aliases,
             cte_name: None,
             cte_references: std::collections::HashMap::new(),
+            pattern_comprehensions: Vec::new(),
         })
     }
 
@@ -639,6 +681,15 @@ pub struct GraphNode {
     /// - Denormalized: vec![("code", "flights.Origin"), ("city", "flights.OriginCity")]
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub projected_columns: Option<Vec<(String, String)>>,
+
+    /// **NEW (Feb 2026)**: Node type candidates for multi-type inference
+    /// When TypeInference finds an untyped node like `(n)`, it infers all
+    /// possible node types from schema. CTE generation creates UNION of node tables.
+    /// The `label` field contains the first type for backward compatibility.
+    /// Example: Some(vec!["User", "Post", "ZeekLog"])
+    /// Scope: THIS node only (not query-level)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub node_types: Option<Vec<String>>,
 }
 
 /// Represents a relationship pattern in a graph query.
@@ -690,6 +741,20 @@ pub struct GraphRel {
     /// Example: {"b": "with_a_b_cte_1"} means left_connection="b" comes from CTE
     /// Allows renderer to generate: a_b.b_user_id instead of b.user_id in JOINs
     pub cte_references: std::collections::HashMap<String, String>,
+
+    /// **NEW (Feb 2026)**: Pattern type combinations for multi-type inference
+    /// When TypeInference finds ambiguous nodes in this pattern, it generates
+    /// all valid (from_label, rel_type, to_label) combinations from schema.
+    /// CTE generation creates UNION of full JOINs for each combination.
+    /// Example: [(User, FOLLOWS, User), (User, AUTHORED, Post)]
+    /// Scope: THIS pattern only (not query-level)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pattern_combinations: Option<Vec<crate::query_planner::plan_ctx::TypeCombination>>,
+
+    /// Set to true by BidirectionalUnion when this GraphRel was split from Direction::Either
+    /// Allows downstream (CTE extraction) to know this was originally undirected
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub was_undirected: Option<bool>,
 }
 
 /// Mode for shortest path queries
@@ -898,6 +963,10 @@ pub struct Projection {
     /// Always Return since WITH clauses use the separate WithClause node.
     /// Whether DISTINCT should be applied to results
     pub distinct: bool,
+    /// Pattern comprehension metadata for CTE+JOIN generation at render time.
+    /// Populated when RETURN clause contains pattern comprehensions like `size([(a)--() | 1])`.
+    #[serde(default)]
+    pub pattern_comprehensions: Vec<PatternComprehensionMeta>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -1073,6 +1142,7 @@ impl Projection {
                 input: input_tf.get_plan(),
                 items: self.items.clone(),
                 distinct: self.distinct,
+                pattern_comprehensions: self.pattern_comprehensions.clone(),
             }))
         })
     }
@@ -1155,6 +1225,7 @@ impl GraphNode {
                 label: self.label.clone(),
                 is_denormalized: self.is_denormalized,
                 projected_columns: self.projected_columns.clone(),
+                node_types: self.node_types.clone(),
             }))
         })
     }
@@ -1186,6 +1257,8 @@ impl GraphRel {
                 is_optional: self.is_optional,
                 anchor_connection: self.anchor_connection.clone(),
                 cte_references: std::collections::HashMap::new(),
+                pattern_combinations: self.pattern_combinations.clone(),
+                was_undirected: self.was_undirected,
             })))
         } else {
             Transformed::No(old_plan)
@@ -1344,6 +1417,7 @@ impl LogicalPlan {
                 col_alias: None,
             }],
             distinct: false,
+            pattern_comprehensions: vec![],
         })
     }
 
@@ -1618,6 +1692,7 @@ mod tests {
             input: original_input.clone(),
             items: projection_items.clone(),
             distinct: false,
+            pattern_comprehensions: vec![],
         };
 
         let old_plan = Arc::new(LogicalPlan::Projection(projection.clone()));
@@ -1648,6 +1723,7 @@ mod tests {
             label: None,
             is_denormalized: false,
             projected_columns: None,
+            node_types: None,
         };
 
         let old_plan = Arc::new(LogicalPlan::GraphNode(graph_node.clone()));
@@ -1691,6 +1767,8 @@ mod tests {
             is_optional: None,
             anchor_connection: None,
             cte_references: std::collections::HashMap::new(),
+            pattern_combinations: None,
+            was_undirected: None,
         };
 
         let old_plan = Arc::new(LogicalPlan::GraphRel(graph_rel.clone()));
@@ -1790,6 +1868,7 @@ mod tests {
             label: None,
             is_denormalized: false,
             projected_columns: None,
+            node_types: None,
         });
 
         let filter = LogicalPlan::Filter(Filter {
@@ -1831,6 +1910,7 @@ mod tests {
                 },
             ],
             distinct: false,
+            pattern_comprehensions: vec![],
         });
 
         // Verify the structure

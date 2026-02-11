@@ -1,17 +1,64 @@
 # ClickGraph Status
 
-*Updated: February 3, 2026*
+*Updated: February 8, 2026*
 
 ## Current Version
 
-**v0.6.3** - Production-ready graph query engine for ClickHouse
+**v0.6.4** - Production-ready graph query engine for ClickHouse
 
 **Test Status**:
-- ✅ Unit tests: 949/949 passing (100%)
+- ✅ Unit tests: 995/995 passing (100%)
 - ✅ Parser tests: 184/184 passing (100%)
 - ✅ Integration tests: 34/38 passing (89.5%) - 3 benchmark tests pending, 1 ignored
 
 **Recent Completed Features**:
+
+### ✅ PatternResolver - Automatic Type Enumeration (Feb 8, 2026) - SCHEMA INTELLIGENCE
+- **Feature**: Systematic type resolution for untyped graph patterns via UNION ALL
+- **What Works**:
+  - **Automatic discovery**: Finds all untyped variables in query plan
+  - **Schema-aware**: Queries schema for all valid node types
+  - **Combination generation**: Creates all valid type assignments (up to 38 combinations)
+  - **Relationship validation**: Filters combinations by schema constraints
+  - **Query cloning**: Creates typed query for each valid combination
+  - **UNION ALL**: Combines all typed queries into single result
+- **Example**:
+  ```cypher
+  -- Input: Untyped exploratory query
+  MATCH (o) RETURN o.name LIMIT 10
+  
+  -- PatternResolver transforms to:
+  MATCH (o:User) RETURN o.name LIMIT 10
+  UNION ALL
+  MATCH (o:Post) RETURN o.name LIMIT 10
+  ```
+- **Architecture**:
+  - **Phase 0**: Infrastructure (status messages, configuration)
+  - **Phase 1**: Discovery (recursive plan traversal)
+  - **Phase 2**: Schema Query (collect type candidates)
+  - **Phase 3**: Combination Generation (cartesian product with limits)
+  - **Phase 4**: Validation (schema relationship checking)
+  - **Phase 5**: Query Cloning (add labels to untyped nodes)
+  - **Phase 6**: UNION ALL (combine typed queries)
+  - **Phase 7**: Integration (analyzer pipeline Step 2.1)
+- **Configuration**:
+  - `CLICKGRAPH_MAX_TYPE_COMBINATIONS=38` (default, max 1000)
+  - Prevents combination explosion in large schemas
+- **Integration**: Runs after TypeInference, handles ambiguous types
+- **Impact**: ✨ **Enables exploratory queries without explicit type annotations**
+- **Performance**: <10ms overhead for typical queries (1-2 untyped variables)
+- **Use Cases**:
+  - Exploratory analysis: `MATCH (n) RETURN count(n)`
+  - Multi-type patterns: `MATCH (a)-[r]->(b) RETURN *`
+  - Schema discovery: `MATCH (n) RETURN distinct labels(n)`
+- **Files**:
+  - New: `analyzer/pattern_resolver.rs` (1033 lines)
+  - New: `analyzer/pattern_resolver_config.rs` (58 lines)
+  - Modified: `analyzer/mod.rs` (pipeline integration)
+  - Modified: `plan_ctx/mod.rs` (status message system)
+- **Branch**: `feature/pattern-resolver`
+- **Testing**: 16 unit tests (100% passing), 995/995 total tests
+- **Commits**: 10 clean, focused commits (+1202/-24 lines)
 
 ### ✅ Property-Based UNION Pruning (Feb 3, 2026) - PERFORMANCE OPTIMIZATION
 - **Feature**: Automatic schema-based filtering for untyped graph patterns

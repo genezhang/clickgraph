@@ -217,3 +217,32 @@ Unknown expression or function identifier `r.user_id` in scope SELECT ... FROM p
 **Affected Files**:
 - `src/render_plan/plan_builder_helpers.rs` - Added `fix_invalid_table_aliases()` function
 
+
+## Pattern Comprehension GROUP BY Property Bug (Feb 9, 2026)
+
+**Issue**: Pattern comprehensions with WITH clause generate incorrect SQL in GROUP BY - references `a.city` instead of `t.start_city` when aggregating from VLP CTE.
+
+**Example Query**:
+```cypher
+MATCH (a:User) WITH a, size([(a)-[r]->() | 1]) AS count RETURN a.user_id, count
+```
+
+**Generated SQL** (incorrect):
+```sql
+SELECT anyLast(a.city) AS "a_city" ...  -- ❌ Should be t.start_city
+FROM vlp_multi_type_a_t1 AS t
+GROUP BY t.start_id
+```
+
+**Error**: `DB::Exception: Unknown expression identifier 'a.city'`
+
+**Workaround**: Only return aggregated count, not node properties:
+```cypher
+MATCH (a:User) WHERE a.user_id = 1 
+WITH a, size([(a)-[r]->() | 1]) AS count 
+RETURN count  -- Works
+```
+
+**Impact**: Neo4j Browser click-to-expand partially broken (needs property access fix)
+
+**Related**: CTE name fix (Feb 9) solved the "Table not found" issue, but this property mapping bug remains.

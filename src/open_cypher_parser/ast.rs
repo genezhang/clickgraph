@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::{cell::RefCell, fmt, rc::Rc};
 
 /// Type of UNION operation
@@ -399,7 +400,7 @@ impl VariableLengthSpec {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Direction {
     Incoming, // `<-`
     Outgoing, // `->`

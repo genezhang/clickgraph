@@ -34,7 +34,7 @@ impl StringArena {
     }
 
     /// Allocate a formatted string
-    pub fn alloc_format<'a>(&'a self, s: String) -> &'a str {
+    pub fn alloc_format(&self, s: String) -> &str {
         self.bump.alloc_str(&s)
     }
 }

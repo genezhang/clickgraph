@@ -10,8 +10,8 @@ pub use id_function::IdFunctionTransformer;
 pub use string_arena::StringArena;
 
 use crate::open_cypher_parser::ast::{
-    CypherStatement, Expression, Literal, MatchClause, OpenCypherQueryAst, Operator,
-    OperatorApplication, ReadingClause, WithClause,
+    CypherStatement, Direction, Expression, Literal, MatchClause, OpenCypherQueryAst, Operator,
+    OperatorApplication, PathPattern, ReadingClause, WithClause,
 };
 use crate::server::bolt_protocol::id_mapper::IdMapper;
 use std::collections::{HashMap, HashSet};
@@ -237,6 +237,73 @@ fn transform_with_clause<'a>(
 /// 3. Combines branches with UNION ALL
 ///
 /// Example transformation:
+/// Extract relationship edges from the query AST as (from_var, to_var) pairs.
+/// Used to validate label combinations against the schema before generating UNION branches.
+/// Returns (from_var, to_var, is_directed) tuples.
+fn extract_relationship_edges<'a>(query: &OpenCypherQueryAst<'a>) -> Vec<(String, String, bool)> {
+    let mut edges = Vec::new();
+    for match_clause in &query.match_clauses {
+        for (_path_var, pattern) in &match_clause.path_patterns {
+            if let PathPattern::ConnectedPattern(connected) = pattern {
+                for cp in connected {
+                    let from = cp.start_node.borrow();
+                    let to = cp.end_node.borrow();
+                    if let (Some(from_name), Some(to_name)) = (from.name, to.name) {
+                        match cp.relationship.direction {
+                            Direction::Incoming => {
+                                edges.push((to_name.to_string(), from_name.to_string(), true));
+                            }
+                            Direction::Outgoing => {
+                                edges.push((from_name.to_string(), to_name.to_string(), true));
+                            }
+                            _ => {
+                                // Undirected: either direction is valid
+                                edges.push((from_name.to_string(), to_name.to_string(), false));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    edges
+}
+
+/// Check whether a label combination is valid given the schema's relationship definitions.
+/// Returns false if no relationship exists between the labels in either direction.
+/// We check both directions because the AST transform handles direction separately —
+/// pruning is just about whether the labels are connected at all.
+fn is_valid_label_combination(
+    combo: &[(&str, &str)],           // (var_name, label) pairs
+    edges: &[(String, String, bool)], // (from_var, to_var, is_directed)
+    schema: &crate::graph_catalog::GraphSchema,
+) -> bool {
+    let label_map: HashMap<&str, &str> = combo.iter().map(|&(v, l)| (v, l)).collect();
+
+    for (from_var, to_var, _is_directed) in edges {
+        let from_label = label_map.get(from_var.as_str());
+        let to_label = label_map.get(to_var.as_str());
+        if let (Some(from_l), Some(to_l)) = (from_label, to_label) {
+            // Check both directions: pruning determines if labels are connected at all
+            let has_rel = schema.get_relationships_schemas().values().any(|rel| {
+                (rel.from_node == *from_l && rel.to_node == *to_l)
+                    || (rel.from_node == *to_l && rel.to_node == *from_l)
+            });
+            if !has_rel {
+                log::info!(
+                    "  Pruning invalid combination: {}({})↔{}({}) - no relationship in schema",
+                    from_var,
+                    from_l,
+                    to_var,
+                    to_l
+                );
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// ```cypher
 /// MATCH (a) WHERE id(a) IN [1, 2, 3] RETURN a
 /// ```
@@ -281,7 +348,9 @@ fn split_query_by_labels<'a>(
                 log::debug!("  No multi-label variables - checking for single-label injection");
 
                 // Even without splits, inject single labels into the query
-                // This ensures type inference works correctly
+                // This ensures type inference works correctly.
+                // If the combination is invalid (e.g., Post→Post with no rels),
+                // the planner will produce Empty and FilterTagging handles it.
                 let mut modified_query = query;
                 for (var_name, labels) in label_constraints {
                     if labels.len() == 1 {
@@ -316,7 +385,130 @@ fn split_query_by_labels<'a>(
                 };
             }
 
-            // For simplicity, split on the first multi-label variable
+            // Multiple multi-label variables: generate UNION branches for all label combinations.
+            // For 2 variables × 2 labels each → 4 UNION branches, one per (label_a, label_b) pair.
+            // Each branch has label-specific IN clauses that match its table.
+            if multi_label_vars.len() > 1 {
+                log::info!(
+                    "  {} multi-label variables found - generating cartesian product UNION branches",
+                    multi_label_vars.len()
+                );
+
+                // Build cartesian product of all label combinations
+                let mut label_combos: Vec<Vec<(&str, &str)>> = vec![vec![]];
+                for (var_name, labels) in &multi_label_vars {
+                    let mut new_combos = Vec::new();
+                    for combo in &label_combos {
+                        for label in labels.iter() {
+                            let mut new_combo = combo.clone();
+                            new_combo.push((var_name.as_str(), label.as_str()));
+                            new_combos.push(new_combo);
+                        }
+                    }
+                    label_combos = new_combos;
+                }
+
+                log::info!("  Generated {} label combinations", label_combos.len());
+
+                // Prune combinations that have no valid relationships in the schema
+                let edges = extract_relationship_edges(&query);
+                if !edges.is_empty() {
+                    if let Some(s) = schema {
+                        let before = label_combos.len();
+                        label_combos.retain(|combo| is_valid_label_combination(combo, &edges, s));
+                        if label_combos.len() < before {
+                            log::info!(
+                                "  Pruned {} invalid combinations ({} → {})",
+                                before - label_combos.len(),
+                                before,
+                                label_combos.len()
+                            );
+                        }
+                    }
+                }
+
+                if label_combos.is_empty() {
+                    log::info!("  All combinations pruned - no valid relationships");
+                    return CypherStatement::Query {
+                        query,
+                        union_clauses,
+                    };
+                }
+
+                // Create a query branch for each combination
+                let mut queries = Vec::new();
+                // Collect single-label vars that aren't in the cartesian product
+                let multi_var_names: HashSet<&str> =
+                    multi_label_vars.iter().map(|(v, _)| v.as_str()).collect();
+                let single_label_fixed: Vec<(&str, &str)> = label_constraints
+                    .iter()
+                    .filter(|(v, ls)| ls.len() == 1 && !multi_var_names.contains(v.as_str()))
+                    .map(|(v, ls)| (v.as_str(), ls.iter().next().unwrap().as_str()))
+                    .collect();
+
+                for combo in &label_combos {
+                    let mut modified_query = query.clone();
+                    for (var_name, label) in combo {
+                        let id_values = id_values_by_label
+                            .get(*var_name)
+                            .and_then(|by_label| by_label.get(*label))
+                            .cloned();
+
+                        modified_query = clone_query_with_label(
+                            arena,
+                            &modified_query,
+                            var_name,
+                            label,
+                            id_values,
+                            schema,
+                        );
+                    }
+                    // Also inject single-label variables into this branch
+                    for (sl_var, sl_label) in &single_label_fixed {
+                        let sl_id_values = id_values_by_label
+                            .get(*sl_var)
+                            .and_then(|by_label| by_label.get(*sl_label))
+                            .cloned();
+                        modified_query = clone_query_with_label(
+                            arena,
+                            &modified_query,
+                            sl_var,
+                            sl_label,
+                            sl_id_values,
+                            schema,
+                        );
+                    }
+                    queries.push(modified_query);
+                }
+
+                if queries.is_empty() {
+                    return CypherStatement::Query {
+                        query,
+                        union_clauses,
+                    };
+                }
+
+                let first = queries.remove(0);
+                let new_unions: Vec<_> = queries
+                    .into_iter()
+                    .map(|q| crate::open_cypher_parser::ast::UnionClause {
+                        union_type: crate::open_cypher_parser::ast::UnionType::All,
+                        query: q,
+                    })
+                    .collect();
+
+                log::info!(
+                    "  Created {} UNION ALL branches for multi-var split",
+                    new_unions.len() + 1
+                );
+
+                return CypherStatement::Query {
+                    query: first,
+                    union_clauses: new_unions,
+                };
+            }
+
+            // Single multi-label variable: split into UNION branches
             let (var_name, labels) = multi_label_vars[0];
             log::info!(
                 "  Splitting on variable '{}' with labels: {:?}",
@@ -327,16 +519,59 @@ fn split_query_by_labels<'a>(
             // Get ID values for this variable
             let var_id_values = id_values_by_label.get(var_name.as_str());
 
-            // Create a query for each label
+            // Get single-label variables for validation
+            let single_label_vars: Vec<(&str, &str)> = label_constraints
+                .iter()
+                .filter(|(v, ls)| ls.len() == 1 && v.as_str() != var_name)
+                .map(|(v, ls)| (v.as_str(), ls.iter().next().unwrap().as_str()))
+                .collect();
+
+            // Validate each label against schema relationships
+            let edges = extract_relationship_edges(&query);
+
+            // Create a query for each label (with validation)
             let mut queries = Vec::new();
             for label in labels {
+                // Build full combo: this label + all single-label vars
+                if !edges.is_empty() {
+                    if let Some(s) = schema {
+                        let mut combo = single_label_vars.clone();
+                        combo.push((var_name, label));
+                        if !is_valid_label_combination(&combo, &edges, s) {
+                            log::info!(
+                                "  Pruning invalid branch: {}={} - no valid relationship in schema",
+                                var_name,
+                                label
+                            );
+                            continue;
+                        }
+                    }
+                }
+
                 let id_values = var_id_values
                     .and_then(|by_label| by_label.get(label))
                     .cloned();
 
                 let cloned =
                     clone_query_with_label(arena, &query, var_name, label, id_values, schema);
-                queries.push(cloned);
+
+                // Also inject single-label variables into this branch
+                let mut branch = cloned;
+                for (sl_var, sl_label) in &single_label_vars {
+                    let sl_id_values = id_values_by_label
+                        .get(*sl_var)
+                        .and_then(|by_label| by_label.get(*sl_label))
+                        .cloned();
+                    branch = clone_query_with_label(
+                        arena,
+                        &branch,
+                        sl_var,
+                        sl_label,
+                        sl_id_values,
+                        schema,
+                    );
+                }
+                queries.push(branch);
             }
 
             if queries.is_empty() {
@@ -391,7 +626,15 @@ fn clone_query_with_label<'a>(
     cloned.match_clauses = cloned
         .match_clauses
         .into_iter()
-        .map(|mc| add_label_to_match_clause(mc, var_name, label_static))
+        .map(|mc| {
+            let mc = add_label_to_match_clause(mc, var_name, label_static);
+            // Also replace id() expressions in MATCH-level WHERE clauses
+            if let Some(ref id_vals) = id_values {
+                replace_match_where_id_expressions(arena, mc, var_name, label, id_vals, schema)
+            } else {
+                mc
+            }
+        })
         .collect();
 
     // Add label to reading_clauses
@@ -400,11 +643,13 @@ fn clone_query_with_label<'a>(
         .into_iter()
         .map(|rc| match rc {
             crate::open_cypher_parser::ast::ReadingClause::Match(mc) => {
-                crate::open_cypher_parser::ast::ReadingClause::Match(add_label_to_match_clause(
-                    mc,
-                    var_name,
-                    label_static,
-                ))
+                let mc = add_label_to_match_clause(mc, var_name, label_static);
+                let mc = if let Some(ref id_vals) = id_values {
+                    replace_match_where_id_expressions(arena, mc, var_name, label, id_vals, schema)
+                } else {
+                    mc
+                };
+                crate::open_cypher_parser::ast::ReadingClause::Match(mc)
             }
             crate::open_cypher_parser::ast::ReadingClause::OptionalMatch(omc) => {
                 crate::open_cypher_parser::ast::ReadingClause::OptionalMatch(omc)
@@ -450,22 +695,55 @@ fn replace_id_expressions_with_in<'a>(
                 // OR chains are likely from id() transformation - replace them
                 Operator::Or => {
                     // Check if this looks like an id() transformed OR chain
-                    // (multiple property equality checks)
-                    let is_id_chain = op_app.operands.iter().all(|operand| {
+                    // for the TARGET variable (not other variables)
+                    let is_id_chain_for_var = op_app.operands.iter().all(|operand| {
                         matches!(operand,
                             Expression::OperatorApplicationExp(OperatorApplication {
                                 operator: Operator::Equal,
                                 operands,
-                            }) if operands.iter().any(|o| matches!(o, Expression::PropertyAccessExp(_)))
+                            }) if operands.iter().any(|o| matches!(o,
+                                Expression::PropertyAccessExp(pa) if pa.base == var_name
+                            ))
                         )
                     });
 
-                    if is_id_chain {
+                    if is_id_chain_for_var {
                         // Replace with IN clause
                         log::debug!(
                             "  Replacing OR chain with IN clause for {}.{}",
                             var_name,
                             label
+                        );
+                        return build_property_in_clause(
+                            arena,
+                            var_name,
+                            label,
+                            id_values.to_vec(),
+                            schema,
+                        );
+                    }
+
+                    // Check if it's a mixed OR chain (contains checks for BOTH
+                    // the target var and other vars). This happens when id(a) and
+                    // id(b) are both resolved and OR'd together.
+                    // Keep only the operands that match our target variable.
+                    let has_target_var = op_app.operands.iter().any(|operand| {
+                        matches!(operand,
+                            Expression::OperatorApplicationExp(OperatorApplication {
+                                operator: Operator::Equal,
+                                operands,
+                            }) if operands.iter().any(|o| matches!(o,
+                                Expression::PropertyAccessExp(pa) if pa.base == var_name
+                            ))
+                        )
+                    });
+
+                    if has_target_var {
+                        // Mixed chain — filter to only our variable's predicates,
+                        // then replace with IN clause
+                        log::debug!(
+                            "  Mixed OR chain detected, filtering for variable '{}' and replacing with IN clause",
+                            var_name
                         );
                         return build_property_in_clause(
                             arena,
@@ -582,6 +860,30 @@ fn build_property_in_clause<'a>(
     })
 }
 
+/// Replace id() expressions in a MATCH clause's own WHERE clause
+fn replace_match_where_id_expressions<'a>(
+    arena: &'a StringArena,
+    mut mc: crate::open_cypher_parser::ast::MatchClause<'a>,
+    var_name: &str,
+    label: &str,
+    id_values: &[String],
+    schema: Option<&'a crate::graph_catalog::GraphSchema>,
+) -> crate::open_cypher_parser::ast::MatchClause<'a> {
+    if let Some(wc) = mc.where_clause {
+        mc.where_clause = Some(crate::open_cypher_parser::ast::WhereClause {
+            conditions: replace_id_expressions_with_in(
+                arena,
+                wc.conditions,
+                var_name,
+                label,
+                id_values,
+                schema,
+            ),
+        });
+    }
+    mc
+}
+
 /// Add a label to node patterns with a specific variable name in a MATCH clause
 fn add_label_to_match_clause<'a>(
     mut mc: crate::open_cypher_parser::ast::MatchClause<'a>,
@@ -607,23 +909,22 @@ fn add_label_to_match_clause<'a>(
                     let updated_patterns = connected_patterns
                         .into_iter()
                         .map(|cp| {
-                            // Update start_node if it matches
-                            {
-                                let mut start = cp.start_node.borrow_mut();
-                                if start.name == Some(var_name) {
-                                    start.labels = Some(vec![label]);
-                                }
+                            // Deep-clone nodes to avoid Rc<RefCell<>> sharing across UNION branches
+                            let mut start_clone = cp.start_node.borrow().clone();
+                            if start_clone.name == Some(var_name) {
+                                start_clone.labels = Some(vec![label]);
                             }
 
-                            // Update end_node if it matches
-                            {
-                                let mut end = cp.end_node.borrow_mut();
-                                if end.name == Some(var_name) {
-                                    end.labels = Some(vec![label]);
-                                }
+                            let mut end_clone = cp.end_node.borrow().clone();
+                            if end_clone.name == Some(var_name) {
+                                end_clone.labels = Some(vec![label]);
                             }
 
-                            cp
+                            crate::open_cypher_parser::ast::ConnectedPattern {
+                                start_node: std::rc::Rc::new(std::cell::RefCell::new(start_clone)),
+                                relationship: cp.relationship,
+                                end_node: std::rc::Rc::new(std::cell::RefCell::new(end_clone)),
+                            }
                         })
                         .collect();
 

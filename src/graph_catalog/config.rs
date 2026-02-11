@@ -1736,6 +1736,13 @@ impl GraphSchemaConfig {
             }
         }
 
+        // Strip composite node keys (db::table::label) — only needed during build-time
+        // for denormalized edge property resolution. Runtime uses simple label keys only.
+        let nodes: HashMap<String, NodeSchema> = nodes
+            .into_iter()
+            .filter(|(k, _)| !k.contains("::"))
+            .collect();
+
         Ok(GraphSchema::build(
             1,
             "default".to_string(),
@@ -1902,6 +1909,13 @@ impl GraphSchemaConfig {
                 }
             }
         }
+
+        // Strip composite node keys (db::table::label) — only needed during build-time
+        // for denormalized edge property resolution. Runtime uses simple label keys only.
+        let nodes: HashMap<String, NodeSchema> = nodes
+            .into_iter()
+            .filter(|(k, _)| !k.contains("::"))
+            .collect();
 
         Ok(GraphSchema::build(
             1,

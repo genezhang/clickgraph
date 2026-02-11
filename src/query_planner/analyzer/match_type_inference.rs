@@ -344,6 +344,190 @@ pub fn infer_relationship_type_from_nodes(
     Ok(Some(matching_types))
 }
 
+/// **NEW (Feb 2026)**: Resolve connected patterns with shared variables
+///
+/// Detects when multiple patterns share variables and applies cross-pattern constraints
+/// to reduce combination explosion.
+///
+/// # Example
+/// ```cypher
+/// MATCH (a)-[r1]->(b)-[r2]->(c) RETURN a, b, c
+/// ```
+///
+/// Without optimization:
+/// - r1 can be 10 types → 10 combinations
+/// - r2 can be 10 types → 10 combinations  
+/// - Total: 10 × 10 = 100 UNION branches
+///
+/// With optimization:
+/// - Detect `b` is shared: r1.to_node = r2.from_node
+/// - Filter: Only combinations where r1.to_label == r2.from_label
+/// - Result: ~5-10 valid UNION branches
+///
+/// # Parameters
+/// - `patterns`: List of patterns in order: [(r1_start, r1_end, r1_types), (r2_start, r2_end, r2_types), ...]
+/// - `schema`: Graph schema for validation
+/// - `max_combinations`: Limit for total combinations (default 38)
+///
+/// # Returns
+/// - `Ok(Some(combinations))` - Optimized list of valid type combinations
+/// - `Ok(None)` - No optimization needed (patterns not connected or already typed)
+/// - `Err(...)` - Too many combinations even after optimization
+pub fn resolve_connected_patterns(
+    patterns: Vec<(String, String, Vec<String>)>, // (from_alias, to_alias, rel_types)
+    schema: &GraphSchema,
+    max_combinations: usize,
+) -> LogicalPlanResult<Option<Vec<Vec<(String, String, String)>>>> {
+    // patterns: [(r1_from, r1_to, r1_types), (r2_from, r2_to, r2_types), ...]
+    // Each entry: (from_node_alias, to_node_alias, possible_rel_types)
+
+    if patterns.is_empty() || patterns.len() == 1 {
+        return Ok(None); // No optimization needed
+    }
+
+    log::info!(
+        "🔗 PatternResolver 2.0: Analyzing {} connected patterns for optimization",
+        patterns.len()
+    );
+
+    // Find shared variables (nodes that appear in multiple patterns)
+    let mut node_appearances: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (idx, (from_alias, to_alias, _)) in patterns.iter().enumerate() {
+        node_appearances
+            .entry(from_alias.clone())
+            .or_default()
+            .push(idx);
+        node_appearances
+            .entry(to_alias.clone())
+            .or_default()
+            .push(idx);
+    }
+
+    // Find shared nodes (appear in 2+ patterns)
+    let shared_nodes: Vec<(String, Vec<usize>)> = node_appearances
+        .into_iter()
+        .filter(|(_, pattern_indices)| pattern_indices.len() >= 2)
+        .collect();
+
+    if shared_nodes.is_empty() {
+        log::info!("  No shared variables found - patterns are independent");
+        return Ok(None);
+    }
+
+    log::info!("  Found {} shared variables:", shared_nodes.len());
+    for (node, indices) in &shared_nodes {
+        log::info!("    '{}' appears in patterns: {:?}", node, indices);
+    }
+
+    // Generate all combinations with constraints
+    // For prototype: Handle 2-pattern case
+    if patterns.len() == 2 {
+        let (r1_from, r1_to, r1_types) = &patterns[0];
+        let (r2_from, r2_to, r2_types) = &patterns[1];
+
+        // Check if they're connected via shared variable
+        let shared_var = if r1_to == r2_from {
+            Some(r1_to.clone())
+        } else {
+            None
+        };
+
+        if let Some(shared) = shared_var {
+            log::info!("  Patterns connected via shared variable: '{}'", shared);
+            log::info!(
+                "    Pattern 1: {} -[{} types]-> {}",
+                r1_from,
+                r1_types.len(),
+                r1_to
+            );
+            log::info!(
+                "    Pattern 2: {} -[{} types]-> {}",
+                r2_from,
+                r2_types.len(),
+                r2_to
+            );
+
+            let rel_schemas = schema.get_relationships_schemas();
+            let mut valid_combos = Vec::new();
+
+            // Generate combinations: for each r1 type, find compatible r2 types
+            for r1_type in r1_types {
+                // Get from/to labels for r1
+                let r1_schema = rel_schemas.get(r1_type);
+                if r1_schema.is_none() {
+                    continue;
+                }
+                let r1_schema = r1_schema.unwrap();
+                let r1_to_label = &r1_schema.to_node;
+
+                for r2_type in r2_types {
+                    // Get from/to labels for r2
+                    let r2_schema = rel_schemas.get(r2_type);
+                    if r2_schema.is_none() {
+                        continue;
+                    }
+                    let r2_schema = r2_schema.unwrap();
+                    let r2_from_label = &r2_schema.from_node;
+
+                    // Constraint: shared variable must have same type
+                    if r1_to_label == r2_from_label {
+                        // Valid combination!
+                        valid_combos.push(vec![
+                            (
+                                r1_schema.from_node.clone(),
+                                r1_type.clone(),
+                                r1_schema.to_node.clone(),
+                            ),
+                            (
+                                r2_schema.from_node.clone(),
+                                r2_type.clone(),
+                                r2_schema.to_node.clone(),
+                            ),
+                        ]);
+
+                        if valid_combos.len() >= max_combinations {
+                            log::warn!(
+                                "  ⚠️ Reached combination limit {} (found {} so far, stopping)",
+                                max_combinations,
+                                valid_combos.len()
+                            );
+                            break;
+                        }
+                    }
+                }
+
+                if valid_combos.len() >= max_combinations {
+                    break;
+                }
+            }
+
+            log::info!(
+                "  ✅ Optimization complete: {} × {} = {} → {} valid combinations ({:.1}% reduction)",
+                r1_types.len(),
+                r2_types.len(),
+                r1_types.len() * r2_types.len(),
+                valid_combos.len(),
+                100.0 * (1.0 - (valid_combos.len() as f64 / (r1_types.len() * r2_types.len()) as f64))
+            );
+
+            if valid_combos.is_empty() {
+                log::warn!("  ⚠️ No valid combinations found after applying constraints!");
+                return Ok(Some(vec![])); // Empty but not None - we tried optimization
+            }
+
+            return Ok(Some(valid_combos));
+        }
+    }
+
+    // For 3+ patterns or unconnected patterns, fall back to no optimization (for now)
+    log::info!(
+        "  Skipping optimization: {} patterns (only 2-pattern optimization implemented)",
+        patterns.len()
+    );
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

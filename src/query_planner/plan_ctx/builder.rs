@@ -64,7 +64,7 @@ impl PlanCtxBuilder {
             schema,
             tenant_id: None,
             view_parameter_values: None,
-            max_inferred_types: 5, // Default value
+            max_inferred_types: 20, // Default value (increased for Neo4j Browser)
             parent_scope: None,
             is_with_scope: false,
             alias_table_ctx_map: HashMap::new(),
@@ -207,6 +207,10 @@ impl PlanCtxBuilder {
             cte_alias_sources: self.cte_alias_sources,
             where_property_requirements: self.where_property_requirements,
             where_label_constraints: HashMap::new(),
+            status_messages: Vec::new(),
+            node_combinations: HashMap::new(),
+            pattern_combinations: HashMap::new(),
+            group_combinations: HashMap::new(),
         }
     }
 }
@@ -231,7 +235,7 @@ mod tests {
 
         assert_eq!(ctx.schema().database(), "test");
         assert!(ctx.tenant_id.is_none());
-        assert_eq!(ctx.max_inferred_types, 5);
+        assert_eq!(ctx.max_inferred_types, 20);
     }
 
     #[test]

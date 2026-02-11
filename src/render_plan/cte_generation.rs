@@ -49,6 +49,12 @@ pub struct CteGenerationContext {
     pub end_node_label: Option<String>,
     /// Whether this VLP is optional (affects start node filter handling)
     pub is_optional: bool,
+
+    /// **NEW (Feb 2026)**: Multi-type pattern combinations for UNION generation
+    /// Map: (from_alias, to_alias) → Vec<TypeCombination>
+    /// When set, CTE generation creates UNION of all pattern combinations
+    pub pattern_combinations:
+        Option<HashMap<(String, String), Vec<crate::query_planner::plan_ctx::TypeCombination>>>,
 }
 
 impl CteGenerationContext {
@@ -73,6 +79,7 @@ impl CteGenerationContext {
             start_node_label: None,
             end_node_label: None,
             is_optional: false,
+            pattern_combinations: None,
         }
     }
 

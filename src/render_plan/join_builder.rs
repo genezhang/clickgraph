@@ -84,10 +84,33 @@ fn find_multi_type_in_plan(
     }
 }
 
+/// Helper function to find GraphRel with pattern_combinations in a logical plan
+fn find_graph_rel(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::GraphRel> {
+    use crate::query_planner::logical_plan::*;
+    match plan {
+        LogicalPlan::GraphRel(gr) => Some(gr),
+        LogicalPlan::Projection(proj) => find_graph_rel(&proj.input),
+        LogicalPlan::Filter(filter) => find_graph_rel(&filter.input),
+        LogicalPlan::GroupBy(group_by) => find_graph_rel(&group_by.input),
+        LogicalPlan::GraphNode(gn) => find_graph_rel(&gn.input),
+        LogicalPlan::OrderBy(order_by) => find_graph_rel(&order_by.input),
+        LogicalPlan::Limit(limit) => find_graph_rel(&limit.input),
+        LogicalPlan::Skip(skip) => find_graph_rel(&skip.input),
+        _ => None,
+    }
+}
+
 /// Join Builder trait for extracting JOIN-related information from logical plans
 pub trait JoinBuilder {
     /// Extract JOIN clauses from the logical plan
     fn extract_joins(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<Vec<Join>>;
+
+    /// Extract JOIN clauses with CTE context for deterministic CTE name lookups
+    fn extract_joins_with_context(
+        &self,
+        schema: &GraphSchema,
+        context: &crate::render_plan::cte_generation::CteGenerationContext,
+    ) -> RenderPlanBuilderResult<Vec<Join>>;
 
     /// Extract UNWIND clauses as ARRAY JOIN items
     fn extract_array_join(&self) -> RenderPlanBuilderResult<Vec<ArrayJoin>>;
@@ -141,6 +164,106 @@ impl JoinBuilder for LogicalPlan {
                 Ok(joins)
             }
             _ => Ok(Vec::new()),
+        }
+    }
+
+    /// Extract JOIN clauses with CTE context for deterministic CTE name resolution
+    /// This is the context-aware version that looks up multi-type CTE names from the registry
+    fn extract_joins_with_context(
+        &self,
+        schema: &GraphSchema,
+        _context: &crate::render_plan::cte_generation::CteGenerationContext,
+    ) -> RenderPlanBuilderResult<Vec<Join>> {
+        // For most node types, delegate to regular extract_joins (context not needed)
+        // Only GraphRel with multi-type patterns needs the context
+        match self {
+            LogicalPlan::GraphRel(graph_rel) => {
+                // Check if this is a multi-type pattern that needs CTE lookup
+                let is_implicit_one_hop = graph_rel
+                    .variable_length
+                    .as_ref()
+                    .map(|spec| spec.min_hops == Some(1) && spec.max_hops == Some(1))
+                    .unwrap_or(false);
+                let is_no_vlp_or_implicit =
+                    graph_rel.variable_length.is_none() || is_implicit_one_hop;
+
+                if is_no_vlp_or_implicit {
+                    if let Some(ref labels) = graph_rel.labels {
+                        if labels.len() > 1 {
+                            // Multi-type relationship - look up CTE name from task-local QueryContext
+                            if let Some(cte_name) =
+                                crate::server::query_context::get_relationship_cte_name(
+                                    &graph_rel.alias,
+                                )
+                            {
+                                log::info!(
+                                    "✓ Multi-type relationship '{}' - found registered CTE name: '{}'",
+                                    graph_rel.alias,
+                                    cte_name
+                                );
+
+                                // Get the left node's ID column to join on
+                                let left_id_col = extract_id_column(&graph_rel.left)
+                                    .unwrap_or_else(|| {
+                                        log::warn!("⚠️  Could not find ID column for alias '{}', using default", graph_rel.left_connection);
+                                        "id".to_string()
+                                    });
+
+                                // Create JOIN condition: left_alias.id_col = cte_alias.from_node_id
+                                let join_condition = OperatorApplication {
+                                    operator: Operator::Equal,
+                                    operands: vec![
+                                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(
+                                                graph_rel.left_connection.clone(),
+                                            ),
+                                            column: PropertyValue::Column(left_id_col),
+                                        }),
+                                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(cte_name.clone()),
+                                            column: PropertyValue::Column(
+                                                "from_node_id".to_string(),
+                                            ),
+                                        }),
+                                    ],
+                                };
+
+                                // Create the JOIN
+                                let join = Join {
+                                    table_name: cte_name.clone(),
+                                    table_alias: cte_name.clone(),
+                                    joining_on: vec![join_condition],
+                                    join_type: if graph_rel.is_optional.unwrap_or(false) {
+                                        JoinType::Left
+                                    } else {
+                                        JoinType::Inner
+                                    },
+                                    pre_filter: None,
+                                    from_id_column: Some("from_node_id".to_string()),
+                                    to_id_column: Some("to_node_id".to_string()),
+                                    graph_rel: None,
+                                };
+
+                                return Ok(vec![join]);
+                            } else {
+                                log::error!(
+                                    "❌ Multi-type relationship '{}' has no registered CTE name in context! This is a bug.",
+                                    graph_rel.alias
+                                );
+                                return Err(RenderBuildError::InvalidRenderPlan(format!(
+                                    "Multi-type relationship '{}' CTE not found in context",
+                                    graph_rel.alias
+                                )));
+                            }
+                        }
+                    }
+                }
+
+                // Not a multi-type pattern, use regular extraction
+                <LogicalPlan as JoinBuilder>::extract_joins(self, schema)
+            }
+            // For all other node types, delegate to regular extract_joins
+            _ => <LogicalPlan as JoinBuilder>::extract_joins(self, schema),
         }
     }
 
@@ -313,6 +436,18 @@ impl JoinBuilder for LogicalPlan {
                 joins
             }
             LogicalPlan::GraphJoins(graph_joins) => {
+                // === PATTERNRESOLVER 2.0: Check for pattern_combinations FIRST ===
+                // Pattern combinations create a self-contained CTE with all JOINs already done
+                // The CTE is used as FROM, and NO additional JOINs should be generated
+                if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
+                    if graph_rel.pattern_combinations.is_some() {
+                        log::info!(
+                            "✓ PATTERNRESOLVER 2.0: pattern_combinations detected - returning empty joins (CTE is self-contained)"
+                        );
+                        return Ok(vec![]);
+                    }
+                }
+
                 // � MULTI-TYPE FIX: Check for multi-type relationship patterns FIRST
                 // Multi-type patterns like [:FOLLOWS|AUTHORED] don't use the deprecated joins field
                 // They generate a CTE (vlp_multi_type_a_b) that must be used as FROM, not JOINs
@@ -784,7 +919,21 @@ impl JoinBuilder for LogicalPlan {
                     if let Some(ref labels) = graph_rel.labels {
                         if labels.len() > 1 {
                             log::info!(
-                                "✓ Multi-type relationship (non-VLP or implicit *1) {:?} - using CTE vlp_multi_type_{}_{}, no joins needed (RETURNING EMPTY)",
+                                "✓ Multi-type relationship {:?} - CTE will be used, no joins in regular path (use extract_joins_with_context)",
+                                labels
+                            );
+                            return Ok(Vec::new());
+                        }
+                    }
+                }
+
+                // 🚀 MULTI-TYPE VLP: Check if this is a multi-type variable-length pattern
+                // Multi-type VLPs (e.g., [:FOLLOWS|AUTHORED*2]) also use CTE as FROM
+                if graph_rel.variable_length.is_some() {
+                    if let Some(ref labels) = graph_rel.labels {
+                        if labels.len() > 1 {
+                            log::info!(
+                                "✓ Multi-type VLP {:?} - using CTE vlp_multi_type_{}_{}, no joins needed (RETURNING EMPTY)",
                                 labels,
                                 graph_rel.left_connection,
                                 graph_rel.right_connection

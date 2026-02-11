@@ -1163,6 +1163,7 @@ impl GraphJoinInference {
                         input: processed_child,
                         items: projection.items.clone(),
                         distinct: projection.distinct,
+                        pattern_comprehensions: projection.pattern_comprehensions.clone(),
                     },
                 ));
 
@@ -2517,7 +2518,7 @@ impl GraphJoinInference {
         plan_ctx: &mut PlanCtx,
         collected_graph_joins: &mut Vec<Join>,
         join_ctx: &mut JoinContext,
-        graph_rel: &GraphRel, // Added to check for path variables
+        _graph_rel: &GraphRel, // Added to check for path variables
     ) -> AnalyzerResult<()> {
         log::warn!(
             "🚨 handle_graph_pattern_v2 ENTER: rel={}, left={}, right={}, strategy={:?}",
@@ -3567,10 +3568,7 @@ impl GraphJoinInference {
         // Track C: Check if relationship has types (may be filtered to 0 by property-based pruning)
         // If no types, skip join inference - the Empty plan handles this case
         if let Ok(rel_ctx) = plan_ctx.get_rel_table_ctx(&graph_rel.alias) {
-            if rel_ctx
-                .get_labels()
-                .map_or(true, |labels| labels.is_empty())
-            {
+            if rel_ctx.get_labels().is_none_or(|labels| labels.is_empty()) {
                 log::info!(
                     "🔧 GraphJoinInference: Skipping for relationship '{}' with no types (filtered by Track C)",
                     graph_rel.alias
@@ -3789,7 +3787,7 @@ impl GraphJoinInference {
             );
 
             // 1. Create FROM marker for anchor node (left node)
-            helpers::JoinBuilder::from_marker(&left_node_schema.full_table_name(), &left_alias)
+            helpers::JoinBuilder::from_marker(left_node_schema.full_table_name(), &left_alias)
                 .build_and_push(collected_graph_joins);
 
             // 2. Create LEFT JOIN to VLP CTE

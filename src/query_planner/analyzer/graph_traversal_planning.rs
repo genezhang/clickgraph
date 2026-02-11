@@ -307,6 +307,7 @@ impl AnalyzerPass for GraphTRaversalPlanning {
                             where_clause: with_clause.where_clause.clone(),
                             exported_aliases: with_clause.exported_aliases.clone(),
                             cte_references: with_clause.cte_references.clone(),
+                            pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
                         };
                         Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
                     }
@@ -365,10 +366,7 @@ impl GraphTRaversalPlanning {
         // Track C: Check if relationship has types (may be filtered to 0 by property-based pruning)
         // If no types, skip graph traversal planning - the Empty plan handles this case
         if let Ok(rel_ctx) = plan_ctx.get_rel_table_ctx(&graph_rel.alias) {
-            if rel_ctx
-                .get_labels()
-                .map_or(true, |labels| labels.is_empty())
-            {
+            if rel_ctx.get_labels().is_none_or(|labels| labels.is_empty()) {
                 log::info!(
                     "🔧 GraphTraversalPlanning: Skipping for relationship '{}' with no types (filtered by Track C)",
                     graph_rel.alias
@@ -845,6 +843,7 @@ impl GraphTRaversalPlanning {
                 col_alias: None,
             }],
             distinct: false,
+            pattern_comprehensions: vec![],
         }))
     }
 }

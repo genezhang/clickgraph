@@ -151,6 +151,7 @@ impl CollectUnwindElimination {
                         input: optimized_input,
                         items: new_items,
                         distinct: proj.distinct,
+                        pattern_comprehensions: proj.pattern_comprehensions.clone(),
                     },
                 ));
 
@@ -189,6 +190,7 @@ impl CollectUnwindElimination {
                         where_clause: with.where_clause.clone(),
                         exported_aliases: with.exported_aliases.clone(),
                         cte_references: with.cte_references.clone(),
+                        pattern_comprehensions: with.pattern_comprehensions.clone(),
                     })),
                     alias_map,
                 ))
@@ -423,6 +425,9 @@ impl CollectUnwindElimination {
                                                     where_clause: with.where_clause.clone(),
                                                     exported_aliases: new_exported_aliases,
                                                     cte_references: with.cte_references.clone(),
+                                                    pattern_comprehensions: with
+                                                        .pattern_comprehensions
+                                                        .clone(),
                                                 }));
 
                                             // Map: UNWIND alias -> source variable
@@ -487,6 +492,7 @@ mod tests {
             where_clause: None,
             exported_aliases: vec!["friends".to_string()],
             cte_references: Default::default(),
+            pattern_comprehensions: vec![],
         }));
 
         let unwind_plan = Arc::new(LogicalPlan::Unwind(Unwind {
@@ -537,6 +543,7 @@ mod tests {
             where_clause: None,
             exported_aliases: vec!["u".to_string(), "friends".to_string()],
             cte_references: Default::default(),
+            pattern_comprehensions: vec![],
         }));
 
         let unwind_plan = Arc::new(LogicalPlan::Unwind(Unwind {

@@ -84,7 +84,7 @@ fn extract_from_ast_expr<'a>(
                     }
 
                     // Check if first operand is id(var)
-                    if let Some(ast::Expression::FunctionCallExp(func)) = op_app.operands.get(0) {
+                    if let Some(ast::Expression::FunctionCallExp(func)) = op_app.operands.first() {
                         if func.name == "id" && func.args.len() == 1 {
                             if let ast::Expression::Variable(var_name) = &func.args[0] {
                                 // Extract IDs from second operand (list)
@@ -100,7 +100,7 @@ fn extract_from_ast_expr<'a>(
                                             {
                                                 constraints
                                                     .entry(var_name.to_string())
-                                                    .or_insert_with(HashSet::new)
+                                                    .or_default()
                                                     .insert(label);
                                             }
                                         }
@@ -117,7 +117,7 @@ fn extract_from_ast_expr<'a>(
                     }
 
                     // Handle: id(var) = X
-                    if let Some(ast::Expression::FunctionCallExp(func)) = op_app.operands.get(0) {
+                    if let Some(ast::Expression::FunctionCallExp(func)) = op_app.operands.first() {
                         if func.name == "id" && func.args.len() == 1 {
                             if let ast::Expression::Variable(var_name) = &func.args[0] {
                                 if let Some(ast::Expression::Literal(ast::Literal::Integer(
@@ -129,7 +129,7 @@ fn extract_from_ast_expr<'a>(
                                     {
                                         constraints
                                             .entry(var_name.to_string())
-                                            .or_insert_with(HashSet::new)
+                                            .or_default()
                                             .insert(label);
                                     }
                                 }

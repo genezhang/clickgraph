@@ -15,6 +15,7 @@ impl Projection {
             input: Arc::new(LogicalPlan::ViewScan(Arc::new(scan))),
             items,
             distinct: false,
+            pattern_comprehensions: vec![],
         }))
     }
 
