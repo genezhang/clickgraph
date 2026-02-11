@@ -39,7 +39,6 @@ use crate::utils::cte_naming::{extract_cte_base_name, is_generated_cte_name};
 use log::debug;
 use std::sync::Arc;
 
-use super::cte_extraction::extract_node_labels;
 use super::errors::RenderBuildError;
 use super::plan_builder_helpers::{
     extract_rel_and_node_tables, extract_table_name, find_anchor_node, find_table_name_for_alias,
@@ -63,17 +62,8 @@ type RenderPlanBuilderResult<T> = Result<T, RenderBuildError>;
 /// let from_table = logical_plan.extract_from()?;
 /// ```
 pub trait FromBuilder {
-    /// Extract FROM clause from this logical plan
-    ///
-    /// Returns an optional FromTable representing the primary data source.
-    /// Returns None for plans that don't have a direct table source (e.g., Union, PageRank).
-    ///
-    /// # Errors
-    ///
-    /// Returns RenderBuildError if:
-    /// - Table name cannot be resolved for a required alias
-    /// - GraphJoins has no FROM marker and no valid anchor
-    /// - Plan structure is invalid or unsupported
+    /// Extract the FROM table/view reference from a logical plan
+    /// Uses task-local QueryContext internally for CTE name lookups
     fn extract_from(&self) -> RenderPlanBuilderResult<Option<FromTable>>;
 }
 
@@ -262,12 +252,12 @@ impl LogicalPlan {
         let left_is_denormalized = is_node_denormalized(&graph_rel.left);
         let right_is_denormalized = is_node_denormalized(&graph_rel.right);
 
-        log::debug!(
-            "🔍 extract_from GraphRel: alias='{}', left_is_denorm={}, right_is_denorm={}, is_optional={:?}",
+        log::warn!(
+            "🔍 FROM extract_from_graph_rel: alias='{}', variable_length={:?}, pattern_combinations={:?}, labels={:?}",
             graph_rel.alias,
-            left_is_denormalized,
-            right_is_denormalized,
-            graph_rel.is_optional
+            graph_rel.variable_length,
+            graph_rel.pattern_combinations.as_ref().map(|c| c.len()),
+            graph_rel.labels
         );
 
         // VARIABLE-LENGTH PATH CHECK
@@ -286,36 +276,67 @@ impl LogicalPlan {
             // Non-optional VLP: Use CTE as FROM
             log::debug!("✓ VARIABLE-LENGTH pattern: using CTE as FROM");
 
-            // Check if this is a multi-type VLP that requires special CTE naming
+            // Look up registered CTE name from task-local QueryContext
+            if let Some(cte_name) =
+                crate::server::query_context::get_relationship_cte_name(&graph_rel.alias)
+            {
+                log::info!(
+                    "✅ FROM BUILDER: Found registered CTE name='{}' for alias='{}'",
+                    cte_name,
+                    graph_rel.alias
+                );
+
+                return Ok(Some(ViewTableRef {
+                    source: Arc::new(LogicalPlan::Empty),
+                    name: cte_name,
+                    alias: graph_rel.path_variable.clone(),
+                    use_final: false,
+                }));
+            }
+
+            // Fallback: CTE name was not registered (shouldn't happen in production)
+            // This is for backward compatibility during transition period
+            log::warn!(
+                "⚠️ FROM BUILDER: CTE not registered for alias '{}', falling back to computation",
+                graph_rel.alias
+            );
+
+            // TODO: Extract CTE naming logic to shared utility function
+            // Current duplication: plan_builder.rs (here and lines 1285-1304),
+            // plan_builder_utils.rs (lines 1152-1167 with multi-type support)
+
             let start_alias = &graph_rel.left_connection;
             let end_alias = &graph_rel.right_connection;
 
-            // First try multi-type VLP CTE name format
-            let multi_type_cte_name = if start_alias <= end_alias {
+            // 🔍 DEBUG: Check pattern_combinations field
+            log::warn!(
+                "🔍 FROM BUILDER VLP: alias='{}', left='{}', right='{}', pattern_combinations={:?}, labels={:?}",
+                graph_rel.alias,
+                start_alias,
+                end_alias,
+                graph_rel.pattern_combinations.as_ref().map(|c| c.len()),
+                graph_rel.labels
+            );
+
+            // Check if this is a multi-type pattern (has pattern_combinations)
+            let cte_name = if graph_rel.pattern_combinations.is_some() {
+                // Multi-type VLP: vlp_multi_type_{start}_{end}
                 format!("vlp_multi_type_{}_{}", start_alias, end_alias)
             } else {
-                format!("vlp_multi_type_{}_{}", end_alias, start_alias)
+                // Single-type VLP: vlp_{start}_{end}
+                format!("vlp_{}_{}", start_alias, end_alias)
             };
 
-            // Check if multi-type CTE exists (we'd need to check context, but for now assume it might exist)
-            // For now, prefer multi-type if the pattern suggests it (multiple rel types or end labels)
-            let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
-            let end_labels = extract_node_labels(&graph_rel.right).unwrap_or_default();
-
-            let use_multi_type = rel_types.len() > 1 || end_labels.len() > 1;
-            let cte_name = if use_multi_type {
-                log::debug!("✓ Using multi-type VLP CTE: {}", multi_type_cte_name);
-                multi_type_cte_name
-            } else {
-                // Fall back to single-type VLP CTE name
-                let single_type_cte_name = format!("vlp_{}_{}", start_alias, end_alias);
-                log::debug!("✓ Using single-type VLP CTE: {}", single_type_cte_name);
-                single_type_cte_name
-            };
+            log::warn!(
+                "🔍 FROM BUILDER: Computed CTE name='{}' (multi_type={})",
+                cte_name,
+                graph_rel.pattern_combinations.is_some()
+            );
 
             log::debug!(
-                "✓ Using CTE '{}' as FROM for variable-length path",
-                cte_name
+                "✓ Using CTE '{}' as FROM for variable-length path (multi-type: {})",
+                cte_name,
+                graph_rel.pattern_combinations.is_some()
             );
 
             return Ok(Some(ViewTableRef {
@@ -366,8 +387,31 @@ impl LogicalPlan {
         let left_table_name = extract_table_name(&graph_rel.left);
         let right_table_name = extract_table_name(&graph_rel.right);
 
+        log::debug!(
+            "🔍 extract_from_graph_rel: left_table={:?}, right_table={:?}, pattern_combinations={:?}",
+            left_table_name,
+            right_table_name,
+            graph_rel.pattern_combinations.as_ref().map(|c| c.len())
+        );
+
         // If both nodes are anonymous, use the relationship table as FROM
         if left_table_name.is_none() && right_table_name.is_none() {
+            // === PATTERNRESOLVER 2.0: CHECK FOR PATTERN UNION CTE ===
+            // If pattern_combinations exist, use the CTE instead of the relationship table
+            if graph_rel.pattern_combinations.is_some() {
+                let cte_name = format!("pattern_union_{}", graph_rel.alias);
+                log::info!(
+                    "🔀 PatternResolver 2.0: Using UNION CTE '{}' as FROM for anonymous pattern",
+                    cte_name
+                );
+                return Ok(Some(ViewTableRef {
+                    source: Arc::new(LogicalPlan::Empty),
+                    name: cte_name,
+                    alias: Some(graph_rel.alias.clone()),
+                    use_final: false,
+                }));
+            }
+
             // Edge-driven query: use relationship table directly (not as CTE)
             // Extract table name from the relationship ViewScan
             if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
@@ -501,6 +545,74 @@ impl LogicalPlan {
         }
     }
 
+    /// Extract FROM clause for GraphRel with CTE context (context-aware version)
+    /// LOOKS UP registered CTE names instead of recomputing them.
+    /// Fails with descriptive error if CTE name not found in registry.
+    fn extract_from_graph_rel_with_context(
+        &self,
+        graph_rel: &crate::query_planner::logical_plan::GraphRel,
+        _context: &crate::render_plan::cte_generation::CteGenerationContext,
+    ) -> RenderPlanBuilderResult<Option<ViewTableRef>> {
+        log::warn!(
+            "🔍 FROM extract_from_graph_rel_with_context: alias='{}', variable_length={:?}",
+            graph_rel.alias,
+            graph_rel.variable_length
+        );
+
+        // Handle optional VLP case
+        let is_optional = graph_rel.is_optional.unwrap_or(false);
+        if is_optional {
+            log::debug!("✓ OPTIONAL VLP: Skipping CTE as FROM, will use anchor node instead");
+            return Ok(None);
+        }
+
+        // Look up registered CTE name from task-local QueryContext
+        if let Some(cte_name) =
+            crate::server::query_context::get_relationship_cte_name(&graph_rel.alias)
+        {
+            log::info!(
+                "✅ FROM BUILDER: Found registered CTE name='{}' for alias='{}'",
+                cte_name,
+                graph_rel.alias
+            );
+
+            return Ok(Some(ViewTableRef {
+                source: Arc::new(LogicalPlan::Empty),
+                name: cte_name,
+                alias: graph_rel.path_variable.clone(),
+                use_final: false,
+            }));
+        }
+
+        // CTE name not registered - this is an internal inconsistency error
+        let error_msg = format!(
+            "INTERNAL ERROR: VLP CTE name not registered for alias '{}'!\n\
+             This indicates CTE extraction and FROM extraction are out of sync.\n\
+             \n\
+             Expected flow:\n\
+             1. extract_ctes_with_context() creates CTE and calls register_relationship_cte_name()\n\
+             2. extract_from_with_context() calls get_relationship_cte_name() to look up\n\
+             \n\
+             Debug Info:\n\
+             - GraphRel alias: '{}'\n\
+             - left_connection: '{}'\n\
+             - right_connection: '{}'\n\
+             - variable_length: {:?}\n\
+             - pattern_combinations: {:?}\n\
+             - labels: {:?}",
+            graph_rel.alias,
+            graph_rel.alias,
+            graph_rel.left_connection,
+            graph_rel.right_connection,
+            graph_rel.variable_length,
+            graph_rel.pattern_combinations.as_ref().map(|c| c.len()),
+            graph_rel.labels,
+        );
+
+        log::error!("{}", error_msg);
+        Err(RenderBuildError::InvalidRenderPlan(error_msg))
+    }
+
     /// Extract FROM clause for GraphJoins patterns
     ///
     /// GraphJoins represent the result of graph pattern analysis where all tables
@@ -544,16 +656,43 @@ impl LogicalPlan {
         //
         // 🔧 CRITICAL: Check for multi-type relationships BEFORE using FROM marker!
         // Multi-type patterns create a FROM marker join but should use the CTE instead.
+
+        // === PATTERNRESOLVER 2.0: Check for pattern_combinations FIRST ===
+        log::debug!("PatternResolver 2.0: Checking for pattern_combinations...");
+        if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
+            log::error!(
+                "🔥 Found GraphRel, alias='{}', checking pattern_combinations: {:?}",
+                graph_rel.alias,
+                graph_rel.pattern_combinations.as_ref().map(|c| c.len())
+            );
+            match &graph_rel.pattern_combinations {
+                Some(combinations) => {
+                    let cte_name = format!("pattern_union_{}", graph_rel.alias);
+                    log::error!(
+                        "🔀 PatternResolver 2.0: Using pattern UNION CTE '{}' as FROM ({} combinations)",
+                        cte_name,
+                        combinations.len()
+                    );
+                    return Ok(Some(ViewTableRef {
+                        source: Arc::new(LogicalPlan::Empty),
+                        name: cte_name,
+                        alias: Some(graph_rel.alias.clone()),
+                        use_final: false,
+                    }));
+                }
+                None => {
+                    log::debug!("pattern_combinations is None");
+                }
+            }
+        } else {
+            log::debug!("find_graph_rel returned None");
+        }
+
         log::info!("🔍 Checking for multi-type relationship before processing FROM marker...");
         if let Some(graph_rel) = find_multi_type_graph_rel(&graph_joins.input) {
             let start_alias = &graph_rel.left_connection;
             let end_alias = &graph_rel.right_connection;
-            // 🔧 FIX: Normalize alias order for undirected patterns (alphabetical)
-            let cte_name = if start_alias <= end_alias {
-                format!("vlp_multi_type_{}_{}", start_alias, end_alias)
-            } else {
-                format!("vlp_multi_type_{}_{}", end_alias, start_alias)
-            };
+            let cte_name = format!("vlp_multi_type_{}_{}", start_alias, end_alias);
 
             log::info!(
                 "🎯 MULTI-TYPE: Using CTE '{}' as FROM (relationship types: {:?})",
@@ -788,11 +927,24 @@ impl LogicalPlan {
                         // TODO: Extract CTE naming logic to shared utility function
                         // Current duplication: plan_builder.rs (here and lines 965-986),
                         // plan_builder_utils.rs (lines 1152-1167 with multi-type support)
-                        // Note: This handles single-type VLP only. Multi-type VLP uses
-                        // vlp_multi_type_{start}_{end} format (see plan_builder_utils.rs)
+
                         let start_alias = &graph_rel.left_connection;
                         let end_alias = &graph_rel.right_connection;
-                        let cte_name = format!("vlp_{}_{}", start_alias, end_alias);
+
+                        // Check if this is a multi-type pattern (has pattern_combinations)
+                        let cte_name = if graph_rel.pattern_combinations.is_some() {
+                            // Multi-type VLP: vlp_multi_type_{start}_{end}
+                            format!("vlp_multi_type_{}_{}", start_alias, end_alias)
+                        } else {
+                            // Single-type VLP: vlp_{start}_{end}
+                            format!("vlp_{}_{}", start_alias, end_alias)
+                        };
+
+                        log::debug!(
+                            "✓ Using VLP CTE '{}' (multi-type: {})",
+                            cte_name,
+                            graph_rel.pattern_combinations.is_some()
+                        );
 
                         return Ok(Some(ViewTableRef {
                             source: Arc::new(LogicalPlan::Empty),
@@ -930,12 +1082,7 @@ impl LogicalPlan {
         if let Some(graph_rel) = find_multi_type_graph_rel(&graph_joins.input) {
             let start_alias = &graph_rel.left_connection;
             let end_alias = &graph_rel.right_connection;
-            // 🔧 FIX: Normalize alias order for undirected patterns (alphabetical)
-            let cte_name = if start_alias <= end_alias {
-                format!("vlp_multi_type_{}_{}", start_alias, end_alias)
-            } else {
-                format!("vlp_multi_type_{}_{}", end_alias, start_alias)
-            };
+            let cte_name = format!("vlp_multi_type_{}_{}", start_alias, end_alias);
 
             log::info!(
                 "🎯 MULTI-TYPE: Using CTE '{}' as FROM (relationship types: {:?})",
@@ -962,7 +1109,21 @@ impl LogicalPlan {
             // find_vlp_graph_rel already checks variable_length.is_some()
             let start_alias = &graph_rel.left_connection;
             let end_alias = &graph_rel.right_connection;
-            let cte_name = format!("vlp_{}_{}", start_alias, end_alias);
+
+            // Check if this is a multi-type pattern (has pattern_combinations)
+            let cte_name = if graph_rel.pattern_combinations.is_some() {
+                // Multi-type VLP: vlp_multi_type_{start}_{end}
+                format!("vlp_multi_type_{}_{}", start_alias, end_alias)
+            } else {
+                // Single-type VLP: vlp_{start}_{end}
+                format!("vlp_{}_{}", start_alias, end_alias)
+            };
+
+            log::debug!(
+                "✓ Using chained VLP CTE '{}' (multi-type: {})",
+                cte_name,
+                graph_rel.pattern_combinations.is_some()
+            );
 
             log::info!(
                 "🎯 VLP + CHAINED: Using CTE '{}' as FROM (anchor was '{:?}' but is part of VLP)",

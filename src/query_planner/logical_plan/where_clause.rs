@@ -195,7 +195,7 @@ fn rewrite_predicate_aliases(
         LogicalExpr::OperatorApplicationExp(op) | LogicalExpr::Operator(op) => {
             // Recursively rewrite operands
             let rewritten = OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: op
                     .operands
                     .iter()

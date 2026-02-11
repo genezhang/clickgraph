@@ -53,6 +53,40 @@ fn transform_bidirectional(
             let undirected_count = count_undirected_edges(plan);
 
             if undirected_count > 0 {
+                // Skip Union split for VLP multi-type patterns — the VLP CTE already
+                // generates UNION ALL branches for both directions internally.
+                // Splitting here creates duplicate results and a second CTE with wrong columns.
+                let is_vlp_multi_type = graph_rel.variable_length.is_some()
+                    && graph_rel.labels.as_ref().is_some_and(|l| l.len() > 1);
+                if is_vlp_multi_type {
+                    crate::debug_print!(
+                        "🔄 BidirectionalUnion: VLP multi-type pattern detected ({} labels), skipping Union split — CTE handles both directions",
+                        graph_rel.labels.as_ref().unwrap().len()
+                    );
+                    // Mark as undirected but keep Outgoing direction — VLP CTE handles both
+                    let new_graph_rel = Arc::new(LogicalPlan::GraphRel(GraphRel {
+                        left: graph_rel.left.clone(),
+                        center: graph_rel.center.clone(),
+                        right: graph_rel.right.clone(),
+                        alias: graph_rel.alias.clone(),
+                        direction: Direction::Outgoing,
+                        left_connection: graph_rel.left_connection.clone(),
+                        right_connection: graph_rel.right_connection.clone(),
+                        is_rel_anchor: graph_rel.is_rel_anchor,
+                        variable_length: graph_rel.variable_length.clone(),
+                        shortest_path_mode: graph_rel.shortest_path_mode.clone(),
+                        path_variable: graph_rel.path_variable.clone(),
+                        where_predicate: graph_rel.where_predicate.clone(),
+                        labels: graph_rel.labels.clone(),
+                        is_optional: graph_rel.is_optional,
+                        anchor_connection: graph_rel.anchor_connection.clone(),
+                        cte_references: graph_rel.cte_references.clone(),
+                        pattern_combinations: graph_rel.pattern_combinations.clone(),
+                        was_undirected: Some(true),
+                    }));
+                    return Ok(Transformed::Yes(new_graph_rel));
+                }
+
                 crate::debug_print!(
                     "🔄 BidirectionalUnion: Found {} undirected edge(s) in path, generating {} UNION branches",
                     undirected_count,
@@ -127,6 +161,28 @@ fn transform_bidirectional(
             let undirected_count = count_undirected_edges(&proj.input);
 
             if undirected_count > 0 {
+                // Skip Union split for VLP multi-type patterns — the VLP CTE already
+                // handles both directions internally
+                if is_vlp_multi_type_subtree(&proj.input) {
+                    crate::debug_print!(
+                        "🔄 BidirectionalUnion: VLP multi-type in Projection subtree, skipping Union split"
+                    );
+                    let transformed = transform_bidirectional(&proj.input, plan_ctx, graph_schema)?;
+                    let new_input = match transformed {
+                        Transformed::Yes(p) => p,
+                        Transformed::No(p) => p,
+                    };
+                    let new_proj = Projection {
+                        input: new_input,
+                        items: proj.items.clone(),
+                        distinct: proj.distinct,
+                        pattern_comprehensions: proj.pattern_comprehensions.clone(),
+                    };
+                    return Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
+                        new_proj,
+                    ))));
+                }
+
                 crate::debug_print!(
                     "🔄 BidirectionalUnion: Found {} undirected edge(s) in Projection input, generating {} UNION branches",
                     undirected_count,
@@ -167,6 +223,7 @@ fn transform_bidirectional(
                             input: new_input,
                             items: proj.items.clone(),
                             distinct: proj.distinct,
+                            pattern_comprehensions: proj.pattern_comprehensions.clone(),
                         };
                         Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
                             new_proj,
@@ -273,6 +330,7 @@ fn transform_bidirectional(
                         label: graph_node.label.clone(),
                         is_denormalized: graph_node.is_denormalized,
                         projected_columns: None,
+                        node_types: graph_node.node_types.clone(),
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(new_node))))
                 }
@@ -379,6 +437,7 @@ fn transform_bidirectional(
                         where_clause: with_clause.where_clause.clone(),
                         exported_aliases: with_clause.exported_aliases.clone(),
                         cte_references: with_clause.cte_references.clone(),
+                        pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::WithClause(
                         new_with,
@@ -774,6 +833,12 @@ fn apply_direction_combination_inner(
                 is_optional: graph_rel.is_optional,
                 anchor_connection: graph_rel.anchor_connection.clone(),
                 cte_references: std::collections::HashMap::new(),
+                pattern_combinations: graph_rel.pattern_combinations.clone(),
+                was_undirected: if graph_rel.direction == Direction::Either {
+                    Some(true)
+                } else {
+                    graph_rel.was_undirected
+                },
             }))
         }
         LogicalPlan::Projection(proj) => {
@@ -799,6 +864,7 @@ fn apply_direction_combination_inner(
                 input: new_input,
                 items: new_items,
                 distinct: proj.distinct,
+                pattern_comprehensions: proj.pattern_comprehensions.clone(),
             }))
         }
         LogicalPlan::Filter(filter) => {
@@ -900,6 +966,21 @@ fn swap_expr_columns(expr: &LogicalExpr, column_swaps: &ColumnSwapMap) -> Logica
     }
 }
 
+/// Check if a plan subtree contains a VLP multi-type GraphRel that handles
+/// both directions internally (labels.len() > 1 + variable_length).
+/// Walks through Filter, Projection, and other wrapper nodes to find GraphRel.
+fn is_vlp_multi_type_subtree(plan: &Arc<LogicalPlan>) -> bool {
+    match plan.as_ref() {
+        LogicalPlan::GraphRel(graph_rel) => {
+            graph_rel.variable_length.is_some()
+                && graph_rel.labels.as_ref().is_some_and(|l| l.len() > 1)
+        }
+        LogicalPlan::Filter(f) => is_vlp_multi_type_subtree(&f.input),
+        LogicalPlan::Projection(p) => is_vlp_multi_type_subtree(&p.input),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -943,6 +1024,7 @@ mod tests {
             label: Some("User".to_string()),
             is_denormalized: false,
             projected_columns: None,
+            node_types: None,
         }));
 
         let right_node = Arc::new(LogicalPlan::GraphNode(GraphNode {
@@ -951,6 +1033,7 @@ mod tests {
             label: Some("User".to_string()),
             is_denormalized: false,
             projected_columns: None,
+            node_types: None,
         }));
 
         let graph_rel = GraphRel {
@@ -970,6 +1053,8 @@ mod tests {
             is_optional: None,
             anchor_connection: None,
             cte_references: std::collections::HashMap::new(),
+            pattern_combinations: None,
+            was_undirected: None,
         };
 
         let plan = Arc::new(LogicalPlan::GraphRel(graph_rel));

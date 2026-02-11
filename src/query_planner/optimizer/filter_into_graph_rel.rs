@@ -151,6 +151,8 @@ impl OptimizerPass for FilterIntoGraphRel {
                             is_optional: graph_rel.is_optional, // Preserve optional flag
                             anchor_connection: graph_rel.anchor_connection.clone(),
                             cte_references: std::collections::HashMap::new(),
+                            pattern_combinations: graph_rel.pattern_combinations.clone(),
+                            was_undirected: graph_rel.was_undirected,
                         }));
 
                         // Rebuild projection with new GraphRel, and return without Filter wrapper
@@ -159,6 +161,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 input: new_graph_rel,
                                 items: proj.items.clone(),
                                 distinct: proj.distinct, // PRESERVE distinct flag
+                                pattern_comprehensions: proj.pattern_comprehensions.clone(),
                             },
                         ));
 
@@ -198,6 +201,8 @@ impl OptimizerPass for FilterIntoGraphRel {
                         is_optional: graph_rel.is_optional, // Preserve optional flag
                         anchor_connection: graph_rel.anchor_connection.clone(),
                         cte_references: std::collections::HashMap::new(),
+                        pattern_combinations: graph_rel.pattern_combinations.clone(),
+                        was_undirected: graph_rel.was_undirected,
                     }));
 
                     // Return the GraphRel directly, removing the Filter wrapper
@@ -254,6 +259,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 input: new_view_scan,
                                 items: proj.items.clone(),
                                 distinct: proj.distinct, // PRESERVE distinct flag
+                                pattern_comprehensions: proj.pattern_comprehensions.clone(),
                             },
                         ));
 
@@ -392,6 +398,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                         label: graph_node.label.clone(),
                                         is_denormalized: graph_node.is_denormalized,
                                         projected_columns: graph_node.projected_columns.clone(),
+                                        node_types: None,
                                     };
 
                                 return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(
@@ -443,6 +450,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 input: child_plan.clone(),
                                 items: proj.items.clone(),
                                 distinct: proj.distinct, // PRESERVE distinct flag
+                                pattern_comprehensions: proj.pattern_comprehensions.clone(),
                             },
                         ))));
                     }
@@ -572,6 +580,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 input: new_view_scan,
                                 items: proj.items.clone(),
                                 distinct: proj.distinct, // PRESERVE distinct flag
+                                pattern_comprehensions: proj.pattern_comprehensions.clone(),
                             }));
 
                             println!(
@@ -696,6 +705,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                                 label: graph_node.label.clone(),
                                                 is_denormalized: graph_node.is_denormalized,
                                                 projected_columns: None,
+                                                node_types: None,
                                             },
                                         ));
 
@@ -705,6 +715,9 @@ impl OptimizerPass for FilterIntoGraphRel {
                                                 input: new_graph_node,
                                                 items: proj.items.clone(),
                                                 distinct: proj.distinct,
+                                                pattern_comprehensions: proj
+                                                    .pattern_comprehensions
+                                                    .clone(),
                                             }));
 
                                         println!(
@@ -730,6 +743,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             input: new_input,
                             items: proj.items.clone(),
                             distinct: proj.distinct, // PRESERVE distinct flag
+                            pattern_comprehensions: proj.pattern_comprehensions.clone(),
                         })))
                     }
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
@@ -926,6 +940,8 @@ impl OptimizerPass for FilterIntoGraphRel {
                             is_optional: graph_rel.is_optional,
                             anchor_connection: graph_rel.anchor_connection.clone(),
                             cte_references: std::collections::HashMap::new(),
+                            pattern_combinations: graph_rel.pattern_combinations.clone(),
+                            was_undirected: graph_rel.was_undirected,
                         }));
 
                         return Ok(Transformed::Yes(new_graph_rel));
@@ -1041,6 +1057,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             where_clause: with_clause.where_clause.clone(),
                             exported_aliases: with_clause.exported_aliases.clone(),
                             cte_references: with_clause.cte_references.clone(),
+                            pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
                         };
                         Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
                     }

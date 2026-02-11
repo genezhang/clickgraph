@@ -126,6 +126,7 @@ impl SchemaInference {
                                                     label: Some(label.clone()),
                                                     is_denormalized: graph_node.is_denormalized,
                                                     projected_columns: graph_node.projected_columns.clone(),
+                                                    node_types: None,
                                                 },
                                             ))));
                                         }
@@ -340,6 +341,7 @@ impl SchemaInference {
                             where_clause: with_clause.where_clause.clone(),
                             exported_aliases: with_clause.exported_aliases.clone(),
                             cte_references: with_clause.cte_references.clone(),
+                            pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
                         };
                         Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
                     }
@@ -575,7 +577,7 @@ impl SchemaInference {
         left_table_ctx: &TableCtx,
         rel_table_ctx: &TableCtx,
         right_table_ctx: &TableCtx,
-        plan_ctx: &PlanCtx,
+        _plan_ctx: &PlanCtx,
     ) -> AnalyzerResult<(String, String, String)> {
         // if all present
         if left_table_ctx.get_label_opt().is_some()

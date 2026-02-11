@@ -21,10 +21,7 @@ use crate::{
     query_planner::logical_expr::{
         AggregateFnCall, ColumnAlias, LogicalExpr, PropertyAccess, TableAlias,
     },
-    query_planner::logical_plan::{
-        optional_match_clause::evaluate_optional_match_clause, LogicalPlan, Projection,
-        ProjectionItem, Union, UnionType,
-    },
+    query_planner::logical_plan::{LogicalPlan, Projection, ProjectionItem, Union, UnionType},
     query_planner::plan_ctx::PlanCtx,
 };
 use std::collections::HashSet;
@@ -242,27 +239,25 @@ fn rewrite_expression_pattern_comprehensions<'a>(
             // Special case: size(PatternComprehension) should become count(*)
             // NOT size(collect(projection)) which is semantically wrong
             let func_lower = func.name.to_lowercase();
-            if func_lower == "size" || func_lower == "length" {
-                if func.args.len() == 1 {
-                    if let Expression::PatternComprehension(pc) = &func.args[0] {
-                        log::info!(
-                            "🔄 Found size/length(PatternComprehension), replacing with count(*)"
-                        );
-                        // Replace size([(pattern) | proj]) with count(*)
-                        // The pattern will be added as OPTIONAL MATCH
-                        let count_call = Expression::FunctionCallExp(FunctionCall {
-                            name: "count".to_string(),
-                            args: vec![Expression::Literal(Literal::String("*"))],
-                        });
-                        return (
-                            count_call,
-                            vec![(
-                                (*pc.pattern).clone(),
-                                pc.where_clause.clone(),
-                                pc.projection.clone(),
-                            )],
-                        );
-                    }
+            if (func_lower == "size" || func_lower == "length") && func.args.len() == 1 {
+                if let Expression::PatternComprehension(pc) = &func.args[0] {
+                    log::info!(
+                        "🔄 Found size/length(PatternComprehension), replacing with count(*)"
+                    );
+                    // Replace size([(pattern) | proj]) with count(*)
+                    // The pattern will be added as OPTIONAL MATCH
+                    let count_call = Expression::FunctionCallExp(FunctionCall {
+                        name: "count".to_string(),
+                        args: vec![Expression::Literal(Literal::String("*"))],
+                    });
+                    return (
+                        count_call,
+                        vec![(
+                            (*pc.pattern).clone(),
+                            pc.where_clause.clone(),
+                            pc.projection.clone(),
+                        )],
+                    );
                 }
             }
 
@@ -359,40 +354,75 @@ fn rewrite_expression_pattern_comprehensions<'a>(
 
 fn rewrite_pattern_comprehensions<'a>(
     return_items: Vec<ReturnItem<'a>>,
-    mut plan: Arc<LogicalPlan>,
+    plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
-) -> (Vec<ReturnItem<'a>>, Arc<LogicalPlan>) {
+) -> (
+    Vec<ReturnItem<'a>>,
+    Arc<LogicalPlan>,
+    Vec<crate::query_planner::logical_plan::PatternComprehensionMeta>,
+) {
     let mut rewritten_items = Vec::new();
+    let mut all_metas = Vec::new();
+    let mut pc_counter = 0usize;
 
     for item in return_items {
         // Recursively rewrite pattern comprehensions in the expression
         let (rewritten_expr, pattern_comprehensions) =
             rewrite_expression_pattern_comprehensions(item.expression);
 
-        // Add OPTIONAL MATCH nodes for each pattern comprehension found
-        for (pattern, where_clause, _projection) in pattern_comprehensions {
-            let optional_match = crate::open_cypher_parser::ast::OptionalMatchClause {
-                path_patterns: vec![pattern],
-                where_clause: where_clause.as_ref().map(|w| {
-                    crate::open_cypher_parser::ast::WhereClause {
-                        conditions: (**w).clone(),
-                    }
-                }),
+        // Extract metadata for CTE+JOIN generation (same approach as WITH clause)
+        for (pattern, _where_clause, _projection) in pattern_comprehensions {
+            use crate::query_planner::logical_plan::with_clause::{
+                extract_correlation_variable_from_pattern, extract_direction_and_rel_types,
             };
+            use crate::query_planner::logical_plan::AggregationType;
 
-            plan = match evaluate_optional_match_clause(&optional_match, plan.clone(), plan_ctx) {
-                Ok(new_plan) => new_plan,
-                Err(e) => {
-                    log::error!(
-                        "Failed to evaluate OPTIONAL MATCH for pattern comprehension: {:?}",
-                        e
-                    );
-                    continue;
-                }
-            };
+            let correlation_var = extract_correlation_variable_from_pattern(&pattern, plan_ctx);
+            if correlation_var.is_none() {
+                log::warn!(
+                    "⚠️  RETURN pattern comprehension has no correlation variable - skipping"
+                );
+                continue;
+            }
+            let correlation_var = correlation_var.unwrap();
+
+            let correlation_label = plan_ctx
+                .get_table_ctx(&correlation_var)
+                .ok()
+                .and_then(|ctx| ctx.get_labels().cloned())
+                .and_then(|labels| labels.into_iter().next())
+                .unwrap_or_default();
+
+            let (direction, rel_types) = extract_direction_and_rel_types(&pattern);
+
+            // Determine aggregation type from the rewritten expression
+            // The expression was rewritten to count(*) for size(), collect() for bare pattern comp
+            let agg_type = AggregationType::Count; // Default for size(); TODO: detect from rewritten expr
+
+            let result_alias = item
+                .alias
+                .map(|a| a.to_string())
+                .unwrap_or_else(|| format!("__pc_{}", pc_counter));
+
+            log::info!(
+                "🔧 RETURN pattern comprehension meta: var='{}', label='{}', dir={:?}, rels={:?}, alias='{}'",
+                correlation_var, correlation_label, direction, rel_types, result_alias
+            );
+
+            all_metas.push(
+                crate::query_planner::logical_plan::PatternComprehensionMeta {
+                    correlation_var: correlation_var.clone(),
+                    correlation_label,
+                    direction,
+                    rel_types,
+                    agg_type,
+                    result_alias: result_alias.clone(),
+                },
+            );
+
+            pc_counter += 1;
         }
 
-        // Create new return item with rewritten expression
         let new_item = ReturnItem {
             expression: rewritten_expr,
             alias: item.alias,
@@ -401,7 +431,7 @@ fn rewrite_pattern_comprehensions<'a>(
         rewritten_items.push(new_item);
     }
 
-    (rewritten_items, plan)
+    (rewritten_items, plan, all_metas)
 }
 
 pub fn evaluate_return_clause<'a>(
@@ -426,7 +456,7 @@ pub fn evaluate_return_clause<'a>(
     crate::debug_print!("========================================");
 
     // Rewrite pattern comprehensions before converting to ProjectionItems
-    let (rewritten_return_items, plan) =
+    let (rewritten_return_items, plan, pattern_comp_metas) =
         rewrite_pattern_comprehensions(return_clause.return_items.clone(), plan, plan_ctx);
 
     let projection_items: Vec<ProjectionItem> = rewritten_return_items
@@ -457,6 +487,7 @@ pub fn evaluate_return_clause<'a>(
                     input: branch.clone(),
                     items: projection_items.clone(),
                     distinct: return_clause.distinct,
+                    pattern_comprehensions: vec![],
                 }))
             })
             .collect();
@@ -479,6 +510,7 @@ pub fn evaluate_return_clause<'a>(
         input: plan,
         items: projection_items,
         distinct: return_clause.distinct,
+        pattern_comprehensions: pattern_comp_metas,
     }));
     crate::debug_println!(
         "DEBUG evaluate_return_clause: Created Projection with distinct={}",
@@ -594,6 +626,7 @@ fn build_union_with_aggregation(
                 input: branch.clone(),
                 items: inner_items.clone(),
                 distinct: false, // No DISTINCT on inner - UNION will handle dedup if needed
+                pattern_comprehensions: vec![],
             }))
         })
         .collect();
@@ -650,6 +683,7 @@ fn build_union_with_aggregation(
             input: group_by,
             items: outer_items,
             distinct,
+            pattern_comprehensions: vec![],
         }))
     } else {
         // No aggregation after all (shouldn't happen if we got here, but safe fallback)
@@ -657,6 +691,7 @@ fn build_union_with_aggregation(
             input: inner_union,
             items: outer_items,
             distinct,
+            pattern_comprehensions: vec![],
         }))
     }
 }

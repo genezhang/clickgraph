@@ -244,6 +244,26 @@ pub fn set_multi_type_vlp_aliases(aliases: HashMap<String, String>) {
     });
 }
 
+/// Register a relationship CTE name immediately when created
+/// This allows nested rendering to look up CTE names deterministically
+/// Maps alias (e.g., "r") → cte_name (e.g., "vlp_multi_type_a_t1")
+pub fn register_relationship_cte_name(alias: &str, cte_name: &str) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut()
+            .multi_type_vlp_aliases
+            .insert(alias.to_string(), cte_name.to_string());
+    });
+}
+
+/// Get a relationship CTE name by alias
+/// Returns None if alias not registered (use for lookup-only, no recomputation)
+pub fn get_relationship_cte_name(alias: &str) -> Option<String> {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().multi_type_vlp_aliases.get(alias).cloned())
+        .ok()
+        .flatten()
+}
+
 /// Check if an alias is a multi-type VLP endpoint
 pub fn is_multi_type_vlp_alias(alias: &str) -> bool {
     QUERY_CONTEXT

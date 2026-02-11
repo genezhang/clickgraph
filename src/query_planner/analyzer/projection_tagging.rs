@@ -123,6 +123,7 @@ impl AnalyzerPass for ProjectionTagging {
                     input: child_tf.get_plan(), // Use transformed child instead of original
                     items: proj_items_to_mutate,
                     distinct: projection.distinct,
+                    pattern_comprehensions: projection.pattern_comprehensions.clone(),
                 })));
                 crate::debug_println!(
                     "🔍 ProjectionTagging: AFTER creating new Projection - distinct={}",
@@ -284,6 +285,7 @@ impl AnalyzerPass for ProjectionTagging {
                             where_clause: with_clause.where_clause.clone(),
                             exported_aliases: with_clause.exported_aliases.clone(),
                             cte_references: with_clause.cte_references.clone(),
+                            pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
                         };
                         Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
                     }
@@ -814,8 +816,9 @@ impl ProjectionTagging {
                         match fn_name_lower.as_str() {
                             "type" => {
                                 // For type(r):
+                                // - Multi-type relationship (UNION) -> reference CTE's path_relationships column
                                 // - Polymorphic edge with type_column -> PropertyAccessExp(r.type_column)
-                                // - Non-polymorphic -> Literal string of the relationship type
+                                // - Non-polymorphic single type -> Literal string of the relationship type
                                 if table_ctx.is_relation() {
                                     // If no explicit alias, use "type(r)" as the column alias
                                     if item.col_alias.is_none() {
@@ -823,6 +826,21 @@ impl ProjectionTagging {
                                             Some(ColumnAlias(format!("type({})", alias)));
                                     }
                                     if let Some(labels) = table_ctx.get_labels() {
+                                        if labels.len() > 1 {
+                                            // Multi-type: VLP CTE produces path_relationships array.
+                                            // Resolve to r.path_relationships[1] which the VLP rewriter
+                                            // handles. Use PropertyAccess with special column name.
+                                            item.expression = LogicalExpr::ArraySubscript {
+                                                array: Box::new(LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                    table_alias: TableAlias(alias.clone()),
+                                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column("path_relationships".to_string()),
+                                                })),
+                                                index: Box::new(LogicalExpr::Literal(
+                                                    crate::query_planner::logical_expr::Literal::Integer(1),
+                                                )),
+                                            };
+                                            return Ok(());
+                                        }
                                         if let Some(first_label) = labels.first() {
                                             // Check if this relationship has a type_column (polymorphic)
                                             if let Ok(rel_schema) =

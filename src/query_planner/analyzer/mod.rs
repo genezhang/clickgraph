@@ -107,6 +107,10 @@ mod unwind_tuple_enricher;
 mod variable_resolver;
 mod vlp_transitivity_check;
 
+// PatternResolver module and configuration
+mod pattern_resolver;
+mod pattern_resolver_config;
+
 pub fn initial_analyzing(
     plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
@@ -135,6 +139,29 @@ pub fn initial_analyzing(
         transformed_plan.get_plan()
     } else {
         plan
+    };
+
+    // Step 2.1: Pattern Resolver - enumerate type combinations for remaining untyped nodes
+    // This runs AFTER TypeInference to handle cases where types cannot be uniquely inferred
+    // Discovers untyped graph variables, generates all valid type combinations from schema
+    // Clones query for each valid combination and combines with UNION ALL
+    // Example: MATCH (o) RETURN o → MATCH (o:User) ... UNION ALL MATCH (o:Post) ...
+    log::info!("🔍 ANALYZER: Running PatternResolver (handle ambiguous types)");
+    use crate::query_planner::analyzer::pattern_resolver::PatternResolver;
+    let pattern_resolver = PatternResolver::new();
+    let plan = match pattern_resolver.analyze_with_graph_schema(
+        plan.clone(),
+        plan_ctx,
+        current_graph_schema,
+    ) {
+        Ok(transformed_plan) => transformed_plan.get_plan(),
+        Err(e) => {
+            log::warn!(
+                "⚠️  PatternResolver failed: {:?}, continuing with original plan",
+                e
+            );
+            plan
+        }
     };
 
     // Step 2.5: VLP Transitivity Check - validate variable-length path patterns
@@ -253,52 +280,49 @@ pub fn initial_analyzing(
     let transformed_plan = group_by_building.analyze(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
 
-    match plan.as_ref() {
-        LogicalPlan::GraphJoins(gj) => {
-            log::warn!(
-                "🔍   GraphJoins! {} joins, input type: {:?}",
-                gj.joins.len(),
-                std::mem::discriminant(gj.input.as_ref())
-            );
-            match gj.input.as_ref() {
-                LogicalPlan::WithClause(wc) => {
+    if let LogicalPlan::GraphJoins(gj) = plan.as_ref() {
+        log::warn!(
+            "🔍   GraphJoins! {} joins, input type: {:?}",
+            gj.joins.len(),
+            std::mem::discriminant(gj.input.as_ref())
+        );
+        match gj.input.as_ref() {
+            LogicalPlan::WithClause(wc) => {
+                log::warn!(
+                    "🔍     WithClause! input type: {:?}",
+                    std::mem::discriminant(wc.input.as_ref())
+                );
+                if let LogicalPlan::Filter(_f) = wc.input.as_ref() {
+                    log::warn!("🔍       ✅✅✅ Filter EXISTS at END of initial_analyzing!");
+                }
+            }
+            LogicalPlan::Projection(proj) => {
+                log::debug!("GraphJoins → Projection (not WithClause) at end of initial_analyzing");
+                log::warn!(
+                    "🔍       Projection.input type: {:?}",
+                    std::mem::discriminant(proj.input.as_ref())
+                );
+                // Check if Projection → WithClause → Filter
+                if let LogicalPlan::WithClause(wc) = proj.input.as_ref() {
                     log::warn!(
-                        "🔍     WithClause! input type: {:?}",
+                        "🔍         WithClause! input type: {:?}",
                         std::mem::discriminant(wc.input.as_ref())
                     );
                     if let LogicalPlan::Filter(f) = wc.input.as_ref() {
-                        log::warn!("🔍       ✅✅✅ Filter EXISTS at END of initial_analyzing!");
-                    }
-                }
-                LogicalPlan::Projection(proj) => {
-                    log::error!("🔥🔥🔥 BUG AT END OF initial_analyzing: GraphJoins → Projection (not WithClause)");
-                    log::warn!(
-                        "🔍       Projection.input type: {:?}",
-                        std::mem::discriminant(proj.input.as_ref())
-                    );
-                    // Check if Projection → WithClause → Filter
-                    if let LogicalPlan::WithClause(wc) = proj.input.as_ref() {
                         log::warn!(
-                            "🔍         WithClause! input type: {:?}",
+                            "🔍           ✅✅✅ Filter EXISTS in WithClause: {:?}",
+                            f.predicate
+                        );
+                    } else {
+                        log::error!(
+                            "🔥🔥🔥 FILTER LOST! WithClause.input is: {:?}",
                             std::mem::discriminant(wc.input.as_ref())
                         );
-                        if let LogicalPlan::Filter(f) = wc.input.as_ref() {
-                            log::warn!(
-                                "🔍           ✅✅✅ Filter EXISTS in WithClause: {:?}",
-                                f.predicate
-                            );
-                        } else {
-                            log::error!(
-                                "🔥🔥🔥 FILTER LOST! WithClause.input is: {:?}",
-                                std::mem::discriminant(wc.input.as_ref())
-                            );
-                        }
                     }
                 }
-                _ => {}
             }
+            _ => {}
         }
-        _ => {}
     }
 
     Ok(plan)
@@ -337,7 +361,7 @@ pub fn intermediate_analyzing(
                     }
                 }
                 LogicalPlan::Projection(proj) => {
-                    log::error!("🔥🔥🔥 BUG: GraphJoins.input is Projection (WHERE already lost!)");
+                    log::debug!("GraphJoins.input is Projection (WHERE already lost)");
                     log::warn!(
                         "🔍       Projection.input type: {:?}",
                         std::mem::discriminant(proj.input.as_ref())

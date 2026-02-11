@@ -45,7 +45,7 @@ pub fn execute(schema: &GraphSchema) -> Result<Vec<HashMap<String, serde_json::V
         let property_mappings = &node_schema.property_mappings;
 
         // Iterate over each property
-        for (prop_name, _prop_value) in property_mappings {
+        for prop_name in property_mappings.keys() {
             let mut record = HashMap::new();
 
             // nodeType: ":`Label`" format (Neo4j convention)

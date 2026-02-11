@@ -83,9 +83,7 @@ impl LabelCodeRegistry {
 
         // Assign new code (starts at 1)
         let code = self.next_code;
-        if self.next_code < 255 {
-            self.next_code += 1;
-        }
+        self.next_code = self.next_code.saturating_add(1);
         // At 255, we stop incrementing (overflow protection)
         self.label_to_code.insert(label.to_string(), code);
         self.code_to_label.insert(code, label.to_string());

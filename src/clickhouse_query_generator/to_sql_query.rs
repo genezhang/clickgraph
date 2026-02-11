@@ -19,6 +19,7 @@ use crate::{
     utils::cte_naming::is_generated_cte_name,
 };
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 // Import function translator for Neo4j -> ClickHouse function mappings
 use super::function_registry::get_function_mapping;
@@ -174,6 +175,27 @@ fn build_cte_property_mappings(plan: &RenderPlan) -> HashMap<String, HashMap<Str
 fn build_multi_type_vlp_aliases(plan: &RenderPlan) -> HashMap<String, String> {
     let mut aliases = HashMap::new();
 
+    // Collect WITH CTE aliases to avoid conflicts
+    // WITH CTEs (e.g., with_a_cte_0) export aliases that access base tables directly,
+    // NOT through VLP JSON properties. We must not register these as VLP aliases.
+    let mut with_cte_aliases: HashSet<String> = HashSet::new();
+    for cte in &plan.ctes.0 {
+        if cte.cte_name.starts_with("with_") {
+            // Extract the alias from CTE name (e.g., "with_a_cte_0" → "a")
+            // Also handle compound names like "with_a_allNeighboursCount_cte_0" → "a"
+            if let Some(rest) = cte.cte_name.strip_prefix("with_") {
+                if let Some(alias) = rest.split("_cte").next() {
+                    with_cte_aliases.insert(alias.to_string());
+                    // Also insert the first segment for compound aliases
+                    // e.g., "a_allNeighboursCount" → also insert "a"
+                    if let Some(first) = alias.split('_').next() {
+                        with_cte_aliases.insert(first.to_string());
+                    }
+                }
+            }
+        }
+    }
+
     // Track multi-type VLP aliases for JSON property extraction
     // Multi-type VLP CTEs have names like "vlp_multi_type_u_x"
     // and their end_properties column contains JSON with node properties
@@ -181,6 +203,14 @@ fn build_multi_type_vlp_aliases(plan: &RenderPlan) -> HashMap<String, String> {
         if cte.cte_name.starts_with("vlp_multi_type_") {
             // Extract Cypher alias from CTE metadata if available
             if let Some(ref cypher_end_alias) = cte.vlp_cypher_end_alias {
+                // Skip if this alias is also a WITH CTE alias — WITH CTEs access base tables
+                if with_cte_aliases.contains(cypher_end_alias.as_str()) {
+                    log::info!(
+                        "🎯 Skipping VLP alias '{}' — conflicts with WITH CTE alias",
+                        cypher_end_alias
+                    );
+                    continue;
+                }
                 aliases.insert(cypher_end_alias.clone(), cte.cte_name.clone());
                 log::info!(
                     "🎯 Tracked multi-type VLP alias: '{}' → CTE '{}'",
@@ -267,11 +297,55 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
             log::debug!("🔍 TRACING: No FROM ref found");
         }
 
-        let start_alias = vlp_cte.vlp_cypher_start_alias.clone();
-        let end_alias = vlp_cte.vlp_cypher_end_alias.clone();
+        let mut start_alias = vlp_cte.vlp_cypher_start_alias.clone();
+        let mut end_alias = vlp_cte.vlp_cypher_end_alias.clone();
         let path_variable = vlp_cte.vlp_path_variable.clone();
         // Non-OPTIONAL VLP: always rewrite start alias (we return early for OPTIONAL VLP)
         let is_optional_vlp = false;
+
+        // Skip rewriting aliases that are covered by WITH CTE JOINs
+        // These aliases reference WITH CTE columns, not VLP CTE columns
+        for join in &plan.joins.0 {
+            if join.table_name.starts_with("with_") {
+                if start_alias.as_deref() == Some(join.table_alias.as_str()) {
+                    log::info!(
+                        "🔧 VLP top-level: Skipping start alias '{}' rewrite (covered by WITH CTE '{}')",
+                        join.table_alias, join.table_name
+                    );
+                    start_alias = None;
+                }
+                if end_alias.as_deref() == Some(join.table_alias.as_str()) {
+                    log::info!(
+                        "🔧 VLP top-level: Skipping end alias '{}' rewrite (covered by WITH CTE '{}')",
+                        join.table_alias, join.table_name
+                    );
+                    end_alias = None;
+                }
+            }
+        }
+        // Also check Union branches for WITH CTE JOINs
+        if let Some(ref union) = plan.union.0 {
+            for branch in &union.input {
+                for join in &branch.joins.0 {
+                    if join.table_name.starts_with("with_") {
+                        if start_alias.as_deref() == Some(join.table_alias.as_str()) {
+                            log::info!(
+                                "🔧 VLP top-level: Skipping start alias '{}' rewrite (covered by WITH CTE in branch)",
+                                join.table_alias
+                            );
+                            start_alias = None;
+                        }
+                        if end_alias.as_deref() == Some(join.table_alias.as_str()) {
+                            log::info!(
+                                "🔧 VLP top-level: Skipping end alias '{}' rewrite (covered by WITH CTE in branch)",
+                                join.table_alias
+                            );
+                            end_alias = None;
+                        }
+                    }
+                }
+            }
+        }
 
         log::info!(
             "🔧 VLP SELECT rewriting: start_alias={:?}, end_alias={:?}, path_variable={:?}",
@@ -337,9 +411,115 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                 log::info!("🔧   ORDER BY rewritten from: {} → {}", before, after);
             }
         }
+
+        // Also rewrite WHERE clause for VLP queries
+        // The WHERE may reference Cypher node aliases (e.g., o.user_id) that need
+        // to be rewritten to VLP CTE column references (e.g., t.end_user_id)
+        if let Some(ref filter_expr) = plan.filters.0 {
+            let before = format!("{:?}", filter_expr);
+            let rewritten = rewrite_expr_for_vlp(
+                filter_expr,
+                &start_alias,
+                &end_alias,
+                &path_variable,
+                is_optional_vlp,
+            );
+            let after = format!("{:?}", rewritten);
+            if before != after {
+                log::info!("🔧   WHERE rewritten from: {} → {}", before, after);
+            }
+            plan.filters = FilterItems(Some(rewritten));
+        }
+    }
+
+    // Also rewrite UNION branches — each may have its own VLP CTE
+    // (e.g., undirected patterns create separate CTEs for each direction)
+    if let Some(ref mut union) = plan.union.0 {
+        for branch in union.input.iter_mut() {
+            rewrite_vlp_branch_select(branch);
+        }
     }
 
     plan
+}
+
+/// Rewrite VLP SELECT aliases for a single UNION branch RenderPlan.
+/// Same logic as the main rewrite_vlp_select_aliases but operates on a branch.
+fn rewrite_vlp_branch_select(branch: &mut RenderPlan) {
+    // Skip if FROM is a generated CTE (WITH clause)
+    if let Some(from_ref) = &branch.from.0 {
+        if is_generated_cte_name(&from_ref.name) {
+            return;
+        }
+    }
+
+    let vlp_cte = branch
+        .ctes
+        .0
+        .iter()
+        .find(|cte| cte.vlp_cypher_start_alias.is_some());
+    if let Some(vlp_cte) = vlp_cte {
+        if let Some(from_ref) = &branch.from.0 {
+            if !from_ref.name.starts_with("vlp_") {
+                return;
+            }
+        }
+
+        let mut start_alias = vlp_cte.vlp_cypher_start_alias.clone();
+        let mut end_alias = vlp_cte.vlp_cypher_end_alias.clone();
+        let path_variable = vlp_cte.vlp_path_variable.clone();
+
+        // Skip rewriting aliases that are covered by WITH CTE JOINs
+        // These aliases reference WITH CTE columns, not VLP CTE columns
+        for join in &branch.joins.0 {
+            if join.table_name.starts_with("with_") {
+                if start_alias.as_deref() == Some(&join.table_alias) {
+                    log::info!(
+                        "🔧 VLP branch: Skipping start alias '{}' rewrite (covered by WITH CTE '{}')",
+                        join.table_alias, join.table_name
+                    );
+                    start_alias = None;
+                }
+                if end_alias.as_deref() == Some(&join.table_alias) {
+                    log::info!(
+                        "🔧 VLP branch: Skipping end alias '{}' rewrite (covered by WITH CTE '{}')",
+                        join.table_alias,
+                        join.table_name
+                    );
+                    end_alias = None;
+                }
+            }
+        }
+
+        log::info!(
+            "🔧 VLP UNION branch rewriting: start={:?}, end={:?}",
+            start_alias,
+            end_alias
+        );
+
+        for item in branch.select.items.iter_mut() {
+            item.expression = rewrite_expr_for_vlp(
+                &item.expression,
+                &start_alias,
+                &end_alias,
+                &path_variable,
+                false,
+            );
+        }
+        for group_expr in branch.group_by.0.iter_mut() {
+            *group_expr =
+                rewrite_expr_for_vlp(group_expr, &start_alias, &end_alias, &path_variable, false);
+        }
+        for order_item in branch.order_by.0.iter_mut() {
+            order_item.expression = rewrite_expr_for_vlp(
+                &order_item.expression,
+                &start_alias,
+                &end_alias,
+                &path_variable,
+                false,
+            );
+        }
+    }
 }
 
 /// Recursively rewrite expressions to map VLP Cypher aliases to CTE column names
@@ -485,6 +665,26 @@ fn rewrite_expr_for_vlp(
                 }
             }
 
+            // Not a start or end alias - check for VLP CTE columns accessed
+            // via the relationship alias (e.g., r.path_relationships → t.path_relationships)
+            let col_name = prop.column.raw();
+            if matches!(
+                col_name,
+                "path_relationships"
+                    | "rel_properties"
+                    | "hop_count"
+                    | "path_nodes"
+                    | "path_edges"
+                    | "start_id"
+                    | "end_id"
+                    | "end_type"
+            ) {
+                return RenderExpr::Column(Column(PropertyValue::Column(format!(
+                    "t.{}",
+                    col_name
+                ))));
+            }
+
             // Not a VLP alias - leave unchanged
             expr.clone()
         }
@@ -583,6 +783,24 @@ fn rewrite_expr_for_vlp(
                 ],
             })
         }
+
+        // Handle ArraySubscript: rewrite inner expressions
+        RenderExpr::ArraySubscript { array, index } => RenderExpr::ArraySubscript {
+            array: Box::new(rewrite_expr_for_vlp(
+                array,
+                start_alias,
+                end_alias,
+                path_variable,
+                skip_start_alias,
+            )),
+            index: Box::new(rewrite_expr_for_vlp(
+                index,
+                start_alias,
+                end_alias,
+                path_variable,
+                skip_start_alias,
+            )),
+        },
 
         // Leave other expressions unchanged
         other => other.clone(),
@@ -869,10 +1087,13 @@ fn extract_order_by_columns_for_union(order_by: &OrderByItems) -> Vec<(RenderExp
     let mut columns = Vec::new();
 
     for (idx, item) in order_by.0.iter().enumerate() {
-        // Check if this is an id() function call (not supported in UNION ORDER BY)
+        // Log unsupported expressions but still include them — don't silently drop ORDER BY
         if matches!(&item.expression, RenderExpr::ScalarFnCall(f) if f.name == "id") {
-            log::warn!("⚠️  ORDER BY id() not supported in UNION queries - removing ORDER BY");
-            return Vec::new(); // Empty vector = skip ORDER BY entirely
+            log::warn!("⚠️  ORDER BY id() may not work correctly in UNION queries");
+        }
+
+        if matches!(&item.expression, RenderExpr::PropertyAccessExp(_)) {
+            log::warn!("⚠️  ORDER BY property access may not work correctly with PatternResolver UNION CTEs");
         }
 
         // Generate a unique alias for this ORDER BY column
@@ -1850,6 +2071,17 @@ impl ToSql for Join {
             }
 
             sql.push_str(&format!(" ON {joining_on_str}"));
+        } else if matches!(
+            self.join_type,
+            JoinType::Inner | JoinType::Left | JoinType::Right
+        ) {
+            // INNER/LEFT/RIGHT JOIN with empty joining_on is likely a planner bug.
+            // Log error but use ON 1=1 as fallback to avoid crashing the server.
+            log::error!(
+                "Join::to_sql: {:?} with empty joining_on for table_alias={} table_name={} — possible planner bug",
+                self.join_type, self.table_alias, self.table_name
+            );
+            sql.push_str(" ON 1=1");
         }
 
         sql.push('\n');

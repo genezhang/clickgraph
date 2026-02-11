@@ -298,6 +298,7 @@ impl AnalyzerPass for CteColumnResolver {
                         input: child_tf.get_plan(),
                         items: resolved_items,
                         distinct: proj.distinct,
+                        pattern_comprehensions: proj.pattern_comprehensions.clone(),
                     })))
                 } else {
                     Transformed::No(logical_plan.clone())

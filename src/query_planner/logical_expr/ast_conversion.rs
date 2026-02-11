@@ -359,6 +359,7 @@ impl<'a> TryFrom<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery
                 label: node.first_label().map(|s| s.to_string()),
                 is_denormalized: false,
                 projected_columns: None,
+                node_types: None,
             })),
             AstPathPattern::ConnectedPattern(connected_patterns) => {
                 if connected_patterns.is_empty() {
@@ -375,6 +376,7 @@ impl<'a> TryFrom<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery
                         label: start.first_label().map(|s| s.to_string()),
                         is_denormalized: false,
                         projected_columns: None,
+                        node_types: None,
                     });
 
                     let rel_scan = LogicalPlan::Empty;
@@ -385,6 +387,7 @@ impl<'a> TryFrom<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery
                         label: end.first_label().map(|s| s.to_string()),
                         is_denormalized: false,
                         projected_columns: None,
+                        node_types: None,
                     });
 
                     let direction = match rel.direction {
@@ -413,6 +416,8 @@ impl<'a> TryFrom<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery
                         is_optional: None,
                         anchor_connection: None,
                         cte_references: std::collections::HashMap::new(),
+                        pattern_combinations: None,
+                        was_undirected: None,
                     }))
                 }
             }

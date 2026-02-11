@@ -88,7 +88,7 @@ pub fn strip_comments(input: &str) -> String {
 
             // Check if previous character was `<` (making this `<--` incoming relationship)
             // We already pushed the `<`, so check the last char in result
-            if result.chars().last() == Some('<') {
+            if result.ends_with('<') {
                 result.push(ch);
                 continue;
             }

@@ -6,7 +6,6 @@ use crate::open_cypher_parser;
 use crate::open_cypher_parser::ast::{CypherStatement, StandaloneProcedureCall};
 use crate::server::GLOBAL_SCHEMAS;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 /// Execute a standalone procedure call by name
 ///

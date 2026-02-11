@@ -58,7 +58,7 @@ pub fn build_logical_plan(
         Arc::new(schema.clone()),
         tenant_id,
         view_parameter_values,
-        max_inferred_types.unwrap_or(5),
+        max_inferred_types.unwrap_or(20), // Default 20 for Neo4j Browser compatibility
     );
 
     log::debug!(
@@ -421,6 +421,12 @@ fn process_with_clause_chain<'a>(
         );
         logical_plan = process_with_clause_chain(subsequent_with, logical_plan, &mut child_ctx)?;
     }
+
+    // Merge typed variables from child scope first, so that variables defined
+    // in the second MATCH (e.g., path variables) retain their correct type.
+    // Must happen BEFORE insert_table_ctx, which would heuristically re-register
+    // path variables as Node if they're not already in the registry.
+    plan_ctx.variables_mut().merge(child_ctx.variables());
 
     // Copy child scope back to parent so subsequent clauses can see new aliases
     // Note: This includes aliases from both exported (from WITH) and newly created (from MATCH)

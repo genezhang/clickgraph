@@ -2844,7 +2844,7 @@ fn fix_invalid_table_aliases(
         }
         RenderExpr::OperatorApplicationExp(op_app) => {
             RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op_app.operator.clone(),
+                operator: op_app.operator,
                 operands: op_app
                     .operands
                     .iter()
@@ -2889,11 +2889,11 @@ pub(super) fn add_label_column_to_union_branches(
         .zip(logical_branches.iter())
         .map(|(mut plan, logical_branch)| {
             // Check if __label__ already exists - skip if so
-            let has_label = plan.select.items.iter().any(|item| {
-                item.col_alias
-                    .as_ref()
-                    .map_or(false, |a| a.0 == "__label__")
-            });
+            let has_label = plan
+                .select
+                .items
+                .iter()
+                .any(|item| item.col_alias.as_ref().is_some_and(|a| a.0 == "__label__"));
 
             if has_label {
                 log::debug!(
@@ -4416,7 +4416,7 @@ pub(super) fn convert_path_branches_to_json(
     union_plans: Vec<super::RenderPlan>,
     logical_plans: Option<&[std::sync::Arc<crate::query_planner::logical_plan::LogicalPlan>]>,
 ) -> Vec<super::RenderPlan> {
-    use super::render_expr::{Literal, RenderExpr, ScalarFnCall};
+    use super::render_expr::{Literal, RenderExpr};
     use super::{ColumnAlias, RenderPlan, SelectItem, SelectItems};
 
     log::warn!(

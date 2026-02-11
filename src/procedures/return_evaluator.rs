@@ -8,7 +8,7 @@
 //! 2. Evaluates RETURN expressions (COLLECT, maps, arrays, etc.)
 //! 3. Returns transformed results: [{result: {name: "labels", data: ["User", "Post", ...]}}]
 
-use crate::open_cypher_parser::ast::{Expression, FunctionCall, Literal, ReturnClause, ReturnItem};
+use crate::open_cypher_parser::ast::{Expression, Literal, ReturnClause};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
@@ -21,6 +21,12 @@ type EvalResult = Result<JsonValue, String>;
 pub struct EvalContext {
     /// Current record (variable name -> value)
     pub variables: HashMap<String, JsonValue>,
+}
+
+impl Default for EvalContext {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EvalContext {
@@ -99,8 +105,8 @@ fn has_aggregation_in_expr(expr: &Expression) -> bool {
         }
         Expression::ArraySlicing { array, from, to } => {
             has_aggregation_in_expr(array)
-                || from.as_ref().map_or(false, |e| has_aggregation_in_expr(e))
-                || to.as_ref().map_or(false, |e| has_aggregation_in_expr(e))
+                || from.as_ref().is_some_and(|e| has_aggregation_in_expr(e))
+                || to.as_ref().is_some_and(|e| has_aggregation_in_expr(e))
         }
         Expression::ArraySubscript { array, index } => {
             has_aggregation_in_expr(array) || has_aggregation_in_expr(index)

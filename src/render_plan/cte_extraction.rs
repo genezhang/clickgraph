@@ -338,6 +338,7 @@ fn extract_node_alias(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::GraphNode(node) => Some(node.alias.clone()),
         LogicalPlan::Filter(filter) => extract_node_alias(&filter.input),
         LogicalPlan::Projection(proj) => extract_node_alias(&proj.input),
+        LogicalPlan::WithClause(wc) => extract_node_alias(&wc.input),
         _ => None,
     }
 }
@@ -356,6 +357,8 @@ fn extract_schema_filter_from_node(plan: &LogicalPlan, cte_alias: &str) -> Optio
             }
         }
         LogicalPlan::Filter(filter) => extract_schema_filter_from_node(&filter.input, cte_alias),
+        LogicalPlan::Projection(proj) => extract_schema_filter_from_node(&proj.input, cte_alias),
+        LogicalPlan::WithClause(wc) => extract_schema_filter_from_node(&wc.input, cte_alias),
         _ => None,
     }
 }
@@ -445,6 +448,7 @@ pub(crate) fn extract_node_labels(plan: &LogicalPlan) -> Option<Vec<String>> {
         }
         LogicalPlan::Filter(filter) => extract_node_labels(&filter.input),
         LogicalPlan::Projection(proj) => extract_node_labels(&proj.input),
+        LogicalPlan::WithClause(wc) => extract_node_labels(&wc.input),
         _ => None,
     }
 }
@@ -1668,6 +1672,7 @@ pub fn extract_ctes_with_context(
     last_node_alias: &str,
     context: &mut super::cte_generation::CteGenerationContext,
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
+    plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
 ) -> RenderPlanBuilderResult<Vec<Cte>> {
     // Debug: Log the plan type being processed
     let plan_type = match plan {
@@ -1682,9 +1687,11 @@ pub fn extract_ctes_with_context(
         LogicalPlan::WithClause(_) => "WithClause",
         _ => "Other",
     };
-    println!(
-        "DEBUG extract_ctes_with_context: Processing {} node",
-        plan_type
+
+    log::debug!(
+        "extract_ctes_with_context: Processing {} node, plan_ctx available: {}",
+        plan_type,
+        plan_ctx.is_some()
     );
 
     match plan {
@@ -1722,7 +1729,13 @@ pub fn extract_ctes_with_context(
                 );
                 return Ok(vec![]);
             }
-            extract_ctes_with_context(&graph_node.input, last_node_alias, context, schema)
+            extract_ctes_with_context(
+                &graph_node.input,
+                last_node_alias,
+                context,
+                schema,
+                plan_ctx,
+            )
         }
         LogicalPlan::GraphRel(graph_rel) => {
             // Handle variable-length paths with context
@@ -2033,7 +2046,7 @@ pub fn extract_ctes_with_context(
                                         1 => Some(stripped[0].clone()), // Unwrap single operand
                                         _ => Some(LogicalExpr::Operator(
                                             crate::query_planner::logical_expr::OperatorApplication {
-                                                operator: op.operator.clone(),
+                                                operator: op.operator,
                                                 operands: stripped,
                                             }
                                         ))
@@ -2484,6 +2497,7 @@ pub fn extract_ctes_with_context(
                         last_node_alias,
                         context,
                         schema,
+                        plan_ctx,
                     )?;
 
                     return Ok(child_ctes);
@@ -2528,8 +2542,10 @@ pub fn extract_ctes_with_context(
                             end_labels = labels;
                         }
 
-                        // If only one label or no labels, collect all possible end types from relationships
-                        if end_labels.len() <= 1 {
+                        // If no labels set, derive all possible end types from relationships.
+                        // When end_labels is already set (by PatternResolver or explicit typing
+                        // like `(b:Post)`), respect the constraint — don't re-expand.
+                        if end_labels.is_empty() {
                             let mut possible_end_types = std::collections::HashSet::new();
 
                             // 🔧 FIX: If rel_types is empty (unlabeled relationship pattern),
@@ -2539,15 +2555,18 @@ pub fn extract_ctes_with_context(
                                 // Get all relationships that involve the start node type(s)
                                 let mut all_rel_types = std::collections::HashSet::new();
 
-                                for start_label in &start_labels {
-                                    // Iterate through all relationships in schema
-                                    for (rel_name, rel_schema) in schema.get_relationships_schemas()
-                                    {
-                                        // Check if this relationship connects from or to the start node
-                                        if rel_schema.from_node == *start_label
-                                            || rel_schema.to_node == *start_label
-                                        {
-                                            all_rel_types.insert(rel_name.clone());
+                                // Use unique relationship types to avoid duplicates
+                                let unique_rel_types = schema.get_unique_relationship_types();
+                                for rel_type in unique_rel_types {
+                                    if let Ok(rel_schema) = schema.get_rel_schema(&rel_type) {
+                                        // Check if this relationship connects from or to any start node
+                                        for start_label in &start_labels {
+                                            if rel_schema.from_node == *start_label
+                                                || rel_schema.to_node == *start_label
+                                            {
+                                                all_rel_types.insert(rel_type.clone());
+                                                break;
+                                            }
                                         }
                                     }
                                 }
@@ -2618,6 +2637,7 @@ pub fn extract_ctes_with_context(
 
                         // For multi-type VLP, we use start_filters_sql and end_filters_sql directly
                         // The schema filters are handled differently in JOIN expansion
+                        let is_undirected = graph_rel.was_undirected.unwrap_or(false);
                         let generator = MultiTypeVlpJoinGenerator::new(
                             schema,
                             start_labels,
@@ -2630,6 +2650,8 @@ pub fn extract_ctes_with_context(
                             end_filters_sql.clone(),
                             rel_filters_sql.clone(),
                             view_parameter_values,
+                            plan_ctx.map(|ctx| std::sync::Arc::new(ctx.clone())),
+                            is_undirected,
                         );
 
                         // TODO: Add property projections based on what's needed in RETURN clause
@@ -2638,12 +2660,9 @@ pub fn extract_ctes_with_context(
 
                         // Generate CTE name - use vlp_ prefix for proper detection
                         // The plan_builder.rs looks for CTEs starting with "vlp_" or "chained_path_"
-                        // 🔧 FIX: Normalize alias order for undirected patterns (alphabetical)
-                        let cte_name = if start_alias <= end_alias {
-                            format!("vlp_multi_type_{}_{}", start_alias, end_alias)
-                        } else {
-                            format!("vlp_multi_type_{}_{}", end_alias, start_alias)
-                        };
+                        // Use start_alias_end_alias order as-is — undirected patterns create
+                        // separate CTEs for each direction (a→o vs o→a) with different content
+                        let cte_name = format!("vlp_multi_type_{}_{}", start_alias, end_alias);
 
                         // Generate SQL
                         match generator.generate_cte_sql(&cte_name) {
@@ -2688,12 +2707,29 @@ pub fn extract_ctes_with_context(
                                     outer_where_filters: None, // Multi-type VLP doesn't need outer filters
                                 };
 
+                                // Register CTE name in context for deterministic FROM/JOIN references
+                                // Register CTE name in task-local QueryContext for lookup during nested rendering
+                                crate::server::query_context::register_relationship_cte_name(
+                                    &graph_rel.alias,
+                                    &cte_name,
+                                );
+                                eprintln!(
+                                    "🔥🔥🔥 REGISTRATION: alias='{}' → cte_name='{}'",
+                                    graph_rel.alias, cte_name
+                                );
+                                log::warn!(
+                                    "📝 Registered multi-type VLP CTE: alias='{}' → cte_name='{}'",
+                                    graph_rel.alias,
+                                    cte_name
+                                );
+
                                 // Extract CTEs from child plans
                                 let mut child_ctes = extract_ctes_with_context(
                                     &graph_rel.right,
                                     last_node_alias,
                                     context,
                                     schema,
+                                    plan_ctx,
                                 )?;
                                 child_ctes.push(cte);
 
@@ -2731,7 +2767,7 @@ pub fn extract_ctes_with_context(
                             let is_mixed = start_is_denormalized != end_is_denormalized;
 
                             // Continue with old logic...
-                            log::debug!("CTE: Using fallback - start_denormalized={}, end_denormalized={}, both={}, mixed={}", 
+                            log::debug!("CTE: Using fallback - start_denormalized={}, end_denormalized={}, both={}, mixed={}",
                                 start_is_denormalized, end_is_denormalized, both_denormalized, is_mixed);
 
                             // Create a minimal pattern for continuation
@@ -2759,7 +2795,7 @@ pub fn extract_ctes_with_context(
                     let start_is_denormalized = pattern_ctx.left_node.is_embedded();
                     let end_is_denormalized = pattern_ctx.right_node.is_embedded();
 
-                    log::debug!("CTE: Using PatternSchemaContext - both_denormalized={}, is_mixed={}, is_fk_edge={}, strategy={:?}", 
+                    log::debug!("CTE: Using PatternSchemaContext - both_denormalized={}, is_mixed={}, is_fk_edge={}, strategy={:?}",
                         both_denormalized, is_mixed, is_fk_edge, pattern_ctx.join_strategy);
                     log::debug!(
                         "CTE: Individual flags - start_is_denormalized={}, end_is_denormalized={}",
@@ -2924,6 +2960,7 @@ pub fn extract_ctes_with_context(
                         last_node_alias,
                         context,
                         schema,
+                        plan_ctx,
                     )?;
                     child_ctes.push(var_len_cte);
 
@@ -2933,6 +2970,206 @@ pub fn extract_ctes_with_context(
 
             // Handle multiple relationship types for regular single-hop relationships
             let mut relationship_ctes = vec![];
+
+            // === PATTERNRESOLVER 2.0: HANDLE PATTERN COMBINATIONS ===
+            // Check for deferred UNION - pattern_combinations contains (from_label, rel_type, to_label)
+            // This enables ()-[r]->() patterns where BOTH nodes AND relationships vary
+            if let Some(ref combinations) = graph_rel.pattern_combinations {
+                log::info!(
+                    "🔀 PatternResolver 2.0: Found {} pattern combinations in GraphRel, generating UNION CTE",
+                    combinations.len()
+                );
+
+                // Generate a SELECT for each combination: full pattern JOIN
+                // Each branch: (from_node_table JOIN rel_table JOIN to_node_table)
+                let union_branches: Result<Vec<String>, RenderBuildError> = combinations
+                    .iter()
+                    .map(|combo| {
+                        // Get schemas for this combination
+                        let from_node_schema = schema
+                            .node_schema(&combo.from_label)
+                            .map_err(|_| {
+                                RenderBuildError::NodeSchemaNotFound(format!(
+                                    "Node schema not found for '{}'",
+                                    combo.from_label
+                                ))
+                            })?;
+
+                        let rel_schema = schema
+                            .get_rel_schema_with_nodes(
+                                &combo.rel_type,
+                                Some(&combo.from_label),
+                                Some(&combo.to_label)
+                            )
+                            .map_err(|_| {
+                                RenderBuildError::MissingTableInfo(format!(
+                                    "Relationship schema not found for '{}' between '{}' and '{}'",
+                                    combo.rel_type,
+                                    combo.from_label,
+                                    combo.to_label
+                                ))
+                            })?;
+
+                        let to_node_schema = schema
+                            .node_schema(&combo.to_label)
+                            .map_err(|_| {
+                                RenderBuildError::NodeSchemaNotFound(format!(
+                                    "Node schema not found for '{}'",
+                                    combo.to_label
+                                ))
+                            })?;
+
+                        // Table names
+                        let from_table = format!("{}.{}", from_node_schema.database, from_node_schema.table_name);
+                        let rel_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+                        let to_table = format!("{}.{}", to_node_schema.database, to_node_schema.table_name);
+
+                        // ID columns
+                        let from_id_col = from_node_schema.node_id.column();
+                        let to_id_col = to_node_schema.node_id.column();
+                        let rel_from_col = &rel_schema.from_id;
+                        let rel_to_col = &rel_schema.to_id;
+
+                        // Generate SELECT for this branch
+                        // Output columns matching VLP/path pattern expectations:
+                        // - start_id, end_id (for ID lookups)
+                        // - path_relationships (array with relationship type)
+                        // - rel_properties (array with relationship properties as JSON)
+
+                        // Collect relationship properties for formatRowNoNewline
+                        let rel_prop_cols: Vec<String> = rel_schema
+                            .property_mappings
+                            .iter()
+                            .map(|(cypher_name, prop_val)| {
+                                let col_name = match prop_val {
+                                    PropertyValue::Column(c) => c.clone(),
+                                    PropertyValue::Expression(e) => e.clone(), // Use expression as-is
+                                };
+                                format!("{rel_table}.{col_name} AS {cypher_name}")
+                            })
+                            .collect();
+
+                        let rel_properties_json = if rel_prop_cols.is_empty() {
+                            "'{}'".to_string() // Empty JSON object
+                        } else {
+                            format!("formatRowNoNewline('JSONEachRow', {})", rel_prop_cols.join(", "))
+                        };
+
+                        // Collect node properties for start_properties and end_properties
+                        // This enables path queries: MATCH p=()-->() RETURN p
+                        let start_prop_cols: Vec<String> = from_node_schema
+                            .property_mappings.values().map(|prop_val| {
+                                let col_name = match prop_val {
+                                    PropertyValue::Column(c) => c.clone(),
+                                    PropertyValue::Expression(e) => e.clone(),
+                                };
+                                // Include both the column and its alias for proper JSON formatting
+                                format!("{from_table}.{col_name}")
+                            })
+                            .collect();
+
+                        let end_prop_cols: Vec<String> = to_node_schema
+                            .property_mappings.values().map(|prop_val| {
+                                let col_name = match prop_val {
+                                    PropertyValue::Column(c) => c.clone(),
+                                    PropertyValue::Expression(e) => e.clone(),
+                                };
+                                format!("{to_table}.{col_name}")
+                            })
+                            .collect();
+
+                        let start_properties_json = if start_prop_cols.is_empty() {
+                            "'{}'".to_string()
+                        } else {
+                            format!("formatRowNoNewline('JSONEachRow', {})", start_prop_cols.join(", "))
+                        };
+
+                        let end_properties_json = if end_prop_cols.is_empty() {
+                            "'{}'".to_string()
+                        } else {
+                            format!("formatRowNoNewline('JSONEachRow', {})", end_prop_cols.join(", "))
+                        };
+
+                        // Extract base relationship type (strip ::FromLabel::ToLabel suffix)
+                        let base_rel_type = combo.rel_type.split("::").next().unwrap_or(&combo.rel_type);
+
+                        let branch_sql = format!(
+                            "SELECT \
+                                toString({from_table}.{from_id_col}) as start_id, \
+                                toString({to_table}.{to_id_col}) as end_id, \
+                                ['{}'] as path_relationships, \
+                                [{}] as rel_properties, \
+                                {} as start_properties, \
+                                {} as end_properties \
+                            FROM {rel_table} \
+                            INNER JOIN {from_table} ON {from_table}.{from_id_col} = {rel_table}.{rel_from_col} \
+                            INNER JOIN {to_table} ON {to_table}.{to_id_col} = {rel_table}.{rel_to_col} \
+                            LIMIT 1000",
+                            base_rel_type,
+                            rel_properties_json,
+                            start_properties_json,
+                            end_properties_json
+                        );
+
+                        log::debug!(
+                            "  Branch: (:{from_label})-[:{rel_type}]->(:{to_label})",
+                            from_label = combo.from_label,
+                            rel_type = combo.rel_type,
+                            to_label = combo.to_label
+                        );
+
+                        Ok(branch_sql)
+                    })
+                    .collect();
+
+                let union_branches = union_branches?;
+                let union_sql = union_branches.join("\nUNION ALL\n");
+
+                // Create CTE name based on relationship alias
+                let cte_name = format!("pattern_union_{}", graph_rel.alias);
+                log::info!(
+                    "✅ Generated UNION CTE '{}' with {} branches",
+                    cte_name,
+                    combinations.len()
+                );
+
+                relationship_ctes.push(Cte::new(
+                    cte_name.clone(),
+                    super::CteContent::RawSql(format!("{} AS (\n{}\n)", cte_name, union_sql)),
+                    false,
+                ));
+
+                // Register CTE name in task-local QueryContext for lookup during nested rendering
+                crate::server::query_context::register_relationship_cte_name(
+                    &graph_rel.alias,
+                    &cte_name,
+                );
+                log::info!(
+                    "📝 Registered PatternResolver 2.0 CTE: alias='{}' → cte_name='{}'",
+                    graph_rel.alias,
+                    cte_name
+                );
+
+                // Extract CTEs from child plans
+                let mut child_ctes = extract_ctes_with_context(
+                    &graph_rel.left,
+                    last_node_alias,
+                    context,
+                    schema,
+                    plan_ctx,
+                )?;
+                let right_ctes = extract_ctes_with_context(
+                    &graph_rel.right,
+                    last_node_alias,
+                    context,
+                    schema,
+                    plan_ctx,
+                )?;
+                child_ctes.extend(right_ctes);
+                child_ctes.extend(relationship_ctes);
+
+                return Ok(child_ctes);
+            }
 
             if let Some(labels) = &graph_rel.labels {
                 crate::debug_print!(
@@ -3067,6 +3304,17 @@ pub fn extract_ctes_with_context(
                         super::CteContent::RawSql(formatted_union_sql),
                         false,
                     ));
+
+                    // Register CTE name in task-local QueryContext for lookup during nested rendering
+                    crate::server::query_context::register_relationship_cte_name(
+                        &graph_rel.alias,
+                        &cte_name,
+                    );
+                    log::info!(
+                        "📝 Registered multi-type CTE: alias='{}' → cte_name='{}'",
+                        graph_rel.alias,
+                        cte_name
+                    );
                 } else {
                     crate::debug_println!(
                         "DEBUG cte_extraction: Single relationship type, no UNION needed"
@@ -3079,10 +3327,20 @@ pub fn extract_ctes_with_context(
             // IMPORTANT: Recurse into left and right branches to collect CTEs from nested GraphRels
             // This is needed for multi-hop polymorphic patterns like (u)-[r1]->(m)-[r2]->(t)
             // where both r1 and r2 are wildcard edges needing their own CTEs
-            let left_ctes =
-                extract_ctes_with_context(&graph_rel.left, last_node_alias, context, schema)?;
-            let mut right_ctes =
-                extract_ctes_with_context(&graph_rel.right, last_node_alias, context, schema)?;
+            let left_ctes = extract_ctes_with_context(
+                &graph_rel.left,
+                last_node_alias,
+                context,
+                schema,
+                plan_ctx,
+            )?;
+            let mut right_ctes = extract_ctes_with_context(
+                &graph_rel.right,
+                last_node_alias,
+                context,
+                schema,
+                plan_ctx,
+            )?;
 
             // Combine all CTEs from left, right, and current relationship
             let mut all_ctes = left_ctes;
@@ -3109,6 +3367,7 @@ pub fn extract_ctes_with_context(
                 last_node_alias,
                 &mut new_context.clone(),
                 schema,
+                plan_ctx,
             )?;
 
             Ok(ctes)
@@ -3136,23 +3395,33 @@ pub fn extract_ctes_with_context(
                     LogicalPlan::WithClause(_) => "WithClause",
                 }
             );
-            extract_ctes_with_context(&projection.input, last_node_alias, context, schema)
+            extract_ctes_with_context(
+                &projection.input,
+                last_node_alias,
+                context,
+                schema,
+                plan_ctx,
+            )
         }
-        LogicalPlan::GraphJoins(graph_joins) => {
-            extract_ctes_with_context(&graph_joins.input, last_node_alias, context, schema)
-        }
+        LogicalPlan::GraphJoins(graph_joins) => extract_ctes_with_context(
+            &graph_joins.input,
+            last_node_alias,
+            context,
+            schema,
+            plan_ctx,
+        ),
         LogicalPlan::GroupBy(group_by) => {
             log::info!("🔍 CTE extraction: Delegating from GroupBy to input plan");
-            extract_ctes_with_context(&group_by.input, last_node_alias, context, schema)
+            extract_ctes_with_context(&group_by.input, last_node_alias, context, schema, plan_ctx)
         }
         LogicalPlan::OrderBy(order_by) => {
-            extract_ctes_with_context(&order_by.input, last_node_alias, context, schema)
+            extract_ctes_with_context(&order_by.input, last_node_alias, context, schema, plan_ctx)
         }
         LogicalPlan::Skip(skip) => {
-            extract_ctes_with_context(&skip.input, last_node_alias, context, schema)
+            extract_ctes_with_context(&skip.input, last_node_alias, context, schema, plan_ctx)
         }
         LogicalPlan::Limit(limit) => {
-            extract_ctes_with_context(&limit.input, last_node_alias, context, schema)
+            extract_ctes_with_context(&limit.input, last_node_alias, context, schema, plan_ctx)
         }
         LogicalPlan::Cte(logical_cte) => {
             // 🔧 FIX: Use the schema parameter directly instead of context.schema()
@@ -3172,17 +3441,19 @@ pub fn extract_ctes_with_context(
                     last_node_alias,
                     context,
                     schema,
+                    plan_ctx,
                 )?);
             }
             Ok(ctes)
         }
         LogicalPlan::PageRank(_) => Ok(vec![]),
         LogicalPlan::Unwind(u) => {
-            extract_ctes_with_context(&u.input, last_node_alias, context, schema)
+            extract_ctes_with_context(&u.input, last_node_alias, context, schema, plan_ctx)
         }
         LogicalPlan::CartesianProduct(cp) => {
             println!("DEBUG CTE Extraction: Processing CartesianProduct");
-            let mut ctes = extract_ctes_with_context(&cp.left, last_node_alias, context, schema)?;
+            let mut ctes =
+                extract_ctes_with_context(&cp.left, last_node_alias, context, schema, plan_ctx)?;
             println!(
                 "DEBUG CTE Extraction: CartesianProduct left side returned {} CTEs",
                 ctes.len()
@@ -3192,6 +3463,7 @@ pub fn extract_ctes_with_context(
                 last_node_alias,
                 context,
                 schema,
+                plan_ctx,
             )?);
             println!(
                 "DEBUG CTE Extraction: CartesianProduct total {} CTEs",
@@ -3208,7 +3480,8 @@ pub fn extract_ctes_with_context(
             // The CTE contains the SQL from the input plan with the WITH projection
 
             // First, extract any CTEs from the input
-            let mut ctes = extract_ctes_with_context(&wc.input, last_node_alias, context, schema)?;
+            let mut ctes =
+                extract_ctes_with_context(&wc.input, last_node_alias, context, schema, plan_ctx)?;
 
             // CRITICAL FIX: Use CTE name from analyzer's cte_references if available
             // The VariableResolver already assigned CTE names and stored them in cte_references.
@@ -3387,6 +3660,7 @@ pub fn extract_ctes_with_context(
                 input: wc.input.clone(),
                 items: final_items.clone(),
                 distinct: wc.distinct,
+                pattern_comprehensions: vec![],
             };
 
             // If we have aggregations, wrap in GroupBy node with proper ID column lookup
@@ -3452,6 +3726,27 @@ pub fn extract_ctes_with_context(
             };
 
             let mut cte_render_plan = plan_to_render.to_render_plan(schema)?;
+
+            // 🔧 CRITICAL FIX: Override FROM with context-aware extraction
+            // The regular to_render_plan() can't access CTE context, so it may compute wrong CTE names.
+            // We re-extract FROM here with the context to get the correct registered CTE names.
+            use crate::render_plan::from_builder::FromBuilder;
+            log::warn!("🔍 CTE Extraction: About to extract FROM for WITH clause");
+            match plan_to_render.extract_from() {
+                Ok(Some(correct_from)) => {
+                    log::warn!(
+                        "✅ CTE Extraction: Extracted FROM, new FROM={:?}",
+                        correct_from.table
+                    );
+                    cte_render_plan.from = crate::render_plan::FromTableItem(correct_from.table);
+                }
+                Ok(None) => {
+                    log::warn!("⚠️  CTE Extraction: extract_from returned None");
+                }
+                Err(e) => {
+                    log::error!("❌ CTE Extraction: extract_from failed: {:?}", e);
+                }
+            }
 
             // Add WHERE clause from WITH to the CTE render plan
             if let Some(where_clause) = &wc.where_clause {
@@ -4545,6 +4840,10 @@ pub fn extract_node_label_from_viewscan_with_schema(
         }
         LogicalPlan::Limit(l) => extract_node_label_from_viewscan_with_schema(&l.input, schema),
         LogicalPlan::Skip(s) => extract_node_label_from_viewscan_with_schema(&s.input, schema),
+        LogicalPlan::WithClause(wc) => {
+            // WITH clause wraps the original node plan — recurse to find the label
+            extract_node_label_from_viewscan_with_schema(&wc.input, schema)
+        }
         _ => None,
     }
 }
@@ -4577,6 +4876,8 @@ pub fn extract_node_label_from_viewscan(plan: &LogicalPlan) -> Option<String> {
             extract_node_label_from_viewscan(&node.input)
         }
         LogicalPlan::Filter(filter) => extract_node_label_from_viewscan(&filter.input),
+        LogicalPlan::Projection(proj) => extract_node_label_from_viewscan(&proj.input),
+        LogicalPlan::WithClause(wc) => extract_node_label_from_viewscan(&wc.input),
         _ => None,
     }
 }

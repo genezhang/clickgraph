@@ -208,6 +208,55 @@ impl SelectBuilder for LogicalPlan {
                                         // Entity (Node or Relationship) - expand properties
                                         match &typed_var.source() {
                                             VariableSource::Match => {
+                                                // Check if this node is in a multi-type VLP context.
+                                                // If so, use JSON columns from the CTE instead of
+                                                // expanding individual properties (which differ per type).
+                                                if let TypedVariable::Node(_) = typed_var {
+                                                    if let Some(gr) = self
+                                                        .find_graph_rel_for_alias(&table_alias.0)
+                                                    {
+                                                        if let Some(ref labels) = gr.labels {
+                                                            if labels.len() > 1 {
+                                                                log::info!(
+                                                                    "🎯 Multi-type VLP node '{}' detected ({} rel types), using JSON columns",
+                                                                    table_alias.0, labels.len()
+                                                                );
+                                                                let position = if gr.left_connection
+                                                                    == table_alias.0
+                                                                {
+                                                                    "start"
+                                                                } else {
+                                                                    "end"
+                                                                };
+                                                                // Emit JSON properties column
+                                                                select_items.push(SelectItem {
+                                                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                                        table_alias: RenderTableAlias("t".to_string()),
+                                                                        column: PropertyValue::Column(format!("{}_properties", position)),
+                                                                    }),
+                                                                    col_alias: Some(ColumnAlias(format!("{}.properties", table_alias.0))),
+                                                                });
+                                                                // Emit ID column
+                                                                select_items.push(SelectItem {
+                                                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                                        table_alias: RenderTableAlias("t".to_string()),
+                                                                        column: PropertyValue::Column(format!("{}_id", position)),
+                                                                    }),
+                                                                    col_alias: Some(ColumnAlias(format!("{}.id", table_alias.0))),
+                                                                });
+                                                                // Emit type column
+                                                                select_items.push(SelectItem {
+                                                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                                        table_alias: RenderTableAlias("t".to_string()),
+                                                                        column: PropertyValue::Column(format!("{}_type", position)),
+                                                                    }),
+                                                                    col_alias: Some(ColumnAlias(format!("{}.__label__", table_alias.0))),
+                                                                });
+                                                                continue; // skip expand_base_table_entity
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                                 // Base table: use schema + logical plan table alias
                                                 self.expand_base_table_entity(
                                                     &table_alias.0,
@@ -377,6 +426,144 @@ impl SelectBuilder for LogicalPlan {
                                 "🔍 Expanding PropertyAccessExp('{}.*') to properties",
                                 prop.table_alias.0
                             );
+
+                            // Multi-type VLP nodes: use JSON columns instead of individual properties
+                            if let Some(gr) = self.find_graph_rel_for_alias(&prop.table_alias.0) {
+                                if let Some(ref labels) = gr.labels {
+                                    if labels.len() > 1 {
+                                        log::info!(
+                                            "🎯 Multi-type VLP node '{}' detected ({} rel types), using JSON columns for wildcard",
+                                            prop.table_alias.0, labels.len()
+                                        );
+                                        let position = if gr.left_connection == prop.table_alias.0 {
+                                            "start"
+                                        } else {
+                                            "end"
+                                        };
+                                        select_items.push(SelectItem {
+                                            expression: RenderExpr::PropertyAccessExp(
+                                                PropertyAccess {
+                                                    table_alias: RenderTableAlias("t".to_string()),
+                                                    column: PropertyValue::Column(format!(
+                                                        "{}_properties",
+                                                        position
+                                                    )),
+                                                },
+                                            ),
+                                            col_alias: Some(ColumnAlias(format!(
+                                                "{}.properties",
+                                                prop.table_alias.0
+                                            ))),
+                                        });
+                                        select_items.push(SelectItem {
+                                            expression: RenderExpr::PropertyAccessExp(
+                                                PropertyAccess {
+                                                    table_alias: RenderTableAlias("t".to_string()),
+                                                    column: PropertyValue::Column(format!(
+                                                        "{}_id",
+                                                        position
+                                                    )),
+                                                },
+                                            ),
+                                            col_alias: Some(ColumnAlias(format!(
+                                                "{}.id",
+                                                prop.table_alias.0
+                                            ))),
+                                        });
+                                        select_items.push(SelectItem {
+                                            expression: RenderExpr::PropertyAccessExp(
+                                                PropertyAccess {
+                                                    table_alias: RenderTableAlias("t".to_string()),
+                                                    column: PropertyValue::Column(format!(
+                                                        "{}_type",
+                                                        position
+                                                    )),
+                                                },
+                                            ),
+                                            col_alias: Some(ColumnAlias(format!(
+                                                "{}.__label__",
+                                                prop.table_alias.0
+                                            ))),
+                                        });
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            // Multi-type VLP relationship: use CTE relationship columns
+                            // Only applies to VLP multi-type path (labels > 1 + variable_length)
+                            // NOT to pattern_combinations path which uses regular table JOINs
+                            if let Some(gr) = self.find_graph_rel_by_rel_alias(&prop.table_alias.0)
+                            {
+                                if let Some(ref labels) = gr.labels {
+                                    if labels.len() > 1
+                                        && gr.variable_length.is_some()
+                                        && gr.pattern_combinations.is_none()
+                                    {
+                                        log::info!(
+                                            "🎯 Multi-type VLP relationship '{}' detected ({} types), using CTE columns",
+                                            prop.table_alias.0, labels.len()
+                                        );
+                                        select_items.push(SelectItem {
+                                            expression: RenderExpr::PropertyAccessExp(
+                                                PropertyAccess {
+                                                    table_alias: RenderTableAlias("t".to_string()),
+                                                    column: PropertyValue::Column(
+                                                        "path_relationships".to_string(),
+                                                    ),
+                                                },
+                                            ),
+                                            col_alias: Some(ColumnAlias(format!(
+                                                "{}.type",
+                                                prop.table_alias.0
+                                            ))),
+                                        });
+                                        select_items.push(SelectItem {
+                                            expression: RenderExpr::PropertyAccessExp(
+                                                PropertyAccess {
+                                                    table_alias: RenderTableAlias("t".to_string()),
+                                                    column: PropertyValue::Column(
+                                                        "rel_properties".to_string(),
+                                                    ),
+                                                },
+                                            ),
+                                            col_alias: Some(ColumnAlias(format!(
+                                                "{}.properties",
+                                                prop.table_alias.0
+                                            ))),
+                                        });
+                                        select_items.push(SelectItem {
+                                            expression: RenderExpr::PropertyAccessExp(
+                                                PropertyAccess {
+                                                    table_alias: RenderTableAlias("t".to_string()),
+                                                    column: PropertyValue::Column(
+                                                        "start_id".to_string(),
+                                                    ),
+                                                },
+                                            ),
+                                            col_alias: Some(ColumnAlias(format!(
+                                                "{}.start_id",
+                                                prop.table_alias.0
+                                            ))),
+                                        });
+                                        select_items.push(SelectItem {
+                                            expression: RenderExpr::PropertyAccessExp(
+                                                PropertyAccess {
+                                                    table_alias: RenderTableAlias("t".to_string()),
+                                                    column: PropertyValue::Column(
+                                                        "end_id".to_string(),
+                                                    ),
+                                                },
+                                            ),
+                                            col_alias: Some(ColumnAlias(format!(
+                                                "{}.end_id",
+                                                prop.table_alias.0
+                                            ))),
+                                        });
+                                        continue;
+                                    }
+                                }
+                            }
 
                             // Check if this is a denormalized edge alias mapping
                             let mapped_alias = crate::render_plan::get_denormalized_alias_mapping(
@@ -636,16 +823,14 @@ impl SelectBuilder for LogicalPlan {
                                         let id_column = match typed_var {
                                             TypedVariable::Node(node_var) => {
                                                 if let Some(label) = node_var.labels.first() {
-                                                    ctx.schema()
-                                                        .node_schema(label)
-                                                        .ok()
-                                                        .map(|ns| {
+                                                    ctx.schema().node_schema(label).ok().and_then(
+                                                        |ns| {
                                                             ns.node_id
                                                                 .columns()
                                                                 .first()
                                                                 .map(|s| s.to_string())
-                                                        })
-                                                        .flatten()
+                                                        },
+                                                    )
                                                 } else {
                                                     None
                                                 }
@@ -655,7 +840,7 @@ impl SelectBuilder for LogicalPlan {
                                                     ctx.schema()
                                                         .get_rel_schema(rel_type)
                                                         .ok()
-                                                        .map(|rs| {
+                                                        .and_then(|rs| {
                                                             if let Some(ref edge_id) = rs.edge_id {
                                                                 edge_id
                                                                     .columns()
@@ -665,7 +850,6 @@ impl SelectBuilder for LogicalPlan {
                                                                 Some(rs.from_id.clone())
                                                             }
                                                         })
-                                                        .flatten()
                                                 } else {
                                                     None
                                                 }
@@ -803,6 +987,30 @@ impl SelectBuilder for LogicalPlan {
 // ============================================================================
 
 impl LogicalPlan {
+    /// Check if this plan contains a GraphRel with pattern_combinations for the given alias
+    fn has_pattern_combinations_for_alias(&self, alias: &str) -> bool {
+        match self {
+            LogicalPlan::GraphRel(gr) => {
+                if gr.alias == alias && gr.pattern_combinations.is_some() {
+                    return true;
+                }
+                // Check recursively
+                gr.left.has_pattern_combinations_for_alias(alias)
+                    || gr.center.has_pattern_combinations_for_alias(alias)
+                    || gr.right.has_pattern_combinations_for_alias(alias)
+            }
+            LogicalPlan::GraphNode(gn) => gn.input.has_pattern_combinations_for_alias(alias),
+            LogicalPlan::Projection(p) => p.input.has_pattern_combinations_for_alias(alias),
+            LogicalPlan::Filter(f) => f.input.has_pattern_combinations_for_alias(alias),
+            LogicalPlan::GroupBy(g) => g.input.has_pattern_combinations_for_alias(alias),
+            LogicalPlan::OrderBy(o) => o.input.has_pattern_combinations_for_alias(alias),
+            LogicalPlan::Limit(l) => l.input.has_pattern_combinations_for_alias(alias),
+            LogicalPlan::Skip(s) => s.input.has_pattern_combinations_for_alias(alias),
+            LogicalPlan::GraphJoins(gj) => gj.input.has_pattern_combinations_for_alias(alias),
+            _ => false,
+        }
+    }
+
     /// Expand a base table entity (Node/Relationship from MATCH)
     fn expand_base_table_entity(
         &self,
@@ -825,8 +1033,18 @@ impl LogicalPlan {
         // - path_relationships: array of relationship types
         // - rel_properties: array of relationship property JSON objects
         // - end_type, end_id, start_id, end_properties, hop_count
+        //
+        // IMPORTANT: Only use CTE columns when the current plan branch actually uses a CTE.
+        // PlanCtx may list multiple rel_types for 'r' globally, but pattern_combinations
+        // splits the query into single-type UNION branches that use regular table JOINs.
+        // We verify by checking the GraphRel on the plan: it must have variable_length
+        // (VLP CTE) or pattern_combinations (pattern_union CTE).
         if let TypedVariable::Relationship(_) = typed_var {
-            if labels.len() > 1 {
+            let graph_rel = self.find_graph_rel_by_rel_alias(alias);
+            let uses_cte = graph_rel.is_some_and(|gr| {
+                gr.variable_length.is_some() || gr.pattern_combinations.is_some()
+            });
+            if labels.len() > 1 && uses_cte {
                 // This is a multi-type relationship - properties come from CTE, not base table
                 log::info!(
                     "🎯 Multi-type relationship '{}' detected ({} types), using CTE columns",
@@ -834,10 +1052,19 @@ impl LogicalPlan {
                     labels.len()
                 );
 
-                // For RETURN r on multi-type relationships, select from CTE columns
-                // The CTE has columns: end_type, end_id, start_id, end_properties, hop_count, path_relationships, rel_properties
-                // We select these columns and alias them as r.*
-                let cte_alias = "t"; // Multi-type CTEs always use 't' as alias (VLP_CTE_FROM_ALIAS)
+                // === PATTERNRESOLVER 2.0: Determine CTE alias ===
+                // For pattern_combinations, CTE alias is the relationship alias (e.g., "r")
+                // For regular multi-type ([:TYPE1|TYPE2]), CTE alias is "t" (VLP_CTE_FROM_ALIAS)
+                let has_pattern_combinations = self.has_pattern_combinations_for_alias(alias);
+                let cte_alias = if has_pattern_combinations {
+                    log::info!(
+                        "🔀 PatternResolver 2.0: Using relationship alias '{}' for CTE reference",
+                        alias
+                    );
+                    alias // Pattern combinations use relationship alias
+                } else {
+                    "t" // Regular multi-type uses VLP_CTE_FROM_ALIAS
+                };
 
                 // Add all CTE columns needed to reconstruct the relationship
                 select_items.push(SelectItem {
@@ -1053,9 +1280,13 @@ impl LogicalPlan {
         }
 
         // Generate CTE column names and SelectItems
+        // Use CTE property mappings from query context (populated by cte_manager)
+        // to get the actual column names rather than constructing them manually.
         let prop_count = properties.len();
-        for (prop_name, db_column) in properties {
-            let cte_column = format!("{}_{}", alias, db_column);
+        for (prop_name, _db_column) in properties {
+            let cte_column =
+                crate::server::query_context::get_cte_property_mapping(&from_alias, &prop_name)
+                    .unwrap_or_else(|| format!("{}_{}", alias, prop_name));
             select_items.push(SelectItem {
                 expression: RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: RenderTableAlias(from_alias.clone()),
@@ -1126,7 +1357,15 @@ impl LogicalPlan {
 
     /// Compute FROM alias from CTE name
     fn compute_from_alias_from_cte_name(&self, cte_name: &str) -> String {
-        // The FROM alias is simply the CTE name itself
+        // For WITH CTEs: "with_a_allNeighboursCount_cte_0" → "a_allNeighboursCount"
+        if cte_name.starts_with("with_") {
+            if let Some(base) = cte_name.strip_prefix("with_") {
+                // Strip _cte_N suffix
+                if let Some(idx) = base.rfind("_cte_") {
+                    return base[..idx].to_string();
+                }
+            }
+        }
         cte_name.to_string()
     }
 
@@ -1159,6 +1398,69 @@ impl LogicalPlan {
                     .first()
                     .and_then(|branch| branch.find_graph_rel_for_path(path_name))
             }
+            _ => None,
+        }
+    }
+
+    /// Find GraphRel where the given alias is a left or right connection.
+    /// Used to detect multi-type VLP context for whole-node expansion.
+    fn find_graph_rel_for_alias(
+        &self,
+        alias: &str,
+    ) -> Option<&crate::query_planner::logical_plan::GraphRel> {
+        use crate::query_planner::logical_plan::LogicalPlan;
+        match self {
+            LogicalPlan::GraphRel(gr)
+                if gr.left_connection == alias || gr.right_connection == alias =>
+            {
+                Some(gr)
+            }
+            LogicalPlan::GraphRel(gr) => gr
+                .left
+                .find_graph_rel_for_alias(alias)
+                .or_else(|| gr.right.find_graph_rel_for_alias(alias)),
+            LogicalPlan::GraphJoins(gj) => gj.input.find_graph_rel_for_alias(alias),
+            LogicalPlan::GraphNode(gn) => gn.input.find_graph_rel_for_alias(alias),
+            LogicalPlan::Projection(p) => p.input.find_graph_rel_for_alias(alias),
+            LogicalPlan::Filter(f) => f.input.find_graph_rel_for_alias(alias),
+            LogicalPlan::GroupBy(gb) => gb.input.find_graph_rel_for_alias(alias),
+            LogicalPlan::Limit(l) => l.input.find_graph_rel_for_alias(alias),
+            LogicalPlan::Skip(s) => s.input.find_graph_rel_for_alias(alias),
+            LogicalPlan::OrderBy(o) => o.input.find_graph_rel_for_alias(alias),
+            LogicalPlan::Union(u) => u
+                .inputs
+                .first()
+                .and_then(|branch| branch.find_graph_rel_for_alias(alias)),
+            _ => None,
+        }
+    }
+
+    /// Find a GraphRel whose own relationship alias matches the given alias.
+    /// Unlike `find_graph_rel_for_alias` which matches node connections (left/right),
+    /// this matches the GraphRel's own `alias` field (the relationship variable).
+    fn find_graph_rel_by_rel_alias(
+        &self,
+        alias: &str,
+    ) -> Option<&crate::query_planner::logical_plan::GraphRel> {
+        use crate::query_planner::logical_plan::LogicalPlan;
+        match self {
+            LogicalPlan::GraphRel(gr) if gr.alias == alias => Some(gr),
+            LogicalPlan::GraphRel(gr) => gr
+                .left
+                .find_graph_rel_by_rel_alias(alias)
+                .or_else(|| gr.right.find_graph_rel_by_rel_alias(alias)),
+            LogicalPlan::GraphJoins(gj) => gj.input.find_graph_rel_by_rel_alias(alias),
+            LogicalPlan::GraphNode(gn) => gn.input.find_graph_rel_by_rel_alias(alias),
+            LogicalPlan::Projection(p) => p.input.find_graph_rel_by_rel_alias(alias),
+            LogicalPlan::Filter(f) => f.input.find_graph_rel_by_rel_alias(alias),
+            LogicalPlan::GroupBy(gb) => gb.input.find_graph_rel_by_rel_alias(alias),
+            LogicalPlan::Limit(l) => l.input.find_graph_rel_by_rel_alias(alias),
+            LogicalPlan::Skip(s) => s.input.find_graph_rel_by_rel_alias(alias),
+            LogicalPlan::OrderBy(o) => o.input.find_graph_rel_by_rel_alias(alias),
+            LogicalPlan::Union(u) => u
+                .inputs
+                .first()
+                .and_then(|branch| branch.find_graph_rel_by_rel_alias(alias)),
             _ => None,
         }
     }
@@ -1209,58 +1511,67 @@ impl LogicalPlan {
                 cte_alias
             );
 
-            // 🔧 FIX: Check if this is a multi-type CTE (doesn't have path_nodes/path_edges)
+            // 🔧 FIX: Check if this is a multi-type VLP (doesn't have path_nodes/path_edges)
             // Multi-type CTEs use different columns: start_properties, end_properties, rel_properties
-            if let Some(ctx) = plan_ctx {
-                if let Some((cte_name, _)) = ctx.get_cte_alias_source(path_alias) {
-                    if cte_name.starts_with("vlp_multi_type_") {
-                        log::info!("🎯 Multi-type VLP path detected: '{}'", cte_name);
+            // Detection: check if the GraphRel has multiple relationship types (implicit *1 multi-type)
+            let is_multi_type = self
+                .find_graph_rel_for_path(path_alias)
+                .map(|gr| {
+                    gr.labels.as_ref().is_some_and(|l| l.len() > 1)
+                        || gr.pattern_combinations.is_some()
+                })
+                .unwrap_or(false);
 
-                        // For multi-type paths, we construct the path from individual components
-                        // tuple(start_properties, end_properties, rel_properties, hop_count)
-                        select_items.push(SelectItem {
-                            expression: RenderExpr::ScalarFnCall(ScalarFnCall {
-                                name: "tuple".to_string(),
-                                args: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: RenderTableAlias(cte_alias.to_string()),
-                                        column: PropertyValue::Column(
-                                            "start_properties".to_string(),
-                                        ),
-                                    }),
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: RenderTableAlias(cte_alias.to_string()),
-                                        column: PropertyValue::Column("end_properties".to_string()),
-                                    }),
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: RenderTableAlias(cte_alias.to_string()),
-                                        column: PropertyValue::Column("rel_properties".to_string()),
-                                    }),
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: RenderTableAlias(cte_alias.to_string()),
-                                        column: PropertyValue::Column(
-                                            "path_relationships".to_string(),
-                                        ),
-                                    }),
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: RenderTableAlias(cte_alias.to_string()),
-                                        column: PropertyValue::Column("start_id".to_string()),
-                                    }),
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: RenderTableAlias(cte_alias.to_string()),
-                                        column: PropertyValue::Column("end_id".to_string()),
-                                    }),
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: RenderTableAlias(cte_alias.to_string()),
-                                        column: PropertyValue::Column("hop_count".to_string()),
-                                    }),
-                                ],
+            if is_multi_type {
+                log::info!("🎯 Multi-type VLP path detected for '{}'", path_alias);
+
+                // For multi-type paths, we construct the path from individual components
+                // tuple(start_properties, end_properties, rel_properties, hop_count)
+                select_items.push(SelectItem {
+                    expression: RenderExpr::ScalarFnCall(ScalarFnCall {
+                        name: "tuple".to_string(),
+                        args: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: RenderTableAlias(cte_alias.to_string()),
+                                column: PropertyValue::Column("start_properties".to_string()),
                             }),
-                            col_alias: Some(ColumnAlias(path_alias.to_string())),
-                        });
-                        return;
-                    }
-                }
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: RenderTableAlias(cte_alias.to_string()),
+                                column: PropertyValue::Column("end_properties".to_string()),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: RenderTableAlias(cte_alias.to_string()),
+                                column: PropertyValue::Column("rel_properties".to_string()),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: RenderTableAlias(cte_alias.to_string()),
+                                column: PropertyValue::Column("path_relationships".to_string()),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: RenderTableAlias(cte_alias.to_string()),
+                                column: PropertyValue::Column("start_id".to_string()),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: RenderTableAlias(cte_alias.to_string()),
+                                column: PropertyValue::Column("end_id".to_string()),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: RenderTableAlias(cte_alias.to_string()),
+                                column: PropertyValue::Column("hop_count".to_string()),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: RenderTableAlias(cte_alias.to_string()),
+                                column: PropertyValue::Column("start_type".to_string()),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: RenderTableAlias(cte_alias.to_string()),
+                                column: PropertyValue::Column("end_type".to_string()),
+                            }),
+                        ],
+                    }),
+                    col_alias: Some(ColumnAlias(path_alias.to_string())),
+                });
+                return;
             }
 
             // Standard VLP with path_nodes and path_edges
@@ -1298,6 +1609,15 @@ impl LogicalPlan {
             // This is critical for UNION branches which use branch-specific aliases (t1_0, t2_0)
             // instead of the original aliases (a, b) registered in plan_ctx
             let graph_rel_ref = self.find_graph_rel_for_path(path_alias);
+            log::info!(
+                "🔍 Fixed-hop path '{}': graph_rel_ref found={}, has_pattern_combinations={}",
+                path_alias,
+                graph_rel_ref.is_some(),
+                graph_rel_ref
+                    .as_ref()
+                    .and_then(|g| g.pattern_combinations.as_ref())
+                    .is_some()
+            );
             let (start_alias, end_alias, rel_alias) = if let Some(graph_rel) = &graph_rel_ref {
                 log::info!(
                     "🔍 Found GraphRel for path '{}' with actual aliases: left={}, right={}, rel={}",
@@ -1330,6 +1650,84 @@ impl LogicalPlan {
                 );
                 (start, end, rel)
             };
+
+            // 🔥 PatternResolver 2.0: Check if using pattern_union CTE
+            // PatternResolver 2.0 CTEs have JSON property columns
+            // We need to expand these as individual SELECT columns for result transformer
+            if let Some(graph_rel) = &graph_rel_ref {
+                if graph_rel.pattern_combinations.is_some() {
+                    log::info!("🔀 PatternResolver 2.0 path detected: expanding JSON columns for result transformer");
+
+                    // Use CTE alias (pattern_union_{rel_alias})
+                    let cte_alias = &rel_alias;
+
+                    // Expand JSON property columns individually (for result transformer to parse)
+                    select_items.push(SelectItem {
+                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: RenderTableAlias(cte_alias.clone()),
+                            column: PropertyValue::Column("start_properties".to_string()),
+                        }),
+                        col_alias: Some(ColumnAlias("_start_properties".to_string())),
+                    });
+                    select_items.push(SelectItem {
+                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: RenderTableAlias(cte_alias.clone()),
+                            column: PropertyValue::Column("end_properties".to_string()),
+                        }),
+                        col_alias: Some(ColumnAlias("_end_properties".to_string())),
+                    });
+                    select_items.push(SelectItem {
+                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: RenderTableAlias(cte_alias.clone()),
+                            column: PropertyValue::Column("rel_properties".to_string()),
+                        }),
+                        col_alias: Some(ColumnAlias("_rel_properties".to_string())),
+                    });
+
+                    // Extract relationship type from array (first element)
+                    select_items.push(SelectItem {
+                        expression: RenderExpr::ScalarFnCall(ScalarFnCall {
+                            name: "arrayElement".to_string(),
+                            args: vec![
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: RenderTableAlias(cte_alias.clone()),
+                                    column: PropertyValue::Column("path_relationships".to_string()),
+                                }),
+                                RenderExpr::Literal(Literal::Integer(1)), // ClickHouse arrays are 1-indexed
+                            ],
+                        }),
+                        col_alias: Some(ColumnAlias("__rel_type__".to_string())),
+                    });
+
+                    // Add start_id and end_id for element_id construction
+                    select_items.push(SelectItem {
+                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: RenderTableAlias(cte_alias.clone()),
+                            column: PropertyValue::Column("start_id".to_string()),
+                        }),
+                        col_alias: Some(ColumnAlias("__start_id__".to_string())),
+                    });
+                    select_items.push(SelectItem {
+                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: RenderTableAlias(cte_alias.clone()),
+                            column: PropertyValue::Column("end_id".to_string()),
+                        }),
+                        col_alias: Some(ColumnAlias("__end_id__".to_string())),
+                    });
+
+                    // Add stub __start_label__ and __end_label__ (will be inferred from properties)
+                    select_items.push(SelectItem {
+                        expression: RenderExpr::Literal(Literal::String("Node".to_string())),
+                        col_alias: Some(ColumnAlias("__start_label__".to_string())),
+                    });
+                    select_items.push(SelectItem {
+                        expression: RenderExpr::Literal(Literal::String("Node".to_string())),
+                        col_alias: Some(ColumnAlias("__end_label__".to_string())),
+                    });
+
+                    return; // Done - skip the rest of fixed-path expansion
+                }
+            }
 
             // Check if relationship is denormalized
             let is_rel_denormalized = if let Some(graph_rel) = &graph_rel_ref {

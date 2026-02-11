@@ -106,9 +106,40 @@ impl<'a> IdFunctionTransformer<'a> {
                 self.transform_operator_application(op_app)
             }
 
-            // Recursively transform function calls (but don't transform id() here - handled in operators)
+            // Transform id() function calls standalone (ORDER BY, SELECT)
             Expression::FunctionCallExp(func) => {
                 log::debug!("    Found FunctionCall: {}", func.name);
+
+                // Special handling for id(var) in ORDER BY / SELECT
+                // Transform to var.id_property (let SQL generator handle it)
+                if func.name.eq_ignore_ascii_case("id") && func.args.len() == 1 {
+                    if let Expression::Variable(var) = &func.args[0] {
+                        log::info!(
+                            "    🔄 Transforming standalone id({}) to property access",
+                            var
+                        );
+
+                        // Determine the ID property name from schema
+                        let id_property = if let Some(_schema) = self.schema {
+                            // We don't know the label here, so use a generic approach:
+                            // Return a PropertyAccess that the SQL generator can resolve
+                            // The SQL generator will need to handle this for multi-type patterns
+                            "id"
+                        } else {
+                            "id"
+                        };
+
+                        let property_str = self.arena.alloc_str(id_property);
+                        return Expression::PropertyAccessExp(
+                            crate::open_cypher_parser::ast::PropertyAccess {
+                                base: var,
+                                key: property_str,
+                            },
+                        );
+                    }
+                }
+
+                // For other functions, recursively transform arguments
                 Expression::FunctionCallExp(FunctionCall {
                     name: func.name.clone(),
                     args: func
@@ -299,6 +330,17 @@ impl<'a> IdFunctionTransformer<'a> {
                     label,
                     id_str
                 );
+                // Record label constraint for UNION pruning / label injection
+                self.label_constraints
+                    .entry(var.to_string())
+                    .or_default()
+                    .insert(label.to_string());
+                self.id_values_by_label
+                    .entry(var.to_string())
+                    .or_default()
+                    .entry(label.to_string())
+                    .or_default()
+                    .push(id_str.clone());
                 return self.build_label_and_id_check(var, &label, &id_str);
             }
         }
@@ -335,40 +377,20 @@ impl<'a> IdFunctionTransformer<'a> {
                     labels_for_var.insert(label.to_string());
                     ids_by_label
                         .entry(label.to_string())
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(id_str.clone());
                     filters.push(self.build_label_and_id_check(var, &label, &id_str));
                     continue;
                 }
             }
 
-            // Fallback: Decode label from bit pattern (for IDs not in cache)
-            use crate::utils::id_encoding::{IdEncoding, LABEL_CODE_REGISTRY};
-            let (label_code, raw_id) = IdEncoding::decode(id_value);
-            if label_code > 0 {
-                if let Ok(registry) = LABEL_CODE_REGISTRY.read() {
-                    if let Some(label) = registry.get_label(label_code) {
-                        log::info!(
-                            "  🎯 Decoded from bit pattern: {} -> label='{}', raw_id={}",
-                            id_value,
-                            label,
-                            raw_id
-                        );
-                        labels_for_var.insert(label.clone());
-                        let id_str = raw_id.to_string();
-                        ids_by_label
-                            .entry(label.clone())
-                            .or_insert_with(Vec::new)
-                            .push(id_str.clone());
-                        filters.push(self.build_label_and_id_check(var, &label, &id_str));
-                        continue;
-                    }
-                }
-            }
-
-            // ID not found in cache - skip with warning
+            // Fallback: Decode label from bit pattern
+            // NOTE: Bit-pattern decoding is unreliable across server restarts because
+            // label codes depend on registration order. Only the element_id cache
+            // (populated during the current session) is reliable. Skip unknown IDs
+            // rather than risk wrong-label SQL predicates.
             log::warn!(
-                "id() transform: id({}) = {} cannot be resolved (not in global cache)",
+                "id() transform: id({}) = {} cannot be resolved (not in session cache, skipping)",
                 var,
                 id_value
             );
@@ -470,8 +492,8 @@ impl<'a> IdFunctionTransformer<'a> {
 
         // Build: var.id_property = 'value'
         // Label will be added to MATCH pattern during split_query_by_labels()
-        let id_value_static: &'a str = self.arena.alloc_str(&id_value);
-        let id_property_static: &'a str = self.arena.alloc_str(&id_property);
+        let id_value_static: &'a str = self.arena.alloc_str(id_value);
+        let id_property_static: &'a str = self.arena.alloc_str(id_property);
 
         // ID check: var.id_property = 'value'
         Expression::OperatorApplicationExp(OperatorApplication {

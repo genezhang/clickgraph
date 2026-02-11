@@ -128,6 +128,36 @@ impl AnalyzerPass for FilterTagging {
                 let child_plan_ref = match &child_tf {
                     Transformed::Yes(plan) | Transformed::No(plan) => plan.as_ref(),
                 };
+
+                // If child resolved to Empty (no valid relationships), the filter
+                // may reference aliases with no table context. Try property mapping;
+                // if it fails, propagate Empty upward — there are no rows to filter.
+                if matches!(child_plan_ref, LogicalPlan::Empty) {
+                    match self.apply_property_mapping(
+                        filter.predicate.clone(),
+                        plan_ctx,
+                        graph_schema,
+                        Some(child_plan_ref),
+                    ) {
+                        Ok(mapped) => {
+                            // Table context exists (test scenario) — extract normally
+                            let final_filter = self.extract_filters(mapped, plan_ctx)?;
+                            return Ok(if final_filter.is_some() {
+                                Transformed::Yes(Arc::new(LogicalPlan::Filter(Filter {
+                                    input: child_tf.get_plan().clone(),
+                                    predicate: final_filter.unwrap(),
+                                })))
+                            } else {
+                                Transformed::Yes(child_tf.get_plan().clone())
+                            });
+                        }
+                        Err(_) => {
+                            log::info!("FilterTagging: Child is Empty, no table context - propagating Empty");
+                            return Ok(Transformed::Yes(Arc::new(LogicalPlan::Empty)));
+                        }
+                    }
+                }
+
                 // Apply property mapping to the filter predicate
                 let mapped_predicate = self.apply_property_mapping(
                     filter.predicate.clone(),
@@ -285,6 +315,7 @@ impl AnalyzerPass for FilterTagging {
                         input: child_tf.get_plan(),
                         items: mapped_items,
                         distinct: projection.distinct, // PRESERVE distinct flag from original projection
+                        pattern_comprehensions: projection.pattern_comprehensions.clone(),
                     },
                 )));
                 crate::debug_println!(
@@ -427,6 +458,7 @@ impl AnalyzerPass for FilterTagging {
                     where_clause: with_clause.where_clause.clone(),
                     exported_aliases: with_clause.exported_aliases.clone(),
                     cte_references: with_clause.cte_references.clone(),
+                    pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
                 };
                 Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
             }
@@ -547,6 +579,7 @@ impl FilterTagging {
                         input: child_tf.get_plan().clone(),
                         items: mapped_items,
                         distinct: projection.distinct,
+                        pattern_comprehensions: projection.pattern_comprehensions.clone(),
                     },
                 ))))
             }
@@ -610,9 +643,9 @@ impl FilterTagging {
     fn try_transform_id_comparison(
         &self,
         op: &OperatorApplication,
-        plan_ctx: &PlanCtx,
+        _plan_ctx: &PlanCtx,
         graph_schema: &GraphSchema,
-        plan: Option<&LogicalPlan>,
+        _plan: Option<&LogicalPlan>,
     ) -> AnalyzerResult<Option<LogicalExpr>> {
         // Check for id(var) = N pattern (id function on left, literal on right)
         let (id_fn_call, literal_value, id_on_left) = match (&op.operands[0], &op.operands[1]) {
@@ -630,7 +663,7 @@ impl FilterTagging {
         };
 
         // Extract the variable alias from id(var)
-        let var_alias = match id_fn_call.args.get(0) {
+        let var_alias = match id_fn_call.args.first() {
             Some(LogicalExpr::TableAlias(alias)) => alias.0.clone(),
             _ => return Ok(None), // id() without variable
         };
@@ -2874,6 +2907,7 @@ mod tests {
             label: None,
             is_denormalized: false,
             projected_columns: None,
+            node_types: None,
         }));
 
         let result = analyzer

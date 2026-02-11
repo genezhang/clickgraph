@@ -223,7 +223,7 @@ impl PropertiesBuilder for LogicalPlan {
                                 log::info!(
                                     "🔍 VLP properties for '{}': {:?}",
                                     alias,
-                                    properties.iter().map(|(k, v)| k).collect::<Vec<_>>()
+                                    properties.iter().map(|(k, _v)| k).collect::<Vec<_>>()
                                 );
                                 // 🔧 FIX: For OPTIONAL MATCH + VLP, if this is the anchor node (start node),
                                 // use the ANCHOR TABLE's columns, not VLP CTE columns!

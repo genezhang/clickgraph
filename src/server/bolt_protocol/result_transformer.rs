@@ -525,9 +525,21 @@ pub fn transform_row(
                 // We use the metadata (labels, types) from query planning
 
                 if *is_vlp {
-                    // VLP paths have different column format - not yet supported
-                    log::warn!("VLP path transformation not yet implemented");
-                    result.push(BoltValue::Json(Value::Null));
+                    // VLP multi-type paths: the SQL returns a tuple column with all path data
+                    let mut path = transform_vlp_path(&row, &meta.field_name, schema)?;
+
+                    // Assign session-scoped integer IDs
+                    for node in &mut path.nodes {
+                        node.id = id_mapper.get_or_assign(&node.element_id);
+                    }
+                    for rel in &mut path.relationships {
+                        rel.id = id_mapper.get_or_assign(&rel.element_id);
+                        rel.start_node_id = id_mapper.get_or_assign(&rel.start_node_element_id);
+                        rel.end_node_id = id_mapper.get_or_assign(&rel.end_node_element_id);
+                    }
+
+                    let packstream_bytes = path.to_packstream();
+                    result.push(BoltValue::PackstreamBytes(packstream_bytes));
                     continue;
                 }
 
@@ -659,21 +671,89 @@ fn transform_to_node(
 
     for (key, value) in row.iter() {
         if let Some(prop_name) = key.strip_prefix(&prefix) {
-            // Skip internal __label__ column from properties
-            if prop_name != "_label__" {
+            // Skip internal __label__ and VLP metadata columns from properties
+            if prop_name != "__label__"
+                && prop_name != "_label__"
+                && prop_name != "id"
+                && prop_name != "properties"
+            {
                 properties.insert(prop_name.to_string(), value.clone());
             }
         }
     }
 
+    // VLP CTE results: o.properties is a JSON blob, o.id is the ID string
+    // Parse JSON properties and merge into the properties map
+    let _vlp_id_col = format!("{}.id", var_name);
+    let vlp_props_col = format!("{}.properties", var_name);
+    if let Some(props_val) = row.get(&vlp_props_col) {
+        match props_val {
+            Value::String(json_str) => {
+                if let Ok(parsed) = serde_json::from_str::<HashMap<String, Value>>(json_str) {
+                    for (k, v) in parsed {
+                        // Strip table alias prefix from JSON keys (e.g., "a_1.user_id" → "user_id")
+                        // ClickHouse adds these prefixes when JOINs create ambiguous column names
+                        let clean_key = if k.contains('.') {
+                            k.split('.').next_back().unwrap_or(&k).to_string()
+                        } else {
+                            k
+                        };
+                        properties.entry(clean_key).or_insert(v);
+                    }
+                } else {
+                    log::debug!(
+                        "VLP: Failed to parse JSON properties for {}: {}",
+                        var_name,
+                        json_str
+                    );
+                }
+            }
+            other => {
+                log::debug!(
+                    "VLP: properties column for {} is not a string: {:?}",
+                    var_name,
+                    other
+                );
+            }
+        }
+    } else {
+        log::debug!(
+            "VLP: No {}.properties column found. Row keys: {:?}",
+            var_name,
+            row.keys().collect::<Vec<_>>()
+        );
+    }
+
     // Get primary label
-    // Priority: 1. Use provided labels, 2. Check __label__ column, 3. Infer from properties
-    let label = if let Some(l) = labels.first() {
+    // Priority: 1. Per-row {alias}.__label__ (VLP/UNION), 2. Provided labels (metadata), 3. __label__, 4. Infer
+    let label = if let Some(label_value) = row.get(&format!("{}.__label__", var_name)) {
+        // VLP multi-type queries: {alias}.__label__ has the correct per-row label
+        let row_label = value_to_string(label_value).ok_or_else(|| {
+            format!(
+                "Invalid {}.__label__ value for node: {}",
+                var_name, var_name
+            )
+        })?;
+        if row_label != "Unknown" {
+            row_label
+        } else if let Some(l) = labels.first() {
+            l.clone()
+        } else {
+            infer_node_label_from_properties(&properties, schema)
+                .ok_or_else(|| format!("No label for node variable: {}", var_name))?
+        }
+    } else if let Some(l) = labels.first() {
         l.clone()
     } else if let Some(label_value) = row.get("__label__") {
-        // For UNION queries, __label__ column contains the node type
-        value_to_string(label_value)
-            .ok_or_else(|| format!("Invalid __label__ value for node variable: {}", var_name))?
+        let label_str = value_to_string(label_value)
+            .ok_or_else(|| format!("Invalid __label__ value for node variable: {}", var_name))?;
+        // Skip "Unknown" — it's the outer VLP query's default label, not the node's actual label
+        if label_str == "Unknown" {
+            infer_node_label_from_properties(&properties, schema)
+                .ok_or_else(|| format!("No label for node variable: {}", var_name))?
+        } else {
+            label_str
+        }
     } else {
         // Fallback: infer label from properties by matching schema ID columns
         infer_node_label_from_properties(&properties, schema)
@@ -708,12 +788,9 @@ fn transform_to_node(
     log::debug!("🔢 Node created: element_id={}, id={}", element_id, id);
 
     // Create Node struct
-    // Use inferred label if original labels was empty
-    let final_labels = if labels.is_empty() {
-        vec![label]
-    } else {
-        labels.to_vec()
-    };
+    // Use the resolved label (from per-row __label__ or inference) as the definitive label.
+    // This is more accurate than metadata labels for UNION queries where node types vary per row.
+    let final_labels = vec![label];
 
     Ok(Node {
         id,
@@ -738,7 +815,7 @@ fn infer_node_label_from_properties(
         // Check if ANY of the ID columns is present with a non-null value
         let has_id = id_columns
             .iter()
-            .any(|col| properties.get(*col).map_or(false, |v| !v.is_null()));
+            .any(|col| properties.get(*col).is_some_and(|v| !v.is_null()));
 
         if has_id {
             return Some(label.clone());
@@ -927,6 +1004,16 @@ fn transform_to_relationship(
     let rel_id = generate_id_from_element_id(&element_id);
     let start_node_id = generate_id_from_element_id(&start_node_element_id);
     let end_node_id = generate_id_from_element_id(&end_node_element_id);
+
+    log::debug!(
+        "🔗 Bolt Relationship: type={}, start={}({}) end={}({}), element_id={}",
+        rel_type,
+        start_node_element_id,
+        start_node_id,
+        end_node_element_id,
+        end_node_id,
+        element_id
+    );
 
     // Create Relationship struct
     Ok(Relationship {
@@ -1205,6 +1292,155 @@ fn transform_path_from_json(row: &HashMap<String, Value>) -> Result<Path, String
         end_node.id,
         relationship.rel_type
     );
+
+    Ok(Path::single_hop(start_node, relationship, end_node))
+}
+
+/// Transform a VLP multi-type path from its tuple representation.
+///
+/// The VLP CTE returns a tuple column with these fields (in order):
+/// [0] start_properties (JSON string)
+/// [1] end_properties (JSON string)
+/// [2] rel_properties (array of JSON strings, one per hop)
+/// [3] path_relationships (array of rel type strings, e.g., ["FOLLOWS"])
+/// [4] start_id (string)
+/// [5] end_id (string)
+/// [6] hop_count (integer)
+/// [7] start_type (string, e.g., "User")
+/// [8] end_type (string, e.g., "Post")
+fn transform_vlp_path(
+    row: &HashMap<String, Value>,
+    path_field: &str,
+    _schema: &GraphSchema,
+) -> Result<Path, String> {
+    // The tuple is returned as a JSON array
+    let tuple_val = row.get(path_field).ok_or_else(|| {
+        format!(
+            "VLP path column '{}' not found in row. Available: {:?}",
+            path_field,
+            row.keys().collect::<Vec<_>>()
+        )
+    })?;
+
+    let fields = match tuple_val {
+        Value::Array(arr) => arr,
+        other => {
+            return Err(format!(
+                "VLP path '{}': expected Array tuple, got {:?}",
+                path_field, other
+            ));
+        }
+    };
+
+    if fields.len() < 9 {
+        return Err(format!(
+            "VLP path '{}': expected 9 tuple fields, got {}",
+            path_field,
+            fields.len()
+        ));
+    }
+
+    // Extract fields from the tuple
+    let start_props_json = fields[0].as_str().unwrap_or("{}");
+    let end_props_json = fields[1].as_str().unwrap_or("{}");
+
+    // rel_properties is an array of JSON strings (one per hop)
+    let rel_props_json = match &fields[2] {
+        Value::Array(arr) => arr.first().and_then(|v| v.as_str()).unwrap_or("{}"),
+        Value::String(s) => s.as_str(),
+        _ => "{}",
+    };
+
+    // path_relationships is an array of relationship type strings
+    let rel_type = match &fields[3] {
+        Value::Array(arr) => arr
+            .first()
+            .and_then(|v| v.as_str())
+            .unwrap_or("UNKNOWN")
+            .to_string(),
+        Value::String(s) => s.clone(),
+        _ => "UNKNOWN".to_string(),
+    };
+
+    let start_id_str = fields[4].as_str().unwrap_or("0").to_string();
+    let end_id_str = fields[5].as_str().unwrap_or("0").to_string();
+    let hop_count = fields[6]
+        .as_i64()
+        .or_else(|| fields[6].as_str().and_then(|s| s.parse().ok()))
+        .unwrap_or(1);
+    let start_type = fields[7].as_str().unwrap_or("Unknown").to_string();
+    let end_type = fields[8].as_str().unwrap_or("Unknown").to_string();
+
+    log::debug!(
+        "VLP path: {}:{} -[{}]-> {}:{}",
+        start_type,
+        start_id_str,
+        rel_type,
+        end_type,
+        end_id_str
+    );
+
+    // Parse property JSON blobs
+    let start_props: HashMap<String, Value> =
+        serde_json::from_str(start_props_json).unwrap_or_default();
+    let end_props: HashMap<String, Value> =
+        serde_json::from_str(end_props_json).unwrap_or_default();
+    let rel_props: HashMap<String, Value> =
+        serde_json::from_str(rel_props_json).unwrap_or_default();
+
+    // Build start node
+    let start_element_id = generate_node_element_id(&start_type, &[&start_id_str]);
+    let start_id = generate_id_from_element_id(&start_element_id);
+    let start_node = Node::new(
+        start_id,
+        vec![start_type.clone()],
+        clean_property_keys(start_props),
+        start_element_id,
+    );
+
+    // Build end node
+    let end_element_id = generate_node_element_id(&end_type, &[&end_id_str]);
+    let end_id = generate_id_from_element_id(&end_element_id);
+    let end_node = Node::new(
+        end_id,
+        vec![end_type.clone()],
+        clean_property_keys(end_props),
+        end_element_id,
+    );
+
+    // Build relationship
+    let rel_element_id = generate_relationship_element_id(&rel_type, &start_id_str, &end_id_str);
+    let rel_id = generate_id_from_element_id(&rel_element_id);
+    let relationship = Relationship::new(
+        rel_id,
+        start_id,
+        end_id,
+        rel_type,
+        clean_property_keys(rel_props),
+        rel_element_id,
+        start_node.element_id.clone(),
+        end_node.element_id.clone(),
+    );
+
+    log::debug!(
+        "VLP Path: start={} (id={}), end={} (id={}), rel={}",
+        start_node.labels[0],
+        start_node.id,
+        end_node.labels[0],
+        end_node.id,
+        relationship.rel_type
+    );
+
+    // Currently only single-hop VLP paths are serialized to Bolt Path objects.
+    // Multi-hop paths (hop_count > 1) would need to construct full Path with
+    // all intermediate nodes — not yet implemented for browser expand queries
+    // which only use *1 (implicit single-hop) patterns.
+    if hop_count > 1 {
+        log::warn!(
+            "VLP path with hop_count={} truncated to single hop for Bolt serialization",
+            hop_count
+        );
+    }
 
     Ok(Path::single_hop(start_node, relationship, end_node))
 }
@@ -1604,8 +1840,8 @@ fn find_relationship_in_row_with_type(
 
     // Use the known relationship type from path metadata
     let rel_type = known_rel_types.first()?;
-    let from_label = from_labels.first()?;
-    let to_label = to_labels.first()?;
+    let _from_label = from_labels.first()?;
+    let _to_label = to_labels.first()?;
 
     log::info!(
         "✅ Found relationship '{}' in row: type={}, properties={}",
@@ -1913,11 +2149,7 @@ mod tests {
     #[test]
     #[ignore] // TODO: Fix test - needs proper row data mapping from relationship columns to node ID columns
     fn test_transform_to_relationship_basic() {
-        use crate::graph_catalog::{
-            config::Identifier,
-            expression_parser::PropertyValue,
-            graph_schema::{NodeIdSchema, NodeSchema, RelationshipSchema},
-        };
+        use crate::graph_catalog::graph_schema::RelationshipSchema;
         use std::collections::HashMap;
 
         // Create a minimal schema

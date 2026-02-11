@@ -60,7 +60,7 @@ pub fn execute(schema: &GraphSchema) -> Result<Vec<HashMap<String, serde_json::V
 mod tests {
     use super::*;
     use crate::graph_catalog::graph_schema::GraphSchema;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
 
     fn create_empty_schema() -> GraphSchema {
         GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new())

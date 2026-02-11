@@ -126,7 +126,7 @@ pub struct PlanCtx {
     /// Used to resolve property access on renamed CTE aliases:
     /// When accessing person.name, map to u.name, then to CTE column u_name
     cte_alias_sources: HashMap<String, (String, String)>,
-    /// **NEW (Feb 2026 - Track C)**: WHERE clause property requirements
+    /// WHERE clause property requirements (for pattern combination pruning)
     /// Extracted from WHERE clause before pattern traversal for property-based optimization
     /// Map: alias (e.g., "n", "r") → set of required property names (e.g., {"bytes_sent", "timestamp"})
     /// Enables pruning of UNION branches that don't have required properties
@@ -138,6 +138,70 @@ pub struct PlanCtx {
     /// Enables pruning of UNION branches to only include relevant relationship types
     /// Example: `WHERE id(a) IN [<user-ids>]` → {"a": {"User"}}
     where_label_constraints: HashMap<String, HashSet<String>>,
+
+    /// Status messages collected during planning (PatternResolver diagnostics)
+    /// Vector of (level, message) tuples for warnings, info, and errors during analysis
+    /// Used by PatternResolver to report combination limits, missing types, etc.
+    /// Example: (Warning, "Type combinations limited to 38")
+    status_messages: Vec<(StatusLevel, String)>,
+
+    /// Node type combinations for simple untyped node queries
+    /// Map: node_alias → Vec<label>
+    /// Example: {"n": ["User", "Post", "ZeekLog"]}
+    /// Used when a simple node query like `MATCH (n) RETURN n` can match multiple node types
+    /// CTE generation will create UNION of all node tables
+    node_combinations: HashMap<String, Vec<String>>,
+
+    /// Pattern type combinations for untyped relationship patterns
+    /// Map: (from_alias, to_alias) → Vec<TypeCombination>
+    /// Example: {("a", "b"): [(User, FOLLOWS, User), (User, AUTHORED, Post), ...]}
+    /// Used when pattern inference finds ambiguous nodes that could match multiple types
+    /// CTE generation will create UNION of all valid pattern combinations
+    pattern_combinations: HashMap<(String, String), Vec<TypeCombination>>,
+
+    /// Connected pattern group combinations (optimization - WIP)
+    /// Map: group_id → Vec<GroupCombination>
+    /// Example: {"a_b_c": [GroupCombination{...}, ...]}
+    /// Used when multiple patterns share variables (e.g., `(a)-[r1]->(b)-[r2]->(c)` shares `b`)
+    /// Each GroupCombination assigns types to all patterns in the group consistently
+    /// Status: Under development - not yet used in CTE generation
+    group_combinations: HashMap<String, Vec<GroupCombination>>,
+}
+
+/// Status message severity level
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusLevel {
+    /// Informational message (e.g., "No valid types found")
+    Info,
+    /// Warning message (e.g., "Combination limit reached")
+    Warning,
+    /// Error message (should not prevent query execution, just notify)
+    Error,
+}
+
+/// Type combination for multi-type pattern resolution
+/// Represents one valid (from_label, rel_type, to_label) tuple from schema
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TypeCombination {
+    /// From node label (e.g., "User")
+    pub from_label: String,
+    /// Relationship type (e.g., "FOLLOWS")
+    pub rel_type: String,
+    /// To node label (e.g., "User")
+    pub to_label: String,
+}
+
+/// Group combination for connected patterns (optimization - WIP)
+/// Represents one valid type assignment across multiple connected patterns.
+/// Used when patterns share variables (e.g., `(a)-[r1]->(b)-[r2]->(c)` shares `b`).
+/// Status: Data structure complete, optimization logic under development
+#[derive(Debug, Clone)]
+pub struct GroupCombination {
+    /// Type assignment for each pattern in the connected group
+    /// Key: (left_alias, right_alias) identifies the pattern (e.g., ("a", "b"))
+    /// Value: Type combination for that pattern
+    /// Example: {("a","b"): (User, FOLLOWS, User), ("b","c"): (User, WORKS_AT, Company)}
+    pub pattern_types: HashMap<(String, String), TypeCombination>,
 }
 
 impl PlanCtx {
@@ -201,23 +265,21 @@ impl PlanCtx {
                 self.variables
                     .define_node(alias.clone(), labels, VariableSource::Match);
             }
-        } else {
-            if let Some(typed_var) = self.variables.lookup(&alias) {
-                let variant_name = if typed_var.is_node() {
-                    "Node"
-                } else if typed_var.is_relationship() {
-                    "Relationship"
-                } else if typed_var.as_path().is_some() {
-                    "Path"
-                } else {
-                    "Unknown"
-                };
-                log::info!(
-                    "⚠️  Skipping insert_table_ctx for '{}' - already registered as {} variant",
-                    alias,
-                    variant_name
-                );
-            }
+        } else if let Some(typed_var) = self.variables.lookup(&alias) {
+            let variant_name = if typed_var.is_node() {
+                "Node"
+            } else if typed_var.is_relationship() {
+                "Relationship"
+            } else if typed_var.as_path().is_some() {
+                "Path"
+            } else {
+                "Unknown"
+            };
+            log::info!(
+                "⚠️  Skipping insert_table_ctx for '{}' - already registered as {} variant",
+                alias,
+                variant_name
+            );
         }
 
         self.alias_table_ctx_map.insert(alias.clone(), table_ctx);
@@ -444,13 +506,17 @@ impl PlanCtx {
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
             property_requirements: None,
-            max_inferred_types: 5,
+            max_inferred_types: 20, // Increased for Neo4j Browser node expansion
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
             where_label_constraints: HashMap::new(),
+            status_messages: Vec::new(),
+            node_combinations: HashMap::new(),
+            group_combinations: HashMap::new(),
+            pattern_combinations: HashMap::new(),
         }
     }
 
@@ -471,13 +537,17 @@ impl PlanCtx {
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
             property_requirements: None,
-            max_inferred_types: 5,
+            max_inferred_types: 20, // Increased for Neo4j Browser node expansion
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
             where_label_constraints: HashMap::new(),
+            status_messages: Vec::new(),
+            node_combinations: HashMap::new(),
+            group_combinations: HashMap::new(),
+            pattern_combinations: HashMap::new(),
         }
     }
 
@@ -519,6 +589,10 @@ impl PlanCtx {
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
             where_label_constraints: HashMap::new(),
+            status_messages: Vec::new(),
+            node_combinations: HashMap::new(),
+            group_combinations: HashMap::new(),
+            pattern_combinations: HashMap::new(),
         }
     }
 
@@ -556,6 +630,10 @@ impl PlanCtx {
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
             where_label_constraints: HashMap::new(),
+            status_messages: Vec::new(),
+            node_combinations: HashMap::new(),
+            group_combinations: HashMap::new(),
+            pattern_combinations: HashMap::new(),
         }
     }
 
@@ -586,8 +664,59 @@ impl PlanCtx {
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
             where_label_constraints: HashMap::new(),
+            status_messages: Vec::new(),
+            node_combinations: HashMap::new(),
+            group_combinations: HashMap::new(),
+            pattern_combinations: HashMap::new(),
         }
     }
+
+    // ========================================================================
+    // Status Message Methods (for PatternResolver and other analyzer passes)
+    // ========================================================================
+
+    /// Add an informational status message
+    pub fn add_info(&mut self, message: impl Into<String>) {
+        self.status_messages
+            .push((StatusLevel::Info, message.into()));
+    }
+
+    /// Add a warning status message
+    pub fn add_warning(&mut self, message: impl Into<String>) {
+        self.status_messages
+            .push((StatusLevel::Warning, message.into()));
+    }
+
+    /// Add an error status message
+    pub fn add_error(&mut self, message: impl Into<String>) {
+        self.status_messages
+            .push((StatusLevel::Error, message.into()));
+    }
+
+    /// Get all status messages
+    pub fn get_messages(&self) -> &[(StatusLevel, String)] {
+        &self.status_messages
+    }
+
+    /// Clear all status messages
+    pub fn clear_messages(&mut self) {
+        self.status_messages.clear();
+    }
+
+    // ========================================================================
+    // CTE Management
+    // ========================================================================
+
+    /// Generate next unique CTE ID
+    pub fn next_cte_id(&mut self) -> usize {
+        let id = self.cte_counter;
+        self.cte_counter += 1;
+        id
+    }
+
+    // ========================================================================
+    // Existing Methods Continue Below
+    // ========================================================================
 
     /// Get the tenant ID for this query context
     pub fn tenant_id(&self) -> Option<&String> {
@@ -623,6 +752,9 @@ impl PlanCtx {
         for (alias, info) in other.denormalized_node_edges {
             self.denormalized_node_edges.entry(alias).or_insert(info);
         }
+
+        // Merge status messages from other context
+        self.status_messages.extend(other.status_messages);
     }
 
     /// Register columns exported by a CTE
@@ -774,6 +906,17 @@ impl PlanCtx {
                     self.variables
                         .define_path(alias.clone(), None, None, None, None, false);
                     // Note: Path info is limited when passing through CTE
+                } else if labels.as_ref().is_none_or(|l| l.is_empty())
+                    && table_ctx.is_explicit_alias()
+                {
+                    // Computed alias with no labels (e.g., `WITH count(*) AS cnt`)
+                    // → scalar, not a node
+                    self.variables.define_scalar(
+                        alias.clone(),
+                        VariableSource::Cte {
+                            cte_name: cte_name.to_string(),
+                        },
+                    );
                 } else {
                     self.variables.define_node(
                         alias.clone(),
@@ -1310,5 +1453,220 @@ impl PlanCtx {
     /// Used after WITH clause processing to make exported variables available.
     pub fn import_variables_from_cte(&mut self, exported: &VariableRegistry) {
         self.variables.merge_overwrite(exported);
+    }
+
+    // ========================================================================
+    // Multi-Type Support Methods (Feb 2026)
+    // ========================================================================
+
+    /// Store node type combinations for multi-type simple nodes
+    ///
+    /// Used when a simple node query like `MATCH (n) RETURN n` can match multiple types.
+    /// CTE generation will create UNION of all node tables.
+    ///
+    /// # Example
+    /// ```ignore
+    /// plan_ctx.store_node_combinations("n", vec!["User", "Post", "ZeekLog"]);
+    /// ```
+    pub fn store_node_combinations(&mut self, alias: &str, labels: Vec<String>) {
+        log::info!("🎯 Storing node combinations for '{}': {:?}", alias, labels);
+        self.node_combinations.insert(alias.to_string(), labels);
+    }
+
+    /// Get node type combinations for an alias
+    pub fn get_node_combinations(&self, alias: &str) -> Option<&Vec<String>> {
+        self.node_combinations.get(alias)
+    }
+
+    /// Store pattern type combinations for multi-type patterns
+    ///
+    /// Used when pattern inference finds ambiguous nodes that could match multiple types.
+    /// CTE generation will create UNION of all valid pattern combinations.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let combinations = vec![
+    ///     TypeCombination {
+    ///         from_label: "User".to_string(),
+    ///         rel_type: "FOLLOWS".to_string(),
+    ///         to_label: "User".to_string(),
+    ///     },
+    ///     TypeCombination {
+    ///         from_label: "User".to_string(),
+    ///         rel_type: "AUTHORED".to_string(),
+    ///         to_label: "Post".to_string(),
+    ///     },
+    /// ];
+    /// plan_ctx.store_pattern_combinations("a", "b", combinations);
+    /// ```
+    pub fn store_pattern_combinations(
+        &mut self,
+        from_alias: &str,
+        to_alias: &str,
+        combinations: Vec<TypeCombination>,
+    ) {
+        log::info!(
+            "🎯 Storing {} pattern combinations for '{}' -> '{}'",
+            combinations.len(),
+            from_alias,
+            to_alias
+        );
+        self.pattern_combinations
+            .insert((from_alias.to_string(), to_alias.to_string()), combinations);
+    }
+
+    /// Get pattern type combinations for a pair of aliases
+    pub fn get_pattern_combinations(
+        &self,
+        from_alias: &str,
+        to_alias: &str,
+    ) -> Option<&Vec<TypeCombination>> {
+        self.pattern_combinations
+            .get(&(from_alias.to_string(), to_alias.to_string()))
+    }
+
+    /// Generate pattern combinations from schema matches
+    ///
+    /// This is a helper method that generates cartesian product of node types and relationship types,
+    /// validates them against the schema, and stores the results.
+    ///
+    /// # Arguments
+    /// * `from_alias` - From node alias
+    /// * `to_alias` - To node alias
+    /// * `from_candidates` - Candidate labels for from node
+    /// * `rel_candidates` - Candidate relationship types
+    /// * `to_candidates` - Candidate labels for to node
+    /// * `schema` - Graph schema for validation
+    /// * `max_combinations` - Maximum number of combinations (default 38)
+    ///
+    /// # Returns
+    /// Number of valid combinations generated
+    pub fn generate_and_store_pattern_combinations(
+        &mut self,
+        from_alias: &str,
+        to_alias: &str,
+        from_candidates: Vec<String>,
+        rel_candidates: Vec<String>,
+        to_candidates: Vec<String>,
+        schema: &crate::graph_catalog::graph_schema::GraphSchema,
+        max_combinations: usize,
+    ) -> usize {
+        let mut combinations = Vec::new();
+        let mut count = 0;
+
+        // Generate cartesian product and validate against schema
+        for from_label in &from_candidates {
+            for rel_type in &rel_candidates {
+                for to_label in &to_candidates {
+                    // Validate this combination against schema
+                    if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
+                        let from_matches = from_label == &rel_schema.from_node;
+                        let to_matches = to_label == &rel_schema.to_node;
+
+                        if from_matches && to_matches {
+                            combinations.push(TypeCombination {
+                                from_label: from_label.clone(),
+                                rel_type: rel_type.clone(),
+                                to_label: to_label.clone(),
+                            });
+                            count += 1;
+
+                            if count >= max_combinations {
+                                log::warn!(
+                                    "⚠️ Hit {} combination limit for '{}' -> '{}'",
+                                    max_combinations,
+                                    from_alias,
+                                    to_alias
+                                );
+                                self.store_pattern_combinations(from_alias, to_alias, combinations);
+                                return count;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !combinations.is_empty() {
+            self.store_pattern_combinations(from_alias, to_alias, combinations);
+        }
+
+        count
+    }
+
+    // ========================================================================
+    // Group Combination Methods (Feb 2026 - Cross-Pattern Optimization)
+    // ========================================================================
+
+    /// Store group combinations for connected patterns
+    ///
+    /// Used when multiple patterns share variables (e.g., `(a)-[r1]->(b)-[r2]->(c)` shares `b`).
+    /// Group combinations ensure consistent type assignment across all patterns.
+    ///
+    /// # Arguments
+    /// * `group_id` - Unique identifier for the connected group (e.g., "a_b_c")
+    /// * `combos` - Valid type combinations for the entire group
+    ///
+    /// # Example
+    /// ```ignore
+    /// let group_combos = vec![
+    ///     GroupCombination {
+    ///         pattern_types: [
+    ///             (("a","b"), TypeCombination { from: "User", rel: "FOLLOWS", to: "User" }),
+    ///             (("b","c"), TypeCombination { from: "User", rel: "WORKS_AT", to: "Company" }),
+    ///         ].into(),
+    ///     },
+    /// ];
+    /// plan_ctx.store_group_combinations("a_b_c", group_combos);
+    /// ```
+    pub fn store_group_combinations(&mut self, group_id: String, combos: Vec<GroupCombination>) {
+        log::info!(
+            "🎯 Storing {} group combinations for connected group '{}'",
+            combos.len(),
+            group_id
+        );
+        self.group_combinations.insert(group_id, combos);
+    }
+
+    /// Get group combinations for a connected group
+    pub fn get_group_combinations(&self, group_id: &str) -> Option<&Vec<GroupCombination>> {
+        self.group_combinations.get(group_id)
+    }
+
+    /// Extract pattern-specific combinations from group combinations
+    ///
+    /// This is the key interface for downstream code: given a specific pattern
+    /// (identified by from/to aliases), extract just its combinations from the group.
+    ///
+    /// # Arguments
+    /// * `group_id` - The connected group identifier
+    /// * `left_alias` - From node alias (e.g., "a")
+    /// * `right_alias` - To node alias (e.g., "b")
+    ///
+    /// # Returns
+    /// Vector of type combinations for this specific pattern, or None if group not found
+    ///
+    /// # Example
+    /// ```ignore
+    /// // After storing group combos for "a_b_c"
+    /// let r1_combos = plan_ctx.get_pattern_combinations_from_group("a_b_c", "a", "b");
+    /// // Returns: [(User, FOLLOWS, User), (User, AUTHORED, Post), ...]
+    /// ```
+    pub fn get_pattern_combinations_from_group(
+        &self,
+        group_id: &str,
+        left_alias: &str,
+        right_alias: &str,
+    ) -> Option<Vec<TypeCombination>> {
+        self.group_combinations.get(group_id).map(|group_combos| {
+            group_combos
+                .iter()
+                .filter_map(|gc| {
+                    gc.pattern_types
+                        .get(&(left_alias.to_string(), right_alias.to_string()))
+                        .cloned()
+                })
+                .collect()
+        })
     }
 }

@@ -66,6 +66,7 @@ impl TrivialWithElimination {
                                 input: with.input.clone(),
                                 items: proj.items.clone(),
                                 distinct: proj.distinct,
+                                pattern_comprehensions: proj.pattern_comprehensions.clone(),
                             },
                         )));
                     }
@@ -76,6 +77,7 @@ impl TrivialWithElimination {
                         input: optimized_input,
                         items: proj.items.clone(),
                         distinct: proj.distinct,
+                        pattern_comprehensions: proj.pattern_comprehensions.clone(),
                     },
                 )))
             }
@@ -101,6 +103,7 @@ impl TrivialWithElimination {
                             where_clause: with.where_clause.clone(),
                             exported_aliases: with.exported_aliases.clone(),
                             cte_references: with.cte_references.clone(),
+                            pattern_comprehensions: with.pattern_comprehensions.clone(),
                         })));
                     }
                 }
@@ -116,6 +119,7 @@ impl TrivialWithElimination {
                     where_clause: with.where_clause.clone(),
                     exported_aliases: with.exported_aliases.clone(),
                     cte_references: with.cte_references.clone(),
+                    pattern_comprehensions: with.pattern_comprehensions.clone(),
                 })))
             }
 
@@ -235,6 +239,7 @@ mod tests {
             where_clause: None,
             exported_aliases: vec!["a".to_string()],
             cte_references: std::collections::HashMap::new(),
+            pattern_comprehensions: vec![],
         };
 
         assert!(TrivialWithElimination::is_trivial_with(&with));
@@ -253,6 +258,7 @@ mod tests {
             where_clause: None,
             exported_aliases: vec![],
             cte_references: std::collections::HashMap::new(),
+            pattern_comprehensions: vec![],
         };
 
         assert!(!TrivialWithElimination::is_trivial_with(&with));
@@ -281,6 +287,7 @@ mod tests {
             where_clause: None,
             exported_aliases: vec!["cnt".to_string()],
             cte_references: std::collections::HashMap::new(),
+            pattern_comprehensions: vec![],
         };
 
         assert!(!TrivialWithElimination::is_trivial_with(&with));

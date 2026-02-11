@@ -85,6 +85,7 @@ impl CleanupViewScanFilters {
                             input: new_input,
                             items: proj.items.clone(),
                             distinct: proj.distinct,
+                            pattern_comprehensions: proj.pattern_comprehensions.clone(),
                         }),
                     )),
                     Transformed::No(_) => Transformed::No(logical_plan),
@@ -149,6 +150,8 @@ impl CleanupViewScanFilters {
                                 is_optional: graph_rel.is_optional,
                                 anchor_connection: graph_rel.anchor_connection.clone(),
                                 cte_references: graph_rel.cte_references.clone(),
+                                pattern_combinations: graph_rel.pattern_combinations.clone(),
+                                was_undirected: graph_rel.was_undirected,
                             },
                         )))
                     }
@@ -170,6 +173,7 @@ impl CleanupViewScanFilters {
                             label: graph_node.label.clone(),
                             is_denormalized: graph_node.is_denormalized,
                             projected_columns: None,
+                            node_types: None,
                         }),
                     )),
                     Transformed::No(_) => Transformed::No(logical_plan),
@@ -310,6 +314,7 @@ impl CleanupViewScanFilters {
                             where_clause: with_clause.where_clause.clone(),
                             exported_aliases: with_clause.exported_aliases.clone(),
                             cte_references: with_clause.cte_references.clone(),
+                            pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
                         };
                         Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
                     }

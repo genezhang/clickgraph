@@ -9,7 +9,7 @@ use crate::{
             plan_builder::LogicalPlanResult,
             {
                 CartesianProduct, GraphNode, GraphRel, LogicalPlan, ShortestPathMode, Union,
-                UnionType, VariableLengthSpec,
+                VariableLengthSpec,
             },
         },
         plan_ctx::PlanCtx,
@@ -24,8 +24,7 @@ use super::helpers::{
     compute_connection_aliases, compute_rel_node_labels, compute_variable_length,
     convert_properties, convert_properties_to_operator_application, determine_optional_anchor,
     generate_denormalization_aware_scan, generate_scan, is_denormalized_scan,
-    is_label_denormalized, register_node_in_context, register_path_variable,
-    register_relationship_in_context,
+    is_label_denormalized, register_node_in_context, register_relationship_in_context,
 };
 use super::view_scan::generate_relationship_center;
 use crate::query_planner::analyzer::match_type_inference::{
@@ -320,39 +319,98 @@ fn traverse_connected_pattern_with_mode<'a>(
             return Ok(Arc::new(LogicalPlan::Empty));
         }
 
-        // === FULLY UNTYPED MULTI-TYPE UNION EXPANSION ===
-        // For patterns like ()-->() where BOTH nodes are untyped AND we have multiple relationship types,
-        // generate a UNION where each branch processes as a typed pattern through the normal flow.
-        // This ensures each branch gets the exact same treatment as MATCH (a:Type1)-[:REL]->(b:Type2).
+        // === FULLY UNTYPED MULTI-TYPE PATTERN - DEFERRED UNION ===
+        // **NEW (Feb 2026 - PatternResolver 2.0)**: Instead of creating Union immediately,
+        // store type combinations in GraphRel and defer UNION to CTE generation.
+        //
+        // This enables:
+        // 1. Cross-pattern optimization (detect (a)-[r1]->(b)-[r2]->(c) connections)
+        // 2. No LogicalPlan Union = no PlanCtx isolation issues
+        // 3. CTE-level UNION like existing [:TYPE1|TYPE2] pattern (proven!)
+        //
+        // For patterns like ()-[r]->() where BOTH nodes are untyped AND we have multiple relationship types,
+        // store all valid (from_label, rel_type, to_label) combinations in GraphRel.pattern_combinations.
+        // CTE generation will create UNION of full pattern JOINs at SQL level.
+        log::debug!(
+            "🔍 Checking multi-type pattern: start_label={:?}, end_label={:?}, rel_labels={:?}",
+            start_node_label,
+            end_node_label,
+            rel_labels
+        );
         if start_node_label.is_none() && end_node_label.is_none() {
             if let Some(ref types) = rel_labels {
+                log::debug!(
+                    "  ✓ Both nodes untyped, rel_labels has {} types",
+                    types.len()
+                );
                 if types.len() > 1 {
                     log::info!(
-                        "🔀 Fully untyped multi-type pattern: {} types, generating UNION",
+                        "🔀 PatternResolver 2.0: Fully untyped multi-type pattern with {} types",
                         types.len()
                     );
+                    log::info!(
+                        "  Storing combinations in GraphRel, deferring UNION to CTE generation"
+                    );
+                    log::info!("  CTE will include node properties for path query support");
 
                     // Extract node types for each relationship from schema
+                    // Filter to composite keys ONLY to avoid duplicates (schema has both forms)
                     let mut relationship_node_types: Vec<(String, String, String)> = {
                         let graph_schema = plan_ctx.schema();
-                        types
+
+                        // First: get unique base types from rel_labels (could contain both LIKED and LIKED::User::Post)
+                        let mut seen_base_types = std::collections::HashSet::new();
+                        let unique_rel_types: Vec<&String> = types
+                            .iter()
+                            .filter(|rel_type| {
+                                let base_type = rel_type.split("::").next().unwrap_or(rel_type);
+                                seen_base_types.insert(base_type.to_string())
+                            })
+                            .collect();
+
+                        log::debug!(
+                            "  Filtered {} rel_labels to {} unique base types",
+                            types.len(),
+                            unique_rel_types.len()
+                        );
+
+                        // Then: look up each unique type (prefer composite key if exists)
+                        unique_rel_types
                             .iter()
                             .filter_map(|rel_type| {
-                                let rel_schema =
-                                    graph_schema.get_relationships_schema_opt(rel_type)?;
-                                Some((
-                                    rel_type.clone(),
-                                    rel_schema.from_node.clone(),
-                                    rel_schema.to_node.clone(),
-                                ))
+                                // Try composite key first
+                                let rel_schema = if rel_type.contains("::") {
+                                    graph_schema.get_relationships_schema_opt(rel_type)
+                                } else {
+                                    // Simple key: try to find composite key by looking up all relationships
+                                    let base_type = rel_type.as_str();
+                                    graph_schema
+                                        .get_relationships_schemas()
+                                        .iter()
+                                        .find(|(key, _schema)| {
+                                            key.starts_with(base_type) && key.contains("::")
+                                        })
+                                        .map(|(_, schema)| schema)
+                                        .or_else(|| {
+                                            graph_schema.get_relationships_schema_opt(rel_type)
+                                        })
+                                };
+
+                                rel_schema.map(|schema| {
+                                    (
+                                        rel_type.split("::").next().unwrap_or(rel_type).to_string(), // Use base type
+                                        schema.from_node.clone(),
+                                        schema.to_node.clone(),
+                                    )
+                                })
                             })
                             .collect()
                     };
 
-                    // === UNION PRUNING OPTIMIZATION ===
-                    // If WHERE clause contains id() constraints, use them to prune branches
+                    // === COMBINATION PRUNING ===
+                    // If WHERE clause contains id() constraints, prune combinations early
                     log::info!(
-                        "🔍 Checking UNION pruning for start='{}', end='{}'",
+                        "🔍 Checking combination pruning for start='{}', end='{}'",
                         start_node_alias,
                         end_node_alias
                     );
@@ -381,8 +439,12 @@ fn traverse_connected_pattern_with_mode<'a>(
 
                             if !keep {
                                 log::info!(
-                                    "  ✂️  Pruning branch: {}->{}->{}  (start_match={}, end_match={})",
-                                    from_node, rel_type, to_node, start_matches, end_matches
+                                    "  ✂️  Pruning: {}->{}->{}  (start_match={}, end_match={})",
+                                    from_node,
+                                    rel_type,
+                                    to_node,
+                                    start_matches,
+                                    end_matches
                                 );
                             }
 
@@ -390,7 +452,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                         });
 
                         log::info!(
-                            "🎯 UNION pruning: {} → {} branches (removed {})",
+                            "🎯 Combination pruning: {} → {} combinations (removed {})",
                             original_count,
                             relationship_node_types.len(),
                             original_count - relationship_node_types.len()
@@ -404,257 +466,151 @@ fn traverse_connected_pattern_with_mode<'a>(
                         ));
                     }
 
-                    let mut union_branches = Vec::new();
+                    // === CREATE TYPE COMBINATIONS ===
+                    // Convert to TypeCombination format for storage
+                    use crate::query_planner::plan_ctx::TypeCombination;
+                    let pattern_combinations: Vec<TypeCombination> = relationship_node_types
+                        .iter()
+                        .map(|(rel_type, from_node, to_node)| TypeCombination {
+                            from_label: from_node.clone(),
+                            rel_type: rel_type.clone(),
+                            to_label: to_node.clone(),
+                        })
+                        .collect();
 
-                    // For each relationship type, process as a typed pattern through normal flow
-                    for (branch_idx, (rel_type, from_node_type, to_node_type)) in
-                        relationship_node_types.iter().enumerate()
-                    {
-                        log::info!(
-                            "  UNION branch: (:{from_node})-[:{rel_type}]->(:{to_node})",
-                            from_node = from_node_type,
-                            rel_type = rel_type,
-                            to_node = to_node_type
-                        );
+                    log::info!(
+                        "📦 Stored {} type combinations in GraphRel.pattern_combinations",
+                        pattern_combinations.len()
+                    );
 
-                        // Generate UNIQUE aliases for this branch to avoid conflicts in plan_ctx
-                        // Each branch has its own node aliases, but shares the path variable name
-                        let branch_start_alias = format!("{}_{}", start_node_alias, branch_idx);
-                        let branch_end_alias = format!("{}_{}", end_node_alias, branch_idx);
+                    // === CREATE SINGLE GRAPHREL WITH COMBINATIONS ===
+                    // Use FIRST combination for type information (backward compatibility)
+                    // CTE generation will iterate all combinations and create UNION at SQL level
+                    let first_combo = pattern_combinations.first().ok_or_else(|| {
+                        LogicalPlanError::QueryPlanningError(
+                            "No combinations available after pruning".to_string(),
+                        )
+                    })?;
 
-                        // Temporarily override labels to process through normal flow
-                        let branch_start_label = Some(from_node_type.clone());
-                        let branch_end_label = Some(to_node_type.clone());
-                        let branch_rel_labels = Some(vec![rel_type.clone()]);
+                    let start_label_for_scan = Some(first_combo.from_label.clone());
+                    let end_label_for_scan = Some(first_combo.to_label.clone());
+                    let rel_labels_for_scan = Some(vec![first_combo.rel_type.clone()]);
 
-                        log::debug!(
-                            "🔍 UNION branch {}: start='{}', end='{}', rel='{}', labels=({:?}, {:?})",
-                            branch_idx,
-                            &branch_start_alias,
-                            &branch_end_alias,
-                            &rel_alias,
-                            &branch_start_label,
-                            &branch_end_label
-                        );
-
-                        // Process this typed pattern through the STANDARD flow below
-                        // by duplicating the "disconnected pattern" logic for each branch
-
-                        // Generate scans for typed nodes
-                        let (start_scan, start_is_denorm) =
-                            if is_label_denormalized(&branch_start_label, plan_ctx) {
-                                (Arc::new(LogicalPlan::Empty), true)
-                            } else {
-                                let scan = generate_scan(
-                                    branch_start_alias.clone(),
-                                    branch_start_label.clone(),
-                                    plan_ctx,
-                                )?;
-                                let is_d = is_denormalized_scan(&scan);
-                                (scan, is_d)
-                            };
-
-                        let start_graph_node = GraphNode {
-                            input: start_scan,
-                            alias: branch_start_alias.clone(),
-                            label: branch_start_label.clone(),
-                            is_denormalized: start_is_denorm,
-                            projected_columns: None,
-                        };
-
-                        let (end_scan, end_is_denorm) = generate_denormalization_aware_scan(
-                            &branch_end_alias,
-                            &branch_end_label,
-                            plan_ctx,
-                        )?;
-
-                        let end_graph_node = GraphNode {
-                            input: end_scan,
-                            alias: branch_end_alias.clone(),
-                            label: branch_end_label.clone(),
-                            is_denormalized: end_is_denorm,
-                            projected_columns: None,
-                        };
-
-                        let (left_conn, right_conn) = compute_connection_aliases(
-                            &rel.direction,
-                            &branch_start_alias,
-                            &branch_end_alias,
-                        );
-
-                        let (left_node_label_for_rel, right_node_label_for_rel) =
-                            compute_rel_node_labels(
-                                &rel.direction,
-                                &branch_start_label,
-                                &branch_end_label,
-                            );
-
-                        let (left_node, right_node) = match rel.direction {
-                            ast::Direction::Outgoing => (
-                                Arc::new(LogicalPlan::GraphNode(start_graph_node)),
-                                Arc::new(LogicalPlan::GraphNode(end_graph_node)),
-                            ),
-                            ast::Direction::Incoming => (
-                                Arc::new(LogicalPlan::GraphNode(end_graph_node)),
-                                Arc::new(LogicalPlan::GraphNode(start_graph_node)),
-                            ),
-                            ast::Direction::Either => (
-                                Arc::new(LogicalPlan::GraphNode(start_graph_node)),
-                                Arc::new(LogicalPlan::GraphNode(end_graph_node)),
-                            ),
-                        };
-
-                        log::debug!(
-                            "🔍 Creating GraphRel for branch {}: rel_alias='{}', rel_type='{}', path_variable={:?}",
-                            union_branches.len(),
-                            &rel_alias,
-                            rel_type,
-                            path_variable
-                        );
-
-                        let graph_rel_node = GraphRel {
-                            left: left_node,
-                            center: generate_relationship_center(
-                                &rel_alias,
-                                &branch_rel_labels,
-                                &left_conn,
-                                &right_conn,
-                                &left_node_label_for_rel,
-                                &right_node_label_for_rel,
+                    // Generate scans for nodes using first combination
+                    let (start_scan, start_is_denorm) =
+                        if is_label_denormalized(&start_label_for_scan, plan_ctx) {
+                            (Arc::new(LogicalPlan::Empty), true)
+                        } else {
+                            let scan = generate_scan(
+                                start_node_alias.clone(),
+                                start_label_for_scan.clone(),
                                 plan_ctx,
-                            )?,
-                            right: right_node,
-                            alias: rel_alias.clone(),
-                            direction: rel.direction.clone().into(),
-                            left_connection: left_conn.clone(),
-                            right_connection: right_conn.clone(),
-                            is_rel_anchor: false,
-                            variable_length: None, // Single-hop pattern
-                            shortest_path_mode: shortest_path_mode.clone(),
-                            path_variable: path_variable.map(|s| s.to_string()),
-                            where_predicate: None,
-                            labels: branch_rel_labels.clone(),
-                            is_optional: if is_optional { Some(true) } else { None },
-                            anchor_connection: None,
-                            cte_references: std::collections::HashMap::new(),
+                            )?;
+                            (scan, false)
                         };
 
-                        log::warn!(
-                            "🔀 Created GraphRel for UNION branch {}: alias='{}', path_variable={:?}",
-                            union_branches.len(),
-                            &graph_rel_node.alias,
-                            &graph_rel_node.path_variable
-                        );
+                    let (end_scan, end_is_denorm) =
+                        if is_label_denormalized(&end_label_for_scan, plan_ctx) {
+                            (Arc::new(LogicalPlan::Empty), true)
+                        } else {
+                            let scan = generate_scan(
+                                end_node_alias.clone(),
+                                end_label_for_scan.clone(),
+                                plan_ctx,
+                            )?;
+                            (scan, false)
+                        };
 
-                        // Register branch-specific node aliases in plan_ctx
-                        // This is critical for property expansion to work!
-                        register_node_in_context(
-                            plan_ctx,
-                            &left_conn,
-                            &Some(from_node_type.clone()),
-                            vec![], // Properties not used for UNION branches
-                            true,   // has_name
-                        );
-                        register_node_in_context(
-                            plan_ctx,
-                            &right_conn,
-                            &Some(to_node_type.clone()),
-                            vec![], // Properties not used for UNION branches
-                            true,   // has_name
-                        );
+                    let start_graph_node = GraphNode {
+                        input: start_scan,
+                        alias: start_node_alias.clone(),
+                        label: start_label_for_scan.clone(),
+                        is_denormalized: start_is_denorm,
+                        projected_columns: None,
+                        node_types: None, // Multi-type info is in pattern_combinations
+                    };
 
-                        log::info!(
-                            "📝 Registered branch {} node aliases: left='{}' ({}), right='{}' ({})",
-                            union_branches.len(),
-                            left_conn,
-                            from_node_type,
-                            right_conn,
-                            to_node_type
-                        );
+                    let end_graph_node = GraphNode {
+                        input: end_scan,
+                        alias: end_node_alias.clone(),
+                        label: end_label_for_scan.clone(),
+                        is_denormalized: end_is_denorm,
+                        projected_columns: None,
+                        node_types: None,
+                    };
 
-                        // SIMPLE: Don't wrap in Projection - let GraphRel handle everything
-                        // GraphRel already emits all node/rel properties in its SELECT
-                        // We just need it to also emit the path tuple (done in select_builder.rs)
-                        union_branches.push(Arc::new(LogicalPlan::GraphRel(graph_rel_node)));
-                    }
+                    // Determine connection aliases based on direction
+                    let (left_conn, right_conn) = compute_connection_aliases(
+                        &rel.direction,
+                        &start_node_alias,
+                        &end_node_alias,
+                    );
 
-                    // Create Union of all branches
-                    let union_plan = LogicalPlan::Union(Union {
-                        inputs: union_branches.clone(), // Clone for registration
-                        union_type: UnionType::All,
-                    });
+                    // Generate relationship center
+                    let from_label_opt = Some(first_combo.from_label.clone());
+                    let to_label_opt = Some(first_combo.to_label.clone());
+                    let rel_center = generate_relationship_center(
+                        &rel_alias,
+                        &rel_labels_for_scan,
+                        &left_conn,
+                        &right_conn,
+                        &from_label_opt,
+                        &to_label_opt,
+                        plan_ctx,
+                    )?;
 
-                    // Register the ORIGINAL node aliases (for path variable compatibility)
-                    // These point to the first branch's nodes
+                    // Create GraphRel with pattern_combinations
+                    let graph_rel_node = GraphRel {
+                        left: Arc::new(LogicalPlan::GraphNode(start_graph_node)),
+                        center: rel_center,
+                        right: Arc::new(LogicalPlan::GraphNode(end_graph_node)),
+                        alias: rel_alias.clone(),
+                        direction: rel.direction.clone().into(),
+                        left_connection: left_conn.clone(),
+                        right_connection: right_conn.clone(),
+                        is_rel_anchor: false,
+                        variable_length: None, // Single-hop pattern
+                        shortest_path_mode: shortest_path_mode.clone(),
+                        path_variable: path_variable.map(|s| s.to_string()),
+                        where_predicate: None,
+                        labels: rel_labels_for_scan,
+                        is_optional: if is_optional { Some(true) } else { None },
+                        anchor_connection: None,
+                        cte_references: std::collections::HashMap::new(),
+                        pattern_combinations: Some(pattern_combinations.clone()), // ⭐ KEY: Store combinations!
+                        was_undirected: None,
+                    };
+
+                    plan = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
+
+                    // === REGISTER ALIASES IN PLAN_CTX ===
+                    // Register nodes with multi-type information
                     register_node_in_context(
                         plan_ctx,
                         &start_node_alias,
-                        &None,  // No specific label for the generic alias
-                        vec![], // Properties not used for UNION branches
+                        &None, // No single label - will use combinations
+                        vec![],
                         start_node_ref.name.is_some(),
                     );
                     register_node_in_context(
                         plan_ctx,
                         &end_node_alias,
                         &None,
-                        vec![], // Properties not used for UNION branches
+                        vec![],
                         end_node_ref.name.is_some(),
                     );
 
-                    // Register EACH branch's node aliases with CORRECT typed labels
-                    for (branch_idx, branch) in union_branches.iter().enumerate() {
-                        if let LogicalPlan::GraphRel(ref graph_rel) = **branch {
-                            // Extract node labels from the branch
-                            if let LogicalPlan::GraphNode(ref left_node) = *graph_rel.left {
-                                register_node_in_context(
-                                    plan_ctx,
-                                    &left_node.alias,
-                                    &left_node.label,
-                                    vec![],
-                                    true,
-                                );
-                            }
-                            if let LogicalPlan::GraphNode(ref right_node) = *graph_rel.right {
-                                register_node_in_context(
-                                    plan_ctx,
-                                    &right_node.alias,
-                                    &right_node.label,
-                                    vec![],
-                                    true,
-                                );
-                            }
-
-                            // Register this branch's relationship alias
-                            log::debug!(
-                                "Registering UNION branch {}: rel_alias='{}', labels={:?}",
-                                branch_idx,
-                                graph_rel.alias,
-                                graph_rel.labels
-                            );
-                            plan_ctx.insert_table_ctx(
-                                graph_rel.alias.clone(),
-                                crate::query_planner::plan_ctx::TableCtx::build(
-                                    graph_rel.alias.clone(),
-                                    graph_rel.labels.clone(),
-                                    vec![],
-                                    true,
-                                    false,
-                                ),
-                            );
-                        }
-                    }
-
-                    // Register the ORIGINAL relationship alias (for path variable)
-                    let all_rel_types: Vec<String> = relationship_node_types
+                    // Register relationship with all types
+                    let all_rel_types: Vec<String> = pattern_combinations
                         .iter()
-                        .map(|(rel_type, _, _)| rel_type.clone())
+                        .map(|c| c.rel_type.clone())
                         .collect();
 
                     plan_ctx.insert_table_ctx(
                         rel_alias.clone(),
                         crate::query_planner::plan_ctx::TableCtx::build(
                             rel_alias.clone(),
-                            Some(all_rel_types.clone()),
+                            Some(all_rel_types),
                             vec![],
                             true,
                             false,
@@ -662,21 +618,21 @@ fn traverse_connected_pattern_with_mode<'a>(
                     );
 
                     // Register path variable if present
-                    // For UNION patterns: registered with original aliases, but expansion uses per-branch aliases from GraphRel
                     if let Some(pvar) = path_variable {
-                        log::warn!("📍 Registering UNION path variable '{}'", pvar);
+                        log::info!(
+                            "📍 Registering path variable '{}' for multi-type pattern",
+                            pvar
+                        );
 
-                        // Register path - aliases don't matter much since expansion will use GraphRel's actual aliases
                         plan_ctx.define_path(
                             pvar.to_string(),
                             Some(start_node_alias.clone()),
                             Some(end_node_alias.clone()),
                             Some(rel_alias.clone()),
-                            None, // No length bounds for single-hop
+                            None,
                             shortest_path_mode.is_some(),
                         );
 
-                        // Register TableCtx for ProjectionTagging
                         plan_ctx.insert_table_ctx(
                             pvar.to_string(),
                             crate::query_planner::plan_ctx::TableCtx::build(
@@ -687,18 +643,11 @@ fn traverse_connected_pattern_with_mode<'a>(
                                 true,
                             ),
                         );
-
-                        log::warn!(
-                            "✅ Registered UNION path variable '{}' (expansion will use per-branch GraphRel aliases)",
-                            pvar
-                        );
                     }
 
-                    plan = Arc::new(union_plan);
-
                     log::info!(
-                        "✅ Created UNION with {} branches for fully untyped pattern",
-                        relationship_node_types.len()
+                        "✅ PatternResolver 2.0: Created GraphRel with {} pattern combinations (UNION deferred to CTE)",
+                        pattern_combinations.len()
                     );
 
                     // Skip the normal processing below
@@ -823,6 +772,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                             label: end_node_label.clone().map(|s| s.to_string()),
                             is_denormalized: is_denorm,
                             projected_columns: None,
+                            node_types: None,
                         })),
                     )
                 }
@@ -841,6 +791,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                             label: end_node_label.clone().map(|s| s.to_string()),
                             is_denormalized: is_denorm,
                             projected_columns: None,
+                            node_types: None,
                         })),
                         plan.clone(),
                     )
@@ -861,6 +812,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                             label: end_node_label.clone().map(|s| s.to_string()),
                             is_denormalized: is_denorm,
                             projected_columns: None,
+                            node_types: None,
                         })),
                     )
                 }
@@ -923,6 +875,8 @@ fn traverse_connected_pattern_with_mode<'a>(
                 is_optional: if is_optional { Some(true) } else { None },
                 anchor_connection,
                 cte_references: std::collections::HashMap::new(),
+                pattern_combinations: None,
+                was_undirected: None,
             };
 
             // Register relationship and path variable in context
@@ -977,6 +931,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 label: start_node_label.clone().map(|s| s.to_string()),
                 is_denormalized: start_is_denorm,
                 projected_columns: None,
+                node_types: None,
             };
             register_node_in_context(
                 plan_ctx,
@@ -1033,6 +988,8 @@ fn traverse_connected_pattern_with_mode<'a>(
                     None
                 },
                 cte_references: std::collections::HashMap::new(),
+                pattern_combinations: None,
+                was_undirected: None,
             };
 
             // Register relationship and path variable in context
@@ -1120,6 +1077,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 label: start_node_label.clone().map(|s| s.to_string()),
                 is_denormalized: start_is_denorm,
                 projected_columns: None,
+                node_types: None,
             };
             crate::debug_print!(
                 "=== DISCONNECTED: start_graph_node created with is_denormalized={} ===",
@@ -1142,6 +1100,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 label: end_node_label.clone().map(|s| s.to_string()),
                 is_denormalized: end_is_denorm,
                 projected_columns: None,
+                node_types: None,
             };
             register_node_in_context(
                 plan_ctx,
@@ -1286,6 +1245,8 @@ fn traverse_connected_pattern_with_mode<'a>(
                 is_optional: if is_optional { Some(true) } else { None },
                 anchor_connection,
                 cte_references: std::collections::HashMap::new(),
+                pattern_combinations: None,
+                was_undirected: None,
             };
 
             // Register relationship and path variable in context
@@ -1435,12 +1396,12 @@ pub(super) fn traverse_node_pattern(
                         // The source_table format is "database.table_name" e.g. "brahmand.users_bench"
                         if let LogicalPlan::ViewScan(vs) = branch.as_ref() {
                             // Try to find the node label by looking up which node type uses this table
-                            let table_name = vs.source_table.split('.').last().unwrap_or(&vs.source_table);
+                            let table_name = vs.source_table.split('.').next_back().unwrap_or(&vs.source_table);
                             plan_ctx.schema().all_node_schemas()
                                 .iter()
                                 .find_map(|(label, schema)| {
                                     // Check if this schema's table matches
-                                    let schema_table = schema.table_name.split('.').last().unwrap_or(&schema.table_name);
+                                    let schema_table = schema.table_name.split('.').next_back().unwrap_or(&schema.table_name);
                                     if schema_table == table_name {
                                         Some(label.clone())
                                     } else {
@@ -1465,6 +1426,7 @@ pub(super) fn traverse_node_pattern(
                         label: branch_label,
                         is_denormalized: is_denorm,
                         projected_columns: None,
+                        node_types: None,
                     }))
                 })
                 .collect();
@@ -1489,6 +1451,7 @@ pub(super) fn traverse_node_pattern(
             label: node_label.map(|s| s.to_string()),
             is_denormalized: is_denorm,
             projected_columns: None,
+            node_types: None,
         };
         let new_node_plan = Arc::new(LogicalPlan::GraphNode(graph_node));
 

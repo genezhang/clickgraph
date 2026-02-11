@@ -655,6 +655,7 @@ fn test_analyzer_denormalized_property_integration() {
             label: Some("Airport".to_string()),
             is_denormalized: true,
             projected_columns: None,
+            node_types: None,
         },
     ));
 
@@ -690,6 +691,7 @@ fn test_analyzer_denormalized_property_integration() {
             label: Some("Airport".to_string()),
             is_denormalized: true,
             projected_columns: None,
+            node_types: None,
         },
     ));
 
@@ -713,6 +715,8 @@ fn test_analyzer_denormalized_property_integration() {
             is_optional: None,
             anchor_connection: None,
             cte_references: std::collections::HashMap::new(),
+            pattern_combinations: None,
+            was_undirected: None,
         },
     ));
 
@@ -752,6 +756,7 @@ fn test_analyzer_denormalized_property_integration() {
             )),
         }],
         distinct: false,
+        pattern_comprehensions: vec![],
     }));
 
     // Setup plan context
@@ -895,6 +900,7 @@ fn test_denormalized_standalone_node_return_all_properties() {
         label: Some("Airport".to_string()),
         is_denormalized: true,
         projected_columns: None,
+        node_types: None,
     });
 
     // Create Projection with RETURN a (whole node return)
@@ -905,6 +911,7 @@ fn test_denormalized_standalone_node_return_all_properties() {
         }],
         input: Arc::new(graph_node),
         distinct: false,
+        pattern_comprehensions: vec![],
     });
 
     // Test: get_properties_with_table_alias should find properties from from_node_properties
@@ -1019,6 +1026,7 @@ fn test_denormalized_standalone_node_both_positions() {
         label: Some("Airport".to_string()),
         is_denormalized: true,
         projected_columns: None,
+        node_types: None,
     });
 
     let to_node = LogicalPlan::GraphNode(GraphNode {
@@ -1027,6 +1035,7 @@ fn test_denormalized_standalone_node_both_positions() {
         label: Some("Airport".to_string()),
         is_denormalized: true,
         projected_columns: None,
+        node_types: None,
     });
 
     let union = LogicalPlan::Union(Union {
@@ -1042,6 +1051,7 @@ fn test_denormalized_standalone_node_both_positions() {
         }],
         input: Arc::new(union),
         distinct: false,
+        pattern_comprehensions: vec![],
     });
 
     // Test: get_properties_with_table_alias should find properties from the first Union branch

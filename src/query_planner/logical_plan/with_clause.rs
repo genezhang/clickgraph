@@ -28,20 +28,18 @@ use crate::{
     open_cypher_parser::ast::{Expression, WithClause as AstWithClause, WithItem},
     query_planner::{
         logical_expr::LogicalExpr,
-        logical_plan::{
-            errors::LogicalPlanError, optional_match_clause::evaluate_optional_match_clause,
-            LogicalPlan, OrderByItem, ProjectionItem,
-        },
+        logical_plan::{errors::LogicalPlanError, LogicalPlan, OrderByItem, ProjectionItem},
         plan_ctx::PlanCtx,
     },
 };
 use std::sync::Arc;
 
-/// Type alias for pattern comprehension tuple (same as return_clause.rs)
-type PatternComprehension<'a> = (
+/// Type alias for pattern comprehension tuple with aggregation type
+type PatternComprehensionInfo<'a> = (
     crate::open_cypher_parser::ast::PathPattern<'a>,
     Option<Box<Expression<'a>>>,
     Box<Expression<'a>>,
+    crate::query_planner::logical_plan::AggregationType, // Aggregation type
 );
 
 /// Evaluate a WITH clause by creating a WithClause node.
@@ -93,8 +91,13 @@ pub fn evaluate_with_clause<'a>(
 
     // Rewrite pattern comprehensions before converting to ProjectionItems
     // This handles patterns like: WITH a, size([(a)--() | 1]) AS neighborCount
-    let (rewritten_with_items, plan) =
-        rewrite_with_pattern_comprehensions(with_clause.with_items.clone(), plan, plan_ctx)?;
+    // Instead of creating Projection(GroupBy) nodes (which break in VLP path),
+    // we extract metadata to be consumed at render time as CTE + LEFT JOIN.
+    let (rewritten_with_items, pattern_comp_metas) = rewrite_with_pattern_comprehensions(
+        with_clause.with_items.clone(),
+        plan.clone(),
+        plan_ctx,
+    )?;
 
     log::warn!(
         "🔍 evaluate_with_clause: After pattern comprehension rewrite, plan type = {:?}",
@@ -163,39 +166,55 @@ pub fn evaluate_with_clause<'a>(
         with_node = with_node.with_where(predicate);
     }
 
+    // Attach pattern comprehension metadata for render-time CTE generation
+    with_node.pattern_comprehensions = pattern_comp_metas;
+
     Ok(Arc::new(LogicalPlan::WithClause(with_node)))
 }
 
-/// Rewrite pattern comprehensions in WITH items before converting to ProjectionItems.
-/// This mirrors the rewriting done in return_clause.rs for RETURN items.
+/// Rewrite pattern comprehensions in WITH items.
 ///
-/// Pattern comprehensions like `[(a)--() | 1]` are converted to:
-/// 1. An OPTIONAL MATCH for the pattern
-/// 2. collect(projection) to aggregate the results
+/// Instead of creating Projection(GroupBy) logical plan nodes (which break in the VLP path),
+/// this extracts metadata that the render phase uses to generate CTE + LEFT JOIN SQL.
+///
+/// For example: `WITH a, size([(a)--() | 1]) AS allNeighboursCount`
+/// - Rewrites `size([(a)--() | 1])` → `Variable("__pc_0")` in the WITH expression
+/// - Returns `PatternComprehensionMeta` with correlation_var="a", agg_type=Count, etc.
+/// - At render time, this becomes a CTE scanning all edge tables + LEFT JOIN
 fn rewrite_with_pattern_comprehensions<'a>(
     with_items: Vec<WithItem<'a>>,
-    mut plan: Arc<LogicalPlan>,
+    _plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
-) -> Result<(Vec<WithItem<'a>>, Arc<LogicalPlan>), LogicalPlanError> {
+) -> Result<
+    (
+        Vec<WithItem<'a>>,
+        Vec<crate::query_planner::logical_plan::PatternComprehensionMeta>,
+    ),
+    LogicalPlanError,
+> {
     let mut rewritten_items = Vec::new();
+    let mut all_metas = Vec::new();
+    let mut pc_counter = 0usize;
+
     log::debug!(
         "rewrite_with_pattern_comprehensions: Processing {} items",
         with_items.len()
     );
-    log::warn!(
-        "🔍 rewrite_with_pattern_comprehensions: Input plan type = {:?}",
-        std::mem::discriminant(&*plan)
-    );
 
+    // FIRST PASS: Pre-register simple variable pass-throughs
+    for (idx, item) in with_items.iter().enumerate() {
+        if let Expression::Variable(var_name) = &item.expression {
+            if plan_ctx.get_table_ctx(var_name).is_ok() {
+                log::info!(
+                    "🔧 Pattern comprehension pre-registration: Variable '{}' from item[{}] already in context",
+                    var_name, idx
+                );
+            }
+        }
+    }
+
+    // SECOND PASS: Extract pattern comprehensions as metadata
     for (idx, item) in with_items.into_iter().enumerate() {
-        log::debug!(
-            "rewrite_with_pattern_comprehensions: Item[{}] alias={:?}, expr_type={:?}",
-            idx,
-            item.alias,
-            std::mem::discriminant(&item.expression)
-        );
-
-        // Recursively rewrite pattern comprehensions in the expression
         let (rewritten_expr, pattern_comprehensions) =
             rewrite_expression_pattern_comprehensions(item.expression.clone());
 
@@ -205,32 +224,50 @@ fn rewrite_with_pattern_comprehensions<'a>(
             pattern_comprehensions.len()
         );
 
-        // Add OPTIONAL MATCH nodes for each pattern comprehension found
-        for (pattern, where_clause, _projection) in pattern_comprehensions {
-            let optional_match = crate::open_cypher_parser::ast::OptionalMatchClause {
-                path_patterns: vec![pattern],
-                where_clause: where_clause.as_ref().map(|w| {
-                    crate::open_cypher_parser::ast::WhereClause {
-                        conditions: (**w).clone(),
-                    }
-                }),
-            };
+        for (pattern, _where_clause, _projection, agg_type) in pattern_comprehensions {
+            let correlation_var = extract_correlation_variable_from_pattern(&pattern, plan_ctx);
+            if correlation_var.is_none() {
+                log::warn!("⚠️  Pattern comprehension has no correlation variable - skipping");
+                continue;
+            }
+            let correlation_var = correlation_var.unwrap();
 
-            plan = match evaluate_optional_match_clause(&optional_match, plan.clone(), plan_ctx) {
-                Ok(new_plan) => new_plan,
-                Err(e) => {
-                    // Don't silently fail - propagate the error
-                    // Pattern comprehension requires the OPTIONAL MATCH to work correctly
-                    log::error!("Pattern comprehension OPTIONAL MATCH failed: {:?}", e);
-                    return Err(LogicalPlanError::QueryPlanningError(format!(
-                        "Failed to plan pattern comprehension: {}",
-                        e
-                    )));
-                }
-            };
+            // Extract correlation variable's label from plan context
+            let correlation_label = plan_ctx
+                .get_table_ctx(&correlation_var)
+                .ok()
+                .and_then(|ctx| ctx.get_labels().cloned())
+                .and_then(|labels| labels.into_iter().next())
+                .unwrap_or_default();
+
+            // Extract direction and relationship types from the pattern
+            let (direction, rel_types) = extract_direction_and_rel_types(&pattern);
+
+            // Determine the result alias from the WITH item
+            let result_alias = item
+                .alias
+                .map(|a| a.to_string())
+                .unwrap_or_else(|| format!("__pc_{}", pc_counter));
+
+            log::info!(
+                "🔧 Pattern comprehension meta: var='{}', label='{}', dir={:?}, rels={:?}, agg={:?}, alias='{}'",
+                correlation_var, correlation_label, direction, rel_types, agg_type, result_alias
+            );
+
+            all_metas.push(
+                crate::query_planner::logical_plan::PatternComprehensionMeta {
+                    correlation_var: correlation_var.clone(),
+                    correlation_label,
+                    direction,
+                    rel_types,
+                    agg_type,
+                    result_alias: result_alias.clone(),
+                },
+            );
+
+            pc_counter += 1;
         }
 
-        // Create new WITH item with rewritten expression
         let new_item = WithItem {
             expression: rewritten_expr,
             alias: item.alias,
@@ -238,14 +275,14 @@ fn rewrite_with_pattern_comprehensions<'a>(
         rewritten_items.push(new_item);
     }
 
-    Ok((rewritten_items, plan))
+    Ok((rewritten_items, all_metas))
 }
 
 /// Recursively rewrite pattern comprehensions in an expression.
-/// Returns the rewritten expression and a list of extracted pattern comprehensions.
+/// Returns the rewritten expression and a list of extracted pattern comprehensions with aggregation types.
 fn rewrite_expression_pattern_comprehensions<'a>(
     expr: Expression<'a>,
-) -> (Expression<'a>, Vec<PatternComprehension<'a>>) {
+) -> (Expression<'a>, Vec<PatternComprehensionInfo<'a>>) {
     use crate::open_cypher_parser::ast::*;
 
     log::debug!(
@@ -255,8 +292,8 @@ fn rewrite_expression_pattern_comprehensions<'a>(
 
     match expr {
         Expression::PatternComprehension(pc) => {
-            log::info!("🔄 Found PatternComprehension, replacing with collect()");
-            // Found a pattern comprehension - collect it and replace with collect(projection)
+            log::info!("🔄 Found bare PatternComprehension, replacing with collect()");
+            // Found a bare pattern comprehension - collect it and replace with collect(projection)
             let collect_call = Expression::FunctionCallExp(FunctionCall {
                 name: "collect".to_string(),
                 args: vec![(*pc.projection).clone()],
@@ -267,45 +304,99 @@ fn rewrite_expression_pattern_comprehensions<'a>(
                     (*pc.pattern).clone(),
                     pc.where_clause.clone(),
                     pc.projection.clone(),
+                    crate::query_planner::logical_plan::AggregationType::GroupArray, // Bare list uses groupArray
                 )],
             )
         }
         Expression::FunctionCallExp(func) => {
             log::debug!(
-                "🔄 Checking FunctionCallExp '{}' for size(PatternComprehension)",
+                "🔄 Checking FunctionCallExp '{}' for pattern comprehensions",
                 func.name
             );
-            // Special case: size(PatternComprehension) should become count(*)
-            // NOT size(collect(projection)) which is semantically wrong
+
             let func_lower = func.name.to_lowercase();
-            if func_lower == "size" || func_lower == "length" {
-                log::debug!("🔄 Found size/length with {} args", func.args.len());
-                if func.args.len() == 1 {
-                    log::debug!(
-                        "🔄 Checking if arg is PatternComprehension: {:?}",
-                        std::mem::discriminant(&func.args[0])
-                    );
-                    if let Expression::PatternComprehension(pc) = &func.args[0] {
-                        log::info!(
-                            "🔄 size(PatternComprehension) detected, replacing with count(*)"
-                        );
-                        // Replace size([(pattern) | proj]) with count(*)
-                        // The pattern will be added as OPTIONAL MATCH
-                        let count_call = Expression::FunctionCallExp(FunctionCall {
+
+            // Check for aggregation functions with pattern comprehensions
+            if func.args.len() == 1 {
+                if let Expression::PatternComprehension(pc) = &func.args[0] {
+                    use crate::query_planner::logical_plan::AggregationType;
+
+                    let agg_type = match func_lower.as_str() {
+                        "size" | "length" => {
+                            log::info!("🔄 size/length(PatternComprehension) detected → COUNT");
+                            AggregationType::Count
+                        }
+                        "collect" => {
+                            log::info!("🔄 collect(PatternComprehension) detected → GroupArray");
+                            AggregationType::GroupArray
+                        }
+                        "sum" => {
+                            log::info!("🔄 sum(PatternComprehension) detected → Sum");
+                            AggregationType::Sum
+                        }
+                        "avg" => {
+                            log::info!("🔄 avg(PatternComprehension) detected → Avg");
+                            AggregationType::Avg
+                        }
+                        "min" => {
+                            log::info!("🔄 min(PatternComprehension) detected → Min");
+                            AggregationType::Min
+                        }
+                        "max" => {
+                            log::info!("🔄 max(PatternComprehension) detected → Max");
+                            AggregationType::Max
+                        }
+                        _ => {
+                            // Not a recognized aggregation function - process normally
+                            log::debug!(
+                                "🔄 Function '{}' with PatternComprehension - processing args",
+                                func.name
+                            );
+                            let mut all_pcs = Vec::new();
+                            let new_args: Vec<Expression<'a>> = func
+                                .args
+                                .into_iter()
+                                .map(|arg| {
+                                    let (new_arg, pcs) =
+                                        rewrite_expression_pattern_comprehensions(arg);
+                                    all_pcs.extend(pcs);
+                                    new_arg
+                                })
+                                .collect();
+                            return (
+                                Expression::FunctionCallExp(FunctionCall {
+                                    name: func.name,
+                                    args: new_args,
+                                }),
+                                all_pcs,
+                            );
+                        }
+                    };
+
+                    // For size/length, replace with count(*), for others replace with the function call
+                    let replacement_expr = if matches!(agg_type, AggregationType::Count) {
+                        Expression::FunctionCallExp(FunctionCall {
                             name: "count".to_string(),
                             args: vec![Expression::Literal(
                                 crate::open_cypher_parser::ast::Literal::String("*"),
                             )],
-                        });
-                        return (
-                            count_call,
-                            vec![(
-                                (*pc.pattern).clone(),
-                                pc.where_clause.clone(),
-                                pc.projection.clone(),
-                            )],
-                        );
-                    }
+                        })
+                    } else {
+                        Expression::FunctionCallExp(FunctionCall {
+                            name: func.name.clone(),
+                            args: vec![(*pc.projection).clone()],
+                        })
+                    };
+
+                    return (
+                        replacement_expr,
+                        vec![(
+                            (*pc.pattern).clone(),
+                            pc.where_clause.clone(),
+                            pc.projection.clone(),
+                            agg_type,
+                        )],
+                    );
                 }
             }
 
@@ -408,3 +499,81 @@ fn rewrite_expression_pattern_comprehensions<'a>(
 // 2. Hard-coded node type-specific id columns (e.g., `user_id`)
 // 3. Wrote to render-time context during logical planning
 // 4. Could diverge from actual columns/aliases produced during SQL rendering
+
+/// Extract the correlation variable from a pattern.
+/// The correlation variable is a node alias from outer scope used in the pattern.
+/// Example: [(a)--() | 1] → "a" is the correlation variable
+pub(crate) fn extract_correlation_variable_from_pattern<'a>(
+    pattern: &crate::open_cypher_parser::ast::PathPattern<'a>,
+    plan_ctx: &PlanCtx,
+) -> Option<String> {
+    use crate::open_cypher_parser::ast::PathPattern;
+
+    // Extract variables from pattern
+    let mut variables = Vec::new();
+
+    match pattern {
+        PathPattern::Node(node) => {
+            if let Some(name) = node.name {
+                variables.push(name);
+            }
+        }
+        PathPattern::ConnectedPattern(connected) => {
+            for conn in connected {
+                let start_node = conn.start_node.borrow();
+                if let Some(name) = start_node.name {
+                    variables.push(name);
+                }
+                let end_node = conn.end_node.borrow();
+                if let Some(name) = end_node.name {
+                    variables.push(name);
+                }
+            }
+        }
+        PathPattern::ShortestPath(inner) | PathPattern::AllShortestPaths(inner) => {
+            return extract_correlation_variable_from_pattern(inner, plan_ctx);
+        }
+    }
+
+    // Find the first variable that exists in parent context
+    for var in variables {
+        if plan_ctx.get_table_ctx(var).is_ok() {
+            log::debug!("🔍 Found correlation variable '{}' in parent context", var);
+            return Some(var.to_string());
+        }
+    }
+
+    log::warn!("⚠️  No correlation variable found in pattern");
+    None
+}
+
+/// Extract direction and relationship types from a pattern.
+/// Returns (Direction, Option<Vec<rel_type_names>>).
+pub(crate) fn extract_direction_and_rel_types(
+    pattern: &crate::open_cypher_parser::ast::PathPattern<'_>,
+) -> (
+    crate::open_cypher_parser::ast::Direction,
+    Option<Vec<String>>,
+) {
+    use crate::open_cypher_parser::ast::{Direction, PathPattern};
+
+    match pattern {
+        PathPattern::ConnectedPattern(connected) => {
+            if let Some(conn) = connected.first() {
+                let direction = conn.relationship.direction.clone();
+                let rel_types = conn
+                    .relationship
+                    .labels
+                    .as_ref()
+                    .map(|labels| labels.iter().map(|l| l.to_string()).collect());
+                (direction, rel_types)
+            } else {
+                (Direction::Either, None)
+            }
+        }
+        PathPattern::ShortestPath(inner) | PathPattern::AllShortestPaths(inner) => {
+            extract_direction_and_rel_types(inner)
+        }
+        _ => (Direction::Either, None),
+    }
+}

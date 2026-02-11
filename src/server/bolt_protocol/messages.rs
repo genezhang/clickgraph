@@ -3,7 +3,6 @@
 //! This module defines the message types for the Neo4j Bolt protocol v4.4.
 //! Messages are the primary communication unit between client and server.
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 

@@ -1644,7 +1644,7 @@ impl DenormalizedCteStrategy {
         for prop in properties {
             // Determine if this property belongs to start (from) or end (to) node
             let is_from_node = prop.cypher_alias == self.pattern_ctx.left_node_alias;
-            let prefix = if is_from_node { "start_" } else { "end_" };
+            let _prefix = if is_from_node { "start_" } else { "end_" };
 
             // Map logical property to physical column in edge table
             let physical_col = self.map_denormalized_property(&prop.column_name, is_from_node)?;

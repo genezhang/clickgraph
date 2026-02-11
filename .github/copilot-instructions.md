@@ -2,8 +2,12 @@
 
 ## Project Overview
 ClickGraph is a stateless, **read-only graph query engine** for ClickHouse, written in Rust. It translates Cypher queries into ClickHouse SQL queries, enabling graph analysis capabilities on ClickHouse databases. Codebase has evolved and diverged from the original Brahmand project. Features related to DDLs for special node and edge tables and updates have been removed.
+We are at late stage of development with almost all the features implemented, and many rounds of refactoring work are done to improve the codebase quality. When fixing a bug or enhancing for a new feature, please understand what is needed, and thoroughly understand what has existed. Do not introduce new code without looking for existing code to leverage.
 
 **Project Scope**: Read-only analytical queries only. Write operations (`CREATE`, `SET`, `DELETE`, `MERGE`) are explicitly out of scope.
+
+**Ground rule 1**: do not change query semantics, honestly evaluate query and return what is asked, no more, and no less.
+**Ground rule 2**: no shortcut. Take time to fully understand the foundation of the processing flow and details, and methodically add a feature or fix a bug. Quality is top priority, no hacking, no patching, but only solid code.
 
 ## Coding Style Guidelines
 - Always prefer idiomatic Rust code styles and best practices, follow Rust's official style guidelines: https://doc.rust-lang.org/1.0.0/style/
@@ -404,6 +408,12 @@ cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 - Current status: 325/325 unit tests + 32/35 integration tests passing (91.4%)
 
 ## Project-Specific Conventions
+
+### Understand the Scopes
+- No thread-local structures unless it's global config, such as read-only schema
+- A query has a task-local QueryContext, which is for the entire query
+- Within a query we have specific scope for variables, MATCH, WITH etc. Always consider to put into the right scope.
+- SQL CTEs are always at query scope while references are within some scopes.
 
 ### Error Handling
 - Each module has its own error type in `errors.rs`

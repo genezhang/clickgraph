@@ -112,7 +112,7 @@ fn element_id_to_filter(element_id: &str, alias: &str) -> Option<(String, String
 
             // Determine if value is numeric (no quotes needed) or string
             let value_expr = if id_values.len() == 1 {
-                if let Ok(_) = id_values[0].parse::<i64>() {
+                if id_values[0].parse::<i64>().is_ok() {
                     id_values[0].clone() // Numeric - no quotes
                 } else {
                     let escaped = id_value.replace('\'', "''");
@@ -169,14 +169,14 @@ fn rewrite_id_equals(
                 log::info!("id() rewrite: id({}) = {} → {}", alias, id, filter);
             } else {
                 // Fallback: use element_id string comparison
-                let replacement = format!("1 = 0",);
+                let replacement = "1 = 0".to_string();
                 result.replace_range(start..end, &replacement);
                 *was_rewritten = true;
             }
         } else {
             // ID not found - this node doesn't exist in this session
             // Replace with impossible condition
-            let replacement = format!("1 = 0");
+            let replacement = "1 = 0".to_string();
             result.replace_range(start..end, &replacement);
             *was_rewritten = true;
             missing_ids.push(id);

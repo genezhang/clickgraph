@@ -17,7 +17,6 @@ use super::{BoltConfig, BoltContext, ConnectionState};
 
 use crate::clickhouse_query_generator;
 use crate::open_cypher_parser;
-use crate::open_cypher_parser::ast::CypherStatement;
 use crate::query_planner;
 
 /// Execution plan for procedure-only queries (extracted before async execution)
@@ -63,11 +62,6 @@ fn bolt_value_to_string(value: &BoltValue) -> String {
     }
 }
 
-/// Decode id() parameters in a query
-///
-/// Neo4j Browser sends queries like `id(a) IN $existingNodeIds` with encoded IDs.
-/// This function detects which parameters are used with id() and decodes them.
-///
 /// Pattern detection: `id(alias) IN $paramName` or `id(alias) = $paramName`
 /// Substitute Cypher parameters into query string, keeping encoded IDs intact
 /// This replaces $paramName with actual values so parser sees literals
@@ -738,7 +732,12 @@ impl BoltHandler {
         // Substitute Cypher parameters into query string (keeping encoded IDs)
         // This allows parser to see actual values as literals while preserving encoding
         // The AST transformer will then extract labels from encoded IDs for UNION pruning
-        let query = substitute_cypher_parameters(&query, &parameters);
+        let query = substitute_cypher_parameters(query, &parameters);
+
+        // NOTE: Do NOT rewrite the browser's directed relationship-fetch to undirected.
+        // The browser's Path objects from the expand query already carry all relationship data.
+        // Making it undirected causes Relationship objects with schema-direction start/end IDs
+        // that reference nodes not in the browser's graph, crashing with "t.source is undefined".
 
         // Get selected schema from context, or from RUN message metadata
         let (schema_name, tenant_id, role, view_parameters) = {
@@ -1097,10 +1096,54 @@ impl BoltHandler {
         use crate::open_cypher_parser::ast::CypherStatement;
 
         // ============================================================
-        // PHASE 1: Parse and Transform (synchronous, single pass)
+        // PHASE 1: Determine Schema (for id() transformation)
         // ============================================================
 
-        // Parse Cypher statement once
+        // Parse once to extract schema name
+        let effective_schema = match open_cypher_parser::parse_cypher_statement(query) {
+            Ok((_, stmt)) => match stmt {
+                CypherStatement::Query { query, .. } => {
+                    if let Some(use_clause) = query.use_clause {
+                        use_clause.database_name.to_string()
+                    } else {
+                        schema_name.as_deref().unwrap_or("default").to_string()
+                    }
+                }
+                CypherStatement::ProcedureCall(_) => {
+                    schema_name.as_deref().unwrap_or("default").to_string()
+                }
+            },
+            Err(_) => schema_name.as_deref().unwrap_or("default").to_string(),
+        };
+
+        // Load the actual GraphSchema object for id() transformation
+        let graph_schema = if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+            if let Ok(schemas) = schemas_lock.try_read() {
+                schemas.get(&effective_schema).cloned()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if graph_schema.is_some() {
+            log::info!(
+                "✅ Loaded schema '{}' for id() transformation",
+                effective_schema
+            );
+        } else {
+            log::warn!(
+                "⚠️  Schema '{}' not found for id() transformation",
+                effective_schema
+            );
+        }
+
+        // ============================================================
+        // PHASE 2: Parse and Transform (synchronous, single pass)
+        // ============================================================
+
+        // Parse Cypher statement for transformation
         let parsed_stmt = match open_cypher_parser::parse_cypher_statement(query) {
             Ok((_, stmt)) => stmt,
             Err(parse_error) => {
@@ -1118,37 +1161,20 @@ impl BoltHandler {
             context.id_mapper.clone()
         };
 
-        // ============================================================
-        // PHASE 2: Analyze Statement Type (synchronous)
-        // ============================================================
-
         // Parse and transform in a limited scope to extract metadata
         let ast_arena = crate::query_planner::ast_transform::StringArena::new();
-        let (is_procedure, is_union, effective_schema, exec_plan, query_type, label_constraints) = {
+        let (is_procedure, _is_union, exec_plan, query_type, _label_constraints) = {
+            // Transform id() functions with schema available
             let (transformed_stmt, label_constraints) =
                 crate::query_planner::ast_transform::transform_id_functions(
                     &ast_arena,
                     parsed_stmt,
                     &id_mapper_snapshot,
-                    None, // No schema available yet (loaded later)
+                    graph_schema.as_ref(),
                 );
 
             let is_procedure = crate::procedures::is_procedure_only_statement(&transformed_stmt);
             let is_union = crate::procedures::is_procedure_union_query(&transformed_stmt);
-
-            // Determine effective schema
-            let effective_schema = match &transformed_stmt {
-                CypherStatement::Query { query, .. } => {
-                    if let Some(ref use_clause) = query.use_clause {
-                        use_clause.database_name.to_string()
-                    } else {
-                        schema_name.as_deref().unwrap_or("default").to_string()
-                    }
-                }
-                CypherStatement::ProcedureCall(_) => {
-                    schema_name.as_deref().unwrap_or("default").to_string()
-                }
-            };
 
             log::debug!("Query execution using schema: {}", effective_schema);
             log::debug!(
@@ -1250,7 +1276,6 @@ impl BoltHandler {
             (
                 is_procedure,
                 is_union,
-                effective_schema,
                 exec_plan,
                 query_type,
                 label_constraints,
@@ -1291,7 +1316,7 @@ impl BoltHandler {
                         &registry,
                     )
                     .await
-                    .map_err(|e| BoltError::query_error(e))?;
+                    .map_err(BoltError::query_error)?;
 
                     // Parse original query to get RETURN clause (procedures don't have id() in RETURN)
                     let return_clause = match open_cypher_parser::parse_cypher_statement(query) {
@@ -1332,7 +1357,7 @@ impl BoltHandler {
                             &registry,
                         )
                         .await
-                        .map_err(|e| BoltError::query_error(e))?;
+                        .map_err(BoltError::query_error)?;
 
                         // Apply RETURN clause if branch has one
                         let transformed_results = if branch.has_return {
@@ -1533,7 +1558,7 @@ impl BoltHandler {
             }
         };
 
-        log::debug!("Executing SQL: {}", final_sql);
+        log::info!("📊 Executing SQL: {}", final_sql);
 
         // Apply role for ClickHouse RBAC (Phase 2)
         if let Some(ref role_name) = role {
