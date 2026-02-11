@@ -590,16 +590,16 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             .ok_or("Node not found")
         {
             let end_id_sql = if node_schema.node_id.is_composite() {
-                // Composite ID: convert tuple to String
+                // Composite ID: pipe-join columns to match element_id format "val1|val2"
                 let cols: Vec<String> = node_schema
                     .node_id
                     .columns()
                     .iter()
-                    .map(|col| format!("{}.{}", node_alias, col))
+                    .map(|col| format!("toString({}.{})", node_alias, col))
                     .collect();
                 format!(
-                    "toString(tuple({})) AS {}",
-                    cols.join(", "),
+                    "concat({}) AS {}",
+                    cols.join(", '|', "),
                     VLP_END_ID_COLUMN
                 )
             } else {
@@ -623,15 +623,16 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 .ok_or("Node not found")
             {
                 let start_id_sql = if node_schema.node_id.is_composite() {
+                    // Composite ID: pipe-join columns to match element_id format "val1|val2"
                     let cols: Vec<String> = node_schema
                         .node_id
                         .columns()
                         .iter()
-                        .map(|col| format!("{}.{}", start_alias_sql, col))
+                        .map(|col| format!("toString({}.{})", start_alias_sql, col))
                         .collect();
                     format!(
-                        "toString(tuple({})) AS {}",
-                        cols.join(", "),
+                        "concat({}) AS {}",
+                        cols.join(", '|', "),
                         VLP_START_ID_COLUMN
                     )
                 } else {
