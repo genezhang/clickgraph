@@ -1552,69 +1552,6 @@ fn extract_id_string_from_props(
     "0".to_string()
 }
 
-/// Extract ID from properties HashMap, trying multiple possible ID field names
-/// Also handles prefixed keys like "t1_0.user_id" or "_s_user_id" by checking if key ends with the ID field
-fn extract_id_from_props(props: &HashMap<String, Value>, id1: &str, id2: &str, id3: &str) -> i64 {
-    // Common ID column names to check
-    let common_id_fields = [
-        id1,
-        id2,
-        id3,
-        "code",
-        "node_id",
-        "origin_code",
-        "dest_code",
-        "airport_code",
-    ];
-
-    // First try exact match
-    for id_field in &common_id_fields {
-        if let Some(val) = props.get(*id_field) {
-            if let Some(id) = value_to_i64(val) {
-                return id;
-            }
-            // Also try string values (for string IDs like "LAX")
-            if let Some(str_id) = value_to_string(val) {
-                // Use hash of string ID as integer ID
-                return generate_id_from_element_id(&str_id);
-            }
-        }
-    }
-
-    // Then try prefixed match (_s_, _e_, _r_ prefixes)
-    for id_field in &common_id_fields {
-        for prefix in &["_s_", "_e_", "_r_"] {
-            let prefixed_key = format!("{}{}", prefix, id_field);
-            if let Some(val) = props.get(&prefixed_key) {
-                if let Some(id) = value_to_i64(val) {
-                    return id;
-                }
-                // Also try string values (for string IDs like "LAX")
-                if let Some(str_id) = value_to_string(val) {
-                    return generate_id_from_element_id(&str_id);
-                }
-            }
-        }
-    }
-
-    // Finally try suffix match (for table alias prefixed keys like "t1_0.user_id")
-    for (key, val) in props {
-        for id_field in &common_id_fields {
-            if key.ends_with(&format!(".{}", id_field)) || key.ends_with(id_field) {
-                if let Some(id) = value_to_i64(val) {
-                    return id;
-                }
-                // Also try string values
-                if let Some(str_id) = value_to_string(val) {
-                    return generate_id_from_element_id(&str_id);
-                }
-            }
-        }
-    }
-
-    0
-}
-
 /// Generate a unique integer node ID from element_id
 /// This ensures round-trip: element_id is the source of truth, integer id is derived from it
 /// Generate a deterministic ID from an element_id using the single source of truth.
@@ -1622,14 +1559,6 @@ fn extract_id_from_props(props: &HashMap<String, Value>, id1: &str, id2: &str, i
 fn generate_id_from_element_id(element_id: &str) -> i64 {
     // Delegate to IdMapper's compute_deterministic_id for consistent encoding
     super::id_mapper::IdMapper::compute_deterministic_id(element_id)
-}
-
-fn value_to_i64(val: &Value) -> Option<i64> {
-    match val {
-        Value::Number(n) => n.as_i64(),
-        Value::String(s) => s.parse::<i64>().ok(),
-        _ => None,
-    }
 }
 
 /// Extract first element from a ClickHouse array value
@@ -1750,77 +1679,7 @@ fn find_node_in_row_with_label(
     })
 }
 
-/// Find a node in the result row by its alias
-fn find_node_in_row(
-    row: &HashMap<String, Value>,
-    alias: &str,
-    return_metadata: &[ReturnItemMetadata],
-    schema: &GraphSchema,
-) -> Option<Node> {
-    // Look for this alias in return metadata
-    for meta in return_metadata {
-        if meta.field_name == alias {
-            if let ReturnItemType::Node { labels } = &meta.item_type {
-                // Found it! Try to transform
-                return transform_to_node(row, alias, labels, schema).ok();
-            }
-        }
-    }
-
-    // Check if it's in the row with property prefixes (e.g., "t1.user_id")
-    let prefix = format!("{}.", alias);
-    let mut properties = std::collections::HashMap::new();
-
-    for (key, value) in row.iter() {
-        if let Some(prop_name) = key.strip_prefix(&prefix) {
-            properties.insert(prop_name.to_string(), value.clone());
-        }
-    }
-
-    if properties.is_empty() {
-        return None;
-    }
-
-    // Try to guess label from schema by looking at property names
-    // This is a heuristic - we check which node type has these properties
-    for (label, node_schema) in schema.all_node_schemas() {
-        let schema_props: std::collections::HashSet<&String> =
-            node_schema.property_mappings.keys().collect();
-        let row_props: std::collections::HashSet<&str> =
-            properties.keys().map(|s| s.as_str()).collect();
-
-        // If most row properties match schema properties, this is likely the right label
-        let matches = row_props
-            .iter()
-            .filter(|p| schema_props.iter().any(|sp| sp.as_str() == **p))
-            .count();
-        if matches > 0 && matches >= row_props.len() / 2 {
-            // Found a matching label
-            let id_columns = node_schema.node_id.id.columns();
-            let id_values: Vec<String> = id_columns
-                .iter()
-                .filter_map(|col| properties.get(*col).and_then(value_to_string))
-                .collect();
-
-            if !id_values.is_empty() {
-                let element_id = format!("{}:{}", label, id_values.join("|"));
-                // Derive integer ID from element_id (ensures uniqueness across labels)
-                let id: i64 = generate_id_from_element_id(&element_id);
-
-                return Some(Node {
-                    id,
-                    labels: vec![label.clone()],
-                    properties,
-                    element_id,
-                });
-            }
-        }
-    }
-
-    None
-}
-
-/// Find a relationship in the result row by its alias, using known types
+/// Create a node with a known label but no data
 fn find_relationship_in_row_with_type(
     row: &HashMap<String, Value>,
     alias: &str,
@@ -1899,85 +1758,6 @@ fn find_relationship_in_row_with_type(
         start_node_element_id: start_element_id.to_string(),
         end_node_element_id: end_element_id.to_string(),
     })
-}
-
-/// Find a relationship in the result row by its alias
-fn find_relationship_in_row(
-    row: &HashMap<String, Value>,
-    alias: &str,
-    start_element_id: &str,
-    end_element_id: &str,
-    return_metadata: &[ReturnItemMetadata],
-    schema: &GraphSchema,
-) -> Option<Relationship> {
-    // Look for this alias in return metadata
-    for meta in return_metadata {
-        if meta.field_name == alias {
-            if let ReturnItemType::Relationship {
-                rel_types,
-                from_label,
-                to_label,
-            } = &meta.item_type
-            {
-                // Found it! Try to transform
-                return transform_to_relationship(
-                    row,
-                    alias,
-                    rel_types,
-                    from_label.as_deref(),
-                    to_label.as_deref(),
-                    schema,
-                )
-                .ok();
-            }
-        }
-    }
-
-    // Check if it's in the row with property prefixes
-    let prefix = format!("{}.", alias);
-    let mut properties = std::collections::HashMap::new();
-
-    for (key, value) in row.iter() {
-        if let Some(prop_name) = key.strip_prefix(&prefix) {
-            properties.insert(prop_name.to_string(), value.clone());
-        }
-    }
-
-    if properties.is_empty() {
-        return None;
-    }
-
-    // Try to guess relationship type from schema
-    for (rel_type, rel_schema) in schema.get_relationships_schemas() {
-        // Check if this relationship type's properties match
-        let from_col = &rel_schema.from_id;
-        let to_col = &rel_schema.to_id;
-
-        if properties.contains_key(from_col) && properties.contains_key(to_col) {
-            let from_id = properties
-                .get(from_col)
-                .and_then(value_to_string)
-                .unwrap_or_default();
-            let to_id = properties
-                .get(to_col)
-                .and_then(value_to_string)
-                .unwrap_or_default();
-            let element_id = format!("{}:{}->{}", rel_type, from_id, to_id);
-
-            return Some(Relationship {
-                id: 0,
-                start_node_id: 0,
-                end_node_id: 0,
-                rel_type: rel_type.clone(),
-                properties,
-                element_id,
-                start_node_element_id: start_element_id.to_string(),
-                end_node_element_id: end_element_id.to_string(),
-            });
-        }
-    }
-
-    None
 }
 
 /// Create a node with a known label but no data
