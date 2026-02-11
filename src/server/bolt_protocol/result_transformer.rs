@@ -1083,7 +1083,7 @@ fn transform_to_path(
     // Format: _start_properties, _end_properties, _rel_properties, __rel_type__, __start_label__, __end_label__
     if row.contains_key("_start_properties") && row.contains_key("_end_properties") {
         log::trace!("🎯 Detected JSON format for path - using explicit type/label columns");
-        return transform_path_from_json(row);
+        return transform_path_from_json(row, schema);
     }
 
     // Original format: individual columns for each property
@@ -1178,7 +1178,10 @@ fn transform_to_path(
 /// Parses _start_properties, _end_properties, _rel_properties JSON strings
 /// Used for UNION path queries where each row has explicit type columns:
 /// __start_label__, __end_label__, __rel_type__
-fn transform_path_from_json(row: &HashMap<String, Value>) -> Result<Path, String> {
+fn transform_path_from_json(
+    row: &HashMap<String, Value>,
+    schema: &GraphSchema,
+) -> Result<Path, String> {
     // Parse start node properties from JSON
     let start_props: HashMap<String, Value> = match row.get("_start_properties") {
         Some(Value::String(json_str)) => {
@@ -1244,7 +1247,7 @@ fn transform_path_from_json(row: &HashMap<String, Value>) -> Result<Path, String
     };
 
     // Create start node - element_id is source of truth, integer id derived from it
-    let start_id_str = extract_id_string_from_props(&start_props);
+    let start_id_str = extract_id_string_from_props(&start_props, Some(schema), Some(&start_label));
     let start_element_id = generate_node_element_id(&start_label, &[&start_id_str]);
     let start_id = generate_id_from_element_id(&start_element_id);
     // Clean property keys (remove table alias prefix like "t1_0.")
@@ -1257,7 +1260,7 @@ fn transform_path_from_json(row: &HashMap<String, Value>) -> Result<Path, String
     );
 
     // Create end node - element_id is source of truth, integer id derived from it
-    let end_id_str = extract_id_string_from_props(&end_props);
+    let end_id_str = extract_id_string_from_props(&end_props, Some(schema), Some(&end_label));
     let end_element_id = generate_node_element_id(&end_label, &[&end_id_str]);
     let end_id = generate_id_from_element_id(&end_element_id);
     // Clean property keys
@@ -1474,8 +1477,36 @@ fn clean_property_keys(props: HashMap<String, Value>) -> HashMap<String, Value> 
 
 /// Extract ID string from properties HashMap for element_id generation
 /// Tries common ID field names and returns the string representation
-fn extract_id_string_from_props(props: &HashMap<String, Value>) -> String {
-    // Common ID column names to check, in order of preference
+fn extract_id_string_from_props(
+    props: &HashMap<String, Value>,
+    schema: Option<&GraphSchema>,
+    label: Option<&str>,
+) -> String {
+    // Try schema-defined ID columns first (most reliable)
+    if let (Some(schema), Some(label)) = (schema, label) {
+        if let Some(node_schema) = schema.node_schema_opt(label) {
+            let id_columns = node_schema.node_id.id.columns();
+            let id_values: Vec<String> = id_columns
+                .iter()
+                .filter_map(|col| {
+                    props
+                        .get(*col)
+                        .or_else(|| {
+                            // Try prefixed variants (_s_, _e_)
+                            ["_s_", "_e_"]
+                                .iter()
+                                .find_map(|pfx| props.get(&format!("{}{}", pfx, col)))
+                        })
+                        .and_then(value_to_string)
+                })
+                .collect();
+            if id_values.len() == id_columns.len() {
+                return id_values.join("|");
+            }
+        }
+    }
+
+    // Fallback: common ID column names
     let id_fields = [
         "user_id",
         "post_id",
@@ -1488,7 +1519,6 @@ fn extract_id_string_from_props(props: &HashMap<String, Value>) -> String {
         "flight_id",
     ];
 
-    // First try exact match
     for id_field in &id_fields {
         if let Some(val) = props.get(*id_field) {
             if let Some(str_val) = value_to_string(val) {
@@ -1497,7 +1527,7 @@ fn extract_id_string_from_props(props: &HashMap<String, Value>) -> String {
         }
     }
 
-    // Then try prefixed match (_s_, _e_, _r_ prefixes)
+    // Try prefixed match (_s_, _e_, _r_ prefixes)
     for id_field in &id_fields {
         for prefix in &["_s_", "_e_", "_r_"] {
             let prefixed_key = format!("{}{}", prefix, id_field);
@@ -1509,7 +1539,7 @@ fn extract_id_string_from_props(props: &HashMap<String, Value>) -> String {
         }
     }
 
-    // Finally try any key that looks like an ID
+    // Last resort: any key that looks like an ID
     for (key, val) in props {
         let key_lower = key.to_lowercase();
         if key_lower.ends_with("_id") || key_lower.ends_with("id") || key_lower == "code" {
