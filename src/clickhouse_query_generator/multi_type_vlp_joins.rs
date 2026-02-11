@@ -597,11 +597,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                     .iter()
                     .map(|col| format!("toString({}.{})", node_alias, col))
                     .collect();
-                format!(
-                    "concat({}) AS {}",
-                    cols.join(", '|', "),
-                    VLP_END_ID_COLUMN
-                )
+                format!("concat({}) AS {}", cols.join(", '|', "), VLP_END_ID_COLUMN)
             } else {
                 // Single ID: cast to String
                 format!(

@@ -1,7 +1,7 @@
 # Known Issues
 
-**Active Issues**: 1 bug, 5 feature limitations  
-**Last Updated**: January 21, 2026
+**Active Issues**: 1 bug, 7 feature limitations  
+**Last Updated**: February 11, 2026
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -246,3 +246,31 @@ RETURN count  -- Works
 **Impact**: Neo4j Browser click-to-expand partially broken (needs property access fix)
 
 **Related**: CTE name fix (Feb 9) solved the "Table not found" issue, but this property mapping bug remains.
+
+---
+
+## Neo4j Browser Schema Compatibility Limitations
+
+### 7. Denormalized Node Schemas — Browser Expand Not Supported
+**Status**: ⚠️ Known Limitation  
+**Added**: February 11, 2026
+
+**Description**: Neo4j Browser click-to-expand does not work with denormalized/virtual node schemas (e.g., `ontime_denormalized.yaml`, `zeek_merged.yaml`). The VLP CTE generates flat individual columns for denormalized node properties, but the result transformer's `transform_vlp_path()` expects a JSON `properties` blob.
+
+**Affected schemas**: Any schema where nodes are defined with `from_node_properties` / `to_node_properties` on the relationship (nodes are virtual, embedded in edge table).
+
+**Workaround**: Standard queries (`MATCH (a:Airport) RETURN a`) work. Only browser click-to-expand (which uses VLP path queries internally) is affected.
+
+**Fix**: Either make denormalized VLP CTEs output JSON properties blobs, or update the result transformer to handle flat property columns from denormalized CTEs.
+
+### 8. Multi-Tenant Cross-Session ID Isolation
+**Status**: ⚠️ Known Limitation  
+**Added**: February 11, 2026
+
+**Description**: When using parameterized views for multi-tenancy, the Bolt protocol's `IdMapper` cross-session lookup can produce cross-tenant ID contamination. Element IDs like `"User:1"` are identical across tenants because `tenant_id` is a view parameter, not part of the node ID.
+
+Two tenants with `User:1` will get the same encoded integer ID. Cross-session reverse lookups (used when a new browser connection queries `id(n) = X`) may return data from the wrong tenant's session cache.
+
+**Impact**: Only affects multi-tenant deployments using parameterized views with the Neo4j Browser Bolt protocol. HTTP API and single-tenant deployments are not affected.
+
+**Workaround**: Include `tenant_id` as part of the composite node ID in the schema definition (e.g., `node_id: [tenant_id, user_id]`), or use separate ClickGraph instances per tenant.
