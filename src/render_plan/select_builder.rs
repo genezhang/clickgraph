@@ -568,8 +568,13 @@ impl SelectBuilder for LogicalPlan {
                             // CTE reference wildcard: alias was renamed to CTE name
                             // (e.g., "a" → "with_a_cte_0" by rewrite_logical_expr_cte_refs)
                             // Reverse-map to original alias, then expand using CTE columns.
-                            if let Some(original_alias) = self.find_cte_original_alias(&prop.table_alias.0) {
-                                let cte_props = crate::server::query_context::get_all_cte_properties(&original_alias);
+                            if let Some(original_alias) =
+                                self.find_cte_original_alias(&prop.table_alias.0)
+                            {
+                                let cte_props =
+                                    crate::server::query_context::get_all_cte_properties(
+                                        &original_alias,
+                                    );
                                 if !cte_props.is_empty() {
                                     log::info!(
                                         "🔍 CTE wildcard expansion: '{}' → original alias '{}' with {} properties",
@@ -577,10 +582,16 @@ impl SelectBuilder for LogicalPlan {
                                     );
                                     for (prop_name, cte_column) in &cte_props {
                                         select_items.push(SelectItem {
-                                            expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                                                table_alias: RenderTableAlias(original_alias.clone()),
-                                                column: PropertyValue::Column(cte_column.clone()),
-                                            }),
+                                            expression: RenderExpr::PropertyAccessExp(
+                                                PropertyAccess {
+                                                    table_alias: RenderTableAlias(
+                                                        original_alias.clone(),
+                                                    ),
+                                                    column: PropertyValue::Column(
+                                                        cte_column.clone(),
+                                                    ),
+                                                },
+                                            ),
                                             col_alias: Some(ColumnAlias(format!(
                                                 "{}.{}",
                                                 original_alias, prop_name
@@ -1338,7 +1349,9 @@ impl LogicalPlan {
                         if let Some(from_props) = &node_schema.from_properties {
                             for (prop_name, _col) in from_props {
                                 if !properties.iter().any(|(p, _)| p == prop_name)
-                                    && !denorm_props.iter().any(|(p, _): &(String, String)| p == prop_name)
+                                    && !denorm_props
+                                        .iter()
+                                        .any(|(p, _): &(String, String)| p == prop_name)
                                 {
                                     denorm_props.push((prop_name.clone(), prop_name.clone()));
                                 }
@@ -1347,7 +1360,9 @@ impl LogicalPlan {
                         if let Some(to_props) = &node_schema.to_properties {
                             for (prop_name, _col) in to_props {
                                 if !properties.iter().any(|(p, _)| p == prop_name)
-                                    && !denorm_props.iter().any(|(p, _): &(String, String)| p == prop_name)
+                                    && !denorm_props
+                                        .iter()
+                                        .any(|(p, _): &(String, String)| p == prop_name)
                                 {
                                     denorm_props.push((prop_name.clone(), prop_name.clone()));
                                 }

@@ -1176,10 +1176,7 @@ fn extract_path_context_from_select(select: &SelectItems) -> Option<PathBranchCo
 /// Resolve denormalized virtual node references in ORDER BY expressions.
 /// Maps `o.code` → `t1.dest_code` (outgoing) or `t1.origin_code` (incoming)
 /// by checking node position in path and schema from_node/to_node properties.
-fn resolve_denormalized_order_by_expr(
-    expr: &RenderExpr,
-    ctx: &PathBranchContext,
-) -> RenderExpr {
+fn resolve_denormalized_order_by_expr(expr: &RenderExpr, ctx: &PathBranchContext) -> RenderExpr {
     use crate::graph_catalog::expression_parser::PropertyValue;
 
     match expr {
@@ -1215,7 +1212,10 @@ fn resolve_denormalized_order_by_expr(
             ) {
                 log::info!(
                     "🔧 ORDER BY: Resolved denorm {}.{} → {}.{}",
-                    alias, prop_name, ctx.rel_alias, resolved_col
+                    alias,
+                    prop_name,
+                    ctx.rel_alias,
+                    resolved_col
                 );
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(ctx.rel_alias.clone()),
@@ -1240,7 +1240,9 @@ fn resolve_denormalized_order_by_expr(
                             {
                                 log::info!(
                                     "🔧 ORDER BY: Resolved denorm id({}) → {}.{}",
-                                    alias_name, ctx.rel_alias, resolved_col
+                                    alias_name,
+                                    ctx.rel_alias,
+                                    resolved_col
                                 );
                                 return RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(ctx.rel_alias.clone()),
@@ -1267,10 +1269,7 @@ fn resolve_denormalized_order_by_expr(
 
 /// Look up a denormalized property from the current schema's edge definitions.
 /// `is_from_node`: true = look in from_node_properties, false = look in to_node_properties
-fn resolve_denorm_property_from_schema(
-    prop_name: &str,
-    is_from_node: bool,
-) -> Option<String> {
+fn resolve_denorm_property_from_schema(prop_name: &str, is_from_node: bool) -> Option<String> {
     use crate::server::GLOBAL_SCHEMAS;
 
     let schemas_lock = GLOBAL_SCHEMAS.get()?;

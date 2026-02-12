@@ -1624,135 +1624,146 @@ impl RenderPlanBuilder for LogicalPlan {
                 } else {
                     // Standard path: use flat extractors for non-Union inputs
 
-                log::warn!("🔍 Calling extract_filters on WithClause input...");
-                let mut cte_filters = FilterBuilder::extract_filters(with.input.as_ref())?;
-                log::warn!("🔍 extract_filters returned: {:?}", cte_filters);
+                    log::warn!("🔍 Calling extract_filters on WithClause input...");
+                    let mut cte_filters = FilterBuilder::extract_filters(with.input.as_ref())?;
+                    log::warn!("🔍 extract_filters returned: {:?}", cte_filters);
 
-                let mut cte_having = with.input.extract_having()?;
+                    let mut cte_having = with.input.extract_having()?;
 
-                if let Some(where_clause) = &with.where_clause {
-                    let render_where: RenderExpr =
-                        where_clause.clone().try_into().map_err(|_| {
-                            RenderBuildError::InvalidRenderPlan(
-                                "Failed to convert where clause".to_string(),
-                            )
-                        })?;
-                    if has_aggregation {
-                        if cte_having.is_some() {
-                            return Err(RenderBuildError::InvalidRenderPlan(
-                                "Multiple having clauses".to_string(),
-                            ));
+                    if let Some(where_clause) = &with.where_clause {
+                        let render_where: RenderExpr =
+                            where_clause.clone().try_into().map_err(|_| {
+                                RenderBuildError::InvalidRenderPlan(
+                                    "Failed to convert where clause".to_string(),
+                                )
+                            })?;
+                        if has_aggregation {
+                            if cte_having.is_some() {
+                                return Err(RenderBuildError::InvalidRenderPlan(
+                                    "Multiple having clauses".to_string(),
+                                ));
+                            }
+                            cte_having = Some(render_where);
+                        } else if let Some(existing) = cte_filters {
+                            cte_filters =
+                                Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::And,
+                                    operands: vec![existing, render_where],
+                                }));
+                        } else {
+                            cte_filters = Some(render_where);
                         }
-                        cte_having = Some(render_where);
-                    } else if let Some(existing) = cte_filters {
-                        cte_filters =
-                            Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                                operator: Operator::And,
-                                operands: vec![existing, render_where],
-                            }));
-                    } else {
-                        cte_filters = Some(render_where);
-                    }
-                }
-
-                log::warn!("🔍🔍🔍 BEFORE extract_select_items for WITH.input");
-                let mut cte_select_items = <LogicalPlan as SelectBuilder>::extract_select_items(
-                    with.input.as_ref(),
-                    None,
-                )?;
-                log::warn!(
-                    "🔍🔍🔍 AFTER extract_select_items: got {} items",
-                    cte_select_items.len()
-                );
-
-                // 🔧 FIX: Process scalar expressions from WITH items
-                // For expressions like `u.name AS userName`, we need to:
-                // 1. Rewrite property access (u.name → u.full_name based on schema)
-                // 2. Convert to SelectItem and add to cte_select_items
-                use crate::query_planner::logical_expr::expression_rewriter::{
-                    rewrite_expression_with_property_mapping, ExpressionRewriteContext,
-                };
-                let rewrite_ctx = ExpressionRewriteContext::new(&with.input);
-
-                for item in &with.items {
-                    // Skip TableAlias items (node pass-through) - they're already expanded
-                    if matches!(&item.expression, LogicalExpr::TableAlias(_)) {
-                        continue;
                     }
 
-                    // Rewrite the expression to map properties to DB columns
-                    let rewritten_expr =
-                        rewrite_expression_with_property_mapping(&item.expression, &rewrite_ctx);
-
-                    // Convert to RenderExpr
-                    let render_expr: RenderExpr = rewritten_expr.try_into().map_err(|e| {
-                        RenderBuildError::InvalidRenderPlan(format!(
-                            "Failed to convert WITH expression: {:?}",
-                            e
-                        ))
-                    })?;
-
-                    // Use the explicit alias from the WITH item
-                    let col_alias = item.col_alias.as_ref().map(|ca| ColumnAlias(ca.0.clone()));
-
-                    log::info!(
-                        "🔧 Added WITH scalar expression: {:?} AS {:?}",
-                        render_expr,
-                        col_alias
+                    log::warn!("🔍🔍🔍 BEFORE extract_select_items for WITH.input");
+                    let mut cte_select_items =
+                        <LogicalPlan as SelectBuilder>::extract_select_items(
+                            with.input.as_ref(),
+                            None,
+                        )?;
+                    log::warn!(
+                        "🔍🔍🔍 AFTER extract_select_items: got {} items",
+                        cte_select_items.len()
                     );
 
-                    cte_select_items.push(SelectItem {
-                        expression: render_expr,
-                        col_alias,
-                    });
-                }
+                    // 🔧 FIX: Process scalar expressions from WITH items
+                    // For expressions like `u.name AS userName`, we need to:
+                    // 1. Rewrite property access (u.name → u.full_name based on schema)
+                    // 2. Convert to SelectItem and add to cte_select_items
+                    use crate::query_planner::logical_expr::expression_rewriter::{
+                        rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+                    };
+                    let rewrite_ctx = ExpressionRewriteContext::new(&with.input);
 
-                // ✅ FIX (Phase 6): Remap column aliases to match exported aliases
-                // When we have `WITH u AS person`, the select items will have aliases like `u.name`
-                // but they need to be remapped to `person.name` for the CTE output
-                let alias_mapping = build_with_alias_mapping(&with.items, &with.exported_aliases);
-                if !alias_mapping.is_empty() {
-                    cte_select_items = remap_select_item_aliases(cte_select_items, &alias_mapping);
-                }
+                    for item in &with.items {
+                        // Skip TableAlias items (node pass-through) - they're already expanded
+                        if matches!(&item.expression, LogicalExpr::TableAlias(_)) {
+                            continue;
+                        }
 
-                let mut temp_context = super::cte_generation::CteGenerationContext::new();
-                // Extract CTEs from WITH.input to populate context with CTE names
-                let _temp_ctes =
-                    extract_ctes_with_context(&with.input, "", &mut temp_context, schema, None)?;
+                        // Rewrite the expression to map properties to DB columns
+                        let rewritten_expr = rewrite_expression_with_property_mapping(
+                            &item.expression,
+                            &rewrite_ctx,
+                        );
 
-                // Now extract FROM with context so VLP CTEs can be looked up
-                use crate::render_plan::from_builder::FromBuilder;
-                let cte_from = FromTableItem(with.input.extract_from()?.and_then(|ft| ft.table));
-                let cte_joins = JoinItems(RenderPlanBuilder::extract_joins(
-                    with.input.as_ref(),
-                    schema,
-                )?);
-                let cte_group_by = GroupByExpressions(
-                    <LogicalPlan as GroupByBuilder>::extract_group_by(with.input.as_ref())?,
-                );
-                let cte_order_by = OrderByItems(with.input.extract_order_by()?);
-                let cte_skip = SkipItem(with.input.extract_skip());
-                let cte_limit = LimitItem(with.input.extract_limit());
+                        // Convert to RenderExpr
+                        let render_expr: RenderExpr = rewritten_expr.try_into().map_err(|e| {
+                            RenderBuildError::InvalidRenderPlan(format!(
+                                "Failed to convert WITH expression: {:?}",
+                                e
+                            ))
+                        })?;
 
-                CteContent::Structured(Box::new(RenderPlan {
-                    ctes: CteItems(vec![]),
-                    select: SelectItems {
-                        items: cte_select_items,
-                        distinct: false,
-                    },
-                    from: cte_from,
-                    joins: cte_joins,
-                    array_join: ArrayJoinItem(vec![]),
-                    filters: FilterItems(cte_filters),
-                    group_by: cte_group_by,
-                    having_clause: cte_having,
-                    order_by: cte_order_by,
-                    skip: cte_skip,
-                    limit: cte_limit,
-                    union: UnionItems(None),
-                    fixed_path_info: None,
-                    is_multi_label_scan: false,
-                }))
+                        // Use the explicit alias from the WITH item
+                        let col_alias = item.col_alias.as_ref().map(|ca| ColumnAlias(ca.0.clone()));
+
+                        log::info!(
+                            "🔧 Added WITH scalar expression: {:?} AS {:?}",
+                            render_expr,
+                            col_alias
+                        );
+
+                        cte_select_items.push(SelectItem {
+                            expression: render_expr,
+                            col_alias,
+                        });
+                    }
+
+                    // ✅ FIX (Phase 6): Remap column aliases to match exported aliases
+                    // When we have `WITH u AS person`, the select items will have aliases like `u.name`
+                    // but they need to be remapped to `person.name` for the CTE output
+                    let alias_mapping =
+                        build_with_alias_mapping(&with.items, &with.exported_aliases);
+                    if !alias_mapping.is_empty() {
+                        cte_select_items =
+                            remap_select_item_aliases(cte_select_items, &alias_mapping);
+                    }
+
+                    let mut temp_context = super::cte_generation::CteGenerationContext::new();
+                    // Extract CTEs from WITH.input to populate context with CTE names
+                    let _temp_ctes = extract_ctes_with_context(
+                        &with.input,
+                        "",
+                        &mut temp_context,
+                        schema,
+                        None,
+                    )?;
+
+                    // Now extract FROM with context so VLP CTEs can be looked up
+                    use crate::render_plan::from_builder::FromBuilder;
+                    let cte_from =
+                        FromTableItem(with.input.extract_from()?.and_then(|ft| ft.table));
+                    let cte_joins = JoinItems(RenderPlanBuilder::extract_joins(
+                        with.input.as_ref(),
+                        schema,
+                    )?);
+                    let cte_group_by = GroupByExpressions(
+                        <LogicalPlan as GroupByBuilder>::extract_group_by(with.input.as_ref())?,
+                    );
+                    let cte_order_by = OrderByItems(with.input.extract_order_by()?);
+                    let cte_skip = SkipItem(with.input.extract_skip());
+                    let cte_limit = LimitItem(with.input.extract_limit());
+
+                    CteContent::Structured(Box::new(RenderPlan {
+                        ctes: CteItems(vec![]),
+                        select: SelectItems {
+                            items: cte_select_items,
+                            distinct: false,
+                        },
+                        from: cte_from,
+                        joins: cte_joins,
+                        array_join: ArrayJoinItem(vec![]),
+                        filters: FilterItems(cte_filters),
+                        group_by: cte_group_by,
+                        having_clause: cte_having,
+                        order_by: cte_order_by,
+                        skip: cte_skip,
+                        limit: cte_limit,
+                        union: UnionItems(None),
+                        fixed_path_info: None,
+                        is_multi_label_scan: false,
+                    }))
                 }; // end of if/else is_denormalized_input
 
                 // Use CTE name from analyzer (includes counter for uniqueness)
@@ -2684,7 +2695,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
 
                     // Apply Limit/OrderBy/Skip from wrapper nodes
-                    fn apply_wrappers(plan: &LogicalPlan, render: &mut RenderPlan) -> Result<(), RenderBuildError> {
+                    fn apply_wrappers(
+                        plan: &LogicalPlan,
+                        render: &mut RenderPlan,
+                    ) -> Result<(), RenderBuildError> {
                         match plan {
                             LogicalPlan::Limit(l) => {
                                 render.limit = LimitItem(Some(l.count));

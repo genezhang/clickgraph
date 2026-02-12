@@ -894,8 +894,10 @@ impl JoinBuilder for LogicalPlan {
                 // Collect conditions from skipped joins that reference CTE aliases
                 // When a relationship JOIN is skipped (same table as anchor), its condition
                 // (e.g., r.origin_code = a.a_code) should be transferred to the CTE JOIN
-                let mut skipped_cte_conditions: std::collections::HashMap<String, Vec<OperatorApplication>> =
-                    std::collections::HashMap::new();
+                let mut skipped_cte_conditions: std::collections::HashMap<
+                    String,
+                    Vec<OperatorApplication>,
+                > = std::collections::HashMap::new();
 
                 for input_join in input_joins {
                     // Skip if alias already exists
@@ -959,7 +961,9 @@ impl JoinBuilder for LogicalPlan {
                     // First try to apply to existing empty CTE joins
                     for join in &mut joins {
                         if join.joining_on.is_empty() {
-                            if let Some(conditions) = skipped_cte_conditions.remove(&join.table_alias) {
+                            if let Some(conditions) =
+                                skipped_cte_conditions.remove(&join.table_alias)
+                            {
                                 log::info!(
                                     "🔧 Transferring {} conditions from skipped JOIN to CTE JOIN '{}'",
                                     conditions.len(),

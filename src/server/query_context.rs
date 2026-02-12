@@ -234,12 +234,7 @@ pub fn get_all_cte_properties(cte_alias: &str) -> Vec<(String, String)> {
             ctx.borrow()
                 .cte_property_mappings
                 .get(cte_alias)
-                .map(|props| {
-                    props
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect()
-                })
+                .map(|props| props.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                 .unwrap_or_default()
         })
         .unwrap_or_default()

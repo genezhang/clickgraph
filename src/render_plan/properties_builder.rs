@@ -180,7 +180,6 @@ impl PropertiesBuilder for LogicalPlan {
                 // - Outgoing: left_connection → from_node_properties, right_connection → to_node_properties
                 // - Incoming: left_connection → to_node_properties, right_connection → from_node_properties
                 if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
-
                     crate::debug_println!("DEBUG GraphRel: alias='{}' checking left='{}', right='{}', rel_alias='{}', direction={:?}",
                         alias, rel.left_connection, rel.right_connection, rel.alias, rel.direction);
                     crate::debug_println!(
@@ -201,7 +200,7 @@ impl PropertiesBuilder for LogicalPlan {
                     // Check if alias matches left_connection
                     if alias == rel.left_connection {
                         log::info!("✅ Found left_connection match for '{}'", alias);
-                        // left_connection is always FROM side (BidirectionalUnion swaps 
+                        // left_connection is always FROM side (BidirectionalUnion swaps
                         // connections for Incoming, maintaining left=FROM invariant)
                         let props = &scan.from_node_properties;
                         if let Some(node_props) = props {

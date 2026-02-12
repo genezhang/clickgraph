@@ -4903,10 +4903,8 @@ fn find_cypher_id_property_for_alias(plan: &LogicalPlan, alias: &str) -> Option<
             .inputs
             .iter()
             .find_map(|i| find_cypher_id_property_for_alias(i, alias)),
-        LogicalPlan::CartesianProduct(cp) => {
-            find_cypher_id_property_for_alias(&cp.left, alias)
-                .or_else(|| find_cypher_id_property_for_alias(&cp.right, alias))
-        }
+        LogicalPlan::CartesianProduct(cp) => find_cypher_id_property_for_alias(&cp.left, alias)
+            .or_else(|| find_cypher_id_property_for_alias(&cp.right, alias)),
         LogicalPlan::WithClause(wc) => find_cypher_id_property_for_alias(&wc.input, alias),
         _ => None,
     }
@@ -6147,8 +6145,7 @@ pub(crate) fn update_graph_joins_cte_refs(
                 .inputs
                 .iter()
                 .map(|input| {
-                    update_graph_joins_cte_refs(input, cte_references)
-                        .map(|p| Arc::new(p))
+                    update_graph_joins_cte_refs(input, cte_references).map(|p| Arc::new(p))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(LogicalPlan::Union(Union {
@@ -6368,20 +6365,19 @@ fn populate_cte_property_mappings_from_render_plan(
         std::collections::HashMap::new();
 
     // For denormalized unions, parent SELECT is empty; items are in union branches.
-    let select_items: &[SelectItem] =
-        if render_plan.select.items.is_empty() {
-            if let UnionItems(Some(ref union)) = render_plan.union {
-                if !union.input.is_empty() {
-                    &union.input[0].select.items
-                } else {
-                    &render_plan.select.items
-                }
+    let select_items: &[SelectItem] = if render_plan.select.items.is_empty() {
+        if let UnionItems(Some(ref union)) = render_plan.union {
+            if !union.input.is_empty() {
+                &union.input[0].select.items
             } else {
                 &render_plan.select.items
             }
         } else {
             &render_plan.select.items
-        };
+        }
+    } else {
+        &render_plan.select.items
+    };
 
     for select_item in select_items {
         if let Some(col_alias) = &select_item.col_alias {
@@ -7585,17 +7581,29 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                         fn has_denorm_vs(p: &LogicalPlan) -> bool {
                                             match p {
                                                 LogicalPlan::ViewScan(vs) => vs.is_denormalized,
-                                                LogicalPlan::GraphNode(gn) => has_denorm_vs(gn.input.as_ref()),
-                                                LogicalPlan::Filter(f) => has_denorm_vs(f.input.as_ref()),
-                                                LogicalPlan::Projection(p) => has_denorm_vs(p.input.as_ref()),
+                                                LogicalPlan::GraphNode(gn) => {
+                                                    has_denorm_vs(gn.input.as_ref())
+                                                }
+                                                LogicalPlan::Filter(f) => {
+                                                    has_denorm_vs(f.input.as_ref())
+                                                }
+                                                LogicalPlan::Projection(p) => {
+                                                    has_denorm_vs(p.input.as_ref())
+                                                }
                                                 _ => false,
                                             }
                                         }
                                         has_denorm_vs(input.as_ref())
                                     }),
-                                    LogicalPlan::Filter(f) => plan_has_denormalized_union(f.input.as_ref()),
-                                    LogicalPlan::GraphNode(gn) => plan_has_denormalized_union(gn.input.as_ref()),
-                                    LogicalPlan::Projection(p) => plan_has_denormalized_union(p.input.as_ref()),
+                                    LogicalPlan::Filter(f) => {
+                                        plan_has_denormalized_union(f.input.as_ref())
+                                    }
+                                    LogicalPlan::GraphNode(gn) => {
+                                        plan_has_denormalized_union(gn.input.as_ref())
+                                    }
+                                    LogicalPlan::Projection(p) => {
+                                        plan_has_denormalized_union(p.input.as_ref())
+                                    }
                                     _ => false,
                                 }
                             }
@@ -7618,7 +7626,9 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 let rename_alias = with_plans
                                     .first()
                                     .and_then(|p| match p {
-                                        LogicalPlan::WithClause(wc) => wc.exported_aliases.first().cloned(),
+                                        LogicalPlan::WithClause(wc) => {
+                                            wc.exported_aliases.first().cloned()
+                                        }
                                         _ => None,
                                     })
                                     .unwrap_or_else(|| with_alias.clone());
@@ -7637,8 +7647,16 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                     // Sort by alias to ensure consistent column order across
                                     // UNION branches (SQL UNION maps by position, not name)
                                     select.items.sort_by(|a, b| {
-                                        let a_alias = a.col_alias.as_ref().map(|c| c.0.as_str()).unwrap_or("");
-                                        let b_alias = b.col_alias.as_ref().map(|c| c.0.as_str()).unwrap_or("");
+                                        let a_alias = a
+                                            .col_alias
+                                            .as_ref()
+                                            .map(|c| c.0.as_str())
+                                            .unwrap_or("");
+                                        let b_alias = b
+                                            .col_alias
+                                            .as_ref()
+                                            .map(|c| c.0.as_str())
+                                            .unwrap_or("");
                                         a_alias.cmp(b_alias)
                                     });
                                 }
@@ -7672,21 +7690,24 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 }
 
                                 // Clear plan-level fields so CTE renders union directly
-                                rendered.select = SelectItems { items: vec![], distinct: false };
+                                rendered.select = SelectItems {
+                                    items: vec![],
+                                    distinct: false,
+                                };
                                 rendered.from = FromTableItem(None);
                                 rendered.filters = FilterItems(None);
                                 rendered.joins = JoinItems(vec![]);
                             } else {
-                            // For UNION plans, we need to apply projection over the union
-                            // We do this by keeping the UNION structure but replacing SELECT items
-                            // The union branches already have all columns, so we wrap with our projection
-                            // This creates: SELECT <with_items> FROM (SELECT * FROM table1 UNION ALL SELECT * FROM table2) AS __union
+                                // For UNION plans, we need to apply projection over the union
+                                // We do this by keeping the UNION structure but replacing SELECT items
+                                // The union branches already have all columns, so we wrap with our projection
+                                // This creates: SELECT <with_items> FROM (SELECT * FROM table1 UNION ALL SELECT * FROM table2) AS __union
 
-                            // For both UNION and non-UNION: apply projection to SELECT
-                            rendered.select = SelectItems {
-                                items: select_items,
-                                distinct: with_distinct,
-                            };
+                                // For both UNION and non-UNION: apply projection to SELECT
+                                rendered.select = SelectItems {
+                                    items: select_items,
+                                    distinct: with_distinct,
+                                };
                             } // end is_denorm_union else
 
                             // If there's aggregation, add GROUP BY for non-aggregate expressions
@@ -8089,11 +8110,16 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             let node_alias = with_plans
                                 .first()
                                 .and_then(|p| match p {
-                                    LogicalPlan::WithClause(wc) => wc.exported_aliases.first().cloned(),
+                                    LogicalPlan::WithClause(wc) => {
+                                        wc.exported_aliases.first().cloned()
+                                    }
                                     _ => None,
                                 })
                                 .unwrap_or_else(|| pc_meta.correlation_var.clone());
-                            ("__union".to_string(), format!("{}_{}", node_alias, id_column))
+                            (
+                                "__union".to_string(),
+                                format!("{}_{}", node_alias, id_column),
+                            )
                         } else {
                             (pc_meta.correlation_var.clone(), id_column.clone())
                         };
@@ -8131,9 +8157,9 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         {
                             with_cte_render.select.items.push(SelectItem {
                                 expression: RenderExpr::Column(
-                                    crate::render_plan::render_expr::Column(
-                                        PropertyValue::Column("__union.*".to_string()),
-                                    ),
+                                    crate::render_plan::render_expr::Column(PropertyValue::Column(
+                                        "__union.*".to_string(),
+                                    )),
                                 ),
                                 col_alias: None,
                             });
@@ -11548,7 +11574,8 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
             .get(cte_name)
             .and_then(|(_, _, alias_to_id, _)| {
                 // Try direct lookup first
-                alias_to_id.get(with_alias)
+                alias_to_id
+                    .get(with_alias)
                     .or_else(|| {
                         // Combined alias (e.g., "a_allNeighboursCount") won't match
                         // individual aliases (e.g., "a"). Try first matching key.
@@ -11560,9 +11587,9 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                         let stripped = prefixed
                             .strip_prefix(&format!("{}_", with_alias))
                             .or_else(|| {
-                                alias_to_id.keys().find_map(|k| {
-                                    prefixed.strip_prefix(&format!("{}_", k))
-                                })
+                                alias_to_id
+                                    .keys()
+                                    .find_map(|k| prefixed.strip_prefix(&format!("{}_", k)))
                             })
                             .unwrap_or(prefixed);
                         stripped.to_string()
@@ -11571,7 +11598,9 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
             .unwrap_or_else(|| "id".to_string());
         log::info!(
             "🔧 create_cte_reference: CTE '{}' alias '{}' → id_column '{}'",
-            cte_name, with_alias, cte_id_column
+            cte_name,
+            with_alias,
+            cte_id_column
         );
 
         LogicalPlan::GraphNode(GraphNode {
