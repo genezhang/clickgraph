@@ -33,6 +33,9 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::Arc;
+
+use crate::graph_catalog::graph_schema::GraphSchema;
 
 /// Per-query context holding all query-scoped state
 /// This replaces multiple scattered task_local!/thread_local! declarations
@@ -41,7 +44,10 @@ pub struct QueryContext {
     /// Schema name for this query (from USE clause or request parameter)
     pub schema_name: Option<String>,
 
-    /// Denormalized edge alias mapping: target_node_alias → edge_alias
+    /// The resolved GraphSchema for this query, set once at query entry.
+    /// All downstream code should use `get_current_schema()` instead of
+    /// accessing GLOBAL_SCHEMAS directly.
+    pub schema: Option<Arc<GraphSchema>>,
 
     /// Denormalized edge alias mapping: target_node_alias → edge_alias
     /// For denormalized edges where the edge table serves as both edge and target node
@@ -124,6 +130,45 @@ pub fn set_current_schema_name(name: Option<String>) {
 pub fn clear_current_schema_name() {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
         ctx.borrow_mut().schema_name = None;
+    });
+}
+
+/// Get the resolved GraphSchema for the current query.
+/// Returns None if no schema was set (e.g., outside query context).
+pub fn get_current_schema() -> Option<Arc<GraphSchema>> {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().schema.clone())
+        .ok()
+        .flatten()
+}
+
+/// Get the current schema, falling back to GLOBAL_SCHEMAS if not in a task-local context.
+/// This is needed for unit tests that set up GLOBAL_SCHEMAS directly without task-local scope.
+pub fn get_current_schema_with_fallback() -> Option<Arc<GraphSchema>> {
+    // Try task-local first
+    if let Some(schema) = get_current_schema() {
+        return Some(schema);
+    }
+    // Fallback to GLOBAL_SCHEMAS for backward compatibility (tests)
+    let schema_name = get_current_schema_name().unwrap_or_else(|| "default".to_string());
+    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+        if let Ok(schemas) = schemas_lock.try_read() {
+            if let Some(schema) = schemas.get(&schema_name) {
+                return Some(Arc::new(schema.clone()));
+            }
+            if let Some(schema) = schemas.values().next() {
+                return Some(Arc::new(schema.clone()));
+            }
+        }
+    }
+    None
+}
+
+/// Set the resolved GraphSchema for the current query.
+/// Should be called once at query entry after resolving the schema name.
+pub fn set_current_schema(schema: Arc<GraphSchema>) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().schema = Some(schema);
     });
 }
 

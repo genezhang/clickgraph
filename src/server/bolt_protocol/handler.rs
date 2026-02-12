@@ -797,18 +797,22 @@ impl BoltHandler {
             log::debug!("Query execution using schema: default");
         }
 
-        // Parse and execute the query
+        // Parse and execute the query with task-local schema context
         // Note: id() predicates with encoded values are decoded in FilterTagging pass
-        match self
-            .execute_cypher_query(
+        use crate::server::query_context::{with_query_context, QueryContext};
+        let ctx = QueryContext::new(schema_name.clone());
+        match with_query_context(
+            ctx,
+            self.execute_cypher_query(
                 &query,
                 parameters,
                 schema_name,
                 tenant_id,
                 role,
                 view_parameters,
-            )
-            .await
+            ),
+        )
+        .await
         {
             Ok(result_metadata) => {
                 // Update context to streaming state
@@ -1116,7 +1120,9 @@ impl BoltHandler {
             Err(_) => schema_name.as_deref().unwrap_or("default").to_string(),
         };
 
-        // Load the actual GraphSchema object for id() transformation
+        // Load the actual GraphSchema object for id() transformation.
+        // Set schema name in task-local context so downstream code can use it.
+        crate::server::query_context::set_current_schema_name(Some(effective_schema.clone()));
         let graph_schema = if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
             if let Ok(schemas) = schemas_lock.try_read() {
                 schemas.get(&effective_schema).cloned()
@@ -1459,6 +1465,10 @@ impl BoltHandler {
                 return Err(BoltError::query_error(format!("Schema error: {}", e)));
             }
         };
+
+        // Set the resolved schema in task-local context so all downstream
+        // code can access it via get_current_schema() without GLOBAL_SCHEMAS lookups
+        crate::server::query_context::set_current_schema(std::sync::Arc::new(graph_schema.clone()));
 
         // Re-parse and transform for planning (after async boundary)
         // Note: This is unavoidable due to Rc<RefCell<>> in AST not being Send

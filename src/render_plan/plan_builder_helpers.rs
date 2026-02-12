@@ -1377,73 +1377,42 @@ pub(super) fn rewrite_logical_path_functions(
     }
 }
 
-/// Helper function to get node table name for a given alias
-/// DEPRECATED: This function uses GLOBAL_SCHEMAS which may not have correct schema.
-/// Prefer using schema parameter passed through the call chain.
+/// Helper function to get node table name for a given alias.
+/// Uses the task-local query schema; falls back to GLOBAL_SCHEMAS if no context.
 pub(super) fn get_node_table_for_alias(alias: &str) -> String {
-    // Try to get from global schema - look for "default" or first available
-    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-        if let Ok(schemas) = schemas_lock.try_read() {
-            // Try "default" first, then fall back to first schema
-            let schema_opt = schemas.get("default").or_else(|| schemas.values().next());
+    use crate::server::query_context::get_current_schema_with_fallback as get_current_schema;
 
-            if let Some(schema) = schema_opt {
-                // Look up the node type from the alias - this is a simplified lookup
-                // In a real implementation, we'd need to track node types per alias
-                // For now, assume "User" type for common cases
-                if let Some(user_node) = schema.node_schema_opt("User") {
-                    // Return fully qualified table name: database.table_name
-                    return format!("{}.{}", user_node.database, user_node.table_name);
-                }
-            } else {
-                log::error!("❌ SCHEMA ERROR: No schemas loaded in GLOBAL_SCHEMAS. Cannot resolve alias '{}'.", alias);
-                return format!("ERROR_NO_SCHEMA_FOR_ALIAS_{}", alias);
-            }
+    if let Some(schema) = get_current_schema() {
+        if let Some(user_node) = schema.node_schema_opt("User") {
+            return format!("{}.{}", user_node.database, user_node.table_name);
         }
     }
 
-    // No GLOBAL_SCHEMAS available at all
     log::error!(
-        "❌ SCHEMA ERROR: GLOBAL_SCHEMAS not initialized. Cannot resolve alias '{}'.",
+        "❌ SCHEMA ERROR: No schema available. Cannot resolve alias '{}'.",
         alias
     );
-    format!("ERROR_SCHEMA_NOT_INITIALIZED_{}", alias)
+    format!("ERROR_NO_SCHEMA_FOR_ALIAS_{}", alias)
 }
 
-/// Helper function to get node ID columns for a given alias
-/// Returns Vec of column names (single element for simple ID, multiple for composite)
-/// DEPRECATED: This function uses GLOBAL_SCHEMAS which may not have correct schema.
-/// Prefer using schema parameter passed through the call chain.
+/// Helper function to get node ID columns for a given alias.
+/// Uses the task-local query schema; falls back to GLOBAL_SCHEMAS if no context.
 pub(super) fn get_node_id_columns_for_alias(alias: &str) -> Vec<String> {
-    // Try to get from global schema - look for "default" or first available
-    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-        if let Ok(schemas) = schemas_lock.try_read() {
-            // Try "default" first, then fall back to first schema
-            let schema_opt = schemas.get("default").or_else(|| schemas.values().next());
+    use crate::server::query_context::get_current_schema_with_fallback as get_current_schema;
 
-            if let Some(schema) = schema_opt {
-                // Look up the node type from the alias - this is a simplified lookup
-                if let Some(user_node) = schema.node_schema_opt("User") {
-                    return user_node
-                        .node_id
-                        .columns()
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect();
-                }
-            } else {
-                log::error!(
-                    "❌ SCHEMA ERROR: No schemas loaded. Cannot get ID columns for alias '{}'.",
-                    alias
-                );
-                return vec![format!("ERROR_NO_SCHEMA_FOR_{}", alias)];
-            }
+    if let Some(schema) = get_current_schema() {
+        if let Some(user_node) = schema.node_schema_opt("User") {
+            return user_node
+                .node_id
+                .columns()
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
         }
     }
 
-    // No GLOBAL_SCHEMAS available
     log::error!(
-        "❌ SCHEMA ERROR: GLOBAL_SCHEMAS not initialized. Cannot get ID columns for alias '{}'.",
+        "❌ SCHEMA ERROR: No schema available. Cannot get ID columns for alias '{}'.",
         alias
     );
     vec![format!("ERROR_SCHEMA_NOT_INITIALIZED_{}", alias)]
@@ -1469,88 +1438,48 @@ pub(super) fn get_node_id_column_for_alias(alias: &str) -> String {
         })
 }
 
-/// Get relationship columns from schema by relationship type
-/// Returns (from_column, to_column) for a given relationship type
-/// DEPRECATED: Uses GLOBAL_SCHEMAS. Prefer passing schema through call chain.
+/// Get relationship columns from schema by relationship type.
+/// Uses the task-local query schema.
 pub(super) fn get_relationship_columns_from_schema(rel_type: &str) -> Option<(String, String)> {
-    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-        if let Ok(schemas) = schemas_lock.try_read() {
-            // Try "default" first, then fall back to first schema
-            let schema_opt = schemas.get("default").or_else(|| schemas.values().next());
+    use crate::server::query_context::get_current_schema_with_fallback as get_current_schema;
 
-            if let Some(schema) = schema_opt {
-                if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
-                    return Some((
-                        rel_schema.from_id.clone(), // Use column names, not node types!
-                        rel_schema.to_id.clone(),
-                    ));
-                }
-            } else {
-                log::error!("❌ SCHEMA ERROR: No schemas loaded. Cannot get relationship columns for type '{}'.", rel_type);
-            }
-        }
+    let schema = get_current_schema()?;
+    if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
+        return Some((rel_schema.from_id.clone(), rel_schema.to_id.clone()));
     }
     None
 }
 
-/// Get relationship columns from schema by table name
-/// Searches all relationship schemas to find one with matching table name
-/// DEPRECATED: Uses GLOBAL_SCHEMAS. Prefer passing schema through call chain.
+/// Get relationship columns from schema by table name.
+/// Uses the task-local query schema.
 pub(super) fn get_relationship_columns_by_table(table_name: &str) -> Option<(String, String)> {
-    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-        if let Ok(schemas) = schemas_lock.try_read() {
-            // Try "default" first, then fall back to first schema
-            let schema_opt = schemas.get("default").or_else(|| schemas.values().next());
+    use crate::server::query_context::get_current_schema_with_fallback as get_current_schema;
 
-            if let Some(schema) = schema_opt {
-                // Search through all relationship schemas for one with matching table name
-                for (_key, rel_schema) in schema.get_relationships_schemas().iter() {
-                    if rel_schema.table_name == table_name {
-                        return Some((
-                            rel_schema.from_id.clone(), // Use column names!
-                            rel_schema.to_id.clone(),
-                        ));
-                    }
-                }
-            } else {
-                log::error!(
-                    "❌ SCHEMA ERROR: No schemas loaded. Cannot get columns for table '{}'.",
-                    table_name
-                );
-            }
+    let schema = get_current_schema()?;
+    for (_key, rel_schema) in schema.get_relationships_schemas().iter() {
+        if rel_schema.table_name == table_name {
+            return Some((rel_schema.from_id.clone(), rel_schema.to_id.clone()));
         }
     }
     None
 }
 
-/// Get node table name and ID columns from schema
-/// Returns (table_name, id_columns) for a given node label
-/// DEPRECATED: Uses GLOBAL_SCHEMAS. Prefer passing schema through call chain.
+/// Get node table name and ID columns from schema.
+/// Uses the task-local query schema.
 pub(super) fn get_node_info_from_schema(node_label: &str) -> Option<(String, Vec<String>)> {
-    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-        if let Ok(schemas) = schemas_lock.try_read() {
-            // Try "default" first, then fall back to first schema
-            let schema_opt = schemas.get("default").or_else(|| schemas.values().next());
+    use crate::server::query_context::get_current_schema_with_fallback as get_current_schema;
 
-            if let Some(schema) = schema_opt {
-                if let Ok(node_schema) = schema.node_schema(node_label) {
-                    return Some((
-                        node_schema.table_name.clone(),
-                        node_schema
-                            .node_id
-                            .columns()
-                            .iter()
-                            .map(|s| s.to_string())
-                            .collect(),
-                    ));
-                }
-            } else {
-                log::error!(
-                    "❌ SCHEMA ERROR: No schemas loaded. Cannot get node info for label '{}'.",
-                    node_label
-                );
-            }
-        }
+    let schema = get_current_schema()?;
+    if let Ok(node_schema) = schema.node_schema(node_label) {
+        return Some((
+            node_schema.table_name.clone(),
+            node_schema
+                .node_id
+                .columns()
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        ));
     }
     None
 }
@@ -1772,20 +1701,12 @@ pub(super) fn collect_undirected_relationships(plan: &LogicalPlan) -> Result<Vec
                         // First, try to look up the relationship schema by type
                         let edge_id_cols = if let Some(labels) = &graph_rel.labels {
                             if let Some(rel_type) = labels.first() {
-                                // Look up relationship schema from GLOBAL_SCHEMAS
-                                if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-                                    if let Ok(schemas) = schemas_lock.try_read() {
-                                        if let Some(default_schema) = schemas.get("default") {
-                                            if let Some(rel_schema) = default_schema.get_relationships_schema_opt(rel_type) {
-                                                match &rel_schema.edge_id {
-                                                    Some(id) => id.columns().iter().map(|s| s.to_string()).collect(),
-                                                    None => vec![from_col.clone(), to_col.clone()],
-                                                }
-                                            } else {
-                                                vec![from_col.clone(), to_col.clone()]
-                                            }
-                                        } else {
-                                            vec![from_col.clone(), to_col.clone()]
+                                // Look up relationship schema from task-local context
+                                if let Some(schema) = crate::server::query_context::get_current_schema_with_fallback() {
+                                    if let Some(rel_schema) = schema.get_relationships_schema_opt(rel_type) {
+                                        match &rel_schema.edge_id {
+                                            Some(id) => id.columns().iter().map(|s| s.to_string()).collect(),
+                                            None => vec![from_col.clone(), to_col.clone()],
                                         }
                                     } else {
                                         vec![from_col.clone(), to_col.clone()]
@@ -2230,25 +2151,16 @@ pub(super) fn render_expr_to_sql_for_cte(
 /// Query: `MATCH (u:User)-[:FOLLOWS]->(other:User)`
 ///
 /// Generates: `r.interaction_type = 'FOLLOWS' AND r.from_type = 'User' AND r.to_type = 'User'`
-/// DEPRECATED: Uses GLOBAL_SCHEMAS. Should be refactored to accept schema parameter.
+/// Uses the task-local query schema.
 pub(super) fn generate_polymorphic_edge_filters(
     rel_alias: &str,
     rel_type: &str,
     from_label: &str,
     to_label: &str,
 ) -> Option<RenderExpr> {
-    use crate::server::GLOBAL_SCHEMAS;
+    use crate::server::query_context::get_current_schema_with_fallback as get_current_schema;
 
-    // Get the relationship schema to check if it's polymorphic
-    let schema_lock = GLOBAL_SCHEMAS.get()?;
-    let schemas = schema_lock.try_read().ok()?;
-    // Try "default" first, then fall back to first schema
-    let schema = schemas.get("default").or_else(|| {
-        log::warn!(
-            "No 'default' schema found, using first available schema for polymorphic filters"
-        );
-        schemas.values().next()
-    })?;
+    let schema = get_current_schema()?;
     let rel_schema = schema.get_rel_schema(rel_type).ok()?;
 
     // Check if this is a polymorphic edge
@@ -4446,23 +4358,15 @@ pub(super) fn convert_path_branches_to_json(
             // Uses the active query's schema to avoid cross-schema ambiguity in multi-schema mode.
             if node_labels.is_none() {
                 if let Some(ref rt) = rel_type {
-                    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-                        if let Ok(schemas) = schemas_lock.try_read() {
-                            let schema_name = crate::server::query_context::get_current_schema_name()
-                                .unwrap_or_else(|| "default".to_string());
-                            let active_schema = schemas
-                                .get(&schema_name)
-                                .or_else(|| schemas.get("default"));
-                            if let Some(schema) = active_schema {
-                                if let Ok(rs) = schema.get_rel_schema(rt) {
-                                    node_labels =
-                                        Some((rs.from_node.clone(), rs.to_node.clone()));
-                                    log::info!(
-                                        "  Branch {}: derived labels from rel schema: from='{}', to='{}'",
-                                        branch_idx, rs.from_node, rs.to_node
-                                    );
-                                }
-                            }
+                    if let Some(schema) =
+                        crate::server::query_context::get_current_schema_with_fallback()
+                    {
+                        if let Ok(rs) = schema.get_rel_schema(rt) {
+                            node_labels = Some((rs.from_node.clone(), rs.to_node.clone()));
+                            log::info!(
+                                "  Branch {}: derived labels from rel schema: from='{}', to='{}'",
+                                branch_idx, rs.from_node, rs.to_node
+                            );
                         }
                     }
                 }

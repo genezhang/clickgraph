@@ -4,7 +4,6 @@ use super::{ProcedureRegistry, ProcedureResult};
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::open_cypher_parser;
 use crate::open_cypher_parser::ast::{CypherStatement, StandaloneProcedureCall};
-use crate::server::GLOBAL_SCHEMAS;
 use std::collections::HashMap;
 
 /// Execute a standalone procedure call by name
@@ -56,9 +55,15 @@ pub async fn execute_procedure(
     execute_procedure_by_name(call.procedure_name, schema_name, registry).await
 }
 
-/// Get a schema by name from the global registry
+/// Get a schema by name — uses task-local context first, falls back to GLOBAL_SCHEMAS
 async fn get_schema(schema_name: &str) -> Result<GraphSchema, String> {
-    let schemas_guard = GLOBAL_SCHEMAS
+    // Try task-local context first
+    if let Some(schema) = crate::server::query_context::get_current_schema() {
+        return Ok(schema.as_ref().clone());
+    }
+
+    // Fallback to GLOBAL_SCHEMAS for backward compatibility
+    let schemas_guard = crate::server::GLOBAL_SCHEMAS
         .get()
         .ok_or_else(|| "Schema registry not initialized".to_string())?;
 

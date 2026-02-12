@@ -1230,26 +1230,21 @@ impl JoinBuilder for LogicalPlan {
                         if let (Some(curr_type), Some(left_type)) =
                             (current_rel_type, left_rel_type)
                         {
-                            // Try to get coupling info from schema
-                            if let Some(schema_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-                                if let Ok(schemas) = schema_lock.try_read() {
-                                    // Try different schema names
-                                    for schema_name in ["default", ""] {
-                                        if let Some(schema) = schemas.get(schema_name) {
-                                            if let Some(coupling_info) =
-                                                schema.get_coupled_edge_info(&left_type, &curr_type)
-                                            {
-                                                println!(
-                                                    "DEBUG: COUPLED EDGES DETECTED! {} and {} share coupling node {} in table {}",
-                                                    left_type, curr_type, coupling_info.coupling_node, coupling_info.table_name
-                                                );
+                            // Try to get coupling info from task-local schema
+                            if let Some(schema) =
+                                crate::server::query_context::get_current_schema_with_fallback()
+                            {
+                                if let Some(coupling_info) =
+                                    schema.get_coupled_edge_info(&left_type, &curr_type)
+                                {
+                                    println!(
+                                        "DEBUG: COUPLED EDGES DETECTED! {} and {} share coupling node {} in table {}",
+                                        left_type, curr_type, coupling_info.coupling_node, coupling_info.table_name
+                                    );
 
-                                                // Skip the JOIN - edges are in the same row!
-                                                // If arrays need expansion, user should use UNWIND clause
-                                                return Ok(joins);
-                                            }
-                                        }
-                                    }
+                                    // Skip the JOIN - edges are in the same row!
+                                    // If arrays need expansion, user should use UNWIND clause
+                                    return Ok(joins);
                                 }
                             }
                         }
@@ -1706,28 +1701,16 @@ impl JoinBuilder for LogicalPlan {
                     if let Some(label_list) = labels {
                         if !label_list.is_empty() {
                             // Use the first relationship type to get the table name
-                            // For multi-relationship queries, all relationships should connect to the same table
-                            // (or the query should use denormalized edges)
-                            if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-                                if let Ok(schemas) = schemas_lock.try_read() {
-                                    // Try "default" schema first, then empty string
-                                    for schema_name in ["default", ""] {
-                                        if let Some(schema) = schemas.get(schema_name) {
-                                            if let Ok(rel_schema) =
-                                                schema.get_rel_schema(&label_list[0])
-                                            {
-                                                let table_name = if is_from_node {
-                                                    &rel_schema.from_node_table
-                                                } else {
-                                                    &rel_schema.to_node_table
-                                                };
-                                                return Some(format!(
-                                                    "{}.{}",
-                                                    rel_schema.database, table_name
-                                                ));
-                                            }
-                                        }
-                                    }
+                            if let Some(schema) =
+                                crate::server::query_context::get_current_schema_with_fallback()
+                            {
+                                if let Ok(rel_schema) = schema.get_rel_schema(&label_list[0]) {
+                                    let table_name = if is_from_node {
+                                        &rel_schema.from_node_table
+                                    } else {
+                                        &rel_schema.to_node_table
+                                    };
+                                    return Some(format!("{}.{}", rel_schema.database, table_name));
                                 }
                             }
                         }

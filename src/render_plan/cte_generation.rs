@@ -422,24 +422,18 @@ pub(crate) fn extract_var_len_properties(
                         // Handle wildcard property selection
                         if property_name == "*" {
                             // Expand * to all properties for this node type
-                            if let Some(schema_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-                                if let Ok(schemas) = schema_lock.try_read() {
-                                    // TODO(schema-threading): Hardcoded "default" - should use context.schema
-                                    if let Some(schema) = schemas.get("default") {
-                                        if let Some(node_schema) =
-                                            schema.all_node_schemas().get(node_label)
-                                        {
-                                            // Create a property for each mapping
-                                            for (prop_name, prop_value) in
-                                                &node_schema.property_mappings
-                                            {
-                                                properties.push(NodeProperty {
-                                                    cypher_alias: node_alias.to_string(),
-                                                    column_name: prop_value.raw().to_string(),
-                                                    alias: prop_name.clone(),
-                                                });
-                                            }
-                                        }
+                            if let Some(schema) =
+                                crate::server::query_context::get_current_schema_with_fallback()
+                            {
+                                if let Some(node_schema) = schema.all_node_schemas().get(node_label)
+                                {
+                                    // Create a property for each mapping
+                                    for (prop_name, prop_value) in &node_schema.property_mappings {
+                                        properties.push(NodeProperty {
+                                            cypher_alias: node_alias.to_string(),
+                                            column_name: prop_value.raw().to_string(),
+                                            alias: prop_name.clone(),
+                                        });
                                     }
                                 }
                             }
@@ -607,120 +601,28 @@ pub fn map_property_to_column_with_relationship_context(
     node_label: &str,
     relationship_type: Option<&str>,
     node_role: Option<NodeRole>,
-    schema_name: Option<&str>,
+    _schema_name: Option<&str>,
 ) -> Result<String, String> {
     use std::fs::OpenOptions;
     use std::io::Write;
 
-    // Try to get the schema from the global state
-    let schema_lock = crate::server::GLOBAL_SCHEMAS.get().ok_or_else(|| {
-        let msg = "GLOBAL_SCHEMAS not initialized".to_string();
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("debug_property_mapping.log")
-        {
-            let _ = writeln!(file, "ERROR: {}", msg);
-        }
-        msg
-    })?;
-
-    let schemas = schema_lock.try_read().map_err(|_| {
-        let msg = "Failed to acquire read lock on GLOBAL_SCHEMAS".to_string();
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("debug_property_mapping.log")
-        {
-            let _ = writeln!(file, "ERROR: {}", msg);
-        }
-        msg
-    })?;
-
-    if schemas.is_empty() {
-        let msg = "No schemas loaded in GLOBAL_SCHEMAS".to_string();
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("debug_property_mapping.log")
-        {
-            let _ = writeln!(file, "ERROR: {}", msg);
-        }
-        return Err(msg);
-    }
-
-    // ✅ FIXED: Use deterministic schema lookup
-    // Priority: explicit schema_name > task-local QUERY_SCHEMA_NAME > search all schemas (fallback)
-    let resolved_schema_name = schema_name
-        .map(|s| s.to_string())
-        .or_else(super::render_expr::get_current_schema_name);
+    // Get schema from task-local context (set at query entry),
+    // falling back to GLOBAL_SCHEMAS for backward compatibility (tests).
+    let current_schema = crate::server::query_context::get_current_schema_with_fallback();
+    let schema = if let Some(ref s) = current_schema {
+        s.as_ref()
+    } else {
+        return Err(format!(
+            "No schema available for property '{}' on node '{}'",
+            property, node_label
+        ));
+    };
 
     log::info!(
-        "🔍 map_property_to_column_with_relationship_context: property='{}', node_label='{}', resolved_schema_name={:?}",
+        "🔍 map_property_to_column_with_relationship_context: property='{}', node_label='{}'",
         property,
         node_label,
-        resolved_schema_name
     );
-
-    let schema = if let Some(sname) = resolved_schema_name {
-        log::info!("  ✓ Using explicit schema: {}", sname);
-        schemas.get(&sname).ok_or_else(|| {
-            let available_schemas: Vec<String> = schemas.keys().cloned().collect();
-            let msg = format!(
-                "Schema '{}' not found. Available schemas: {}",
-                sname,
-                available_schemas.join(", ")
-            );
-            if let Ok(mut file) = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("debug_property_mapping.log")
-            {
-                let _ = writeln!(file, "ERROR: {}", msg);
-            }
-            msg
-        })?
-    } else {
-        // ❌ ARCHITECTURAL ISSUE: Schema context is missing!
-        // This should NEVER happen in production. Schema must be explicitly specified.
-        // Each query operates within ONE schema scope - never cross-schema search.
-
-        log::error!(
-            "🚨 CRITICAL: map_property_to_column called without schema context for property='{}', node_label='{}'",
-            property,
-            node_label
-        );
-        log::error!(
-            "   Available schemas: {:?}",
-            schemas.keys().collect::<Vec<_>>()
-        );
-        log::error!(
-            "   This indicates a bug in schema context propagation through the rendering pipeline."
-        );
-
-        // Fallback: Search all schemas (this is a bug - should never happen)
-        // Log the schema that is being used (will help debug the root cause)
-        schemas
-            .values()
-            .find(|s| s.all_node_schemas().contains_key(node_label))
-            .ok_or_else(|| {
-                let available_schemas: Vec<String> = schemas.keys().cloned().collect();
-                let msg = format!(
-                    "CRITICAL: Node label '{}' not found. Schema context was missing (no explicit schema_name and QUERY_SCHEMA_NAME task_local not set). Available schemas: {}. This is a bug in schema context propagation.",
-                    node_label,
-                    available_schemas.join(", ")
-                );
-                log::error!("{}", msg);
-                if let Ok(mut file) = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open("debug_property_mapping.log")
-                {
-                    let _ = writeln!(file, "CRITICAL ERROR: {}", msg);
-                }
-                msg
-            })?
-    };
 
     // Get the node schema first
     let node_schema = schema.all_node_schemas().get(node_label).ok_or_else(|| {
@@ -864,56 +766,16 @@ pub fn map_property_to_column_with_relationship_context(
 pub fn map_relationship_property_to_column(
     property: &str,
     relationship_type: &str,
-    schema_name: Option<&str>,
+    _schema_name: Option<&str>,
 ) -> Result<String, String> {
-    // Try to get the schema from the global state
-    let schema_lock = crate::server::GLOBAL_SCHEMAS
-        .get()
-        .ok_or_else(|| "GLOBAL_SCHEMAS not initialized".to_string())?;
-
-    let schemas = schema_lock
-        .try_read()
-        .map_err(|_| "Failed to acquire read lock on GLOBAL_SCHEMAS".to_string())?;
-
-    // Try explicit parameter first, then task-local context
-    let resolved_schema_name = schema_name
-        .map(|s| s.to_string())
-        .or_else(super::render_expr::get_current_schema_name);
-
-    let schema = if let Some(sname) = resolved_schema_name {
-        schemas
-            .get(&sname)
-            .ok_or_else(|| format!("Schema '{}' not found", sname))?
-    } else {
-        // This should NEVER happen in production. Schema must be explicitly specified.
-        // Each query operates within ONE schema scope - never cross-schema search.
-        log::error!(
-            "🚨 CRITICAL: map_relationship_property_to_column called without schema context for property='{}', relationship_type='{}'",
-            property,
-            relationship_type
-        );
-        log::error!(
-            "   Available schemas: {:?}",
-            schemas.keys().collect::<Vec<_>>()
-        );
-        log::error!(
-            "   This indicates a bug in schema context propagation through the rendering pipeline."
-        );
-
-        // Fallback: Search all schemas (this is a bug - should never happen)
-        schemas
-            .values()
-            .find(|s| {
-                s.get_relationships_schemas()
-                    .contains_key(relationship_type)
-            })
-            .ok_or_else(|| {
-                format!(
-                    "Relationship type '{}' not found in any schema",
-                    relationship_type
-                )
-            })?
-    };
+    // Get schema from task-local context, falling back to GLOBAL_SCHEMAS for tests
+    let current_schema = crate::server::query_context::get_current_schema_with_fallback();
+    let schema = current_schema.as_deref().ok_or_else(|| {
+        format!(
+            "No schema available for relationship property '{}' on type '{}'",
+            property, relationship_type
+        )
+    })?;
 
     // Get the relationship schema
     let rel_schema = schema
