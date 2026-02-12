@@ -227,14 +227,19 @@ pub fn get_cte_property_mapping(cte_alias: &str, property: &str) -> Option<Strin
 }
 
 /// Get all CTE property mappings for a given alias
-/// Returns Vec<(property_name, cte_column_name)> or empty vec if not found
+/// Returns Vec<(property_name, cte_column_name)> sorted by property name for deterministic order
 pub fn get_all_cte_properties(cte_alias: &str) -> Vec<(String, String)> {
     QUERY_CONTEXT
         .try_with(|ctx| {
             ctx.borrow()
                 .cte_property_mappings
                 .get(cte_alias)
-                .map(|props| props.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                .map(|props| {
+                    let mut entries: Vec<(String, String)> =
+                        props.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                    entries.sort_by(|a, b| a.0.cmp(&b.0));
+                    entries
+                })
                 .unwrap_or_default()
         })
         .unwrap_or_default()

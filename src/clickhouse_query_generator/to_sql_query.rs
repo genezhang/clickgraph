@@ -1267,44 +1267,54 @@ fn resolve_denormalized_order_by_expr(expr: &RenderExpr, ctx: &PathBranchContext
     }
 }
 
-/// Look up a denormalized property from the current schema's edge definitions.
+/// Look up a denormalized property from the active query's schema edge definitions.
+/// Uses the task-local schema name to scope the lookup; falls back to "default".
 /// `is_from_node`: true = look in from_node_properties, false = look in to_node_properties
 fn resolve_denorm_property_from_schema(prop_name: &str, is_from_node: bool) -> Option<String> {
+    use crate::server::query_context::get_current_schema_name;
     use crate::server::GLOBAL_SCHEMAS;
 
     let schemas_lock = GLOBAL_SCHEMAS.get()?;
     let schemas_guard = schemas_lock.try_read().ok()?;
-    for schema in schemas_guard.values() {
-        for rel_schema in schema.get_relationships_schemas().values() {
-            let props: Option<&std::collections::HashMap<String, String>> = if is_from_node {
-                rel_schema.from_node_properties.as_ref()
-            } else {
-                rel_schema.to_node_properties.as_ref()
-            };
-            if let Some(prop_map) = props {
-                if let Some(col_name) = prop_map.get(prop_name) {
-                    return Some(col_name.clone());
-                }
+    let schema_name = get_current_schema_name().unwrap_or_else(|| "default".to_string());
+    let schema = schemas_guard
+        .get(&schema_name)
+        .or_else(|| schemas_guard.get("default"))?;
+
+    for rel_schema in schema.get_relationships_schemas().values() {
+        let props: Option<&std::collections::HashMap<String, String>> = if is_from_node {
+            rel_schema.from_node_properties.as_ref()
+        } else {
+            rel_schema.to_node_properties.as_ref()
+        };
+        if let Some(prop_map) = props {
+            if let Some(col_name) = prop_map.get(prop_name) {
+                return Some(col_name.clone());
             }
         }
     }
     None
 }
 
-/// Look up the node_id property name from the first denormalized node in GLOBAL_SCHEMAS.
+/// Look up the node_id property name from the active query's schema.
+/// Uses the task-local schema name to scope the lookup; falls back to "default".
 /// Returns the logical property name (e.g., "code") used for id() resolution.
 fn lookup_denorm_node_id_property() -> Option<String> {
+    use crate::server::query_context::get_current_schema_name;
     use crate::server::GLOBAL_SCHEMAS;
 
     let schemas_lock = GLOBAL_SCHEMAS.get()?;
     let schemas_guard = schemas_lock.try_read().ok()?;
-    for schema in schemas_guard.values() {
-        for node_schema in schema.all_node_schemas().values() {
-            if node_schema.is_denormalized {
-                let columns = node_schema.node_id.id.columns();
-                if let Some(first_col) = columns.first() {
-                    return Some(first_col.to_string());
-                }
+    let schema_name = get_current_schema_name().unwrap_or_else(|| "default".to_string());
+    let schema = schemas_guard
+        .get(&schema_name)
+        .or_else(|| schemas_guard.get("default"))?;
+
+    for node_schema in schema.all_node_schemas().values() {
+        if node_schema.is_denormalized {
+            let columns = node_schema.node_id.id.columns();
+            if let Some(first_col) = columns.first() {
+                return Some(first_col.to_string());
             }
         }
     }

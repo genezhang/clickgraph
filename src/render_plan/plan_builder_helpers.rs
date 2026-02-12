@@ -4442,12 +4442,18 @@ pub(super) fn convert_path_branches_to_json(
                 })
             });
 
-            // Fallback: when label extraction fails (e.g., CTE-backed nodes), derive from relationship schema
+            // Fallback: when label extraction fails (e.g., CTE-backed nodes), derive from relationship schema.
+            // Uses the active query's schema to avoid cross-schema ambiguity in multi-schema mode.
             if node_labels.is_none() {
                 if let Some(ref rt) = rel_type {
                     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
                         if let Ok(schemas) = schemas_lock.try_read() {
-                            for schema in schemas.values() {
+                            let schema_name = crate::server::query_context::get_current_schema_name()
+                                .unwrap_or_else(|| "default".to_string());
+                            let active_schema = schemas
+                                .get(&schema_name)
+                                .or_else(|| schemas.get("default"));
+                            if let Some(schema) = active_schema {
                                 if let Ok(rs) = schema.get_rel_schema(rt) {
                                     node_labels =
                                         Some((rs.from_node.clone(), rs.to_node.clone()));
@@ -4455,7 +4461,6 @@ pub(super) fn convert_path_branches_to_json(
                                         "  Branch {}: derived labels from rel schema: from='{}', to='{}'",
                                         branch_idx, rs.from_node, rs.to_node
                                     );
-                                    break;
                                 }
                             }
                         }
