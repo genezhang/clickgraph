@@ -1322,11 +1322,49 @@ impl LogicalPlan {
         // Get properties from schema
         let plan_ctx = plan_ctx.unwrap(); // Should always be Some for CTE expansion
         let schema = plan_ctx.schema();
-        let properties = if let TypedVariable::Node(_) = typed_var {
+        let mut properties = if let TypedVariable::Node(_) = typed_var {
             schema.get_node_properties(labels)
         } else {
             schema.get_relationship_properties(labels)
         };
+
+        // For denormalized nodes, property_mappings only has node_id (e.g., code).
+        // Merge in from_properties/to_properties to get all denormalized properties.
+        if let TypedVariable::Node(_) = typed_var {
+            if let Some(label) = labels.first() {
+                if let Some(node_schema) = schema.node_schema_opt(label) {
+                    if node_schema.is_denormalized {
+                        let mut denorm_props = Vec::new();
+                        if let Some(from_props) = &node_schema.from_properties {
+                            for (prop_name, _col) in from_props {
+                                if !properties.iter().any(|(p, _)| p == prop_name)
+                                    && !denorm_props.iter().any(|(p, _): &(String, String)| p == prop_name)
+                                {
+                                    denorm_props.push((prop_name.clone(), prop_name.clone()));
+                                }
+                            }
+                        }
+                        if let Some(to_props) = &node_schema.to_properties {
+                            for (prop_name, _col) in to_props {
+                                if !properties.iter().any(|(p, _)| p == prop_name)
+                                    && !denorm_props.iter().any(|(p, _): &(String, String)| p == prop_name)
+                                {
+                                    denorm_props.push((prop_name.clone(), prop_name.clone()));
+                                }
+                            }
+                        }
+                        if !denorm_props.is_empty() {
+                            log::info!(
+                                "✅ Merged {} denormalized properties for CTE entity '{}'",
+                                denorm_props.len(),
+                                alias
+                            );
+                            properties.extend(denorm_props);
+                        }
+                    }
+                }
+            }
+        }
 
         if properties.is_empty() {
             log::warn!(
@@ -1339,6 +1377,9 @@ impl LogicalPlan {
         // Generate CTE column names and SelectItems
         // Use CTE property mappings from query context (populated by cte_manager)
         // to get the actual column names rather than constructing them manually.
+        // Use individual node alias as table reference (not combined CTE FROM alias)
+        // because JOINs use individual aliases (e.g., `AS a`, not `AS a_allNeighboursCount`)
+        let table_ref = alias.to_string();
         let prop_count = properties.len();
         for (prop_name, _db_column) in properties {
             let cte_column =
@@ -1346,7 +1387,7 @@ impl LogicalPlan {
                     .unwrap_or_else(|| format!("{}_{}", alias, prop_name));
             select_items.push(SelectItem {
                 expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: RenderTableAlias(from_alias.clone()),
+                    table_alias: RenderTableAlias(table_ref.clone()),
                     column: PropertyValue::Column(cte_column),
                 }),
                 col_alias: Some(ColumnAlias(format!("{}.{}", alias, prop_name))),

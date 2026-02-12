@@ -42,6 +42,8 @@ impl PropertiesBuilder for LogicalPlan {
                 // FAST PATH: Use pre-computed projected_columns if available
                 // (populated by ProjectedColumnsResolver analyzer pass)
                 if let Some(projected_cols) = &node.projected_columns {
+                    log::info!("🔍 get_properties_with_table_alias: GraphNode '{}' using projected_columns ({} entries): {:?}",
+                        alias, projected_cols.len(), projected_cols);
                     // projected_columns format: Vec<(property_name, qualified_column)>
                     // e.g., [("firstName", "p.first_name"), ("age", "p.age")]
                     // We need to return unqualified column names: ("firstName", "first_name")

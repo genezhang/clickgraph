@@ -11547,13 +11547,26 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
         let cte_id_column = cte_schemas
             .get(cte_name)
             .and_then(|(_, _, alias_to_id, _)| {
-                alias_to_id.get(with_alias).map(|prefixed| {
-                    // Strip the alias prefix: "a_code" → "code"
-                    prefixed
-                        .strip_prefix(&format!("{}_", with_alias))
-                        .unwrap_or(prefixed)
-                        .to_string()
-                })
+                // Try direct lookup first
+                alias_to_id.get(with_alias)
+                    .or_else(|| {
+                        // Combined alias (e.g., "a_allNeighboursCount") won't match
+                        // individual aliases (e.g., "a"). Try first matching key.
+                        alias_to_id.keys().next().and_then(|k| alias_to_id.get(k))
+                    })
+                    .map(|prefixed| {
+                        // Strip any alias prefix: "a_code" → "code"
+                        // Try with_alias first, then each key in alias_to_id
+                        let stripped = prefixed
+                            .strip_prefix(&format!("{}_", with_alias))
+                            .or_else(|| {
+                                alias_to_id.keys().find_map(|k| {
+                                    prefixed.strip_prefix(&format!("{}_", k))
+                                })
+                            })
+                            .unwrap_or(prefixed);
+                        stripped.to_string()
+                    })
             })
             .unwrap_or_else(|| "id".to_string());
         log::info!(

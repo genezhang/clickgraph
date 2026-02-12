@@ -2683,10 +2683,31 @@ impl RenderPlanBuilder for LogicalPlan {
                         }));
                     }
 
-                    // Wrap in Limit if needed
-                    if let LogicalPlan::Limit(l) = self {
-                        base_render.limit = LimitItem(Some(l.count));
+                    // Apply Limit/OrderBy/Skip from wrapper nodes
+                    fn apply_wrappers(plan: &LogicalPlan, render: &mut RenderPlan) -> Result<(), RenderBuildError> {
+                        match plan {
+                            LogicalPlan::Limit(l) => {
+                                render.limit = LimitItem(Some(l.count));
+                                apply_wrappers(&l.input, render)?;
+                            }
+                            LogicalPlan::OrderBy(ob) => {
+                                let order_by_items: Result<Vec<OrderByItem>, _> = ob
+                                    .items
+                                    .iter()
+                                    .map(|item| item.clone().try_into())
+                                    .collect();
+                                render.order_by = OrderByItems(order_by_items?);
+                                apply_wrappers(&ob.input, render)?;
+                            }
+                            LogicalPlan::Skip(s) => {
+                                render.skip = SkipItem(Some(s.count));
+                                apply_wrappers(&s.input, render)?;
+                            }
+                            _ => {}
+                        }
+                        Ok(())
                     }
+                    apply_wrappers(self, &mut base_render)?;
 
                     return Ok(base_render);
                 }
@@ -3116,6 +3137,28 @@ impl RenderPlanBuilder for LogicalPlan {
             // Now delegate to old to_render_plan for the rest of WITH processing
             // (which will reuse the CTEs we just generated)
             return self.to_render_plan(schema);
+        }
+
+        // Unwrap Limit/OrderBy/Skip wrappers and recurse with plan_ctx preserved
+        if let LogicalPlan::Limit(l) = self {
+            let mut render_plan = l.input.to_render_plan_with_ctx(schema, plan_ctx)?;
+            render_plan.limit = LimitItem(Some(l.count));
+            return Ok(render_plan);
+        }
+        if let LogicalPlan::OrderBy(ob) = self {
+            let mut render_plan = ob.input.to_render_plan_with_ctx(schema, plan_ctx)?;
+            let order_by_items: Result<Vec<OrderByItem>, _> = ob
+                .items
+                .iter()
+                .map(|item| item.clone().try_into())
+                .collect();
+            render_plan.order_by = OrderByItems(order_by_items?);
+            return Ok(render_plan);
+        }
+        if let LogicalPlan::Skip(s) = self {
+            let mut render_plan = s.input.to_render_plan_with_ctx(schema, plan_ctx)?;
+            render_plan.skip = SkipItem(Some(s.count));
+            return Ok(render_plan);
         }
 
         // For all other cases, log what type we're delegating
