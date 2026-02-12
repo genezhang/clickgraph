@@ -1537,11 +1537,92 @@ impl RenderPlanBuilder for LogicalPlan {
                     std::mem::discriminant(with.input.as_ref())
                 );
 
+                // Check if the input contains a denormalized Union.
+                // Denormalized Unions need special handling: each branch has different
+                // property mappings (from_properties vs to_properties), so the flat
+                // extractor approach (extract_from, extract_select_items, extract_filters)
+                // cannot handle them — it collapses to one branch with wrong mappings.
+                // Instead, use to_render_plan() which correctly renders both branches.
+                fn input_has_denormalized_union(plan: &LogicalPlan) -> bool {
+                    match plan {
+                        LogicalPlan::Union(u) => u.inputs.iter().any(|input| {
+                            fn has_denorm_vs(p: &LogicalPlan) -> bool {
+                                match p {
+                                    LogicalPlan::ViewScan(vs) => vs.is_denormalized,
+                                    LogicalPlan::GraphNode(gn) => has_denorm_vs(gn.input.as_ref()),
+                                    LogicalPlan::Filter(f) => has_denorm_vs(f.input.as_ref()),
+                                    LogicalPlan::Projection(p) => has_denorm_vs(p.input.as_ref()),
+                                    _ => false,
+                                }
+                            }
+                            has_denorm_vs(input.as_ref())
+                        }),
+                        LogicalPlan::Filter(f) => input_has_denormalized_union(f.input.as_ref()),
+                        LogicalPlan::GraphNode(gn) => {
+                            input_has_denormalized_union(gn.input.as_ref())
+                        }
+                        LogicalPlan::Projection(p) => {
+                            input_has_denormalized_union(p.input.as_ref())
+                        }
+                        _ => false,
+                    }
+                }
+
+                let is_denormalized_input = input_has_denormalized_union(with.input.as_ref());
+
                 // Handle WithClause by building a CTE from the input and creating a render plan with the CTE
                 let has_aggregation = with
                     .items
                     .iter()
                     .any(|item| matches!(item.expression, LogicalExpr::AggregateFnCall(_)));
+
+                let cte_content = if is_denormalized_input {
+                    // Denormalized Union path: use to_render_plan() which correctly
+                    // renders both UNION branches with per-branch property resolution
+                    log::info!("🔧 WithClause: Using to_render_plan for denormalized Union input");
+                    let mut input_plan = with.input.to_render_plan(schema)?;
+
+                    // Apply WHERE clause from WITH if present
+                    if let Some(where_clause) = &with.where_clause {
+                        let render_where: RenderExpr =
+                            where_clause.clone().try_into().map_err(|_| {
+                                RenderBuildError::InvalidRenderPlan(
+                                    "Failed to convert where clause".to_string(),
+                                )
+                            })?;
+                        if has_aggregation {
+                            input_plan.having_clause = Some(render_where);
+                        } else {
+                            input_plan.filters = match input_plan.filters.0 {
+                                Some(existing) => FilterItems(Some(
+                                    RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                        operator: Operator::And,
+                                        operands: vec![existing, render_where],
+                                    }),
+                                )),
+                                None => FilterItems(Some(render_where)),
+                            };
+                        }
+                    }
+
+                    // Apply ORDER BY/SKIP/LIMIT from WITH clause
+                    if let Some(order_by) = &with.order_by {
+                        let items: Result<Vec<OrderByItem>, _> = order_by
+                            .iter()
+                            .map(|ob| OrderByItem::try_from(ob.clone()))
+                            .collect();
+                        input_plan.order_by = OrderByItems(items?);
+                    }
+                    if let Some(skip) = with.skip {
+                        input_plan.skip = SkipItem(Some(skip as i64));
+                    }
+                    if let Some(limit) = with.limit {
+                        input_plan.limit = LimitItem(Some(limit as i64));
+                    }
+
+                    CteContent::Structured(Box::new(input_plan))
+                } else {
+                    // Standard path: use flat extractors for non-Union inputs
 
                 log::warn!("🔍 Calling extract_filters on WithClause input...");
                 let mut cte_filters = FilterBuilder::extract_filters(with.input.as_ref())?;
@@ -1653,7 +1734,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 let cte_skip = SkipItem(with.input.extract_skip());
                 let cte_limit = LimitItem(with.input.extract_limit());
 
-                let cte_content = CteContent::Structured(Box::new(RenderPlan {
+                CteContent::Structured(Box::new(RenderPlan {
                     ctes: CteItems(vec![]),
                     select: SelectItems {
                         items: cte_select_items,
@@ -1671,8 +1752,8 @@ impl RenderPlanBuilder for LogicalPlan {
                     union: UnionItems(None),
                     fixed_path_info: None,
                     is_multi_label_scan: false,
-                    // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
-                }));
+                }))
+                }; // end of if/else is_denormalized_input
 
                 // Use CTE name from analyzer (includes counter for uniqueness)
                 // The analyzer set this name using CteSchemaResolver with proper counter tracking

@@ -417,11 +417,40 @@ impl AnalyzerPass for FilterTagging {
                 }
             }
             LogicalPlan::WithClause(with_clause) => {
+                // Temporarily clear CTE references for exported aliases before
+                // processing the WithClause's input. Inside the input (e.g., Union
+                // over denormalized ViewScans), properties still refer to original
+                // table columns and must be resolved, not skipped as CTE-sourced.
+                let mut saved_cte_refs: Vec<(String, Option<String>)> = Vec::new();
+                for alias in &with_clause.exported_aliases {
+                    if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias) {
+                        if table_ctx.is_cte_reference() {
+                            saved_cte_refs.push((alias.clone(), table_ctx.get_cte_name().cloned()));
+                            let mut cleared_ctx = table_ctx.clone();
+                            cleared_ctx.set_cte_reference(None);
+                            plan_ctx.insert_table_ctx(alias.clone(), cleared_ctx);
+                            log::debug!(
+                                "🔧 FilterTagging: Temporarily cleared CTE reference for alias '{}'",
+                                alias
+                            );
+                        }
+                    }
+                }
+
                 let child_tf = self.analyze_with_graph_schema(
                     with_clause.input.clone(),
                     plan_ctx,
                     graph_schema,
                 )?;
+
+                // Restore CTE references after processing input
+                for (alias, cte_ref) in &saved_cte_refs {
+                    if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias) {
+                        let mut restored_ctx = table_ctx.clone();
+                        restored_ctx.set_cte_reference(cte_ref.clone());
+                        plan_ctx.insert_table_ctx(alias.clone(), restored_ctx);
+                    }
+                }
 
                 // Apply property mapping to WITH clause items (resolves LabelExpression, etc.)
                 let mut mapped_items = Vec::new();
@@ -1316,10 +1345,20 @@ impl FilterTagging {
                                         "FilterTagging: Resolved id({}) to PropertyAccess with column '{}'",
                                         alias_str, column
                                     );
-                                    return Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    let prop_expr = LogicalExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(alias_str.clone()),
                                         column: crate::graph_catalog::expression_parser::PropertyValue::Column(column),
-                                    }));
+                                    });
+                                    // Recurse to apply property mapping (resolves
+                                    // Cypher property to physical column for
+                                    // denormalized schemas)
+                                    return self.apply_property_mapping_internal(
+                                        prop_expr,
+                                        plan_ctx,
+                                        graph_schema,
+                                        plan,
+                                        preserve_id_function,
+                                    );
                                 }
                             }
                         }

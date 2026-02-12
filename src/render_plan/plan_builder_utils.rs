@@ -7454,6 +7454,97 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         log::warn!("🔧 build_chained_with_match_cte_plan: Total select_items after expansion: {}", select_items.len());
 
                         if !select_items.is_empty() {
+                            // Check if the logical plan has a denormalized Union.
+                            // Denormalized Unions already have per-branch SELECT items with
+                            // correct column resolution (origin_code vs dest_code). We must NOT
+                            // overwrite them with a flat projection from one branch only.
+                            // Instead, rename aliases in each branch: "code" → "a_code".
+                            fn plan_has_denormalized_union(plan: &LogicalPlan) -> bool {
+                                match plan {
+                                    LogicalPlan::Union(u) => u.inputs.iter().any(|input| {
+                                        fn has_denorm_vs(p: &LogicalPlan) -> bool {
+                                            match p {
+                                                LogicalPlan::ViewScan(vs) => vs.is_denormalized,
+                                                LogicalPlan::GraphNode(gn) => has_denorm_vs(gn.input.as_ref()),
+                                                LogicalPlan::Filter(f) => has_denorm_vs(f.input.as_ref()),
+                                                LogicalPlan::Projection(p) => has_denorm_vs(p.input.as_ref()),
+                                                _ => false,
+                                            }
+                                        }
+                                        has_denorm_vs(input.as_ref())
+                                    }),
+                                    LogicalPlan::Filter(f) => plan_has_denormalized_union(f.input.as_ref()),
+                                    LogicalPlan::GraphNode(gn) => plan_has_denormalized_union(gn.input.as_ref()),
+                                    LogicalPlan::Projection(p) => plan_has_denormalized_union(p.input.as_ref()),
+                                    _ => false,
+                                }
+                            }
+                            let is_denorm_union = plan_has_denormalized_union(plan_to_render)
+                                && rendered.union.0.is_some();
+
+                            if is_denorm_union {
+                                // Denormalized Union: the RenderPlan stores first branch in
+                                // (select, from, filters) and remaining branches in union.input[].
+                                // For CTE content, we need ALL branches in a flat UNION DISTINCT.
+                                // Move first branch into union.input and clear plan-level fields.
+                                log::info!(
+                                    "🔧 build_chained_with_match_cte_plan: Denormalized Union detected, restructuring for WITH '{}'",
+                                    with_alias
+                                );
+                                fn rename_branch_aliases(select: &mut SelectItems, alias: &str) {
+                                    for item in &mut select.items {
+                                        if let Some(ref mut col_alias) = item.col_alias {
+                                            if col_alias.0 == "__label__" {
+                                                continue;
+                                            }
+                                            let new_name = format!("{}_{}", alias, col_alias.0);
+                                            col_alias.0 = new_name;
+                                        }
+                                    }
+                                    select.distinct = true;
+                                    // Sort by alias to ensure consistent column order across
+                                    // UNION branches (SQL UNION maps by position, not name)
+                                    select.items.sort_by(|a, b| {
+                                        let a_alias = a.col_alias.as_ref().map(|c| c.0.as_str()).unwrap_or("");
+                                        let b_alias = b.col_alias.as_ref().map(|c| c.0.as_str()).unwrap_or("");
+                                        a_alias.cmp(b_alias)
+                                    });
+                                }
+
+                                // Build first branch RenderPlan from the parent plan's fields
+                                let mut first_branch = RenderPlan {
+                                    ctes: CteItems(vec![]),
+                                    select: rendered.select.clone(),
+                                    from: rendered.from.clone(),
+                                    joins: rendered.joins.clone(),
+                                    array_join: ArrayJoinItem(Vec::new()),
+                                    filters: rendered.filters.clone(),
+                                    group_by: GroupByExpressions(vec![]),
+                                    having_clause: None,
+                                    order_by: OrderByItems(vec![]),
+                                    skip: SkipItem(None),
+                                    limit: LimitItem(None),
+                                    union: UnionItems(None),
+                                    fixed_path_info: None,
+                                    is_multi_label_scan: false,
+                                };
+                                rename_branch_aliases(&mut first_branch.select, &with_alias);
+
+                                // Rename aliases in remaining branches
+                                if let UnionItems(Some(ref mut union)) = rendered.union {
+                                    for branch in &mut union.input {
+                                        rename_branch_aliases(&mut branch.select, &with_alias);
+                                    }
+                                    // Insert first branch at the beginning
+                                    union.input.insert(0, first_branch);
+                                }
+
+                                // Clear plan-level fields so CTE renders union directly
+                                rendered.select = SelectItems { items: vec![], distinct: false };
+                                rendered.from = FromTableItem(None);
+                                rendered.filters = FilterItems(None);
+                                rendered.joins = JoinItems(vec![]);
+                            } else {
                             // For UNION plans, we need to apply projection over the union
                             // We do this by keeping the UNION structure but replacing SELECT items
                             // The union branches already have all columns, so we wrap with our projection
@@ -7464,6 +7555,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 items: select_items,
                                 distinct: with_distinct,
                             };
+                            } // end is_denorm_union else
 
                             // If there's aggregation, add GROUP BY for non-aggregate expressions
                             // PERFORMANCE: Only GROUP BY the ID column(s) for TableAlias items
