@@ -226,6 +226,25 @@ pub fn get_cte_property_mapping(cte_alias: &str, property: &str) -> Option<Strin
         .flatten()
 }
 
+/// Get all CTE property mappings for a given alias
+/// Returns Vec<(property_name, cte_column_name)> or empty vec if not found
+pub fn get_all_cte_properties(cte_alias: &str) -> Vec<(String, String)> {
+    QUERY_CONTEXT
+        .try_with(|ctx| {
+            ctx.borrow()
+                .cte_property_mappings
+                .get(cte_alias)
+                .map(|props| {
+                    props
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .unwrap_or_default()
+}
+
 /// Clear CTE property mappings
 pub fn clear_cte_property_mappings() {
     let _ = QUERY_CONTEXT.try_with(|ctx| {

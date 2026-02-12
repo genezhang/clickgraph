@@ -565,11 +565,60 @@ impl SelectBuilder for LogicalPlan {
                                 }
                             }
 
+                            // CTE reference wildcard: alias was renamed to CTE name
+                            // (e.g., "a" → "with_a_cte_0" by rewrite_logical_expr_cte_refs)
+                            // Reverse-map to original alias, then expand using CTE columns.
+                            if let Some(original_alias) = self.find_cte_original_alias(&prop.table_alias.0) {
+                                let cte_props = crate::server::query_context::get_all_cte_properties(&original_alias);
+                                if !cte_props.is_empty() {
+                                    log::info!(
+                                        "🔍 CTE wildcard expansion: '{}' → original alias '{}' with {} properties",
+                                        prop.table_alias.0, original_alias, cte_props.len()
+                                    );
+                                    for (prop_name, cte_column) in &cte_props {
+                                        select_items.push(SelectItem {
+                                            expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: RenderTableAlias(original_alias.clone()),
+                                                column: PropertyValue::Column(cte_column.clone()),
+                                            }),
+                                            col_alias: Some(ColumnAlias(format!(
+                                                "{}.{}",
+                                                original_alias, prop_name
+                                            ))),
+                                        });
+                                    }
+                                    continue;
+                                }
+                            }
+
                             // Check if this is a denormalized edge alias mapping
-                            let mapped_alias = crate::render_plan::get_denormalized_alias_mapping(
-                                &prop.table_alias.0,
-                            )
-                            .unwrap_or_else(|| prop.table_alias.0.clone());
+                            // First try plan_ctx (populated during planning), then fall back to
+                            // logical plan inspection, then QUERY_CONTEXT
+                            let mapped_alias = if let Some(ctx) = plan_ctx {
+                                if let Some((edge_alias, _is_from, _label, _type)) =
+                                    ctx.get_denormalized_alias_info(&prop.table_alias.0)
+                                {
+                                    edge_alias.clone()
+                                } else {
+                                    // plan_ctx doesn't have it (e.g., Union branches use cloned ctx)
+                                    // Fall back to inspecting the logical plan's GraphRel
+                                    self.find_denormalized_edge_alias(&prop.table_alias.0)
+                                        .or_else(|| {
+                                            crate::render_plan::get_denormalized_alias_mapping(
+                                                &prop.table_alias.0,
+                                            )
+                                        })
+                                        .unwrap_or_else(|| prop.table_alias.0.clone())
+                                }
+                            } else {
+                                self.find_denormalized_edge_alias(&prop.table_alias.0)
+                                    .or_else(|| {
+                                        crate::render_plan::get_denormalized_alias_mapping(
+                                            &prop.table_alias.0,
+                                        )
+                                    })
+                                    .unwrap_or_else(|| prop.table_alias.0.clone())
+                            };
 
                             if mapped_alias != prop.table_alias.0 {
                                 log::info!(
@@ -579,8 +628,16 @@ impl SelectBuilder for LogicalPlan {
                                 );
                             }
 
+                            // For denormalized nodes, look up properties using original node alias
+                            // but render with the edge table alias
+                            let property_lookup_alias = if mapped_alias != prop.table_alias.0 {
+                                &prop.table_alias.0
+                            } else {
+                                &mapped_alias
+                            };
+
                             let (properties, table_alias_for_render) =
-                                match self.get_properties_with_table_alias(&mapped_alias) {
+                                match self.get_properties_with_table_alias(property_lookup_alias) {
                                     Ok((props, _)) => {
                                         let props: Vec<(String, String)> = props;
                                         if props.is_empty() {
@@ -1431,6 +1488,52 @@ impl LogicalPlan {
                 .inputs
                 .first()
                 .and_then(|branch| branch.find_graph_rel_for_alias(alias)),
+            _ => None,
+        }
+    }
+
+    /// Find the edge alias for a denormalized node.
+    /// If the given alias is a node in a GraphRel with a denormalized center ViewScan
+    /// (has from_node_properties or to_node_properties), return the relationship alias.
+    fn find_denormalized_edge_alias(&self, node_alias: &str) -> Option<String> {
+        let gr = self.find_graph_rel_for_alias(node_alias)?;
+        if let LogicalPlan::ViewScan(scan) = gr.center.as_ref() {
+            if scan.from_node_properties.is_some() || scan.to_node_properties.is_some() {
+                return Some(gr.alias.clone());
+            }
+        }
+        None
+    }
+
+    /// Reverse-map a CTE name to the original alias.
+    /// Searches GraphJoins.cte_references for an entry where value == cte_name,
+    /// returning the key (original alias).
+    fn find_cte_original_alias(&self, cte_name: &str) -> Option<String> {
+        match self {
+            LogicalPlan::GraphJoins(gj) => {
+                for (alias, name) in &gj.cte_references {
+                    if name == cte_name {
+                        return Some(alias.clone());
+                    }
+                }
+                gj.input.find_cte_original_alias(cte_name)
+            }
+            LogicalPlan::Union(u) => u
+                .inputs
+                .iter()
+                .find_map(|branch| branch.find_cte_original_alias(cte_name)),
+            LogicalPlan::Projection(p) => p.input.find_cte_original_alias(cte_name),
+            LogicalPlan::Filter(f) => f.input.find_cte_original_alias(cte_name),
+            LogicalPlan::GraphRel(gr) => {
+                for (alias, name) in &gr.cte_references {
+                    if name == cte_name {
+                        return Some(alias.clone());
+                    }
+                }
+                gr.left
+                    .find_cte_original_alias(cte_name)
+                    .or_else(|| gr.right.find_cte_original_alias(cte_name))
+            }
             _ => None,
         }
     }
