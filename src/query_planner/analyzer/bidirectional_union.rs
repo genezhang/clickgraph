@@ -686,6 +686,17 @@ fn generate_direction_combinations(
         let mut column_swaps: ColumnSwapMap = std::collections::HashMap::new();
         let branch = apply_direction_combination(plan, combination, &mut column_swaps);
 
+        // Skip branches with invalid relationship directions (e.g., FK-edge only
+        // defines one direction, so the reverse branch is invalid)
+        if !is_valid_direction_branch(&branch, graph_schema) {
+            log::debug!(
+                "🔄 BidirectionalUnion: Skipping invalid direction combination {:b}/{}",
+                combination,
+                total_combinations - 1
+            );
+            continue;
+        }
+
         // Apply relationship uniqueness filter to prevent same edge from being used twice.
         // Uses edge_id columns from schema (or defaults to [from_id, to_id]).
         // This ensures Neo4j-compatible behavior where relationship instances are unique in paths.
@@ -695,6 +706,97 @@ fn generate_direction_combinations(
     }
 
     branches
+}
+
+/// Check if all relationship patterns in a branch are valid against the schema.
+/// Returns false only if the schema explicitly defines the relationship type but with
+/// different from/to node labels (i.e., the reverse direction is invalid).
+/// If the relationship type is not in the schema at all, returns true (validation pass
+/// will catch it later with a proper error).
+fn is_valid_direction_branch(plan: &Arc<LogicalPlan>, graph_schema: &GraphSchema) -> bool {
+    match plan.as_ref() {
+        LogicalPlan::GraphRel(graph_rel) => {
+            if let Some(labels) = &graph_rel.labels {
+                if let Some(rel_type) = labels.first() {
+                    if let Some(rel_schema) = graph_schema.get_relationships_schema_opt(rel_type) {
+                        let schema_from = &rel_schema.from_node;
+                        let schema_to = &rel_schema.to_node;
+                        // Skip validation for wildcard schemas
+                        if schema_from == "$any" || schema_to == "$any" {
+                            return true;
+                        }
+                        // Self-referencing relationships are always valid in both directions
+                        if schema_from == schema_to {
+                            return true;
+                        }
+                        // Try explicit labels first
+                        let from_label = extract_node_label_from_plan(&graph_rel.left);
+                        let to_label = extract_node_label_from_plan(&graph_rel.right);
+                        if let (Some(from), Some(to)) = (&from_label, &to_label) {
+                            if from != schema_from || to != schema_to {
+                                log::debug!(
+                                    "🔄 is_valid_direction_branch: REJECTING ({})-[:{}]->({}), schema defines ({})→({})",
+                                    from, rel_type, to, schema_from, schema_to
+                                );
+                                return false;
+                            }
+                        } else {
+                            // Unlabeled nodes: check ViewScan source tables against schema
+                            let left_table = extract_source_table_from_plan(&graph_rel.left);
+                            let right_table = extract_source_table_from_plan(&graph_rel.right);
+                            let from_node_table = graph_schema
+                                .node_schema(schema_from)
+                                .ok()
+                                .map(|n| n.full_table_name());
+                            let to_node_table = graph_schema
+                                .node_schema(schema_to)
+                                .ok()
+                                .map(|n| n.full_table_name());
+                            if let (Some(lt), Some(rt), Some(ft), Some(tt)) =
+                                (&left_table, &right_table, &from_node_table, &to_node_table)
+                            {
+                                if ft != tt && (lt != ft || rt != tt) {
+                                    log::debug!(
+                                        "🔄 is_valid_direction_branch: REJECTING unlabeled branch by table: left={}, right={}, schema from={}, to={}",
+                                        lt, rt, ft, tt
+                                    );
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Recurse into nested patterns
+            is_valid_direction_branch(&graph_rel.left, graph_schema)
+                && is_valid_direction_branch(&graph_rel.right, graph_schema)
+        }
+        LogicalPlan::GraphNode(gn) => is_valid_direction_branch(&gn.input, graph_schema),
+        LogicalPlan::Projection(p) => is_valid_direction_branch(&p.input, graph_schema),
+        LogicalPlan::Filter(f) => is_valid_direction_branch(&f.input, graph_schema),
+        _ => true,
+    }
+}
+
+/// Extract node label from a plan node (GraphNode → label)
+fn extract_node_label_from_plan(plan: &Arc<LogicalPlan>) -> Option<String> {
+    match plan.as_ref() {
+        LogicalPlan::GraphNode(gn) => gn.label.clone(),
+        LogicalPlan::Projection(p) => extract_node_label_from_plan(&p.input),
+        LogicalPlan::Filter(f) => extract_node_label_from_plan(&f.input),
+        _ => None,
+    }
+}
+
+/// Extract source table name from a plan node (ViewScan → source_table)
+fn extract_source_table_from_plan(plan: &Arc<LogicalPlan>) -> Option<String> {
+    match plan.as_ref() {
+        LogicalPlan::ViewScan(vs) => Some(vs.source_table.clone()),
+        LogicalPlan::GraphNode(gn) => extract_source_table_from_plan(&gn.input),
+        LogicalPlan::Projection(p) => extract_source_table_from_plan(&p.input),
+        LogicalPlan::Filter(f) => extract_source_table_from_plan(&f.input),
+        _ => None,
+    }
 }
 
 /// Apply a specific direction combination to a plan.
