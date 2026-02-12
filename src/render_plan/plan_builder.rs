@@ -1481,6 +1481,20 @@ impl RenderPlanBuilder for LogicalPlan {
                     );
                 }
 
+                // Qualify unqualified Column expressions in SELECT items with the alias.
+                // ViewScan generates bare Column("dest_city") without a table qualifier;
+                // the SQL generator would then guess a table alias via heuristics (often "t").
+                // By converting them to PropertyAccessExp here, the correct alias is used.
+                for item in &mut render_plan.select.items {
+                    if let RenderExpr::Column(Column(ref prop_val)) = item.expression {
+                        let col_name = prop_val.raw().to_string();
+                        item.expression = RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(gn.alias.clone()),
+                            column: PropertyValue::Column(col_name),
+                        });
+                    }
+                }
+
                 Ok(render_plan)
             }
             LogicalPlan::ViewScan(vs) => {
@@ -1523,142 +1537,234 @@ impl RenderPlanBuilder for LogicalPlan {
                     std::mem::discriminant(with.input.as_ref())
                 );
 
+                // Check if the input contains a denormalized Union.
+                // Denormalized Unions need special handling: each branch has different
+                // property mappings (from_properties vs to_properties), so the flat
+                // extractor approach (extract_from, extract_select_items, extract_filters)
+                // cannot handle them — it collapses to one branch with wrong mappings.
+                // Instead, use to_render_plan() which correctly renders both branches.
+                fn input_has_denormalized_union(plan: &LogicalPlan) -> bool {
+                    match plan {
+                        LogicalPlan::Union(u) => u.inputs.iter().any(|input| {
+                            fn has_denorm_vs(p: &LogicalPlan) -> bool {
+                                match p {
+                                    LogicalPlan::ViewScan(vs) => vs.is_denormalized,
+                                    LogicalPlan::GraphNode(gn) => has_denorm_vs(gn.input.as_ref()),
+                                    LogicalPlan::Filter(f) => has_denorm_vs(f.input.as_ref()),
+                                    LogicalPlan::Projection(p) => has_denorm_vs(p.input.as_ref()),
+                                    _ => false,
+                                }
+                            }
+                            has_denorm_vs(input.as_ref())
+                        }),
+                        LogicalPlan::Filter(f) => input_has_denormalized_union(f.input.as_ref()),
+                        LogicalPlan::GraphNode(gn) => {
+                            input_has_denormalized_union(gn.input.as_ref())
+                        }
+                        LogicalPlan::Projection(p) => {
+                            input_has_denormalized_union(p.input.as_ref())
+                        }
+                        _ => false,
+                    }
+                }
+
+                let is_denormalized_input = input_has_denormalized_union(with.input.as_ref());
+
                 // Handle WithClause by building a CTE from the input and creating a render plan with the CTE
                 let has_aggregation = with
                     .items
                     .iter()
                     .any(|item| matches!(item.expression, LogicalExpr::AggregateFnCall(_)));
 
-                log::warn!("🔍 Calling extract_filters on WithClause input...");
-                let mut cte_filters = FilterBuilder::extract_filters(with.input.as_ref())?;
-                log::warn!("🔍 extract_filters returned: {:?}", cte_filters);
+                let cte_content = if is_denormalized_input {
+                    // Denormalized Union path: use to_render_plan() which correctly
+                    // renders both UNION branches with per-branch property resolution
+                    log::info!("🔧 WithClause: Using to_render_plan for denormalized Union input");
+                    let mut input_plan = with.input.to_render_plan(schema)?;
 
-                let mut cte_having = with.input.extract_having()?;
-
-                if let Some(where_clause) = &with.where_clause {
-                    let render_where: RenderExpr =
-                        where_clause.clone().try_into().map_err(|_| {
-                            RenderBuildError::InvalidRenderPlan(
-                                "Failed to convert where clause".to_string(),
-                            )
-                        })?;
-                    if has_aggregation {
-                        if cte_having.is_some() {
-                            return Err(RenderBuildError::InvalidRenderPlan(
-                                "Multiple having clauses".to_string(),
-                            ));
+                    // Apply WHERE clause from WITH if present
+                    if let Some(where_clause) = &with.where_clause {
+                        let render_where: RenderExpr =
+                            where_clause.clone().try_into().map_err(|_| {
+                                RenderBuildError::InvalidRenderPlan(
+                                    "Failed to convert where clause".to_string(),
+                                )
+                            })?;
+                        if has_aggregation {
+                            input_plan.having_clause = Some(render_where);
+                        } else {
+                            input_plan.filters = match input_plan.filters.0 {
+                                Some(existing) => FilterItems(Some(
+                                    RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                        operator: Operator::And,
+                                        operands: vec![existing, render_where],
+                                    }),
+                                )),
+                                None => FilterItems(Some(render_where)),
+                            };
                         }
-                        cte_having = Some(render_where);
-                    } else if let Some(existing) = cte_filters {
-                        cte_filters =
-                            Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                                operator: Operator::And,
-                                operands: vec![existing, render_where],
-                            }));
-                    } else {
-                        cte_filters = Some(render_where);
-                    }
-                }
-
-                log::warn!("🔍🔍🔍 BEFORE extract_select_items for WITH.input");
-                let mut cte_select_items = <LogicalPlan as SelectBuilder>::extract_select_items(
-                    with.input.as_ref(),
-                    None,
-                )?;
-                log::warn!(
-                    "🔍🔍🔍 AFTER extract_select_items: got {} items",
-                    cte_select_items.len()
-                );
-
-                // 🔧 FIX: Process scalar expressions from WITH items
-                // For expressions like `u.name AS userName`, we need to:
-                // 1. Rewrite property access (u.name → u.full_name based on schema)
-                // 2. Convert to SelectItem and add to cte_select_items
-                use crate::query_planner::logical_expr::expression_rewriter::{
-                    rewrite_expression_with_property_mapping, ExpressionRewriteContext,
-                };
-                let rewrite_ctx = ExpressionRewriteContext::new(&with.input);
-
-                for item in &with.items {
-                    // Skip TableAlias items (node pass-through) - they're already expanded
-                    if matches!(&item.expression, LogicalExpr::TableAlias(_)) {
-                        continue;
                     }
 
-                    // Rewrite the expression to map properties to DB columns
-                    let rewritten_expr =
-                        rewrite_expression_with_property_mapping(&item.expression, &rewrite_ctx);
+                    // Apply ORDER BY/SKIP/LIMIT from WITH clause
+                    if let Some(order_by) = &with.order_by {
+                        let items: Result<Vec<OrderByItem>, _> = order_by
+                            .iter()
+                            .map(|ob| OrderByItem::try_from(ob.clone()))
+                            .collect();
+                        input_plan.order_by = OrderByItems(items?);
+                    }
+                    if let Some(skip) = with.skip {
+                        input_plan.skip = SkipItem(Some(skip as i64));
+                    }
+                    if let Some(limit) = with.limit {
+                        input_plan.limit = LimitItem(Some(limit as i64));
+                    }
 
-                    // Convert to RenderExpr
-                    let render_expr: RenderExpr = rewritten_expr.try_into().map_err(|e| {
-                        RenderBuildError::InvalidRenderPlan(format!(
-                            "Failed to convert WITH expression: {:?}",
-                            e
-                        ))
-                    })?;
+                    CteContent::Structured(Box::new(input_plan))
+                } else {
+                    // Standard path: use flat extractors for non-Union inputs
 
-                    // Use the explicit alias from the WITH item
-                    let col_alias = item.col_alias.as_ref().map(|ca| ColumnAlias(ca.0.clone()));
+                    log::warn!("🔍 Calling extract_filters on WithClause input...");
+                    let mut cte_filters = FilterBuilder::extract_filters(with.input.as_ref())?;
+                    log::warn!("🔍 extract_filters returned: {:?}", cte_filters);
 
-                    log::info!(
-                        "🔧 Added WITH scalar expression: {:?} AS {:?}",
-                        render_expr,
-                        col_alias
+                    let mut cte_having = with.input.extract_having()?;
+
+                    if let Some(where_clause) = &with.where_clause {
+                        let render_where: RenderExpr =
+                            where_clause.clone().try_into().map_err(|_| {
+                                RenderBuildError::InvalidRenderPlan(
+                                    "Failed to convert where clause".to_string(),
+                                )
+                            })?;
+                        if has_aggregation {
+                            if cte_having.is_some() {
+                                return Err(RenderBuildError::InvalidRenderPlan(
+                                    "Multiple having clauses".to_string(),
+                                ));
+                            }
+                            cte_having = Some(render_where);
+                        } else if let Some(existing) = cte_filters {
+                            cte_filters =
+                                Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::And,
+                                    operands: vec![existing, render_where],
+                                }));
+                        } else {
+                            cte_filters = Some(render_where);
+                        }
+                    }
+
+                    log::warn!("🔍🔍🔍 BEFORE extract_select_items for WITH.input");
+                    let mut cte_select_items =
+                        <LogicalPlan as SelectBuilder>::extract_select_items(
+                            with.input.as_ref(),
+                            None,
+                        )?;
+                    log::warn!(
+                        "🔍🔍🔍 AFTER extract_select_items: got {} items",
+                        cte_select_items.len()
                     );
 
-                    cte_select_items.push(SelectItem {
-                        expression: render_expr,
-                        col_alias,
-                    });
-                }
+                    // 🔧 FIX: Process scalar expressions from WITH items
+                    // For expressions like `u.name AS userName`, we need to:
+                    // 1. Rewrite property access (u.name → u.full_name based on schema)
+                    // 2. Convert to SelectItem and add to cte_select_items
+                    use crate::query_planner::logical_expr::expression_rewriter::{
+                        rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+                    };
+                    let rewrite_ctx = ExpressionRewriteContext::new(&with.input);
 
-                // ✅ FIX (Phase 6): Remap column aliases to match exported aliases
-                // When we have `WITH u AS person`, the select items will have aliases like `u.name`
-                // but they need to be remapped to `person.name` for the CTE output
-                let alias_mapping = build_with_alias_mapping(&with.items, &with.exported_aliases);
-                if !alias_mapping.is_empty() {
-                    cte_select_items = remap_select_item_aliases(cte_select_items, &alias_mapping);
-                }
+                    for item in &with.items {
+                        // Skip TableAlias items (node pass-through) - they're already expanded
+                        if matches!(&item.expression, LogicalExpr::TableAlias(_)) {
+                            continue;
+                        }
 
-                let mut temp_context = super::cte_generation::CteGenerationContext::new();
-                // Extract CTEs from WITH.input to populate context with CTE names
-                let _temp_ctes =
-                    extract_ctes_with_context(&with.input, "", &mut temp_context, schema, None)?;
+                        // Rewrite the expression to map properties to DB columns
+                        let rewritten_expr = rewrite_expression_with_property_mapping(
+                            &item.expression,
+                            &rewrite_ctx,
+                        );
 
-                // Now extract FROM with context so VLP CTEs can be looked up
-                use crate::render_plan::from_builder::FromBuilder;
-                let cte_from = FromTableItem(with.input.extract_from()?.and_then(|ft| ft.table));
-                let cte_joins = JoinItems(RenderPlanBuilder::extract_joins(
-                    with.input.as_ref(),
-                    schema,
-                )?);
-                let cte_group_by = GroupByExpressions(
-                    <LogicalPlan as GroupByBuilder>::extract_group_by(with.input.as_ref())?,
-                );
-                let cte_order_by = OrderByItems(with.input.extract_order_by()?);
-                let cte_skip = SkipItem(with.input.extract_skip());
-                let cte_limit = LimitItem(with.input.extract_limit());
+                        // Convert to RenderExpr
+                        let render_expr: RenderExpr = rewritten_expr.try_into().map_err(|e| {
+                            RenderBuildError::InvalidRenderPlan(format!(
+                                "Failed to convert WITH expression: {:?}",
+                                e
+                            ))
+                        })?;
 
-                let cte_content = CteContent::Structured(Box::new(RenderPlan {
-                    ctes: CteItems(vec![]),
-                    select: SelectItems {
-                        items: cte_select_items,
-                        distinct: false,
-                    },
-                    from: cte_from,
-                    joins: cte_joins,
-                    array_join: ArrayJoinItem(vec![]),
-                    filters: FilterItems(cte_filters),
-                    group_by: cte_group_by,
-                    having_clause: cte_having,
-                    order_by: cte_order_by,
-                    skip: cte_skip,
-                    limit: cte_limit,
-                    union: UnionItems(None),
-                    fixed_path_info: None,
-                    is_multi_label_scan: false,
-                    // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
-                }));
+                        // Use the explicit alias from the WITH item
+                        let col_alias = item.col_alias.as_ref().map(|ca| ColumnAlias(ca.0.clone()));
+
+                        log::info!(
+                            "🔧 Added WITH scalar expression: {:?} AS {:?}",
+                            render_expr,
+                            col_alias
+                        );
+
+                        cte_select_items.push(SelectItem {
+                            expression: render_expr,
+                            col_alias,
+                        });
+                    }
+
+                    // ✅ FIX (Phase 6): Remap column aliases to match exported aliases
+                    // When we have `WITH u AS person`, the select items will have aliases like `u.name`
+                    // but they need to be remapped to `person.name` for the CTE output
+                    let alias_mapping =
+                        build_with_alias_mapping(&with.items, &with.exported_aliases);
+                    if !alias_mapping.is_empty() {
+                        cte_select_items =
+                            remap_select_item_aliases(cte_select_items, &alias_mapping);
+                    }
+
+                    let mut temp_context = super::cte_generation::CteGenerationContext::new();
+                    // Extract CTEs from WITH.input to populate context with CTE names
+                    let _temp_ctes = extract_ctes_with_context(
+                        &with.input,
+                        "",
+                        &mut temp_context,
+                        schema,
+                        None,
+                    )?;
+
+                    // Now extract FROM with context so VLP CTEs can be looked up
+                    use crate::render_plan::from_builder::FromBuilder;
+                    let cte_from =
+                        FromTableItem(with.input.extract_from()?.and_then(|ft| ft.table));
+                    let cte_joins = JoinItems(RenderPlanBuilder::extract_joins(
+                        with.input.as_ref(),
+                        schema,
+                    )?);
+                    let cte_group_by = GroupByExpressions(
+                        <LogicalPlan as GroupByBuilder>::extract_group_by(with.input.as_ref())?,
+                    );
+                    let cte_order_by = OrderByItems(with.input.extract_order_by()?);
+                    let cte_skip = SkipItem(with.input.extract_skip());
+                    let cte_limit = LimitItem(with.input.extract_limit());
+
+                    CteContent::Structured(Box::new(RenderPlan {
+                        ctes: CteItems(vec![]),
+                        select: SelectItems {
+                            items: cte_select_items,
+                            distinct: false,
+                        },
+                        from: cte_from,
+                        joins: cte_joins,
+                        array_join: ArrayJoinItem(vec![]),
+                        filters: FilterItems(cte_filters),
+                        group_by: cte_group_by,
+                        having_clause: cte_having,
+                        order_by: cte_order_by,
+                        skip: cte_skip,
+                        limit: cte_limit,
+                        union: UnionItems(None),
+                        fixed_path_info: None,
+                        is_multi_label_scan: false,
+                    }))
+                }; // end of if/else is_denormalized_input
 
                 // Use CTE name from analyzer (includes counter for uniqueness)
                 // The analyzer set this name using CteSchemaResolver with proper counter tracking
@@ -1916,9 +2022,33 @@ impl RenderPlanBuilder for LogicalPlan {
                     .iter()
                     .all(|input| is_node_scan_input(input.as_ref(), 1));
 
-                log::debug!("is_multi_label_scan={}", is_multi_label_scan);
+                // Check if this is a denormalized single-label UNION (from/to positions)
+                // Denormalized unions have the same label in all branches and should NOT
+                // go through the multi-label json_builder path
+                let is_denormalized_union = union.inputs.iter().any(|input| {
+                    fn has_denormalized_view_scan(plan: &LogicalPlan) -> bool {
+                        match plan {
+                            LogicalPlan::ViewScan(vs) => vs.is_denormalized,
+                            LogicalPlan::GraphNode(gn) => {
+                                has_denormalized_view_scan(gn.input.as_ref())
+                            }
+                            LogicalPlan::Projection(p) => {
+                                has_denormalized_view_scan(p.input.as_ref())
+                            }
+                            LogicalPlan::Filter(f) => has_denormalized_view_scan(f.input.as_ref()),
+                            _ => false,
+                        }
+                    }
+                    has_denormalized_view_scan(input.as_ref())
+                });
 
-                if is_multi_label_scan && union.inputs.len() > 1 {
+                log::debug!(
+                    "is_multi_label_scan={}, is_denormalized_union={}",
+                    is_multi_label_scan,
+                    is_denormalized_union
+                );
+
+                if is_multi_label_scan && union.inputs.len() > 1 && !is_denormalized_union {
                     log::info!(
                         "Multi-label node scan detected: {} ViewScans - using json_builder for uniform UNION",
                         union.inputs.len()
@@ -2094,10 +2224,11 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
 
                 // Store union branches in the base plan
-                // UnionType::All corresponds to UNION ALL
+                let render_union_type = super::UnionType::try_from(union.union_type.clone())
+                    .unwrap_or(super::UnionType::All);
                 base_plan.union = UnionItems(Some(super::Union {
                     input: union_branches,
-                    union_type: super::UnionType::All,
+                    union_type: render_union_type,
                 }));
 
                 // 🔧 CRITICAL: After combining UNION branches, rewrite VLP endpoint aliases
@@ -2554,16 +2685,43 @@ impl RenderPlanBuilder for LogicalPlan {
                     base_render.ctes.0 = all_ctes;
 
                     if !all_renders.is_empty() {
+                        let render_union_type =
+                            super::UnionType::try_from(union.union_type.clone())
+                                .unwrap_or(super::UnionType::All);
                         base_render.union = UnionItems(Some(super::Union {
                             input: all_renders,
-                            union_type: super::UnionType::All,
+                            union_type: render_union_type,
                         }));
                     }
 
-                    // Wrap in Limit if needed
-                    if let LogicalPlan::Limit(l) = self {
-                        base_render.limit = LimitItem(Some(l.count));
+                    // Apply Limit/OrderBy/Skip from wrapper nodes
+                    fn apply_wrappers(
+                        plan: &LogicalPlan,
+                        render: &mut RenderPlan,
+                    ) -> Result<(), RenderBuildError> {
+                        match plan {
+                            LogicalPlan::Limit(l) => {
+                                render.limit = LimitItem(Some(l.count));
+                                apply_wrappers(&l.input, render)?;
+                            }
+                            LogicalPlan::OrderBy(ob) => {
+                                let order_by_items: Result<Vec<OrderByItem>, _> = ob
+                                    .items
+                                    .iter()
+                                    .map(|item| item.clone().try_into())
+                                    .collect();
+                                render.order_by = OrderByItems(order_by_items?);
+                                apply_wrappers(&ob.input, render)?;
+                            }
+                            LogicalPlan::Skip(s) => {
+                                render.skip = SkipItem(Some(s.count));
+                                apply_wrappers(&s.input, render)?;
+                            }
+                            _ => {}
+                        }
+                        Ok(())
                     }
+                    apply_wrappers(self, &mut base_render)?;
 
                     return Ok(base_render);
                 }
@@ -2812,9 +2970,11 @@ impl RenderPlanBuilder for LogicalPlan {
                     })
                     .collect::<RenderPlanBuilderResult<Vec<_>>>()?;
 
+                let render_union_type = super::UnionType::try_from(union.union_type.clone())
+                    .unwrap_or(super::UnionType::All);
                 base_render.union = UnionItems(Some(super::Union {
                     input: remaining_renders,
-                    union_type: super::UnionType::All,
+                    union_type: render_union_type,
                 }));
             }
 
@@ -2991,6 +3151,28 @@ impl RenderPlanBuilder for LogicalPlan {
             // Now delegate to old to_render_plan for the rest of WITH processing
             // (which will reuse the CTEs we just generated)
             return self.to_render_plan(schema);
+        }
+
+        // Unwrap Limit/OrderBy/Skip wrappers and recurse with plan_ctx preserved
+        if let LogicalPlan::Limit(l) = self {
+            let mut render_plan = l.input.to_render_plan_with_ctx(schema, plan_ctx)?;
+            render_plan.limit = LimitItem(Some(l.count));
+            return Ok(render_plan);
+        }
+        if let LogicalPlan::OrderBy(ob) = self {
+            let mut render_plan = ob.input.to_render_plan_with_ctx(schema, plan_ctx)?;
+            let order_by_items: Result<Vec<OrderByItem>, _> = ob
+                .items
+                .iter()
+                .map(|item| item.clone().try_into())
+                .collect();
+            render_plan.order_by = OrderByItems(order_by_items?);
+            return Ok(render_plan);
+        }
+        if let LogicalPlan::Skip(s) = self {
+            let mut render_plan = s.input.to_render_plan_with_ctx(schema, plan_ctx)?;
+            render_plan.skip = SkipItem(Some(s.count));
+            return Ok(render_plan);
         }
 
         // For all other cases, log what type we're delegating

@@ -1105,6 +1105,9 @@ fn extract_order_by_columns_for_union(order_by: &OrderByItems) -> Vec<(RenderExp
 }
 
 /// Add ORDER BY columns to a RenderPlan's SELECT (for UNION branches)
+/// For denormalized schemas, resolves virtual node property references
+/// (e.g., `o.code`) to actual edge table columns (e.g., `t1.dest_code`)
+/// by examining the branch's path tuple direction and schema properties.
 fn add_order_by_columns_to_select(
     mut plan: RenderPlan,
     order_columns: &[(RenderExpr, String)],
@@ -1112,10 +1115,19 @@ fn add_order_by_columns_to_select(
     use crate::render_plan::render_expr::ColumnAlias;
     use crate::render_plan::SelectItem;
 
+    // Build context for denormalized virtual node resolution:
+    // Parse the path tuple to find which aliases are start/end and the rel alias
+    let path_context = extract_path_context_from_select(&plan.select);
+
     for (expr, alias) in order_columns {
-        // Add this column to the SELECT with the given alias
+        let resolved_expr = if let Some(ref ctx) = path_context {
+            resolve_denormalized_order_by_expr(expr, ctx)
+        } else {
+            expr.clone()
+        };
+
         plan.select.items.push(SelectItem {
-            expression: expr.clone(),
+            expression: resolved_expr,
             col_alias: Some(ColumnAlias(alias.clone())),
         });
     }
@@ -1123,7 +1135,179 @@ fn add_order_by_columns_to_select(
     plan
 }
 
-/// Generate SQL from RenderPlan with configurable CTE depth limit
+/// Path context extracted from a branch's SELECT items
+struct PathBranchContext {
+    start_alias: String,
+    end_alias: String,
+    rel_alias: String,
+}
+
+/// Extract path context (start/end/rel aliases) from SELECT items' path tuple
+fn extract_path_context_from_select(select: &SelectItems) -> Option<PathBranchContext> {
+    for item in &select.items {
+        if let Some(ref ca) = item.col_alias {
+            if ca.0 == "path" {
+                if let RenderExpr::ScalarFnCall(func) = &item.expression {
+                    if func.name == "tuple" && func.args.len() >= 4 {
+                        let get_str = |idx: usize| -> Option<String> {
+                            if let RenderExpr::Literal(Literal::String(s)) = &func.args[idx] {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        };
+                        if let (Some(start), Some(end), Some(rel)) =
+                            (get_str(1), get_str(2), get_str(3))
+                        {
+                            return Some(PathBranchContext {
+                                start_alias: start,
+                                end_alias: end,
+                                rel_alias: rel,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Resolve denormalized virtual node references in ORDER BY expressions.
+/// Maps `o.code` → `t1.dest_code` (outgoing) or `t1.origin_code` (incoming)
+/// by checking node position in path and schema from_node/to_node properties.
+fn resolve_denormalized_order_by_expr(expr: &RenderExpr, ctx: &PathBranchContext) -> RenderExpr {
+    use crate::graph_catalog::expression_parser::PropertyValue;
+
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            let alias = &pa.table_alias.0;
+            let prop_name = pa.column.raw();
+
+            // Check if this alias is a virtual denormalized node (start or end of path)
+            // and NOT the relationship alias (which is a real table)
+            if alias == &ctx.rel_alias {
+                return expr.clone(); // Real table alias, no resolution needed
+            }
+
+            // Determine if this alias is start_node or end_node
+            let is_start = alias == &ctx.start_alias;
+            let is_end = alias == &ctx.end_alias;
+
+            if !is_start && !is_end {
+                return expr.clone(); // Not a path node, leave as-is
+            }
+
+            // Look up denormalized property mapping from schema
+            // For "id" property (from id() function transformation), resolve to node_id first
+            let effective_prop_name = if prop_name == "id" {
+                lookup_denorm_node_id_property().unwrap_or_else(|| prop_name.to_string())
+            } else {
+                prop_name.to_string()
+            };
+
+            if let Some(resolved_col) = resolve_denorm_property_from_schema(
+                &effective_prop_name,
+                is_start, // if start, use from_node_properties; if end, use to_node_properties
+            ) {
+                log::info!(
+                    "🔧 ORDER BY: Resolved denorm {}.{} → {}.{}",
+                    alias,
+                    prop_name,
+                    ctx.rel_alias,
+                    resolved_col
+                );
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(ctx.rel_alias.clone()),
+                    column: PropertyValue::Column(resolved_col),
+                })
+            } else {
+                expr.clone()
+            }
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            // Special handling for id(alias) — resolve to the node's ID column
+            if func.name.eq_ignore_ascii_case("id") && func.args.len() == 1 {
+                if let RenderExpr::TableAlias(alias) = &func.args[0] {
+                    let alias_name = &alias.0;
+                    let is_start = alias_name == &ctx.start_alias;
+                    let is_end = alias_name == &ctx.end_alias;
+                    if is_start || is_end {
+                        // Look up the node_id property name from schema, then resolve it
+                        if let Some(id_prop) = lookup_denorm_node_id_property() {
+                            if let Some(resolved_col) =
+                                resolve_denorm_property_from_schema(&id_prop, is_start)
+                            {
+                                log::info!(
+                                    "🔧 ORDER BY: Resolved denorm id({}) → {}.{}",
+                                    alias_name,
+                                    ctx.rel_alias,
+                                    resolved_col
+                                );
+                                return RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(ctx.rel_alias.clone()),
+                                    column: PropertyValue::Column(resolved_col),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            let new_args: Vec<_> = func
+                .args
+                .iter()
+                .map(|a| resolve_denormalized_order_by_expr(a, ctx))
+                .collect();
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: func.name.clone(),
+                args: new_args,
+            })
+        }
+        other => other.clone(),
+    }
+}
+
+/// Look up a denormalized property from the active query's schema edge definitions.
+/// Uses the task-local schema; falls back to GLOBAL_SCHEMAS["default"] if no context.
+/// `is_from_node`: true = look in from_node_properties, false = look in to_node_properties
+fn resolve_denorm_property_from_schema(prop_name: &str, is_from_node: bool) -> Option<String> {
+    use crate::server::query_context::get_current_schema;
+
+    let schema = get_current_schema()?;
+
+    for rel_schema in schema.get_relationships_schemas().values() {
+        let props: Option<&std::collections::HashMap<String, String>> = if is_from_node {
+            rel_schema.from_node_properties.as_ref()
+        } else {
+            rel_schema.to_node_properties.as_ref()
+        };
+        if let Some(prop_map) = props {
+            if let Some(col_name) = prop_map.get(prop_name) {
+                return Some(col_name.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Look up the node_id property name from the active query's schema.
+/// Uses the task-local schema; falls back to GLOBAL_SCHEMAS["default"] if no context.
+/// Returns the logical property name (e.g., "code") used for id() resolution.
+fn lookup_denorm_node_id_property() -> Option<String> {
+    use crate::server::query_context::get_current_schema;
+
+    let schema = get_current_schema()?;
+
+    for node_schema in schema.all_node_schemas().values() {
+        if node_schema.is_denormalized {
+            let columns = node_schema.node_id.id.columns();
+            if let Some(first_col) = columns.first() {
+                return Some(first_col.to_string());
+            }
+        }
+    }
+    None
+}
 pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
     // Extract fixed path information if not already set
     // This looks at the RenderPlan structure to infer path variable info
@@ -1879,6 +2063,9 @@ impl ToSql for Cte {
                         cte_body.push_str("FROM (\n");
                         cte_body.push_str(&plan.union.to_sql());
                         cte_body.push_str(") AS __union\n");
+
+                        // Render JOINs (e.g., pattern comprehension LEFT JOINs)
+                        cte_body.push_str(&plan.joins.to_sql());
 
                         // Add GROUP BY if present (for aggregations)
                         cte_body.push_str(&plan.group_by.to_sql());

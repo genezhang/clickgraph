@@ -4859,18 +4859,79 @@ fn detect_vlp_endpoint_from_plan(plan: &LogicalPlan, alias: &str) -> Option<VlpE
     }
 }
 
+/// Find the Cypher property name used as the node ID for a given alias.
+/// For denormalized nodes, the ViewScan.id_column is the ClickHouse column (e.g., origin_code),
+/// but CTE columns use Cypher property names (e.g., code). This function reverse-looks up
+/// the Cypher property from from_node_properties.
+fn find_cypher_id_property_for_alias(plan: &LogicalPlan, alias: &str) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphNode(node) if node.alias == alias => {
+            if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
+                if let Some(ref from_props) = scan.from_node_properties {
+                    for (cypher_prop, ch_col) in from_props {
+                        if ch_col.raw() == scan.id_column {
+                            return Some(cypher_prop.clone());
+                        }
+                    }
+                }
+            } else if let LogicalPlan::Union(union_plan) = node.input.as_ref() {
+                // For denormalized nodes with UNION input, check first branch
+                if let Some(first) = union_plan.inputs.first() {
+                    if let LogicalPlan::ViewScan(scan) = first.as_ref() {
+                        if let Some(ref from_props) = scan.from_node_properties {
+                            for (cypher_prop, ch_col) in from_props {
+                                if ch_col.raw() == scan.id_column {
+                                    return Some(cypher_prop.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+        LogicalPlan::GraphRel(rel) => find_cypher_id_property_for_alias(&rel.left, alias)
+            .or_else(|| find_cypher_id_property_for_alias(&rel.right, alias)),
+        LogicalPlan::Projection(p) => find_cypher_id_property_for_alias(&p.input, alias),
+        LogicalPlan::Filter(f) => find_cypher_id_property_for_alias(&f.input, alias),
+        LogicalPlan::GroupBy(g) => find_cypher_id_property_for_alias(&g.input, alias),
+        LogicalPlan::GraphJoins(j) => find_cypher_id_property_for_alias(&j.input, alias),
+        LogicalPlan::OrderBy(o) => find_cypher_id_property_for_alias(&o.input, alias),
+        LogicalPlan::Skip(s) => find_cypher_id_property_for_alias(&s.input, alias),
+        LogicalPlan::Limit(l) => find_cypher_id_property_for_alias(&l.input, alias),
+        LogicalPlan::Union(u) => u
+            .inputs
+            .iter()
+            .find_map(|i| find_cypher_id_property_for_alias(i, alias)),
+        LogicalPlan::CartesianProduct(cp) => find_cypher_id_property_for_alias(&cp.left, alias)
+            .or_else(|| find_cypher_id_property_for_alias(&cp.right, alias)),
+        LogicalPlan::WithClause(wc) => find_cypher_id_property_for_alias(&wc.input, alias),
+        _ => None,
+    }
+}
+
 /// Compute the CTE ID column name for an alias using the deterministic formula.
 /// This should be called AFTER expand_table_alias_to_select_items generates the columns.
 ///
-/// The formula matches what expand_table_alias_to_select_items uses:
-/// - For VLP endpoints: `format!("{}_{}", alias, id_col)` where id_col is from schema
-/// - For regular nodes: `format!("{}_{}", alias, id_col)` where id_col is from ViewScan
+/// CTE columns use Cypher property names (e.g., a_code), not ClickHouse column names
+/// (e.g., a_origin_code). For denormalized nodes where these differ, we use the
+/// Cypher property name from the schema's from_node_properties mapping.
 ///
 /// This is the single source of truth for alias→ID column mapping.
 pub(crate) fn compute_cte_id_column_for_alias(alias: &str, plan: &LogicalPlan) -> Option<String> {
-    // Get the ID column from the schema via the plan
+    // For denormalized nodes, use the Cypher property name (e.g., "code")
+    // rather than the ClickHouse column (e.g., "origin_code")
+    if let Some(cypher_id) = find_cypher_id_property_for_alias(plan, alias) {
+        log::info!(
+            "📊 compute_cte_id: alias '{}' → Cypher ID property '{}' (denormalized)",
+            alias,
+            cypher_id
+        );
+        return Some(format!("{}_{}", alias, cypher_id));
+    }
+
+    // Fallback: use find_id_column_for_alias (returns ClickHouse column name)
     if let Ok(id_col) = plan.find_id_column_for_alias(alias) {
-        // Use the same formula as expand_table_alias_to_select_items
         Some(format!("{}_{}", alias, id_col))
     } else {
         None
@@ -5873,34 +5934,46 @@ pub(crate) fn update_graph_joins_cte_refs(
                     );
                     Some(anchor.clone())
                 } else {
-                    // Anchor NOT in cte_references - scope violation!
-                    // Try to find a replacement from joins that ARE in current scope
-                    log::warn!(
-                        "🔧 update_graph_joins_cte_refs: anchor_table '{}' NOT in scope. \
-                         Scope barrier violation! Available CTEs: {:?}",
-                        anchor,
-                        cte_references.keys().collect::<Vec<_>>()
-                    );
-
-                    // Search joins for a valid anchor (table_alias must be in cte_references)
-                    let replacement_anchor = gj.joins.iter()
-                        .find(|j| cte_references.contains_key(&j.table_alias))
-                        .map(|j| {
-                            log::info!(
-                                "🔧 update_graph_joins_cte_refs: Found replacement anchor '{}' from joins",
-                                j.table_alias
-                            );
-                            j.table_alias.clone()
-                        });
-
-                    if replacement_anchor.is_none() {
-                        log::warn!(
-                            "🔧 update_graph_joins_cte_refs: No valid replacement anchor found in joins. \
-                             Setting to None (will be determined during extraction)."
+                    // Anchor NOT in cte_references — check if it's a valid variable
+                    // from the current MATCH clause (not a scope-violated WITH variable).
+                    // If anchor matches a join's table_alias, it's a new variable from the
+                    // second MATCH and should be kept.
+                    let anchor_in_joins = gj.joins.iter().any(|j| &j.table_alias == anchor);
+                    if anchor_in_joins {
+                        log::info!(
+                            "🔧 update_graph_joins_cte_refs: anchor_table '{}' not in CTE scope but exists in joins — keeping as valid new variable",
+                            anchor,
                         );
-                    }
+                        Some(anchor.clone())
+                    } else {
+                        // Anchor NOT in joins either — scope violation
+                        log::warn!(
+                            "🔧 update_graph_joins_cte_refs: anchor_table '{}' NOT in scope. \
+                             Scope barrier violation! Available CTEs: {:?}",
+                            anchor,
+                            cte_references.keys().collect::<Vec<_>>()
+                        );
 
-                    replacement_anchor
+                        // Search joins for a valid anchor (table_alias must be in cte_references)
+                        let replacement_anchor = gj.joins.iter()
+                            .find(|j| cte_references.contains_key(&j.table_alias))
+                            .map(|j| {
+                                log::info!(
+                                    "🔧 update_graph_joins_cte_refs: Found replacement anchor '{}' from joins",
+                                    j.table_alias
+                                );
+                                j.table_alias.clone()
+                            });
+
+                        if replacement_anchor.is_none() {
+                            log::warn!(
+                                "🔧 update_graph_joins_cte_refs: No valid replacement anchor found in joins. \
+                                 Setting to None (will be determined during extraction)."
+                            );
+                        }
+
+                        replacement_anchor
+                    }
                 }
             } else {
                 None
@@ -6065,6 +6138,29 @@ pub(crate) fn update_graph_joins_cte_refs(
             Ok(LogicalPlan::Skip(Skip {
                 input: Arc::new(new_input),
                 count: skip.count,
+            }))
+        }
+        LogicalPlan::Union(union) => {
+            let new_inputs: Vec<Arc<LogicalPlan>> = union
+                .inputs
+                .iter()
+                .map(|input| {
+                    update_graph_joins_cte_refs(input, cte_references).map(|p| Arc::new(p))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(LogicalPlan::Union(Union {
+                inputs: new_inputs,
+                union_type: union.union_type.clone(),
+            }))
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            let new_left = update_graph_joins_cte_refs(&cp.left, cte_references)?;
+            let new_right = update_graph_joins_cte_refs(&cp.right, cte_references)?;
+            Ok(LogicalPlan::CartesianProduct(CartesianProduct {
+                left: Arc::new(new_left),
+                right: Arc::new(new_right),
+                is_optional: cp.is_optional,
+                join_condition: cp.join_condition.clone(),
             }))
         }
         other => Ok(other.clone()),
@@ -6268,9 +6364,29 @@ fn populate_cte_property_mappings_from_render_plan(
     let mut alias_mapping: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
 
-    for select_item in &render_plan.select.items {
+    // For denormalized unions, parent SELECT is empty; items are in union branches.
+    let select_items: &[SelectItem] = if render_plan.select.items.is_empty() {
+        if let UnionItems(Some(ref union)) = render_plan.union {
+            if !union.input.is_empty() {
+                &union.input[0].select.items
+            } else {
+                &render_plan.select.items
+            }
+        } else {
+            &render_plan.select.items
+        }
+    } else {
+        &render_plan.select.items
+    };
+
+    for select_item in select_items {
         if let Some(col_alias) = &select_item.col_alias {
             let col_name = col_alias.0.clone();
+
+            // Skip internal discriminator columns
+            if col_name == "__label__" {
+                continue;
+            }
 
             // CTE columns can be:
             // 1. Prefixed: "a_name", "a_user_id" → property is after underscore
@@ -7454,16 +7570,145 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         log::warn!("🔧 build_chained_with_match_cte_plan: Total select_items after expansion: {}", select_items.len());
 
                         if !select_items.is_empty() {
-                            // For UNION plans, we need to apply projection over the union
-                            // We do this by keeping the UNION structure but replacing SELECT items
-                            // The union branches already have all columns, so we wrap with our projection
-                            // This creates: SELECT <with_items> FROM (SELECT * FROM table1 UNION ALL SELECT * FROM table2) AS __union
+                            // Check if the logical plan has a denormalized Union.
+                            // Denormalized Unions already have per-branch SELECT items with
+                            // correct column resolution (origin_code vs dest_code). We must NOT
+                            // overwrite them with a flat projection from one branch only.
+                            // Instead, rename aliases in each branch: "code" → "a_code".
+                            fn plan_has_denormalized_union(plan: &LogicalPlan) -> bool {
+                                match plan {
+                                    LogicalPlan::Union(u) => u.inputs.iter().any(|input| {
+                                        fn has_denorm_vs(p: &LogicalPlan) -> bool {
+                                            match p {
+                                                LogicalPlan::ViewScan(vs) => vs.is_denormalized,
+                                                LogicalPlan::GraphNode(gn) => {
+                                                    has_denorm_vs(gn.input.as_ref())
+                                                }
+                                                LogicalPlan::Filter(f) => {
+                                                    has_denorm_vs(f.input.as_ref())
+                                                }
+                                                LogicalPlan::Projection(p) => {
+                                                    has_denorm_vs(p.input.as_ref())
+                                                }
+                                                _ => false,
+                                            }
+                                        }
+                                        has_denorm_vs(input.as_ref())
+                                    }),
+                                    LogicalPlan::Filter(f) => {
+                                        plan_has_denormalized_union(f.input.as_ref())
+                                    }
+                                    LogicalPlan::GraphNode(gn) => {
+                                        plan_has_denormalized_union(gn.input.as_ref())
+                                    }
+                                    LogicalPlan::Projection(p) => {
+                                        plan_has_denormalized_union(p.input.as_ref())
+                                    }
+                                    _ => false,
+                                }
+                            }
+                            let is_denorm_union = plan_has_denormalized_union(plan_to_render)
+                                && rendered.union.0.is_some();
 
-                            // For both UNION and non-UNION: apply projection to SELECT
-                            rendered.select = SelectItems {
-                                items: select_items,
-                                distinct: with_distinct,
-                            };
+                            if is_denorm_union {
+                                // Denormalized Union: the RenderPlan stores first branch in
+                                // (select, from, filters) and remaining branches in union.input[].
+                                // For CTE content, we need ALL branches in a flat UNION DISTINCT.
+                                // Move first branch into union.input and clear plan-level fields.
+                                log::info!(
+                                    "🔧 build_chained_with_match_cte_plan: Denormalized Union detected, restructuring for WITH '{}'",
+                                    with_alias
+                                );
+
+                                // Use the first exported alias (the node alias) for column renaming,
+                                // not the combined with_alias. This ensures columns like "code" become
+                                // "a_code" (not "a_allNeighboursCount_code") for unambiguous parsing.
+                                let rename_alias = with_plans
+                                    .first()
+                                    .and_then(|p| match p {
+                                        LogicalPlan::WithClause(wc) => {
+                                            wc.exported_aliases.first().cloned()
+                                        }
+                                        _ => None,
+                                    })
+                                    .unwrap_or_else(|| with_alias.clone());
+
+                                fn rename_branch_aliases(select: &mut SelectItems, alias: &str) {
+                                    for item in &mut select.items {
+                                        if let Some(ref mut col_alias) = item.col_alias {
+                                            if col_alias.0 == "__label__" {
+                                                continue;
+                                            }
+                                            let new_name = format!("{}_{}", alias, col_alias.0);
+                                            col_alias.0 = new_name;
+                                        }
+                                    }
+                                    select.distinct = true;
+                                    // Sort by alias to ensure consistent column order across
+                                    // UNION branches (SQL UNION maps by position, not name)
+                                    select.items.sort_by(|a, b| {
+                                        let a_alias = a
+                                            .col_alias
+                                            .as_ref()
+                                            .map(|c| c.0.as_str())
+                                            .unwrap_or("");
+                                        let b_alias = b
+                                            .col_alias
+                                            .as_ref()
+                                            .map(|c| c.0.as_str())
+                                            .unwrap_or("");
+                                        a_alias.cmp(b_alias)
+                                    });
+                                }
+
+                                // Build first branch RenderPlan from the parent plan's fields
+                                let mut first_branch = RenderPlan {
+                                    ctes: CteItems(vec![]),
+                                    select: rendered.select.clone(),
+                                    from: rendered.from.clone(),
+                                    joins: rendered.joins.clone(),
+                                    array_join: ArrayJoinItem(Vec::new()),
+                                    filters: rendered.filters.clone(),
+                                    group_by: GroupByExpressions(vec![]),
+                                    having_clause: None,
+                                    order_by: OrderByItems(vec![]),
+                                    skip: SkipItem(None),
+                                    limit: LimitItem(None),
+                                    union: UnionItems(None),
+                                    fixed_path_info: None,
+                                    is_multi_label_scan: false,
+                                };
+                                rename_branch_aliases(&mut first_branch.select, &rename_alias);
+
+                                // Rename aliases in remaining branches
+                                if let UnionItems(Some(ref mut union)) = rendered.union {
+                                    for branch in &mut union.input {
+                                        rename_branch_aliases(&mut branch.select, &rename_alias);
+                                    }
+                                    // Insert first branch at the beginning
+                                    union.input.insert(0, first_branch);
+                                }
+
+                                // Clear plan-level fields so CTE renders union directly
+                                rendered.select = SelectItems {
+                                    items: vec![],
+                                    distinct: false,
+                                };
+                                rendered.from = FromTableItem(None);
+                                rendered.filters = FilterItems(None);
+                                rendered.joins = JoinItems(vec![]);
+                            } else {
+                                // For UNION plans, we need to apply projection over the union
+                                // We do this by keeping the UNION structure but replacing SELECT items
+                                // The union branches already have all columns, so we wrap with our projection
+                                // This creates: SELECT <with_items> FROM (SELECT * FROM table1 UNION ALL SELECT * FROM table2) AS __union
+
+                                // For both UNION and non-UNION: apply projection to SELECT
+                                rendered.select = SelectItems {
+                                    items: select_items,
+                                    distinct: with_distinct,
+                                };
+                            } // end is_denorm_union else
 
                             // If there's aggregation, add GROUP BY for non-aggregate expressions
                             // PERFORMANCE: Only GROUP BY the ID column(s) for TableAlias items
@@ -7856,12 +8101,35 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             TableAlias as RenderTableAlias,
                         };
 
+                        // For denormalized Union wrapped as subquery, the JOIN references
+                        // __union alias with renamed columns instead of the original table alias
+                        let (join_table_alias, join_column) = if with_cte_render.union.0.is_some()
+                            && with_cte_render.from.0.is_none()
+                        {
+                            // Use node alias (first exported alias) matching the rename prefix
+                            let node_alias = with_plans
+                                .first()
+                                .and_then(|p| match p {
+                                    LogicalPlan::WithClause(wc) => {
+                                        wc.exported_aliases.first().cloned()
+                                    }
+                                    _ => None,
+                                })
+                                .unwrap_or_else(|| pc_meta.correlation_var.clone());
+                            (
+                                "__union".to_string(),
+                                format!("{}_{}", node_alias, id_column),
+                            )
+                        } else {
+                            (pc_meta.correlation_var.clone(), id_column.clone())
+                        };
+
                         let on_clause = crate::render_plan::render_expr::OperatorApplication {
                             operator: Operator::Equal,
                             operands: vec![
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: RenderTableAlias(pc_meta.correlation_var.clone()),
-                                    column: PropertyValue::Column(id_column.clone()),
+                                    table_alias: RenderTableAlias(join_table_alias),
+                                    column: PropertyValue::Column(join_column),
                                 }),
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: RenderTableAlias(pc_alias.clone()),
@@ -7881,6 +8149,21 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             graph_rel: None,
                         };
                         with_cte_render.joins.0.push(join);
+
+                        // For denormalized Union: add __union.* to pass through all UNION columns
+                        if with_cte_render.union.0.is_some()
+                            && with_cte_render.from.0.is_none()
+                            && with_cte_render.select.items.is_empty()
+                        {
+                            with_cte_render.select.items.push(SelectItem {
+                                expression: RenderExpr::Column(
+                                    crate::render_plan::render_expr::Column(PropertyValue::Column(
+                                        "__union.*".to_string(),
+                                    )),
+                                ),
+                                col_alias: None,
+                            });
+                        }
 
                         // Add SELECT item for the aggregation result
                         let result_col_alias = pc_meta.result_alias.clone();
@@ -8053,7 +8336,14 @@ pub(crate) fn build_chained_with_match_cte_plan(
             {
                 UnionItems(Some(union)) if !union.input.is_empty() => {
                     // For UNION, take schema from first branch (all branches must have same schema)
-                    let items = union.input[0].select.items.clone();
+                    let mut items = union.input[0].select.items.clone();
+                    // Also include any wrapping SELECT items (e.g., pattern comprehension results)
+                    // These are in with_cte_render.select alongside __union.* pass-through
+                    for item in &with_cte_render.select.items {
+                        if item.col_alias.is_some() {
+                            items.push(item.clone());
+                        }
+                    }
                     let names: Vec<String> = items
                         .iter()
                         .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
@@ -8139,11 +8429,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // used when generating the SELECT items
             let mut alias_to_id_column: HashMap<String, String> = HashMap::new();
 
-            // Get exported aliases from the WITH clause - use the with_alias directly
-            // The WITH clause exports the alias being processed
-            let exported_aliases: Vec<String> = vec![with_alias.clone()];
-
-            // For each exported alias, compute the ID column name deterministically
+            // Use individual exported aliases (e.g., ["a", "allNeighboursCount"]) not combined with_alias
+            // compute_cte_id_column_for_alias needs the actual node alias to find the GraphNode
             for alias in &exported_aliases {
                 if let Some(id_col_name) = compute_cte_id_column_for_alias(alias, &current_plan) {
                     log::info!(
@@ -8784,13 +9071,26 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                 // Insert the CTE join at the BEGINNING of the joins list
                 // (CTE should be joined first so its columns are available)
-                render_plan.joins.0.insert(0, cte_join.clone());
-
-                log::info!(
-                    "🔧 build_chained_with_match_cte_plan: Added CTE JOIN: {} AS {}",
-                    cte_name,
-                    cte_alias
-                );
+                // BUT: skip if a JOIN for this CTE alias already exists (from extract_joins)
+                let already_has_cte_join = render_plan
+                    .joins
+                    .0
+                    .iter()
+                    .any(|j| j.table_alias == cte_alias);
+                if !already_has_cte_join {
+                    render_plan.joins.0.insert(0, cte_join.clone());
+                    log::info!(
+                        "🔧 build_chained_with_match_cte_plan: Added CTE JOIN: {} AS {}",
+                        cte_name,
+                        cte_alias
+                    );
+                } else {
+                    log::info!(
+                        "🔧 build_chained_with_match_cte_plan: Skipping CTE JOIN {} AS {} (already present from extract_joins)",
+                        cte_name,
+                        cte_alias
+                    );
+                }
 
                 // Also add the WITH CTE JOIN to each Union branch
                 // The main plan's joins only apply to the first branch (outgoing).
@@ -11267,12 +11567,48 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
             (HashMap::new(), HashMap::new())
         };
 
+        // Look up the actual ID column from cte_schemas (alias → ID column mapping)
+        // The alias_to_id stores prefixed names like "a_code", but ViewScan.id_column
+        // should be unprefixed (e.g., "code") because resolve_cte_reference adds the prefix.
+        let cte_id_column = cte_schemas
+            .get(cte_name)
+            .and_then(|(_, _, alias_to_id, _)| {
+                // Try direct lookup first
+                alias_to_id
+                    .get(with_alias)
+                    .or_else(|| {
+                        // Combined alias (e.g., "a_allNeighboursCount") won't match
+                        // individual aliases (e.g., "a"). Try first matching key.
+                        alias_to_id.keys().next().and_then(|k| alias_to_id.get(k))
+                    })
+                    .map(|prefixed| {
+                        // Strip any alias prefix: "a_code" → "code"
+                        // Try with_alias first, then each key in alias_to_id
+                        let stripped = prefixed
+                            .strip_prefix(&format!("{}_", with_alias))
+                            .or_else(|| {
+                                alias_to_id
+                                    .keys()
+                                    .find_map(|k| prefixed.strip_prefix(&format!("{}_", k)))
+                            })
+                            .unwrap_or(prefixed);
+                        stripped.to_string()
+                    })
+            })
+            .unwrap_or_else(|| "id".to_string());
+        log::info!(
+            "🔧 create_cte_reference: CTE '{}' alias '{}' → id_column '{}'",
+            cte_name,
+            with_alias,
+            cte_id_column
+        );
+
         LogicalPlan::GraphNode(GraphNode {
             input: Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan {
                 source_table: cte_name.to_string(),
                 view_filter: None,
                 property_mapping,
-                id_column: "id".to_string(),
+                id_column: cte_id_column.clone(),
                 output_schema: vec!["id".to_string()],
                 projections: vec![],
                 from_id: None,

@@ -415,6 +415,38 @@ cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 - Within a query we have specific scope for variables, MATCH, WITH etc. Always consider to put into the right scope.
 - SQL CTEs are always at query scope while references are within some scopes.
 
+### Schema Access Pattern ⚠️ **[CRITICAL]**
+
+**Rule**: All query-processing code MUST access the schema via the task-local `QueryContext`, never directly from `GLOBAL_SCHEMAS`.
+
+The resolved `GraphSchema` is stored as `Arc<GraphSchema>` in the task-local `QueryContext` and set once at query entry (HTTP handler in `handlers.rs`, Bolt handler in `bolt_protocol/handler.rs`).
+
+```rust
+// ✅ CORRECT: Use task-local schema in query-processing code
+use crate::server::query_context::get_current_schema;
+if let Some(schema) = get_current_schema() {
+    let node = schema.all_node_schemas().get("User");
+}
+
+// ✅ CORRECT: Use fallback version in code also called from unit tests
+// (tests may set up GLOBAL_SCHEMAS directly without task-local scope)
+use crate::server::query_context::get_current_schema_with_fallback;
+if let Some(schema) = get_current_schema_with_fallback() { ... }
+
+// ❌ WRONG: Direct GLOBAL_SCHEMAS access in query-processing code
+if let Some(lock) = crate::server::GLOBAL_SCHEMAS.get() {
+    if let Ok(schemas) = lock.try_read() { ... }  // Non-deterministic in multi-schema
+}
+```
+
+**Where GLOBAL_SCHEMAS is still appropriate**:
+- `server/mod.rs` — initialization
+- `server/graph_catalog.rs` — admin endpoints (load/list schemas)
+- `server/bolt_protocol/handler.rs` — connection setup (before query scope)
+- Test setup code in `*_tests.rs` files
+
+**Key files**: `server/query_context.rs` (accessors), `server/handlers.rs` (HTTP entry), `server/bolt_protocol/handler.rs` (Bolt entry)
+
 ### Error Handling
 - Each module has its own error type in `errors.rs`
 - Use `thiserror` for error definitions

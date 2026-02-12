@@ -590,18 +590,14 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             .ok_or("Node not found")
         {
             let end_id_sql = if node_schema.node_id.is_composite() {
-                // Composite ID: convert tuple to String
+                // Composite ID: pipe-join columns to match element_id format "val1|val2"
                 let cols: Vec<String> = node_schema
                     .node_id
                     .columns()
                     .iter()
-                    .map(|col| format!("{}.{}", node_alias, col))
+                    .map(|col| format!("toString({}.{})", node_alias, col))
                     .collect();
-                format!(
-                    "toString(tuple({})) AS {}",
-                    cols.join(", "),
-                    VLP_END_ID_COLUMN
-                )
+                format!("concat({}) AS {}", cols.join(", '|', "), VLP_END_ID_COLUMN)
             } else {
                 // Single ID: cast to String
                 format!(
@@ -623,15 +619,16 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 .ok_or("Node not found")
             {
                 let start_id_sql = if node_schema.node_id.is_composite() {
+                    // Composite ID: pipe-join columns to match element_id format "val1|val2"
                     let cols: Vec<String> = node_schema
                         .node_id
                         .columns()
                         .iter()
-                        .map(|col| format!("{}.{}", start_alias_sql, col))
+                        .map(|col| format!("toString({}.{})", start_alias_sql, col))
                         .collect();
                     format!(
-                        "toString(tuple({})) AS {}",
-                        cols.join(", "),
+                        "concat({}) AS {}",
+                        cols.join(", '|', "),
                         VLP_START_ID_COLUMN
                     )
                 } else {
@@ -745,6 +742,17 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                                 }
                             }
                         }
+                    } else if let Some(denorm_props) =
+                        self.get_denormalized_node_properties(node_type, false, hops)
+                    {
+                        // Denormalized node: properties come from edge table columns
+                        use crate::clickhouse_query_generator::json_builder::generate_json_from_denormalized_properties;
+                        let json_sql = generate_json_from_denormalized_properties(
+                            &denorm_props,
+                            node_alias,
+                            "_e_",
+                        );
+                        items.push(format!("{} AS end_properties", json_sql));
                     } else {
                         items.push("'{}' AS end_properties".to_string());
                     }
@@ -840,6 +848,17 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                                     }
                                 }
                             }
+                        } else if let Some(denorm_props) =
+                            self.get_denormalized_node_properties(start_type, true, hops)
+                        {
+                            // Denormalized node: properties come from edge table columns
+                            use crate::clickhouse_query_generator::json_builder::generate_json_from_denormalized_properties;
+                            let json_sql = generate_json_from_denormalized_properties(
+                                &denorm_props,
+                                start_alias_sql,
+                                "_s_",
+                            );
+                            items.push(format!("{} AS start_properties", json_sql));
                         } else {
                             items.push("'{}' AS start_properties".to_string());
                         }
@@ -1041,6 +1060,52 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             log::error!("❌ Failed to get relationship columns: {}", e);
         }
         result
+    }
+
+    /// Get denormalized node properties from the relationship schema.
+    ///
+    /// For denormalized nodes (property_mappings is empty), properties come from
+    /// `from_node_properties` or `to_node_properties` on the relationship schema.
+    /// Returns the appropriate mapping based on the hop direction.
+    fn get_denormalized_node_properties(
+        &self,
+        _node_type: &str,
+        is_start_node: bool,
+        hops: &[crate::query_planner::analyzer::multi_type_vlp_expansion::PathHop],
+    ) -> Option<std::collections::HashMap<String, String>> {
+        let hop = if is_start_node {
+            hops.first()
+        } else {
+            hops.last()
+        }?;
+
+        let (schema_from, schema_to) = if hop.reversed {
+            (&hop.to_node_type, &hop.from_node_type)
+        } else {
+            (&hop.from_node_type, &hop.to_node_type)
+        };
+
+        let rel_schema = self
+            .schema
+            .get_rel_schema_with_nodes(&hop.rel_type, Some(schema_from), Some(schema_to))
+            .ok()?;
+
+        // For start node: if hop is normal direction, start = from_node → use from_node_properties
+        //                 if hop is reversed, start = to_node → use to_node_properties
+        // For end node: opposite
+        let props = if is_start_node {
+            if hop.reversed {
+                &rel_schema.to_node_properties
+            } else {
+                &rel_schema.from_node_properties
+            }
+        } else if hop.reversed {
+            &rel_schema.from_node_properties
+        } else {
+            &rel_schema.to_node_properties
+        };
+
+        props.clone()
     }
 
     /// Get ID column for a node type

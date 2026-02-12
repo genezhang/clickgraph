@@ -504,6 +504,10 @@ async fn query_handler_inner(
             }
         };
 
+        // Set the resolved schema in task-local context so all downstream
+        // code can access it via get_current_schema() without GLOBAL_SCHEMAS lookups
+        crate::server::query_context::set_current_schema(std::sync::Arc::new(graph_schema.clone()));
+
         // Phase 1: Parse query with UNION support
         // IMPORTANT: Parse the CLEAN query without CYPHER prefix
         let parse_start = Instant::now();

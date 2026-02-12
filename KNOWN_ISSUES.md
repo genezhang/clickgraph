@@ -1,7 +1,7 @@
 # Known Issues
 
-**Active Issues**: 1 bug, 5 feature limitations  
-**Last Updated**: January 21, 2026
+**Active Issues**: 1 bug, 7 feature limitations  
+**Last Updated**: February 11, 2026
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).  
 For usage patterns and feature documentation, see [docs/wiki/](docs/wiki/).
@@ -246,3 +246,26 @@ RETURN count  -- Works
 **Impact**: Neo4j Browser click-to-expand partially broken (needs property access fix)
 
 **Related**: CTE name fix (Feb 9) solved the "Table not found" issue, but this property mapping bug remains.
+
+---
+
+## Neo4j Browser Schema Compatibility Limitations
+
+### 7. Denormalized Node Schemas — Browser Expand ✅ FIXED
+**Status**: ✅ FIXED (February 12, 2026)
+
+**Description**: Neo4j Browser click-to-expand now works with denormalized/virtual node schemas (e.g., `denormalized_flights.yaml`). VLP CTEs generate JSON property blobs (`start_properties`, `end_properties`) instead of flat columns, matching the 9-field tuple format expected by `transform_vlp_path()`.
+
+**Tested**: All 7 Bolt protocol tests pass — nodes with properties, relationships with all attributes, outbound click-to-expand, string element IDs.
+
+### 8. Multi-Tenant Cross-Session ID Isolation
+**Status**: ⚠️ Known Limitation  
+**Added**: February 11, 2026
+
+**Description**: When using parameterized views for multi-tenancy, the Bolt protocol's `IdMapper` cross-session lookup can produce cross-tenant ID contamination. Element IDs like `"User:1"` are identical across tenants because `tenant_id` is a view parameter, not part of the node ID.
+
+Two tenants with `User:1` will get the same encoded integer ID. Cross-session reverse lookups (used when a new browser connection queries `id(n) = X`) may return data from the wrong tenant's session cache.
+
+**Impact**: Only affects multi-tenant deployments using parameterized views with the Neo4j Browser Bolt protocol. HTTP API and single-tenant deployments are not affected.
+
+**Workaround**: Include `tenant_id` as part of the composite node ID in the schema definition (e.g., `node_id: [tenant_id, user_id]`), or use separate ClickGraph instances per tenant.

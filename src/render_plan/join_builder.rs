@@ -116,6 +116,33 @@ pub trait JoinBuilder {
     fn extract_array_join(&self) -> RenderPlanBuilderResult<Vec<ArrayJoin>>;
 }
 
+/// Check if an OperatorApplication condition references a given alias in its operands
+fn condition_references_alias(cond: &super::render_expr::OperatorApplication, alias: &str) -> bool {
+    use super::render_expr::RenderExpr;
+    for operand in &cond.operands {
+        match operand {
+            RenderExpr::PropertyAccessExp(pa) => {
+                if pa.table_alias.0 == alias {
+                    return true;
+                }
+            }
+            RenderExpr::Column(super::render_expr::Column(pv)) => {
+                let col_str = pv.raw();
+                if col_str.starts_with(&format!("{}.", alias)) {
+                    return true;
+                }
+            }
+            RenderExpr::OperatorApplicationExp(inner) => {
+                if condition_references_alias(inner, alias) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Default implementation of JoinBuilder for LogicalPlan
 impl JoinBuilder for LogicalPlan {
     /// Extract UNWIND clauses as ARRAY JOIN items
@@ -559,6 +586,11 @@ impl JoinBuilder for LogicalPlan {
                 let mut joins: Vec<Join> = Vec::new();
                 let mut skipped_first = false;
                 let from_alias = graph_joins.anchor_table.as_ref().cloned();
+                log::info!(
+                    "🔧 GraphJoins extract_joins: from_alias={:?}, num_joins={}",
+                    from_alias,
+                    graph_joins.joins.len()
+                );
 
                 // Import logical JoinType for comparison
                 use crate::query_planner::logical_plan::JoinType as LogicalJoinType;
@@ -859,9 +891,28 @@ impl JoinBuilder for LogicalPlan {
                     anchor_table_name
                 );
 
+                // Collect conditions from skipped joins that reference CTE aliases
+                // When a relationship JOIN is skipped (same table as anchor), its condition
+                // (e.g., r.origin_code = a.a_code) should be transferred to the CTE JOIN
+                let mut skipped_cte_conditions: std::collections::HashMap<
+                    String,
+                    Vec<OperatorApplication>,
+                > = std::collections::HashMap::new();
+
                 for input_join in input_joins {
                     // Skip if alias already exists
                     if existing_aliases.contains(&input_join.table_alias) {
+                        // Check if the skipped join's conditions reference CTE aliases
+                        for cond in &input_join.joining_on {
+                            for (cte_alias, _cte_name) in &graph_joins.cte_references {
+                                if condition_references_alias(cond, cte_alias) {
+                                    skipped_cte_conditions
+                                        .entry(cte_alias.clone())
+                                        .or_default()
+                                        .push(cond.clone());
+                                }
+                            }
+                        }
                         continue;
                     }
 
@@ -881,6 +932,17 @@ impl JoinBuilder for LogicalPlan {
                                 input_join.table_alias,
                                 graph_joins.anchor_table.as_ref().unwrap()
                             );
+                            // Also capture conditions from this skipped join
+                            for cond in &input_join.joining_on {
+                                for (cte_alias, _cte_name) in &graph_joins.cte_references {
+                                    if condition_references_alias(cond, cte_alias) {
+                                        skipped_cte_conditions
+                                            .entry(cte_alias.clone())
+                                            .or_default()
+                                            .push(cond.clone());
+                                    }
+                                }
+                            }
                             continue;
                         }
                     }
@@ -891,6 +953,45 @@ impl JoinBuilder for LogicalPlan {
                         input_join.table_alias
                     );
                     joins.push(input_join);
+                }
+
+                // Apply skipped CTE conditions to existing CTE joins that have empty conditions,
+                // or create new CTE JOINs if none exist yet
+                if !skipped_cte_conditions.is_empty() {
+                    // First try to apply to existing empty CTE joins
+                    for join in &mut joins {
+                        if join.joining_on.is_empty() {
+                            if let Some(conditions) =
+                                skipped_cte_conditions.remove(&join.table_alias)
+                            {
+                                log::info!(
+                                    "🔧 Transferring {} conditions from skipped JOIN to CTE JOIN '{}'",
+                                    conditions.len(),
+                                    join.table_alias
+                                );
+                                join.joining_on = conditions;
+                            }
+                        }
+                    }
+                    // Create new CTE JOINs for any remaining skipped conditions
+                    for (cte_alias, conditions) in skipped_cte_conditions {
+                        if let Some(cte_name) = graph_joins.cte_references.get(&cte_alias) {
+                            log::info!(
+                                "🔧 Creating CTE JOIN for '{}' ({}) with {} conditions from skipped joins",
+                                cte_alias, cte_name, conditions.len()
+                            );
+                            joins.push(Join {
+                                table_name: cte_name.clone(),
+                                table_alias: cte_alias,
+                                joining_on: conditions,
+                                join_type: super::JoinType::Inner,
+                                pre_filter: None,
+                                from_id_column: None,
+                                to_id_column: None,
+                                graph_rel: None,
+                            });
+                        }
+                    }
                 }
 
                 joins
@@ -1129,26 +1230,21 @@ impl JoinBuilder for LogicalPlan {
                         if let (Some(curr_type), Some(left_type)) =
                             (current_rel_type, left_rel_type)
                         {
-                            // Try to get coupling info from schema
-                            if let Some(schema_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-                                if let Ok(schemas) = schema_lock.try_read() {
-                                    // Try different schema names
-                                    for schema_name in ["default", ""] {
-                                        if let Some(schema) = schemas.get(schema_name) {
-                                            if let Some(coupling_info) =
-                                                schema.get_coupled_edge_info(&left_type, &curr_type)
-                                            {
-                                                println!(
-                                                    "DEBUG: COUPLED EDGES DETECTED! {} and {} share coupling node {} in table {}",
-                                                    left_type, curr_type, coupling_info.coupling_node, coupling_info.table_name
-                                                );
+                            // Try to get coupling info from task-local schema
+                            if let Some(schema) =
+                                crate::server::query_context::get_current_schema_with_fallback()
+                            {
+                                if let Some(coupling_info) =
+                                    schema.get_coupled_edge_info(&left_type, &curr_type)
+                                {
+                                    println!(
+                                        "DEBUG: COUPLED EDGES DETECTED! {} and {} share coupling node {} in table {}",
+                                        left_type, curr_type, coupling_info.coupling_node, coupling_info.table_name
+                                    );
 
-                                                // Skip the JOIN - edges are in the same row!
-                                                // If arrays need expansion, user should use UNWIND clause
-                                                return Ok(joins);
-                                            }
-                                        }
-                                    }
+                                    // Skip the JOIN - edges are in the same row!
+                                    // If arrays need expansion, user should use UNWIND clause
+                                    return Ok(joins);
                                 }
                             }
                         }
@@ -1605,28 +1701,16 @@ impl JoinBuilder for LogicalPlan {
                     if let Some(label_list) = labels {
                         if !label_list.is_empty() {
                             // Use the first relationship type to get the table name
-                            // For multi-relationship queries, all relationships should connect to the same table
-                            // (or the query should use denormalized edges)
-                            if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-                                if let Ok(schemas) = schemas_lock.try_read() {
-                                    // Try "default" schema first, then empty string
-                                    for schema_name in ["default", ""] {
-                                        if let Some(schema) = schemas.get(schema_name) {
-                                            if let Ok(rel_schema) =
-                                                schema.get_rel_schema(&label_list[0])
-                                            {
-                                                let table_name = if is_from_node {
-                                                    &rel_schema.from_node_table
-                                                } else {
-                                                    &rel_schema.to_node_table
-                                                };
-                                                return Some(format!(
-                                                    "{}.{}",
-                                                    rel_schema.database, table_name
-                                                ));
-                                            }
-                                        }
-                                    }
+                            if let Some(schema) =
+                                crate::server::query_context::get_current_schema_with_fallback()
+                            {
+                                if let Ok(rel_schema) = schema.get_rel_schema(&label_list[0]) {
+                                    let table_name = if is_from_node {
+                                        &rel_schema.from_node_table
+                                    } else {
+                                        &rel_schema.to_node_table
+                                    };
+                                    return Some(format!("{}.{}", rel_schema.database, table_name));
                                 }
                             }
                         }
@@ -1696,11 +1780,40 @@ impl JoinBuilder for LogicalPlan {
                         })
                 } else {
                     // Single hop: extract ID column from the node ViewScan
-                    extract_id_column(&graph_rel.left)
-                        .unwrap_or_else(|| table_to_id_column(&start_table))
+                    let extracted = extract_id_column(&graph_rel.left);
+                    let col = extracted.unwrap_or_else(|| {
+                        // For CTE-referenced nodes, table name is a CTE name (e.g., "with_a_cte_0")
+                        // which won't be found in schema. Use the node label to find the actual ID column.
+                        if graph_rel.cte_references.contains_key(&graph_rel.left_connection) {
+                            let label = extract_node_label_from_viewscan(&graph_rel.left);
+                            if let Some(label) = &label {
+                                let label_table = super::cte_extraction::label_to_table_name(label);
+                                let col = table_to_id_column(&label_table);
+                                log::info!("🔍 start_id_col: CTE-referenced node '{}', using label '{}' -> table '{}' -> id_col '{}'",
+                                    graph_rel.left_connection, label, label_table, col);
+                                return col;
+                            }
+                        }
+                        table_to_id_column(&start_table)
+                    });
+                    col
                 };
-                let end_id_col = extract_id_column(&graph_rel.right)
-                    .unwrap_or_else(|| table_to_id_column(&end_table));
+                let end_id_col = {
+                    let extracted = extract_id_column(&graph_rel.right);
+                    extracted.unwrap_or_else(|| {
+                        if graph_rel.cte_references.contains_key(&graph_rel.right_connection) {
+                            let label = extract_node_label_from_viewscan(&graph_rel.right);
+                            if let Some(label) = &label {
+                                let label_table = super::cte_extraction::label_to_table_name(label);
+                                let col = table_to_id_column(&label_table);
+                                log::info!("🔍 end_id_col: CTE-referenced node '{}', using label '{}' -> table '{}' -> id_col '{}'",
+                                    graph_rel.right_connection, label, label_table, col);
+                                return col;
+                            }
+                        }
+                        table_to_id_column(&end_table)
+                    })
+                };
 
                 // Get relationship columns
                 let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(

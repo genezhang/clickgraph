@@ -28,7 +28,7 @@ pub use crate::server::query_context::{
 /// Generate SQL for an EXISTS subquery directly from the logical plan
 /// This is a simplified approach that generates basic EXISTS SQL
 fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderBuildError> {
-    use crate::server::GLOBAL_SCHEMAS;
+    use crate::server::query_context::get_current_schema;
 
     // Try to extract pattern info from the subplan
     // The subplan is typically a GraphRel representing a relationship pattern
@@ -40,20 +40,14 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
             use crate::clickhouse_query_generator::to_sql_query::render_plan_to_sql;
             use crate::render_plan::plan_builder::RenderPlanBuilder;
 
-            // Get schema from GLOBAL_SCHEMAS
-            let schemas_lock = GLOBAL_SCHEMAS.get();
-            let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
-            let schema = schemas_guard
-                .as_ref()
-                .and_then(|guard| guard.values().next())
-                .ok_or_else(|| {
-                    RenderBuildError::InvalidRenderPlan(
-                        "No schema available for EXISTS subquery".to_string(),
-                    )
-                })?;
+            let schema = get_current_schema().ok_or_else(|| {
+                RenderBuildError::InvalidRenderPlan(
+                    "No schema available for EXISTS subquery".to_string(),
+                )
+            })?;
 
             // Convert logical plan to render plan using the full pipeline
-            let render_plan = exists.subplan.to_render_plan(schema)?;
+            let render_plan = exists.subplan.to_render_plan(&schema)?;
 
             // Generate SQL from render plan
             let sql = render_plan_to_sql(render_plan, 10); // Use default max_cte_depth
@@ -72,27 +66,9 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
             // Get the start node alias (the correlated variable)
             let start_alias = &graph_rel.left_connection;
 
-            // Try to get schema for relationship lookup
-            // GLOBAL_SCHEMAS is OnceCell<RwLock<HashMap<String, GraphSchema>>>
-            // CRITICAL FIX: Use the current schema name from thread-local storage
-            // instead of searching all schemas. This fixes EXISTS with multi-schema support.
-            let schemas_lock = GLOBAL_SCHEMAS.get();
-            let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
-
-            // First try to get the schema by name from thread-local
-            let current_schema_name = get_current_schema_name();
-            let schema = schemas_guard.as_ref().and_then(|guard| {
-                if let Some(ref name) = current_schema_name {
-                    // Use the specific schema if we have a name
-                    guard.get(name)
-                } else {
-                    // Fallback: search all schemas for one that has this relationship type
-                    // This is less reliable but maintains backward compatibility
-                    guard
-                        .values()
-                        .find(|s| s.get_relationships_schema_opt(&rel_type).is_some())
-                }
-            });
+            // Use the active query's schema from task-local context
+            let current_schema = get_current_schema();
+            let schema = current_schema.as_deref();
 
             // Look up the relationship table and columns using public accessors
             if let Some(schema) = schema {
@@ -167,7 +143,7 @@ fn generate_multi_hop_pattern_count_sql(
     connected_patterns: &[ConnectedPattern],
     start_alias: &str,
 ) -> Result<String, RenderBuildError> {
-    use crate::server::GLOBAL_SCHEMAS;
+    use crate::server::query_context::get_current_schema;
 
     // Get the first relationship type to find the correct schema
     let first_rel_type = connected_patterns
@@ -180,32 +156,14 @@ fn generate_multi_hop_pattern_count_sql(
             )
         })?;
 
-    // CRITICAL FIX: Use the current schema name from thread-local storage
-    // instead of searching all schemas. This fixes multi-hop EXISTS with multi-schema support.
-    let schemas_lock = GLOBAL_SCHEMAS.get();
-    let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
-
-    // First try to get the schema by name from thread-local
-    let current_schema_name = get_current_schema_name();
-    let schema = schemas_guard
-        .as_ref()
-        .and_then(|guard| {
-            if let Some(ref name) = current_schema_name {
-                // Use the specific schema if we have a name
-                guard.get(name)
-            } else {
-                // Fallback: search all schemas for one that has this relationship type
-                guard
-                    .values()
-                    .find(|s| s.get_relationships_schema_opt(first_rel_type).is_some())
-            }
-        })
-        .ok_or_else(|| {
-            RenderBuildError::InvalidRenderPlan(format!(
-                "Schema not found for multi-hop pattern with relationship '{}'",
-                first_rel_type
-            ))
-        })?;
+    // Use the active query's schema from task-local context
+    let current_schema = get_current_schema();
+    let schema = current_schema.as_deref().ok_or_else(|| {
+        RenderBuildError::InvalidRenderPlan(format!(
+            "Schema not found for multi-hop pattern with relationship '{}'",
+            first_rel_type
+        ))
+    })?;
 
     // First relationship connects to start node (correlated)
     let first_conn = &connected_patterns[0];
@@ -382,7 +340,7 @@ fn generate_multi_hop_pattern_count_sql(
 /// (SELECT COUNT(*) FROM rel_table WHERE rel_table.from_id = n.id)
 /// ```
 fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBuildError> {
-    use crate::server::GLOBAL_SCHEMAS;
+    use crate::server::query_context::get_current_schema;
 
     match pattern {
         PathPattern::ConnectedPattern(connected_patterns) => {
@@ -424,17 +382,9 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
             // Determine direction
             let is_undirected = matches!(conn.relationship.direction, Direction::Either);
 
-            // Try to get schema for relationship lookup
-            // CRITICAL FIX: Search all schemas for one that has this relationship type
-            // instead of hardcoding "default". This fixes size() with multi-schema support.
-            let schemas_lock = GLOBAL_SCHEMAS.get();
-            let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
-            let schema = schemas_guard.as_ref().and_then(|guard| {
-                // Try each schema until we find one with this relationship type
-                guard
-                    .values()
-                    .find(|s| s.get_relationships_schema_opt(&rel_type).is_some())
-            });
+            // Use the active query's schema from task-local context
+            let current_schema = get_current_schema();
+            let schema = current_schema.as_deref();
 
             // Look up the relationship table and columns
             if let Some(schema) = schema {
@@ -558,7 +508,7 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
 fn generate_not_exists_from_path_pattern(
     pattern: &PathPattern,
 ) -> Result<String, RenderBuildError> {
-    use crate::server::GLOBAL_SCHEMAS;
+    use crate::server::query_context::get_current_schema;
 
     match pattern {
         PathPattern::ConnectedPattern(connected_patterns) => {
@@ -592,17 +542,9 @@ fn generate_not_exists_from_path_pattern(
             // Get direction
             let is_undirected = conn.relationship.direction == Direction::Either;
 
-            // Try to get schema for relationship lookup
-            // CRITICAL FIX: Search all schemas for one that has this relationship type
-            // instead of hardcoding "default". This fixes size() with multi-schema support.
-            let schemas_lock = GLOBAL_SCHEMAS.get();
-            let schemas_guard = schemas_lock.and_then(|lock| lock.try_read().ok());
-            let schema = schemas_guard.as_ref().and_then(|guard| {
-                // Try each schema until we find one with this relationship type
-                guard
-                    .values()
-                    .find(|s| s.get_relationships_schema_opt(&rel_type).is_some())
-            });
+            // Use the active query's schema from task-local context
+            let current_schema = get_current_schema();
+            let schema = current_schema.as_deref();
 
             // Look up the relationship table and columns
             if let Some(schema) = schema {

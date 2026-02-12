@@ -42,6 +42,8 @@ impl PropertiesBuilder for LogicalPlan {
                 // FAST PATH: Use pre-computed projected_columns if available
                 // (populated by ProjectedColumnsResolver analyzer pass)
                 if let Some(projected_cols) = &node.projected_columns {
+                    log::info!("🔍 get_properties_with_table_alias: GraphNode '{}' using projected_columns ({} entries): {:?}",
+                        alias, projected_cols.len(), projected_cols);
                     // projected_columns format: Vec<(property_name, qualified_column)>
                     // e.g., [("firstName", "p.first_name"), ("age", "p.age")]
                     // We need to return unqualified column names: ("firstName", "first_name")
@@ -178,9 +180,6 @@ impl PropertiesBuilder for LogicalPlan {
                 // - Outgoing: left_connection → from_node_properties, right_connection → to_node_properties
                 // - Incoming: left_connection → to_node_properties, right_connection → from_node_properties
                 if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
-                    let is_incoming =
-                        rel.direction == crate::query_planner::logical_expr::Direction::Incoming;
-
                     crate::debug_println!("DEBUG GraphRel: alias='{}' checking left='{}', right='{}', rel_alias='{}', direction={:?}",
                         alias, rel.left_connection, rel.right_connection, rel.alias, rel.direction);
                     crate::debug_println!(
@@ -194,29 +193,16 @@ impl PropertiesBuilder for LogicalPlan {
                     );
 
                     // Check if BOTH nodes are denormalized on this edge
-                    // If so, right_connection should use left_connection's alias (the FROM table)
-                    // because the edge is fully denormalized - no separate JOIN for the edge
-                    let left_props_exist = if is_incoming {
-                        scan.to_node_properties.is_some()
-                    } else {
-                        scan.from_node_properties.is_some()
-                    };
-                    let right_props_exist = if is_incoming {
-                        scan.from_node_properties.is_some()
-                    } else {
-                        scan.to_node_properties.is_some()
-                    };
+                    let left_props_exist = scan.from_node_properties.is_some();
+                    let right_props_exist = scan.to_node_properties.is_some();
                     let _both_nodes_denormalized = left_props_exist && right_props_exist;
 
                     // Check if alias matches left_connection
                     if alias == rel.left_connection {
                         log::info!("✅ Found left_connection match for '{}'", alias);
-                        // For Incoming direction, left node is on the TO side of the edge
-                        let props = if is_incoming {
-                            &scan.to_node_properties
-                        } else {
-                            &scan.from_node_properties
-                        };
+                        // left_connection is always FROM side (BidirectionalUnion swaps
+                        // connections for Incoming, maintaining left=FROM invariant)
+                        let props = &scan.from_node_properties;
                         if let Some(node_props) = props {
                             let properties = extract_sorted_properties(node_props);
                             if !properties.is_empty() {
@@ -282,12 +268,9 @@ impl PropertiesBuilder for LogicalPlan {
                     }
                     // Check if alias matches right_connection
                     if alias == rel.right_connection {
-                        // For Incoming direction, right node is on the FROM side of the edge
-                        let props = if is_incoming {
-                            &scan.from_node_properties
-                        } else {
-                            &scan.to_node_properties
-                        };
+                        // right_connection is always TO side (BidirectionalUnion swaps
+                        // connections for Incoming, maintaining right=TO invariant)
+                        let props = &scan.to_node_properties;
                         if let Some(node_props) = props {
                             let properties = extract_sorted_properties(node_props);
                             if !properties.is_empty() {
