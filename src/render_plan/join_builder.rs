@@ -865,17 +865,31 @@ impl JoinBuilder for LogicalPlan {
                 }
 
                 // Get anchor table name if set
+                // For FK-edge patterns, the anchor may be either the left or right node
                 let anchor_table_name =
                     graph_joins.anchor_table.as_ref().and_then(|anchor_alias| {
                         // First check our map
                         if let Some(name) = alias_to_table.get(anchor_alias) {
                             return Some(name.clone());
                         }
-                        // Otherwise try to extract from GraphRel right node (which is typically the anchor for FK-edge)
-                        if let LogicalPlan::Projection(proj) = graph_joins.input.as_ref() {
-                            if let LogicalPlan::GraphRel(graph_rel) = proj.input.as_ref() {
-                                if &graph_rel.right_connection == anchor_alias {
-                                    if let LogicalPlan::GraphNode(gn) = graph_rel.right.as_ref() {
+                        // Extract from GraphRel nodes (handles both left and right anchor)
+                        // Unwrap through Projection/Filter wrappers to find the GraphRel
+                        let mut plan = graph_joins.input.as_ref();
+                        loop {
+                            match plan {
+                                LogicalPlan::Projection(proj) => plan = proj.input.as_ref(),
+                                LogicalPlan::Filter(filter) => plan = filter.input.as_ref(),
+                                _ => break,
+                            }
+                        }
+                        if let LogicalPlan::GraphRel(graph_rel) = plan {
+                            // Check both left and right connections
+                            for (conn, node) in [
+                                (&graph_rel.left_connection, &graph_rel.left),
+                                (&graph_rel.right_connection, &graph_rel.right),
+                            ] {
+                                if conn == anchor_alias {
+                                    if let LogicalPlan::GraphNode(gn) = node.as_ref() {
                                         if let LogicalPlan::ViewScan(scan) = gn.input.as_ref() {
                                             return Some(scan.source_table.clone());
                                         }

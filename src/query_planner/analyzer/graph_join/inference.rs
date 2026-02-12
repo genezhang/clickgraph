@@ -3213,14 +3213,14 @@ impl GraphJoinInference {
                 from_id,
                 to_id,
                 join_side,
-                is_self_referencing: _is_self_referencing,
+                is_self_referencing,
             } => {
                 use crate::graph_catalog::pattern_schema::NodePosition;
 
                 crate::debug_print!(
                     "    🔑 FkEdgeJoin: join_side={:?}, self_ref={}",
                     join_side,
-                    _is_self_referencing
+                    is_self_referencing
                 );
 
                 // FK-edge pattern: edge table IS one of the node tables
@@ -3346,17 +3346,23 @@ impl GraphJoinInference {
                             join_ctx.insert(right_alias.to_string());
                         } else if !left_already_joined {
                             // Standard case: JOIN left node to the already-anchored right/edge table
-                            // JOIN left: left.id = right.from_id (right table has the FK column)
+                            // For non-self-ref: left.PK = right.from_id (FK on right points to left PK)
+                            // For self-ref: left.from_id = right.to_id (FK on left points to right PK)
+                            let (left_col, right_col) = if *is_self_referencing {
+                                (from_id.as_str(), to_id.as_str())
+                            } else {
+                                (left_id_col.as_str(), from_id.as_str())
+                            };
                             crate::debug_print!(
                                 "       JOIN: {}.{} = {}.{}",
                                 left_alias,
-                                left_id_col,
+                                left_col,
                                 right_alias,
-                                from_id
+                                right_col
                             );
                             helpers::JoinBuilder::new(left_cte_name, left_alias)
                                 .optional(left_is_optional)
-                                .add_condition(left_alias, &left_id_col, right_alias, from_id)
+                                .add_condition(left_alias, left_col, right_alias, right_col)
                                 .from_id(from_id)
                                 .to_id(to_id)
                                 .build_and_push(collected_graph_joins);
@@ -3440,17 +3446,23 @@ impl GraphJoinInference {
                             join_ctx.insert(left_alias.to_string());
                         } else if !right_already_joined {
                             // Standard case: JOIN right node to the already-anchored left/edge table
-                            // JOIN right: right.id = left.to_id (left table has the FK column)
+                            // For non-self-ref: right.PK = left.to_id (FK on left points to right PK)
+                            // For self-ref: right.to_id = left.from_id (symmetric)
+                            let (right_col, left_col) = if *is_self_referencing {
+                                (to_id.as_str(), from_id.as_str())
+                            } else {
+                                (right_id_col.as_str(), to_id.as_str())
+                            };
                             crate::debug_print!(
                                 "       JOIN: {}.{} = {}.{}",
                                 right_alias,
-                                right_id_col,
+                                right_col,
                                 left_alias,
-                                to_id
+                                left_col
                             );
                             helpers::JoinBuilder::new(right_cte_name, right_alias)
                                 .optional(right_is_optional)
-                                .add_condition(right_alias, &right_id_col, left_alias, to_id)
+                                .add_condition(right_alias, right_col, left_alias, left_col)
                                 .from_id(from_id)
                                 .to_id(to_id)
                                 .build_and_push(collected_graph_joins);
