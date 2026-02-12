@@ -1679,7 +1679,8 @@ fn find_node_in_row_with_label(
     })
 }
 
-/// Create a node with a known label but no data
+/// Find or reconstruct a relationship in the result row using its alias, path metadata,
+/// and the start/end node element IDs.
 fn find_relationship_in_row_with_type(
     row: &HashMap<String, Value>,
     alias: &str,

@@ -2219,16 +2219,45 @@ impl<'a> VariableLengthCteGenerator<'a> {
         {
             use crate::clickhouse_query_generator::json_builder::generate_json_from_denormalized_properties;
 
-            // Find the denormalized node schema for this relationship table
-            let rel_table_name = self
-                .relationship_table
-                .rsplit('.')
-                .next()
-                .unwrap_or(&self.relationship_table);
-            let node_schema = self.schema.all_node_schemas().values().find(|n| {
-                let t = n.table_name.rsplit('.').next().unwrap_or(&n.table_name);
-                t == rel_table_name
-            });
+            // Find the denormalized node schema using relationship type and from/to labels
+            // for deterministic lookup, falling back to table name matching.
+            let node_schema = {
+                let mut found = None;
+
+                // Prefer lookup via relationship type → from_node label → node schema
+                if let Some(ref rel_types) = self.relationship_types {
+                    if let Some(rel_type) = rel_types.first() {
+                        let rel_schemas = self.schema.get_relationships_schemas();
+                        if let Some(rel_schema) = rel_schemas.get(rel_type) {
+                            let from_label = &rel_schema.from_node;
+                            found = self
+                                .schema
+                                .all_node_schemas()
+                                .iter()
+                                .find(|(key, _)| {
+                                    *key == from_label
+                                        || key.ends_with(&format!("::{}", from_label))
+                                })
+                                .map(|(_, v)| v);
+                        }
+                    }
+                }
+
+                // Fallback: match by table name (legacy behavior)
+                if found.is_none() {
+                    let rel_table_name = self
+                        .relationship_table
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or(&self.relationship_table);
+                    found = self.schema.all_node_schemas().values().find(|n| {
+                        let t = n.table_name.rsplit('.').next().unwrap_or(&n.table_name);
+                        t == rel_table_name
+                    });
+                }
+
+                found
+            };
 
             if let Some(ns) = node_schema {
                 // Start node properties (from_properties for normal direction)
@@ -2236,6 +2265,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     let json_sql = generate_json_from_denormalized_properties(
                         from_props,
                         &self.relationship_alias,
+                        "_s_",
                     );
                     select_items.push(format!("{} AS start_properties", json_sql));
                 } else {
@@ -2247,6 +2277,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     let json_sql = generate_json_from_denormalized_properties(
                         to_props,
                         &self.relationship_alias,
+                        "_e_",
                     );
                     select_items.push(format!("{} AS end_properties", json_sql));
                 } else {
@@ -2261,17 +2292,26 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Add relationship properties JSON
         {
             let rel_schemas = self.schema.get_relationships_schemas();
-            let rel_type_name = self
-                .relationship_table
-                .rsplit('.')
-                .next()
-                .unwrap_or(&self.relationship_table);
-            let rel_props_json = rel_schemas
-                .values()
-                .find(|r| {
-                    let t = r.table_name.rsplit('.').next().unwrap_or(&r.table_name);
-                    t == rel_type_name
-                })
+            // Prefer lookup by relationship type name for deterministic selection
+            // when multiple relationship types share the same table.
+            let rel_schema = self
+                .relationship_types
+                .as_ref()
+                .and_then(|types| types.first())
+                .and_then(|rel_type| rel_schemas.get(rel_type))
+                .or_else(|| {
+                    // Fallback: match by table name (legacy behavior)
+                    let rel_table_name = self
+                        .relationship_table
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or(&self.relationship_table);
+                    rel_schemas.values().find(|r| {
+                        let t = r.table_name.rsplit('.').next().unwrap_or(&r.table_name);
+                        t == rel_table_name
+                    })
+                });
+            let rel_props_json = rel_schema
                 .map(|r| {
                     if r.property_mappings.is_empty() {
                         "'{}'".to_string()
@@ -2395,13 +2435,87 @@ impl<'a> VariableLengthCteGenerator<'a> {
             ),
         ];
 
-        // Add denormalized properties - carry forward start properties, get new end properties
-        // Use physical column names without prefixing
+        // Add denormalized properties as JSON blobs matching base case columns.
+        // Carry forward start_properties from CTE, generate new end_properties from joined edge.
+        {
+            use crate::clickhouse_query_generator::json_builder::generate_json_from_denormalized_properties;
+
+            // start_properties: carry forward from CTE (unchanged through recursion)
+            select_items.push("vp.start_properties as start_properties".to_string());
+
+            // end_properties: generate from new edge's to_node columns
+            let node_schema = {
+                let mut found = None;
+                if let Some(ref rel_types) = self.relationship_types {
+                    if let Some(rel_type) = rel_types.first() {
+                        let rel_schemas = self.schema.get_relationships_schemas();
+                        if let Some(rel_schema) = rel_schemas.get(rel_type) {
+                            let from_label = &rel_schema.from_node;
+                            found = self
+                                .schema
+                                .all_node_schemas()
+                                .iter()
+                                .find(|(key, _)| {
+                                    *key == from_label
+                                        || key.ends_with(&format!("::{}", from_label))
+                                })
+                                .map(|(_, v)| v);
+                        }
+                    }
+                }
+                found
+            };
+
+            if let Some(ns) = node_schema {
+                if let Some(ref to_props) = ns.to_properties {
+                    let json_sql = generate_json_from_denormalized_properties(
+                        to_props,
+                        &self.relationship_alias,
+                        "_e_",
+                    );
+                    select_items.push(format!("{} AS end_properties", json_sql));
+                } else {
+                    select_items.push("'{}' AS end_properties".to_string());
+                }
+            } else {
+                select_items.push("'{}' AS end_properties".to_string());
+            }
+
+            // rel_properties: generate from new edge's relationship columns
+            let rel_schemas = self.schema.get_relationships_schemas();
+            let rel_schema = self
+                .relationship_types
+                .as_ref()
+                .and_then(|types| types.first())
+                .and_then(|rel_type| rel_schemas.get(rel_type));
+            let rel_props_json = rel_schema
+                .map(|r| {
+                    if r.property_mappings.is_empty() {
+                        "'{}'".to_string()
+                    } else {
+                        use crate::clickhouse_query_generator::json_builder::generate_json_properties_sql;
+                        generate_json_properties_sql(
+                            &r.property_mappings,
+                            &self.relationship_alias,
+                        )
+                    }
+                })
+                .unwrap_or_else(|| "'{}'".to_string());
+            select_items.push(format!(
+                "arrayConcat(vp.rel_properties, [{}]) as rel_properties",
+                rel_props_json
+            ));
+
+            // start_type / end_type: carry forward from CTE
+            select_items.push("vp.start_type as start_type".to_string());
+            select_items.push("vp.end_type as end_type".to_string());
+        }
+
+        // Also carry forward flat start_/end_ columns for backward compatibility
+        // with property selection in outer queries
         for prop in &self.properties {
             if prop.cypher_alias == self.start_cypher_alias {
-                // Start properties: carry forward from CTE (physical column names)
                 if let Ok(physical_col) = self.map_denormalized_property(&prop.alias, true) {
-                    // 🔧 FIX: Carry forward with start_ prefix (base case has start_X, recursive needs to preserve it)
                     select_items.push(format!(
                         "vp.start_{} as start_{}",
                         physical_col, physical_col
@@ -2409,14 +2523,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 }
             }
             if prop.cypher_alias == self.end_cypher_alias {
-                // End properties: get from new edge's to_node columns
                 if let Ok(physical_col) = self.map_denormalized_property(&prop.alias, false) {
-                    // 🔧 FIX: Add end_ prefix for VLP property rewrite
                     select_items.push(format!(
                         "{}.{} as end_{}",
-                        self.relationship_alias,
-                        physical_col,
-                        physical_col // Use prefixed column name for VLP rewrite
+                        self.relationship_alias, physical_col, physical_col
                     ));
                 } else {
                     log::warn!(

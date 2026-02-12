@@ -747,8 +747,11 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                     {
                         // Denormalized node: properties come from edge table columns
                         use crate::clickhouse_query_generator::json_builder::generate_json_from_denormalized_properties;
-                        let json_sql =
-                            generate_json_from_denormalized_properties(&denorm_props, node_alias);
+                        let json_sql = generate_json_from_denormalized_properties(
+                            &denorm_props,
+                            node_alias,
+                            "_e_",
+                        );
                         items.push(format!("{} AS end_properties", json_sql));
                     } else {
                         items.push("'{}' AS end_properties".to_string());
@@ -853,6 +856,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                             let json_sql = generate_json_from_denormalized_properties(
                                 &denorm_props,
                                 start_alias_sql,
+                                "_s_",
                             );
                             items.push(format!("{} AS start_properties", json_sql));
                         } else {
