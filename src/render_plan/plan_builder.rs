@@ -1916,9 +1916,33 @@ impl RenderPlanBuilder for LogicalPlan {
                     .iter()
                     .all(|input| is_node_scan_input(input.as_ref(), 1));
 
-                log::debug!("is_multi_label_scan={}", is_multi_label_scan);
+                // Check if this is a denormalized single-label UNION (from/to positions)
+                // Denormalized unions have the same label in all branches and should NOT
+                // go through the multi-label json_builder path
+                let is_denormalized_union = union.inputs.iter().any(|input| {
+                    fn has_denormalized_view_scan(plan: &LogicalPlan) -> bool {
+                        match plan {
+                            LogicalPlan::ViewScan(vs) => vs.is_denormalized,
+                            LogicalPlan::GraphNode(gn) => {
+                                has_denormalized_view_scan(gn.input.as_ref())
+                            }
+                            LogicalPlan::Projection(p) => {
+                                has_denormalized_view_scan(p.input.as_ref())
+                            }
+                            LogicalPlan::Filter(f) => has_denormalized_view_scan(f.input.as_ref()),
+                            _ => false,
+                        }
+                    }
+                    has_denormalized_view_scan(input.as_ref())
+                });
 
-                if is_multi_label_scan && union.inputs.len() > 1 {
+                log::debug!(
+                    "is_multi_label_scan={}, is_denormalized_union={}",
+                    is_multi_label_scan,
+                    is_denormalized_union
+                );
+
+                if is_multi_label_scan && union.inputs.len() > 1 && !is_denormalized_union {
                     log::info!(
                         "Multi-label node scan detected: {} ViewScans - using json_builder for uniform UNION",
                         union.inputs.len()
@@ -2094,10 +2118,11 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
 
                 // Store union branches in the base plan
-                // UnionType::All corresponds to UNION ALL
+                let render_union_type = super::UnionType::try_from(union.union_type.clone())
+                    .unwrap_or(super::UnionType::All);
                 base_plan.union = UnionItems(Some(super::Union {
                     input: union_branches,
-                    union_type: super::UnionType::All,
+                    union_type: render_union_type,
                 }));
 
                 // 🔧 CRITICAL: After combining UNION branches, rewrite VLP endpoint aliases
@@ -2554,9 +2579,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     base_render.ctes.0 = all_ctes;
 
                     if !all_renders.is_empty() {
+                        let render_union_type =
+                            super::UnionType::try_from(union.union_type.clone())
+                                .unwrap_or(super::UnionType::All);
                         base_render.union = UnionItems(Some(super::Union {
                             input: all_renders,
-                            union_type: super::UnionType::All,
+                            union_type: render_union_type,
                         }));
                     }
 
@@ -2812,9 +2840,11 @@ impl RenderPlanBuilder for LogicalPlan {
                     })
                     .collect::<RenderPlanBuilderResult<Vec<_>>>()?;
 
+                let render_union_type = super::UnionType::try_from(union.union_type.clone())
+                    .unwrap_or(super::UnionType::All);
                 base_render.union = UnionItems(Some(super::Union {
                     input: remaining_renders,
-                    union_type: super::UnionType::All,
+                    union_type: render_union_type,
                 }));
             }
 

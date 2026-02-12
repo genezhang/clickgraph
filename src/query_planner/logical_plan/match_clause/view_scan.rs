@@ -244,11 +244,11 @@ pub fn try_generate_view_scan(
 
                 let union = Union {
                     inputs: union_inputs,
-                    union_type: UnionType::All,
+                    union_type: UnionType::Distinct,
                 };
 
                 log::info!(
-                    "✓ Created UNION ALL with {} branches for denormalized node '{}'",
+                    "✓ Created UNION DISTINCT with {} branches for denormalized node '{}'",
                     union.inputs.len(),
                     label
                 );
@@ -359,17 +359,17 @@ pub fn try_generate_view_scan(
             to_scan.node_label = Some(base_label.to_string());
             // Note: from_node_properties is None - this is the TO branch
 
-            // Create Union of the two ViewScans
+            // Create Union of the two ViewScans (DISTINCT to dedup denormalized nodes)
             let union = Union {
                 inputs: vec![
                     Arc::new(LogicalPlan::ViewScan(Arc::new(from_scan))),
                     Arc::new(LogicalPlan::ViewScan(Arc::new(to_scan))),
                 ],
-                union_type: UnionType::All,
+                union_type: UnionType::Distinct,
             };
 
             log::info!(
-                ">>>SINGLE-TABLE CASE: Created UNION with 2 branches for '{}' <<<",
+                ">>>SINGLE-TABLE CASE: Created UNION DISTINCT with 2 branches for '{}' <<<",
                 label
             );
             return Ok(Some(Arc::new(LogicalPlan::Union(union))));
