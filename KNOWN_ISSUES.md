@@ -251,17 +251,12 @@ RETURN count  -- Works
 
 ## Neo4j Browser Schema Compatibility Limitations
 
-### 7. Denormalized Node Schemas — Browser Expand Not Supported
-**Status**: ⚠️ Known Limitation  
-**Added**: February 11, 2026
+### 7. Denormalized Node Schemas — Browser Expand ✅ FIXED
+**Status**: ✅ FIXED (February 12, 2026)
 
-**Description**: Neo4j Browser click-to-expand does not work with denormalized/virtual node schemas (e.g., `ontime_denormalized.yaml`, `zeek_merged.yaml`). The VLP CTE generates flat individual columns for denormalized node properties, but the result transformer's `transform_vlp_path()` expects a JSON `properties` blob.
+**Description**: Neo4j Browser click-to-expand now works with denormalized/virtual node schemas (e.g., `denormalized_flights.yaml`). VLP CTEs generate JSON property blobs (`start_properties`, `end_properties`) instead of flat columns, matching the 9-field tuple format expected by `transform_vlp_path()`.
 
-**Affected schemas**: Any schema where nodes are defined with `from_node_properties` / `to_node_properties` on the relationship (nodes are virtual, embedded in edge table).
-
-**Workaround**: Standard queries (`MATCH (a:Airport) RETURN a`) work. Only browser click-to-expand (which uses VLP path queries internally) is affected.
-
-**Fix**: Either make denormalized VLP CTEs output JSON properties blobs, or update the result transformer to handle flat property columns from denormalized CTEs.
+**Tested**: All 7 Bolt protocol tests pass — nodes with properties, relationships with all attributes, outbound click-to-expand, string element IDs.
 
 ### 8. Multi-Tenant Cross-Session ID Isolation
 **Status**: ⚠️ Known Limitation  
