@@ -1880,6 +1880,9 @@ impl ToSql for Cte {
                         cte_body.push_str(&plan.union.to_sql());
                         cte_body.push_str(") AS __union\n");
 
+                        // Render JOINs (e.g., pattern comprehension LEFT JOINs)
+                        cte_body.push_str(&plan.joins.to_sql());
+
                         // Add GROUP BY if present (for aggregations)
                         cte_body.push_str(&plan.group_by.to_sql());
 

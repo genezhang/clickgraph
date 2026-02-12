@@ -7491,6 +7491,18 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                     "🔧 build_chained_with_match_cte_plan: Denormalized Union detected, restructuring for WITH '{}'",
                                     with_alias
                                 );
+
+                                // Use the first exported alias (the node alias) for column renaming,
+                                // not the combined with_alias. This ensures columns like "code" become
+                                // "a_code" (not "a_allNeighboursCount_code") for unambiguous parsing.
+                                let rename_alias = with_plans
+                                    .first()
+                                    .and_then(|p| match p {
+                                        LogicalPlan::WithClause(wc) => wc.exported_aliases.first().cloned(),
+                                        _ => None,
+                                    })
+                                    .unwrap_or_else(|| with_alias.clone());
+
                                 fn rename_branch_aliases(select: &mut SelectItems, alias: &str) {
                                     for item in &mut select.items {
                                         if let Some(ref mut col_alias) = item.col_alias {
@@ -7528,12 +7540,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                     fixed_path_info: None,
                                     is_multi_label_scan: false,
                                 };
-                                rename_branch_aliases(&mut first_branch.select, &with_alias);
+                                rename_branch_aliases(&mut first_branch.select, &rename_alias);
 
                                 // Rename aliases in remaining branches
                                 if let UnionItems(Some(ref mut union)) = rendered.union {
                                     for branch in &mut union.input {
-                                        rename_branch_aliases(&mut branch.select, &with_alias);
+                                        rename_branch_aliases(&mut branch.select, &rename_alias);
                                     }
                                     // Insert first branch at the beginning
                                     union.input.insert(0, first_branch);
@@ -7948,12 +7960,30 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             TableAlias as RenderTableAlias,
                         };
 
+                        // For denormalized Union wrapped as subquery, the JOIN references
+                        // __union alias with renamed columns instead of the original table alias
+                        let (join_table_alias, join_column) = if with_cte_render.union.0.is_some()
+                            && with_cte_render.from.0.is_none()
+                        {
+                            // Use node alias (first exported alias) matching the rename prefix
+                            let node_alias = with_plans
+                                .first()
+                                .and_then(|p| match p {
+                                    LogicalPlan::WithClause(wc) => wc.exported_aliases.first().cloned(),
+                                    _ => None,
+                                })
+                                .unwrap_or_else(|| pc_meta.correlation_var.clone());
+                            ("__union".to_string(), format!("{}_{}", node_alias, id_column))
+                        } else {
+                            (pc_meta.correlation_var.clone(), id_column.clone())
+                        };
+
                         let on_clause = crate::render_plan::render_expr::OperatorApplication {
                             operator: Operator::Equal,
                             operands: vec![
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: RenderTableAlias(pc_meta.correlation_var.clone()),
-                                    column: PropertyValue::Column(id_column.clone()),
+                                    table_alias: RenderTableAlias(join_table_alias),
+                                    column: PropertyValue::Column(join_column),
                                 }),
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: RenderTableAlias(pc_alias.clone()),
@@ -7973,6 +8003,21 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             graph_rel: None,
                         };
                         with_cte_render.joins.0.push(join);
+
+                        // For denormalized Union: add __union.* to pass through all UNION columns
+                        if with_cte_render.union.0.is_some()
+                            && with_cte_render.from.0.is_none()
+                            && with_cte_render.select.items.is_empty()
+                        {
+                            with_cte_render.select.items.push(SelectItem {
+                                expression: RenderExpr::Column(
+                                    crate::render_plan::render_expr::Column(
+                                        PropertyValue::Column("__union.*".to_string()),
+                                    ),
+                                ),
+                                col_alias: None,
+                            });
+                        }
 
                         // Add SELECT item for the aggregation result
                         let result_col_alias = pc_meta.result_alias.clone();
@@ -8145,7 +8190,14 @@ pub(crate) fn build_chained_with_match_cte_plan(
             {
                 UnionItems(Some(union)) if !union.input.is_empty() => {
                     // For UNION, take schema from first branch (all branches must have same schema)
-                    let items = union.input[0].select.items.clone();
+                    let mut items = union.input[0].select.items.clone();
+                    // Also include any wrapping SELECT items (e.g., pattern comprehension results)
+                    // These are in with_cte_render.select alongside __union.* pass-through
+                    for item in &with_cte_render.select.items {
+                        if item.col_alias.is_some() {
+                            items.push(item.clone());
+                        }
+                    }
                     let names: Vec<String> = items
                         .iter()
                         .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
