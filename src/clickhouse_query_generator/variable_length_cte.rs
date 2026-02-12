@@ -289,19 +289,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
     ) -> Self {
         let database = std::env::var("CLICKHOUSE_DATABASE").ok();
 
-        eprintln!(
-            "🔧 GENERATOR: new_denormalized() called with {} properties",
-            properties.len()
-        );
-        for (i, prop) in properties.iter().enumerate() {
-            eprintln!(
-                "🔧 GENERATOR:   [{}] cypher_alias='{}', column_name='{}', alias='{}'",
-                i, prop.cypher_alias, prop.column_name, prop.alias
-            );
-        }
-        eprintln!(
-            "🔧 GENERATOR: start_alias='{}', end_alias='{}'",
-            start_alias, end_alias
+        log::debug!(
+            "new_denormalized: {} properties, start='{}', end='{}'",
+            properties.len(),
+            start_alias,
+            end_alias
         );
 
         Self {
@@ -822,90 +814,42 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
     }
 
-    /// Map a logical property name to physical column name for denormalized nodes
-    /// Uses from_properties or to_properties mappings from schema
+    /// Map a logical property name to physical column name for denormalized nodes.
+    /// Uses from_properties or to_properties mappings from schema.
     fn map_denormalized_property(
         &self,
         logical_prop: &str,
         is_from_node: bool,
     ) -> Result<String, String> {
-        eprintln!(
-            "🔍 MAP: map_denormalized_property('{}', is_from_node={})",
-            logical_prop, is_from_node
-        );
-        eprintln!(
-            "🔍 MAP:   relationship_table = '{}'",
-            self.relationship_table
-        );
-
         // For denormalized nodes, find the node schema that points to our relationship table
         let node_schemas = self.schema.all_node_schemas();
-        eprintln!(
-            "🔍 MAP:   Found {} node schemas in total",
-            node_schemas.len()
-        );
 
-        // ✅ FIX: Strip database prefix for comparison (handles both "flights" and "db.flights")
+        // Strip database prefix for comparison (handles both "flights" and "db.flights")
         let rel_table_name = self
             .relationship_table
             .rsplit('.')
             .next()
             .unwrap_or(&self.relationship_table);
-        eprintln!(
-            "🔍 MAP:   Comparing against table name: '{}'",
-            rel_table_name
-        );
-
-        for (label, schema) in node_schemas.iter() {
-            let schema_table = schema
-                .table_name
-                .rsplit('.')
-                .next()
-                .unwrap_or(&schema.table_name);
-            eprintln!(
-                "🔍 MAP:     - '{}' -> table '{}' (stripped: '{}')",
-                label, schema.table_name, schema_table
-            );
-        }
 
         let node_schema = node_schemas
             .values()
             .find(|n| {
                 let schema_table = n.table_name.rsplit('.').next().unwrap_or(&n.table_name);
-                schema_table == rel_table_name // ✅ Compare without database prefix
+                schema_table == rel_table_name
             })
-            .ok_or_else(|| {
-                let msg = format!("No node schema found for table '{}'", rel_table_name);
-                eprintln!("❌ MAP: {}", msg);
-                msg
-            })?;
+            .ok_or_else(|| format!("No node schema found for table '{}'", rel_table_name))?;
 
-        eprintln!("✅ MAP:   Found matching node schema");
-
-        // Get the appropriate property mapping (from_properties or to_properties)
         let property_map = if is_from_node {
-            eprintln!("🔍 MAP:   Looking in from_properties");
             node_schema.from_properties.as_ref()
         } else {
-            eprintln!("🔍 MAP:   Looking in to_properties");
             node_schema.to_properties.as_ref()
         };
 
-        if let Some(map) = property_map {
-            eprintln!("🔍 MAP:   Property map has {} entries:", map.len());
-            for (key, val) in map.iter() {
-                eprintln!("🔍 MAP:     - '{}' -> '{}'", key, val);
-            }
-        } else {
-            eprintln!("❌ MAP:   Property map is None!");
-        }
-
-        // Look up the physical column name
-        let result = property_map
+        property_map
             .and_then(|map| map.get(logical_prop))
             .map(|col| col.to_string())
             .ok_or_else(|| {
-                let msg = format!(
+                format!(
                     "Property '{}' not found in {} for denormalized node in table '{}'",
                     logical_prop,
                     if is_from_node {
@@ -914,19 +858,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
                         "to_properties"
                     },
                     self.relationship_table
-                );
-                eprintln!("❌ MAP: {}", msg);
-                msg
-            });
-
-        if let Ok(ref col) = result {
-            eprintln!(
-                "✅ MAP: Successfully mapped '{}' -> '{}'",
-                logical_prop, col
-            );
-        }
-
-        result
+                )
+            })
     }
 
     /// Generate the recursive CTE for variable-length traversal
@@ -2240,21 +2173,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// Generate base case for denormalized edges (first hop)
     /// For denormalized: FROM rel_table only (no node tables)
     fn generate_denormalized_base_case(&self, hop_count: u32) -> String {
-        eprintln!("\n🔧 BASE_CASE: generate_denormalized_base_case() called");
-        eprintln!(
-            "🔧 BASE_CASE: self.properties.len() = {}",
-            self.properties.len()
-        );
-        eprintln!(
-            "🔧 BASE_CASE: start_cypher_alias = '{}'",
-            self.start_cypher_alias
-        );
-        eprintln!(
-            "🔧 BASE_CASE: end_cypher_alias = '{}'",
-            self.end_cypher_alias
-        );
-        eprintln!(
-            "🔧 BASE_CASE: relationship_table = '{}'",
+        log::debug!(
+            "generate_denormalized_base_case: start_alias='{}', end_alias='{}', rel_table='{}'",
+            self.start_cypher_alias,
+            self.end_cypher_alias,
             self.relationship_table
         );
 
@@ -2291,77 +2213,91 @@ impl<'a> VariableLengthCteGenerator<'a> {
             ),
         ];
 
-        // Add denormalized node properties to CTE
-        // For denormalized nodes, properties come directly from edge table
-        // Use physical column names (e.g., "Origin", "OriginCityName") without prefixing
-        eprintln!(
-            "🔧 BASE_CASE: Processing {} properties...",
-            self.properties.len()
-        );
-        for (i, prop) in self.properties.iter().enumerate() {
-            eprintln!("🔧 BASE_CASE: [{}] Processing prop: cypher_alias='{}', column_name='{}', alias='{}'",
-                     i, prop.cypher_alias, prop.column_name, prop.alias);
+        // Generate JSON property blobs for start and end nodes (denormalized)
+        // Instead of flat columns, generate formatRowNoNewline JSON to match
+        // the multi-type VLP tuple format expected by transform_vlp_path()
+        {
+            use crate::clickhouse_query_generator::json_builder::generate_json_from_denormalized_properties;
 
-            if prop.cypher_alias == self.start_cypher_alias {
-                eprintln!("🔧 BASE_CASE:   [{}] Matches START alias", i);
-                // Start node property: use from_properties mapping
-                match self.map_denormalized_property(&prop.alias, true) {
-                    Ok(physical_col) => {
-                        eprintln!(
-                            "🔧 BASE_CASE:   [{}] Mapped to physical column: '{}'",
-                            i, physical_col
-                        );
-                        let sql_fragment = format!(
-                            "{}.{} as start_{}",
-                            self.relationship_alias,
-                            physical_col,
-                            physical_col // 🔧 FIX: Add start_ prefix for VLP property rewrite
-                        );
-                        eprintln!(
-                            "🔧 BASE_CASE:   [{}] Adding to select: '{}'",
-                            i, sql_fragment
-                        );
-                        select_items.push(sql_fragment);
-                    }
-                    Err(e) => {
-                        eprintln!("❌ BASE_CASE:   [{}] Mapping FAILED: {}", i, e);
-                        log::warn!("Could not map start property {}: {}", prop.alias, e);
-                    }
+            // Find the denormalized node schema for this relationship table
+            let rel_table_name = self
+                .relationship_table
+                .rsplit('.')
+                .next()
+                .unwrap_or(&self.relationship_table);
+            let node_schema = self.schema.all_node_schemas().values().find(|n| {
+                let t = n.table_name.rsplit('.').next().unwrap_or(&n.table_name);
+                t == rel_table_name
+            });
+
+            if let Some(ns) = node_schema {
+                // Start node properties (from_properties for normal direction)
+                if let Some(ref from_props) = ns.from_properties {
+                    let json_sql = generate_json_from_denormalized_properties(
+                        from_props,
+                        &self.relationship_alias,
+                    );
+                    select_items.push(format!("{} AS start_properties", json_sql));
+                } else {
+                    select_items.push("'{}' AS start_properties".to_string());
                 }
-            }
-            if prop.cypher_alias == self.end_cypher_alias {
-                eprintln!("🔧 BASE_CASE:   [{}] Matches END alias", i);
-                // End node property: use to_properties mapping
-                match self.map_denormalized_property(&prop.alias, false) {
-                    Ok(physical_col) => {
-                        eprintln!(
-                            "🔧 BASE_CASE:   [{}] Mapped to physical column: '{}'",
-                            i, physical_col
-                        );
-                        let sql_fragment = format!(
-                            "{}.{} as end_{}",
-                            self.relationship_alias,
-                            physical_col,
-                            physical_col // 🔧 FIX: Add end_ prefix for VLP property rewrite
-                        );
-                        eprintln!(
-                            "🔧 BASE_CASE:   [{}] Adding to select: '{}'",
-                            i, sql_fragment
-                        );
-                        select_items.push(sql_fragment);
-                    }
-                    Err(e) => {
-                        eprintln!("❌ BASE_CASE:   [{}] Mapping FAILED: {}", i, e);
-                        log::warn!("Could not map end property {}: {}", prop.alias, e);
-                    }
+
+                // End node properties (to_properties for normal direction)
+                if let Some(ref to_props) = ns.to_properties {
+                    let json_sql = generate_json_from_denormalized_properties(
+                        to_props,
+                        &self.relationship_alias,
+                    );
+                    select_items.push(format!("{} AS end_properties", json_sql));
+                } else {
+                    select_items.push("'{}' AS end_properties".to_string());
                 }
+            } else {
+                select_items.push("'{}' AS start_properties".to_string());
+                select_items.push("'{}' AS end_properties".to_string());
             }
         }
 
-        eprintln!(
-            "🔧 BASE_CASE: After property processing, select_items.len() = {}",
-            select_items.len()
-        );
+        // Add relationship properties JSON
+        {
+            let rel_schemas = self.schema.get_relationships_schemas();
+            let rel_type_name = self
+                .relationship_table
+                .rsplit('.')
+                .next()
+                .unwrap_or(&self.relationship_table);
+            let rel_props_json = rel_schemas
+                .values()
+                .find(|r| {
+                    let t = r.table_name.rsplit('.').next().unwrap_or(&r.table_name);
+                    t == rel_type_name
+                })
+                .map(|r| {
+                    if r.property_mappings.is_empty() {
+                        "'{}'".to_string()
+                    } else {
+                        use crate::clickhouse_query_generator::json_builder::generate_json_properties_sql;
+                        generate_json_properties_sql(
+                            &r.property_mappings,
+                            &self.relationship_alias,
+                        )
+                    }
+                })
+                .unwrap_or_else(|| "'{}'".to_string());
+            select_items.push(format!("[{}] AS rel_properties", rel_props_json));
+        }
+
+        // Add start_type and end_type discriminators for transform_vlp_path()
+        if let Some(ref start_label) = self.from_node_label {
+            select_items.push(format!("'{}' AS start_type", start_label));
+        } else {
+            select_items.push("'Unknown' AS start_type".to_string());
+        }
+        if let Some(ref end_label) = self.to_node_label {
+            select_items.push(format!("'{}' AS end_type", end_label));
+        } else {
+            select_items.push("'Unknown' AS end_type".to_string());
+        }
 
         let select_clause = select_items.join(",\n        ");
 

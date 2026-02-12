@@ -152,6 +152,32 @@ pub fn generate_json_properties_from_schema_without_aliases(
     generate_json_properties_without_aliases(&node_schema.property_mappings, table_alias)
 }
 
+/// Generate JSON properties from denormalized node property mappings.
+///
+/// Denormalized nodes have `from_node_properties` / `to_node_properties` on the
+/// relationship schema (HashMap<String, String>: cypher_name → physical_column),
+/// instead of `property_mappings` (HashMap<String, PropertyValue>).
+///
+/// Uses `formatRowNoNewline('JSONEachRow', alias.col AS cypher_name, ...)` to produce
+/// JSON with Cypher property names as keys.
+pub fn generate_json_from_denormalized_properties(
+    denorm_props: &HashMap<String, String>,
+    table_alias: &str,
+) -> String {
+    if denorm_props.is_empty() {
+        return "'{}'".to_string();
+    }
+
+    let columns: Vec<String> = denorm_props
+        .iter()
+        .map(|(cypher_name, physical_col)| {
+            format!("{}.{} AS {}", table_alias, physical_col, cypher_name)
+        })
+        .collect();
+
+    format!("formatRowNoNewline('JSONEachRow', {})", columns.join(", "))
+}
+
 /// Generate SQL for a UNION query across all node types
 ///
 /// Creates a UNION ALL query that returns (_label, _id, _properties) for all node types.
