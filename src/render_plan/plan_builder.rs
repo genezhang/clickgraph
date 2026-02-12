@@ -1481,6 +1481,20 @@ impl RenderPlanBuilder for LogicalPlan {
                     );
                 }
 
+                // Qualify unqualified Column expressions in SELECT items with the alias.
+                // ViewScan generates bare Column("dest_city") without a table qualifier;
+                // the SQL generator would then guess a table alias via heuristics (often "t").
+                // By converting them to PropertyAccessExp here, the correct alias is used.
+                for item in &mut render_plan.select.items {
+                    if let RenderExpr::Column(Column(ref prop_val)) = item.expression {
+                        let col_name = prop_val.raw().to_string();
+                        item.expression = RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(gn.alias.clone()),
+                            column: PropertyValue::Column(col_name),
+                        });
+                    }
+                }
+
                 Ok(render_plan)
             }
             LogicalPlan::ViewScan(vs) => {
