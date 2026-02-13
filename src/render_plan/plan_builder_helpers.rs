@@ -1524,7 +1524,7 @@ pub(super) fn get_node_id_column_for_alias_with_schema(
     let node_schema = schema.node_schema(&label).ok()?;
 
     // Return first ID column
-    node_schema.node_id.columns().first().map(|s| s.to_string())
+    Some(node_schema.node_id.id.first_column().to_string())
 }
 
 /// Get node ID columns (for composite keys) using plan context and schema

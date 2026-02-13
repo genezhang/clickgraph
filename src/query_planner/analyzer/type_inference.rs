@@ -368,6 +368,8 @@ impl TypeInference {
                                 ),
                             );
                         }
+                        // Also update VariableRegistry so Bolt metadata picks up inferred labels
+                        plan_ctx.update_node_labels(&rel.right_connection, inferred_labels.clone());
 
                         // Return first label for backward compatibility with single-label logic
                         // The full labels list is now stored in plan_ctx for path enumeration
@@ -593,9 +595,12 @@ impl TypeInference {
                                         new_node,
                                     ))));
                                 }
-                            } else if let Some(label) = labels.first() {
+                            } else if let Some(label) = labels_vec.first() {
                                 // Single label - existing logic
                                 log::info!("🏷️ TypeInference: Creating ViewScan for GraphNode '{}' with inferred label '{}'", node.alias, label);
+
+                                // Update VariableRegistry so Bolt metadata picks up inferred labels
+                                plan_ctx.update_node_labels(&node.alias, labels_vec.clone());
 
                                 // Get node schema to create ViewScan
                                 if let Ok(node_schema) = graph_schema.node_schema(label) {
@@ -1382,6 +1387,8 @@ impl TypeInference {
                 edge_info
             );
         }
+        // Also update VariableRegistry so Bolt metadata picks up inferred labels
+        plan_ctx.update_node_labels(node_alias, vec![label.to_string()]);
     }
     /// Infer the label/type of elements being unwound from an UNWIND expression.
     ///

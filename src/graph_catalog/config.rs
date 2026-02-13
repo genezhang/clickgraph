@@ -127,6 +127,44 @@ impl Identifier {
                 .collect(),
         }
     }
+
+    /// Generate a pipe-joined SQL expression for use as a string ID.
+    /// If alias is non-empty: `toString(alias.col)` / `concat(toString(alias.c1), '|', toString(alias.c2))`
+    /// If alias is empty: `toString(col)` / `concat(toString(c1), '|', toString(c2))`
+    /// For single non-composite IDs without alias, just returns the column name (no toString).
+    pub fn to_pipe_joined_sql(&self, alias: &str) -> String {
+        let qualify = |col: &str| -> String {
+            if alias.is_empty() {
+                col.to_string()
+            } else {
+                format!("{}.{}", alias, col)
+            }
+        };
+        match self {
+            Identifier::Single(col) => {
+                if alias.is_empty() {
+                    col.clone()
+                } else {
+                    format!("toString({})", qualify(col))
+                }
+            }
+            Identifier::Composite(cols) => {
+                let parts: Vec<String> = cols
+                    .iter()
+                    .map(|c| format!("toString({})", qualify(c)))
+                    .collect();
+                format!("concat({})", parts.join(", '|', "))
+            }
+        }
+    }
+
+    /// Get the first (or only) column name. Falls back to "id" if empty.
+    pub fn first_column(&self) -> &str {
+        match self {
+            Identifier::Single(col) => col.as_str(),
+            Identifier::Composite(cols) => cols.first().map(|s| s.as_str()).unwrap_or("id"),
+        }
+    }
 }
 
 impl From<String> for Identifier {

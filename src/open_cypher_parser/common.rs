@@ -1,7 +1,7 @@
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_until, take_while1},
-    character::complete::{alphanumeric1, digit1, multispace0},
+    character::complete::{alpha1, alphanumeric1, digit1, multispace0},
     combinator::{opt, recognize},
     error::ParseError,
     multi::many0,
@@ -179,10 +179,15 @@ where
 //     .parse(input)
 // }
 
-// one or more alphanumerics followed by zero or more occurrences of an underscore and more alphanumerics.
-// e.g., it will match "account", "creation", or "foo_bar".
+// One or more alphanumerics/underscores forming a valid identifier.
+// Allows leading underscores (e.g., "__expand", "_name") per OpenCypher spec.
+// e.g., it will match "account", "creation", "foo_bar", "_name", "__expand".
 fn identifier_core(input: &str) -> IResult<&str, &str> {
-    recognize(pair(alphanumeric1, many0(pair(tag("_"), alphanumeric1)))).parse(input)
+    recognize(pair(
+        alt((alpha1, tag("_"))),
+        many0(alt((alphanumeric1, tag("_")))),
+    ))
+    .parse(input)
 }
 
 // identifier with optional leading '$'s and at most one dot.

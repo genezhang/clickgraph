@@ -300,6 +300,10 @@ pub struct Cte {
     pub from_alias: Option<String>,
     /// Filters to apply to outer SELECT when referencing this CTE (for denormalized VLP end_node_filters)
     pub outer_where_filters: Option<String>,
+    /// Original exported aliases from the WITH clause (e.g., ["__expand", "a", "allNeighboursCount"])
+    /// Used to build cte_references without relying on CTE name parsing, which fails for
+    /// aliases containing underscores.
+    pub with_exported_aliases: Vec<String>,
 }
 
 impl Cte {
@@ -321,6 +325,7 @@ impl Cte {
             columns: Vec::new(),
             from_alias: None,
             outer_where_filters: None,
+            with_exported_aliases: Vec::new(),
         }
     }
 
@@ -373,6 +378,7 @@ impl Cte {
             ],
             from_alias: Some(VLP_CTE_FROM_ALIAS.to_string()), // VLP CTEs use standard FROM alias
             outer_where_filters: None,
+            with_exported_aliases: Vec::new(),
         }
     }
 
@@ -409,6 +415,7 @@ impl Cte {
             columns,
             from_alias: Some(from_alias),
             outer_where_filters: None,
+            with_exported_aliases: Vec::new(),
         }
     }
 

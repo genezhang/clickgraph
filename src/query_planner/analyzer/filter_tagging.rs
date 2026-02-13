@@ -737,13 +737,13 @@ impl FilterTagging {
 
         // Get the ID column for this label from the schema
         let id_column = if let Ok(node_schema) = graph_schema.node_schema(&label) {
-            node_schema.node_id.columns().first().map(|s| s.to_string())
+            Some(node_schema.node_id.id.first_column().to_string())
         } else if let Ok(rel_schema) = graph_schema.get_rel_schema(&label) {
             // For relationships, use edge_id if defined, else from_id
             if let Some(ref edge_id) = rel_schema.edge_id {
-                edge_id.columns().first().map(|s| s.to_string())
+                Some(edge_id.first_column().to_string())
             } else {
-                Some(rel_schema.from_id.to_string())
+                Some(rel_schema.from_id.first_column().to_string())
             }
         } else {
             log::warn!(

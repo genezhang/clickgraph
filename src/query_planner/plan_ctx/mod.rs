@@ -1242,6 +1242,11 @@ impl PlanCtx {
             .define_node(name, labels, VariableSource::Match);
     }
 
+    /// Update labels on an existing node variable (e.g., after type inference)
+    pub fn update_node_labels(&mut self, name: &str, labels: Vec<String>) {
+        self.variables.update_node_labels(name, labels);
+    }
+
     /// Define a node variable from a CTE export
     ///
     /// # Arguments
