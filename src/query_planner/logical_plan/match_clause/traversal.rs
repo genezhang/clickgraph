@@ -397,15 +397,33 @@ fn traverse_connected_pattern_with_mode<'a>(
                                 };
 
                                 rel_schema.map(|schema| {
-                                    (
-                                        rel_type.split("::").next().unwrap_or(rel_type).to_string(), // Use base type
-                                        schema.from_node.clone(),
-                                        schema.to_node.clone(),
-                                    )
+                                    let base_type =
+                                        rel_type.split("::").next().unwrap_or(rel_type).to_string();
+                                    let froms = graph_schema.expand_node_type(&schema.from_node);
+                                    let tos = graph_schema.expand_node_type(&schema.to_node);
+                                    froms
+                                        .into_iter()
+                                        .flat_map(|f| {
+                                            let bt = base_type.clone();
+                                            tos.iter()
+                                                .map(move |t| (bt.clone(), f.clone(), t.clone()))
+                                        })
+                                        .collect::<Vec<_>>()
                                 })
                             })
+                            .flatten()
                             .collect()
                     };
+
+                    if relationship_node_types.len() > 50 {
+                        log::warn!(
+                            "⚠️ Polymorphic expansion generated {} type combinations for pattern \
+                             '{}'->'{}'; consider constraining node labels to reduce query complexity",
+                            relationship_node_types.len(),
+                            start_node_alias,
+                            end_node_alias
+                        );
+                    }
 
                     // === COMBINATION PRUNING ===
                     // If WHERE clause contains id() constraints, prune combinations early

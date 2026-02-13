@@ -937,8 +937,63 @@ fn transform_to_relationship(
         .ok_or_else(|| format!("Relationship schema not found for type: {}", rel_type))?;
 
     // Get from/to node labels (use provided or schema defaults)
-    let from_node_label = from_label.unwrap_or(&rel_schema.from_node);
-    let to_node_label = to_label.unwrap_or(&rel_schema.to_node);
+    // For polymorphic edges ($any), resolve actual label from row's start_type/end_type
+    let schema_from_label = from_label.unwrap_or(&rel_schema.from_node);
+    let schema_to_label = to_label.unwrap_or(&rel_schema.to_node);
+
+    let resolved_from_label: String;
+    let resolved_to_label: String;
+
+    if schema_from_label == "$any" || schema_to_label == "$any" {
+        // Polymorphic edge: actual node types are in the row's start_type/end_type columns
+        resolved_from_label = if schema_from_label == "$any" {
+            properties
+                .get("start_type")
+                .and_then(value_to_string)
+                .unwrap_or_else(|| {
+                    log::warn!(
+                        "Polymorphic relationship missing 'start_type' column; \
+                         falling back to first node type in schema"
+                    );
+                    schema
+                        .all_node_schemas()
+                        .keys()
+                        .next()
+                        .cloned()
+                        .unwrap_or_default()
+                })
+        } else {
+            schema_from_label.to_string()
+        };
+        resolved_to_label = if schema_to_label == "$any" {
+            properties
+                .get("end_type")
+                .and_then(value_to_string)
+                .unwrap_or_else(|| {
+                    log::warn!(
+                        "Polymorphic relationship missing 'end_type' column; \
+                         falling back to first node type in schema"
+                    );
+                    schema
+                        .all_node_schemas()
+                        .keys()
+                        .next()
+                        .cloned()
+                        .unwrap_or_default()
+                })
+        } else {
+            schema_to_label.to_string()
+        };
+        // Remove start_type/end_type from properties so they don't leak as rel properties
+        properties.remove("start_type");
+        properties.remove("end_type");
+    } else {
+        resolved_from_label = schema_from_label.to_string();
+        resolved_to_label = schema_to_label.to_string();
+    }
+
+    let from_node_label = &resolved_from_label;
+    let to_node_label = &resolved_to_label;
 
     // Get from/to node schemas to determine if IDs are composite
     let from_node_schema = schema
@@ -1086,49 +1141,91 @@ fn transform_to_path(
         return transform_path_from_json(row, schema);
     }
 
+    // For polymorphic UNION path queries, use __start_label__ and __end_label__ columns
+    let effective_start_labels = if start_labels.is_empty() {
+        if let Some(label_val) = row.get("__start_label__").and_then(value_to_string) {
+            if label_val != "Unknown" {
+                log::debug!("Using __start_label__ column: {}", label_val);
+                vec![label_val]
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        }
+    } else {
+        start_labels.to_vec()
+    };
+
+    let effective_end_labels = if end_labels.is_empty() {
+        if let Some(label_val) = row.get("__end_label__").and_then(value_to_string) {
+            if label_val != "Unknown" {
+                log::debug!("Using __end_label__ column: {}", label_val);
+                vec![label_val]
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        }
+    } else {
+        end_labels.to_vec()
+    };
+
     // Original format: individual columns for each property
     // Extract start node - require either metadata lookup success or known labels
-    let start_node =
-        find_node_in_row_with_label(row, start_alias, start_labels, return_metadata, schema)
-            .or_else(|| {
-                // If we have a known label, create node with that label
-                start_labels.first().map(|label| {
-                    log::debug!("Creating start node with known label: {}", label);
-                    create_node_with_label(label, 0)
-                })
-            })
-            .ok_or_else(|| {
-                format!(
-                    "Internal error: Cannot resolve start node '{}' for path '{}'. \
+    let start_node = find_node_in_row_with_label(
+        row,
+        start_alias,
+        &effective_start_labels,
+        return_metadata,
+        schema,
+    )
+    .or_else(|| {
+        // If we have a known label, create node with that label
+        effective_start_labels.first().map(|label| {
+            log::debug!("Creating start node with known label: {}", label);
+            create_node_with_label(label, 0)
+        })
+    })
+    .ok_or_else(|| {
+        format!(
+            "Internal error: Cannot resolve start node '{}' for path '{}'. \
                      No label metadata available and node not found in row. \
                      start_labels={:?}, row_keys={:?}",
-                    start_alias,
-                    path_name,
-                    start_labels,
-                    row.keys().collect::<Vec<_>>()
-                )
-            })?;
+            start_alias,
+            path_name,
+            effective_start_labels,
+            row.keys().collect::<Vec<_>>()
+        )
+    })?;
 
     // Extract end node - require either metadata lookup success or known labels
-    let end_node = find_node_in_row_with_label(row, end_alias, end_labels, return_metadata, schema)
-        .or_else(|| {
-            // If we have a known label, create node with that label
-            end_labels.first().map(|label| {
-                log::debug!("Creating end node with known label: {}", label);
-                create_node_with_label(label, 1)
-            })
+    let end_node = find_node_in_row_with_label(
+        row,
+        end_alias,
+        &effective_end_labels,
+        return_metadata,
+        schema,
+    )
+    .or_else(|| {
+        // If we have a known label, create node with that label
+        effective_end_labels.first().map(|label| {
+            log::debug!("Creating end node with known label: {}", label);
+            create_node_with_label(label, 1)
         })
-        .ok_or_else(|| {
-            format!(
-                "Internal error: Cannot resolve end node '{}' for path '{}'. \
+    })
+    .ok_or_else(|| {
+        format!(
+            "Internal error: Cannot resolve end node '{}' for path '{}'. \
                      No label metadata available and node not found in row. \
                      end_labels={:?}, row_keys={:?}",
-                end_alias,
-                path_name,
-                end_labels,
-                row.keys().collect::<Vec<_>>()
-            )
-        })?;
+            end_alias,
+            path_name,
+            effective_end_labels,
+            row.keys().collect::<Vec<_>>()
+        )
+    })?;
 
     // Extract relationship - require either metadata lookup success or known types
     let relationship = find_relationship_in_row_with_type(
@@ -1635,10 +1732,18 @@ fn find_node_in_row_with_label(
     }
 
     // Use the known label from path metadata (already extracted from composite keys)
-    let label = known_labels.first()?;
+    // Fall back to __label__ column from UNION queries if known_labels is empty
+    let label = if let Some(l) = known_labels.first() {
+        l.clone()
+    } else if let Some(label_val) = row.get("__label__").and_then(value_to_string) {
+        log::debug!("Using __label__ column for node '{}': {}", alias, label_val);
+        label_val
+    } else {
+        return None;
+    };
 
     // Get node schema
-    let node_schema = schema.node_schema_opt(label)?;
+    let node_schema = schema.node_schema_opt(&label)?;
 
     // Get ID columns from schema
     let id_columns = node_schema.node_id.id.columns();
@@ -1657,7 +1762,7 @@ fn find_node_in_row_with_label(
     }
 
     let element_id = generate_node_element_id(
-        label,
+        &label,
         &id_values.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
     );
     // Derive integer ID from element_id (ensures uniqueness across labels)

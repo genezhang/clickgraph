@@ -223,7 +223,12 @@ fn generate_paths_recursive(
     // Base case: no more hops needed
     if remaining_hops == 0 {
         // Check if current node matches any of the target end labels
-        if end_labels.contains(&current_node_type.to_string()) {
+        // Empty end_labels or "UnknownEndType" means any node type is acceptable
+        let end_matches = end_labels.is_empty()
+            || end_labels
+                .iter()
+                .any(|l| l == current_node_type || l == "UnknownEndType" || l == "$any");
+        if end_matches {
             return vec![PathEnumeration { hops: path_so_far }];
         } else {
             return vec![]; // Path doesn't end at valid type
@@ -238,26 +243,40 @@ fn generate_paths_recursive(
         let valid_edges = find_edges_from_node(schema, rel_type, current_node_type);
 
         for edge in &valid_edges {
-            let hop = PathHop {
-                rel_type: rel_type.clone(),
-                from_node_type: edge.from_node.clone(),
-                to_node_type: edge.to_node.clone(),
-                reversed: false,
-            };
+            // For polymorphic edges with $any node types, expand to concrete types.
+            // Note: N node types → N×N combinations per edge, but filtered by
+            // current_node_type match below, limiting actual branches to N per hop.
+            let from_types = schema.expand_node_type(&edge.from_node);
+            let to_types = schema.expand_node_type(&edge.to_node);
 
-            let mut new_path = path_so_far.clone();
-            new_path.push(hop);
+            for from_t in &from_types {
+                // Filter: from_type must match current_node_type
+                if from_t != current_node_type {
+                    continue;
+                }
+                for to_t in &to_types {
+                    let hop = PathHop {
+                        rel_type: rel_type.clone(),
+                        from_node_type: from_t.clone(),
+                        to_node_type: to_t.clone(),
+                        reversed: false,
+                    };
 
-            let sub_paths = generate_paths_recursive(
-                &edge.to_node,
-                rel_types,
-                end_labels,
-                remaining_hops - 1,
-                new_path,
-                schema,
-                include_incoming,
-            );
-            result.extend(sub_paths);
+                    let mut new_path = path_so_far.clone();
+                    new_path.push(hop);
+
+                    let sub_paths = generate_paths_recursive(
+                        to_t,
+                        rel_types,
+                        end_labels,
+                        remaining_hops - 1,
+                        new_path,
+                        schema,
+                        include_incoming,
+                    );
+                    result.extend(sub_paths);
+                }
+            }
         }
 
         // Also find incoming edges (to current node) for undirected patterns
@@ -265,28 +284,39 @@ fn generate_paths_recursive(
             let incoming_edges = find_edges_to_node(schema, rel_type, current_node_type);
 
             for edge in incoming_edges {
-                // Create a reversed hop: we traverse FROM current TO edge.from_node
-                // but through the edge table where current is the to_node
-                let hop = PathHop {
-                    rel_type: rel_type.clone(),
-                    from_node_type: edge.to_node.clone(), // current node (which is the edge's to_node)
-                    to_node_type: edge.from_node.clone(), // destination (which is the edge's from_node)
-                    reversed: true,
-                };
+                let edge_to_types = schema.expand_node_type(&edge.to_node);
+                let edge_from_types = schema.expand_node_type(&edge.from_node);
 
-                let mut new_path = path_so_far.clone();
-                new_path.push(hop);
+                for to_t in &edge_to_types {
+                    // Filter: to_node must match current_node_type (reversed hop)
+                    if to_t != current_node_type {
+                        continue;
+                    }
+                    for from_t in &edge_from_types {
+                        // Create a reversed hop: we traverse FROM current TO edge.from_node
+                        // but through the edge table where current is the to_node
+                        let hop = PathHop {
+                            rel_type: rel_type.clone(),
+                            from_node_type: to_t.clone(),
+                            to_node_type: from_t.clone(),
+                            reversed: true,
+                        };
 
-                let sub_paths = generate_paths_recursive(
-                    &edge.from_node, // Continue from the edge's from_node
-                    rel_types,
-                    end_labels,
-                    remaining_hops - 1,
-                    new_path,
-                    schema,
-                    include_incoming,
-                );
-                result.extend(sub_paths);
+                        let mut new_path = path_so_far.clone();
+                        new_path.push(hop);
+
+                        let sub_paths = generate_paths_recursive(
+                            from_t,
+                            rel_types,
+                            end_labels,
+                            remaining_hops - 1,
+                            new_path,
+                            schema,
+                            include_incoming,
+                        );
+                        result.extend(sub_paths);
+                    }
+                }
             }
         }
     }
@@ -336,7 +366,10 @@ fn find_edges_from_node<'a>(
         );
 
         // Check if this edge starts from the specified node type
-        if matches_type && rel_schema.from_node == from_node_type {
+        // $any means polymorphic: actual type determined at runtime via from_label_column
+        if matches_type
+            && (rel_schema.from_node == from_node_type || rel_schema.from_node == "$any")
+        {
             log::debug!("    ✅ Found matching edge!");
             edges.push(rel_schema);
         } else {
@@ -367,7 +400,7 @@ fn find_edges_to_node<'a>(
             key == rel_type
         };
 
-        if matches_type && rel_schema.to_node == to_node_type {
+        if matches_type && (rel_schema.to_node == to_node_type || rel_schema.to_node == "$any") {
             log::debug!(
                 "🔍 find_edges_to_node: found rel '{}' where {} -> {} (incoming to {})",
                 key,

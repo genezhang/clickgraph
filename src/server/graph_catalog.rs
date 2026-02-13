@@ -30,7 +30,13 @@ fn preregister_schema_labels(schema: &GraphSchema) {
         let code = IdEncoding::register_label(label);
         log::debug!("Pre-registered node label '{}' with code {}", label, code);
     }
-    let mut rel_types: Vec<_> = schema.get_relationships_schemas().keys().collect();
+    let mut rel_types: Vec<_> = schema
+        .get_relationships_schemas()
+        .keys()
+        .map(|k| k.split("::").next().unwrap_or(k).to_string())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
     rel_types.sort();
     for type_name in &rel_types {
         let code = IdEncoding::register_label(type_name);

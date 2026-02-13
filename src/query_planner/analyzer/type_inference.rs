@@ -81,6 +81,7 @@ use crate::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
             errors::AnalyzerError,
+            pattern_resolver_config::get_max_combinations,
         },
         logical_expr::LogicalExpr,
         logical_plan::{GraphNode, GraphRel, LogicalPlan, ViewScan},
@@ -313,11 +314,24 @@ impl TypeInference {
                             );
                             for rel_schema in rel_schemas {
                                 // Always include to_node (forward direction)
-                                to_node_labels.insert(rel_schema.to_node.clone());
+                                // Expand $any to all concrete node labels
+                                if rel_schema.to_node == "$any" {
+                                    for label in graph_schema.all_node_schemas().keys() {
+                                        to_node_labels.insert(label.clone());
+                                    }
+                                } else {
+                                    to_node_labels.insert(rel_schema.to_node.clone());
+                                }
 
                                 // For bi-directional patterns, also include from_node (reverse direction)
                                 if is_bidirectional {
-                                    to_node_labels.insert(rel_schema.from_node.clone());
+                                    if rel_schema.from_node == "$any" {
+                                        for label in graph_schema.all_node_schemas().keys() {
+                                            to_node_labels.insert(label.clone());
+                                        }
+                                    } else {
+                                        to_node_labels.insert(rel_schema.from_node.clone());
+                                    }
                                     log::debug!(
                                         "🎯 TypeInference: Bi-directional pattern - added both from_node='{}' and to_node='{}'",
                                         rel_schema.from_node,
@@ -973,17 +987,25 @@ impl TypeInference {
         let rel_schemas = graph_schema.get_relationships_schemas();
 
         // Find all relationships that match ALL known constraints
-        // IMPORTANT: Iterate ONLY composite keys (those with "::") to avoid duplicates
-        // Schema stores both "FOLLOWS" and "FOLLOWS::User::User" for backward compatibility,
-        // but we only want to process each unique (type, from_node, to_node) once.
+        // Find matching relationships using the rel_type_index to avoid duplicates.
+        // Standard schemas have composite keys (e.g., "FOLLOWS::User::User"),
+        // polymorphic schemas have simple keys (e.g., "FOLLOWS").
+        // The rel_type_index maps base_type → [keys], giving us all unique entries.
         let matches: Vec<(
             String,
             &crate::graph_catalog::graph_schema::RelationshipSchema,
         )> = rel_schemas
             .iter()
             .filter(|(full_key, _)| {
-                // Only process composite keys - they have complete type information
-                full_key.contains("::")
+                // Use composite keys when they exist; fall back to simple keys for polymorphic
+                if full_key.contains("::") {
+                    true
+                } else {
+                    // Include simple key only if no composite key exists for this type
+                    !rel_schemas.keys().any(|k| {
+                        k.contains("::") && k.split("::").next() == Some(full_key.as_str())
+                    })
+                }
             })
             .filter_map(|(full_key, rel_schema)| {
                 // Extract base type for matching
@@ -1078,17 +1100,28 @@ impl TypeInference {
         };
 
         // Infer left node label (all matches should agree on from_node for single edge type)
+        // NOTE: $any is a polymorphic sentinel, not a real label — treat as ambiguous
         let inferred_left_label = if known_left_label.is_some() {
             known_left_label
         } else if matches.len() == 1 {
             let label = matches[0].1.from_node.clone();
-            self.update_node_label_in_ctx(left_connection, &label, "from", &matches[0].0, plan_ctx);
-            Some(label)
+            if label == "$any" {
+                None // Polymorphic: node type resolved at runtime
+            } else {
+                self.update_node_label_in_ctx(
+                    left_connection,
+                    &label,
+                    "from",
+                    &matches[0].0,
+                    plan_ctx,
+                );
+                Some(label)
+            }
         } else {
             // Multiple matches - check if they all have same from_node
             let from_nodes: std::collections::HashSet<_> =
                 matches.iter().map(|(_, s)| &s.from_node).collect();
-            if from_nodes.len() == 1 {
+            if from_nodes.len() == 1 && matches[0].1.from_node != "$any" {
                 let label = matches[0].1.from_node.clone();
                 self.update_node_label_in_ctx(
                     left_connection,
@@ -1099,14 +1132,12 @@ impl TypeInference {
                 );
                 Some(label)
             } else {
-                // ⭐ NEW: Ambiguous from_node → collect candidates for combination generation
                 log::info!(
                     "🎯 TypeInference: Ambiguous from_node for '{}' → {} candidates: {:?}",
                     left_connection,
                     from_nodes.len(),
                     from_nodes
                 );
-                // Will generate combinations after inferring to_node
                 None // Ambiguous, can't infer single type
             }
         };
@@ -1116,13 +1147,23 @@ impl TypeInference {
             known_right_label
         } else if matches.len() == 1 {
             let label = matches[0].1.to_node.clone();
-            self.update_node_label_in_ctx(right_connection, &label, "to", &matches[0].0, plan_ctx);
-            Some(label)
+            if label == "$any" {
+                None // Polymorphic: node type resolved at runtime
+            } else {
+                self.update_node_label_in_ctx(
+                    right_connection,
+                    &label,
+                    "to",
+                    &matches[0].0,
+                    plan_ctx,
+                );
+                Some(label)
+            }
         } else {
             // Multiple matches - check if they all have same to_node
             let to_nodes: std::collections::HashSet<_> =
                 matches.iter().map(|(_, s)| &s.to_node).collect();
-            if to_nodes.len() == 1 {
+            if to_nodes.len() == 1 && matches[0].1.to_node != "$any" {
                 let label = matches[0].1.to_node.clone();
                 self.update_node_label_in_ctx(
                     right_connection,
@@ -1133,14 +1174,12 @@ impl TypeInference {
                 );
                 Some(label)
             } else {
-                // ⭐ NEW: Ambiguous to_node → collect candidates for combination generation
                 log::info!(
                     "🎯 TypeInference: Ambiguous to_node for '{}' → {} candidates: {:?}",
                     right_connection,
                     to_nodes.len(),
                     to_nodes
                 );
-                // Will generate combinations below
                 None // Ambiguous, can't infer single type
             }
         };
@@ -1153,19 +1192,34 @@ impl TypeInference {
             use crate::query_planner::plan_ctx::TypeCombination;
             let mut combinations = Vec::new();
 
+            let max_combos = get_max_combinations();
+
             for (rel_type_key, rel_schema) in &matches {
-                // rel_type_key is already a base type from earlier extraction
+                let from_labels = graph_schema.expand_node_type(&rel_schema.from_node);
+                let to_labels = graph_schema.expand_node_type(&rel_schema.to_node);
 
-                combinations.push(TypeCombination {
-                    from_label: rel_schema.from_node.clone(),
-                    rel_type: rel_type_key.clone(),
-                    to_label: rel_schema.to_node.clone(),
-                });
+                for from_label in &from_labels {
+                    for to_label in &to_labels {
+                        combinations.push(TypeCombination {
+                            from_label: from_label.clone(),
+                            rel_type: rel_type_key.clone(),
+                            to_label: to_label.clone(),
+                        });
 
-                // Apply 38 combination limit
-                if combinations.len() >= 38 {
+                        if combinations.len() >= max_combos {
+                            break;
+                        }
+                    }
+                    if combinations.len() >= max_combos {
+                        break;
+                    }
+                }
+
+                if combinations.len() >= max_combos {
                     log::warn!(
-                        "⚠️ Pattern combinations limited to 38 for '{}' -> '{}' (found {} total matches)",
+                        "⚠️ Pattern combinations limited to {} for '{}' -> '{}' (found {} total matches). \
+                         Set CLICKGRAPH_MAX_TYPE_COMBINATIONS to increase.",
+                        max_combos,
                         left_connection,
                         right_connection,
                         matches.len()
@@ -1282,7 +1336,8 @@ impl TypeInference {
         false
     }
 
-    /// Update or create TableCtx with inferred label
+    /// Update or create TableCtx with inferred label.
+    /// Never stores `$any` — it's a polymorphic sentinel, not a concrete label.
     fn update_node_label_in_ctx(
         &self,
         node_alias: &str,
@@ -1291,6 +1346,13 @@ impl TypeInference {
         edge_info: &str,
         plan_ctx: &mut PlanCtx,
     ) {
+        if label == "$any" {
+            log::debug!(
+                "🏷️ TypeInference: Skipping '$any' label for '{}' (polymorphic sentinel)",
+                node_alias
+            );
+            return;
+        }
         if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(node_alias) {
             table_ctx.set_labels(Some(vec![label.to_string()]));
             log::info!(

@@ -2850,7 +2850,99 @@ pub(super) fn add_label_column_to_union_branches(
         .collect()
 }
 
-/// Find a Union node nested inside a plan
+/// Add __start_label__ and __end_label__ columns to path UNION branches.
+///
+/// For UNION queries produced by PatternResolver for path queries (e.g., MATCH p=()-[r:FOLLOWS]->() RETURN p),
+/// each branch has concrete start/end node types. We add these as literal columns so the
+/// result transformer can determine node labels per row.
+pub(super) fn add_path_label_columns_to_union_branches(
+    union_plans: Vec<super::RenderPlan>,
+    logical_branches: &[std::sync::Arc<LogicalPlan>],
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+) -> Vec<super::RenderPlan> {
+    use super::{ColumnAlias, SelectItem};
+
+    if union_plans.len() != logical_branches.len() {
+        log::warn!(
+            "add_path_label_columns: mismatch {} render plans vs {} logical branches",
+            union_plans.len(),
+            logical_branches.len()
+        );
+        return union_plans;
+    }
+
+    union_plans
+        .into_iter()
+        .zip(logical_branches.iter())
+        .map(|(mut plan, logical_branch)| {
+            // Check if __start_label__ already exists
+            let has_start = plan.select.items.iter().any(|item| {
+                item.col_alias
+                    .as_ref()
+                    .is_some_and(|a| a.0 == "__start_label__")
+            });
+            if has_start {
+                return plan;
+            }
+
+            // Extract start and end labels from the GraphRel in this branch
+            let (start_label, end_label) = extract_path_labels_from_plan(logical_branch, schema);
+
+            log::debug!(
+                "add_path_label_columns: start={:?}, end={:?}",
+                start_label,
+                end_label
+            );
+
+            let start_item = SelectItem {
+                expression: RenderExpr::Literal(Literal::String(
+                    start_label.unwrap_or_else(|| "Unknown".to_string()),
+                )),
+                col_alias: Some(ColumnAlias("__start_label__".to_string())),
+            };
+            let end_item = SelectItem {
+                expression: RenderExpr::Literal(Literal::String(
+                    end_label.unwrap_or_else(|| "Unknown".to_string()),
+                )),
+                col_alias: Some(ColumnAlias("__end_label__".to_string())),
+            };
+
+            // Prepend to SELECT items
+            let mut new_items = vec![start_item, end_item];
+            new_items.extend(plan.select.items);
+            plan.select.items = new_items;
+
+            plan
+        })
+        .collect()
+}
+
+/// Extract start and end node labels from a plan containing a GraphRel.
+fn extract_path_labels_from_plan(
+    plan: &LogicalPlan,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+) -> (Option<String>, Option<String>) {
+    match plan {
+        LogicalPlan::GraphRel(gr) => {
+            let start =
+                crate::render_plan::cte_extraction::extract_node_label_from_viewscan_with_schema(
+                    &gr.left, schema,
+                );
+            let end =
+                crate::render_plan::cte_extraction::extract_node_label_from_viewscan_with_schema(
+                    &gr.right, schema,
+                );
+            (start, end)
+        }
+        LogicalPlan::Projection(p) => extract_path_labels_from_plan(&p.input, schema),
+        LogicalPlan::Filter(f) => extract_path_labels_from_plan(&f.input, schema),
+        LogicalPlan::Limit(l) => extract_path_labels_from_plan(&l.input, schema),
+        LogicalPlan::Skip(s) => extract_path_labels_from_plan(&s.input, schema),
+        LogicalPlan::OrderBy(o) => extract_path_labels_from_plan(&o.input, schema),
+        LogicalPlan::GraphJoins(gj) => extract_path_labels_from_plan(&gj.input, schema),
+        _ => (None, None),
+    }
+}
 pub(super) fn find_nested_union(
     plan: &LogicalPlan,
 ) -> Option<&crate::query_planner::logical_plan::Union> {
@@ -4473,13 +4565,20 @@ pub(super) fn convert_path_branches_to_json(
 
             let mut new_items = Vec::new();
 
+            // Collect aliases already present in other_items (e.g., from CTE references)
+            // to avoid adding duplicate columns
+            let existing_aliases: std::collections::HashSet<String> = other_items
+                .iter()
+                .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+                .collect();
+
             // 1. Keep path tuple as-is
             if let Some(p) = path_item {
                 new_items.push(p);
             }
 
             // 2. Convert start node properties to JSON (prefix: _s_)
-            if !start_items.is_empty() {
+            if !start_items.is_empty() && !existing_aliases.contains("_start_properties") {
                 let json_expr = build_format_row_json(&start_items, "_s_", denorm_table_alias, &start_alias);
                 new_items.push(SelectItem {
                     expression: json_expr,
@@ -4488,7 +4587,7 @@ pub(super) fn convert_path_branches_to_json(
             }
 
             // 3. Convert end node properties to JSON (prefix: _e_)
-            if !end_items.is_empty() {
+            if !end_items.is_empty() && !existing_aliases.contains("_end_properties") {
                 let json_expr = build_format_row_json(&end_items, "_e_", denorm_table_alias, &end_alias);
                 new_items.push(SelectItem {
                     expression: json_expr,
@@ -4497,38 +4596,46 @@ pub(super) fn convert_path_branches_to_json(
             }
 
             // 4. Convert relationship properties to JSON (prefix: _r_) or empty object if none
-            if !rel_items.is_empty() {
-                let json_expr = build_format_row_json(&rel_items, "_r_", denorm_table_alias, &rel_alias);
-                new_items.push(SelectItem {
-                    expression: json_expr,
-                    col_alias: Some(ColumnAlias("_rel_properties".to_string())),
-                });
-            } else {
-                // No relationship properties (denormalized) - empty JSON object
-                new_items.push(SelectItem {
-                    expression: RenderExpr::Literal(Literal::String("{}".to_string())),
-                    col_alias: Some(ColumnAlias("_rel_properties".to_string())),
-                });
+            if !existing_aliases.contains("_rel_properties") {
+                if !rel_items.is_empty() {
+                    let json_expr = build_format_row_json(&rel_items, "_r_", denorm_table_alias, &rel_alias);
+                    new_items.push(SelectItem {
+                        expression: json_expr,
+                        col_alias: Some(ColumnAlias("_rel_properties".to_string())),
+                    });
+                } else {
+                    // No relationship properties (denormalized) - empty JSON object
+                    new_items.push(SelectItem {
+                        expression: RenderExpr::Literal(Literal::String("{}".to_string())),
+                        col_alias: Some(ColumnAlias("_rel_properties".to_string())),
+                    });
+                }
             }
 
             // 5. Add explicit relationship type column (no guessing!)
             if let Some(ref rt) = rel_type {
-                new_items.push(SelectItem {
-                    expression: RenderExpr::Literal(Literal::String(rt.clone())),
-                    col_alias: Some(ColumnAlias("__rel_type__".to_string())),
-                });
+                if !existing_aliases.contains("__rel_type__") {
+                    new_items.push(SelectItem {
+                        expression: RenderExpr::Literal(Literal::String(rt.clone())),
+                        col_alias: Some(ColumnAlias("__rel_type__".to_string())),
+                    });
+                }
             }
 
             // 6. Add explicit start/end node label columns (no guessing!)
             if let Some((ref start_label, ref end_label)) = node_labels {
-                new_items.push(SelectItem {
-                    expression: RenderExpr::Literal(Literal::String(start_label.clone())),
-                    col_alias: Some(ColumnAlias("__start_label__".to_string())),
-                });
-                new_items.push(SelectItem {
-                    expression: RenderExpr::Literal(Literal::String(end_label.clone())),
-                    col_alias: Some(ColumnAlias("__end_label__".to_string())),
-                });
+                if !existing_aliases.contains("__start_label__") {
+                    new_items.push(SelectItem {
+                        expression: RenderExpr::Literal(Literal::String(start_label.clone())),
+                        col_alias: Some(ColumnAlias("__start_label__".to_string())),
+                    });
+                }
+                if !existing_aliases.contains("__end_label__") {
+                    new_items.push(SelectItem {
+                        expression: RenderExpr::Literal(Literal::String(end_label.clone())),
+                        col_alias: Some(ColumnAlias("__end_label__".to_string())),
+                    });
+                }
             }
 
             // 7. Preserve non-path items (scalars, aggregations, CTE columns)

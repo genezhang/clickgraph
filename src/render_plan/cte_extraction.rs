@@ -2550,13 +2550,33 @@ pub fn extract_ctes_with_context(
                                     // For undirected patterns, we need to consider both directions
                                     // But we should add the OTHER node in each relationship, not both blindly
                                     for start_label in &start_labels {
+                                        let from_matches = rel_schema.from_node == *start_label
+                                            || rel_schema.from_node == "$any";
+                                        let to_matches = rel_schema.to_node == *start_label
+                                            || rel_schema.to_node == "$any";
+
                                         // If relationship goes FROM start_label, add to_node as possible end
-                                        if rel_schema.from_node == *start_label {
-                                            possible_end_types.insert(rel_schema.to_node.clone());
+                                        if from_matches {
+                                            if rel_schema.to_node == "$any" {
+                                                // Polymorphic: expand to all concrete node types
+                                                for nt in schema.all_node_schemas().keys() {
+                                                    possible_end_types.insert(nt.clone());
+                                                }
+                                            } else {
+                                                possible_end_types
+                                                    .insert(rel_schema.to_node.clone());
+                                            }
                                         }
                                         // If relationship goes TO start_label, add from_node as possible end
-                                        if rel_schema.to_node == *start_label {
-                                            possible_end_types.insert(rel_schema.from_node.clone());
+                                        if to_matches {
+                                            if rel_schema.from_node == "$any" {
+                                                for nt in schema.all_node_schemas().keys() {
+                                                    possible_end_types.insert(nt.clone());
+                                                }
+                                            } else {
+                                                possible_end_types
+                                                    .insert(rel_schema.from_node.clone());
+                                            }
                                         }
                                     }
                                 }
@@ -3059,22 +3079,51 @@ pub fn extract_ctes_with_context(
                         // Extract base relationship type (strip ::FromLabel::ToLabel suffix)
                         let base_rel_type = combo.rel_type.split("::").next().unwrap_or(&combo.rel_type);
 
+                        // Build WHERE clauses for polymorphic type filtering
+                        let mut where_clauses = Vec::new();
+                        if let Some(ref type_col) = rel_schema.type_column {
+                            where_clauses.push(format!(
+                                "{rel_table}.{type_col} = '{base_rel_type}'"
+                            ));
+                        }
+                        if let Some(ref from_lbl_col) = rel_schema.from_label_column {
+                            where_clauses.push(format!(
+                                "{rel_table}.{from_lbl_col} = '{}'",
+                                combo.from_label
+                            ));
+                        }
+                        if let Some(ref to_lbl_col) = rel_schema.to_label_column {
+                            where_clauses.push(format!(
+                                "{rel_table}.{to_lbl_col} = '{}'",
+                                combo.to_label
+                            ));
+                        }
+                        let where_clause = if where_clauses.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" WHERE {}", where_clauses.join(" AND "))
+                        };
+
                         let branch_sql = format!(
                             "SELECT \
+                                '{from_label}' AS start_type, \
                                 toString({from_table}.{from_id_col}) as start_id, \
                                 toString({to_table}.{to_id_col}) as end_id, \
+                                '{to_label}' AS end_type, \
                                 ['{}'] as path_relationships, \
                                 [{}] as rel_properties, \
                                 {} as start_properties, \
                                 {} as end_properties \
                             FROM {rel_table} \
                             INNER JOIN {from_table} ON {from_table}.{from_id_col} = {rel_table}.{rel_from_col} \
-                            INNER JOIN {to_table} ON {to_table}.{to_id_col} = {rel_table}.{rel_to_col} \
+                            INNER JOIN {to_table} ON {to_table}.{to_id_col} = {rel_table}.{rel_to_col}{where_clause} \
                             LIMIT 1000",
                             base_rel_type,
                             rel_properties_json,
                             start_properties_json,
-                            end_properties_json
+                            end_properties_json,
+                            from_label = combo.from_label,
+                            to_label = combo.to_label,
                         );
 
                         log::debug!(
@@ -3133,6 +3182,10 @@ pub fn extract_ctes_with_context(
                 )?;
                 child_ctes.extend(right_ctes);
                 child_ctes.extend(relationship_ctes);
+
+                // Deduplicate CTEs by name (same pattern can appear in multiple plan branches)
+                let mut seen_cte_names = std::collections::HashSet::new();
+                child_ctes.retain(|cte| seen_cte_names.insert(cte.cte_name.clone()));
 
                 return Ok(child_ctes);
             }
@@ -4796,6 +4849,13 @@ pub fn extract_node_label_from_viewscan_with_schema(
         }
         LogicalPlan::GraphJoins(gj) => {
             extract_node_label_from_viewscan_with_schema(&gj.input, schema)
+        }
+        LogicalPlan::GraphRel(gr) => {
+            // For GraphRel, prefer start node (left) label but fall back to end node (right)
+            if let Some(label) = extract_node_label_from_viewscan_with_schema(&gr.left, schema) {
+                return Some(label);
+            }
+            extract_node_label_from_viewscan_with_schema(&gr.right, schema)
         }
         LogicalPlan::Union(u) => {
             // For UNION of denormalized nodes, try to get label from first input

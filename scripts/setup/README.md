@@ -58,6 +58,23 @@ MATCH (f:DataFile {file_id: 1})-[r:COPIED_BY*1..3 {operation: 'clean'}]->(d:Data
 RETURN f.path, d.path
 ```
 
+### setup_polymorphic_data.sh
+Sets up polymorphic interactions table in brahmand database. Single edge table with
+`interaction_type` discriminator for FOLLOWS, LIKES, AUTHORED, COMMENTED, SHARED.
+
+**Use case**: Testing polymorphic edge schemas (type_column + from_label_column + to_label_column)
+
+### setup_composite_id_data.sh
+Sets up multi-bank accounts in `db_composite_id` database with composite node IDs.
+
+**What it creates**:
+- `accounts` table (composite PK: bank_id + account_number)
+- `customers` table (single PK: customer_id)
+- `account_ownership` edge (single → composite)
+- `transfers` edge (composite → composite)
+
+**Use case**: Testing composite (multi-column) node IDs
+
 ## Schema Overview
 
 ### 1. social_benchmark (brahmand database)

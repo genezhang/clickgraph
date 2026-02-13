@@ -452,27 +452,22 @@ impl SchemaInference {
                     }
                 } else {
                     // For multiple relationship types, check if any are polymorphic
-                    // If so, we need to mark the unlabeled target node as $any
+                    // Polymorphic nodes: leave labels unset — the multi-type UNION expansion
+                    // in traversal.rs will resolve them to concrete types.
                     if !right_has_label {
-                        // Check if any of the relationship types are polymorphic ($any nodes)
                         if let Some(labels) = &rel_labels_cloned {
                             for label in labels {
                                 if let Ok(rel_schema) = graph_schema.get_rel_schema(label) {
                                     if rel_schema.from_node == "$any"
                                         || rel_schema.to_node == "$any"
                                     {
-                                        // This is a polymorphic edge - set target as $any
+                                        // Polymorphic edges: leave node label unset here.
+                                        // The traversal layer (traversal.rs) and PatternResolver
+                                        // will expand $any to concrete node types later.
                                         log::debug!(
-                                            "SchemaInference: Marking target node '{}' as $any (polymorphic edge)",
+                                            "SchemaInference: Polymorphic edge detected for target '{}' — leaving label unset",
                                             right_alias
                                         );
-                                        let target_ctx = plan_ctx
-                                            .get_mut_table_ctx(right_alias)
-                                            .map_err(|e| AnalyzerError::PlanCtx {
-                                                pass: Pass::SchemaInference,
-                                                source: e,
-                                            })?;
-                                        target_ctx.set_labels(Some(vec!["$any".to_string()]));
                                         break;
                                     }
                                 }
@@ -488,16 +483,9 @@ impl SchemaInference {
                                         || rel_schema.to_node == "$any"
                                     {
                                         log::debug!(
-                                            "SchemaInference: Marking source node '{}' as $any (polymorphic edge)",
+                                            "SchemaInference: Polymorphic edge detected for source '{}' — leaving label unset",
                                             left_alias
                                         );
-                                        let source_ctx = plan_ctx
-                                            .get_mut_table_ctx(left_alias)
-                                            .map_err(|e| AnalyzerError::PlanCtx {
-                                                pass: Pass::SchemaInference,
-                                                source: e,
-                                            })?;
-                                        source_ctx.set_labels(Some(vec!["$any".to_string()]));
                                         break;
                                     }
                                 }

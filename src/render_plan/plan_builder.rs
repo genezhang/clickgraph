@@ -2519,6 +2519,9 @@ impl RenderPlanBuilder for LogicalPlan {
                                     LogicalPlan::Projection(p) => contains_graph_rel(&p.input),
                                     LogicalPlan::Filter(f) => contains_graph_rel(&f.input),
                                     LogicalPlan::GraphJoins(gj) => contains_graph_rel(&gj.input),
+                                    LogicalPlan::Limit(l) => contains_graph_rel(&l.input),
+                                    LogicalPlan::Skip(s) => contains_graph_rel(&s.input),
+                                    LogicalPlan::OrderBy(o) => contains_graph_rel(&o.input),
                                     _ => false,
                                 }
                             }
@@ -2530,6 +2533,15 @@ impl RenderPlanBuilder for LogicalPlan {
                             log::info!("🏷️ Adding __label__ column for node-only UNION query");
                             branch_renders =
                                 super::plan_builder_helpers::add_label_column_to_union_branches(
+                                    branch_renders,
+                                    &union.inputs,
+                                    schema,
+                                );
+                        } else {
+                            // For path UNION queries (with GraphRel), add start/end label columns
+                            log::info!("🏷️ Adding __start_label__/__end_label__ columns for path UNION query");
+                            branch_renders =
+                                super::plan_builder_helpers::add_path_label_columns_to_union_branches(
                                     branch_renders,
                                     &union.inputs,
                                     schema,
@@ -2563,23 +2575,40 @@ impl RenderPlanBuilder for LogicalPlan {
                                     );
                                     all_ctes[existing_idx] = cte.clone();
                                 } else if !new_empty {
-                                    // Both non-empty with same name: rename the new one
-                                    let mut suffix = 2;
-                                    let base_name = cte.cte_name.clone();
-                                    let mut new_name = format!("{}_{}", base_name, suffix);
-                                    while all_ctes.iter().any(|e| e.cte_name == new_name) {
-                                        suffix += 1;
-                                        new_name = format!("{}_{}", base_name, suffix);
+                                    // Both non-empty with same name: check if content is identical
+                                    let same_content =
+                                        match (&all_ctes[existing_idx].content, &cte.content) {
+                                            (
+                                                super::CteContent::RawSql(a),
+                                                super::CteContent::RawSql(b),
+                                            ) => a == b,
+                                            _ => false,
+                                        };
+                                    if same_content {
+                                        // Exact duplicate — skip it
+                                        log::debug!(
+                                            "UNION: Skipping identical duplicate CTE '{}'",
+                                            cte.cte_name
+                                        );
+                                    } else {
+                                        // Different content, same name: rename the new one
+                                        let mut suffix = 2;
+                                        let base_name = cte.cte_name.clone();
+                                        let mut new_name = format!("{}_{}", base_name, suffix);
+                                        while all_ctes.iter().any(|e| e.cte_name == new_name) {
+                                            suffix += 1;
+                                            new_name = format!("{}_{}", base_name, suffix);
+                                        }
+                                        log::debug!(
+                                            "UNION: Renaming duplicate CTE '{}' → '{}'",
+                                            base_name,
+                                            new_name
+                                        );
+                                        let mut renamed_cte = cte.clone();
+                                        renamed_cte.cte_name = new_name.clone();
+                                        renamed.push((base_name, new_name));
+                                        all_ctes.push(renamed_cte);
                                     }
-                                    log::debug!(
-                                        "UNION: Renaming duplicate CTE '{}' → '{}'",
-                                        base_name,
-                                        new_name
-                                    );
-                                    let mut renamed_cte = cte.clone();
-                                    renamed_cte.cte_name = new_name.clone();
-                                    renamed.push((base_name, new_name));
-                                    all_ctes.push(renamed_cte);
                                 }
                             } else {
                                 log::debug!("UNION: Collecting CTE '{}'", cte.cte_name);
@@ -2654,7 +2683,10 @@ impl RenderPlanBuilder for LogicalPlan {
                             let is_dup = kept_renders.iter().any(|kept| {
                                 let kept_from = kept.from.0.as_ref().map(|f| f.name.as_str());
                                 if from_name == kept_from
-                                    && from_name.is_some_and(|n| n.starts_with("vlp_multi_type_"))
+                                    && from_name.is_some_and(|n| {
+                                        n.starts_with("vlp_multi_type_")
+                                            || n.starts_with("pattern_union_")
+                                    })
                                     && render.select.items.len() == kept.select.items.len()
                                 {
                                     render
@@ -2669,7 +2701,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             });
                             if is_dup {
                                 log::info!(
-                                    "🔀 UNION: Deduplicating identical VLP branch from '{}'",
+                                    "🔀 UNION: Deduplicating identical CTE branch from '{}'",
                                     from_name.unwrap_or("?")
                                 );
                                 continue;

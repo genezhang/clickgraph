@@ -405,7 +405,8 @@ fn clone_plan_with_labels(plan: &LogicalPlan, combo: &HashMap<String, String>) -
                     // Untyped node - add the label from combination
                     let mut cloned = node.clone();
                     cloned.label = Some(label.clone());
-                    cloned.input = Arc::new(clone_plan_with_labels(&node.input, combo));
+                    // Prune Union input to the ViewScan matching this label
+                    cloned.input = Arc::new(prune_union_for_label(&node.input, label, combo));
                     LogicalPlan::GraphNode(cloned)
                 } else {
                     // Already typed - just recurse
@@ -515,6 +516,50 @@ fn clone_plan_with_labels(plan: &LogicalPlan, combo: &HashMap<String, String>) -
         LogicalPlan::Empty => LogicalPlan::Empty,
         LogicalPlan::ViewScan(view_scan) => LogicalPlan::ViewScan(view_scan.clone()),
     }
+}
+
+/// Prune a Union input to the ViewScan matching the given label.
+///
+/// When PatternResolver assigns a label to an untyped node, the node's input
+/// may still be a Union of ViewScans over all node types. This function
+/// selects the ViewScan whose source table matches the target label's schema table,
+/// effectively "resolving" the polymorphic node to a concrete type.
+fn prune_union_for_label(
+    input: &LogicalPlan,
+    label: &str,
+    combo: &HashMap<String, String>,
+) -> LogicalPlan {
+    if let LogicalPlan::Union(union_plan) = input {
+        // Look up the target table for this label
+        if let Some(schema) = crate::server::query_context::get_current_schema() {
+            if let Some(node_schema) = schema.node_schema_opt(label) {
+                let target_table = format!("{}.{}", node_schema.database, node_schema.table_name);
+                // Find the ViewScan matching this table
+                for vs_input in &union_plan.inputs {
+                    if let LogicalPlan::ViewScan(scan) = vs_input.as_ref() {
+                        if scan.source_table == target_table {
+                            log::debug!(
+                                "prune_union_for_label: selected '{}' for label '{}'",
+                                target_table,
+                                label
+                            );
+                            return LogicalPlan::ViewScan(scan.clone());
+                        }
+                    }
+                }
+            }
+        }
+        // Fallback: use first ViewScan
+        if let Some(first) = union_plan.inputs.first() {
+            log::warn!(
+                "prune_union_for_label: could not resolve table for label '{}', falling back to first ViewScan",
+                label
+            );
+            return clone_plan_with_labels(first, combo);
+        }
+    }
+    // Not a Union — just recurse
+    clone_plan_with_labels(input, combo)
 }
 
 /// Validate type combinations against schema relationships
@@ -793,6 +838,11 @@ fn is_valid_combination(
     true
 }
 
+/// Match node type considering `$any` as wildcard (polymorphic schemas)
+fn node_type_matches(schema_node: &str, query_node: &str) -> bool {
+    schema_node == "$any" || schema_node == query_node
+}
+
 /// Check if a specific relationship exists in schema
 fn check_relationship_exists(
     from_type: &str,
@@ -801,7 +851,8 @@ fn check_relationship_exists(
     graph_schema: &GraphSchema,
 ) -> bool {
     if let Some(rel_schema) = graph_schema.get_relationships_schema_opt(rel_type) {
-        rel_schema.from_node == from_type && rel_schema.to_node == to_type
+        node_type_matches(&rel_schema.from_node, from_type)
+            && node_type_matches(&rel_schema.to_node, to_type)
     } else {
         false
     }
@@ -826,8 +877,10 @@ fn check_relationship_exists_bidirectional(
                 key == rel_type
             };
             type_matches
-                && ((rel_schema.from_node == from_type && rel_schema.to_node == to_type)
-                    || (rel_schema.from_node == to_type && rel_schema.to_node == from_type))
+                && ((node_type_matches(&rel_schema.from_node, from_type)
+                    && node_type_matches(&rel_schema.to_node, to_type))
+                    || (node_type_matches(&rel_schema.from_node, to_type)
+                        && node_type_matches(&rel_schema.to_node, from_type)))
         })
 }
 
@@ -841,7 +894,10 @@ fn check_any_relationship_exists(
     graph_schema
         .get_relationships_schemas()
         .values()
-        .any(|rel_schema| rel_schema.from_node == from_type && rel_schema.to_node == to_type)
+        .any(|rel_schema| {
+            node_type_matches(&rel_schema.from_node, from_type)
+                && node_type_matches(&rel_schema.to_node, to_type)
+        })
 }
 
 /// Check if ANY relationship exists between two node types in either direction
@@ -854,8 +910,10 @@ fn check_any_relationship_exists_bidirectional(
         .get_relationships_schemas()
         .values()
         .any(|rel_schema| {
-            (rel_schema.from_node == from_type && rel_schema.to_node == to_type)
-                || (rel_schema.from_node == to_type && rel_schema.to_node == from_type)
+            (node_type_matches(&rel_schema.from_node, from_type)
+                && node_type_matches(&rel_schema.to_node, to_type))
+                || (node_type_matches(&rel_schema.from_node, to_type)
+                    && node_type_matches(&rel_schema.to_node, from_type))
         })
 }
 

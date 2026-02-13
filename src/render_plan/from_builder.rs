@@ -260,6 +260,26 @@ impl LogicalPlan {
             graph_rel.labels
         );
 
+        // === PATTERNRESOLVER 2.0: Check pattern_combinations FIRST ===
+        // When pattern_combinations exist (non-VLP), a pattern_union CTE has been generated.
+        // Use that CTE as FROM instead of the raw edge table.
+        if let Some(combinations) = &graph_rel.pattern_combinations {
+            if graph_rel.variable_length.is_none() {
+                let cte_name = format!("pattern_union_{}", graph_rel.alias);
+                log::info!(
+                    "🔀 PatternResolver 2.0: Using pattern UNION CTE '{}' as FROM ({} combinations)",
+                    cte_name,
+                    combinations.len()
+                );
+                return Ok(Some(ViewTableRef {
+                    source: Arc::new(LogicalPlan::Empty),
+                    name: cte_name,
+                    alias: Some(graph_rel.alias.clone()),
+                    use_final: false,
+                }));
+            }
+        }
+
         // VARIABLE-LENGTH PATH CHECK
         // For variable-length paths, use the CTE name as FROM UNLESS it's optional
         if graph_rel.variable_length.is_some() {
@@ -289,7 +309,7 @@ impl LogicalPlan {
                 return Ok(Some(ViewTableRef {
                     source: Arc::new(LogicalPlan::Empty),
                     name: cte_name,
-                    alias: graph_rel.path_variable.clone(),
+                    alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
                     use_final: false,
                 }));
             }
@@ -342,7 +362,7 @@ impl LogicalPlan {
             return Ok(Some(ViewTableRef {
                 source: Arc::new(LogicalPlan::Empty),
                 name: cte_name,
-                alias: graph_rel.path_variable.clone(),
+                alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
                 use_final: false,
             }));
         }
@@ -579,7 +599,7 @@ impl LogicalPlan {
             return Ok(Some(ViewTableRef {
                 source: Arc::new(LogicalPlan::Empty),
                 name: cte_name,
-                alias: graph_rel.path_variable.clone(),
+                alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
                 use_final: false,
             }));
         }

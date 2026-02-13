@@ -1313,6 +1313,10 @@ fn build_polymorphic_edge_schemas(
             constraints: poly_edge.constraints.clone(),
             edge_id_types: None,
         };
+        // Use simple key (just the type name) for polymorphic edges.
+        // Composite keys like "AUTHORED::$any::$any" cause issues downstream because $any
+        // is a sentinel, not a concrete node type. Since polymorphic edges are disambiguated
+        // by type_column/from_label_column/to_label_column at query time, a simple key suffices.
         results.push((type_val.clone(), rel_schema));
     }
 
@@ -1730,6 +1734,14 @@ impl GraphSchemaConfig {
                 EdgeDefinition::Polymorphic(poly_edge) => {
                     let poly_schemas = build_polymorphic_edge_schemas(poly_edge, &no_discovery)?;
                     for (type_name, rel_schema) in poly_schemas {
+                        if relationships.contains_key(&type_name) {
+                            log::warn!(
+                                "⚠️ Schema collision: polymorphic edge '{}' overwrites existing \
+                                 standard edge with the same type name. Mixing polymorphic and \
+                                 standard edges with the same type is not supported.",
+                                type_name
+                            );
+                        }
                         relationships.insert(type_name, rel_schema);
                     }
                 }
@@ -1904,6 +1916,13 @@ impl GraphSchemaConfig {
                     for (type_name, rel_schema) in
                         build_polymorphic_edge_schemas(poly_edge, &discovery)?
                     {
+                        if relationships.contains_key(&type_name) {
+                            log::warn!(
+                                "⚠️ Schema collision: polymorphic edge '{}' overwrites existing \
+                                 standard edge with the same type name.",
+                                type_name
+                            );
+                        }
                         relationships.insert(type_name, rel_schema);
                     }
                 }

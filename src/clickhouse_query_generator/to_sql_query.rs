@@ -1872,6 +1872,31 @@ impl ToSql for CteItems {
             return sql;
         }
 
+        // Deduplicate CTEs by name (same pattern may appear from multiple plan branches)
+        let mut seen_names = std::collections::HashSet::new();
+        let deduped: Vec<&Cte> = self
+            .0
+            .iter()
+            .filter(|cte| seen_names.insert(cte.cte_name.clone()))
+            .collect();
+
+        if deduped.len() < self.0.len() {
+            log::warn!(
+                "🔄 CTE dedup: {} → {} CTEs (removed {} duplicates). Names: {:?}",
+                self.0.len(),
+                deduped.len(),
+                self.0.len() - deduped.len(),
+                self.0
+                    .iter()
+                    .map(|c| c.cte_name.as_str())
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        if deduped.is_empty() {
+            return sql;
+        }
+
         // ClickHouse limitation: WITH RECURSIVE can only contain ONE recursive CTE
         // Solution: Keep first recursive CTE group in WITH RECURSIVE block,
         // wrap each additional recursive CTE group in a nested WITH RECURSIVE subquery
@@ -1880,7 +1905,7 @@ impl ToSql for CteItems {
         let mut cte_groups: Vec<Vec<&Cte>> = Vec::new();
         let mut current_group: Vec<&Cte> = Vec::new();
 
-        for cte in &self.0 {
+        for cte in &deduped {
             if cte.is_recursive {
                 // Start new group with this recursive CTE
                 if !current_group.is_empty() {
@@ -1938,9 +1963,9 @@ impl ToSql for CteItems {
         // If no recursive CTEs at all
         if cte_groups.is_empty() || !cte_groups.iter().any(|g| g[0].is_recursive) {
             sql.push_str("WITH ");
-            for (i, cte) in self.0.iter().enumerate() {
+            for (i, cte) in deduped.iter().enumerate() {
                 sql.push_str(&cte.to_sql());
-                if i + 1 < self.0.len() {
+                if i + 1 < deduped.len() {
                     sql.push_str(", ");
                 }
                 sql.push('\n');
