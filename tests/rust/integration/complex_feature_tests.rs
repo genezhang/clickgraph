@@ -1071,3 +1071,70 @@ async fn test_deeply_nested_expressions() {
         "Should contain multiplication operator"
     );
 }
+
+/// Regression test: VLP+WITH CTE JOIN must use node's actual ID column (e.g., user_id),
+/// not the VLP's generic start_id/end_id.
+///
+/// The Neo4j Browser click-to-expand sends:
+///   MATCH (a) WHERE id(a) = N
+///   WITH a, size([(a)--() | 1]) AS allNeighboursCount
+///   MATCH path = (a)--(o) RETURN path, allNeighboursCount
+///
+/// The final SELECT JOINs the VLP CTE to the WITH CTE. The JOIN condition
+/// must reference the WITH CTE's actual ID column (a_user_id), not a_start_id.
+#[tokio::test]
+async fn test_vlp_with_cte_join_uses_node_id_not_start_id() {
+    let schema = create_test_schema();
+
+    let cypher = r#"
+        MATCH (a:User) WHERE a.user_id = 1
+        WITH a, size([(a)--() | 1]) AS allNeighboursCount
+        MATCH path = (a)--(o)
+        RETURN path, allNeighboursCount
+        LIMIT 10
+    "#;
+
+    let ast = parse_query(cypher).expect("Failed to parse browser expand query");
+
+    let result = evaluate_read_query(ast, &schema, None, None);
+    assert!(
+        result.is_ok(),
+        "Failed to evaluate browser expand query: {:?}",
+        result.err()
+    );
+
+    let (logical_plan, _plan_ctx) = result.unwrap();
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL for browser expand query: {:?}",
+        render_result.err()
+    );
+
+    let render_plan = render_result.unwrap();
+    let sql = render_plan.to_sql();
+    println!("Generated SQL:\n{}", sql);
+
+    // The critical assertion: JOIN must use the node's real ID column, not VLP start_id
+    assert!(
+        !sql.contains("a_start_id"),
+        "BUG REGRESSION: JOIN references a_start_id instead of node's actual ID column.\n\
+         The WITH CTE exports a_user_id, not a_start_id.\n\
+         SQL:\n{}",
+        sql
+    );
+
+    // Verify the correct column is used
+    assert!(
+        sql.contains("a_user_id"),
+        "JOIN should reference a_user_id from the WITH CTE.\nSQL:\n{}",
+        sql
+    );
+
+    // Verify basic structure
+    assert!(sql.contains("vlp_"), "Should contain VLP CTE");
+    assert!(
+        sql.contains("with_a_allNeighboursCount"),
+        "Should contain WITH CTE for allNeighboursCount"
+    );
+}
