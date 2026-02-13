@@ -397,13 +397,43 @@ fn traverse_connected_pattern_with_mode<'a>(
                                 };
 
                                 rel_schema.map(|schema| {
-                                    (
-                                        rel_type.split("::").next().unwrap_or(rel_type).to_string(), // Use base type
-                                        schema.from_node.clone(),
-                                        schema.to_node.clone(),
-                                    )
+                                    let base_type = rel_type
+                                        .split("::")
+                                        .next()
+                                        .unwrap_or(rel_type)
+                                        .to_string();
+                                    let from = schema.from_node.clone();
+                                    let to = schema.to_node.clone();
+                                    // Expand $any to concrete node types
+                                    let froms = if from == "$any" {
+                                        graph_schema
+                                            .all_node_schemas()
+                                            .keys()
+                                            .cloned()
+                                            .collect::<Vec<_>>()
+                                    } else {
+                                        vec![from]
+                                    };
+                                    let tos = if to == "$any" {
+                                        graph_schema
+                                            .all_node_schemas()
+                                            .keys()
+                                            .cloned()
+                                            .collect::<Vec<_>>()
+                                    } else {
+                                        vec![to]
+                                    };
+                                    froms
+                                        .into_iter()
+                                        .flat_map(|f| {
+                                            let bt = base_type.clone();
+                                            tos.iter()
+                                                .map(move |t| (bt.clone(), f.clone(), t.clone()))
+                                        })
+                                        .collect::<Vec<_>>()
                                 })
                             })
+                            .flatten()
                             .collect()
                     };
 

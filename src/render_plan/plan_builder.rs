@@ -2563,23 +2563,36 @@ impl RenderPlanBuilder for LogicalPlan {
                                     );
                                     all_ctes[existing_idx] = cte.clone();
                                 } else if !new_empty {
-                                    // Both non-empty with same name: rename the new one
-                                    let mut suffix = 2;
-                                    let base_name = cte.cte_name.clone();
-                                    let mut new_name = format!("{}_{}", base_name, suffix);
-                                    while all_ctes.iter().any(|e| e.cte_name == new_name) {
-                                        suffix += 1;
-                                        new_name = format!("{}_{}", base_name, suffix);
+                                    // Both non-empty with same name: check if content is identical
+                                    let same_content = match (&all_ctes[existing_idx].content, &cte.content) {
+                                        (super::CteContent::RawSql(a), super::CteContent::RawSql(b)) => a == b,
+                                        _ => false,
+                                    };
+                                    if same_content {
+                                        // Exact duplicate — skip it
+                                        log::debug!(
+                                            "UNION: Skipping identical duplicate CTE '{}'",
+                                            cte.cte_name
+                                        );
+                                    } else {
+                                        // Different content, same name: rename the new one
+                                        let mut suffix = 2;
+                                        let base_name = cte.cte_name.clone();
+                                        let mut new_name = format!("{}_{}", base_name, suffix);
+                                        while all_ctes.iter().any(|e| e.cte_name == new_name) {
+                                            suffix += 1;
+                                            new_name = format!("{}_{}", base_name, suffix);
+                                        }
+                                        log::debug!(
+                                            "UNION: Renaming duplicate CTE '{}' → '{}'",
+                                            base_name,
+                                            new_name
+                                        );
+                                        let mut renamed_cte = cte.clone();
+                                        renamed_cte.cte_name = new_name.clone();
+                                        renamed.push((base_name, new_name));
+                                        all_ctes.push(renamed_cte);
                                     }
-                                    log::debug!(
-                                        "UNION: Renaming duplicate CTE '{}' → '{}'",
-                                        base_name,
-                                        new_name
-                                    );
-                                    let mut renamed_cte = cte.clone();
-                                    renamed_cte.cte_name = new_name.clone();
-                                    renamed.push((base_name, new_name));
-                                    all_ctes.push(renamed_cte);
                                 }
                             } else {
                                 log::debug!("UNION: Collecting CTE '{}'", cte.cte_name);

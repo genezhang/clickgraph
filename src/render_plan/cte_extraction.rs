@@ -3079,6 +3079,31 @@ pub fn extract_ctes_with_context(
                         // Extract base relationship type (strip ::FromLabel::ToLabel suffix)
                         let base_rel_type = combo.rel_type.split("::").next().unwrap_or(&combo.rel_type);
 
+                        // Build WHERE clauses for polymorphic type filtering
+                        let mut where_clauses = Vec::new();
+                        if let Some(ref type_col) = rel_schema.type_column {
+                            where_clauses.push(format!(
+                                "{rel_table}.{type_col} = '{base_rel_type}'"
+                            ));
+                        }
+                        if let Some(ref from_lbl_col) = rel_schema.from_label_column {
+                            where_clauses.push(format!(
+                                "{rel_table}.{from_lbl_col} = '{}'",
+                                combo.from_label
+                            ));
+                        }
+                        if let Some(ref to_lbl_col) = rel_schema.to_label_column {
+                            where_clauses.push(format!(
+                                "{rel_table}.{to_lbl_col} = '{}'",
+                                combo.to_label
+                            ));
+                        }
+                        let where_clause = if where_clauses.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" WHERE {}", where_clauses.join(" AND "))
+                        };
+
                         let branch_sql = format!(
                             "SELECT \
                                 toString({from_table}.{from_id_col}) as start_id, \
@@ -3089,7 +3114,7 @@ pub fn extract_ctes_with_context(
                                 {} as end_properties \
                             FROM {rel_table} \
                             INNER JOIN {from_table} ON {from_table}.{from_id_col} = {rel_table}.{rel_from_col} \
-                            INNER JOIN {to_table} ON {to_table}.{to_id_col} = {rel_table}.{rel_to_col} \
+                            INNER JOIN {to_table} ON {to_table}.{to_id_col} = {rel_table}.{rel_to_col}{where_clause} \
                             LIMIT 1000",
                             base_rel_type,
                             rel_properties_json,
@@ -3153,6 +3178,10 @@ pub fn extract_ctes_with_context(
                 )?;
                 child_ctes.extend(right_ctes);
                 child_ctes.extend(relationship_ctes);
+
+                // Deduplicate CTEs by name (same pattern can appear in multiple plan branches)
+                let mut seen_cte_names = std::collections::HashSet::new();
+                child_ctes.retain(|cte| seen_cte_names.insert(cte.cte_name.clone()));
 
                 return Ok(child_ctes);
             }
