@@ -330,18 +330,26 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
             }
             LogicalPlan::GraphRel(rel) => {
-                // 🔧 VLP ENDPOINT FIX: For variable-length paths, check if alias is a VLP endpoint
-                // In denormalized schemas, VLP endpoints don't have separate node tables
-                // Their "ID column" is start_id or end_id in the VLP CTE
+                // First try to find the actual GraphNode's ID column in left/right branches.
+                // This takes priority because the node's real ID column (e.g., "user_id")
+                // is the correct answer for WITH CTE schemas.
+                if let Ok(id) = rel.left.find_id_column_for_alias(alias) {
+                    return Ok(id);
+                }
+                if let Ok(id) = rel.right.find_id_column_for_alias(alias) {
+                    return Ok(id);
+                }
+
+                // VLP ENDPOINT FALLBACK: For variable-length paths, if the alias wasn't
+                // found as a GraphNode (e.g., denormalized schemas without separate node
+                // tables), use start_id/end_id from the VLP CTE.
                 if rel.variable_length.is_some() {
-                    // Extract endpoint aliases from GraphRel connections
-                    // left_connection = start node, right_connection = end node
                     let start_alias = &rel.left_connection;
                     let end_alias = &rel.right_connection;
 
                     if alias == start_alias {
                         log::info!(
-                            "🎯 VLP: Alias '{}' is VLP start endpoint -> using '{}' as ID column",
+                            "🎯 VLP: Alias '{}' is VLP start endpoint (fallback) -> using '{}' as ID column",
                             alias,
                             VLP_START_ID_COLUMN
                         );
@@ -349,20 +357,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                     if alias == end_alias {
                         log::info!(
-                            "🎯 VLP: Alias '{}' is VLP end endpoint -> using '{}' as ID column",
+                            "🎯 VLP: Alias '{}' is VLP end endpoint (fallback) -> using '{}' as ID column",
                             alias,
                             VLP_END_ID_COLUMN
                         );
                         return Ok(VLP_END_ID_COLUMN.to_string());
                     }
-                }
-
-                // Check both left and right branches
-                if let Ok(id) = rel.left.find_id_column_for_alias(alias) {
-                    return Ok(id);
-                }
-                if let Ok(id) = rel.right.find_id_column_for_alias(alias) {
-                    return Ok(id);
                 }
             }
             LogicalPlan::Projection(proj) => {
