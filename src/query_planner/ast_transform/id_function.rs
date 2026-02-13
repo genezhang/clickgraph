@@ -200,6 +200,14 @@ impl<'a> IdFunctionTransformer<'a> {
                     log::info!("      ✅ Found id({}) = {} - transforming!", var, id_value);
                     return self.rewrite_id_equals(var, id_value);
                 }
+                // labels(a) = "Label" → true (label is tracked via MATCH pattern or CTE)
+                if let Some(var) = self.extract_labels_equals(&op_app.operands) {
+                    log::info!(
+                        "      🏷️ Removing labels({}) predicate (handled by MATCH pattern/CTE)",
+                        var
+                    );
+                    return Expression::Literal(Literal::Boolean(true));
+                }
             }
 
             // id(a) IN [1, 2, 3] → ((a:L1 AND a.id = 'v1') OR ...)
@@ -259,6 +267,38 @@ impl<'a> IdFunctionTransformer<'a> {
             return Some((var, id));
         }
 
+        None
+    }
+
+    /// Extract `labels(var) = "Label"` pattern → returns the variable name
+    fn extract_labels_equals(&self, operands: &[Expression<'a>]) -> Option<&'a str> {
+        if operands.len() != 2 {
+            return None;
+        }
+        // Check labels(var) = "Label"
+        if let Expression::FunctionCallExp(func) = &operands[0] {
+            if (func.name.eq_ignore_ascii_case("labels") || func.name.eq_ignore_ascii_case("label"))
+                && func.args.len() == 1
+            {
+                if let Expression::Variable(var) = &func.args[0] {
+                    if matches!(&operands[1], Expression::Literal(Literal::String(_))) {
+                        return Some(var);
+                    }
+                }
+            }
+        }
+        // Check "Label" = labels(var)
+        if let Expression::FunctionCallExp(func) = &operands[1] {
+            if (func.name.eq_ignore_ascii_case("labels") || func.name.eq_ignore_ascii_case("label"))
+                && func.args.len() == 1
+            {
+                if let Expression::Variable(var) = &func.args[0] {
+                    if matches!(&operands[0], Expression::Literal(Literal::String(_))) {
+                        return Some(var);
+                    }
+                }
+            }
+        }
         None
     }
 
@@ -451,61 +491,88 @@ impl<'a> IdFunctionTransformer<'a> {
         }
     }
 
-    /// Build property check expression: `var.id_property = 'value'`
+    /// Build property check expression for node ID (supports composite keys).
     ///
-    /// Returns just the ID property check. Label information is tracked separately
-    /// and will be added to the MATCH pattern by split_query_by_labels().
+    /// For single-column IDs: `var.id_property = 'value'`
+    /// For composite IDs: `var.col1 = 'val1' AND var.col2 = 'val2'`
+    ///
+    /// Label information is tracked separately and added to the MATCH pattern
+    /// by split_query_by_labels().
     fn build_label_and_id_check(
         &self,
         var: &'a str,
         label: &str,
         id_value: &str,
     ) -> Expression<'a> {
-        // Determine which property to use for ID check
-        let id_property = if let Some(schema) = self.schema {
-            // Look up the node_id property from schema
+        // Look up the ID columns from schema
+        let id_columns: Vec<&str> = if let Some(schema) = self.schema {
             if let Some(node_schema) = schema.node_schema_opt(label) {
-                // Get the first column of the node_id (for composite keys, use first)
                 let columns = node_schema.node_id.id.columns();
-                if !columns.is_empty() {
-                    columns[0]
-                } else {
+                if columns.is_empty() {
                     log::warn!("Label {} has no node_id columns, using 'id'", label);
-                    "id"
+                    vec!["id"]
+                } else {
+                    columns
                 }
             } else {
                 log::warn!("Label {} not found in schema, using 'id'", label);
-                "id"
+                vec!["id"]
             }
         } else {
             log::warn!("No schema provided to transformer, using 'id'");
-            "id"
+            vec!["id"]
         };
 
-        log::debug!(
-            "        Generating predicate: {}.{} = '{}' (label '{}' tracked separately)",
-            var,
-            id_property,
-            id_value,
-            label
-        );
+        // Split composite ID value by '|' separator
+        let id_parts: Vec<&str> = id_value.split('|').collect();
 
-        // Build: var.id_property = 'value'
-        // Label will be added to MATCH pattern during split_query_by_labels()
-        let id_value_static: &'a str = self.arena.alloc_str(id_value);
-        let id_property_static: &'a str = self.arena.alloc_str(id_property);
+        // Build one equality predicate per ID column
+        let mut predicates = Vec::new();
+        for (i, col) in id_columns.iter().enumerate() {
+            let val = if i < id_parts.len() {
+                id_parts[i]
+            } else {
+                log::warn!(
+                    "Composite ID for {} has fewer parts ({}) than columns ({})",
+                    label,
+                    id_parts.len(),
+                    id_columns.len()
+                );
+                id_value
+            };
 
-        // ID check: var.id_property = 'value'
-        Expression::OperatorApplicationExp(OperatorApplication {
-            operator: Operator::Equal,
-            operands: vec![
-                Expression::PropertyAccessExp(crate::open_cypher_parser::ast::PropertyAccess {
-                    base: var,
-                    key: id_property_static,
-                }),
-                Expression::Literal(Literal::String(id_value_static)),
-            ],
-        })
+            log::debug!(
+                "        Generating predicate: {}.{} = '{}' (label '{}' tracked separately)",
+                var,
+                col,
+                val,
+                label
+            );
+
+            let val_static: &'a str = self.arena.alloc_str(val);
+            let col_static: &'a str = self.arena.alloc_str(col);
+
+            predicates.push(Expression::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::Equal,
+                operands: vec![
+                    Expression::PropertyAccessExp(crate::open_cypher_parser::ast::PropertyAccess {
+                        base: var,
+                        key: col_static,
+                    }),
+                    Expression::Literal(Literal::String(val_static)),
+                ],
+            }));
+        }
+
+        // Single predicate or AND-chain for composite
+        if predicates.len() == 1 {
+            predicates.remove(0)
+        } else {
+            Expression::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::And,
+                operands: predicates,
+            })
+        }
     }
 }
 

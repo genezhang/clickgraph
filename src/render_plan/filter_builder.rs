@@ -4,11 +4,12 @@
 //! It processes WHERE clauses, HAVING clauses, and other filter conditions
 //! that need to be applied to the generated SQL queries.
 
+use crate::graph_catalog::config::Identifier;
 use crate::query_planner::logical_expr::expression_rewriter::{
     rewrite_expression_with_property_mapping, ExpressionRewriteContext,
 };
+use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::LogicalPlan;
-use crate::graph_catalog::config::Identifier;
 use crate::render_plan::cte_extraction::{
     extract_relationship_columns, table_to_id_column, RelationshipColumns,
 };
@@ -164,8 +165,30 @@ impl FilterBuilder for LogicalPlan {
                     return Ok(None);
                 }
 
-                // Collect all where_predicates from this GraphRel and nested GraphRel nodes
-                // Using helper functions from plan_builder_helpers module
+                // PatternResolver 2.0: pattern_combinations generates a UNION CTE
+                // (pattern_union_{alias}). The outer WHERE must reference CTE columns
+                // (start_id, start_type, end_id, end_type) instead of base table aliases.
+                if graph_rel.pattern_combinations.is_some() {
+                    if let Some(ref predicate) = graph_rel.where_predicate {
+                        let cte_alias = &graph_rel.alias;
+                        let left = &graph_rel.left_connection;
+                        let right = &graph_rel.right_connection;
+                        let rewritten =
+                            rewrite_predicate_for_pattern_cte(predicate, cte_alias, left, right);
+                        if !rewritten.is_empty() {
+                            log::info!(
+                                "🔀 PatternResolver 2.0: Rewritten {} WHERE predicate(s) for CTE columns",
+                                rewritten.len()
+                            );
+                            let combined = rewritten.join(" AND ");
+                            return Ok(Some(RenderExpr::Raw(combined)));
+                        }
+                    }
+                    log::info!(
+                        "🔀 PatternResolver 2.0: No outer WHERE predicates for pattern_combinations"
+                    );
+                    return Ok(None);
+                }
                 let all_predicates =
                     collect_graphrel_predicates(&LogicalPlan::GraphRel(graph_rel.clone()));
 
@@ -443,5 +466,180 @@ impl FilterBuilder for LogicalPlan {
         };
         crate::debug_println!("DEBUG extract_distinct: Returning {}", result);
         result
+    }
+}
+
+/// Rewrite a logical predicate for use as outer WHERE on a pattern_union CTE.
+/// Converts `id(alias)` → `cte.start_id`/`end_id` and `labels(alias)` → `cte.start_type`/`end_type`.
+/// Splits AND predicates and rewrites each individually. Returns raw SQL fragments.
+fn rewrite_predicate_for_pattern_cte(
+    predicate: &LogicalExpr,
+    cte_alias: &str,
+    left_alias: &str,
+    right_alias: &str,
+) -> Vec<String> {
+    let mut parts = Vec::new();
+    split_and_predicates(predicate, &mut parts);
+    let mut rewritten = Vec::new();
+
+    for part in &parts {
+        if let Some(sql) =
+            rewrite_single_predicate_for_cte(part, cte_alias, left_alias, right_alias)
+        {
+            rewritten.push(sql);
+        } else {
+            log::warn!(
+                "⚠️ PatternResolver 2.0: Could not rewrite predicate for CTE columns: {:?}",
+                part
+            );
+        }
+    }
+    rewritten
+}
+
+/// Split an AND-combined predicate into individual parts.
+fn split_and_predicates<'a>(expr: &'a LogicalExpr, out: &mut Vec<&'a LogicalExpr>) {
+    if let LogicalExpr::OperatorApplicationExp(op_app) = expr {
+        if op_app.operator == crate::query_planner::logical_expr::Operator::And {
+            for operand in &op_app.operands {
+                split_and_predicates(operand, out);
+            }
+            return;
+        }
+    }
+    out.push(expr);
+}
+
+/// Rewrite a single predicate expression to reference CTE columns.
+/// Handles patterns:
+/// - `id(alias) IN [values]` or `id(alias) = value` (ScalarFnCall)
+/// - `labels(alias) = value` (ScalarFnCall)
+/// - `alias.id_prop IN [values]` (PropertyAccess — optimizer-resolved id())
+fn rewrite_single_predicate_for_cte(
+    expr: &LogicalExpr,
+    cte_alias: &str,
+    left_alias: &str,
+    right_alias: &str,
+) -> Option<String> {
+    match expr {
+        LogicalExpr::OperatorApplicationExp(op_app) => {
+            if op_app.operands.len() == 2 {
+                let lhs = &op_app.operands[0];
+                let rhs = &op_app.operands[1];
+
+                // Case 1: ScalarFnCall — id(alias) or labels(alias)
+                if let LogicalExpr::ScalarFnCall(fn_call) = lhs {
+                    if let Some(alias) = extract_fn_alias(fn_call) {
+                        let position = if alias == left_alias {
+                            "start"
+                        } else if alias == right_alias {
+                            "end"
+                        } else {
+                            return None;
+                        };
+
+                        match fn_call.name.as_str() {
+                            "id" => {
+                                let cte_col = format!("{}.{}_id", cte_alias, position);
+                                let rhs_sql = render_rhs_to_sql(rhs, true);
+                                let op_str = render_operator(&op_app.operator);
+                                return Some(format!("{} {} {}", cte_col, op_str, rhs_sql));
+                            }
+                            "labels" => {
+                                let cte_col = format!("{}.{}_type", cte_alias, position);
+                                let rhs_sql = render_rhs_to_sql(rhs, false);
+                                let op_str = render_operator(&op_app.operator);
+                                return Some(format!("{} {} {}", cte_col, op_str, rhs_sql));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Case 2: PropertyAccess — optimizer-resolved id(a) becomes a.customer_id
+                // Map any property on a node alias to start_id/end_id (click-to-expand uses ID)
+                if let LogicalExpr::PropertyAccessExp(prop) = lhs {
+                    let alias = &prop.table_alias.0;
+                    let position = if alias == left_alias {
+                        "start"
+                    } else if alias == right_alias {
+                        "end"
+                    } else {
+                        return None;
+                    };
+                    // For CTE outer WHERE, node properties map to start_id/end_id
+                    // (the optimizer only resolves id() to property access, not arbitrary properties)
+                    let cte_col = format!("{}.{}_id", cte_alias, position);
+                    let rhs_sql = render_rhs_to_sql(rhs, true);
+                    let op_str = render_operator(&op_app.operator);
+                    return Some(format!("{} {} {}", cte_col, op_str, rhs_sql));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Extract the alias argument from a ScalarFnCall like id(a) or labels(a).
+fn extract_fn_alias(fn_call: &crate::query_planner::logical_expr::ScalarFnCall) -> Option<&str> {
+    if fn_call.args.len() == 1 {
+        match &fn_call.args[0] {
+            LogicalExpr::TableAlias(alias) => Some(&alias.0),
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
+/// Render operator to SQL string.
+fn render_operator(op: &crate::query_planner::logical_expr::Operator) -> &'static str {
+    use crate::query_planner::logical_expr::Operator as LogicalOp;
+    match op {
+        LogicalOp::Equal => "=",
+        LogicalOp::NotEqual => "!=",
+        LogicalOp::In => "IN",
+        LogicalOp::NotIn => "NOT IN",
+        LogicalOp::LessThan => "<",
+        LogicalOp::GreaterThan => ">",
+        LogicalOp::LessThanEqual => "<=",
+        LogicalOp::GreaterThanEqual => ">=",
+        _ => "=",
+    }
+}
+
+/// Render the RHS of a comparison to SQL. For id() comparisons, wrap values in toString().
+fn render_rhs_to_sql(expr: &LogicalExpr, as_string: bool) -> String {
+    use crate::query_planner::logical_expr::Literal;
+    match expr {
+        LogicalExpr::Literal(lit) => match lit {
+            Literal::Integer(n) => {
+                if as_string {
+                    format!("'{}'", n)
+                } else {
+                    n.to_string()
+                }
+            }
+            Literal::String(s) => format!("'{}'", s),
+            Literal::Float(f) => f.to_string(),
+            Literal::Boolean(b) => b.to_string(),
+            Literal::Null => "NULL".to_string(),
+        },
+        LogicalExpr::List(items) => {
+            let rendered: Vec<String> = items
+                .iter()
+                .map(|i| render_rhs_to_sql(i, as_string))
+                .collect();
+            format!("[{}]", rendered.join(", "))
+        }
+        _ => {
+            // Fallback: try to render via RenderExpr conversion
+            if let Ok(render_expr) = RenderExpr::try_from(expr.clone()) {
+                format!("{:?}", render_expr)
+            } else {
+                "NULL".to_string()
+            }
+        }
     }
 }
