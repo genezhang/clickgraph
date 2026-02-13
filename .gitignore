@@ -122,6 +122,9 @@ docs1/
 !DEV_QUICK_START.md
 !TESTING.md
 
+# Agent documentation for AI-assisted development
+!**/AGENTS.md
+
 # Development assistants
 .claude/
 agent-os/
