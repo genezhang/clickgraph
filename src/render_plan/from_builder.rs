@@ -289,7 +289,7 @@ impl LogicalPlan {
                 return Ok(Some(ViewTableRef {
                     source: Arc::new(LogicalPlan::Empty),
                     name: cte_name,
-                    alias: graph_rel.path_variable.clone(),
+                    alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
                     use_final: false,
                 }));
             }
@@ -342,7 +342,7 @@ impl LogicalPlan {
             return Ok(Some(ViewTableRef {
                 source: Arc::new(LogicalPlan::Empty),
                 name: cte_name,
-                alias: graph_rel.path_variable.clone(),
+                alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
                 use_final: false,
             }));
         }
@@ -579,7 +579,7 @@ impl LogicalPlan {
             return Ok(Some(ViewTableRef {
                 source: Arc::new(LogicalPlan::Empty),
                 name: cte_name,
-                alias: graph_rel.path_variable.clone(),
+                alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
                 use_final: false,
             }));
         }

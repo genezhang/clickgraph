@@ -4473,13 +4473,20 @@ pub(super) fn convert_path_branches_to_json(
 
             let mut new_items = Vec::new();
 
+            // Collect aliases already present in other_items (e.g., from CTE references)
+            // to avoid adding duplicate columns
+            let existing_aliases: std::collections::HashSet<String> = other_items
+                .iter()
+                .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+                .collect();
+
             // 1. Keep path tuple as-is
             if let Some(p) = path_item {
                 new_items.push(p);
             }
 
             // 2. Convert start node properties to JSON (prefix: _s_)
-            if !start_items.is_empty() {
+            if !start_items.is_empty() && !existing_aliases.contains("_start_properties") {
                 let json_expr = build_format_row_json(&start_items, "_s_", denorm_table_alias, &start_alias);
                 new_items.push(SelectItem {
                     expression: json_expr,
@@ -4488,7 +4495,7 @@ pub(super) fn convert_path_branches_to_json(
             }
 
             // 3. Convert end node properties to JSON (prefix: _e_)
-            if !end_items.is_empty() {
+            if !end_items.is_empty() && !existing_aliases.contains("_end_properties") {
                 let json_expr = build_format_row_json(&end_items, "_e_", denorm_table_alias, &end_alias);
                 new_items.push(SelectItem {
                     expression: json_expr,
@@ -4497,38 +4504,46 @@ pub(super) fn convert_path_branches_to_json(
             }
 
             // 4. Convert relationship properties to JSON (prefix: _r_) or empty object if none
-            if !rel_items.is_empty() {
-                let json_expr = build_format_row_json(&rel_items, "_r_", denorm_table_alias, &rel_alias);
-                new_items.push(SelectItem {
-                    expression: json_expr,
-                    col_alias: Some(ColumnAlias("_rel_properties".to_string())),
-                });
-            } else {
-                // No relationship properties (denormalized) - empty JSON object
-                new_items.push(SelectItem {
-                    expression: RenderExpr::Literal(Literal::String("{}".to_string())),
-                    col_alias: Some(ColumnAlias("_rel_properties".to_string())),
-                });
+            if !existing_aliases.contains("_rel_properties") {
+                if !rel_items.is_empty() {
+                    let json_expr = build_format_row_json(&rel_items, "_r_", denorm_table_alias, &rel_alias);
+                    new_items.push(SelectItem {
+                        expression: json_expr,
+                        col_alias: Some(ColumnAlias("_rel_properties".to_string())),
+                    });
+                } else {
+                    // No relationship properties (denormalized) - empty JSON object
+                    new_items.push(SelectItem {
+                        expression: RenderExpr::Literal(Literal::String("{}".to_string())),
+                        col_alias: Some(ColumnAlias("_rel_properties".to_string())),
+                    });
+                }
             }
 
             // 5. Add explicit relationship type column (no guessing!)
             if let Some(ref rt) = rel_type {
-                new_items.push(SelectItem {
-                    expression: RenderExpr::Literal(Literal::String(rt.clone())),
-                    col_alias: Some(ColumnAlias("__rel_type__".to_string())),
-                });
+                if !existing_aliases.contains("__rel_type__") {
+                    new_items.push(SelectItem {
+                        expression: RenderExpr::Literal(Literal::String(rt.clone())),
+                        col_alias: Some(ColumnAlias("__rel_type__".to_string())),
+                    });
+                }
             }
 
             // 6. Add explicit start/end node label columns (no guessing!)
             if let Some((ref start_label, ref end_label)) = node_labels {
-                new_items.push(SelectItem {
-                    expression: RenderExpr::Literal(Literal::String(start_label.clone())),
-                    col_alias: Some(ColumnAlias("__start_label__".to_string())),
-                });
-                new_items.push(SelectItem {
-                    expression: RenderExpr::Literal(Literal::String(end_label.clone())),
-                    col_alias: Some(ColumnAlias("__end_label__".to_string())),
-                });
+                if !existing_aliases.contains("__start_label__") {
+                    new_items.push(SelectItem {
+                        expression: RenderExpr::Literal(Literal::String(start_label.clone())),
+                        col_alias: Some(ColumnAlias("__start_label__".to_string())),
+                    });
+                }
+                if !existing_aliases.contains("__end_label__") {
+                    new_items.push(SelectItem {
+                        expression: RenderExpr::Literal(Literal::String(end_label.clone())),
+                        col_alias: Some(ColumnAlias("__end_label__".to_string())),
+                    });
+                }
             }
 
             // 7. Preserve non-path items (scalars, aggregations, CTE columns)
