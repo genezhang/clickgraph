@@ -483,15 +483,14 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 from_clauses.push(rel_join_sql);
 
                 // Add polymorphic type filters (type_column, from_label_column, to_label_column)
-                if let Ok(rel_schema) =
-                    self.schema
-                        .get_rel_schema_with_nodes(&hop.rel_type, Some(schema_from), Some(schema_to))
-                {
+                if let Ok(rel_schema) = self.schema.get_rel_schema_with_nodes(
+                    &hop.rel_type,
+                    Some(schema_from),
+                    Some(schema_to),
+                ) {
                     if let Some(ref type_col) = rel_schema.type_column {
-                        where_clauses.push(format!(
-                            "{}.{} = '{}'",
-                            rel_alias, type_col, hop.rel_type
-                        ));
+                        where_clauses
+                            .push(format!("{}.{} = '{}'", rel_alias, type_col, hop.rel_type));
                     }
                     if let Some(ref from_label_col) = rel_schema.from_label_column {
                         where_clauses.push(format!(

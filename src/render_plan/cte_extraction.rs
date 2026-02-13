@@ -2563,7 +2563,8 @@ pub fn extract_ctes_with_context(
                                                     possible_end_types.insert(nt.clone());
                                                 }
                                             } else {
-                                                possible_end_types.insert(rel_schema.to_node.clone());
+                                                possible_end_types
+                                                    .insert(rel_schema.to_node.clone());
                                             }
                                         }
                                         // If relationship goes TO start_label, add from_node as possible end
@@ -2573,7 +2574,8 @@ pub fn extract_ctes_with_context(
                                                     possible_end_types.insert(nt.clone());
                                                 }
                                             } else {
-                                                possible_end_types.insert(rel_schema.from_node.clone());
+                                                possible_end_types
+                                                    .insert(rel_schema.from_node.clone());
                                             }
                                         }
                                     }

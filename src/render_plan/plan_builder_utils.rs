@@ -12237,7 +12237,10 @@ pub(super) fn build_pattern_comprehension_sql(
 
         // Build optional type_column filter for polymorphic edges
         let type_filter = if let Some(ref type_col) = rel_schema.type_column {
-            format!(" WHERE {}.{} = '{}'", rel_schema.table_name, type_col, rel_name)
+            format!(
+                " WHERE {}.{} = '{}'",
+                rel_schema.table_name, type_col, rel_name
+            )
         } else {
             String::new()
         };

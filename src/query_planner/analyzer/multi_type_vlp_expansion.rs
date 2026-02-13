@@ -431,9 +431,7 @@ fn find_edges_to_node<'a>(
             key == rel_type
         };
 
-        if matches_type
-            && (rel_schema.to_node == to_node_type || rel_schema.to_node == "$any")
-        {
+        if matches_type && (rel_schema.to_node == to_node_type || rel_schema.to_node == "$any") {
             log::debug!(
                 "🔍 find_edges_to_node: found rel '{}' where {} -> {} (incoming to {})",
                 key,
