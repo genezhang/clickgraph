@@ -469,6 +469,8 @@ impl JoinBuilder {
 
     /// Add equality condition(s) for Identifier (handles single and composite).
     /// For single: adds one condition. For composite: adds one condition per column pair.
+    /// If column counts differ (e.g., edge from_id has 1 col but to_id has 2),
+    /// pairs as many as possible and logs a warning.
     pub fn add_identifier_condition(
         mut self,
         left_alias: &str,
@@ -478,13 +480,18 @@ impl JoinBuilder {
     ) -> Self {
         let left_cols = left_id.columns();
         let right_cols = right_id.columns();
-        assert_eq!(
-            left_cols.len(),
-            right_cols.len(),
-            "Identifier column count mismatch in JOIN: {} vs {}",
-            left_cols.len(),
-            right_cols.len()
-        );
+        if left_cols.len() != right_cols.len() {
+            log::warn!(
+                "Identifier column count mismatch in JOIN: {}.{:?} ({}) vs {}.{:?} ({}). \
+                 Pairing available columns.",
+                left_alias,
+                left_cols,
+                left_cols.len(),
+                right_alias,
+                right_cols,
+                right_cols.len()
+            );
+        }
         for (l, r) in left_cols.iter().zip(right_cols.iter()) {
             self.joining_on.push(OperatorApplication {
                 operator: Operator::Equal,

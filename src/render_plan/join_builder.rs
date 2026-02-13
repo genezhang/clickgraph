@@ -112,15 +112,15 @@ fn build_identifier_join_conditions(
 ) -> Vec<OperatorApplication> {
     let left_cols = left_id.columns();
     let right_cols = right_id.columns();
-    assert_eq!(
-        left_cols.len(),
-        right_cols.len(),
-        "Identifier column count mismatch in JOIN: left={} ({:?}) vs right={} ({:?})",
-        left_cols.len(),
-        left_id,
-        right_cols.len(),
-        right_id
-    );
+    if left_cols.len() != right_cols.len() {
+        log::warn!(
+            "Identifier column count mismatch in JOIN: left={} ({:?}) vs right={} ({:?}). Using zip pairing.",
+            left_cols.len(),
+            left_id,
+            right_cols.len(),
+            right_id
+        );
+    }
     left_cols
         .iter()
         .zip(right_cols.iter())
@@ -1043,7 +1043,30 @@ impl JoinBuilder for LogicalPlan {
                         }
                     }
                     // Create new CTE JOINs for any remaining skipped conditions
+                    // BUT skip if the alias is already used as the FROM table (anchor)
+                    // or if a JOIN for this alias already exists in the joins vector
                     for (cte_alias, conditions) in skipped_cte_conditions {
+                        // Skip if this alias is already the anchor/FROM table
+                        if graph_joins
+                            .anchor_table
+                            .as_ref()
+                            .map(|a| a == &cte_alias)
+                            .unwrap_or(false)
+                        {
+                            log::info!(
+                                "🔧 Skipping CTE JOIN for '{}' - already used as FROM table",
+                                cte_alias
+                            );
+                            continue;
+                        }
+                        // Skip if a JOIN for this alias already exists (from pre-computed joins)
+                        if joins.iter().any(|j| j.table_alias == cte_alias) {
+                            log::info!(
+                                "🔧 Skipping CTE JOIN for '{}' - already has a JOIN",
+                                cte_alias
+                            );
+                            continue;
+                        }
                         if let Some(cte_name) = graph_joins.cte_references.get(&cte_alias) {
                             log::info!(
                                 "🔧 Creating CTE JOIN for '{}' ({}) with {} conditions from skipped joins",

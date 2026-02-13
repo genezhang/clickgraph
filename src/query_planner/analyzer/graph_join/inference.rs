@@ -2616,10 +2616,24 @@ impl GraphJoinInference {
             // Traditional: Standard node-edge-node JOINs
             // ================================================================
             JoinStrategy::Traditional {
-                left_join_col,
-                right_join_col,
+                left_join_col: orig_left_join_col,
+                right_join_col: orig_right_join_col,
             } => {
                 crate::debug_print!("    🔗 Traditional: Creating node-edge-node JOINs");
+
+                // For Incoming direction (reversed by BidirectionalUnion), the left node
+                // is the schema's TO node and right is FROM node. We must swap from_id/to_id
+                // so that edge JOIN columns match the correct node PKs.
+                let is_incoming = _graph_rel.direction == Direction::Incoming;
+                let (left_join_col, right_join_col) = if is_incoming {
+                    log::debug!(
+                        "🔄 Incoming direction: swapping join cols for rel '{}': left_join_col={:?} ↔ right_join_col={:?}",
+                        rel_alias, orig_right_join_col, orig_left_join_col
+                    );
+                    (orig_right_join_col, orig_left_join_col)
+                } else {
+                    (orig_left_join_col, orig_right_join_col)
+                };
 
                 // Get node ID columns from NodeAccessStrategy
                 let left_id_col = match &ctx.left_node {

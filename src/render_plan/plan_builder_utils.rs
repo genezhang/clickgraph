@@ -9075,12 +9075,19 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 // Insert the CTE join at the BEGINNING of the joins list
                 // (CTE should be joined first so its columns are available)
                 // BUT: skip if a JOIN for this CTE alias already exists (from extract_joins)
+                // OR if the FROM table already uses this alias (avoid duplicate alias error)
                 let already_has_cte_join = render_plan
                     .joins
                     .0
                     .iter()
                     .any(|j| j.table_alias == cte_alias);
-                if !already_has_cte_join {
+                let from_already_uses_alias = render_plan
+                    .from
+                    .0
+                    .as_ref()
+                    .map(|vr| vr.alias.as_deref() == Some(&cte_alias))
+                    .unwrap_or(false);
+                if !already_has_cte_join && !from_already_uses_alias {
                     render_plan.joins.0.insert(0, cte_join.clone());
                     log::info!(
                         "🔧 build_chained_with_match_cte_plan: Added CTE JOIN: {} AS {}",

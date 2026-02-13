@@ -1189,6 +1189,45 @@ fn transform_to_path(
         end_labels.to_vec()
     };
 
+    // If labels are still empty, infer from relationship schema
+    let effective_start_labels = if effective_start_labels.is_empty() && !rel_types.is_empty() {
+        if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_types[0]) {
+            if rel_schema.from_node != "$any" {
+                log::debug!(
+                    "Inferred start label '{}' from rel schema '{}'",
+                    rel_schema.from_node,
+                    rel_types[0]
+                );
+                vec![rel_schema.from_node.clone()]
+            } else {
+                effective_start_labels
+            }
+        } else {
+            effective_start_labels
+        }
+    } else {
+        effective_start_labels
+    };
+
+    let effective_end_labels = if effective_end_labels.is_empty() && !rel_types.is_empty() {
+        if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_types[0]) {
+            if rel_schema.to_node != "$any" {
+                log::debug!(
+                    "Inferred end label '{}' from rel schema '{}'",
+                    rel_schema.to_node,
+                    rel_types[0]
+                );
+                vec![rel_schema.to_node.clone()]
+            } else {
+                effective_end_labels
+            }
+        } else {
+            effective_end_labels
+        }
+    } else {
+        effective_end_labels
+    };
+
     // Original format: individual columns for each property
     // Extract start node - require either metadata lookup success or known labels
     let start_node = find_node_in_row_with_label(
