@@ -2564,10 +2564,14 @@ impl RenderPlanBuilder for LogicalPlan {
                                     all_ctes[existing_idx] = cte.clone();
                                 } else if !new_empty {
                                     // Both non-empty with same name: check if content is identical
-                                    let same_content = match (&all_ctes[existing_idx].content, &cte.content) {
-                                        (super::CteContent::RawSql(a), super::CteContent::RawSql(b)) => a == b,
-                                        _ => false,
-                                    };
+                                    let same_content =
+                                        match (&all_ctes[existing_idx].content, &cte.content) {
+                                            (
+                                                super::CteContent::RawSql(a),
+                                                super::CteContent::RawSql(b),
+                                            ) => a == b,
+                                            _ => false,
+                                        };
                                     if same_content {
                                         // Exact duplicate — skip it
                                         log::debug!(

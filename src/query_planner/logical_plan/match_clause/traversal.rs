@@ -397,11 +397,8 @@ fn traverse_connected_pattern_with_mode<'a>(
                                 };
 
                                 rel_schema.map(|schema| {
-                                    let base_type = rel_type
-                                        .split("::")
-                                        .next()
-                                        .unwrap_or(rel_type)
-                                        .to_string();
+                                    let base_type =
+                                        rel_type.split("::").next().unwrap_or(rel_type).to_string();
                                     let from = schema.from_node.clone();
                                     let to = schema.to_node.clone();
                                     // Expand $any to concrete node types

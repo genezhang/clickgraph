@@ -1886,7 +1886,10 @@ impl ToSql for CteItems {
                 self.0.len(),
                 deduped.len(),
                 self.0.len() - deduped.len(),
-                self.0.iter().map(|c| c.cte_name.as_str()).collect::<Vec<_>>()
+                self.0
+                    .iter()
+                    .map(|c| c.cte_name.as_str())
+                    .collect::<Vec<_>>()
             );
         }
 
