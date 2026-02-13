@@ -493,16 +493,15 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                             .push(format!("{}.{} = '{}'", rel_alias, type_col, hop.rel_type));
                     }
                     if let Some(ref from_label_col) = rel_schema.from_label_column {
+                        // Use schema_from (original direction) not hop.from_node_type (may be reversed)
                         where_clauses.push(format!(
                             "{}.{} = '{}'",
-                            rel_alias, from_label_col, hop.from_node_type
+                            rel_alias, from_label_col, schema_from
                         ));
                     }
                     if let Some(ref to_label_col) = rel_schema.to_label_column {
-                        where_clauses.push(format!(
-                            "{}.{} = '{}'",
-                            rel_alias, to_label_col, hop.to_node_type
-                        ));
+                        where_clauses
+                            .push(format!("{}.{} = '{}'", rel_alias, to_label_col, schema_to));
                     }
                 }
 

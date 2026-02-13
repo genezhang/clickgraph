@@ -973,17 +973,25 @@ impl TypeInference {
         let rel_schemas = graph_schema.get_relationships_schemas();
 
         // Find all relationships that match ALL known constraints
-        // IMPORTANT: Iterate ONLY composite keys (those with "::") to avoid duplicates
-        // Schema stores both "FOLLOWS" and "FOLLOWS::User::User" for backward compatibility,
-        // but we only want to process each unique (type, from_node, to_node) once.
+        // Find matching relationships using the rel_type_index to avoid duplicates.
+        // Standard schemas have composite keys (e.g., "FOLLOWS::User::User"),
+        // polymorphic schemas have simple keys (e.g., "FOLLOWS").
+        // The rel_type_index maps base_type → [keys], giving us all unique entries.
         let matches: Vec<(
             String,
             &crate::graph_catalog::graph_schema::RelationshipSchema,
         )> = rel_schemas
             .iter()
             .filter(|(full_key, _)| {
-                // Only process composite keys - they have complete type information
-                full_key.contains("::")
+                // Use composite keys when they exist; fall back to simple keys for polymorphic
+                if full_key.contains("::") {
+                    true
+                } else {
+                    // Include simple key only if no composite key exists for this type
+                    !rel_schemas.keys().any(|k| {
+                        k.contains("::") && k.split("::").next() == Some(full_key.as_str())
+                    })
+                }
             })
             .filter_map(|(full_key, rel_schema)| {
                 // Extract base type for matching
