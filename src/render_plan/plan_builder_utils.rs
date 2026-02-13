@@ -12235,23 +12235,32 @@ pub(super) fn build_pattern_comprehension_sql(
 
         let db_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
 
+        // Build optional type_column filter for polymorphic edges
+        let type_filter = if let Some(ref type_col) = rel_schema.type_column {
+            format!(" WHERE {}.{} = '{}'", rel_schema.table_name, type_col, rel_name)
+        } else {
+            String::new()
+        };
+
+        // Handle $any (polymorphic) from_node/to_node matching
+        let from_matches = rel_schema.from_node.eq_ignore_ascii_case(correlation_label)
+            || rel_schema.from_node == "$any";
+        let to_matches = rel_schema.to_node.eq_ignore_ascii_case(correlation_label)
+            || rel_schema.to_node == "$any";
+
         // Check outgoing: correlation_label is the from_node
-        if (matches!(direction, Direction::Outgoing | Direction::Either))
-            && rel_schema.from_node.eq_ignore_ascii_case(correlation_label)
-        {
+        if (matches!(direction, Direction::Outgoing | Direction::Either)) && from_matches {
             branches.push(format!(
-                "SELECT {} AS node_id FROM {}",
-                rel_schema.from_id, db_table
+                "SELECT {} AS node_id FROM {}{}",
+                rel_schema.from_id, db_table, type_filter
             ));
         }
 
         // Check incoming: correlation_label is the to_node
-        if (matches!(direction, Direction::Incoming | Direction::Either))
-            && rel_schema.to_node.eq_ignore_ascii_case(correlation_label)
-        {
+        if (matches!(direction, Direction::Incoming | Direction::Either)) && to_matches {
             branches.push(format!(
-                "SELECT {} AS node_id FROM {}",
-                rel_schema.to_id, db_table
+                "SELECT {} AS node_id FROM {}{}",
+                rel_schema.to_id, db_table, type_filter
             ));
         }
     }

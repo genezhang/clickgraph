@@ -2550,13 +2550,31 @@ pub fn extract_ctes_with_context(
                                     // For undirected patterns, we need to consider both directions
                                     // But we should add the OTHER node in each relationship, not both blindly
                                     for start_label in &start_labels {
+                                        let from_matches = rel_schema.from_node == *start_label
+                                            || rel_schema.from_node == "$any";
+                                        let to_matches = rel_schema.to_node == *start_label
+                                            || rel_schema.to_node == "$any";
+
                                         // If relationship goes FROM start_label, add to_node as possible end
-                                        if rel_schema.from_node == *start_label {
-                                            possible_end_types.insert(rel_schema.to_node.clone());
+                                        if from_matches {
+                                            if rel_schema.to_node == "$any" {
+                                                // Polymorphic: expand to all concrete node types
+                                                for nt in schema.all_node_schemas().keys() {
+                                                    possible_end_types.insert(nt.clone());
+                                                }
+                                            } else {
+                                                possible_end_types.insert(rel_schema.to_node.clone());
+                                            }
                                         }
                                         // If relationship goes TO start_label, add from_node as possible end
-                                        if rel_schema.to_node == *start_label {
-                                            possible_end_types.insert(rel_schema.from_node.clone());
+                                        if to_matches {
+                                            if rel_schema.from_node == "$any" {
+                                                for nt in schema.all_node_schemas().keys() {
+                                                    possible_end_types.insert(nt.clone());
+                                                }
+                                            } else {
+                                                possible_end_types.insert(rel_schema.from_node.clone());
+                                            }
                                         }
                                     }
                                 }

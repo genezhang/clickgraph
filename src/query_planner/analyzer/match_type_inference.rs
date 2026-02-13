@@ -169,6 +169,34 @@ pub fn infer_relationship_type_from_nodes(
     }
 
     // Case 3: At least one node is typed - filter relationships by node type compatibility
+    // Helper: check if a label matches a schema node type (handles $any for polymorphic)
+    let label_matches_from =
+        |l: &String, rel_schema: &crate::graph_catalog::graph_schema::RelationshipSchema| -> bool {
+            if rel_schema.from_node == "$any" {
+                return true;
+            }
+            if l == &rel_schema.from_node {
+                return true;
+            }
+            if let Some(values) = &rel_schema.from_label_values {
+                return values.contains(l);
+            }
+            false
+        };
+    let label_matches_to =
+        |l: &String, rel_schema: &crate::graph_catalog::graph_schema::RelationshipSchema| -> bool {
+            if rel_schema.to_node == "$any" {
+                return true;
+            }
+            if l == &rel_schema.to_node {
+                return true;
+            }
+            if let Some(values) = &rel_schema.to_label_values {
+                return values.contains(l);
+            }
+            false
+        };
+
     let matching_types: Vec<String> = rel_schemas
         .iter()
         .filter(|(_, rel_schema)| {
@@ -178,28 +206,11 @@ pub fn infer_relationship_type_from_nodes(
                     // start→end: from_node=start, to_node=end
                     let from_ok = start_label
                         .as_ref()
-                        .map(|l| {
-                            // Check both from_node and from_label_values for polymorphic support
-                            if l == &rel_schema.from_node {
-                                return true;
-                            }
-                            if let Some(values) = &rel_schema.from_label_values {
-                                return values.contains(l);
-                            }
-                            false
-                        })
+                        .map(|l| label_matches_from(l, rel_schema))
                         .unwrap_or(true);
                     let to_ok = end_label
                         .as_ref()
-                        .map(|l| {
-                            if l == &rel_schema.to_node {
-                                return true;
-                            }
-                            if let Some(values) = &rel_schema.to_label_values {
-                                return values.contains(l);
-                            }
-                            false
-                        })
+                        .map(|l| label_matches_to(l, rel_schema))
                         .unwrap_or(true);
                     from_ok && to_ok
                 }
@@ -207,27 +218,11 @@ pub fn infer_relationship_type_from_nodes(
                     // start←end: from_node=end, to_node=start
                     let from_ok = end_label
                         .as_ref()
-                        .map(|l| {
-                            if l == &rel_schema.from_node {
-                                return true;
-                            }
-                            if let Some(values) = &rel_schema.from_label_values {
-                                return values.contains(l);
-                            }
-                            false
-                        })
+                        .map(|l| label_matches_from(l, rel_schema))
                         .unwrap_or(true);
                     let to_ok = start_label
                         .as_ref()
-                        .map(|l| {
-                            if l == &rel_schema.to_node {
-                                return true;
-                            }
-                            if let Some(values) = &rel_schema.to_label_values {
-                                return values.contains(l);
-                            }
-                            false
-                        })
+                        .map(|l| label_matches_to(l, rel_schema))
                         .unwrap_or(true);
                     from_ok && to_ok
                 }
@@ -236,50 +231,22 @@ pub fn infer_relationship_type_from_nodes(
                     let outgoing_ok = {
                         let from_ok = start_label
                             .as_ref()
-                            .map(|l| {
-                                l == &rel_schema.from_node
-                                    || rel_schema
-                                        .from_label_values
-                                        .as_ref()
-                                        .map(|v| v.contains(l))
-                                        .unwrap_or(false)
-                            })
+                            .map(|l| label_matches_from(l, rel_schema))
                             .unwrap_or(true);
                         let to_ok = end_label
                             .as_ref()
-                            .map(|l| {
-                                l == &rel_schema.to_node
-                                    || rel_schema
-                                        .to_label_values
-                                        .as_ref()
-                                        .map(|v| v.contains(l))
-                                        .unwrap_or(false)
-                            })
+                            .map(|l| label_matches_to(l, rel_schema))
                             .unwrap_or(true);
                         from_ok && to_ok
                     };
                     let incoming_ok = {
                         let from_ok = end_label
                             .as_ref()
-                            .map(|l| {
-                                l == &rel_schema.from_node
-                                    || rel_schema
-                                        .from_label_values
-                                        .as_ref()
-                                        .map(|v| v.contains(l))
-                                        .unwrap_or(false)
-                            })
+                            .map(|l| label_matches_from(l, rel_schema))
                             .unwrap_or(true);
                         let to_ok = start_label
                             .as_ref()
-                            .map(|l| {
-                                l == &rel_schema.to_node
-                                    || rel_schema
-                                        .to_label_values
-                                        .as_ref()
-                                        .map(|v| v.contains(l))
-                                        .unwrap_or(false)
-                            })
+                            .map(|l| label_matches_to(l, rel_schema))
                             .unwrap_or(true);
                         from_ok && to_ok
                     };

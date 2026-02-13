@@ -482,6 +482,31 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 log::info!("   Standard path rel JOIN: {}", rel_join_sql);
                 from_clauses.push(rel_join_sql);
 
+                // Add polymorphic type filters (type_column, from_label_column, to_label_column)
+                if let Ok(rel_schema) =
+                    self.schema
+                        .get_rel_schema_with_nodes(&hop.rel_type, Some(schema_from), Some(schema_to))
+                {
+                    if let Some(ref type_col) = rel_schema.type_column {
+                        where_clauses.push(format!(
+                            "{}.{} = '{}'",
+                            rel_alias, type_col, hop.rel_type
+                        ));
+                    }
+                    if let Some(ref from_label_col) = rel_schema.from_label_column {
+                        where_clauses.push(format!(
+                            "{}.{} = '{}'",
+                            rel_alias, from_label_col, hop.from_node_type
+                        ));
+                    }
+                    if let Some(ref to_label_col) = rel_schema.to_label_column {
+                        where_clauses.push(format!(
+                            "{}.{} = '{}'",
+                            rel_alias, to_label_col, hop.to_node_type
+                        ));
+                    }
+                }
+
                 // Add relationship filters
                 if let Some(ref rel_filters) = self.rel_filters {
                     let rel_filter = rel_filters.replace("rel.", &format!("{}.", rel_alias));
