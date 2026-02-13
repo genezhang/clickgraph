@@ -4852,9 +4852,7 @@ pub fn extract_node_label_from_viewscan_with_schema(
         }
         LogicalPlan::GraphRel(gr) => {
             // For GraphRel, prefer start node (left) label but fall back to end node (right)
-            if let Some(label) =
-                extract_node_label_from_viewscan_with_schema(&gr.left, schema)
-            {
+            if let Some(label) = extract_node_label_from_viewscan_with_schema(&gr.left, schema) {
                 return Some(label);
             }
             extract_node_label_from_viewscan_with_schema(&gr.right, schema)
