@@ -1132,10 +1132,7 @@ async fn test_vlp_with_cte_join_uses_node_id_not_start_id() {
     );
 
     // Verify basic structure
-    assert!(
-        sql.contains("vlp_"),
-        "Should contain VLP CTE"
-    );
+    assert!(sql.contains("vlp_"), "Should contain VLP CTE");
     assert!(
         sql.contains("with_a_allNeighboursCount"),
         "Should contain WITH CTE for allNeighboursCount"
