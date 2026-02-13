@@ -170,7 +170,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 - **Query Performance Metrics**: Phase-by-phase timing with HTTP headers and structured logging for monitoring and optimization
 
 ### Neo4j Ecosystem Compatibility
-- **Bolt Protocol v5.8**: ✅ **Fully functional** - Complete query execution, authentication, and multi-database support. Compatible with Neo4j drivers, cypher-shell, and Neo4j Browser.
+- **Bolt Protocol v5.8**: ✅ **Fully functional** - Complete query execution, authentication, and multi-database support. Compatible with Neo4j drivers, cypher-shell, Neo4j Browser, and AWS graph-notebook (Jupyter visualization).
 - **HTTP REST API**: ✅ **Fully functional** - Complete query execution with parameters, aggregations, and all Cypher features
 - **Multi-Schema Support**: ✅ **Fully working** - Complete schema isolation with per-request schema selection:
   - **USE clause**: Cypher `USE database_name` syntax (highest priority)
@@ -536,6 +536,7 @@ See `docs/configuration.md` for complete configuration documentation.
 - **[Development Process](DEVELOPMENT_PROCESS.md)** - Detailed 6-phase workflow (reference)
 - **[Current Status](STATUS.md)** - What works now, what's in progress
 - **[Known Issues](KNOWN_ISSUES.md)** - Active bugs and limitations
+- **[Wiki Documentation](docs/wiki/)** - Comprehensive guides including [Graph-Notebook Compatibility](docs/wiki/Graph-Notebook-Compatibility.md), [Neo4j Tools Integration](docs/wiki/Neo4j-Tools-Integration.md), and more
 
 ## 🧪 Development Status
 

@@ -63,6 +63,10 @@ pub struct ServerConfig {
 
     /// Whether to run server in daemon mode
     pub daemon: bool,
+
+    /// Neo4j compatibility mode - masquerade as Neo4j server for tool compatibility
+    /// Useful for graph-notebook, Neodash, and other Neo4j ecosystem tools
+    pub neo4j_compat_mode: bool,
 }
 
 impl Default for ServerConfig {
@@ -76,6 +80,7 @@ impl Default for ServerConfig {
             max_cte_depth: 100,
             validate_schema: false,
             daemon: false,
+            neo4j_compat_mode: false,
         }
     }
 }
@@ -92,6 +97,7 @@ impl ServerConfig {
             max_cte_depth: parse_env_var("CLICKGRAPH_MAX_CTE_DEPTH", "100")?,
             validate_schema: parse_env_var("CLICKGRAPH_VALIDATE_SCHEMA", "false")?,
             daemon: false, // Environment-based config always runs in foreground
+            neo4j_compat_mode: parse_env_var("CLICKGRAPH_NEO4J_COMPAT_MODE", "false")?,
         };
 
         config.validate()?;
@@ -108,6 +114,7 @@ impl ServerConfig {
             bolt_enabled: cli.bolt_enabled,
             max_cte_depth: cli.max_cte_depth,
             validate_schema: cli.validate_schema,
+            neo4j_compat_mode: cli.neo4j_compat_mode,
             daemon: cli.daemon,
         };
 
@@ -142,6 +149,7 @@ impl ServerConfig {
         self.bolt_enabled = other.bolt_enabled;
         self.max_cte_depth = other.max_cte_depth;
         self.validate_schema = other.validate_schema;
+        self.neo4j_compat_mode = other.neo4j_compat_mode;
         self.daemon = other.daemon;
     }
 }
@@ -156,6 +164,7 @@ pub struct CliConfig {
     pub bolt_enabled: bool,
     pub max_cte_depth: u32,
     pub validate_schema: bool,
+    pub neo4j_compat_mode: bool,
     pub daemon: bool,
 }
 
