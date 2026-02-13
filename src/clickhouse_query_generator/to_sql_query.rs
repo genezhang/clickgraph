@@ -1092,6 +1092,20 @@ fn extract_order_by_columns_for_union(order_by: &OrderByItems) -> Vec<(RenderExp
             log::warn!("⚠️  ORDER BY id() may not work correctly in UNION queries");
         }
 
+        // Skip unresolvable "id" pseudo-property in UNION branches.
+        // This arises from ORDER BY id(x) where x is an unlabeled node in a
+        // multi-type pattern; the id() AST transform produces x.id but no
+        // actual "id" column exists in the tables.
+        if let RenderExpr::PropertyAccessExp(pa) = &item.expression {
+            if pa.column.raw() == "id" {
+                log::warn!(
+                    "⚠️  Dropping ORDER BY {}.id from UNION (unresolvable pseudo-property)",
+                    pa.table_alias.0
+                );
+                continue;
+            }
+        }
+
         if matches!(&item.expression, RenderExpr::PropertyAccessExp(_)) {
             log::warn!("⚠️  ORDER BY property access may not work correctly with PatternResolver UNION CTEs");
         }
@@ -2655,6 +2669,35 @@ impl RenderExpr {
                         cte_col
                     );
                     return format!("{}.{}", table_alias.0, cte_col);
+                }
+
+                // Resolve "id" pseudo-property (from id() function transform) to actual
+                // schema id column. This handles composite ID schemas where the table
+                // doesn't have a column literally named "id".
+                if col_name == "id" {
+                    use crate::server::query_context::get_current_schema;
+                    if let Some(schema) = get_current_schema() {
+                        // Try each node schema to find one whose source_table matches
+                        // the alias's table. We check by looking at the FROM clause context.
+                        // As a heuristic, try all schemas and use the first single-column ID.
+                        for ns in schema.all_node_schemas().values() {
+                            let cols = ns.node_id.columns();
+                            if cols.len() == 1 {
+                                if let Some(first_col) = cols.first() {
+                                    log::info!(
+                                        "🔧 Resolved {}.id → {}.{} (schema id column)",
+                                        table_alias.0, table_alias.0, first_col
+                                    );
+                                    return format!("{}.{}", table_alias.0, first_col);
+                                }
+                            }
+                        }
+                        // For composite IDs, fall through to render as-is (may error)
+                        log::warn!(
+                            "⚠️  {}.id could not be resolved (composite/unknown ID)",
+                            table_alias.0
+                        );
+                    }
                 }
 
                 // Property has been resolved from schema during query planning.

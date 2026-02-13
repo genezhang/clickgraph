@@ -120,11 +120,30 @@ impl<'a> IdFunctionTransformer<'a> {
                         );
 
                         // Determine the ID property name from schema
-                        let id_property = if let Some(_schema) = self.schema {
-                            // We don't know the label here, so use a generic approach:
-                            // Return a PropertyAccess that the SQL generator can resolve
-                            // The SQL generator will need to handle this for multi-type patterns
-                            "id"
+                        let id_property = if let Some(schema) = self.schema {
+                            // Try to find the label from constraints
+                            let label = self
+                                .label_constraints
+                                .get(*var)
+                                .and_then(|labels| labels.iter().next().map(|s| s.as_str()));
+
+                            if let Some(label) = label {
+                                // Known label: use the first ID column
+                                if let Ok(ns) = schema.node_schema(label) {
+                                    let cols = ns.node_id.columns();
+                                    if let Some(first_col) = cols.first() {
+                                        self.arena.alloc_str(first_col)
+                                    } else {
+                                        "id"
+                                    }
+                                } else {
+                                    "id"
+                                }
+                            } else {
+                                // Unknown label — use generic "id" and let
+                                // the SQL generator handle it
+                                "id"
+                            }
                         } else {
                             "id"
                         };

@@ -2853,6 +2853,85 @@ pub fn remap_cte_names_in_render_plan(
     }
 }
 
+/// Rewrite all occurrences of `old_alias` → `new_alias` in PropertyAccessExp table_alias
+/// across SELECT, JOINs, WHERE, ORDER BY, and UNION branches.
+/// Used when preserving the original node alias (e.g., "a") instead of
+/// the combined CTE alias (e.g., "a_allNeighboursCount").
+fn rewrite_table_alias_in_render_plan(
+    plan: &mut crate::render_plan::RenderPlan,
+    old_alias: &str,
+    new_alias: &str,
+) {
+    use crate::render_plan::render_expr::RenderExpr;
+
+    fn rewrite_expr(expr: RenderExpr, old: &str, new: &str) -> RenderExpr {
+        match expr {
+            RenderExpr::PropertyAccessExp(mut pa) => {
+                if pa.table_alias.0 == old {
+                    pa.table_alias.0 = new.to_string();
+                }
+                RenderExpr::PropertyAccessExp(pa)
+            }
+            RenderExpr::OperatorApplicationExp(mut op) => {
+                op.operands = op
+                    .operands
+                    .into_iter()
+                    .map(|o| rewrite_expr(o, old, new))
+                    .collect();
+                RenderExpr::OperatorApplicationExp(op)
+            }
+            RenderExpr::ScalarFnCall(mut f) => {
+                f.args = f
+                    .args
+                    .into_iter()
+                    .map(|a| rewrite_expr(a, old, new))
+                    .collect();
+                RenderExpr::ScalarFnCall(f)
+            }
+            other => other,
+        }
+    }
+
+    // SELECT items
+    for item in &mut plan.select.items {
+        item.expression = rewrite_expr(item.expression.clone(), old_alias, new_alias);
+    }
+
+    // JOIN conditions
+    for join in &mut plan.joins.0 {
+        // Rewrite table_alias in JOIN itself
+        if join.table_alias == old_alias {
+            join.table_alias = new_alias.to_string();
+        }
+        for op in &mut join.joining_on {
+            if let RenderExpr::OperatorApplicationExp(new_op) = rewrite_expr(
+                RenderExpr::OperatorApplicationExp(op.clone()),
+                old_alias,
+                new_alias,
+            ) {
+                *op = new_op;
+            }
+        }
+    }
+
+    // WHERE
+    if let Some(filter) = &plan.filters.0 {
+        plan.filters.0 = Some(rewrite_expr(filter.clone(), old_alias, new_alias));
+    }
+
+    // ORDER BY
+    for item in &mut plan.order_by.0 {
+        item.expression = rewrite_expr(item.expression.clone(), old_alias, new_alias);
+    }
+
+    // UNION branches
+    if let Some(ref mut union) = plan.union.0 {
+        for branch in &mut union.input {
+            rewrite_table_alias_in_render_plan(branch, old_alias, new_alias);
+        }
+    }
+}
+
 /// Rewrite expressions to use the FROM alias and CTE column names.
 ///
 /// Handles three cases:
@@ -8788,28 +8867,49 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     cte_name
                 );
 
-                // Extract aliases from CTE name for the FROM alias
-                let with_alias_part = if let Some(stripped) = cte_name.strip_prefix("with_") {
+                // Keep the original alias (e.g., "a") as the FROM alias.
+                // The rest of the rendered plan (SELECT, WHERE, JOINs) references "a.xxx",
+                // so the FROM alias must match. The CTE columns are prefixed with the
+                // original alias (e.g., "a_customer_id"), which works with FROM alias "a".
+                let preserved_alias = alias.clone();
+
+                // Compute what the combined alias WOULD have been (e.g., "a_allNeighboursCount")
+                // so we can rewrite any stale references in SELECT/WHERE/ORDER BY
+                let combined_alias = if let Some(stripped) = cte_name.strip_prefix("with_") {
                     if let Some(cte_pos) = stripped.rfind("_cte") {
-                        &stripped[..cte_pos]
+                        stripped[..cte_pos].to_string()
                     } else {
-                        stripped
+                        stripped.to_string()
                     }
                 } else {
-                    ""
+                    String::new()
                 };
 
                 render_plan.from = FromTableItem(Some(ViewTableRef {
                     source: std::sync::Arc::new(LogicalPlan::Empty),
                     name: cte_name.clone(),
-                    alias: Some(with_alias_part.to_string()),
+                    alias: Some(preserved_alias.clone()),
                     use_final: false,
                 }));
+
+                // Rewrite stale references: combined alias → preserved alias
+                // e.g., "a_allNeighboursCount.xxx" → "a.xxx" in SELECT, WHERE, JOINs
+                if combined_alias != preserved_alias && !combined_alias.is_empty() {
+                    log::debug!(
+                        "🔧 Rewriting stale alias '{}' → '{}' in render plan",
+                        combined_alias, preserved_alias
+                    );
+                    rewrite_table_alias_in_render_plan(
+                        &mut render_plan,
+                        &combined_alias,
+                        &preserved_alias,
+                    );
+                }
 
                 log::info!(
                     "🔧 build_chained_with_match_cte_plan: Replaced FROM with: {} AS '{}'",
                     cte_name,
-                    with_alias_part
+                    preserved_alias
                 );
             }
         }

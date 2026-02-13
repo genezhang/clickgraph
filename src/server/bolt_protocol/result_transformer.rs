@@ -154,9 +154,21 @@ pub fn extract_return_metadata(
             LogicalExpr::TableAlias(table_alias) => {
                 // Lookup in plan_ctx.variables
                 match plan_ctx.lookup_variable(&table_alias.to_string()) {
-                    Some(TypedVariable::Node(node_var)) => ReturnItemType::Node {
-                        labels: node_var.labels.clone(),
-                    },
+                    Some(TypedVariable::Node(node_var)) => {
+                        if node_var.labels.is_empty() {
+                            // Node with empty labels is likely a computed alias
+                            // (e.g., pattern comprehension result), treat as Scalar
+                            log::debug!(
+                                "Treating '{}' as Scalar (Node with empty labels)",
+                                table_alias
+                            );
+                            ReturnItemType::Scalar
+                        } else {
+                            ReturnItemType::Node {
+                                labels: node_var.labels.clone(),
+                            }
+                        }
+                    }
                     Some(TypedVariable::Relationship(rel_var)) => ReturnItemType::Relationship {
                         rel_types: rel_var.rel_types.clone(),
                         from_label: rel_var.from_node_label.clone(),

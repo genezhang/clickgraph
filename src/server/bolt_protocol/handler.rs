@@ -1677,9 +1677,11 @@ impl BoltHandler {
                     }
                     Err(e) => {
                         log::warn!("Failed to transform row to graph objects: {}", e);
-                        // Fall back to original row wrapped in BoltValue::Json on error
-                        let fallback: Vec<BoltValue> =
-                            row.iter().map(|v| BoltValue::Json(v.clone())).collect();
+                        // Fall back: produce one Null per metadata item to match field count
+                        let fallback: Vec<BoltValue> = return_metadata
+                            .iter()
+                            .map(|_| BoltValue::Json(Value::Null))
+                            .collect();
                         transformed_rows.push(fallback);
                     }
                 }
