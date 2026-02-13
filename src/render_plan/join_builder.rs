@@ -1018,6 +1018,16 @@ impl JoinBuilder for LogicalPlan {
                     graph_rel.alias, graph_rel.left_connection, graph_rel.right_connection, graph_rel.labels
                 );
 
+                // PatternResolver 2.0: pattern_combinations means a self-contained CTE exists.
+                // No JOINs needed — the CTE already includes all JOINs internally.
+                if graph_rel.pattern_combinations.is_some() && graph_rel.variable_length.is_none() {
+                    log::info!(
+                        "✓ PATTERNRESOLVER 2.0: GraphRel '{}' has pattern_combinations - returning empty joins (CTE is self-contained)",
+                        graph_rel.alias
+                    );
+                    return Ok(Vec::new());
+                }
+
                 // 🚀 MULTI-TYPE RELATIONSHIPS: Check if this is a multi-type pattern (e.g., [:FOLLOWS|AUTHORED])
                 // If it has multiple relationship types, a VLP CTE is generated for the UNION ALL
                 // Return empty joins - the CTE will be used as FROM clause

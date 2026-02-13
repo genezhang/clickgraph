@@ -2671,7 +2671,10 @@ impl RenderPlanBuilder for LogicalPlan {
                             let is_dup = kept_renders.iter().any(|kept| {
                                 let kept_from = kept.from.0.as_ref().map(|f| f.name.as_str());
                                 if from_name == kept_from
-                                    && from_name.is_some_and(|n| n.starts_with("vlp_multi_type_"))
+                                    && from_name.is_some_and(|n| {
+                                        n.starts_with("vlp_multi_type_")
+                                            || n.starts_with("pattern_union_")
+                                    })
                                     && render.select.items.len() == kept.select.items.len()
                                 {
                                     render
@@ -2686,7 +2689,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             });
                             if is_dup {
                                 log::info!(
-                                    "🔀 UNION: Deduplicating identical VLP branch from '{}'",
+                                    "🔀 UNION: Deduplicating identical CTE branch from '{}'",
                                     from_name.unwrap_or("?")
                                 );
                                 continue;
