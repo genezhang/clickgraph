@@ -1874,13 +1874,19 @@ impl LogicalPlan {
                         col_alias: Some(ColumnAlias("__end_id__".to_string())),
                     });
 
-                    // Add stub __start_label__ and __end_label__ (will be inferred from properties)
+                    // Use start_type/end_type from the CTE (added per-branch)
                     select_items.push(SelectItem {
-                        expression: RenderExpr::Literal(Literal::String("Node".to_string())),
+                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: RenderTableAlias(cte_alias.clone()),
+                            column: PropertyValue::Column("start_type".to_string()),
+                        }),
                         col_alias: Some(ColumnAlias("__start_label__".to_string())),
                     });
                     select_items.push(SelectItem {
-                        expression: RenderExpr::Literal(Literal::String("Node".to_string())),
+                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: RenderTableAlias(cte_alias.clone()),
+                            column: PropertyValue::Column("end_type".to_string()),
+                        }),
                         col_alias: Some(ColumnAlias("__end_label__".to_string())),
                     });
 

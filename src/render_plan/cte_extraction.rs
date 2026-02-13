@@ -3106,8 +3106,10 @@ pub fn extract_ctes_with_context(
 
                         let branch_sql = format!(
                             "SELECT \
+                                '{from_label}' AS start_type, \
                                 toString({from_table}.{from_id_col}) as start_id, \
                                 toString({to_table}.{to_id_col}) as end_id, \
+                                '{to_label}' AS end_type, \
                                 ['{}'] as path_relationships, \
                                 [{}] as rel_properties, \
                                 {} as start_properties, \
@@ -3119,7 +3121,9 @@ pub fn extract_ctes_with_context(
                             base_rel_type,
                             rel_properties_json,
                             start_properties_json,
-                            end_properties_json
+                            end_properties_json,
+                            from_label = combo.from_label,
+                            to_label = combo.to_label,
                         );
 
                         log::debug!(
