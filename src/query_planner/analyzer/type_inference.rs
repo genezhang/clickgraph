@@ -313,11 +313,24 @@ impl TypeInference {
                             );
                             for rel_schema in rel_schemas {
                                 // Always include to_node (forward direction)
-                                to_node_labels.insert(rel_schema.to_node.clone());
+                                // Expand $any to all concrete node labels
+                                if rel_schema.to_node == "$any" {
+                                    for label in graph_schema.all_node_schemas().keys() {
+                                        to_node_labels.insert(label.clone());
+                                    }
+                                } else {
+                                    to_node_labels.insert(rel_schema.to_node.clone());
+                                }
 
                                 // For bi-directional patterns, also include from_node (reverse direction)
                                 if is_bidirectional {
-                                    to_node_labels.insert(rel_schema.from_node.clone());
+                                    if rel_schema.from_node == "$any" {
+                                        for label in graph_schema.all_node_schemas().keys() {
+                                            to_node_labels.insert(label.clone());
+                                        }
+                                    } else {
+                                        to_node_labels.insert(rel_schema.from_node.clone());
+                                    }
                                     log::debug!(
                                         "🎯 TypeInference: Bi-directional pattern - added both from_node='{}' and to_node='{}'",
                                         rel_schema.from_node,
@@ -1178,14 +1191,39 @@ impl TypeInference {
             use crate::query_planner::plan_ctx::TypeCombination;
             let mut combinations = Vec::new();
 
-            for (rel_type_key, rel_schema) in &matches {
-                // rel_type_key is already a base type from earlier extraction
+            // Collect all concrete node labels for expanding $any
+            let all_node_labels: Vec<String> =
+                graph_schema.all_node_schemas().keys().cloned().collect();
 
-                combinations.push(TypeCombination {
-                    from_label: rel_schema.from_node.clone(),
-                    rel_type: rel_type_key.clone(),
-                    to_label: rel_schema.to_node.clone(),
-                });
+            for (rel_type_key, rel_schema) in &matches {
+                // Expand $any to concrete node types
+                let from_labels = if rel_schema.from_node == "$any" {
+                    all_node_labels.clone()
+                } else {
+                    vec![rel_schema.from_node.clone()]
+                };
+                let to_labels = if rel_schema.to_node == "$any" {
+                    all_node_labels.clone()
+                } else {
+                    vec![rel_schema.to_node.clone()]
+                };
+
+                for from_label in &from_labels {
+                    for to_label in &to_labels {
+                        combinations.push(TypeCombination {
+                            from_label: from_label.clone(),
+                            rel_type: rel_type_key.clone(),
+                            to_label: to_label.clone(),
+                        });
+
+                        if combinations.len() >= 38 {
+                            break;
+                        }
+                    }
+                    if combinations.len() >= 38 {
+                        break;
+                    }
+                }
 
                 // Apply 38 combination limit
                 if combinations.len() >= 38 {

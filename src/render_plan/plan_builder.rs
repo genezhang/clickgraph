@@ -2519,6 +2519,9 @@ impl RenderPlanBuilder for LogicalPlan {
                                     LogicalPlan::Projection(p) => contains_graph_rel(&p.input),
                                     LogicalPlan::Filter(f) => contains_graph_rel(&f.input),
                                     LogicalPlan::GraphJoins(gj) => contains_graph_rel(&gj.input),
+                                    LogicalPlan::Limit(l) => contains_graph_rel(&l.input),
+                                    LogicalPlan::Skip(s) => contains_graph_rel(&s.input),
+                                    LogicalPlan::OrderBy(o) => contains_graph_rel(&o.input),
                                     _ => false,
                                 }
                             }
@@ -2530,6 +2533,15 @@ impl RenderPlanBuilder for LogicalPlan {
                             log::info!("🏷️ Adding __label__ column for node-only UNION query");
                             branch_renders =
                                 super::plan_builder_helpers::add_label_column_to_union_branches(
+                                    branch_renders,
+                                    &union.inputs,
+                                    schema,
+                                );
+                        } else {
+                            // For path UNION queries (with GraphRel), add start/end label columns
+                            log::info!("🏷️ Adding __start_label__/__end_label__ columns for path UNION query");
+                            branch_renders =
+                                super::plan_builder_helpers::add_path_label_columns_to_union_branches(
                                     branch_renders,
                                     &union.inputs,
                                     schema,

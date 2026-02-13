@@ -560,6 +560,35 @@ impl SelectBuilder for LogicalPlan {
                                                 prop.table_alias.0
                                             ))),
                                         });
+                                        // Include start_type/end_type for polymorphic schemas
+                                        select_items.push(SelectItem {
+                                            expression: RenderExpr::PropertyAccessExp(
+                                                PropertyAccess {
+                                                    table_alias: RenderTableAlias("t".to_string()),
+                                                    column: PropertyValue::Column(
+                                                        "start_type".to_string(),
+                                                    ),
+                                                },
+                                            ),
+                                            col_alias: Some(ColumnAlias(format!(
+                                                "{}.start_type",
+                                                prop.table_alias.0
+                                            ))),
+                                        });
+                                        select_items.push(SelectItem {
+                                            expression: RenderExpr::PropertyAccessExp(
+                                                PropertyAccess {
+                                                    table_alias: RenderTableAlias("t".to_string()),
+                                                    column: PropertyValue::Column(
+                                                        "end_type".to_string(),
+                                                    ),
+                                                },
+                                            ),
+                                            col_alias: Some(ColumnAlias(format!(
+                                                "{}.end_type",
+                                                prop.table_alias.0
+                                            ))),
+                                        });
                                         continue;
                                     }
                                 }
