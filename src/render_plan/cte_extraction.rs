@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 use crate::clickhouse_query_generator::variable_length_cte::NodeProperty;
+use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::graph_catalog::pattern_schema::{JoinStrategy, PatternSchemaContext};
@@ -1042,8 +1043,8 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
 /// Relationship column information
 #[derive(Debug, Clone)]
 pub struct RelationshipColumns {
-    pub from_id: String,
-    pub to_id: String,
+    pub from_id: Identifier,
+    pub to_id: Identifier,
 }
 
 /// Convert a label to its corresponding table name using provided schema
@@ -1235,8 +1236,8 @@ pub fn extract_relationship_columns_from_table_with_schema(
     // NO FALLBACK - log error and return generic columns that will cause SQL error
     log::error!("\u{274c} SCHEMA ERROR: Relationship table '{}' not found in schema. Using generic from_id/to_id columns which will likely fail.", table_name);
     RelationshipColumns {
-        from_id: "from_id".to_string(),
-        to_id: "to_id".to_string(),
+        from_id: Identifier::from("from_id"),
+        to_id: Identifier::from("to_id"),
     }
 }
 
@@ -1254,8 +1255,8 @@ pub fn extract_relationship_columns_from_table(table_name: &str) -> Relationship
         table_name
     );
     RelationshipColumns {
-        from_id: "from_id".to_string(),
-        to_id: "to_id".to_string(),
+        from_id: Identifier::from("from_id"),
+        to_id: Identifier::from("to_id"),
     }
 }
 
@@ -1266,8 +1267,8 @@ pub fn extract_relationship_columns(plan: &LogicalPlan) -> Option<RelationshipCo
             // Check if ViewScan already has relationship columns configured
             if let (Some(from_col), Some(to_col)) = (&view_scan.from_id, &view_scan.to_id) {
                 Some(RelationshipColumns {
-                    from_id: from_col.clone(),
-                    to_id: to_col.clone(),
+                    from_id: Identifier::from(from_col.as_str()),
+                    to_id: Identifier::from(to_col.as_str()),
                 })
             } else {
                 // Fallback to table-based lookup
@@ -1356,13 +1357,13 @@ fn table_to_id_column_for_label(label: &str) -> String {
 fn get_relationship_columns_from_schema(rel_type: &str) -> Option<(String, String)> {
     let table = rel_type_to_table_name(rel_type);
     let cols = extract_relationship_columns_from_table(&table);
-    Some((cols.from_id, cols.to_id))
+    Some((cols.from_id.to_string(), cols.to_id.to_string()))
 }
 
 /// Get relationship columns by table name
 fn get_relationship_columns_by_table(table_name: &str) -> Option<(String, String)> {
     let cols = extract_relationship_columns_from_table(table_name);
-    Some((cols.from_id, cols.to_id))
+    Some((cols.from_id.to_string(), cols.to_id.to_string()))
 }
 
 /// Get node info from schema
@@ -1909,7 +1910,7 @@ pub fn extract_ctes_with_context(
                     if let Ok(node_schema) = schema.node_schema(&start_label) {
                         if node_schema.is_denormalized {
                             // For denormalized nodes, use relationship column
-                            from_col.clone()
+                            from_col.to_string()
                         } else {
                             // For traditional nodes, use node schema's node_id
                             node_schema.node_id.column().to_string()
@@ -1917,18 +1918,18 @@ pub fn extract_ctes_with_context(
                     } else {
                         // Fallback: use relationship's from_id
                         log::warn!("⚠️ VLP: Could not find node schema for '{}', using relationship from_id '{}'", start_label, from_col);
-                        from_col.clone()
+                        from_col.to_string()
                     }
                 } else {
                     // No label available, use relationship columns
-                    from_col.clone()
+                    from_col.to_string()
                 };
 
                 let end_id_col = if !end_label.is_empty() {
                     if let Ok(node_schema) = schema.node_schema(&end_label) {
                         if node_schema.is_denormalized {
                             // For denormalized nodes, use relationship column
-                            to_col.clone()
+                            to_col.to_string()
                         } else {
                             // For traditional nodes, use node schema's node_id
                             node_schema.node_id.column().to_string()
@@ -1936,11 +1937,11 @@ pub fn extract_ctes_with_context(
                     } else {
                         // Fallback: use relationship's to_id
                         log::warn!("⚠️ VLP: Could not find node schema for '{}', using relationship to_id '{}'", end_label, to_col);
-                        to_col.clone()
+                        to_col.to_string()
                     }
                 } else {
                     // No label available, use relationship columns
-                    to_col.clone()
+                    to_col.to_string()
                 };
 
                 log::debug!(
@@ -4124,8 +4125,8 @@ pub fn get_variable_length_rel_info(plan: &LogicalPlan) -> Option<VariableLength
             let cols = extract_relationship_columns(&rel.center)?;
             Some(VariableLengthRelInfo {
                 rel_alias: rel.alias.clone(),
-                from_col: cols.from_id,
-                to_col: cols.to_id,
+                from_col: cols.from_id.to_string(),
+                to_col: cols.to_id.to_string(),
             })
         }
         LogicalPlan::GraphNode(node) => get_variable_length_rel_info(&node.input),
@@ -4709,8 +4710,8 @@ pub fn build_vlp_context(
         end_table_parameterized,
         rel_alias,
         rel_table,
-        rel_from_col: rel_cols.from_id,
-        rel_to_col: rel_cols.to_id,
+        rel_from_col: rel_cols.from_id.to_string(),
+        rel_to_col: rel_cols.to_id.to_string(),
         rel_table_parameterized,
         type_column,
         type_value,
@@ -4738,7 +4739,7 @@ fn extract_node_info(
                     let rel_cols = extract_relationship_columns(rel_center)?;
                     // Determine if this is start or end node by checking if it's the left or right
                     // For now, use from_id - caller should determine correct column
-                    Some((alias, table, rel_cols.from_id))
+                    Some((alias, table, rel_cols.from_id.to_string()))
                 }
                 _ => {
                     // Normal/Polymorphic: get from node's ViewScan

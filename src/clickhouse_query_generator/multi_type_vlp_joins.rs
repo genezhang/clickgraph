@@ -1082,7 +1082,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         if let Err(ref e) = result {
             log::error!("❌ Failed to get relationship columns: {}", e);
         }
-        result
+        result.map(|(from, to)| (from.to_string(), to.to_string()))
     }
 
     /// Get denormalized node properties from the relationship schema.

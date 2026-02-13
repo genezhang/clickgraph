@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::{
     GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema,
 };
@@ -113,8 +114,8 @@ fn setup_denormalized_schema() -> GraphSchema {
             to_node: "Airport".to_string(),
             from_node_table: "airports".to_string(),
             to_node_table: "airports".to_string(),
-            from_id: "origin_id".to_string(),
-            to_id: "dest_id".to_string(),
+            from_id: Identifier::from("origin_id"),
+            to_id: Identifier::from("dest_id"),
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: flight_props,
@@ -343,8 +344,8 @@ fn test_multiple_relationships_same_node() {
             to_node: "Post".to_string(),
             from_node_table: "users".to_string(),
             to_node_table: "posts".to_string(),
-            from_id: "author_id".to_string(),
-            to_id: "post_id".to_string(),
+            from_id: Identifier::from("author_id"),
+            to_id: Identifier::from("post_id"),
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: authored_props,
@@ -511,8 +512,8 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
             to_node: "Airport".to_string(),
             from_node_table: "flights".to_string(),
             to_node_table: "flights".to_string(),
-            from_id: "origin_code".to_string(),
-            to_id: "dest_code".to_string(),
+            from_id: Identifier::from("origin_code"),
+            to_id: Identifier::from("dest_code"),
             from_node_id_dtype: "String".to_string(),
             to_node_id_dtype: "String".to_string(),
             property_mappings: flight_props,

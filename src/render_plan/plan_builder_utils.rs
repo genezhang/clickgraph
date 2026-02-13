@@ -40,6 +40,7 @@
 
 #![allow(dead_code)]
 
+use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::GraphSchema;
 use crate::query_planner::join_context::{
@@ -1468,15 +1469,15 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
 
                         let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
                             RelationshipColumns {
-                                from_id: "from_node_id".to_string(),
-                                to_id: "to_node_id".to_string(),
+                                from_id: Identifier::Single("from_node_id".to_string()),
+                                to_id: Identifier::Single("to_node_id".to_string()),
                             },
                         );
 
                         // For denormalized, use relationship columns directly
                         // For normal, use node ID columns
                         let (start_id_col, end_id_col) = if is_denormalized {
-                            (rel_cols.from_id.clone(), rel_cols.to_id.clone())
+                            (rel_cols.from_id.to_string(), rel_cols.to_id.to_string())
                         } else {
                             let start = extract_id_column(&graph_rel.left)
                                 .unwrap_or_else(|| table_to_id_column(&start_table));
@@ -1486,12 +1487,14 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
                         };
 
                         // Generate cycle prevention filters
+                        let rel_to_id_str = rel_cols.to_id.to_string();
+                        let rel_from_id_str = rel_cols.from_id.to_string();
                         if let Some(cycle_filter) =
                             crate::render_plan::cte_extraction::generate_cycle_prevention_filters(
                                 exact_hops,
                                 &start_id_col,
-                                &rel_cols.to_id,
-                                &rel_cols.from_id,
+                                &rel_to_id_str,
+                                &rel_from_id_str,
                                 &end_id_col,
                                 &graph_rel.left_connection,
                                 &graph_rel.right_connection,
@@ -4164,8 +4167,8 @@ pub(crate) fn generate_swapped_joins_for_optional_match(
 
     // Get relationship columns
     let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(RelationshipColumns {
-        from_id: "from_node_id".to_string(),
-        to_id: "to_node_id".to_string(),
+        from_id: Identifier::Single("from_node_id".to_string()),
+        to_id: Identifier::Single("to_node_id".to_string()),
     });
 
     // For OPTIONAL MATCH with swapped anchor:
@@ -4180,13 +4183,13 @@ pub(crate) fn generate_swapped_joins_for_optional_match(
         Direction::Incoming => {
             // (liker)<-[:LIKES]-(post) means rel points from post to liker
             // rel.from_id = anchor (post), rel.to_id = new (liker)
-            (&rel_cols.from_id, &rel_cols.to_id)
+            (rel_cols.from_id.to_string(), rel_cols.to_id.to_string())
         }
         _ => {
             // Direction::Outgoing or Direction::Either
             // (liker)-[:LIKES]->(post) means rel points from liker to post
             // rel.to_id = anchor (post), rel.from_id = new (liker)
-            (&rel_cols.to_id, &rel_cols.from_id)
+            (rel_cols.to_id.to_string(), rel_cols.from_id.to_string())
         }
     };
 
@@ -12329,10 +12332,10 @@ pub(super) fn find_node_id_column_from_schema(
     // Fallback: look through relationship schemas for from_node/to_node matching
     for rel_schema in schema.get_relationships_schemas().values() {
         if rel_schema.from_node.eq_ignore_ascii_case(label) {
-            return rel_schema.from_id.clone();
+            return rel_schema.from_id.to_string();
         }
         if rel_schema.to_node.eq_ignore_ascii_case(label) {
-            return rel_schema.to_id.clone();
+            return rel_schema.to_id.to_string();
         }
     }
 

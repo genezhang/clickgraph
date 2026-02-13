@@ -41,6 +41,7 @@ use super::metadata::{
 
 use crate::{
     graph_catalog::{
+        config::Identifier,
         graph_schema::{GraphSchema, NodeSchema, RelationshipSchema},
         pattern_schema::{JoinStrategy, NodeAccessStrategy, PatternSchemaContext},
     },
@@ -2724,9 +2725,9 @@ impl GraphJoinInference {
                     if !join_ctx.contains(left_alias) {
                         // Resolve columns for CTE references
                         let resolved_left_id =
-                            helpers::resolve_column(&left_id_col, left_cte_name, plan_ctx);
+                            helpers::resolve_identifier(&left_id_col, left_cte_name, plan_ctx);
                         let resolved_left_join_col =
-                            helpers::resolve_column(left_join_col, rel_cte_name, plan_ctx);
+                            helpers::resolve_identifier(left_join_col, rel_cte_name, plan_ctx);
 
                         // Get table name with database prefix if needed (not for CTEs)
                         let left_table_name = Self::get_table_name_with_prefix(
@@ -2738,7 +2739,7 @@ impl GraphJoinInference {
 
                         helpers::JoinBuilder::new(&left_table_name, left_alias)
                             .optional(left_is_optional)
-                            .add_condition(
+                            .add_identifier_condition(
                                 left_alias,
                                 &resolved_left_id,
                                 rel_alias,
@@ -2751,7 +2752,7 @@ impl GraphJoinInference {
                     // JOIN: Edge table (connects to left via from_id)
                     // Note: resolved_left_join_col was already computed above for the left_join
                     let resolved_left_id_for_rel =
-                        helpers::resolve_column(&left_id_col, left_cte_name, plan_ctx);
+                        helpers::resolve_identifier(&left_id_col, left_cte_name, plan_ctx);
 
                     // Get table name with database prefix if needed (not for CTEs)
                     let rel_table_name = Self::get_rel_table_name_with_prefix(
@@ -2767,18 +2768,18 @@ impl GraphJoinInference {
                     );
 
                     let resolved_left_join_col_for_rel =
-                        helpers::resolve_column(left_join_col, rel_cte_name, plan_ctx);
+                        helpers::resolve_identifier(left_join_col, rel_cte_name, plan_ctx);
                     helpers::JoinBuilder::new(&rel_table_name, rel_alias)
                         .optional(rel_is_optional)
-                        .add_condition(
+                        .add_identifier_condition(
                             rel_alias,
                             &resolved_left_join_col_for_rel,
                             left_alias,
                             &resolved_left_id_for_rel,
                         )
                         .pre_filter(pre_filter.clone())
-                        .from_id(&rel_schema.from_id)
-                        .to_id(&rel_schema.to_id)
+                        .from_id(rel_schema.from_id.to_string())
+                        .to_id(rel_schema.to_id.to_string())
                         .build_and_push(collected_graph_joins);
                     join_ctx.insert(rel_alias.to_string());
 
@@ -2791,9 +2792,9 @@ impl GraphJoinInference {
                     );
                     if !join_ctx.contains(right_alias) {
                         let resolved_right_id =
-                            helpers::resolve_column(&right_id_col, right_cte_name, plan_ctx);
+                            helpers::resolve_identifier(&right_id_col, right_cte_name, plan_ctx);
                         let resolved_right_join_col =
-                            helpers::resolve_column(right_join_col, rel_cte_name, plan_ctx);
+                            helpers::resolve_identifier(right_join_col, rel_cte_name, plan_ctx);
 
                         // Get table name with database prefix if needed (not for CTEs)
                         let right_table_name = Self::get_table_name_with_prefix(
@@ -2810,7 +2811,7 @@ impl GraphJoinInference {
                         );
                         helpers::JoinBuilder::new(&right_table_name, right_alias)
                             .optional(right_is_optional)
-                            .add_condition(
+                            .add_identifier_condition(
                                 right_alias,
                                 &resolved_right_id,
                                 rel_alias,
@@ -2827,9 +2828,9 @@ impl GraphJoinInference {
                         );
 
                         let resolved_right_id =
-                            helpers::resolve_column(&right_id_col, right_cte_name, plan_ctx);
+                            helpers::resolve_identifier(&right_id_col, right_cte_name, plan_ctx);
                         let resolved_right_join_col =
-                            helpers::resolve_column(right_join_col, rel_cte_name, plan_ctx);
+                            helpers::resolve_identifier(right_join_col, rel_cte_name, plan_ctx);
 
                         // Find the edge JOIN we just added and append the correlation condition
                         if let Some(edge_join) = collected_graph_joins
@@ -2837,13 +2838,17 @@ impl GraphJoinInference {
                             .rev() // Search from end (most recently added)
                             .find(|j| j.table_alias == rel_alias)
                         {
-                            let correlation_condition = helpers::eq_condition(
-                                rel_alias,
-                                &resolved_right_join_col,
-                                right_alias,
-                                &resolved_right_id,
-                            );
-                            edge_join.joining_on.push(correlation_condition);
+                            let left_cols = resolved_right_join_col.columns();
+                            let right_cols = resolved_right_id.columns();
+                            for (l, r) in left_cols.iter().zip(right_cols.iter()) {
+                                let correlation_condition = helpers::eq_condition(
+                                    rel_alias,
+                                    *l,
+                                    right_alias,
+                                    *r,
+                                );
+                                edge_join.joining_on.push(correlation_condition);
+                            }
                             log::debug!("✓ Added correlation condition to edge JOIN '{}': connects to already-bound '{}'", rel_alias, right_alias);
                         }
                     }
@@ -2858,14 +2863,14 @@ impl GraphJoinInference {
 
                     // Resolve columns for CTE references
                     let resolved_right_join_col =
-                        helpers::resolve_column(right_join_col, rel_cte_name, plan_ctx);
+                        helpers::resolve_identifier(right_join_col, rel_cte_name, plan_ctx);
                     let resolved_right_id =
-                        helpers::resolve_column(&right_id_col, right_cte_name, plan_ctx);
+                        helpers::resolve_identifier(&right_id_col, right_cte_name, plan_ctx);
 
                     // JOIN: Edge table (connects to RIGHT via to_id)
                     helpers::JoinBuilder::new(rel_cte_name, rel_alias)
                         .optional(rel_is_optional)
-                        .add_condition(
+                        .add_identifier_condition(
                             rel_alias,
                             &resolved_right_join_col,
                             right_alias,
@@ -2879,9 +2884,9 @@ impl GraphJoinInference {
                     if !join_ctx.contains(left_alias) {
                         // Resolve columns for CTE references
                         let resolved_left_id =
-                            helpers::resolve_column(&left_id_col, left_cte_name, plan_ctx);
+                            helpers::resolve_identifier(&left_id_col, left_cte_name, plan_ctx);
                         let resolved_left_join_col =
-                            helpers::resolve_column(left_join_col, rel_cte_name, plan_ctx);
+                            helpers::resolve_identifier(left_join_col, rel_cte_name, plan_ctx);
 
                         log::debug!(
                             "🔧 Creating LEFT node JOIN: {} AS {} (not in join_ctx: {})",
@@ -2896,7 +2901,7 @@ impl GraphJoinInference {
                         );
                         helpers::JoinBuilder::new(left_cte_name, left_alias)
                             .optional(left_is_optional)
-                            .add_condition(
+                            .add_identifier_condition(
                                 left_alias,
                                 &resolved_left_id,
                                 rel_alias,
@@ -2913,9 +2918,9 @@ impl GraphJoinInference {
                         );
 
                         let resolved_left_id =
-                            helpers::resolve_column(&left_id_col, left_cte_name, plan_ctx);
+                            helpers::resolve_identifier(&left_id_col, left_cte_name, plan_ctx);
                         let resolved_left_join_col =
-                            helpers::resolve_column(left_join_col, rel_cte_name, plan_ctx);
+                            helpers::resolve_identifier(left_join_col, rel_cte_name, plan_ctx);
 
                         // Find the edge JOIN we just added and append the correlation condition
                         if let Some(edge_join) = collected_graph_joins
@@ -2923,13 +2928,17 @@ impl GraphJoinInference {
                             .rev() // Search from end (most recently added)
                             .find(|j| j.table_alias == rel_alias)
                         {
-                            let correlation_condition = helpers::eq_condition(
-                                rel_alias,
-                                &resolved_left_join_col,
-                                left_alias,
-                                &resolved_left_id,
-                            );
-                            edge_join.joining_on.push(correlation_condition);
+                            let left_cols = resolved_left_join_col.columns();
+                            let right_cols = resolved_left_id.columns();
+                            for (l, r) in left_cols.iter().zip(right_cols.iter()) {
+                                let correlation_condition = helpers::eq_condition(
+                                    rel_alias,
+                                    *l,
+                                    left_alias,
+                                    *r,
+                                );
+                                edge_join.joining_on.push(correlation_condition);
+                            }
                             log::debug!("✓ Added correlation condition to edge JOIN '{}': connects to already-bound '{}'", rel_alias, left_alias);
                         }
                     }
@@ -3035,9 +3044,10 @@ impl GraphJoinInference {
                 if !join_ctx.contains(join_node_alias) {
                     // Resolve columns for CTE references
                     let resolved_node_id =
-                        helpers::resolve_column(&join_node_id_col, join_node_cte, plan_ctx);
+                        helpers::resolve_identifier(&join_node_id_col, join_node_cte, plan_ctx);
+                    let join_col_id = Identifier::Single(join_col.clone());
                     let resolved_join_col =
-                        helpers::resolve_column(join_col, rel_cte_name, plan_ctx);
+                        helpers::resolve_identifier(&join_col_id, rel_cte_name, plan_ctx);
 
                     // Get table name with database prefix if needed (not for CTEs)
                     // Determine which schema to use based on joined_node position
@@ -3054,7 +3064,7 @@ impl GraphJoinInference {
 
                     helpers::JoinBuilder::new(&join_table_name, join_node_alias)
                         .optional(join_node_optional)
-                        .add_condition(
+                        .add_identifier_condition(
                             join_node_alias,
                             &resolved_node_id,
                             rel_alias,
@@ -3067,9 +3077,10 @@ impl GraphJoinInference {
                 // JOIN: Relationship table itself
                 // Note: resolved_join_col and resolved_node_id already computed above
                 let resolved_node_id_for_rel =
-                    helpers::resolve_column(&join_node_id_col, join_node_cte, plan_ctx);
+                    helpers::resolve_identifier(&join_node_id_col, join_node_cte, plan_ctx);
+                let join_col_id_for_rel = Identifier::Single(join_col.clone());
                 let resolved_join_col_for_rel =
-                    helpers::resolve_column(join_col, rel_cte_name, plan_ctx);
+                    helpers::resolve_identifier(&join_col_id_for_rel, rel_cte_name, plan_ctx);
 
                 // Get table name with database prefix if needed (not for CTEs)
                 let rel_table_name = Self::get_rel_table_name_with_prefix(
@@ -3081,15 +3092,15 @@ impl GraphJoinInference {
 
                 helpers::JoinBuilder::new(&rel_table_name, rel_alias)
                     .optional(rel_is_optional)
-                    .add_condition(
+                    .add_identifier_condition(
                         rel_alias,
                         &resolved_join_col_for_rel,
                         join_node_alias,
                         &resolved_node_id_for_rel,
                     )
                     .pre_filter(pre_filter)
-                    .from_id(&rel_schema.from_id)
-                    .to_id(&rel_schema.to_id)
+                    .from_id(rel_schema.from_id.to_string())
+                    .to_id(rel_schema.to_id.to_string())
                     .build_and_push(collected_graph_joins);
                 join_ctx.insert(rel_alias.to_string());
 
@@ -3243,11 +3254,11 @@ impl GraphJoinInference {
                 // Get node ID columns
                 let left_id_col = match &ctx.left_node {
                     NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
-                    _ => from_id.clone(),
+                    _ => Identifier::Single(from_id.clone()),
                 };
                 let right_id_col = match &ctx.right_node {
                     NodeAccessStrategy::OwnTable { id_column, .. } => id_column.clone(),
-                    _ => to_id.clone(),
+                    _ => Identifier::Single(to_id.clone()),
                 };
 
                 match join_side {
@@ -3322,7 +3333,7 @@ impl GraphJoinInference {
                             // If left_alias is a VLP endpoint, this returns ("t", "end_id")
                             // Otherwise, it returns (left_alias, left_id_col) unchanged
                             let (join_table_alias, join_column) =
-                                plan_ctx.get_vlp_join_reference(left_alias, &left_id_col);
+                                plan_ctx.get_vlp_join_reference(left_alias, &left_id_col.to_string());
 
                             log::debug!(
                                 "🔑 VLP JOIN reference for '{}': ({}, {})",
@@ -3349,9 +3360,9 @@ impl GraphJoinInference {
                             // For non-self-ref: left.PK = right.from_id (FK on right points to left PK)
                             // For self-ref: left.from_id = right.to_id (FK on left points to right PK)
                             let (left_col, right_col) = if *is_self_referencing {
-                                (from_id.as_str(), to_id.as_str())
+                                (from_id.to_string(), to_id.to_string())
                             } else {
-                                (left_id_col.as_str(), from_id.as_str())
+                                (left_id_col.to_string(), from_id.to_string())
                             };
                             crate::debug_print!(
                                 "       JOIN: {}.{} = {}.{}",
@@ -3362,7 +3373,7 @@ impl GraphJoinInference {
                             );
                             helpers::JoinBuilder::new(left_cte_name, left_alias)
                                 .optional(left_is_optional)
-                                .add_condition(left_alias, left_col, right_alias, right_col)
+                                .add_condition(left_alias, &left_col, right_alias, &right_col)
                                 .from_id(from_id)
                                 .to_id(to_id)
                                 .build_and_push(collected_graph_joins);
@@ -3427,7 +3438,7 @@ impl GraphJoinInference {
                             // If right_alias is a VLP endpoint, this returns ("t", "start_id" or "end_id")
                             // Otherwise, it returns (right_alias, right_id_col) unchanged
                             let (join_table_alias, join_column) =
-                                plan_ctx.get_vlp_join_reference(right_alias, &right_id_col);
+                                plan_ctx.get_vlp_join_reference(right_alias, &right_id_col.to_string());
 
                             log::debug!(
                                 "🔑 VLP JOIN reference for '{}': ({}, {})",
@@ -3449,9 +3460,9 @@ impl GraphJoinInference {
                             // For non-self-ref: right.PK = left.to_id (FK on left points to right PK)
                             // For self-ref: right.to_id = left.from_id (symmetric)
                             let (right_col, left_col) = if *is_self_referencing {
-                                (to_id.as_str(), from_id.as_str())
+                                (to_id.to_string(), from_id.to_string())
                             } else {
-                                (right_id_col.as_str(), to_id.as_str())
+                                (right_id_col.to_string(), to_id.to_string())
                             };
                             crate::debug_print!(
                                 "       JOIN: {}.{} = {}.{}",
@@ -3462,7 +3473,7 @@ impl GraphJoinInference {
                             );
                             helpers::JoinBuilder::new(right_cte_name, right_alias)
                                 .optional(right_is_optional)
-                                .add_condition(right_alias, right_col, left_alias, left_col)
+                                .add_condition(right_alias, &right_col, left_alias, &left_col)
                                 .from_id(from_id)
                                 .to_id(to_id)
                                 .build_and_push(collected_graph_joins);
@@ -3982,7 +3993,7 @@ impl GraphJoinInference {
         &self,
         graph_rel: &GraphRel,
         plan_ctx: &PlanCtx,
-        join_ctx: &mut JoinContext,
+        _join_ctx: &mut JoinContext,
     ) -> Result<(), bool> {
         let left_alias = &graph_rel.left_connection;
         let right_alias = &graph_rel.right_connection;

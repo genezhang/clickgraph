@@ -944,7 +944,7 @@ impl SelectBuilder for LogicalPlan {
                                                                     .first()
                                                                     .map(|s| s.to_string())
                                                             } else {
-                                                                Some(rs.from_id.clone())
+                                                                Some(rs.from_id.to_string())
                                                             }
                                                         })
                                                 } else {

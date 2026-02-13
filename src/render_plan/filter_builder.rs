@@ -8,6 +8,7 @@ use crate::query_planner::logical_expr::expression_rewriter::{
     rewrite_expression_with_property_mapping, ExpressionRewriteContext,
 };
 use crate::query_planner::logical_plan::LogicalPlan;
+use crate::graph_catalog::config::Identifier;
 use crate::render_plan::cte_extraction::{
     extract_relationship_columns, table_to_id_column, RelationshipColumns,
 };
@@ -216,14 +217,14 @@ impl FilterBuilder for LogicalPlan {
 
                             let rel_cols = extract_relationship_columns(&graph_rel.center)
                                 .unwrap_or(RelationshipColumns {
-                                    from_id: "from_node_id".to_string(),
-                                    to_id: "to_node_id".to_string(),
+                                    from_id: Identifier::Single("from_node_id".to_string()),
+                                    to_id: Identifier::Single("to_node_id".to_string()),
                                 });
 
                             // For denormalized, use relationship columns directly
                             // For normal, use node ID columns
                             let (start_id_col, end_id_col) = if is_denormalized {
-                                (rel_cols.from_id.clone(), rel_cols.to_id.clone())
+                                (rel_cols.from_id.to_string(), rel_cols.to_id.to_string())
                             } else {
                                 let start = extract_id_column(&graph_rel.left)
                                     .unwrap_or_else(|| table_to_id_column(&start_table));
@@ -232,12 +233,14 @@ impl FilterBuilder for LogicalPlan {
                                 (start, end)
                             };
 
+                            let rel_to_id_str = rel_cols.to_id.to_string();
+                            let rel_from_id_str = rel_cols.from_id.to_string();
                             // Generate cycle prevention filters
                             if let Some(cycle_filter) = crate::render_plan::cte_extraction::generate_cycle_prevention_filters(
                                 exact_hops,
                                 &start_id_col,
-                                &rel_cols.to_id,
-                                &rel_cols.from_id,
+                                &rel_to_id_str,
+                                &rel_from_id_str,
                                 &end_id_col,
                                 &graph_rel.left_connection,
                                 &graph_rel.right_connection,

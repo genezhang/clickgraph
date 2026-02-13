@@ -2010,6 +2010,7 @@ fn try_transform_multi_label_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph_catalog::config::Identifier;
 
     #[test]
     fn test_value_to_string_integer() {
@@ -2086,8 +2087,8 @@ mod tests {
                 to_node: "User".to_string(),
                 from_node_table: "users".to_string(),
                 to_node_table: "users".to_string(),
-                from_id: "follower_id".to_string(),
-                to_id: "followed_id".to_string(),
+                from_id: Identifier::from("follower_id"),
+                to_id: Identifier::from("followed_id"),
                 from_node_id_dtype: "UInt64".to_string(),
                 to_node_id_dtype: "UInt64".to_string(),
                 property_mappings: HashMap::new(),

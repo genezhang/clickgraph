@@ -775,9 +775,9 @@ impl GraphTRaversalPlanning {
             // The WHERE clause needs to reference the actual table columns
             let sub_in_expr_str =
                 if graph_context.rel.schema.from_node == graph_context.right.schema.table_name {
-                    graph_context.rel.schema.from_id.clone() // Use schema column (e.g., user1_id)
+                    graph_context.rel.schema.from_id.to_string() // Use schema column (e.g., user1_id)
                 } else {
-                    graph_context.rel.schema.to_id.clone() // Use schema column (e.g., user2_id)
+                    graph_context.rel.schema.to_id.to_string() // Use schema column (e.g., user2_id)
                 };
 
             let rel_insubquery = self.build_insubquery(

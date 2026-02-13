@@ -11,6 +11,7 @@
 //! - Process UNWIND clauses as ARRAY JOINs
 //! - Build simple relationship render plans using direct JOINs
 
+use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_plan::LogicalPlan;
@@ -1213,8 +1214,8 @@ impl JoinBuilder for LogicalPlan {
                     // Get relationship columns (from_id and to_id)
                     let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
                         RelationshipColumns {
-                            from_id: "from_node_id".to_string(),
-                            to_id: "to_node_id".to_string(),
+                            from_id: Identifier::Single("from_node_id".to_string()),
+                            to_id: Identifier::Single("to_node_id".to_string()),
                         },
                     );
 
@@ -1233,8 +1234,8 @@ impl JoinBuilder for LogicalPlan {
                         // Get the left relationship's to_id column for joining
                         let left_rel_cols = extract_relationship_columns(&left_rel.center)
                             .unwrap_or(RelationshipColumns {
-                                from_id: "from_node_id".to_string(),
-                                to_id: "to_node_id".to_string(),
+                                from_id: Identifier::Single("from_node_id".to_string()),
+                                to_id: Identifier::Single("to_node_id".to_string()),
                             });
 
                         // =========================================================
@@ -1284,18 +1285,18 @@ impl JoinBuilder for LogicalPlan {
                                 operands: vec![
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(graph_rel.alias.clone()),
-                                        column: PropertyValue::Column(rel_cols.from_id.clone()),
+                                        column: PropertyValue::Column(rel_cols.from_id.to_string()),
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(left_rel.alias.clone()),
-                                        column: PropertyValue::Column(left_rel_cols.to_id.clone()),
+                                        column: PropertyValue::Column(left_rel_cols.to_id.to_string()),
                                     }),
                                 ],
                             }],
                             join_type: JoinType::Inner,
                             pre_filter: None,
-                            from_id_column: Some(rel_cols.from_id.clone()), // Preserve for NULL checks
-                            to_id_column: Some(rel_cols.to_id.clone()), // Preserve for NULL checks
+                            from_id_column: Some(rel_cols.from_id.to_string()), // Preserve for NULL checks
+                            to_id_column: Some(rel_cols.to_id.to_string()), // Preserve for NULL checks
                             graph_rel: None,
                         });
                     }
@@ -1364,8 +1365,8 @@ impl JoinBuilder for LogicalPlan {
 
                         let inner_rel_cols = extract_relationship_columns(&inner_rel.center)
                             .unwrap_or(RelationshipColumns {
-                                from_id: "from_node_id".to_string(),
-                                to_id: "to_node_id".to_string(),
+                                from_id: Identifier::Single("from_node_id".to_string()),
+                                to_id: Identifier::Single("to_node_id".to_string()),
                             });
 
                         // Get shared node's ID column
@@ -1382,7 +1383,7 @@ impl JoinBuilder for LogicalPlan {
                             operands: vec![
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(inner_rel.alias.clone()),
-                                    column: PropertyValue::Column(inner_rel_cols.to_id.clone()),
+                                    column: PropertyValue::Column(inner_rel_cols.to_id.to_string()),
                                 }),
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(shared_node_alias.clone()),
@@ -1397,8 +1398,8 @@ impl JoinBuilder for LogicalPlan {
                             joining_on: vec![rel_join_condition],
                             join_type: JoinType::Inner,
                             pre_filter: None,
-                            from_id_column: Some(inner_rel_cols.from_id.clone()),
-                            to_id_column: Some(inner_rel_cols.to_id.clone()),
+                            from_id_column: Some(inner_rel_cols.from_id.to_string()),
+                            to_id_column: Some(inner_rel_cols.to_id.to_string()),
                             graph_rel: None,
                         });
 
@@ -1418,7 +1419,7 @@ impl JoinBuilder for LogicalPlan {
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(inner_rel.alias.clone()),
                                         column: PropertyValue::Column(
-                                            inner_rel_cols.from_id.clone(),
+                                            inner_rel_cols.from_id.to_string(),
                                         ),
                                     }),
                                 ],
@@ -1449,8 +1450,8 @@ impl JoinBuilder for LogicalPlan {
 
                         let inner_rel_cols = extract_relationship_columns(&inner_rel.center)
                             .unwrap_or(RelationshipColumns {
-                                from_id: "from_node_id".to_string(),
-                                to_id: "to_node_id".to_string(),
+                                from_id: Identifier::Single("from_node_id".to_string()),
+                                to_id: Identifier::Single("to_node_id".to_string()),
                             });
 
                         // Get shared node's ID column
@@ -1467,7 +1468,7 @@ impl JoinBuilder for LogicalPlan {
                             operands: vec![
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(inner_rel.alias.clone()),
-                                    column: PropertyValue::Column(inner_rel_cols.from_id.clone()),
+                                    column: PropertyValue::Column(inner_rel_cols.from_id.to_string()),
                                 }),
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(shared_node_alias.clone()),
@@ -1482,8 +1483,8 @@ impl JoinBuilder for LogicalPlan {
                             joining_on: vec![rel_join_condition],
                             join_type: JoinType::Inner,
                             pre_filter: None,
-                            from_id_column: Some(inner_rel_cols.from_id.clone()),
-                            to_id_column: Some(inner_rel_cols.to_id.clone()),
+                            from_id_column: Some(inner_rel_cols.from_id.to_string()),
+                            to_id_column: Some(inner_rel_cols.to_id.to_string()),
                             graph_rel: None,
                         });
 
@@ -1504,7 +1505,7 @@ impl JoinBuilder for LogicalPlan {
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(inner_rel.alias.clone()),
-                                        column: PropertyValue::Column(inner_rel_cols.to_id.clone()),
+                                        column: PropertyValue::Column(inner_rel_cols.to_id.to_string()),
                                     }),
                                 ],
                             };
@@ -1558,8 +1559,8 @@ impl JoinBuilder for LogicalPlan {
 
                     let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
                         RelationshipColumns {
-                            from_id: "from_node_id".to_string(),
-                            to_id: "to_node_id".to_string(),
+                            from_id: Identifier::Single("from_node_id".to_string()),
+                            to_id: Identifier::Single("to_node_id".to_string()),
                         },
                     );
 
@@ -1602,7 +1603,7 @@ impl JoinBuilder for LogicalPlan {
                             operands: vec![
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(graph_rel.alias.clone()),
-                                    column: PropertyValue::Column(rel_col_start.clone()),
+                                    column: PropertyValue::Column(rel_col_start.to_string()),
                                 }),
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(graph_rel.left_connection.clone()),
@@ -1612,8 +1613,8 @@ impl JoinBuilder for LogicalPlan {
                         }],
                         join_type: join_type.clone(),
                         pre_filter: None,
-                        from_id_column: Some(rel_col_start.clone()), // Preserve for NULL checks
-                        to_id_column: Some(rel_col_end.clone()),     // Preserve for NULL checks
+                        from_id_column: Some(rel_col_start.to_string()), // Preserve for NULL checks
+                        to_id_column: Some(rel_col_end.to_string()),     // Preserve for NULL checks
                         graph_rel: None,
                     });
 
@@ -1644,7 +1645,7 @@ impl JoinBuilder for LogicalPlan {
                                         }),
                                         RenderExpr::PropertyAccessExp(PropertyAccess {
                                             table_alias: TableAlias(graph_rel.alias.clone()),
-                                            column: PropertyValue::Column(rel_col_end.clone()),
+                                            column: PropertyValue::Column(rel_col_end.to_string()),
                                         }),
                                     ],
                                 }],
@@ -1842,8 +1843,8 @@ impl JoinBuilder for LogicalPlan {
                 // Get relationship columns
                 let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
                     RelationshipColumns {
-                        from_id: "from_node_id".to_string(),
-                        to_id: "to_node_id".to_string(),
+                        from_id: Identifier::Single("from_node_id".to_string()),
+                        to_id: Identifier::Single("to_node_id".to_string()),
                     },
                 );
 
@@ -1983,7 +1984,7 @@ impl JoinBuilder for LogicalPlan {
                         operands: vec![
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(graph_rel.alias.clone()),
-                                column: PropertyValue::Column(rel_cols.from_id.clone()),
+                                column: PropertyValue::Column(rel_cols.from_id.to_string()),
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_table_alias.clone()),
@@ -1996,7 +1997,7 @@ impl JoinBuilder for LogicalPlan {
                         operands: vec![
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(graph_rel.alias.clone()),
-                                column: PropertyValue::Column(rel_cols.to_id.clone()),
+                                column: PropertyValue::Column(rel_cols.to_id.to_string()),
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_table_alias.clone()),
@@ -2024,7 +2025,7 @@ impl JoinBuilder for LogicalPlan {
                         operands: vec![
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(graph_rel.alias.clone()),
-                                column: PropertyValue::Column(rel_col.clone()),
+                                column: PropertyValue::Column(rel_col.to_string()),
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(left_table_alias),
@@ -2137,8 +2138,8 @@ impl JoinBuilder for LogicalPlan {
                     joining_on: vec![rel_join_condition],
                     join_type: join_type.clone(),
                     pre_filter: combined_pre_filter,
-                    from_id_column: Some(rel_cols.from_id.clone()),
-                    to_id_column: Some(rel_cols.to_id.clone()),
+                    from_id_column: Some(rel_cols.from_id.to_string()),
+                    to_id_column: Some(rel_cols.to_id.to_string()),
                     graph_rel: None,
                 });
 
@@ -2196,7 +2197,7 @@ impl JoinBuilder for LogicalPlan {
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(graph_rel.alias.clone()),
-                                        column: PropertyValue::Column(rel_cols.to_id.clone()),
+                                        column: PropertyValue::Column(rel_cols.to_id.to_string()),
                                     }),
                                 ],
                             };
@@ -2252,7 +2253,7 @@ impl JoinBuilder for LogicalPlan {
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(graph_rel.alias.clone()),
-                                        column: PropertyValue::Column(rel_cols.to_id.clone()),
+                                        column: PropertyValue::Column(rel_cols.to_id.to_string()),
                                     }),
                                 ],
                             }),
@@ -2261,7 +2262,7 @@ impl JoinBuilder for LogicalPlan {
                                 operands: vec![
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(graph_rel.alias.clone()),
-                                        column: PropertyValue::Column(rel_cols.from_id.clone()),
+                                        column: PropertyValue::Column(rel_cols.from_id.to_string()),
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(left_table_alias.clone()),
@@ -2283,7 +2284,7 @@ impl JoinBuilder for LogicalPlan {
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(graph_rel.alias.clone()),
-                                        column: PropertyValue::Column(rel_cols.from_id.clone()),
+                                        column: PropertyValue::Column(rel_cols.from_id.to_string()),
                                     }),
                                 ],
                             }),
@@ -2292,7 +2293,7 @@ impl JoinBuilder for LogicalPlan {
                                 operands: vec![
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(graph_rel.alias.clone()),
-                                        column: PropertyValue::Column(rel_cols.to_id.clone()),
+                                        column: PropertyValue::Column(rel_cols.to_id.to_string()),
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(left_table_alias.clone()),
@@ -2324,7 +2325,7 @@ impl JoinBuilder for LogicalPlan {
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(graph_rel.alias.clone()),
-                                column: PropertyValue::Column(rel_col.clone()),
+                                column: PropertyValue::Column(rel_col.to_string()),
                             }),
                         ],
                     }

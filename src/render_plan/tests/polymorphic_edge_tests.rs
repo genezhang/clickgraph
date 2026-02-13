@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::{
     GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema,
 };
@@ -123,8 +124,8 @@ fn setup_polymorphic_schema() -> GraphSchema {
             to_node: "User".to_string(),
             from_node_table: "users".to_string(),
             to_node_table: "users".to_string(),
-            from_id: "from_id".to_string(),
-            to_id: "to_id".to_string(),
+            from_id: Identifier::from("from_id"),
+            to_id: Identifier::from("to_id"),
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: interaction_props.clone(),
@@ -164,8 +165,8 @@ fn setup_polymorphic_schema() -> GraphSchema {
             to_node: "Post".to_string(),
             from_node_table: "users".to_string(),
             to_node_table: "posts".to_string(),
-            from_id: "from_id".to_string(),
-            to_id: "to_id".to_string(),
+            from_id: Identifier::from("from_id"),
+            to_id: Identifier::from("to_id"),
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: interaction_props.clone(),
@@ -205,8 +206,8 @@ fn setup_polymorphic_schema() -> GraphSchema {
             to_node: "Post".to_string(),
             from_node_table: "users".to_string(),
             to_node_table: "posts".to_string(),
-            from_id: "from_id".to_string(),
-            to_id: "to_id".to_string(),
+            from_id: Identifier::from("from_id"),
+            to_id: Identifier::from("to_id"),
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: interaction_props,
@@ -403,8 +404,8 @@ fn test_non_polymorphic_relationship() {
             to_node: "User".to_string(),
             from_node_table: "users".to_string(),
             to_node_table: "users".to_string(),
-            from_id: "follower_id".to_string(),
-            to_id: "followed_id".to_string(),
+            from_id: Identifier::from("follower_id"),
+            to_id: Identifier::from("followed_id"),
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: HashMap::new(),
@@ -529,8 +530,8 @@ fn test_fixed_endpoint_polymorphic_edge() {
             to_node: "$any".to_string(), // Polymorphic target
             from_node_table: "groups".to_string(),
             to_node_table: "$any".to_string(),
-            from_id: "parent_id".to_string(),
-            to_id: "member_id".to_string(),
+            from_id: Identifier::from("parent_id"),
+            to_id: Identifier::from("member_id"),
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: HashMap::new(),

@@ -1135,7 +1135,7 @@ impl TraditionalCteStrategy {
         match node_strategy {
             NodeAccessStrategy::OwnTable {
                 table, id_column, ..
-            } => Ok((table.clone(), id_column.clone())),
+            } => Ok((table.clone(), id_column.to_string())),
             NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => {
                 // For embedded nodes in traditional strategy, this is unexpected
                 // but we can use the edge alias as the table reference
@@ -2027,14 +2027,14 @@ impl MixedAccessCteStrategy {
     }
 
     /// Get the joined node ID column
-    fn get_joined_node_id_column(&self) -> Result<&str, CteError> {
+    fn get_joined_node_id_column(&self) -> Result<String, CteError> {
         let node_access = match self.joined_node {
             NodePosition::Left => &self.pattern_ctx.left_node,
             NodePosition::Right => &self.pattern_ctx.right_node,
         };
 
         match node_access {
-            NodeAccessStrategy::OwnTable { id_column, .. } => Ok(id_column),
+            NodeAccessStrategy::OwnTable { id_column, .. } => Ok(id_column.to_string()),
             _ => Err(CteError::SchemaValidationError(
                 "Joined node must have own table".into(),
             )),
@@ -2645,7 +2645,7 @@ impl VariableLengthCteStrategy {
         match node {
             NodeAccessStrategy::OwnTable {
                 table, id_column, ..
-            } => Ok((table.clone(), id_column.clone(), false)),
+            } => Ok((table.clone(), id_column.to_string(), false)),
             NodeAccessStrategy::EmbeddedInEdge { edge_alias: _, .. } => {
                 // For embedded nodes, get the edge table and use from_id/to_id based on position
                 let (edge_table, from_col, to_col) = match edge {
@@ -2972,6 +2972,7 @@ impl VariableLengthCteStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph_catalog::config::Identifier;
     use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema};
     use std::collections::HashMap;
 
@@ -2983,18 +2984,18 @@ mod tests {
             right_node_alias: "u2".to_string(),
             rel_alias: "r".to_string(),
             join_strategy: JoinStrategy::Traditional {
-                left_join_col: "follower_id".to_string(),
-                right_join_col: "followed_id".to_string(),
+                left_join_col: Identifier::from("follower_id"),
+                right_join_col: Identifier::from("followed_id"),
             },
             // Fill in other required fields with defaults
             left_node: NodeAccessStrategy::OwnTable {
                 table: "users_bench".to_string(),
-                id_column: "user_id".to_string(),
+                id_column: Identifier::from("user_id"),
                 properties: std::collections::HashMap::new(),
             },
             right_node: NodeAccessStrategy::OwnTable {
                 table: "users_bench".to_string(),
-                id_column: "user_id".to_string(),
+                id_column: Identifier::from("user_id"),
                 properties: std::collections::HashMap::new(),
             },
             edge: EdgeAccessStrategy::SeparateTable {
@@ -3181,12 +3182,12 @@ mod tests {
             rel_alias: "hierarchy".to_string(),
             left_node: NodeAccessStrategy::OwnTable {
                 table: "files".to_string(),
-                id_column: "id".to_string(),
+                id_column: Identifier::from("id"),
                 properties: HashMap::new(), // Simplified for test
             },
             right_node: NodeAccessStrategy::OwnTable {
                 table: "files".to_string(),
-                id_column: "id".to_string(),
+                id_column: Identifier::from("id"),
                 properties: HashMap::new(), // Simplified for test
             },
             edge: EdgeAccessStrategy::FkEdge {
@@ -3264,7 +3265,7 @@ mod tests {
             rel_alias: "r".to_string(),
             left_node: NodeAccessStrategy::OwnTable {
                 table: "users".to_string(),
-                id_column: "user_id".to_string(),
+                id_column: Identifier::from("user_id"),
                 properties: HashMap::new(),
             },
             right_node: NodeAccessStrategy::EmbeddedInEdge {

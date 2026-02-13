@@ -418,6 +418,7 @@ fn find_edges_to_node<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph_catalog::config::Identifier;
     use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema};
     use std::collections::HashMap;
 
@@ -484,8 +485,8 @@ mod tests {
                 to_node: "User".to_string(),
                 from_node_table: "users".to_string(),
                 to_node_table: "users".to_string(),
-                from_id: "follower_id".to_string(),
-                to_id: "followed_id".to_string(),
+                from_id: Identifier::from("follower_id"),
+                to_id: Identifier::from("followed_id"),
                 from_node_id_dtype: "UInt64".to_string(),
                 to_node_id_dtype: "UInt64".to_string(),
                 property_mappings: HashMap::new(),
@@ -518,8 +519,8 @@ mod tests {
                 to_node: "Post".to_string(),
                 from_node_table: "users".to_string(),
                 to_node_table: "posts".to_string(),
-                from_id: "user_id".to_string(),
-                to_id: "post_id".to_string(),
+                from_id: Identifier::from("user_id"),
+                to_id: Identifier::from("post_id"),
                 from_node_id_dtype: "UInt64".to_string(),
                 to_node_id_dtype: "UInt64".to_string(),
                 property_mappings: HashMap::new(),

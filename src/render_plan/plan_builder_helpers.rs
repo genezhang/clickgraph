@@ -1445,7 +1445,7 @@ pub(super) fn get_relationship_columns_from_schema(rel_type: &str) -> Option<(St
 
     let schema = get_current_schema()?;
     if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
-        return Some((rel_schema.from_id.clone(), rel_schema.to_id.clone()));
+        return Some((rel_schema.from_id.to_string(), rel_schema.to_id.to_string()));
     }
     None
 }
@@ -1458,7 +1458,7 @@ pub(super) fn get_relationship_columns_by_table(table_name: &str) -> Option<(Str
     let schema = get_current_schema()?;
     for (_key, rel_schema) in schema.get_relationships_schemas().iter() {
         if rel_schema.table_name == table_name {
-            return Some((rel_schema.from_id.clone(), rel_schema.to_id.clone()));
+            return Some((rel_schema.from_id.to_string(), rel_schema.to_id.to_string()));
         }
     }
     None
@@ -1573,7 +1573,7 @@ pub(super) fn get_relationship_columns_with_schema(
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
 ) -> Option<(String, String)> {
     let rel_schema = schema.get_rel_schema(rel_type).ok()?;
-    Some((rel_schema.from_id.clone(), rel_schema.to_id.clone()))
+    Some((rel_schema.from_id.to_string(), rel_schema.to_id.to_string()))
 }
 
 /// Check if a node with the given alias is polymorphic ($any)

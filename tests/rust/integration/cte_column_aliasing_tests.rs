@@ -6,6 +6,7 @@
 /// Issue #4: CTE Column Aliasing for Mixed RETURN (WITH alias + node property)
 use clickgraph::{
     graph_catalog::{
+        config::Identifier,
         expression_parser::PropertyValue,
         graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema},
     },
@@ -70,8 +71,8 @@ fn create_test_schema() -> GraphSchema {
         to_node: "User".to_string(),
         from_node_table: "users".to_string(),
         to_node_table: "users".to_string(),
-        from_id: "follower_id".to_string(),
-        to_id: "followed_id".to_string(),
+        from_id: Identifier::from("follower_id"),
+        to_id: Identifier::from("followed_id"),
         from_node_id_dtype: "UInt64".to_string(),
         to_node_id_dtype: "UInt64".to_string(),
         property_mappings: HashMap::new(),

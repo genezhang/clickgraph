@@ -1,5 +1,6 @@
 //! Tests for view resolution functionality
 
+use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
 use crate::query_planner::analyzer::view_resolver::ViewResolver;
 use std::collections::HashMap;
@@ -46,8 +47,8 @@ mod tests {
             to_node: "User".to_string(),
             from_node_table: "users".to_string(),
             to_node_table: "users".to_string(),
-            from_id: "follower_id".to_string(),
-            to_id: "followed_id".to_string(),
+            from_id: Identifier::from("follower_id"),
+            to_id: Identifier::from("followed_id"),
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: HashMap::new(),
@@ -112,8 +113,8 @@ mod tests {
             .resolve_relationship("FOLLOWS", None, None)
             .unwrap();
         assert_eq!(rel_schema.table_name, "follows");
-        assert_eq!(rel_schema.from_id, "follower_id");
-        assert_eq!(rel_schema.to_id, "followed_id");
+        assert_eq!(rel_schema.from_id, Identifier::from("follower_id"));
+        assert_eq!(rel_schema.to_id, Identifier::from("followed_id"));
     }
 
     #[test]

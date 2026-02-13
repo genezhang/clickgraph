@@ -743,7 +743,7 @@ impl FilterTagging {
             if let Some(ref edge_id) = rel_schema.edge_id {
                 edge_id.columns().first().map(|s| s.to_string())
             } else {
-                Some(rel_schema.from_id.clone())
+                Some(rel_schema.from_id.to_string())
             }
         } else {
             log::warn!(
@@ -1266,7 +1266,7 @@ impl FilterTagging {
                                                 Some(columns[0].to_string())
                                             }
                                         } else {
-                                            Some(rel_schema.from_id.clone())
+                                            Some(rel_schema.from_id.to_string())
                                         }
                                     } else {
                                         None
@@ -2384,6 +2384,7 @@ impl FilterTagging {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph_catalog::config::Identifier;
     use crate::query_planner::logical_expr::{
         AggregateFnCall, Literal, PropertyAccess, TableAlias,
     };
@@ -2562,8 +2563,8 @@ mod tests {
                 to_node: "Person".to_string(),
                 from_node_table: "persons".to_string(),
                 to_node_table: "persons".to_string(),
-                from_id: "from_node_id".to_string(),
-                to_id: "to_node_id".to_string(),
+                from_id: Identifier::from("from_node_id"),
+                to_id: Identifier::from("to_node_id"),
                 from_node_id_dtype: "UInt32".to_string(),
                 to_node_id_dtype: "UInt32".to_string(),
                 property_mappings: follows_props,
