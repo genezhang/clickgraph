@@ -399,27 +399,8 @@ fn traverse_connected_pattern_with_mode<'a>(
                                 rel_schema.map(|schema| {
                                     let base_type =
                                         rel_type.split("::").next().unwrap_or(rel_type).to_string();
-                                    let from = schema.from_node.clone();
-                                    let to = schema.to_node.clone();
-                                    // Expand $any to concrete node types
-                                    let froms = if from == "$any" {
-                                        graph_schema
-                                            .all_node_schemas()
-                                            .keys()
-                                            .cloned()
-                                            .collect::<Vec<_>>()
-                                    } else {
-                                        vec![from]
-                                    };
-                                    let tos = if to == "$any" {
-                                        graph_schema
-                                            .all_node_schemas()
-                                            .keys()
-                                            .cloned()
-                                            .collect::<Vec<_>>()
-                                    } else {
-                                        vec![to]
-                                    };
+                                    let froms = graph_schema.expand_node_type(&schema.from_node);
+                                    let tos = graph_schema.expand_node_type(&schema.to_node);
                                     froms
                                         .into_iter()
                                         .flat_map(|f| {
@@ -433,6 +414,16 @@ fn traverse_connected_pattern_with_mode<'a>(
                             .flatten()
                             .collect()
                     };
+
+                    if relationship_node_types.len() > 50 {
+                        log::warn!(
+                            "⚠️ Polymorphic expansion generated {} type combinations for pattern \
+                             '{}'->'{}'; consider constraining node labels to reduce query complexity",
+                            relationship_node_types.len(),
+                            start_node_alias,
+                            end_node_alias
+                        );
+                    }
 
                     // === COMBINATION PRUNING ===
                     // If WHERE clause contains id() constraints, prune combinations early

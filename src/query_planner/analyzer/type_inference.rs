@@ -81,6 +81,7 @@ use crate::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
             errors::AnalyzerError,
+            pattern_resolver_config::get_max_combinations,
         },
         logical_expr::LogicalExpr,
         logical_plan::{GraphNode, GraphRel, LogicalPlan, ViewScan},
@@ -1191,22 +1192,11 @@ impl TypeInference {
             use crate::query_planner::plan_ctx::TypeCombination;
             let mut combinations = Vec::new();
 
-            // Collect all concrete node labels for expanding $any
-            let all_node_labels: Vec<String> =
-                graph_schema.all_node_schemas().keys().cloned().collect();
+            let max_combos = get_max_combinations();
 
             for (rel_type_key, rel_schema) in &matches {
-                // Expand $any to concrete node types
-                let from_labels = if rel_schema.from_node == "$any" {
-                    all_node_labels.clone()
-                } else {
-                    vec![rel_schema.from_node.clone()]
-                };
-                let to_labels = if rel_schema.to_node == "$any" {
-                    all_node_labels.clone()
-                } else {
-                    vec![rel_schema.to_node.clone()]
-                };
+                let from_labels = graph_schema.expand_node_type(&rel_schema.from_node);
+                let to_labels = graph_schema.expand_node_type(&rel_schema.to_node);
 
                 for from_label in &from_labels {
                     for to_label in &to_labels {
@@ -1216,19 +1206,20 @@ impl TypeInference {
                             to_label: to_label.clone(),
                         });
 
-                        if combinations.len() >= 38 {
+                        if combinations.len() >= max_combos {
                             break;
                         }
                     }
-                    if combinations.len() >= 38 {
+                    if combinations.len() >= max_combos {
                         break;
                     }
                 }
 
-                // Apply 38 combination limit
-                if combinations.len() >= 38 {
+                if combinations.len() >= max_combos {
                     log::warn!(
-                        "⚠️ Pattern combinations limited to 38 for '{}' -> '{}' (found {} total matches)",
+                        "⚠️ Pattern combinations limited to {} for '{}' -> '{}' (found {} total matches). \
+                         Set CLICKGRAPH_MAX_TYPE_COMBINATIONS to increase.",
+                        max_combos,
                         left_connection,
                         right_connection,
                         matches.len()

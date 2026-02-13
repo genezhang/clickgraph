@@ -551,6 +551,10 @@ fn prune_union_for_label(
         }
         // Fallback: use first ViewScan
         if let Some(first) = union_plan.inputs.first() {
+            log::warn!(
+                "prune_union_for_label: could not resolve table for label '{}', falling back to first ViewScan",
+                label
+            );
             return clone_plan_with_labels(first, combo);
         }
     }

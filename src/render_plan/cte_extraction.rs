@@ -4851,8 +4851,13 @@ pub fn extract_node_label_from_viewscan_with_schema(
             extract_node_label_from_viewscan_with_schema(&gj.input, schema)
         }
         LogicalPlan::GraphRel(gr) => {
-            // For GraphRel, try left node first (start node of the pattern)
-            extract_node_label_from_viewscan_with_schema(&gr.left, schema)
+            // For GraphRel, prefer start node (left) label but fall back to end node (right)
+            if let Some(label) =
+                extract_node_label_from_viewscan_with_schema(&gr.left, schema)
+            {
+                return Some(label);
+            }
+            extract_node_label_from_viewscan_with_schema(&gr.right, schema)
         }
         LogicalPlan::Union(u) => {
             // For UNION of denormalized nodes, try to get label from first input

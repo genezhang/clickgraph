@@ -126,3 +126,18 @@ Every function in this module may behave differently based on:
 5. **Composite ID** — multi-column node identity
 
 When fixing a bug, always check: does this fix work for ALL 5 variations?
+
+### Schema Compatibility Matrix
+
+| Feature / Area                               | Standard | FK-edge | Denormalized | Polymorphic | Composite ID |
+|---------------------------------------------|:--------:|:-------:|:------------:|:-----------:|:------------:|
+| Basic `MATCH` / node scans                  |   ✅     |   ✅    |      ⚠️      |     ✅      |      ⚠️      |
+| Single-hop relationship traversals          |   ✅     |   ✅    |      ⚠️      |     ✅      |      ⚠️      |
+| Multi-hop / variable-length paths (VLP)     |   ✅     |   ⚠️    |      ⚠️      |     ⚠️      |      ⚠️      |
+| OPTIONAL MATCH                              |   ✅     |   ✅    |      ⚠️      |     ✅      |      ⚠️      |
+| Multiple relationship types (`[:A\|:B]`)     |   ✅     |   ⚠️    |      ⚠️      |     ✅      |      ⚠️      |
+| Shortest path functions                      |   ✅     |   ⚠️    |      ⚠️      |     ⚠️      |      ⚠️      |
+| Path projection (`nodes(p)`, `rels(p)`)     |   ✅     |   ⚠️    |      ⚠️      |     ⚠️      |      ⚠️      |
+| Multi-schema (`USE`, per-request)           |   ✅     |   ✅    |      ✅       |     ✅      |      ✅       |
+
+✅ = supported and covered by tests. ⚠️ = designed to work but less coverage — add tests before relying on it.

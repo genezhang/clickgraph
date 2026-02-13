@@ -951,6 +951,10 @@ fn transform_to_relationship(
                 .get("start_type")
                 .and_then(value_to_string)
                 .unwrap_or_else(|| {
+                    log::warn!(
+                        "Polymorphic relationship missing 'start_type' column; \
+                         falling back to first node type in schema"
+                    );
                     schema
                         .all_node_schemas()
                         .keys()
@@ -966,6 +970,10 @@ fn transform_to_relationship(
                 .get("end_type")
                 .and_then(value_to_string)
                 .unwrap_or_else(|| {
+                    log::warn!(
+                        "Polymorphic relationship missing 'end_type' column; \
+                         falling back to first node type in schema"
+                    );
                     schema
                         .all_node_schemas()
                         .keys()

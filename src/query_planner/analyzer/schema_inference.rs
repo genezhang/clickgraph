@@ -461,6 +461,9 @@ impl SchemaInference {
                                     if rel_schema.from_node == "$any"
                                         || rel_schema.to_node == "$any"
                                     {
+                                        // Polymorphic edges: leave node label unset here.
+                                        // The traversal layer (traversal.rs) and PatternResolver
+                                        // will expand $any to concrete node types later.
                                         log::debug!(
                                             "SchemaInference: Polymorphic edge detected for target '{}' — leaving label unset",
                                             right_alias

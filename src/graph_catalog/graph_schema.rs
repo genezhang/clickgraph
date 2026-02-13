@@ -1161,6 +1161,16 @@ impl GraphSchema {
         &self.nodes
     }
 
+    /// Expand a polymorphic `$any` node type to all concrete node labels.
+    /// Returns a single-element vec for concrete types, all node labels for `$any`.
+    pub fn expand_node_type(&self, node_type: &str) -> Vec<String> {
+        if node_type == "$any" {
+            self.nodes.keys().cloned().collect()
+        } else {
+            vec![node_type.to_string()]
+        }
+    }
+
     pub fn node_schema_opt(&self, node_label: &str) -> Option<&NodeSchema> {
         self.nodes.get(node_label)
     }

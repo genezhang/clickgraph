@@ -1734,6 +1734,14 @@ impl GraphSchemaConfig {
                 EdgeDefinition::Polymorphic(poly_edge) => {
                     let poly_schemas = build_polymorphic_edge_schemas(poly_edge, &no_discovery)?;
                     for (type_name, rel_schema) in poly_schemas {
+                        if relationships.contains_key(&type_name) {
+                            log::warn!(
+                                "⚠️ Schema collision: polymorphic edge '{}' overwrites existing \
+                                 standard edge with the same type name. Mixing polymorphic and \
+                                 standard edges with the same type is not supported.",
+                                type_name
+                            );
+                        }
                         relationships.insert(type_name, rel_schema);
                     }
                 }
@@ -1908,6 +1916,13 @@ impl GraphSchemaConfig {
                     for (type_name, rel_schema) in
                         build_polymorphic_edge_schemas(poly_edge, &discovery)?
                     {
+                        if relationships.contains_key(&type_name) {
+                            log::warn!(
+                                "⚠️ Schema collision: polymorphic edge '{}' overwrites existing \
+                                 standard edge with the same type name.",
+                                type_name
+                            );
+                        }
                         relationships.insert(type_name, rel_schema);
                     }
                 }

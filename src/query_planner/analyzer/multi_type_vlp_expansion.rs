@@ -246,24 +246,8 @@ fn generate_paths_recursive(
             // For polymorphic edges with $any node types, expand to concrete types.
             // Note: N node types → N×N combinations per edge, but filtered by
             // current_node_type match below, limiting actual branches to N per hop.
-            let from_types = if edge.from_node == "$any" {
-                schema
-                    .all_node_schemas()
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>()
-            } else {
-                vec![edge.from_node.clone()]
-            };
-            let to_types = if edge.to_node == "$any" {
-                schema
-                    .all_node_schemas()
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>()
-            } else {
-                vec![edge.to_node.clone()]
-            };
+            let from_types = schema.expand_node_type(&edge.from_node);
+            let to_types = schema.expand_node_type(&edge.to_node);
 
             for from_t in &from_types {
                 // Filter: from_type must match current_node_type
@@ -300,25 +284,8 @@ fn generate_paths_recursive(
             let incoming_edges = find_edges_to_node(schema, rel_type, current_node_type);
 
             for edge in incoming_edges {
-                // For polymorphic edges with $any, expand to concrete types
-                let edge_to_types = if edge.to_node == "$any" {
-                    schema
-                        .all_node_schemas()
-                        .keys()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                } else {
-                    vec![edge.to_node.clone()]
-                };
-                let edge_from_types = if edge.from_node == "$any" {
-                    schema
-                        .all_node_schemas()
-                        .keys()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                } else {
-                    vec![edge.from_node.clone()]
-                };
+                let edge_to_types = schema.expand_node_type(&edge.to_node);
+                let edge_from_types = schema.expand_node_type(&edge.from_node);
 
                 for to_t in &edge_to_types {
                     // Filter: to_node must match current_node_type (reversed hop)

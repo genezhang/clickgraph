@@ -165,40 +165,7 @@ echo ""
 
 # 7. Polymorphic interactions data (for social_polymorphic schema)
 log_info "=== Polymorphic Interactions Data ==="
-# Create interactions table if it doesn't exist
-run_sql "
-CREATE TABLE IF NOT EXISTS brahmand.interactions (
-    from_id UInt64,
-    to_id UInt64,
-    interaction_type String,
-    from_type String,
-    to_type String,
-    timestamp DateTime DEFAULT now(),
-    interaction_weight Float32 DEFAULT 1.0
-) ENGINE = Memory
-"
-
-# Insert sample polymorphic interactions
-run_sql "
-INSERT INTO brahmand.interactions (from_id, to_id, interaction_type, from_type, to_type, interaction_weight) VALUES
-    (1, 2, 'FOLLOWS', 'User', 'User', 1.0),
-    (1, 3, 'FOLLOWS', 'User', 'User', 1.0),
-    (2, 3, 'FOLLOWS', 'User', 'User', 1.0),
-    (3, 1, 'FOLLOWS', 'User', 'User', 1.0),
-    (1, 101, 'AUTHORED', 'User', 'Post', 1.0),
-    (2, 102, 'AUTHORED', 'User', 'Post', 1.0),
-    (3, 103, 'AUTHORED', 'User', 'Post', 1.0),
-    (1, 102, 'LIKES', 'User', 'Post', 0.8),
-    (2, 101, 'LIKES', 'User', 'Post', 0.9),
-    (3, 102, 'LIKES', 'User', 'Post', 0.7),
-    (1, 103, 'LIKES', 'User', 'Post', 0.6),
-    (2, 101, 'COMMENTED', 'User', 'Post', 1.0),
-    (3, 101, 'COMMENTED', 'User', 'Post', 1.0),
-    (1, 102, 'COMMENTED', 'User', 'Post', 1.0),
-    (1, 102, 'SHARED', 'User', 'Post', 1.0),
-    (3, 101, 'SHARED', 'User', 'Post', 1.0)
-"
-echo " ✓ Polymorphic interactions data loaded"
+bash "$PROJECT_ROOT/scripts/setup/setup_polymorphic_data.sh"
 echo ""
 
 # 5. Zeek DNS log data (for zeek_dns schema)  
@@ -367,10 +334,15 @@ run_sql "CREATE DATABASE IF NOT EXISTS data_security"
 run_sql_file "$PROJECT_ROOT/examples/data_security/setup_schema.sql" "Data security schema and data"
 echo ""
 
+# 11. Composite Node ID data
+log_info "=== Composite Node ID Data ==="
+bash "$PROJECT_ROOT/scripts/setup/setup_composite_id_data.sh"
+echo ""
+
 # Summary
 log_info "=== Summary ==="
 echo "Databases:"
-run_sql "SHOW DATABASES" | grep -E "brahmand|test_integration|zeek|data_security" | while read db; do
+run_sql "SHOW DATABASES" | grep -E "brahmand|test_integration|zeek|data_security|db_composite_id" | while read db; do
     echo "  - $db"
 done
 
@@ -392,6 +364,13 @@ echo ""
 echo "Key tables in brahmand:"
 for tbl in users_bench posts_bench user_follows_bench post_likes_bench interactions multi_tenant_users multi_tenant_orders multi_tenant_friendships; do
     count=$(run_sql "SELECT count() FROM brahmand.$tbl" 2>/dev/null || echo "0")
+    echo "  - $tbl: $count rows"
+done
+
+echo ""
+echo "Tables in db_composite_id:"
+for tbl in accounts customers account_ownership transfers; do
+    count=$(run_sql "SELECT count() FROM db_composite_id.$tbl" 2>/dev/null || echo "0")
     echo "  - $tbl: $count rows"
 done
 

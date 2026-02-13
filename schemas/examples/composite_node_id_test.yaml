@@ -1,29 +1,64 @@
-name: composite_node_id_test
+# Composite Node ID Example — Multi-Bank Accounts
+#
+# Demonstrates composite (multi-column) node IDs:
+#   Account identified by (bank_id, account_number) — NOT a single column
+#   Customer identified by customer_id — single column (mixed)
+#
+# Graph patterns:
+#   (c:Customer)-[:OWNS]->(a:Account)     — single-to-composite key
+#   (a1:Account)-[:TRANSFERRED]->(a2:Account) — composite-to-composite key
+#
+# Database: db_composite_id (neutral name, simulates real user data)
+
+name: composite_node_id
 version: "1.0"
-description: Test schema for composite node IDs
+description: "Multi-bank accounts with composite node IDs"
 
-nodes:
-  - label: Account
-    database: test
-    table: accounts
-    node_id: [tenant_id, account_id]  # Composite ID
-    property_mappings:
-      balance: account_balance
-      name: account_name
+graph_schema:
+  nodes:
+    - label: Account
+      database: db_composite_id
+      table: accounts
+      node_id: [bank_id, account_number]
+      property_mappings:
+        bank_id: bank_id
+        account_number: account_number
+        holder_name: holder_name
+        account_type: account_type
+        balance: balance
+        opened_date: opened_date
 
-  - label: Transaction
-    database: test
-    table: transactions
-    node_id: transaction_id  # Single ID for comparison
-    property_mappings:
-      amount: transaction_amount
+    - label: Customer
+      database: db_composite_id
+      table: customers
+      node_id: customer_id
+      property_mappings:
+        customer_id: customer_id
+        name: name
+        email: email
+        city: city
 
-edges:
-  - type: OWNS
-    database: test
-    table: account_ownership
-    from_id: tenant_id
-    to_id: account_id
-    from_node: Account
-    to_node: Account
-    property_mappings: {}
+  edges:
+    - type: OWNS
+      database: db_composite_id
+      table: account_ownership
+      from_id: customer_id
+      to_id: [bank_id, account_number]
+      from_node: Customer
+      to_node: Account
+      property_mappings:
+        role: role
+        since: since
+
+    - type: TRANSFERRED
+      database: db_composite_id
+      table: transfers
+      from_id: [from_bank_id, from_account_number]
+      to_id: [to_bank_id, to_account_number]
+      from_node: Account
+      to_node: Account
+      edge_id: transfer_id
+      property_mappings:
+        transfer_id: transfer_id
+        amount: amount
+        transfer_date: transfer_date
