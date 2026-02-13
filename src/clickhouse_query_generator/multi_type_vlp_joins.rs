@@ -1137,7 +1137,10 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             .all_node_schemas()
             .get(node_type)
             .map(|n| {
-                n.node_id.id.columns().first()
+                n.node_id
+                    .id
+                    .columns()
+                    .first()
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "id".to_string())
             })

@@ -1878,7 +1878,9 @@ fn find_relationship_in_row_with_type(
         .keys()
         .filter(|k| {
             (k.starts_with("from_id_") || k.starts_with("to_id_"))
-                && k.rsplit('_').next().map_or(false, |s| s.parse::<usize>().is_ok())
+                && k.rsplit('_')
+                    .next()
+                    .map_or(false, |s| s.parse::<usize>().is_ok())
         })
         .cloned()
         .collect();

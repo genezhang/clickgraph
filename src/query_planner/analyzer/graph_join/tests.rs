@@ -1060,7 +1060,7 @@ fn create_non_self_referencing_fk_schema() -> GraphSchema {
             to_node: "Customer".to_string(), // Different table
             from_node_table: "orders".to_string(),
             to_node_table: "customers".to_string(),
-            from_id: Identifier::from("order_id"),  // Order's PK
+            from_id: Identifier::from("order_id"), // Order's PK
             to_id: Identifier::from("customer_id"), // FK pointing to Customer
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),

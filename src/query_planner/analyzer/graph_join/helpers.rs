@@ -478,8 +478,13 @@ impl JoinBuilder {
     ) -> Self {
         let left_cols = left_id.columns();
         let right_cols = right_id.columns();
-        assert_eq!(left_cols.len(), right_cols.len(),
-            "Identifier column count mismatch in JOIN: {} vs {}", left_cols.len(), right_cols.len());
+        assert_eq!(
+            left_cols.len(),
+            right_cols.len(),
+            "Identifier column count mismatch in JOIN: {} vs {}",
+            left_cols.len(),
+            right_cols.len()
+        );
         for (l, r) in left_cols.iter().zip(right_cols.iter()) {
             self.joining_on.push(OperatorApplication {
                 operator: Operator::Equal,

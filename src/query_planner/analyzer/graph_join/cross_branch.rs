@@ -119,14 +119,20 @@ pub fn generate_relationship_uniqueness_constraints(
                 .as_ref()
                 .map(|id| id.columns().into_iter().map(|s| s.to_string()).collect())
                 .unwrap_or_else(|| {
-                    vec![rel1_schema.from_id.to_string(), rel1_schema.to_id.to_string()]
+                    vec![
+                        rel1_schema.from_id.to_string(),
+                        rel1_schema.to_id.to_string(),
+                    ]
                 });
             let edge2_id_cols: Vec<String> = rel2_schema
                 .edge_id
                 .as_ref()
                 .map(|id| id.columns().into_iter().map(|s| s.to_string()).collect())
                 .unwrap_or_else(|| {
-                    vec![rel2_schema.from_id.to_string(), rel2_schema.to_id.to_string()]
+                    vec![
+                        rel2_schema.from_id.to_string(),
+                        rel2_schema.to_id.to_string(),
+                    ]
                 });
 
             // Generate inequality constraint
@@ -398,7 +404,12 @@ fn create_cross_branch_join_from_edges(
 
     // Create the cross-branch join using JoinBuilder
     let join = helpers::JoinBuilder::new(rel2_schema.full_table_name(), &edge2.alias)
-        .add_condition(&edge2.alias, edge2_col.to_string(), &edge1.alias, edge1_col.to_string())
+        .add_condition(
+            &edge2.alias,
+            edge2_col.to_string(),
+            &edge1.alias,
+            edge1_col.to_string(),
+        )
         .build();
 
     log::debug!(
@@ -634,7 +645,11 @@ pub fn extract_node_appearance(
         log::info!("🔧 VLP NodeAppearance: Using node alias '{}' instead of rel alias '{}' for cross-branch JOIN",
                    node_alias, graph_rel.alias);
 
-        let column_name = node_schema.node_id.id.columns().first()
+        let column_name = node_schema
+            .node_id
+            .id
+            .columns()
+            .first()
             .map(|s| s.to_string())
             .unwrap_or_else(|| "id".to_string());
 

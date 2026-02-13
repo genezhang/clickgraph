@@ -777,7 +777,10 @@ impl PatternSchemaContext {
     /// For denormalized edge schemas, the mapping is in from_properties/to_properties
     /// of the node schema (which correspond to the edge's table). For standalone nodes,
     /// the mapping is in property_mappings.
-    fn resolve_id_column(node_schema: &NodeSchema, is_from_node: bool) -> Result<Identifier, String> {
+    fn resolve_id_column(
+        node_schema: &NodeSchema,
+        is_from_node: bool,
+    ) -> Result<Identifier, String> {
         let id_columns = node_schema.node_id.columns();
         if id_columns.is_empty() {
             return Err("Node schema has no ID columns defined".to_string());
@@ -798,7 +801,11 @@ impl PatternSchemaContext {
                     "🔧 resolve_id_column: '{}' (Cypher) → '{}' (DB column) via {} for table {}",
                     first_prop,
                     column_name,
-                    if is_from_node { "from_properties" } else { "to_properties" },
+                    if is_from_node {
+                        "from_properties"
+                    } else {
+                        "to_properties"
+                    },
                     node_schema.table_name
                 );
                 // For denormalized edges, composite node IDs are not expected
@@ -807,17 +814,22 @@ impl PatternSchemaContext {
         }
 
         // Standalone node table: resolve each ID column through property_mappings
-        let resolved: Vec<String> = id_columns.iter().map(|col| {
-            if let Some(property_value) = node_schema.property_mappings.get(*col) {
-                property_value.raw().to_string()
-            } else {
-                col.to_string()
-            }
-        }).collect();
+        let resolved: Vec<String> = id_columns
+            .iter()
+            .map(|col| {
+                if let Some(property_value) = node_schema.property_mappings.get(*col) {
+                    property_value.raw().to_string()
+                } else {
+                    col.to_string()
+                }
+            })
+            .collect();
 
         log::info!(
             "🔧 resolve_id_column: {:?} → {:?} for table {}",
-            id_columns, resolved, node_schema.table_name
+            id_columns,
+            resolved,
+            node_schema.table_name
         );
 
         if resolved.len() == 1 {

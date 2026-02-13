@@ -91,7 +91,8 @@ pub fn get_graph_context<'a>(
             let mut column_mappings: Vec<(String, String)> = Vec::new();
             for label in labels.iter() {
                 if let Ok(rel_schema) = graph_schema.get_rel_schema(label) {
-                    column_mappings.push((rel_schema.from_id.to_string(), "from_node_id".to_string()));
+                    column_mappings
+                        .push((rel_schema.from_id.to_string(), "from_node_id".to_string()));
                     column_mappings.push((rel_schema.to_id.to_string(), "to_node_id".to_string()));
                 }
             }

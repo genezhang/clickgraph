@@ -2841,12 +2841,8 @@ impl GraphJoinInference {
                             let left_cols = resolved_right_join_col.columns();
                             let right_cols = resolved_right_id.columns();
                             for (l, r) in left_cols.iter().zip(right_cols.iter()) {
-                                let correlation_condition = helpers::eq_condition(
-                                    rel_alias,
-                                    *l,
-                                    right_alias,
-                                    *r,
-                                );
+                                let correlation_condition =
+                                    helpers::eq_condition(rel_alias, *l, right_alias, *r);
                                 edge_join.joining_on.push(correlation_condition);
                             }
                             log::debug!("✓ Added correlation condition to edge JOIN '{}': connects to already-bound '{}'", rel_alias, right_alias);
@@ -2931,12 +2927,8 @@ impl GraphJoinInference {
                             let left_cols = resolved_left_join_col.columns();
                             let right_cols = resolved_left_id.columns();
                             for (l, r) in left_cols.iter().zip(right_cols.iter()) {
-                                let correlation_condition = helpers::eq_condition(
-                                    rel_alias,
-                                    *l,
-                                    left_alias,
-                                    *r,
-                                );
+                                let correlation_condition =
+                                    helpers::eq_condition(rel_alias, *l, left_alias, *r);
                                 edge_join.joining_on.push(correlation_condition);
                             }
                             log::debug!("✓ Added correlation condition to edge JOIN '{}': connects to already-bound '{}'", rel_alias, left_alias);
@@ -3332,8 +3324,8 @@ impl GraphJoinInference {
                             // CRITICAL FIX: Use VLP-aware join reference for left alias
                             // If left_alias is a VLP endpoint, this returns ("t", "end_id")
                             // Otherwise, it returns (left_alias, left_id_col) unchanged
-                            let (join_table_alias, join_column) =
-                                plan_ctx.get_vlp_join_reference(left_alias, &left_id_col.to_string());
+                            let (join_table_alias, join_column) = plan_ctx
+                                .get_vlp_join_reference(left_alias, &left_id_col.to_string());
 
                             log::debug!(
                                 "🔑 VLP JOIN reference for '{}': ({}, {})",
@@ -3437,8 +3429,8 @@ impl GraphJoinInference {
                             // CRITICAL FIX: Use VLP-aware join reference for right alias
                             // If right_alias is a VLP endpoint, this returns ("t", "start_id" or "end_id")
                             // Otherwise, it returns (right_alias, right_id_col) unchanged
-                            let (join_table_alias, join_column) =
-                                plan_ctx.get_vlp_join_reference(right_alias, &right_id_col.to_string());
+                            let (join_table_alias, join_column) = plan_ctx
+                                .get_vlp_join_reference(right_alias, &right_id_col.to_string());
 
                             log::debug!(
                                 "🔑 VLP JOIN reference for '{}': ({}, {})",

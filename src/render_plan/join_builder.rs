@@ -1457,7 +1457,8 @@ impl JoinBuilder for LogicalPlan {
                             let non_shared_id_col = extract_id_column(&inner_rel.left)
                                 .unwrap_or_else(|| "id".to_string());
 
-                            let non_shared_label = extract_node_label_from_viewscan(&inner_rel.left);
+                            let non_shared_label =
+                                extract_node_label_from_viewscan(&inner_rel.left);
                             let non_shared_node_id: Identifier = non_shared_label
                                 .as_ref()
                                 .and_then(|lbl| schema.node_schema_opt(lbl))
@@ -1541,7 +1542,8 @@ impl JoinBuilder for LogicalPlan {
                             let non_shared_id_col = extract_end_node_id_column(&inner_rel.right)
                                 .unwrap_or_else(|| "id".to_string());
 
-                            let non_shared_label = extract_node_label_from_viewscan(&inner_rel.right);
+                            let non_shared_label =
+                                extract_node_label_from_viewscan(&inner_rel.right);
                             let non_shared_node_id: Identifier = non_shared_label
                                 .as_ref()
                                 .and_then(|lbl| schema.node_schema_opt(lbl))
@@ -2229,13 +2231,12 @@ impl JoinBuilder for LogicalPlan {
                         if let Some(table_name) = shared_table {
                             // Create JOIN for shared node: f.id = t2.to_id
                             // For composite IDs, resolve full Identifier from schema
-                            let shared_label = extract_node_label_from_viewscan(
-                                if shared_is_inner_right {
+                            let shared_label =
+                                extract_node_label_from_viewscan(if shared_is_inner_right {
                                     &inner_rel.right
                                 } else {
                                     &inner_rel.left
-                                },
-                            );
+                                });
                             let shared_node_id: Identifier = shared_label
                                 .as_ref()
                                 .and_then(|lbl| schema.node_schema_opt(lbl))

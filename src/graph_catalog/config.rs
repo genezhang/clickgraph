@@ -91,12 +91,24 @@ impl Identifier {
     /// Handles mixed single/composite by pairing columns element-wise.
     /// For single: "left.col = right.col"
     /// For composite: "left.c1 = right.c1 AND left.c2 = right.c2"
-    pub fn to_sql_equality(&self, left_alias: &str, other: &Identifier, right_alias: &str) -> String {
+    pub fn to_sql_equality(
+        &self,
+        left_alias: &str,
+        other: &Identifier,
+        right_alias: &str,
+    ) -> String {
         let left_cols = self.columns();
         let right_cols = other.columns();
-        assert_eq!(left_cols.len(), right_cols.len(),
-            "Identifier column count mismatch: {} vs {}", left_cols.len(), right_cols.len());
-        left_cols.iter().zip(right_cols.iter())
+        assert_eq!(
+            left_cols.len(),
+            right_cols.len(),
+            "Identifier column count mismatch: {} vs {}",
+            left_cols.len(),
+            right_cols.len()
+        );
+        left_cols
+            .iter()
+            .zip(right_cols.iter())
             .map(|(l, r)| format!("{}.{} = {}.{}", left_alias, l, right_alias, r))
             .collect::<Vec<_>>()
             .join(" AND ")
@@ -108,7 +120,9 @@ impl Identifier {
     pub fn to_sql_select(&self, alias: &str, as_prefix: &str) -> Vec<String> {
         match self {
             Identifier::Single(col) => vec![format!("{}.{} AS {}", alias, col, as_prefix)],
-            Identifier::Composite(cols) => cols.iter().enumerate()
+            Identifier::Composite(cols) => cols
+                .iter()
+                .enumerate()
                 .map(|(i, c)| format!("{}.{} AS {}_{}", alias, c, as_prefix, i + 1))
                 .collect(),
         }

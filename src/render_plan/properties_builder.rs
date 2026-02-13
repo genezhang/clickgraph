@@ -176,7 +176,11 @@ impl PropertiesBuilder for LogicalPlan {
                             }
                         }
                         if let Some(ref to_id) = scan.to_id {
-                            let offset = scan.from_id.as_ref().map(|id| id.columns().len()).unwrap_or(0);
+                            let offset = scan
+                                .from_id
+                                .as_ref()
+                                .map(|id| id.columns().len())
+                                .unwrap_or(0);
                             for (i, col) in to_id.columns().iter().enumerate() {
                                 let key = if to_id.is_composite() {
                                     format!("to_id_{}", i + 1)

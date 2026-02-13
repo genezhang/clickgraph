@@ -170,7 +170,7 @@ pub struct RelationshipSchema {
     /// Used for SQL generation and JOIN construction
     pub to_node_table: String,
     pub from_id: Identifier, // FK column(s) for source node ID (e.g., "user1_id" or ["bank_id", "account_number"])
-    pub to_id: Identifier,   // FK column(s) for target node ID (e.g., "user2_id" or ["to_bank_id", "to_account_number"])
+    pub to_id: Identifier, // FK column(s) for target node ID (e.g., "user2_id" or ["to_bank_id", "to_account_number"])
     pub from_node_id_dtype: String,
     pub to_node_id_dtype: String,
     pub property_mappings: HashMap<String, PropertyValue>,
