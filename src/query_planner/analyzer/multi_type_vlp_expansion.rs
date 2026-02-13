@@ -243,7 +243,9 @@ fn generate_paths_recursive(
         let valid_edges = find_edges_from_node(schema, rel_type, current_node_type);
 
         for edge in &valid_edges {
-            // For polymorphic edges with $any node types, expand to concrete types
+            // For polymorphic edges with $any node types, expand to concrete types.
+            // Note: N node types → N×N combinations per edge, but filtered by
+            // current_node_type match below, limiting actual branches to N per hop.
             let from_types = if edge.from_node == "$any" {
                 schema
                     .all_node_schemas()

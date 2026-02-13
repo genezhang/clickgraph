@@ -12236,14 +12236,10 @@ pub(super) fn build_pattern_comprehension_sql(
         let db_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
 
         // Build optional type_column filter for polymorphic edges
-        let type_filter = if let Some(ref type_col) = rel_schema.type_column {
-            format!(
-                " WHERE {}.{} = '{}'",
-                rel_schema.table_name, type_col, rel_name
-            )
-        } else {
-            String::new()
-        };
+        let mut where_clauses = Vec::new();
+        if let Some(ref type_col) = rel_schema.type_column {
+            where_clauses.push(format!("{}.{} = '{}'", db_table, type_col, rel_name));
+        }
 
         // Handle $any (polymorphic) from_node/to_node matching
         let from_matches = rel_schema.from_node.eq_ignore_ascii_case(correlation_label)
@@ -12253,17 +12249,45 @@ pub(super) fn build_pattern_comprehension_sql(
 
         // Check outgoing: correlation_label is the from_node
         if (matches!(direction, Direction::Outgoing | Direction::Either)) && from_matches {
+            let mut branch_where = where_clauses.clone();
+            if rel_schema.from_node == "$any" {
+                if let Some(ref from_label_col) = rel_schema.from_label_column {
+                    branch_where.push(format!(
+                        "{}.{} = '{}'",
+                        db_table, from_label_col, correlation_label
+                    ));
+                }
+            }
+            let where_str = if branch_where.is_empty() {
+                String::new()
+            } else {
+                format!(" WHERE {}", branch_where.join(" AND "))
+            };
             branches.push(format!(
                 "SELECT {} AS node_id FROM {}{}",
-                rel_schema.from_id, db_table, type_filter
+                rel_schema.from_id, db_table, where_str
             ));
         }
 
         // Check incoming: correlation_label is the to_node
         if (matches!(direction, Direction::Incoming | Direction::Either)) && to_matches {
+            let mut branch_where = where_clauses.clone();
+            if rel_schema.to_node == "$any" {
+                if let Some(ref to_label_col) = rel_schema.to_label_column {
+                    branch_where.push(format!(
+                        "{}.{} = '{}'",
+                        db_table, to_label_col, correlation_label
+                    ));
+                }
+            }
+            let where_str = if branch_where.is_empty() {
+                String::new()
+            } else {
+                format!(" WHERE {}", branch_where.join(" AND "))
+            };
             branches.push(format!(
                 "SELECT {} AS node_id FROM {}{}",
-                rel_schema.to_id, db_table, type_filter
+                rel_schema.to_id, db_table, where_str
             ));
         }
     }
