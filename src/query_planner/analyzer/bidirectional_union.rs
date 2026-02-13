@@ -717,33 +717,37 @@ fn is_valid_direction_branch(plan: &Arc<LogicalPlan>, graph_schema: &GraphSchema
     match plan.as_ref() {
         LogicalPlan::GraphRel(graph_rel) => {
             if let Some(labels) = &graph_rel.labels {
-                if let Some(rel_type) = labels.first() {
+                // For multi-type patterns ([:TYPE1|TYPE2]), a branch is valid if ANY
+                // label is valid for this direction (each type generates its own UNION branch).
+                // Only reject if ALL labels are invalid.
+                let from_label = extract_node_label_from_plan(&graph_rel.left);
+                let to_label = extract_node_label_from_plan(&graph_rel.right);
+                let left_table = extract_source_table_from_plan(&graph_rel.left);
+                let right_table = extract_source_table_from_plan(&graph_rel.right);
+
+                let mut all_invalid = true;
+                for rel_type in labels {
                     if let Some(rel_schema) = graph_schema.get_relationships_schema_opt(rel_type) {
                         let schema_from = &rel_schema.from_node;
                         let schema_to = &rel_schema.to_node;
-                        // Skip validation for wildcard schemas
+                        // Wildcard schemas are always valid
                         if schema_from == "$any" || schema_to == "$any" {
-                            return true;
+                            all_invalid = false;
+                            break;
                         }
                         // Self-referencing relationships are always valid in both directions
                         if schema_from == schema_to {
-                            return true;
+                            all_invalid = false;
+                            break;
                         }
-                        // Try explicit labels first
-                        let from_label = extract_node_label_from_plan(&graph_rel.left);
-                        let to_label = extract_node_label_from_plan(&graph_rel.right);
+                        // Check explicit labels
                         if let (Some(from), Some(to)) = (&from_label, &to_label) {
-                            if from != schema_from || to != schema_to {
-                                log::debug!(
-                                    "🔄 is_valid_direction_branch: REJECTING ({})-[:{}]->({}), schema defines ({})→({})",
-                                    from, rel_type, to, schema_from, schema_to
-                                );
-                                return false;
+                            if from == schema_from && to == schema_to {
+                                all_invalid = false;
+                                break;
                             }
                         } else {
                             // Unlabeled nodes: check ViewScan source tables against schema
-                            let left_table = extract_source_table_from_plan(&graph_rel.left);
-                            let right_table = extract_source_table_from_plan(&graph_rel.right);
                             let from_node_table = graph_schema
                                 .node_schema(schema_from)
                                 .ok()
@@ -755,16 +759,28 @@ fn is_valid_direction_branch(plan: &Arc<LogicalPlan>, graph_schema: &GraphSchema
                             if let (Some(lt), Some(rt), Some(ft), Some(tt)) =
                                 (&left_table, &right_table, &from_node_table, &to_node_table)
                             {
-                                if ft != tt && (lt != ft || rt != tt) {
-                                    log::debug!(
-                                        "🔄 is_valid_direction_branch: REJECTING unlabeled branch by table: left={}, right={}, schema from={}, to={}",
-                                        lt, rt, ft, tt
-                                    );
-                                    return false;
+                                if ft == tt || (lt == ft && rt == tt) {
+                                    all_invalid = false;
+                                    break;
                                 }
+                            } else {
+                                // Can't determine tables — assume valid
+                                all_invalid = false;
+                                break;
                             }
                         }
+                    } else {
+                        // Unknown rel type — assume valid
+                        all_invalid = false;
+                        break;
                     }
+                }
+                if all_invalid && !labels.is_empty() {
+                    log::debug!(
+                        "🔄 is_valid_direction_branch: REJECTING branch, no valid types among {:?}",
+                        labels
+                    );
+                    return false;
                 }
             }
             // Recurse into nested patterns
