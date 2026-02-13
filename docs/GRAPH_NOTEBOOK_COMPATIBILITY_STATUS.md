@@ -6,11 +6,17 @@
 
 ### What Was Tested
 
-**Test Suite**: 12 comprehensive compatibility tests  
-**Status**: 12/12 passing (100%)  
+**Test Approach**: Dual-layer validation  
+- **Quick validation**: 12 manual tests (test_graph_notebook.py) for rapid smoke testing
+- **Comprehensive suite**: 26 pytest tests (tests/integration/bolt/test_graph_notebook_compatibility.py)
+**Status**: All tests passing (100%)  
 **Tools**: graph-notebook (AWS Neptune visualization library) + Neo4j Python driver
 
 ## Test Coverage
+
+### Quick Validation Tests (12 manual tests)
+
+Fast smoke tests in `test_graph_notebook.py` for initial validation:
 
 ### ✅ Connection & Protocol (2 tests)
 - Client creation with graph-notebook
@@ -122,14 +128,14 @@ python3 test_graph_notebook.py
 
 **Expected Output**: 12/12 tests passing
 
-### Full Automated Test Suite (2 minutes)
+### Full Automated Test Suite (Pytest - 26 tests)
 
 ```bash
 pytest tests/integration/bolt/test_graph_notebook_compatibility.py -v
 ```
 
 **Coverage**:
-- 30+ test cases
+- 26 test methods across 9 test classes
 - All major query patterns
 - Error handling
 - Edge cases
@@ -210,14 +216,13 @@ Add to CI pipeline:
   run: |
     ./scripts/server/start_server_background.sh --neo4j-compat-mode
     pytest tests/integration/bolt/test_graph_notebook_compatibility.py -v
-    python3 test_graph_notebook.py
 ```
 
 ### Pre-Release Checklist
 
 Before each release, verify:
-- [ ] All 12 quick tests pass
-- [ ] Full test suite (30+ tests) passes
+- [ ] All 12 quick validation tests pass (test_graph_notebook.py)
+- [ ] Full pytest suite (26 tests) passes
 - [ ] Manual Jupyter notebook test works
 - [ ] Schema discovery procedures work
 - [ ] Path visualization works
@@ -247,9 +252,9 @@ When users report compatibility issues:
 
 ## Conclusion
 
-✅ **ClickGraph is production-ready for graph-notebook integration**
+✅ **ClickGraph is robust and well-tested for graph-notebook integration**
 
-The Neo4j compatibility mode successfully bridges the gap between ClickGraph's ClickHouse backend and the Neo4j ecosystem. With 12/12 compatibility tests passing and comprehensive documentation, users can confidently use graph-notebook for Jupyter-based graph visualization and exploration.
+The Neo4j compatibility mode successfully bridges the gap between ClickGraph's ClickHouse backend and the Neo4j ecosystem. With comprehensive test coverage (12 quick validation tests + 26 pytest tests, all passing) and complete documentation, users can confidently use graph-notebook for Jupyter-based graph visualization and exploration.
 
 **Key Success Factors**:
 - Conditional server agent masquerading (`Neo4j/5.8.0`)
