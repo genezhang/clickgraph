@@ -101,6 +101,60 @@ fn find_graph_rel(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_p
     }
 }
 
+/// Build JOIN equality condition(s) for an Identifier pair.
+/// For single IDs: creates one `left.col = right.col` condition.
+/// For composite IDs: creates AND of per-column equalities.
+fn build_identifier_join_conditions(
+    left_alias: &str,
+    left_id: &Identifier,
+    right_alias: &str,
+    right_id: &Identifier,
+) -> Vec<OperatorApplication> {
+    let left_cols = left_id.columns();
+    let right_cols = right_id.columns();
+    assert_eq!(
+        left_cols.len(),
+        right_cols.len(),
+        "Identifier column count mismatch in JOIN: left={} ({:?}) vs right={} ({:?})",
+        left_cols.len(),
+        left_id,
+        right_cols.len(),
+        right_id
+    );
+    left_cols
+        .iter()
+        .zip(right_cols.iter())
+        .map(|(l, r)| OperatorApplication {
+            operator: Operator::Equal,
+            operands: vec![
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(left_alias.to_string()),
+                    column: PropertyValue::Column(l.to_string()),
+                }),
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(right_alias.to_string()),
+                    column: PropertyValue::Column(r.to_string()),
+                }),
+            ],
+        })
+        .collect()
+}
+
+/// Wrap multiple conditions into a single AND OperatorApplication, or return the single one.
+fn wrap_conditions_and(conditions: Vec<OperatorApplication>) -> OperatorApplication {
+    if conditions.len() == 1 {
+        conditions.into_iter().next().unwrap()
+    } else {
+        OperatorApplication {
+            operator: Operator::And,
+            operands: conditions
+                .into_iter()
+                .map(RenderExpr::OperatorApplicationExp)
+                .collect(),
+        }
+    }
+}
+
 /// Join Builder trait for extracting JOIN-related information from logical plans
 pub trait JoinBuilder {
     /// Extract JOIN clauses from the logical plan
@@ -1277,26 +1331,20 @@ impl JoinBuilder for LogicalPlan {
                         // Not coupled - add the JOIN as usual
                         // JOIN this relationship table to the previous one
                         // e.g., INNER JOIN flights AS f2 ON f2.Origin = f1.Dest
+                        let chained_conditions = build_identifier_join_conditions(
+                            &graph_rel.alias,
+                            &rel_cols.from_id,
+                            &left_rel.alias,
+                            &left_rel_cols.to_id,
+                        );
                         joins.push(Join {
                             table_name: rel_table.clone(),
                             table_alias: graph_rel.alias.clone(),
-                            joining_on: vec![OperatorApplication {
-                                operator: Operator::Equal,
-                                operands: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(graph_rel.alias.clone()),
-                                        column: PropertyValue::Column(rel_cols.from_id.to_string()),
-                                    }),
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(left_rel.alias.clone()),
-                                        column: PropertyValue::Column(left_rel_cols.to_id.to_string()),
-                                    }),
-                                ],
-                            }],
+                            joining_on: chained_conditions,
                             join_type: JoinType::Inner,
                             pre_filter: None,
-                            from_id_column: Some(rel_cols.from_id.to_string()), // Preserve for NULL checks
-                            to_id_column: Some(rel_cols.to_id.to_string()), // Preserve for NULL checks
+                            from_id_column: Some(rel_cols.from_id.to_string()),
+                            to_id_column: Some(rel_cols.to_id.to_string()),
                             graph_rel: None,
                         });
                     }
@@ -1378,24 +1426,24 @@ impl JoinBuilder for LogicalPlan {
                         let rel_table = extract_parameterized_table_ref(&inner_rel.center)
                             .unwrap_or_else(|| inner_rel.alias.clone());
 
-                        let rel_join_condition = OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(inner_rel.alias.clone()),
-                                    column: PropertyValue::Column(inner_rel_cols.to_id.to_string()),
-                                }),
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(shared_node_alias.clone()),
-                                    column: PropertyValue::Column(shared_id_col),
-                                }),
-                            ],
-                        };
+                        // Resolve shared node's full Identifier from schema
+                        let shared_label_right = extract_node_label_from_viewscan(&inner_rel.right);
+                        let shared_node_identifier: Identifier = shared_label_right
+                            .as_ref()
+                            .and_then(|lbl| schema.node_schema_opt(lbl))
+                            .map(|ns| ns.node_id.id.clone())
+                            .unwrap_or_else(|| Identifier::Single(shared_id_col));
+                        let rel_join_conditions = build_identifier_join_conditions(
+                            &inner_rel.alias,
+                            &inner_rel_cols.to_id,
+                            &shared_node_alias,
+                            &shared_node_identifier,
+                        );
 
                         joins.push(Join {
                             table_name: rel_table,
                             table_alias: inner_rel.alias.clone(),
-                            joining_on: vec![rel_join_condition],
+                            joining_on: rel_join_conditions,
                             join_type: JoinType::Inner,
                             pre_filter: None,
                             from_id_column: Some(inner_rel_cols.from_id.to_string()),
@@ -1409,26 +1457,23 @@ impl JoinBuilder for LogicalPlan {
                             let non_shared_id_col = extract_id_column(&inner_rel.left)
                                 .unwrap_or_else(|| "id".to_string());
 
-                            let non_shared_join_condition = OperatorApplication {
-                                operator: Operator::Equal,
-                                operands: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(non_shared_alias.clone()),
-                                        column: PropertyValue::Column(non_shared_id_col),
-                                    }),
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(inner_rel.alias.clone()),
-                                        column: PropertyValue::Column(
-                                            inner_rel_cols.from_id.to_string(),
-                                        ),
-                                    }),
-                                ],
-                            };
+                            let non_shared_label = extract_node_label_from_viewscan(&inner_rel.left);
+                            let non_shared_node_id: Identifier = non_shared_label
+                                .as_ref()
+                                .and_then(|lbl| schema.node_schema_opt(lbl))
+                                .map(|ns| ns.node_id.id.clone())
+                                .unwrap_or_else(|| Identifier::Single(non_shared_id_col));
+                            let non_shared_conditions = build_identifier_join_conditions(
+                                &non_shared_alias,
+                                &non_shared_node_id,
+                                &inner_rel.alias,
+                                &inner_rel_cols.from_id,
+                            );
 
                             joins.push(Join {
                                 table_name: non_shared_table,
                                 table_alias: non_shared_alias.clone(),
-                                joining_on: vec![non_shared_join_condition],
+                                joining_on: non_shared_conditions,
                                 join_type: JoinType::Inner,
                                 pre_filter: None,
                                 from_id_column: None,
@@ -1463,24 +1508,24 @@ impl JoinBuilder for LogicalPlan {
                         let rel_table = extract_parameterized_table_ref(&inner_rel.center)
                             .unwrap_or_else(|| inner_rel.alias.clone());
 
-                        let rel_join_condition = OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(inner_rel.alias.clone()),
-                                    column: PropertyValue::Column(inner_rel_cols.from_id.to_string()),
-                                }),
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(shared_node_alias.clone()),
-                                    column: PropertyValue::Column(shared_id_col),
-                                }),
-                            ],
-                        };
+                        // Resolve shared node's full Identifier from schema
+                        let shared_label_left = extract_node_label_from_viewscan(&inner_rel.left);
+                        let shared_node_identifier: Identifier = shared_label_left
+                            .as_ref()
+                            .and_then(|lbl| schema.node_schema_opt(lbl))
+                            .map(|ns| ns.node_id.id.clone())
+                            .unwrap_or_else(|| Identifier::Single(shared_id_col));
+                        let rel_join_conditions = build_identifier_join_conditions(
+                            &inner_rel.alias,
+                            &inner_rel_cols.from_id,
+                            &shared_node_alias,
+                            &shared_node_identifier,
+                        );
 
                         joins.push(Join {
                             table_name: rel_table,
                             table_alias: inner_rel.alias.clone(),
-                            joining_on: vec![rel_join_condition],
+                            joining_on: rel_join_conditions,
                             join_type: JoinType::Inner,
                             pre_filter: None,
                             from_id_column: Some(inner_rel_cols.from_id.to_string()),
@@ -1496,24 +1541,23 @@ impl JoinBuilder for LogicalPlan {
                             let non_shared_id_col = extract_end_node_id_column(&inner_rel.right)
                                 .unwrap_or_else(|| "id".to_string());
 
-                            let non_shared_join_condition = OperatorApplication {
-                                operator: Operator::Equal,
-                                operands: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(non_shared_alias.clone()),
-                                        column: PropertyValue::Column(non_shared_id_col),
-                                    }),
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(inner_rel.alias.clone()),
-                                        column: PropertyValue::Column(inner_rel_cols.to_id.to_string()),
-                                    }),
-                                ],
-                            };
+                            let non_shared_label = extract_node_label_from_viewscan(&inner_rel.right);
+                            let non_shared_node_id: Identifier = non_shared_label
+                                .as_ref()
+                                .and_then(|lbl| schema.node_schema_opt(lbl))
+                                .map(|ns| ns.node_id.id.clone())
+                                .unwrap_or_else(|| Identifier::Single(non_shared_id_col));
+                            let non_shared_conditions = build_identifier_join_conditions(
+                                &non_shared_alias,
+                                &non_shared_node_id,
+                                &inner_rel.alias,
+                                &inner_rel_cols.to_id,
+                            );
 
                             joins.push(Join {
                                 table_name: non_shared_table,
                                 table_alias: non_shared_alias.clone(),
-                                joining_on: vec![non_shared_join_condition],
+                                joining_on: non_shared_conditions,
                                 join_type: JoinType::Inner,
                                 pre_filter: None,
                                 from_id_column: None,
@@ -1595,26 +1639,27 @@ impl JoinBuilder for LogicalPlan {
                     let rel_col_end = &rel_cols.to_id; // for right_connection (TARGET)
 
                     // JOIN 1: Relationship table -> FROM (left) node
+                    // Resolve full Identifier for composite ID support
+                    let left_label = extract_node_label_from_viewscan(&graph_rel.left);
+                    let left_node_id_flen: Identifier = left_label
+                        .as_ref()
+                        .and_then(|lbl| schema.node_schema_opt(lbl))
+                        .map(|ns| ns.node_id.id.clone())
+                        .unwrap_or_else(|| Identifier::Single(left_id_col));
+                    let join1_conditions = build_identifier_join_conditions(
+                        &graph_rel.alias,
+                        rel_col_start,
+                        &graph_rel.left_connection,
+                        &left_node_id_flen,
+                    );
                     joins.push(Join {
                         table_name: rel_table,
                         table_alias: graph_rel.alias.clone(),
-                        joining_on: vec![OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(graph_rel.alias.clone()),
-                                    column: PropertyValue::Column(rel_col_start.to_string()),
-                                }),
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(graph_rel.left_connection.clone()),
-                                    column: PropertyValue::Column(left_id_col),
-                                }),
-                            ],
-                        }],
+                        joining_on: join1_conditions,
                         join_type: join_type.clone(),
                         pre_filter: None,
-                        from_id_column: Some(rel_col_start.to_string()), // Preserve for NULL checks
-                        to_id_column: Some(rel_col_end.to_string()),     // Preserve for NULL checks
+                        from_id_column: Some(rel_col_start.to_string()),
+                        to_id_column: Some(rel_col_end.to_string()),
                         graph_rel: None,
                     });
 
@@ -1631,24 +1676,24 @@ impl JoinBuilder for LogicalPlan {
                                 ))
                             })?;
 
+                            // Resolve full Identifier for composite ID support
+                            let right_label = extract_node_label_from_viewscan(&right_joins.input);
+                            let right_node_id_flen: Identifier = right_label
+                                .as_ref()
+                                .and_then(|lbl| schema.node_schema_opt(lbl))
+                                .map(|ns| ns.node_id.id.clone())
+                                .unwrap_or_else(|| Identifier::Single(right_id_col));
+                            let join2_conditions = build_identifier_join_conditions(
+                                &graph_rel.right_connection,
+                                &right_node_id_flen,
+                                &graph_rel.alias,
+                                rel_col_end,
+                            );
+
                             joins.push(Join {
                                 table_name: cte_table,
                                 table_alias: graph_rel.right_connection.clone(),
-                                joining_on: vec![OperatorApplication {
-                                    operator: Operator::Equal,
-                                    operands: vec![
-                                        RenderExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: TableAlias(
-                                                graph_rel.right_connection.clone(),
-                                            ),
-                                            column: PropertyValue::Column(right_id_col),
-                                        }),
-                                        RenderExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: TableAlias(graph_rel.alias.clone()),
-                                            column: PropertyValue::Column(rel_col_end.to_string()),
-                                        }),
-                                    ],
-                                }],
+                                joining_on: join2_conditions,
                                 join_type,
                                 pre_filter: None,
                                 from_id_column: None,
@@ -1848,6 +1893,20 @@ impl JoinBuilder for LogicalPlan {
                     },
                 );
 
+                // Resolve full node Identifiers for composite ID support.
+                // start_id_col/end_id_col are String (first column only for composite).
+                // For composite nodes, look up the schema to get the full Identifier.
+                let start_node_id: Identifier = start_label
+                    .as_ref()
+                    .and_then(|lbl| schema.node_schema_opt(lbl))
+                    .map(|ns| ns.node_id.id.clone())
+                    .unwrap_or_else(|| Identifier::Single(start_id_col.clone()));
+                let end_node_id: Identifier = end_label
+                    .as_ref()
+                    .and_then(|lbl| schema.node_schema_opt(lbl))
+                    .map(|ns| ns.node_id.id.clone())
+                    .unwrap_or_else(|| Identifier::Single(end_id_col.clone()));
+
                 // JOIN ORDER: For standard patterns like (a)-[:R]->(b), we join:
                 // 1. Relationship table (can reference anchor `a` from FROM clause)
                 // 2. End node `b` (can reference relationship)
@@ -1976,63 +2035,44 @@ impl JoinBuilder for LogicalPlan {
                 //   For incoming: r.to_id = a.user_id
                 //   For either: (r.from_id = a.user_id) OR (r.to_id = a.user_id)
                 let rel_join_condition = if is_bidirectional {
-                    // Bidirectional: create OR condition for both directions
-                    let (left_table_alias, left_column) =
+                    // Bidirectional: (rel.from_id = left.id) OR (rel.to_id = left.id)
+                    // For composite IDs, each side becomes AND of per-column equalities
+                    let (_left_table_alias, _left_column) =
                         resolve_cte_reference(&graph_rel.left_connection, &start_id_col);
-                    let outgoing_cond = OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(graph_rel.alias.clone()),
-                                column: PropertyValue::Column(rel_cols.from_id.to_string()),
-                            }),
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(left_table_alias.clone()),
-                                column: PropertyValue::Column(left_column.clone()),
-                            }),
-                        ],
-                    };
-                    let incoming_cond = OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(graph_rel.alias.clone()),
-                                column: PropertyValue::Column(rel_cols.to_id.to_string()),
-                            }),
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(left_table_alias.clone()),
-                                column: PropertyValue::Column(left_column.clone()),
-                            }),
-                        ],
-                    };
+                    let outgoing_conditions = build_identifier_join_conditions(
+                        &graph_rel.alias,
+                        &rel_cols.from_id,
+                        &_left_table_alias,
+                        &start_node_id,
+                    );
+                    let incoming_conditions = build_identifier_join_conditions(
+                        &graph_rel.alias,
+                        &rel_cols.to_id,
+                        &_left_table_alias,
+                        &start_node_id,
+                    );
+                    let outgoing = wrap_conditions_and(outgoing_conditions);
+                    let incoming = wrap_conditions_and(incoming_conditions);
                     OperatorApplication {
                         operator: Operator::Or,
                         operands: vec![
-                            RenderExpr::OperatorApplicationExp(outgoing_cond),
-                            RenderExpr::OperatorApplicationExp(incoming_cond),
+                            RenderExpr::OperatorApplicationExp(outgoing),
+                            RenderExpr::OperatorApplicationExp(incoming),
                         ],
                     }
                 } else {
                     // Directional: left is always source (from), right is always target (to)
-                    // The GraphRel representation normalizes this - direction only affects
-                    // how nodes are assigned to left/right during parsing.
                     // JOIN 1: relationship.from_id = left_node.id
-                    let (left_table_alias, left_column) =
+                    // For composite IDs, generates AND of per-column equalities
+                    let (_left_table_alias, _left_column) =
                         resolve_cte_reference(&graph_rel.left_connection, &start_id_col);
-                    let rel_col = &rel_cols.from_id;
-                    OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(graph_rel.alias.clone()),
-                                column: PropertyValue::Column(rel_col.to_string()),
-                            }),
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(left_table_alias),
-                                column: PropertyValue::Column(left_column),
-                            }),
-                        ],
-                    }
+                    let conditions = build_identifier_join_conditions(
+                        &graph_rel.alias,
+                        &rel_cols.from_id,
+                        &_left_table_alias,
+                        &start_node_id,
+                    );
+                    wrap_conditions_and(conditions)
                 };
 
                 println!(
@@ -2188,19 +2228,26 @@ impl JoinBuilder for LogicalPlan {
 
                         if let Some(table_name) = shared_table {
                             // Create JOIN for shared node: f.id = t2.to_id
-                            let shared_join_condition = OperatorApplication {
-                                operator: Operator::Equal,
-                                operands: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(shared_alias.clone()),
-                                        column: PropertyValue::Column(shared_id_col),
-                                    }),
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(graph_rel.alias.clone()),
-                                        column: PropertyValue::Column(rel_cols.to_id.to_string()),
-                                    }),
-                                ],
-                            };
+                            // For composite IDs, resolve full Identifier from schema
+                            let shared_label = extract_node_label_from_viewscan(
+                                if shared_is_inner_right {
+                                    &inner_rel.right
+                                } else {
+                                    &inner_rel.left
+                                },
+                            );
+                            let shared_node_id: Identifier = shared_label
+                                .as_ref()
+                                .and_then(|lbl| schema.node_schema_opt(lbl))
+                                .map(|ns| ns.node_id.id.clone())
+                                .unwrap_or_else(|| Identifier::Single(shared_id_col));
+                            let conditions = build_identifier_join_conditions(
+                                shared_alias,
+                                &shared_node_id,
+                                &graph_rel.alias,
+                                &rel_cols.to_id,
+                            );
+                            let shared_join_condition = wrap_conditions_and(conditions);
 
                             joins.push(Join {
                                 table_name,
@@ -2235,74 +2282,64 @@ impl JoinBuilder for LogicalPlan {
                 //   Simplified for bidirectional: b.user_id = CASE WHEN r.from_id = a.user_id THEN r.to_id ELSE r.from_id END
                 //   Actually simpler: just check b connects to whichever end of r that's NOT a
                 let end_join_condition = if is_bidirectional {
-                    // For bidirectional, the end node connects to whichever side of r that ISN'T the start node
-                    // This is expressed as: (b.id = r.to_id AND r.from_id = a.id) OR (b.id = r.from_id AND r.to_id = a.id)
-                    let (left_table_alias, left_column) =
+                    // Bidirectional JOIN 2:
+                    // (b.id = r.to_id AND r.from_id = a.id) OR (b.id = r.from_id AND r.to_id = a.id)
+                    // For composite IDs, each equality becomes AND of per-column equalities
+                    let (_left_table_alias, _left_column) =
                         resolve_cte_reference(&graph_rel.left_connection, &start_id_col);
-                    let (right_table_alias, right_column) =
+                    let (_right_table_alias, _right_column) =
                         resolve_cte_reference(&graph_rel.right_connection, &end_id_col);
+
+                    // Outgoing: b.id = r.to_id AND r.from_id = a.id
+                    let mut outgoing_parts: Vec<RenderExpr> = build_identifier_join_conditions(
+                        &_right_table_alias,
+                        &end_node_id,
+                        &graph_rel.alias,
+                        &rel_cols.to_id,
+                    )
+                    .into_iter()
+                    .map(RenderExpr::OperatorApplicationExp)
+                    .collect();
+                    outgoing_parts.extend(
+                        build_identifier_join_conditions(
+                            &graph_rel.alias,
+                            &rel_cols.from_id,
+                            &_left_table_alias,
+                            &start_node_id,
+                        )
+                        .into_iter()
+                        .map(RenderExpr::OperatorApplicationExp),
+                    );
                     let outgoing_side = OperatorApplication {
                         operator: Operator::And,
-                        operands: vec![
-                            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                                operator: Operator::Equal,
-                                operands: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(right_table_alias.clone()),
-                                        column: PropertyValue::Column(right_column.clone()),
-                                    }),
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(graph_rel.alias.clone()),
-                                        column: PropertyValue::Column(rel_cols.to_id.to_string()),
-                                    }),
-                                ],
-                            }),
-                            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                                operator: Operator::Equal,
-                                operands: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(graph_rel.alias.clone()),
-                                        column: PropertyValue::Column(rel_cols.from_id.to_string()),
-                                    }),
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(left_table_alias.clone()),
-                                        column: PropertyValue::Column(left_column.clone()),
-                                    }),
-                                ],
-                            }),
-                        ],
+                        operands: outgoing_parts,
                     };
+
+                    // Incoming: b.id = r.from_id AND r.to_id = a.id
+                    let mut incoming_parts: Vec<RenderExpr> = build_identifier_join_conditions(
+                        &_right_table_alias,
+                        &end_node_id,
+                        &graph_rel.alias,
+                        &rel_cols.from_id,
+                    )
+                    .into_iter()
+                    .map(RenderExpr::OperatorApplicationExp)
+                    .collect();
+                    incoming_parts.extend(
+                        build_identifier_join_conditions(
+                            &graph_rel.alias,
+                            &rel_cols.to_id,
+                            &_left_table_alias,
+                            &start_node_id,
+                        )
+                        .into_iter()
+                        .map(RenderExpr::OperatorApplicationExp),
+                    );
                     let incoming_side = OperatorApplication {
                         operator: Operator::And,
-                        operands: vec![
-                            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                                operator: Operator::Equal,
-                                operands: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(right_table_alias.clone()),
-                                        column: PropertyValue::Column(right_column.clone()),
-                                    }),
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(graph_rel.alias.clone()),
-                                        column: PropertyValue::Column(rel_cols.from_id.to_string()),
-                                    }),
-                                ],
-                            }),
-                            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                                operator: Operator::Equal,
-                                operands: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(graph_rel.alias.clone()),
-                                        column: PropertyValue::Column(rel_cols.to_id.to_string()),
-                                    }),
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(left_table_alias.clone()),
-                                        column: PropertyValue::Column(left_column.clone()),
-                                    }),
-                                ],
-                            }),
-                        ],
+                        operands: incoming_parts,
                     };
+
                     OperatorApplication {
                         operator: Operator::Or,
                         operands: vec![
@@ -2313,22 +2350,16 @@ impl JoinBuilder for LogicalPlan {
                 } else {
                     // Directional: right is always target (to)
                     // JOIN 2: right_node.id = relationship.to_id
-                    let (right_table_alias, right_column) =
+                    // For composite IDs, generates AND of per-column equalities
+                    let (_right_table_alias, _right_column) =
                         resolve_cte_reference(&graph_rel.right_connection, &end_id_col);
-                    let rel_col = &rel_cols.to_id;
-                    OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(right_table_alias),
-                                column: PropertyValue::Column(right_column),
-                            }),
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(graph_rel.alias.clone()),
-                                column: PropertyValue::Column(rel_col.to_string()),
-                            }),
-                        ],
-                    }
+                    let conditions = build_identifier_join_conditions(
+                        &_right_table_alias,
+                        &end_node_id,
+                        &graph_rel.alias,
+                        &rel_cols.to_id,
+                    );
+                    wrap_conditions_and(conditions)
                 };
 
                 println!(

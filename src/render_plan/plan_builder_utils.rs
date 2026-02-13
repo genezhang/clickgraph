@@ -12326,7 +12326,9 @@ pub(super) fn find_node_id_column_from_schema(
 ) -> String {
     // Look through node schemas to find the ID column
     if let Ok(node_schema) = schema.node_schema(label) {
-        return node_schema.node_id.column().to_string();
+        return node_schema.node_id.id.columns().first()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "id".to_string());
     }
 
     // Fallback: look through relationship schemas for from_node/to_node matching

@@ -634,7 +634,9 @@ pub fn extract_node_appearance(
         log::info!("🔧 VLP NodeAppearance: Using node alias '{}' instead of rel alias '{}' for cross-branch JOIN",
                    node_alias, graph_rel.alias);
 
-        let column_name = node_schema.node_id.column().to_string();
+        let column_name = node_schema.node_id.id.columns().first()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "id".to_string());
 
         return Ok(NodeAppearance {
             rel_alias: node_alias.to_string(),

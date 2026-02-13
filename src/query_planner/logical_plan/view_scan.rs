@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::LogicalPlan;
+use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::filter_parser::SchemaFilter;
 use crate::query_planner::logical_expr::LogicalExpr;
@@ -24,10 +25,10 @@ pub struct ViewScan {
     pub output_schema: Vec<String>,
     /// View-specific projections
     pub projections: Vec<LogicalExpr>,
-    /// For relationship scans: the column containing source node ID
-    pub from_id: Option<String>,
-    /// For relationship scans: the column containing target node ID
-    pub to_id: Option<String>,
+    /// For relationship scans: the column(s) containing source node ID
+    pub from_id: Option<Identifier>,
+    /// For relationship scans: the column(s) containing target node ID
+    pub to_id: Option<Identifier>,
     /// Child plan (if any)
     #[serde(skip)]
     pub input: Option<Arc<LogicalPlan>>,
@@ -163,8 +164,8 @@ impl ViewScan {
         id_column: String,
         output_schema: Vec<String>,
         projections: Vec<LogicalExpr>,
-        from_id: String,
-        to_id: String,
+        from_id: impl Into<Identifier>,
+        to_id: impl Into<Identifier>,
     ) -> Self {
         ViewScan {
             source_table,
@@ -173,8 +174,8 @@ impl ViewScan {
             id_column,
             output_schema,
             projections,
-            from_id: Some(from_id),
-            to_id: Some(to_id),
+            from_id: Some(from_id.into()),
+            to_id: Some(to_id.into()),
             input: None,
             view_parameter_names: None,
             view_parameter_values: None,
@@ -199,8 +200,8 @@ impl ViewScan {
         id_column: String,
         output_schema: Vec<String>,
         projections: Vec<LogicalExpr>,
-        from_id: String,
-        to_id: String,
+        from_id: impl Into<Identifier>,
+        to_id: impl Into<Identifier>,
         input: Arc<LogicalPlan>,
     ) -> Self {
         ViewScan {
@@ -210,8 +211,8 @@ impl ViewScan {
             id_column,
             output_schema,
             projections,
-            from_id: Some(from_id),
-            to_id: Some(to_id),
+            from_id: Some(from_id.into()),
+            to_id: Some(to_id.into()),
             input: Some(input),
             view_parameter_names: None,
             view_parameter_values: None,

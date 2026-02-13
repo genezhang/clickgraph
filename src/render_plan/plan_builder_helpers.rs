@@ -2483,7 +2483,7 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
                     // Only remap if this is a denormalized node (properties on edge table)
                     if scan.from_node_properties.is_some() {
                         if let Some(from_id) = &scan.from_id {
-                            return Some((rel.alias.clone(), from_id.clone()));
+                            return Some((rel.alias.clone(), from_id.to_string()));
                         }
                     }
                 }
@@ -2493,7 +2493,7 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
                     // Only remap if this is a denormalized node (properties on edge table)
                     if scan.to_node_properties.is_some() {
                         if let Some(to_id) = &scan.to_id {
-                            return Some((rel.alias.clone(), to_id.clone()));
+                            return Some((rel.alias.clone(), to_id.to_string()));
                         }
                     }
                 }
@@ -2513,7 +2513,7 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
             if node.is_denormalized && node.alias == alias {
                 if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
                     if let Some(from_id) = &scan.from_id {
-                        return Some((alias.to_string(), from_id.clone()));
+                        return Some((alias.to_string(), from_id.to_string()));
                     }
                 }
             }

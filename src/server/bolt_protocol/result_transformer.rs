@@ -1007,11 +1007,13 @@ fn transform_to_relationship(
     let from_id_columns = from_node_schema.node_id.id.columns();
     let from_id_values: Vec<String> = from_id_columns
         .iter()
-        .map(|col_name| {
+        .enumerate()
+        .map(|(i, col_name)| {
             properties
                 .get(*col_name)
                 .or_else(|| properties.get("start_id")) // For CTE: use generic start_id
                 .or_else(|| properties.get("from_id")) // Fallback to generic name for single column
+                .or_else(|| properties.get(&format!("from_id_{}", i + 1))) // Composite: from_id_1, from_id_2, ...
                 .and_then(value_to_string)
                 .ok_or_else(|| {
                     format!(
@@ -1026,11 +1028,13 @@ fn transform_to_relationship(
     let to_id_columns = to_node_schema.node_id.id.columns();
     let to_id_values: Vec<String> = to_id_columns
         .iter()
-        .map(|col_name| {
+        .enumerate()
+        .map(|(i, col_name)| {
             properties
                 .get(*col_name)
                 .or_else(|| properties.get("end_id")) // For CTE: use generic end_id
                 .or_else(|| properties.get("to_id")) // Fallback to generic name for single column
+                .or_else(|| properties.get(&format!("to_id_{}", i + 1))) // Composite: to_id_1, to_id_2, ...
                 .and_then(value_to_string)
                 .ok_or_else(|| {
                     format!(
@@ -1044,6 +1048,19 @@ fn transform_to_relationship(
     // Join composite IDs with pipe separator
     let from_id_str = from_id_values.join("|");
     let to_id_str = to_id_values.join("|");
+
+    // Remove internal from_id/to_id keys from properties (they're FK columns, not user properties)
+    properties.remove("from_id");
+    properties.remove("to_id");
+    properties.remove("start_id");
+    properties.remove("end_id");
+    // Remove composite variants: from_id_1, from_id_2, to_id_1, to_id_2, ...
+    for i in 1..=from_id_columns.len() {
+        properties.remove(&format!("from_id_{}", i));
+    }
+    for i in 1..=to_id_columns.len() {
+        properties.remove(&format!("to_id_{}", i));
+    }
 
     // Generate relationship elementId: "FOLLOWS:1->2" or "BELONGS_TO:tenant1|user1->tenant1|org1"
     let element_id = generate_relationship_element_id(&rel_type, &from_id_str, &to_id_str);
@@ -1852,6 +1869,22 @@ fn find_relationship_in_row_with_type(
     // Generate relationship element_id from type and node element_ids
     let rel_element_id = format!("{}:{}->{}", rel_type, start_element_id, end_element_id);
     let rel_id = generate_id_from_element_id(&rel_element_id);
+
+    // Remove internal from_id/to_id keys from properties (FK columns, not user properties)
+    properties.remove("from_id");
+    properties.remove("to_id");
+    // Remove composite variants
+    let composite_keys: Vec<String> = properties
+        .keys()
+        .filter(|k| {
+            (k.starts_with("from_id_") || k.starts_with("to_id_"))
+                && k.rsplit('_').next().map_or(false, |s| s.parse::<usize>().is_ok())
+        })
+        .cloned()
+        .collect();
+    for key in composite_keys {
+        properties.remove(&key);
+    }
 
     // Create relationship with extracted properties
     Some(Relationship {

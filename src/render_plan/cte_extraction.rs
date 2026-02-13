@@ -1267,8 +1267,8 @@ pub fn extract_relationship_columns(plan: &LogicalPlan) -> Option<RelationshipCo
             // Check if ViewScan already has relationship columns configured
             if let (Some(from_col), Some(to_col)) = (&view_scan.from_id, &view_scan.to_id) {
                 Some(RelationshipColumns {
-                    from_id: Identifier::from(from_col.as_str()),
-                    to_id: Identifier::from(to_col.as_str()),
+                    from_id: from_col.clone(),
+                    to_id: to_col.clone(),
                 })
             } else {
                 // Fallback to table-based lookup
@@ -1581,13 +1581,13 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
                 // Check if node is the "from" node (left_connection)
                 if alias == rel.left_connection {
                     if let Some(from_id) = &scan.from_id {
-                        return Some((rel.alias.clone(), from_id.clone()));
+                        return Some((rel.alias.clone(), from_id.to_string()));
                     }
                 }
                 // Check if node is the "to" node (right_connection)
                 if alias == rel.right_connection {
                     if let Some(to_id) = &scan.to_id {
-                        return Some((rel.alias.clone(), to_id.clone()));
+                        return Some((rel.alias.clone(), to_id.to_string()));
                     }
                 }
             }
@@ -1609,7 +1609,7 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
                 if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
                     if let Some(from_id) = &scan.from_id {
                         // Use a placeholder alias since standalone nodes don't have a rel alias
-                        return Some((alias.to_string(), from_id.clone()));
+                        return Some((alias.to_string(), from_id.to_string()));
                     }
                 }
             }
@@ -1912,8 +1912,10 @@ pub fn extract_ctes_with_context(
                             // For denormalized nodes, use relationship column
                             from_col.to_string()
                         } else {
-                            // For traditional nodes, use node schema's node_id
-                            node_schema.node_id.column().to_string()
+                            // For traditional nodes, use node schema's node_id (first column for composite)
+                            node_schema.node_id.id.columns().first()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| from_col.to_string())
                         }
                     } else {
                         // Fallback: use relationship's from_id
@@ -1931,8 +1933,10 @@ pub fn extract_ctes_with_context(
                             // For denormalized nodes, use relationship column
                             to_col.to_string()
                         } else {
-                            // For traditional nodes, use node schema's node_id
-                            node_schema.node_id.column().to_string()
+                            // For traditional nodes, use node schema's node_id (first column for composite)
+                            node_schema.node_id.id.columns().first()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| to_col.to_string())
                         }
                     } else {
                         // Fallback: use relationship's to_id
@@ -3011,9 +3015,9 @@ pub fn extract_ctes_with_context(
                         let rel_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
                         let to_table = format!("{}.{}", to_node_schema.database, to_node_schema.table_name);
 
-                        // ID columns
-                        let from_id_col = from_node_schema.node_id.column();
-                        let to_id_col = to_node_schema.node_id.column();
+                        // ID columns (as Identifier for composite support)
+                        let from_node_id = &from_node_schema.node_id.id;
+                        let to_node_id = &to_node_schema.node_id.id;
                         let rel_from_col = &rel_schema.from_id;
                         let rel_to_col = &rel_schema.to_id;
 
@@ -3105,19 +3109,48 @@ pub fn extract_ctes_with_context(
                             format!(" WHERE {}", where_clauses.join(" AND "))
                         };
 
+                        // Generate start_id and end_id expressions for composite support
+                        let start_id_expr = match from_node_id {
+                            Identifier::Single(col) => format!("toString({from_table}.{col})"),
+                            Identifier::Composite(cols) => {
+                                let parts: Vec<String> = cols.iter().map(|c| format!("toString({from_table}.{c})")).collect();
+                                format!("concat({})", parts.join(", '|', "))
+                            }
+                        };
+                        let end_id_expr = match to_node_id {
+                            Identifier::Single(col) => format!("toString({to_table}.{col})"),
+                            Identifier::Composite(cols) => {
+                                let parts: Vec<String> = cols.iter().map(|c| format!("toString({to_table}.{c})")).collect();
+                                format!("concat({})", parts.join(", '|', "))
+                            }
+                        };
+
+                        // Generate JOIN conditions for composite support
+                        let from_join_parts: Vec<String> = from_node_id.columns().iter()
+                            .zip(rel_from_col.columns().iter())
+                            .map(|(n, r)| format!("{from_table}.{n} = {rel_table}.{r}"))
+                            .collect();
+                        let from_join_cond = from_join_parts.join(" AND ");
+
+                        let to_join_parts: Vec<String> = to_node_id.columns().iter()
+                            .zip(rel_to_col.columns().iter())
+                            .map(|(n, r)| format!("{to_table}.{n} = {rel_table}.{r}"))
+                            .collect();
+                        let to_join_cond = to_join_parts.join(" AND ");
+
                         let branch_sql = format!(
                             "SELECT \
                                 '{from_label}' AS start_type, \
-                                toString({from_table}.{from_id_col}) as start_id, \
-                                toString({to_table}.{to_id_col}) as end_id, \
+                                {start_id_expr} as start_id, \
+                                {end_id_expr} as end_id, \
                                 '{to_label}' AS end_type, \
                                 ['{}'] as path_relationships, \
                                 [{}] as rel_properties, \
                                 {} as start_properties, \
                                 {} as end_properties \
                             FROM {rel_table} \
-                            INNER JOIN {from_table} ON {from_table}.{from_id_col} = {rel_table}.{rel_from_col} \
-                            INNER JOIN {to_table} ON {to_table}.{to_id_col} = {rel_table}.{rel_to_col}{where_clause} \
+                            INNER JOIN {from_table} ON {from_join_cond} \
+                            INNER JOIN {to_table} ON {to_join_cond}{where_clause} \
                             LIMIT 1000",
                             base_rel_type,
                             rel_properties_json,
@@ -4321,12 +4354,12 @@ fn collect_path_aliases_with_ids_recursive(
                 if !node_id_columns.contains_key(&rel.left_connection) {
                     node_id_columns.insert(
                         rel.left_connection.clone(),
-                        (rel.alias.clone(), from_id.clone()),
+                        (rel.alias.clone(), from_id.to_string()),
                     );
                 }
 
                 // Map right node to this relationship's to_id
-                node_id_columns.insert(rel.right_connection.clone(), (rel.alias.clone(), to_id));
+                node_id_columns.insert(rel.right_connection.clone(), (rel.alias.clone(), to_id.to_string()));
             }
 
             // Add this relationship

@@ -1136,7 +1136,11 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         self.schema
             .all_node_schemas()
             .get(node_type)
-            .map(|n| n.node_id.column().to_string())
+            .map(|n| {
+                n.node_id.id.columns().first()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "id".to_string())
+            })
             .ok_or_else(|| format!("Node ID column not found for type '{}'", node_type))
     }
 
@@ -1163,8 +1167,10 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                     .values()
                     .map(|col| col.raw().to_string())
                     .collect();
-                // Also include the ID column
-                cols.insert(node_schema.node_id.column().to_string());
+                // Also include the ID column(s)
+                for col in node_schema.node_id.id.columns() {
+                    cols.insert(col.to_string());
+                }
                 cols
             } else {
                 // Can't validate — return filter as-is
