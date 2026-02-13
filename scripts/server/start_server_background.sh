@@ -29,6 +29,7 @@ DISABLE_BOLT=false
 MAX_CTE_DEPTH=100
 VALIDATE_SCHEMA=false
 DEBUG_BUILD=false
+NEO4J_COMPAT_MODE=false
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -89,6 +90,10 @@ while [[ $# -gt 0 ]]; do
             DEBUG_BUILD=true
             shift
             ;;
+        --neo4j-compat-mode)
+            NEO4J_COMPAT_MODE=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [options]"
             echo "Options:"
@@ -131,6 +136,7 @@ export CLICKGRAPH_BOLT_PORT="$BOLT_PORT"
 export CLICKGRAPH_BOLT_ENABLED=$( [ "$DISABLE_BOLT" = false ] && echo "true" || echo "false" )
 export CLICKGRAPH_MAX_CTE_DEPTH="$MAX_CTE_DEPTH"
 export CLICKGRAPH_VALIDATE_SCHEMA=$( [ "$VALIDATE_SCHEMA" = true ] && echo "true" || echo "false" )
+export CLICKGRAPH_NEO4J_COMPAT_MODE=$( [ "$NEO4J_COMPAT_MODE" = true ] && echo "true" || echo "false" )
 
 echo -e "\033[0;32mStarting ClickGraph server in background...\033[0m"
 echo -e "\033[0;36mHTTP Port: $HTTP_PORT (Host: $HTTP_HOST)\033[0m"
@@ -140,6 +146,7 @@ echo -e "\033[0;36mDatabase: $DATABASE\033[0m"
 echo -e "\033[0;36mClickHouse: $CLICKHOUSE_URL\033[0m"
 echo -e "\033[0;36mLog Level: $LOG_LEVEL\033[0m"
 echo -e "\033[0;36mMax CTE Depth: $MAX_CTE_DEPTH\033[0m"
+echo -e "\033[0;36mNeo4j Compat: $NEO4J_COMPAT_MODE\033[0m"
 
 # Determine build mode
 if [ "$DEBUG_BUILD" = true ]; then
@@ -156,12 +163,27 @@ fi
 echo -e "\033[0;33mBuilding ClickGraph...\033[0m"
 cargo build $CARGO_FLAGS --bin clickgraph
 
+# Build CLI arguments
+CLI_ARGS="--http-port $HTTP_PORT --bolt-port $BOLT_PORT --http-host $HTTP_HOST --bolt-host $BOLT_HOST --max-cte-depth $MAX_CTE_DEPTH"
+
+if [ "$DISABLE_BOLT" = true ]; then
+    CLI_ARGS="$CLI_ARGS --disable-bolt"
+fi
+
+if [ "$VALIDATE_SCHEMA" = true ]; then
+    CLI_ARGS="$CLI_ARGS --validate-schema"
+fi
+
+if [ "$NEO4J_COMPAT_MODE" = true ]; then
+    CLI_ARGS="$CLI_ARGS --neo4j-compat-mode"
+fi
+
 # Start server in background
 LOG_FILE="clickgraph_server.log"
 PID_FILE="clickgraph_server.pid"
 
 echo -e "\033[0;33mStarting server (logs: $LOG_FILE)...\033[0m"
-nohup ./target/$BUILD_MODE/clickgraph > "$LOG_FILE" 2>&1 &
+nohup ./target/$BUILD_MODE/clickgraph $CLI_ARGS > "$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 echo $SERVER_PID > "$PID_FILE"
 

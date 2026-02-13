@@ -10,6 +10,9 @@ ClickGraph implements the Neo4j Bolt protocol v5.8, enabling connection from:
 - **Neo4j Desktop** - Desktop application
 - **Cypher Shell** - Command-line interface
 - **Neo4j Drivers** - Python, Java, JavaScript, Go, .NET
+- **Graph-Notebook** - Jupyter notebook visualization (see [Graph-Notebook Compatibility Guide](Graph-Notebook-Compatibility.md))
+
+> **Note**: For AWS graph-notebook and Jupyter visualization, see the dedicated **[Graph-Notebook Compatibility Guide](Graph-Notebook-Compatibility.md)** which includes setup instructions, compatibility mode configuration, and troubleshooting.
 
 ## Quick Start
 

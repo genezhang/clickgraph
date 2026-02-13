@@ -36,6 +36,11 @@ struct Cli {
     /// Run server in daemon mode (background process)
     #[arg(long)]
     daemon: bool,
+
+    /// Neo4j compatibility mode - masquerade as Neo4j server for tool compatibility
+    /// Useful for graph-notebook, Neodash, and other Neo4j ecosystem tools
+    #[arg(long)]
+    neo4j_compat_mode: bool,
 }
 
 impl From<Cli> for config::CliConfig {
@@ -49,6 +54,7 @@ impl From<Cli> for config::CliConfig {
             max_cte_depth: cli.max_cte_depth,
             validate_schema: cli.validate_schema,
             daemon: cli.daemon,
+            neo4j_compat_mode: cli.neo4j_compat_mode,
         }
     }
 }
