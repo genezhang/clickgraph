@@ -793,6 +793,11 @@ fn is_valid_combination(
     true
 }
 
+/// Match node type considering `$any` as wildcard (polymorphic schemas)
+fn node_type_matches(schema_node: &str, query_node: &str) -> bool {
+    schema_node == "$any" || schema_node == query_node
+}
+
 /// Check if a specific relationship exists in schema
 fn check_relationship_exists(
     from_type: &str,
@@ -801,7 +806,8 @@ fn check_relationship_exists(
     graph_schema: &GraphSchema,
 ) -> bool {
     if let Some(rel_schema) = graph_schema.get_relationships_schema_opt(rel_type) {
-        rel_schema.from_node == from_type && rel_schema.to_node == to_type
+        node_type_matches(&rel_schema.from_node, from_type)
+            && node_type_matches(&rel_schema.to_node, to_type)
     } else {
         false
     }
@@ -826,8 +832,10 @@ fn check_relationship_exists_bidirectional(
                 key == rel_type
             };
             type_matches
-                && ((rel_schema.from_node == from_type && rel_schema.to_node == to_type)
-                    || (rel_schema.from_node == to_type && rel_schema.to_node == from_type))
+                && ((node_type_matches(&rel_schema.from_node, from_type)
+                    && node_type_matches(&rel_schema.to_node, to_type))
+                    || (node_type_matches(&rel_schema.from_node, to_type)
+                        && node_type_matches(&rel_schema.to_node, from_type)))
         })
 }
 
@@ -841,7 +849,10 @@ fn check_any_relationship_exists(
     graph_schema
         .get_relationships_schemas()
         .values()
-        .any(|rel_schema| rel_schema.from_node == from_type && rel_schema.to_node == to_type)
+        .any(|rel_schema| {
+            node_type_matches(&rel_schema.from_node, from_type)
+                && node_type_matches(&rel_schema.to_node, to_type)
+        })
 }
 
 /// Check if ANY relationship exists between two node types in either direction
@@ -854,8 +865,10 @@ fn check_any_relationship_exists_bidirectional(
         .get_relationships_schemas()
         .values()
         .any(|rel_schema| {
-            (rel_schema.from_node == from_type && rel_schema.to_node == to_type)
-                || (rel_schema.from_node == to_type && rel_schema.to_node == from_type)
+            (node_type_matches(&rel_schema.from_node, from_type)
+                && node_type_matches(&rel_schema.to_node, to_type))
+                || (node_type_matches(&rel_schema.from_node, to_type)
+                    && node_type_matches(&rel_schema.to_node, from_type))
         })
 }
 

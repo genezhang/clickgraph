@@ -1078,17 +1078,28 @@ impl TypeInference {
         };
 
         // Infer left node label (all matches should agree on from_node for single edge type)
+        // NOTE: $any is a polymorphic sentinel, not a real label — treat as ambiguous
         let inferred_left_label = if known_left_label.is_some() {
             known_left_label
         } else if matches.len() == 1 {
             let label = matches[0].1.from_node.clone();
-            self.update_node_label_in_ctx(left_connection, &label, "from", &matches[0].0, plan_ctx);
-            Some(label)
+            if label == "$any" {
+                None // Polymorphic: node type resolved at runtime
+            } else {
+                self.update_node_label_in_ctx(
+                    left_connection,
+                    &label,
+                    "from",
+                    &matches[0].0,
+                    plan_ctx,
+                );
+                Some(label)
+            }
         } else {
             // Multiple matches - check if they all have same from_node
             let from_nodes: std::collections::HashSet<_> =
                 matches.iter().map(|(_, s)| &s.from_node).collect();
-            if from_nodes.len() == 1 {
+            if from_nodes.len() == 1 && matches[0].1.from_node != "$any" {
                 let label = matches[0].1.from_node.clone();
                 self.update_node_label_in_ctx(
                     left_connection,
@@ -1099,14 +1110,12 @@ impl TypeInference {
                 );
                 Some(label)
             } else {
-                // ⭐ NEW: Ambiguous from_node → collect candidates for combination generation
                 log::info!(
                     "🎯 TypeInference: Ambiguous from_node for '{}' → {} candidates: {:?}",
                     left_connection,
                     from_nodes.len(),
                     from_nodes
                 );
-                // Will generate combinations after inferring to_node
                 None // Ambiguous, can't infer single type
             }
         };
@@ -1116,13 +1125,23 @@ impl TypeInference {
             known_right_label
         } else if matches.len() == 1 {
             let label = matches[0].1.to_node.clone();
-            self.update_node_label_in_ctx(right_connection, &label, "to", &matches[0].0, plan_ctx);
-            Some(label)
+            if label == "$any" {
+                None // Polymorphic: node type resolved at runtime
+            } else {
+                self.update_node_label_in_ctx(
+                    right_connection,
+                    &label,
+                    "to",
+                    &matches[0].0,
+                    plan_ctx,
+                );
+                Some(label)
+            }
         } else {
             // Multiple matches - check if they all have same to_node
             let to_nodes: std::collections::HashSet<_> =
                 matches.iter().map(|(_, s)| &s.to_node).collect();
-            if to_nodes.len() == 1 {
+            if to_nodes.len() == 1 && matches[0].1.to_node != "$any" {
                 let label = matches[0].1.to_node.clone();
                 self.update_node_label_in_ctx(
                     right_connection,
@@ -1133,14 +1152,12 @@ impl TypeInference {
                 );
                 Some(label)
             } else {
-                // ⭐ NEW: Ambiguous to_node → collect candidates for combination generation
                 log::info!(
                     "🎯 TypeInference: Ambiguous to_node for '{}' → {} candidates: {:?}",
                     right_connection,
                     to_nodes.len(),
                     to_nodes
                 );
-                // Will generate combinations below
                 None // Ambiguous, can't infer single type
             }
         };
@@ -1282,7 +1299,8 @@ impl TypeInference {
         false
     }
 
-    /// Update or create TableCtx with inferred label
+    /// Update or create TableCtx with inferred label.
+    /// Never stores `$any` — it's a polymorphic sentinel, not a concrete label.
     fn update_node_label_in_ctx(
         &self,
         node_alias: &str,
@@ -1291,6 +1309,13 @@ impl TypeInference {
         edge_info: &str,
         plan_ctx: &mut PlanCtx,
     ) {
+        if label == "$any" {
+            log::debug!(
+                "🏷️ TypeInference: Skipping '$any' label for '{}' (polymorphic sentinel)",
+                node_alias
+            );
+            return;
+        }
         if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(node_alias) {
             table_ctx.set_labels(Some(vec![label.to_string()]));
             log::info!(
