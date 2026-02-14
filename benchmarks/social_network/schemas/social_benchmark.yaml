@@ -77,7 +77,7 @@ graph_schema:
       from_node: User
       to_node: Post
       property_mappings:
-        like_date: like_date  # FIXED: Actual column is like_date
+        like_date: liked_at
 
     - type: FRIENDS_WITH
       database: brahmand
