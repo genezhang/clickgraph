@@ -896,7 +896,10 @@ impl RenderPlanBuilder for LogicalPlan {
 
                             // Replace with coalesce(__pc_N.result, default)
                             let result_alias = pc_meta.result_alias.clone();
-                            let default_val = if matches!(pc_meta.agg_type, crate::query_planner::logical_plan::AggregationType::GroupArray) {
+                            let default_val = if matches!(
+                                pc_meta.agg_type,
+                                crate::query_planner::logical_plan::AggregationType::GroupArray
+                            ) {
                                 RenderExpr::List(vec![])
                             } else {
                                 RenderExpr::Literal(Literal::Integer(0))
@@ -1260,7 +1263,10 @@ impl RenderPlanBuilder for LogicalPlan {
 
                             // Replace the select item with coalesce(__pc_N.result, default)
                             let result_alias = pc_meta.result_alias.clone();
-                            let default_val = if matches!(pc_meta.agg_type, crate::query_planner::logical_plan::AggregationType::GroupArray) {
+                            let default_val = if matches!(
+                                pc_meta.agg_type,
+                                crate::query_planner::logical_plan::AggregationType::GroupArray
+                            ) {
                                 RenderExpr::List(vec![])
                             } else {
                                 RenderExpr::Literal(Literal::Integer(0))
@@ -2931,7 +2937,10 @@ impl RenderPlanBuilder for LogicalPlan {
 
                             // Replace with coalesce(__pc_N.result, default)
                             let result_alias = pc_meta.result_alias.clone();
-                            let default_val = if matches!(pc_meta.agg_type, crate::query_planner::logical_plan::AggregationType::GroupArray) {
+                            let default_val = if matches!(
+                                pc_meta.agg_type,
+                                crate::query_planner::logical_plan::AggregationType::GroupArray
+                            ) {
                                 RenderExpr::List(vec![])
                             } else {
                                 RenderExpr::Literal(Literal::Integer(0))

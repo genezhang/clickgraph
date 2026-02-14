@@ -76,11 +76,9 @@ pub fn evaluate_unwind_clause(
 
     // Override the typed variable: insert_table_ctx registers it as a Node (no labels),
     // but UNWIND aliases are scalars, not graph entities
-    plan_ctx.variables_mut().define_scalar(
+    plan_ctx.define_scalar_from_unwind(
         unwind_clause.alias.to_string(),
-        crate::query_planner::typed_variable::VariableSource::Unwind {
-            source_array: format!("{:?}", unwind_clause.expression),
-        },
+        format!("{:?}", unwind_clause.expression),
     );
 
     let unwind = Unwind {

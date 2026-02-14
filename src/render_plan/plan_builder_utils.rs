@@ -12517,21 +12517,20 @@ pub(super) fn build_pattern_comprehension_sql(
     use crate::query_planner::logical_plan::AggregationType;
 
     // Resolve target node table/column for property-based aggregation (e.g., collect(f.name))
-    let target_join_info = target_label
-        .and_then(|tl| {
-            target_property.and_then(|tp| {
-                schema.node_schema(tl).ok().map(|ns| {
-                    let target_table = format!("{}.{}", ns.database, ns.table_name);
-                    let target_id = ns.node_id.id.to_pipe_joined_sql("__tgt");
-                    let db_column = ns
-                        .property_mappings
-                        .get(tp)
-                        .map(|pv| pv.raw().to_string())
-                        .unwrap_or_else(|| tp.to_string());
-                    (target_table, target_id, db_column, tl.to_string())
-                })
+    let target_join_info = target_label.and_then(|tl| {
+        target_property.and_then(|tp| {
+            schema.node_schema(tl).ok().map(|ns| {
+                let target_table = format!("{}.{}", ns.database, ns.table_name);
+                let target_id = ns.node_id.id.to_pipe_joined_sql("__tgt");
+                let db_column = ns
+                    .property_mappings
+                    .get(tp)
+                    .map(|pv| pv.raw().to_string())
+                    .unwrap_or_else(|| tp.to_string());
+                (target_table, target_id, db_column, tl.to_string())
             })
-        });
+        })
+    });
 
     let mut branches: Vec<String> = Vec::new();
 
@@ -12584,7 +12583,9 @@ pub(super) fn build_pattern_comprehension_sql(
                     let edge_cols = rel_schema.to_id.columns();
                     let tgt_ns = schema.node_schema(&rel_schema.to_node).ok();
                     let tgt_cols = tgt_ns.map(|ns| ns.node_id.id.columns()).unwrap_or_default();
-                    edge_cols.iter().zip(tgt_cols.iter())
+                    edge_cols
+                        .iter()
+                        .zip(tgt_cols.iter())
                         .map(|(e, t)| format!("{} = __tgt.{}", e, t))
                         .collect::<Vec<_>>()
                         .join(" AND ")
@@ -12632,7 +12633,9 @@ pub(super) fn build_pattern_comprehension_sql(
                     let edge_cols = rel_schema.from_id.columns();
                     let tgt_ns = schema.node_schema(&rel_schema.from_node).ok();
                     let tgt_cols = tgt_ns.map(|ns| ns.node_id.id.columns()).unwrap_or_default();
-                    edge_cols.iter().zip(tgt_cols.iter())
+                    edge_cols
+                        .iter()
+                        .zip(tgt_cols.iter())
                         .map(|(e, t)| format!("{} = __tgt.{}", e, t))
                         .collect::<Vec<_>>()
                         .join(" AND ")

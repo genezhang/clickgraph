@@ -856,8 +856,7 @@ impl FilterTagging {
                 // would convert to a function call. For now, we always try property lookup first.
 
                 // Get the table context for this alias
-                let table_ctx_result = plan_ctx
-                    .get_table_ctx(&property_access.table_alias.0);
+                let table_ctx_result = plan_ctx.get_table_ctx(&property_access.table_alias.0);
 
                 // If alias not found (e.g., pattern comprehension inner variables),
                 // return the expression unchanged — render phase handles scoped aliases
