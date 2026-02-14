@@ -131,27 +131,61 @@ impl ReplanOption {
 
 /// Key for cache lookup
 ///
-/// Uses normalized query and schema name to uniquely identify a query template.
-/// View parameters are NOT part of the cache key - they are substituted at execution time.
+/// Uses normalized query, schema name, and view scope to uniquely identify a query template.
+/// View scope includes tenant_id and view_parameters that affect parameterized view resolution.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct QueryCacheKey {
     /// Normalized Cypher query (with CYPHER prefix stripped)
     pub normalized_query: String,
-    /// Schema name for multi-tenant support
+    /// Schema name for multi-schema support
     pub schema_name: String,
+    /// Tenant ID and view parameters affect SQL generation for parameterized views
+    pub view_scope: String,
 }
 
 impl QueryCacheKey {
     pub fn new(query: &str, schema_name: &str) -> Self {
+        Self::with_view_scope(query, schema_name, None, None)
+    }
+
+    pub fn with_view_scope(
+        query: &str,
+        schema_name: &str,
+        tenant_id: Option<&str>,
+        view_parameters: Option<&std::collections::HashMap<String, String>>,
+    ) -> Self {
         // Strip CYPHER prefix if present
         let stripped = ReplanOption::strip_prefix(query);
 
         // Normalize whitespace: collapse multiple spaces/tabs/newlines into single space
         let normalized = stripped.split_whitespace().collect::<Vec<&str>>().join(" ");
 
+        // Build a scope string from tenant_id and view_parameters
+        let view_scope = match (tenant_id, view_parameters) {
+            (None, None) => String::new(),
+            (Some(tid), None) => format!("tid={}", tid),
+            (None, Some(vp)) => {
+                let mut parts: Vec<String> =
+                    vp.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+                parts.sort();
+                parts.join(",")
+            }
+            (Some(tid), Some(vp)) => {
+                let mut parts: Vec<String> =
+                    vp.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+                parts.sort();
+                // tenant_id may already be in view_parameters; add if not
+                if !vp.contains_key("tenant_id") {
+                    parts.push(format!("tid={}", tid));
+                }
+                parts.join(",")
+            }
+        };
+
         QueryCacheKey {
             normalized_query: normalized,
             schema_name: schema_name.to_string(),
+            view_scope,
         }
     }
 }

@@ -382,7 +382,26 @@ async fn query_handler_inner(
     start_time: Instant,
     mut metrics: QueryPerformanceMetrics,
 ) -> Result<Response, (StatusCode, String)> {
-    let cache_key = query_cache::QueryCacheKey::new(&clean_query, &schema_name);
+    // Convert view_parameters to String values for cache key
+    let vp_strings: Option<HashMap<String, String>> =
+        payload.view_parameters.as_ref().map(|params| {
+            params
+                .iter()
+                .map(|(k, v)| {
+                    let s = match v {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    (k.clone(), s)
+                })
+                .collect()
+        });
+    let cache_key = query_cache::QueryCacheKey::with_view_scope(
+        &clean_query,
+        &schema_name,
+        payload.tenant_id.as_deref(),
+        vp_strings.as_ref(),
+    );
     let mut cache_status = "MISS";
 
     // Try cache lookup (unless replan=force)
