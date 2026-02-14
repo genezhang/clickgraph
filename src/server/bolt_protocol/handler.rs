@@ -404,6 +404,7 @@ impl BoltHandler {
             if let Some(ref db_name) = database {
                 let mut context = lock_context!(self.context);
                 context.schema_name = Some(db_name.clone());
+                context.id_mapper.set_scope(Some(db_name.clone()), None);
                 log::info!("Database/schema specified in HELLO: {}", db_name);
             }
 
@@ -602,6 +603,7 @@ impl BoltHandler {
                     let mut context = lock_context!(self.context);
                     context.set_user(user.username.clone());
                     context.schema_name = database.clone();
+                    context.id_mapper.set_scope(database.clone(), None);
                     context.set_state(ConnectionState::Ready);
                 }
 
@@ -670,6 +672,8 @@ impl BoltHandler {
             let mut context = lock_context!(self.context);
             context.set_user(String::new());
             context.schema_name = None;
+            context.tenant_id = None;
+            context.id_mapper.set_scope(None, None);
             context.set_state(ConnectionState::Authentication(negotiated_version));
         }
 
@@ -788,6 +792,18 @@ impl BoltHandler {
 
             (schema_name, tenant_id, role, view_parameters)
         };
+
+        // Update IdMapper scope for cross-session isolation
+        {
+            let mut context = lock_context!(self.context);
+            if let Some(ref tid) = tenant_id {
+                context.tenant_id = Some(tid.clone());
+            }
+            let scope_tenant = context.tenant_id.clone();
+            context
+                .id_mapper
+                .set_scope(schema_name.clone(), scope_tenant);
+        }
 
         log::info!("Executing Cypher query: {}", query);
 
@@ -943,7 +959,9 @@ impl BoltHandler {
                     context.schema_name,
                     db
                 );
-                context.schema_name = Some(db);
+                context.schema_name = Some(db.clone());
+                let scope_tenant = context.tenant_id.clone();
+                context.id_mapper.set_scope(Some(db), scope_tenant);
             }
         } else {
             log::debug!("BEGIN message does NOT contain database field");

@@ -33,9 +33,11 @@ use std::sync::{Arc, RwLock};
 use crate::utils::id_encoding::{IdEncoding, LABEL_CODE_REGISTRY};
 
 lazy_static! {
-    /// Registry of active session caches for cross-session lookups
-    /// Maps connection_id → Arc<RwLock<SessionCache>>
-    static ref ACTIVE_SESSION_CACHES: RwLock<HashMap<u64, Arc<RwLock<SessionCache>>>> =
+    /// Registry of active session entries for cross-session lookups.
+    /// Maps connection_id → SessionEntry (cache + scope metadata).
+    /// Cross-session lookups only chain to sessions with matching scope
+    /// (same schema_name and tenant_id) to prevent cross-tenant data leakage.
+    static ref ACTIVE_SESSION_CACHES: RwLock<HashMap<u64, SessionEntry>> =
         RwLock::new(HashMap::new());
 }
 
@@ -51,24 +53,39 @@ struct SessionCache {
     int_to_element: HashMap<i64, String>,
 }
 
+/// A registered session entry: cache + scope metadata for cross-session filtering.
+#[derive(Debug)]
+struct SessionEntry {
+    cache: Arc<RwLock<SessionCache>>,
+    schema_name: Option<String>,
+    tenant_id: Option<String>,
+}
+
 /// Deterministic mapper between integer IDs and element_ids
 ///
 /// Each connection gets its own IdMapper with a unique connection ID.
-/// Cross-session lookups search other active sessions' caches.
+/// Cross-session lookups search other active sessions' caches, but only
+/// those with matching scope (schema_name + tenant_id).
 #[derive(Debug)]
 pub struct IdMapper {
     /// Unique connection ID for this mapper
     connection_id: u64,
     /// Shared reference to this session's cache (registered in ACTIVE_SESSION_CACHES)
     cache: Arc<RwLock<SessionCache>>,
+    /// Schema scope for cross-session filtering
+    schema_name: Option<String>,
+    /// Tenant scope for cross-session filtering
+    tenant_id: Option<String>,
 }
 
 impl Clone for IdMapper {
     fn clone(&self) -> Self {
-        // Cloning shares the same cache and connection_id
+        // Cloning shares the same cache, connection_id, and scope
         IdMapper {
             connection_id: self.connection_id,
             cache: Arc::clone(&self.cache),
+            schema_name: self.schema_name.clone(),
+            tenant_id: self.tenant_id.clone(),
         }
     }
 }
@@ -98,7 +115,14 @@ impl IdMapper {
 
         // Register in the global session registry
         if let Ok(mut registry) = ACTIVE_SESSION_CACHES.write() {
-            registry.insert(connection_id, Arc::clone(&cache));
+            registry.insert(
+                connection_id,
+                SessionEntry {
+                    cache: Arc::clone(&cache),
+                    schema_name: None,
+                    tenant_id: None,
+                },
+            );
             log::debug!(
                 "IdMapper: Registered session {} (total sessions: {})",
                 connection_id,
@@ -109,6 +133,24 @@ impl IdMapper {
         IdMapper {
             connection_id,
             cache,
+            schema_name: None,
+            tenant_id: None,
+        }
+    }
+
+    /// Update the scope (schema + tenant) for this session.
+    /// Called when schema_name or tenant_id becomes known (HELLO, LOGON, or RUN).
+    /// Updates both the local fields and the global registry entry.
+    pub fn set_scope(&mut self, schema_name: Option<String>, tenant_id: Option<String>) {
+        self.schema_name = schema_name.clone();
+        self.tenant_id = tenant_id.clone();
+
+        // Update the registry entry
+        if let Ok(mut registry) = ACTIVE_SESSION_CACHES.write() {
+            if let Some(entry) = registry.get_mut(&self.connection_id) {
+                entry.schema_name = schema_name;
+                entry.tenant_id = tenant_id;
+            }
         }
     }
 
@@ -220,7 +262,7 @@ impl IdMapper {
     /// Lookup element_id by integer ID (reverse lookup)
     ///
     /// Uses session cache chaining: first checks own cache, then searches
-    /// other active sessions' caches.
+    /// other active sessions' caches with matching scope (schema + tenant).
     pub fn get_element_id(&self, id: i64) -> Option<String> {
         // Check own cache first
         if let Ok(cache) = self.cache.read() {
@@ -229,19 +271,25 @@ impl IdMapper {
             }
         }
 
-        // Search other active sessions' caches (session cache chaining)
+        // Search other active sessions' caches with matching scope
         if let Ok(registry) = ACTIVE_SESSION_CACHES.read() {
-            for (&conn_id, session_cache) in registry.iter() {
+            for (&conn_id, entry) in registry.iter() {
                 if conn_id == self.connection_id {
                     continue; // Skip own cache (already checked)
                 }
-                if let Ok(cache) = session_cache.read() {
+                // Only chain to sessions with matching scope
+                if entry.schema_name != self.schema_name || entry.tenant_id != self.tenant_id {
+                    continue;
+                }
+                if let Ok(cache) = entry.cache.read() {
                     if let Some(element_id) = cache.int_to_element.get(&id) {
                         log::debug!(
-                            "IdMapper: Cross-session lookup found {} -> {} (from session {})",
+                            "IdMapper: Cross-session lookup found {} -> {} (from session {}, schema={:?}, tenant={:?})",
                             id,
                             element_id,
-                            conn_id
+                            conn_id,
+                            entry.schema_name,
+                            entry.tenant_id,
                         );
                         return Some(element_id.clone());
                     }
@@ -297,11 +345,15 @@ impl IdMapper {
     /// Static function to look up element_id from encoded ID across all sessions
     ///
     /// This can be called from anywhere (e.g., FilterTagging) without needing
-    /// an IdMapper instance. Searches all active session caches.
+    /// an IdMapper instance. Searches all active session caches regardless of scope.
+    ///
+    /// This is safe for decode_for_query because element_ids are deterministic —
+    /// the same element_id string always maps to the same integer ID. The actual
+    /// tenant/schema filtering happens at the SQL level via parameterized views.
     pub fn static_lookup_element_id(encoded_id: i64) -> Option<String> {
         if let Ok(registry) = ACTIVE_SESSION_CACHES.read() {
-            for (_conn_id, session_cache) in registry.iter() {
-                if let Ok(cache) = session_cache.read() {
+            for (_conn_id, entry) in registry.iter() {
+                if let Ok(cache) = entry.cache.read() {
                     if let Some(element_id) = cache.int_to_element.get(&encoded_id) {
                         return Some(element_id.clone());
                     }
@@ -528,17 +580,62 @@ mod tests {
     fn test_session_cache_chaining() {
         // Create mapper 1, assign some IDs
         let mut mapper1 = IdMapper::new();
+        mapper1.set_scope(Some("test_schema".to_string()), None);
         let id1 = mapper1.get_or_assign("User:42");
 
         // id_value should be 42
         assert_eq!(get_id_value(id1), 42);
 
-        // Create mapper 2 (simulating new connection)
-        let mapper2 = IdMapper::new();
+        // Create mapper 2 with SAME scope (simulating new connection to same schema)
+        let mut mapper2 = IdMapper::new();
+        mapper2.set_scope(Some("test_schema".to_string()), None);
 
         // Should be able to look up from mapper1's cache via chaining
         let element_id = mapper2.get_element_id(id1);
         assert_eq!(element_id, Some("User:42".to_string()));
+    }
+
+    #[test]
+    fn test_session_scope_isolation_by_schema() {
+        // Mapper 1 with schema "alpha"
+        let mut mapper1 = IdMapper::new();
+        mapper1.set_scope(Some("alpha".to_string()), None);
+        let id1 = mapper1.get_or_assign("User:1");
+
+        // Mapper 2 with DIFFERENT schema "beta"
+        let mut mapper2 = IdMapper::new();
+        mapper2.set_scope(Some("beta".to_string()), None);
+
+        // Cross-session lookup should NOT find mapper1's data (different schema)
+        assert_eq!(mapper2.get_element_id(id1), None);
+
+        // But mapper with same schema should find it
+        let mut mapper3 = IdMapper::new();
+        mapper3.set_scope(Some("alpha".to_string()), None);
+        assert_eq!(mapper3.get_element_id(id1), Some("User:1".to_string()));
+    }
+
+    #[test]
+    fn test_session_scope_isolation_by_tenant() {
+        // Mapper 1 with tenant "acme"
+        let mut mapper1 = IdMapper::new();
+        mapper1.set_scope(Some("shared_schema".to_string()), Some("acme".to_string()));
+        let id1 = mapper1.get_or_assign("User:1");
+
+        // Mapper 2 with DIFFERENT tenant "globex"
+        let mut mapper2 = IdMapper::new();
+        mapper2.set_scope(
+            Some("shared_schema".to_string()),
+            Some("globex".to_string()),
+        );
+
+        // Cross-session lookup should NOT find mapper1's data (different tenant)
+        assert_eq!(mapper2.get_element_id(id1), None);
+
+        // Mapper with same schema + same tenant should find it
+        let mut mapper3 = IdMapper::new();
+        mapper3.set_scope(Some("shared_schema".to_string()), Some("acme".to_string()));
+        assert_eq!(mapper3.get_element_id(id1), Some("User:1".to_string()));
     }
 
     #[test]
