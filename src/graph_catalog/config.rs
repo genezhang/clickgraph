@@ -99,13 +99,13 @@ impl Identifier {
     ) -> String {
         let left_cols = self.columns();
         let right_cols = other.columns();
-        assert_eq!(
-            left_cols.len(),
-            right_cols.len(),
-            "Identifier column count mismatch: {} vs {}",
-            left_cols.len(),
-            right_cols.len()
-        );
+        if left_cols.len() != right_cols.len() {
+            log::warn!(
+                "Identifier column count mismatch in to_sql_equality: {} vs {}",
+                left_cols.len(),
+                right_cols.len()
+            );
+        }
         left_cols
             .iter()
             .zip(right_cols.iter())

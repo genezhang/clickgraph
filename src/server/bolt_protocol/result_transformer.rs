@@ -41,7 +41,7 @@ use crate::{
         logical_expr::LogicalExpr,
         logical_plan::{LogicalPlan, Projection},
         plan_ctx::PlanCtx,
-        typed_variable::TypedVariable,
+        typed_variable::{TypedVariable, VariableSource},
     },
     server::bolt_protocol::{
         graph_objects::{Node, Path, Relationship},
@@ -155,15 +155,19 @@ pub fn extract_return_metadata(
                 // Lookup in plan_ctx.variables
                 match plan_ctx.lookup_variable(&table_alias.to_string()) {
                     Some(TypedVariable::Node(node_var)) => {
-                        if node_var.labels.is_empty() {
-                            // Node with empty labels is likely a computed alias
+                        if node_var.labels.is_empty()
+                            && !matches!(node_var.source, VariableSource::Match)
+                        {
+                            // Non-MATCH node with empty labels is a computed alias
                             // (e.g., pattern comprehension result), treat as Scalar
                             log::debug!(
-                                "Treating '{}' as Scalar (Node with empty labels)",
+                                "Treating '{}' as Scalar (non-MATCH node with empty labels)",
                                 table_alias
                             );
                             ReturnItemType::Scalar
                         } else {
+                            // MATCH nodes with empty labels are unlabeled nodes (e.g., MATCH (n))
+                            // — still need graph-object transformation
                             ReturnItemType::Node {
                                 labels: node_var.labels.clone(),
                             }

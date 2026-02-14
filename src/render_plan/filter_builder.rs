@@ -621,7 +621,10 @@ fn render_rhs_to_sql(expr: &LogicalExpr, as_string: bool) -> String {
                     n.to_string()
                 }
             }
-            Literal::String(s) => format!("'{}'", s),
+            Literal::String(s) => {
+                let escaped = s.replace('\'', "''");
+                format!("'{}'", escaped)
+            }
             Literal::Float(f) => f.to_string(),
             Literal::Boolean(b) => b.to_string(),
             Literal::Null => "NULL".to_string(),
@@ -634,9 +637,10 @@ fn render_rhs_to_sql(expr: &LogicalExpr, as_string: bool) -> String {
             format!("[{}]", rendered.join(", "))
         }
         _ => {
-            // Fallback: try to render via RenderExpr conversion
+            // Fallback: try to render via RenderExpr conversion and SQL generation
             if let Ok(render_expr) = RenderExpr::try_from(expr.clone()) {
-                format!("{:?}", render_expr)
+                use crate::render_plan::cte_extraction::render_expr_to_sql_string;
+                render_expr_to_sql_string(&render_expr, &[])
             } else {
                 "NULL".to_string()
             }
