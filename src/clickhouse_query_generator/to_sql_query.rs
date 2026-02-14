@@ -1467,39 +1467,69 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
 
             sql.push_str(" FROM (\n");
 
-            // CRITICAL FIX: Generate the first branch's SQL from the base plan
-            // The base plan (plan.select, plan.from, plan.joins, plan.filters) IS the first branch
-            // plan.union only contains branches 2+
-            // For denormalized UNIONs, use the plan's own SELECT which has the correct properties for the first branch
-            let first_branch_sql = {
-                let mut branch_sql = String::new();
-                branch_sql.push_str(&plan.select.to_sql());
-                branch_sql.push_str(&plan.from.to_sql());
-                branch_sql.push_str(&plan.joins.to_sql());
-                branch_sql.push_str(&plan.filters.to_sql());
-                branch_sql
-            };
-            sql.push_str(&first_branch_sql);
-
-            // Now add the remaining branches with UNION ALL
+            // Generate UNION branch SQL.
+            // When has_aggregation is true, all branches are stored in union.input
+            // (extract_union moved the first branch there), so skip the base plan.
+            // Otherwise, the base plan (select/from/joins/filters) IS the first branch.
             if let Some(union) = &plan.union.0 {
                 let union_type_str = match union.union_type {
                     UnionType::Distinct => "UNION DISTINCT \n",
                     UnionType::All => "UNION ALL \n",
                 };
-                for union_branch in &union.input {
-                    sql.push_str(union_type_str);
-                    let branch_sql = {
-                        let mut bsql = String::new();
-                        // USE each branch's own SELECT items, not the first branch's
-                        bsql.push_str(&union_branch.select.to_sql());
-                        bsql.push_str(&union_branch.from.to_sql());
-                        bsql.push_str(&union_branch.joins.to_sql());
-                        bsql.push_str(&union_branch.filters.to_sql());
-                        bsql
+
+                // With aggregation: extract_union already put all branches in union.input,
+                // so don't also render the base plan as first branch.
+                if !has_aggregation && plan.from.0.is_some() {
+                    let first_branch_sql = {
+                        let mut branch_sql = String::new();
+                        branch_sql.push_str(&plan.select.to_sql());
+                        branch_sql.push_str(&plan.from.to_sql());
+                        branch_sql.push_str(&plan.joins.to_sql());
+                        branch_sql.push_str(&plan.filters.to_sql());
+                        branch_sql
                     };
-                    sql.push_str(&branch_sql);
+                    sql.push_str(&first_branch_sql);
+
+                    for union_branch in &union.input {
+                        sql.push_str(union_type_str);
+                        let branch_sql = {
+                            let mut bsql = String::new();
+                            bsql.push_str(&union_branch.select.to_sql());
+                            bsql.push_str(&union_branch.from.to_sql());
+                            bsql.push_str(&union_branch.joins.to_sql());
+                            bsql.push_str(&union_branch.filters.to_sql());
+                            bsql
+                        };
+                        sql.push_str(&branch_sql);
+                    }
+                } else {
+                    // All branches in union.input
+                    for (i, union_branch) in union.input.iter().enumerate() {
+                        if i > 0 {
+                            sql.push_str(union_type_str);
+                        }
+                        let branch_sql = {
+                            let mut bsql = String::new();
+                            bsql.push_str(&union_branch.select.to_sql());
+                            bsql.push_str(&union_branch.from.to_sql());
+                            bsql.push_str(&union_branch.joins.to_sql());
+                            bsql.push_str(&union_branch.filters.to_sql());
+                            bsql
+                        };
+                        sql.push_str(&branch_sql);
+                    }
                 }
+            } else {
+                // No union branches — just use the base plan as the subquery
+                let first_branch_sql = {
+                    let mut branch_sql = String::new();
+                    branch_sql.push_str(&plan.select.to_sql());
+                    branch_sql.push_str(&plan.from.to_sql());
+                    branch_sql.push_str(&plan.joins.to_sql());
+                    branch_sql.push_str(&plan.filters.to_sql());
+                    branch_sql
+                };
+                sql.push_str(&first_branch_sql);
             }
 
             sql.push_str(") AS __union\n");

@@ -654,7 +654,34 @@ impl RenderPlanBuilder for LogicalPlan {
                         // Found Union nested deep, convert it to render plan
                         log::debug!("extract_union: found nested Union, converting to render");
                         let union_render_plan = current.to_render_plan(schema)?;
-                        return Ok(union_render_plan.union.0);
+
+                        // The first branch is stored in the base render plan (select/from/etc.)
+                        // and remaining branches are in union.0. We need ALL branches in
+                        // union.input so the SQL generator uses them correctly (the outer
+                        // GraphJoins will overwrite plan.select with the outer projection).
+                        if let Some(mut union) = union_render_plan.union.0 {
+                            if union_render_plan.from.0.is_some() {
+                                let first_branch = RenderPlan {
+                                    ctes: CteItems(vec![]),
+                                    select: union_render_plan.select,
+                                    from: union_render_plan.from,
+                                    joins: union_render_plan.joins,
+                                    array_join: union_render_plan.array_join,
+                                    filters: union_render_plan.filters,
+                                    group_by: GroupByExpressions(vec![]),
+                                    having_clause: None,
+                                    order_by: OrderByItems(vec![]),
+                                    skip: SkipItem(None),
+                                    limit: LimitItem(None),
+                                    union: UnionItems(None),
+                                    fixed_path_info: None,
+                                    is_multi_label_scan: false,
+                                };
+                                union.input.insert(0, first_branch);
+                            }
+                            return Ok(Some(union));
+                        }
+                        return Ok(None);
                     }
                     _ => break,
                 }
@@ -715,7 +742,31 @@ impl RenderPlanBuilder for LogicalPlan {
                             "🔀 extract_union_with_ctx: Union rendered, has_union={:?}",
                             union_render_plan.union.0.is_some()
                         );
-                        return Ok(union_render_plan.union.0);
+
+                        // Move first branch into union.input (same fix as extract_union)
+                        if let Some(mut union) = union_render_plan.union.0 {
+                            if union_render_plan.from.0.is_some() {
+                                let first_branch = RenderPlan {
+                                    ctes: CteItems(vec![]),
+                                    select: union_render_plan.select,
+                                    from: union_render_plan.from,
+                                    joins: union_render_plan.joins,
+                                    array_join: union_render_plan.array_join,
+                                    filters: union_render_plan.filters,
+                                    group_by: GroupByExpressions(vec![]),
+                                    having_clause: None,
+                                    order_by: OrderByItems(vec![]),
+                                    skip: SkipItem(None),
+                                    limit: LimitItem(None),
+                                    union: UnionItems(None),
+                                    fixed_path_info: None,
+                                    is_multi_label_scan: false,
+                                };
+                                union.input.insert(0, first_branch);
+                            }
+                            return Ok(Some(union));
+                        }
+                        return Ok(None);
                     }
                     other => {
                         log::warn!(
