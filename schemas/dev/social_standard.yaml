@@ -67,7 +67,7 @@ graph_schema:
       table: friendships
       from_id: user_id_1
       to_id: user_id_2
-      edge_id: user_id_1
+      edge_id: [user_id_1, user_id_2]
       from_node: User
       to_node: User
       property_mappings:
