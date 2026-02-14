@@ -192,7 +192,12 @@ impl FilterBuilder for LogicalPlan {
                 let all_predicates =
                     collect_graphrel_predicates(&LogicalPlan::GraphRel(graph_rel.clone()));
 
-                let mut all_predicates = all_predicates;
+                // Strip labels() predicates — they're redundant for non-CTE paths
+                // (label is already constrained by the MATCH pattern)
+                let mut all_predicates: Vec<_> = all_predicates
+                    .into_iter()
+                    .filter(|p| !is_labels_predicate(p))
+                    .collect();
 
                 // 🔒 Add schema-level filters from ViewScans
                 let schema_filters =
@@ -574,6 +579,26 @@ fn rewrite_single_predicate_for_cte(
                     let op_str = render_operator(&op_app.operator);
                     return Some(format!("{} {} {}", cte_col, op_str, rhs_sql));
                 }
+
+                // Case 3: "Label" IN labels(alias) — reversed operand order
+                if let LogicalExpr::ScalarFnCall(fn_call) = rhs {
+                    if fn_call.name.eq_ignore_ascii_case("labels")
+                        || fn_call.name.eq_ignore_ascii_case("label")
+                    {
+                        if let Some(alias) = extract_fn_alias(fn_call) {
+                            let position = if alias == left_alias {
+                                "start"
+                            } else if alias == right_alias {
+                                "end"
+                            } else {
+                                return None;
+                            };
+                            let cte_col = format!("{}.{}_type", cte_alias, position);
+                            let lhs_sql = render_rhs_to_sql(lhs, false);
+                            return Some(format!("{} = {}", cte_col, lhs_sql));
+                        }
+                    }
+                }
             }
             None
         }
@@ -591,6 +616,24 @@ fn extract_fn_alias(fn_call: &crate::query_planner::logical_expr::ScalarFnCall) 
     } else {
         None
     }
+}
+
+/// Check if a predicate involves labels() function (e.g., `labels(n) = "User"`).
+/// These predicates are redundant for non-CTE paths where the label is already
+/// constrained by the MATCH pattern.
+fn is_labels_predicate(expr: &RenderExpr) -> bool {
+    if let RenderExpr::OperatorApplicationExp(op_app) = expr {
+        for operand in &op_app.operands {
+            if let RenderExpr::ScalarFnCall(fn_call) = operand {
+                if fn_call.name.eq_ignore_ascii_case("labels")
+                    || fn_call.name.eq_ignore_ascii_case("label")
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Render operator to SQL string.

@@ -20,6 +20,7 @@ use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::cte_generation::CteGenerationContext;
 use crate::render_plan::cte_manager::CteManager;
 use crate::render_plan::expression_utils::{flatten_addition_operands, has_string_operand};
+use crate::utils::cte_column_naming::cte_column_name;
 use crate::utils::cte_naming::generate_cte_name;
 
 use super::errors::RenderBuildError;
@@ -3652,7 +3653,7 @@ pub fn extract_ctes_with_context(
 
                                 // Convert properties to ProjectionItems with underscore aliases
                                 properties.into_iter().map(|(cypher_prop, db_col)| {
-                                    let underscore_alias = format!("{}_{}", alias.0, cypher_prop);
+                                    let underscore_alias = cte_column_name(&alias.0, &cypher_prop);
                                     crate::query_planner::logical_plan::ProjectionItem {
                                         expression: LogicalExpr::PropertyAccessExp(
                                             crate::query_planner::logical_expr::PropertyAccess {

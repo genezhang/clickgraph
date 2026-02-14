@@ -219,20 +219,37 @@ impl<'a> IdFunctionTransformer<'a> {
                     log::info!("      ✅ Found id({}) = {} - transforming!", var, id_value);
                     return self.rewrite_id_equals(var, id_value);
                 }
-                // labels(a) = "Label" → true (label is tracked via MATCH pattern or CTE)
-                if let Some(var) = self.extract_labels_equals(&op_app.operands) {
-                    log::info!(
-                        "      🏷️ Removing labels({}) predicate (handled by MATCH pattern/CTE)",
-                        var
-                    );
-                    return Expression::Literal(Literal::Boolean(true));
-                }
+                // labels(a) = "Label" — keep for CTE filter rewriting downstream
             }
 
             // id(a) IN [1, 2, 3] → ((a:L1 AND a.id = 'v1') OR ...)
+            // "Label" IN labels(n) → labels(n) = "Label" (normalized for CTE filter rewriting)
             Operator::In => {
                 if let Some((var, ids)) = self.extract_id_in(&op_app.operands) {
                     return self.rewrite_id_in(var, ids, false);
+                }
+                log::debug!(
+                    "      IN operands[0]={:?}, operands[1]={:?}",
+                    op_app.operands.first().map(|e| std::mem::discriminant(e)),
+                    op_app.operands.get(1).map(|e| std::mem::discriminant(e))
+                );
+                if let Some(_var) = self.extract_label_in_labels(&op_app.operands) {
+                    // Normalize: "Label" IN labels(n) → labels(n) = "Label"
+                    // This allows the CTE filter builder to rewrite it to start_type/end_type
+                    if let Expression::Literal(label_lit) = &op_app.operands[0] {
+                        if let Expression::FunctionCallExp(func) = &op_app.operands[1] {
+                            log::info!(
+                                "      🏷️ Normalizing '... IN labels(...)' → 'labels(...) = ...'",
+                            );
+                            return Expression::OperatorApplicationExp(OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    Expression::FunctionCallExp(func.clone()),
+                                    Expression::Literal(label_lit.clone()),
+                                ],
+                            });
+                        }
+                    }
                 }
             }
 
@@ -289,30 +306,19 @@ impl<'a> IdFunctionTransformer<'a> {
         None
     }
 
-    /// Extract `labels(var) = "Label"` pattern → returns the variable name
-    fn extract_labels_equals(&self, operands: &[Expression<'a>]) -> Option<&'a str> {
+    /// Extract `"Label" IN labels(var)` pattern → returns the variable name
+    fn extract_label_in_labels(&self, operands: &[Expression<'a>]) -> Option<&'a str> {
         if operands.len() != 2 {
             return None;
         }
-        // Check labels(var) = "Label"
-        if let Expression::FunctionCallExp(func) = &operands[0] {
-            if (func.name.eq_ignore_ascii_case("labels") || func.name.eq_ignore_ascii_case("label"))
-                && func.args.len() == 1
-            {
-                if let Expression::Variable(var) = &func.args[0] {
-                    if matches!(&operands[1], Expression::Literal(Literal::String(_))) {
-                        return Some(var);
-                    }
-                }
-            }
-        }
-        // Check "Label" = labels(var)
-        if let Expression::FunctionCallExp(func) = &operands[1] {
-            if (func.name.eq_ignore_ascii_case("labels") || func.name.eq_ignore_ascii_case("label"))
-                && func.args.len() == 1
-            {
-                if let Expression::Variable(var) = &func.args[0] {
-                    if matches!(&operands[0], Expression::Literal(Literal::String(_))) {
+        // "Label" IN labels(var)
+        if matches!(&operands[0], Expression::Literal(Literal::String(_))) {
+            if let Expression::FunctionCallExp(func) = &operands[1] {
+                if (func.name.eq_ignore_ascii_case("labels")
+                    || func.name.eq_ignore_ascii_case("label"))
+                    && func.args.len() == 1
+                {
+                    if let Expression::Variable(var) = &func.args[0] {
                         return Some(var);
                     }
                 }

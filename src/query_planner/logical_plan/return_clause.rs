@@ -209,6 +209,47 @@ fn property_key(prop: &PropertyAccess) -> String {
     format!("{}.{}", prop.table_alias.0, prop.column.raw())
 }
 
+/// Extract target node label and projected property from a pattern comprehension.
+/// For `[(u)-[:FOLLOWS]->(f:User) | f.name]`:
+///   - target_label = Some("User")
+///   - target_property = Some("name")
+fn extract_target_info(
+    pattern: &crate::open_cypher_parser::ast::PathPattern<'_>,
+    projection: &crate::open_cypher_parser::ast::Expression<'_>,
+    correlation_var: &str,
+) -> (Option<String>, Option<String>) {
+    use crate::open_cypher_parser::ast::PathPattern;
+
+    // Extract target node label from the pattern (the node that is NOT the correlation var)
+    let target_label = match pattern {
+        PathPattern::ConnectedPattern(connected) => {
+            connected.iter().find_map(|conn| {
+                let start = conn.start_node.borrow();
+                let end = conn.end_node.borrow();
+                // Target is the node that is NOT the correlation variable
+                if start.name.map(|n| n == correlation_var).unwrap_or(false) {
+                    end.first_label().map(|l| l.to_string())
+                } else if end.name.map(|n| n == correlation_var).unwrap_or(false) {
+                    start.first_label().map(|l| l.to_string())
+                } else {
+                    None
+                }
+            })
+        }
+        _ => None,
+    };
+
+    // Extract property from the projection expression (e.g., f.name → "name")
+    let target_property = match projection {
+        crate::open_cypher_parser::ast::Expression::PropertyAccessExp(pa) => {
+            Some(pa.key.to_string())
+        }
+        _ => None,
+    };
+
+    (target_label, target_property)
+}
+
 /// Rewrite pattern comprehensions in return items
 /// Modifies the plan by adding OPTIONAL MATCH nodes and replaces pattern comprehensions with collect()
 /// Recursively rewrite pattern comprehensions within an expression.
@@ -371,7 +412,7 @@ fn rewrite_pattern_comprehensions<'a>(
             rewrite_expression_pattern_comprehensions(item.expression);
 
         // Extract metadata for CTE+JOIN generation (same approach as WITH clause)
-        for (pattern, _where_clause, _projection) in pattern_comprehensions {
+        for (pattern, _where_clause, projection) in pattern_comprehensions {
             use crate::query_planner::logical_plan::with_clause::{
                 extract_correlation_variable_from_pattern, extract_direction_and_rel_types,
             };
@@ -395,9 +436,32 @@ fn rewrite_pattern_comprehensions<'a>(
 
             let (direction, rel_types) = extract_direction_and_rel_types(&pattern);
 
+            // Extract target node label and projected property from the pattern
+            let (target_label, target_property) =
+                extract_target_info(&pattern, &projection, &correlation_var);
+
             // Determine aggregation type from the rewritten expression
-            // The expression was rewritten to count(*) for size(), collect() for bare pattern comp
-            let agg_type = AggregationType::Count; // Default for size(); TODO: detect from rewritten expr
+            let agg_type = match &rewritten_expr {
+                Expression::FunctionCallExp(fc) if fc.name.eq_ignore_ascii_case("collect") => {
+                    AggregationType::GroupArray
+                }
+                Expression::FunctionCallExp(fc) if fc.name.eq_ignore_ascii_case("count") => {
+                    AggregationType::Count
+                }
+                Expression::FunctionCallExp(fc) if fc.name.eq_ignore_ascii_case("sum") => {
+                    AggregationType::Sum
+                }
+                Expression::FunctionCallExp(fc) if fc.name.eq_ignore_ascii_case("avg") => {
+                    AggregationType::Avg
+                }
+                Expression::FunctionCallExp(fc) if fc.name.eq_ignore_ascii_case("min") => {
+                    AggregationType::Min
+                }
+                Expression::FunctionCallExp(fc) if fc.name.eq_ignore_ascii_case("max") => {
+                    AggregationType::Max
+                }
+                _ => AggregationType::Count,
+            };
 
             let result_alias = item
                 .alias
@@ -405,8 +469,8 @@ fn rewrite_pattern_comprehensions<'a>(
                 .unwrap_or_else(|| format!("__pc_{}", pc_counter));
 
             log::info!(
-                "🔧 RETURN pattern comprehension meta: var='{}', label='{}', dir={:?}, rels={:?}, alias='{}'",
-                correlation_var, correlation_label, direction, rel_types, result_alias
+                "🔧 RETURN pattern comprehension meta: var='{}', label='{}', dir={:?}, rels={:?}, alias='{}', target={:?}/{:?}",
+                correlation_var, correlation_label, direction, rel_types, result_alias, target_label, target_property
             );
 
             all_metas.push(
@@ -417,6 +481,8 @@ fn rewrite_pattern_comprehensions<'a>(
                     rel_types,
                     agg_type,
                     result_alias: result_alias.clone(),
+                    target_label,
+                    target_property,
                 },
             );
 

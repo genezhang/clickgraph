@@ -36,6 +36,7 @@ use super::render_expr::{
     PropertyAccess as RenderPropertyAccess, RenderExpr, TableAlias as RenderTableAlias,
 };
 use super::SelectItem;
+use crate::utils::cte_column_naming::cte_column_name;
 
 //=============================================================================
 // CONSOLIDATED PROPERTY EXPANSION LOGIC (Dec 2025)
@@ -239,7 +240,7 @@ pub fn expand_alias_to_projection_items_unified(
             };
 
             let col_alias_name = match alias_format {
-                PropertyAliasFormat::Underscore => format!("{}_{}", alias, prop.property_name),
+                PropertyAliasFormat::Underscore => cte_column_name(alias, &prop.property_name),
                 PropertyAliasFormat::Dot => format!("{}.{}", alias, prop.property_name),
                 PropertyAliasFormat::PropertyOnly => prop.property_name.clone(),
             };
@@ -327,7 +328,7 @@ pub fn expand_alias_to_select_items_unified(
             };
 
             let col_alias_name = match alias_format {
-                PropertyAliasFormat::Underscore => format!("{}_{}", alias, prop.property_name),
+                PropertyAliasFormat::Underscore => cte_column_name(alias, &prop.property_name),
                 PropertyAliasFormat::Dot => format!("{}.{}", alias, prop.property_name),
                 PropertyAliasFormat::PropertyOnly => prop.property_name.clone(),
             };
@@ -389,7 +390,7 @@ pub fn expand_alias_to_properties(
         .into_iter()
         .map(|(prop_name, col_name)| {
             let col_alias_name = match alias_format {
-                PropertyAliasFormat::Underscore => format!("{}_{}", alias, prop_name),
+                PropertyAliasFormat::Underscore => cte_column_name(alias, &prop_name),
                 PropertyAliasFormat::Dot => format!("{}.{}", alias, prop_name),
                 PropertyAliasFormat::PropertyOnly => prop_name.clone(),
             };
@@ -443,7 +444,7 @@ pub fn expand_alias_to_select_items(
                 table_alias: RenderTableAlias(table_alias_to_use.clone()),
                 column: PropertyValue::Column(col_name),
             }),
-            col_alias: Some(RenderColumnAlias(format!("{}_{}", alias, prop_name))),
+            col_alias: Some(RenderColumnAlias(cte_column_name(alias, &prop_name))),
         })
         .collect()
 }
@@ -781,7 +782,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(items[0].col_alias.as_ref().unwrap().0, "p_name");
+        assert_eq!(items[0].col_alias.as_ref().unwrap().0, "p1_p_name");
     }
 
     // =========================================================================
@@ -799,8 +800,8 @@ mod tests {
             expand_alias_to_properties("p", properties, None, PropertyAliasFormat::Underscore);
 
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].col_alias.as_ref().unwrap().0, "p_name");
-        assert_eq!(items[1].col_alias.as_ref().unwrap().0, "p_age");
+        assert_eq!(items[0].col_alias.as_ref().unwrap().0, "p1_p_name");
+        assert_eq!(items[1].col_alias.as_ref().unwrap().0, "p1_p_age");
     }
 
     #[test]

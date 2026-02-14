@@ -22,6 +22,7 @@ use crate::render_plan::render_expr::{
     Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
 };
 use crate::render_plan::{ArrayJoin, Join, JoinType};
+use crate::utils::cte_column_naming::cte_column_name;
 use std::sync::Arc;
 
 // Helper function imports from plan_builder_helpers
@@ -2031,8 +2032,7 @@ impl JoinBuilder for LogicalPlan {
                         // So we reference columns as: o.o_user_id
                         let cte_alias = node_alias;
 
-                        // Column name in CTE: node_alias_column (e.g., "b_user_id")
-                        let cte_column = format!("{}_{}", node_alias, column);
+                        let cte_column = cte_column_name(node_alias, column);
 
                         log::info!(
                             "🔧 Resolved CTE reference: {} -> CTE '{}' (alias '{}'), column '{}'",

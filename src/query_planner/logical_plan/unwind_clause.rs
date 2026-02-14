@@ -74,6 +74,13 @@ pub fn evaluate_unwind_clause(
     );
     plan_ctx.insert_table_ctx(unwind_clause.alias.to_string(), unwind_table_ctx);
 
+    // Override the typed variable: insert_table_ctx registers it as a Node (no labels),
+    // but UNWIND aliases are scalars, not graph entities
+    plan_ctx.define_scalar_from_unwind(
+        unwind_clause.alias.to_string(),
+        format!("{:?}", unwind_clause.expression),
+    );
+
     let unwind = Unwind {
         input: plan,
         expression,

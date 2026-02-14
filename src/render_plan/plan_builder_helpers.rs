@@ -14,6 +14,8 @@
 
 #![allow(dead_code)]
 
+use crate::utils::cte_column_naming::cte_column_name;
+
 use super::render_expr::{
     AggregateFnCall, Column, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr,
     ScalarFnCall, TableAlias,
@@ -230,7 +232,7 @@ pub(super) fn rewrite_table_aliases_to_cte(
             if with_table_aliases.contains(&prop.table_alias.0) {
                 // 🔧 FIX: CTE columns use underscore naming (a_name), not dot notation (a.name)
                 // Rewrite a.name -> with_result."a_name" (not "a.name")
-                let col_name = format!("{}_{}", prop.table_alias.0, prop.column.raw());
+                let col_name = cte_column_name(&prop.table_alias.0, &prop.column.raw());
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(cte_name.to_string()),
                     column: PropertyValue::Column(col_name),
