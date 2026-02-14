@@ -463,9 +463,7 @@ impl BoltHandler {
                         context.set_user(user.username.clone());
                         context.schema_name = database.clone();
                         let tenant_id = context.tenant_id.clone();
-                        context
-                            .id_mapper
-                            .set_scope(database.clone(), tenant_id);
+                        context.id_mapper.set_scope(database.clone(), tenant_id);
                         context.set_state(ConnectionState::Ready);
                     }
 

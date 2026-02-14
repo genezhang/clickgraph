@@ -144,8 +144,7 @@ impl IdMapper {
     /// Clears the session cache when scope changes to prevent stale mappings
     /// from a previous scope leaking into the new one.
     pub fn set_scope(&mut self, schema_name: Option<String>, tenant_id: Option<String>) {
-        let scope_changed =
-            self.schema_name != schema_name || self.tenant_id != tenant_id;
+        let scope_changed = self.schema_name != schema_name || self.tenant_id != tenant_id;
 
         self.schema_name = schema_name.clone();
         self.tenant_id = tenant_id.clone();
