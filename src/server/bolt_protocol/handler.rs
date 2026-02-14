@@ -713,6 +713,88 @@ impl BoltHandler {
         Ok(vec![BoltMessage::success(HashMap::new())])
     }
 
+    /// Handle session commands like `CALL sys.set('key', 'value')` or
+    /// `CALL dbms.setConfigValue('key', 'value')` (browser-friendly alias).
+    /// These are intercepted before Cypher parsing and modify BoltContext state.
+    /// Returns Some(response) if the query was a session command, None otherwise.
+    async fn handle_session_command(
+        &mut self,
+        query: &str,
+    ) -> BoltResult<Option<Vec<BoltMessage>>> {
+        let trimmed = query.trim();
+        let lower = trimmed.to_lowercase();
+
+        // Accept both CALL sys.set(...) and CALL dbms.setConfigValue(...)
+        let is_session_cmd =
+            lower.starts_with("call sys.set") || lower.starts_with("call dbms.setconfigvalue");
+        if !is_session_cmd {
+            return Ok(None);
+        }
+
+        // Bare command without parens — usage error
+        if !trimmed.contains('(') {
+            return Ok(Some(vec![BoltMessage::failure(
+                "Neo.ClientError.Statement.SyntaxError".to_string(),
+                "Usage: CALL sys.set('key', 'value') or CALL dbms.setConfigValue('key', 'value')"
+                    .to_string(),
+            )]));
+        }
+
+        // Parse arguments from CALL sys.set(arg1, arg2)
+        let inner = trimmed.trim_end_matches(')').trim_end_matches(';');
+        let inner = if let Some(pos) = inner.find('(') {
+            &inner[pos + 1..]
+        } else {
+            return Ok(Some(vec![BoltMessage::failure(
+                "Neo.ClientError.Statement.SyntaxError".to_string(),
+                "Usage: CALL dbms.setConfigValue('key', 'value')".to_string(),
+            )]));
+        };
+
+        let parts: Vec<&str> = inner.splitn(2, ',').collect();
+        if parts.len() != 2 {
+            return Ok(Some(vec![BoltMessage::failure(
+                "Neo.ClientError.Statement.SyntaxError".to_string(),
+                "Usage: CALL dbms.setConfigValue('key', 'value')".to_string(),
+            )]));
+        }
+
+        let key = parts[0].trim().trim_matches('\'').trim_matches('"');
+        let value = parts[1].trim().trim_matches('\'').trim_matches('"');
+
+        log::info!("Session command: setting {} = {}", key, value);
+
+        // Store in BoltContext metadata and update IdMapper scope
+        {
+            let mut context = lock_context!(self.context);
+            context.metadata.insert(key.to_string(), value.to_string());
+
+            // Special handling for tenant_id
+            if key == "tenant_id" {
+                context.tenant_id = Some(value.to_string());
+                let schema = context.schema_name.clone();
+                context.id_mapper.set_scope(schema, Some(value.to_string()));
+            }
+
+            // Set state to Streaming so PULL can deliver the cached result
+            context.set_state(ConnectionState::Streaming);
+        }
+
+        // Return SUCCESS with fields metadata so browser can PULL the result
+        let mut meta = HashMap::new();
+        meta.insert(
+            "fields".to_string(),
+            Value::Array(vec![Value::String("result".to_string())]),
+        );
+        // Store confirmation message for PULL
+        self.cached_results = Some(vec![vec![BoltValue::Json(Value::String(format!(
+            "Session {} set to {}",
+            key, value
+        )))]]);
+
+        Ok(Some(vec![BoltMessage::success(meta)]))
+    }
+
     /// Handle RUN message (execute Cypher query)
     async fn handle_run(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         // Verify connection state
@@ -730,6 +812,27 @@ impl BoltHandler {
         let query = message
             .extract_query()
             .ok_or_else(|| BoltError::invalid_message("RUN message missing query"))?;
+
+        // Handle EXPLAIN queries — browser sends "EXPLAIN <partial_query>" as autocomplete
+        // probes while the user types. Return empty SUCCESS so probes don't show errors.
+        // For fully-formed EXPLAIN queries, this also prevents unnecessary execution.
+        if query.trim().to_lowercase().starts_with("explain ") {
+            log::debug!("EXPLAIN query (returning empty plan): {}", query.trim());
+            let mut meta = HashMap::new();
+            meta.insert("fields".to_string(), Value::Array(vec![]));
+            // Set state to Streaming so the subsequent PULL gets a clean completion
+            {
+                let mut context = lock_context!(self.context);
+                context.set_state(ConnectionState::Streaming);
+            }
+            self.cached_results = Some(vec![]);
+            return Ok(vec![BoltMessage::success(meta)]);
+        }
+
+        // Intercept session commands before Cypher parsing
+        if let Some(response) = self.handle_session_command(&query).await? {
+            return Ok(response);
+        }
 
         let parameters = message.extract_parameters().unwrap_or_default();
 
