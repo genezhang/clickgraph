@@ -2087,6 +2087,7 @@ impl JoinBuilder for LogicalPlan {
                     }
                 } else {
                     // Directional: left is always source (from), right is always target (to)
+                    // (traversal.rs compute_connection_aliases swaps for Incoming direction)
                     // JOIN 1: relationship.from_id = left_node.id
                     // For composite IDs, generates AND of per-column equalities
                     let (_left_table_alias, _left_column) =
@@ -2373,6 +2374,7 @@ impl JoinBuilder for LogicalPlan {
                     }
                 } else {
                     // Directional: right is always target (to)
+                    // (traversal.rs compute_connection_aliases swaps for Incoming direction)
                     // JOIN 2: right_node.id = relationship.to_id
                     // For composite IDs, generates AND of per-column equalities
                     let (_right_table_alias, _right_column) =
