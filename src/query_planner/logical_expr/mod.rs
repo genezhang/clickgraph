@@ -485,9 +485,9 @@ mod tests {
         assert_eq!(logical_int, Literal::Integer(42));
 
         // Test float conversion
-        let ast_float = ast::Literal::Float(3.14);
+        let ast_float = ast::Literal::Float(2.72);
         let logical_float = Literal::from(ast_float);
-        assert_eq!(logical_float, Literal::Float(3.14));
+        assert_eq!(logical_float, Literal::Float(2.72));
 
         // Test boolean conversion
         let ast_bool = ast::Literal::Boolean(true);

@@ -686,11 +686,11 @@ mod tests {
 
     #[test]
     fn test_parse_properties_with_float_literal() {
-        let input = "{price: 3.14}";
+        let input = "{price: 2.72}";
         let result = parse_properties(input);
         assert!(
             result.is_ok(),
-            "Failed to parse {{price: 3.14}}: {:?}",
+            "Failed to parse {{price: 2.72}}: {:?}",
             result
         );
         let (remaining, props) = result.unwrap();
@@ -700,7 +700,7 @@ mod tests {
             Property::PropertyKV(kv) => {
                 assert_eq!(kv.key, "price");
                 match &kv.value {
-                    Expression::Literal(Literal::Float(f)) => assert!((f - 3.14).abs() < 0.001),
+                    Expression::Literal(Literal::Float(f)) => assert!((f - 2.72_f64).abs() < 0.001),
                     other => panic!("Expected Float literal, got: {:?}", other),
                 }
             }

@@ -253,8 +253,8 @@ mod tests {
 
     #[test]
     fn test_format_parameter_float() {
-        let value = json!(3.14);
-        assert_eq!(format_parameter(&value).unwrap(), "3.14");
+        let value = json!(2.72);
+        assert_eq!(format_parameter(&value).unwrap(), "2.72");
     }
 
     #[test]
