@@ -1,0 +1,53 @@
+# Polymorphic edge schema for db_polymorphic
+# Database: db_polymorphic
+# Setup: scripts/setup/setup_polymorphic_data.sh
+#
+# Polymorphic pattern: A single interactions table stores ALL edge types,
+# distinguished by the interaction_type column (type discriminator).
+# from_type/to_type columns indicate which node labels the edge connects.
+
+name: social_polymorphic
+
+graph_schema:
+  nodes:
+    - label: User
+      database: db_polymorphic
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: full_name
+        email: email_address
+
+    - label: Post
+      database: db_polymorphic
+      table: posts
+      node_id: post_id
+      property_mappings:
+        post_id: post_id
+        content: content
+        created: created_at
+
+  edges:
+    - polymorphic: true
+      database: db_polymorphic
+      table: interactions
+      from_id: from_id
+      to_id: to_id
+
+      type_column: interaction_type
+      from_label_column: from_type
+      to_label_column: to_type
+
+      type_values:
+        - FOLLOWS
+        - LIKES
+        - AUTHORED
+        - COMMENTED
+        - SHARED
+
+      edge_id: [from_id, to_id, interaction_type, timestamp]
+
+      property_mappings:
+        created_at: timestamp
+        weight: interaction_weight

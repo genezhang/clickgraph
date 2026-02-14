@@ -1,10 +1,15 @@
 #!/bin/bash
 # Setup test data for polymorphic edge schema
-# Database: brahmand (shares users_bench/posts_bench with standard schema)
-# Schema: schemas/examples/social_polymorphic.yaml
+# Database: db_polymorphic
+# Schema: schemas/dev/social_polymorphic.yaml
 #
-# The interactions table stores ALL edge types with type_column discriminator.
-# Requires users_bench and posts_bench to already exist (from benchmark data setup).
+# Tables:
+#   - users (node: User)
+#   - posts (node: Post)
+#   - interactions (polymorphic edge table with type_column discriminator)
+#
+# The interactions table stores ALL edge types (FOLLOWS, LIKES, AUTHORED,
+# COMMENTED, SHARED) in a single table, distinguished by interaction_type column.
 
 set -e
 
@@ -16,9 +21,26 @@ run_sql() {
     echo "$1" | curl -s "${CH_URL}/?user=${CH_USER}&password=${CH_PASS}" --data-binary @-
 }
 
-echo "=== Setting up polymorphic interactions table ==="
+echo "=== Setting up db_polymorphic ==="
 
-run_sql "CREATE TABLE IF NOT EXISTS brahmand.interactions (
+run_sql "CREATE DATABASE IF NOT EXISTS db_polymorphic"
+
+# Users table
+run_sql "CREATE TABLE IF NOT EXISTS db_polymorphic.users (
+    user_id UInt64,
+    full_name String,
+    email_address String
+) ENGINE = Memory"
+
+# Posts table
+run_sql "CREATE TABLE IF NOT EXISTS db_polymorphic.posts (
+    post_id UInt64,
+    content String,
+    created_at DateTime
+) ENGINE = Memory"
+
+# Polymorphic interactions table
+run_sql "CREATE TABLE IF NOT EXISTS db_polymorphic.interactions (
     from_id UInt64,
     to_id UInt64,
     interaction_type String,
@@ -29,10 +51,28 @@ run_sql "CREATE TABLE IF NOT EXISTS brahmand.interactions (
 ) ENGINE = Memory"
 
 # Clear existing data
-run_sql "TRUNCATE TABLE IF EXISTS brahmand.interactions"
+for t in users posts interactions; do
+    run_sql "TRUNCATE TABLE IF EXISTS db_polymorphic.$t"
+done
+
+echo "Tables created. Inserting data..."
+
+run_sql "INSERT INTO db_polymorphic.users VALUES
+(1, 'Alice Smith', 'alice@example.com'),
+(2, 'Bob Jones', 'bob@example.com'),
+(3, 'Carol White', 'carol@example.com'),
+(4, 'David Brown', 'david@example.com'),
+(5, 'Eve Davis', 'eve@example.com')"
+
+run_sql "INSERT INTO db_polymorphic.posts VALUES
+(1, 'Hello world!', '2024-01-01 10:00:00'),
+(2, 'Rust is great', '2024-01-15 14:00:00'),
+(3, 'Graph databases rock', '2024-02-01 09:00:00'),
+(4, 'London calling', '2024-02-20 16:00:00'),
+(5, 'Winter in Toronto', '2024-03-01 11:00:00')"
 
 # FOLLOWS: 10 edges (User->User)
-run_sql "INSERT INTO brahmand.interactions (from_id, to_id, interaction_type, from_type, to_type, timestamp, interaction_weight) VALUES
+run_sql "INSERT INTO db_polymorphic.interactions (from_id, to_id, interaction_type, from_type, to_type, timestamp, interaction_weight) VALUES
 (1, 2, 'FOLLOWS', 'User', 'User', '2025-01-01', 1),
 (2, 3, 'FOLLOWS', 'User', 'User', '2025-01-02', 1),
 (3, 1, 'FOLLOWS', 'User', 'User', '2025-01-03', 1),
@@ -45,7 +85,7 @@ run_sql "INSERT INTO brahmand.interactions (from_id, to_id, interaction_type, fr
 (2, 1, 'FOLLOWS', 'User', 'User', '2025-01-10', 1)"
 
 # LIKES: 6 edges (User->Post)
-run_sql "INSERT INTO brahmand.interactions (from_id, to_id, interaction_type, from_type, to_type, timestamp, interaction_weight) VALUES
+run_sql "INSERT INTO db_polymorphic.interactions (from_id, to_id, interaction_type, from_type, to_type, timestamp, interaction_weight) VALUES
 (1, 1, 'LIKES', 'User', 'Post', '2025-02-01', 0.8),
 (2, 2, 'LIKES', 'User', 'Post', '2025-02-02', 0.9),
 (3, 1, 'LIKES', 'User', 'Post', '2025-02-03', 0.7),
@@ -54,7 +94,7 @@ run_sql "INSERT INTO brahmand.interactions (from_id, to_id, interaction_type, fr
 (1, 2, 'LIKES', 'User', 'Post', '2025-02-06', 0.5)"
 
 # AUTHORED: 5 edges (User->Post)
-run_sql "INSERT INTO brahmand.interactions (from_id, to_id, interaction_type, from_type, to_type, timestamp, interaction_weight) VALUES
+run_sql "INSERT INTO db_polymorphic.interactions (from_id, to_id, interaction_type, from_type, to_type, timestamp, interaction_weight) VALUES
 (1, 1, 'AUTHORED', 'User', 'Post', '2025-03-01', 1),
 (2, 2, 'AUTHORED', 'User', 'Post', '2025-03-02', 1),
 (3, 3, 'AUTHORED', 'User', 'Post', '2025-03-03', 1),
@@ -62,7 +102,7 @@ run_sql "INSERT INTO brahmand.interactions (from_id, to_id, interaction_type, fr
 (5, 5, 'AUTHORED', 'User', 'Post', '2025-03-05', 1)"
 
 # COMMENTED: 5 edges (User->Post)
-run_sql "INSERT INTO brahmand.interactions (from_id, to_id, interaction_type, from_type, to_type, timestamp, interaction_weight) VALUES
+run_sql "INSERT INTO db_polymorphic.interactions (from_id, to_id, interaction_type, from_type, to_type, timestamp, interaction_weight) VALUES
 (1, 1, 'COMMENTED', 'User', 'Post', '2025-04-01', 0.3),
 (2, 1, 'COMMENTED', 'User', 'Post', '2025-04-02', 0.4),
 (3, 2, 'COMMENTED', 'User', 'Post', '2025-04-03', 0.5),
@@ -70,15 +110,17 @@ run_sql "INSERT INTO brahmand.interactions (from_id, to_id, interaction_type, fr
 (5, 3, 'COMMENTED', 'User', 'Post', '2025-04-05', 0.7)"
 
 # SHARED: 3 edges (User->Post)
-run_sql "INSERT INTO brahmand.interactions (from_id, to_id, interaction_type, from_type, to_type, timestamp, interaction_weight) VALUES
+run_sql "INSERT INTO db_polymorphic.interactions (from_id, to_id, interaction_type, from_type, to_type, timestamp, interaction_weight) VALUES
 (1, 2, 'SHARED', 'User', 'Post', '2025-05-01', 0.8),
 (2, 3, 'SHARED', 'User', 'Post', '2025-05-02', 0.9),
 (3, 1, 'SHARED', 'User', 'Post', '2025-05-03', 0.7)"
 
 echo ""
 echo "=== Data loaded ==="
-echo "Total interactions: $(run_sql 'SELECT count() FROM brahmand.interactions')"
-run_sql "SELECT interaction_type, count() AS cnt FROM brahmand.interactions GROUP BY interaction_type ORDER BY interaction_type FORMAT PrettyCompact"
+echo "Users:        $(run_sql 'SELECT count() FROM db_polymorphic.users')"
+echo "Posts:        $(run_sql 'SELECT count() FROM db_polymorphic.posts')"
+echo "Interactions: $(run_sql 'SELECT count() FROM db_polymorphic.interactions')"
+run_sql "SELECT interaction_type, count() AS cnt FROM db_polymorphic.interactions GROUP BY interaction_type ORDER BY interaction_type FORMAT PrettyCompact"
 echo ""
 echo "Start server with:"
-echo "  GRAPH_CONFIG_PATH=schemas/examples/social_polymorphic.yaml cargo run --bin clickgraph"
+echo "  GRAPH_CONFIG_PATH=schemas/dev/social_polymorphic.yaml cargo run --bin clickgraph"
