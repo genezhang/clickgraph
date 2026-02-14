@@ -1,7 +1,7 @@
 #!/bin/bash
 # Setup test data for standard schema (separate node + edge tables)
 # Database: db_standard
-# Schema: schemas/dev/social_dev_standard.yaml
+# Schema: schemas/dev/social_standard.yaml
 #
 # Tables:
 #   - users (node: User)
