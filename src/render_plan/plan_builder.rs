@@ -309,6 +309,38 @@ pub(crate) trait RenderPlanBuilder {
 /// 2. If yes, get columns from cte_schemas[cte_name] with this alias prefix
 /// 3. If no, it's a fresh variable - query the plan for base table properties
 ///
+/// When a Union is rendered to a RenderPlan, the first branch's data lives in
+/// the base plan fields (select/from/joins/filters) while remaining branches
+/// are in union.input. For the GraphJoins flat-extraction path, we need ALL
+/// branches in union.input because the outer GraphJoins will overwrite
+/// plan.select with the outer projection. This helper moves the first branch.
+fn move_first_branch_into_union(plan: RenderPlan) -> Option<Union> {
+    if let Some(mut union) = plan.union.0 {
+        if plan.from.0.is_some() {
+            let first_branch = RenderPlan {
+                ctes: CteItems(vec![]),
+                select: plan.select,
+                from: plan.from,
+                joins: plan.joins,
+                array_join: plan.array_join,
+                filters: plan.filters,
+                group_by: GroupByExpressions(vec![]),
+                having_clause: None,
+                order_by: OrderByItems(vec![]),
+                skip: SkipItem(None),
+                limit: LimitItem(None),
+                union: UnionItems(None),
+                fixed_path_info: None,
+                is_multi_label_scan: false,
+            };
+            union.input.insert(0, first_branch);
+        }
+        Some(union)
+    } else {
+        None
+    }
+}
+
 /// # Arguments
 /// * `has_aggregation` - If true, wraps non-ID columns with anyLast() for efficient aggregation
 /// * `plan_ctx` - Optional PlanCtx for accessing PropertyRequirements (property pruning optimization)
@@ -654,7 +686,12 @@ impl RenderPlanBuilder for LogicalPlan {
                         // Found Union nested deep, convert it to render plan
                         log::debug!("extract_union: found nested Union, converting to render");
                         let union_render_plan = current.to_render_plan(schema)?;
-                        return Ok(union_render_plan.union.0);
+
+                        // The first branch is stored in the base render plan (select/from/etc.)
+                        // and remaining branches are in union.0. We need ALL branches in
+                        // union.input so the SQL generator uses them correctly (the outer
+                        // GraphJoins will overwrite plan.select with the outer projection).
+                        return Ok(move_first_branch_into_union(union_render_plan));
                     }
                     _ => break,
                 }
@@ -715,7 +752,9 @@ impl RenderPlanBuilder for LogicalPlan {
                             "🔀 extract_union_with_ctx: Union rendered, has_union={:?}",
                             union_render_plan.union.0.is_some()
                         );
-                        return Ok(union_render_plan.union.0);
+
+                        // Move first branch into union.input (same logic as extract_union)
+                        return Ok(move_first_branch_into_union(union_render_plan));
                     }
                     other => {
                         log::warn!(
