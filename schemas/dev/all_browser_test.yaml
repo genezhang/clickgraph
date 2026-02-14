@@ -1,0 +1,283 @@
+default_schema: social_standard
+schemas:
+- name: social_standard
+  graph_schema:
+    nodes:
+    - label: User
+      database: db_standard
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: full_name
+        email: email_address
+        registration_date: registration_date
+        is_active: is_active
+        country: country
+        city: city
+    - label: Post
+      database: db_standard
+      table: posts
+      node_id: post_id
+      property_mappings:
+        post_id: post_id
+        content: content
+        date: created_at
+    edges:
+    - type: FOLLOWS
+      database: db_standard
+      table: user_follows
+      from_id: follower_id
+      to_id: followed_id
+      from_node: User
+      to_node: User
+      property_mappings:
+        follow_date: follow_date
+    - type: AUTHORED
+      database: db_standard
+      table: posts
+      from_id: user_id
+      to_id: post_id
+      edge_id: post_id
+      from_node: User
+      to_node: Post
+      property_mappings: {}
+    - type: LIKED
+      database: db_standard
+      table: post_likes
+      from_id: user_id
+      to_id: post_id
+      from_node: User
+      to_node: Post
+      property_mappings:
+        like_date: liked_at
+    - type: FRIENDS_WITH
+      database: db_standard
+      table: friendships
+      from_id: user_id_1
+      to_id: user_id_2
+      edge_id:
+      - user_id_1
+      - user_id_2
+      from_node: User
+      to_node: User
+      property_mappings:
+        since_date: since
+- name: flights_denormalized
+  graph_schema:
+    nodes:
+    - label: Airport
+      database: db_denormalized
+      table: flights_denorm
+      node_id: code
+      property_mappings: {}
+      from_node_properties:
+        code: origin_code
+        city: origin_city
+        state: origin_state
+      to_node_properties:
+        code: dest_code
+        city: dest_city
+        state: dest_state
+    edges:
+    - type: FLIGHT
+      database: db_denormalized
+      table: flights_denorm
+      from_id: origin_code
+      to_id: dest_code
+      from_node: Airport
+      to_node: Airport
+      edge_id:
+      - flight_id
+      - flight_number
+      property_mappings:
+        flight_id: flight_id
+        flight_num: flight_number
+        carrier: carrier
+        departure_time: departure_time
+        arrival_time: arrival_time
+        distance: distance
+- name: orders_customers_fk
+  graph_schema:
+    nodes:
+    - label: Order
+      database: db_fk_edge
+      table: orders_fk
+      node_id: order_id
+      property_mappings:
+        order_id: order_id
+        order_date: order_date
+        total_amount: total_amount
+    - label: Customer
+      database: db_fk_edge
+      table: customers_fk
+      node_id: customer_id
+      property_mappings:
+        customer_id: customer_id
+        name: name
+        email: email
+    edges:
+    - type: PLACED_BY
+      database: db_fk_edge
+      table: orders_fk
+      from_id: order_id
+      to_id: customer_id
+      from_node: Order
+      to_node: Customer
+- name: social_polymorphic
+  graph_schema:
+    nodes:
+    - label: User
+      database: db_polymorphic
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: full_name
+        email: email_address
+    - label: Post
+      database: db_polymorphic
+      table: posts
+      node_id: post_id
+      property_mappings:
+        post_id: post_id
+        content: content
+        created: created_at
+    edges:
+    - polymorphic: true
+      database: db_polymorphic
+      table: interactions
+      from_id: from_id
+      to_id: to_id
+      type_column: interaction_type
+      from_label_column: from_type
+      to_label_column: to_type
+      type_values:
+      - FOLLOWS
+      - LIKES
+      - AUTHORED
+      - COMMENTED
+      - SHARED
+      edge_id:
+      - from_id
+      - to_id
+      - interaction_type
+      - timestamp
+      property_mappings:
+        created_at: timestamp
+        weight: interaction_weight
+- name: composite_node_id
+  graph_schema:
+    nodes:
+    - label: Account
+      database: db_composite_id
+      table: accounts
+      node_id:
+      - bank_id
+      - account_number
+      property_mappings:
+        bank_id: bank_id
+        account_number: account_number
+        holder_name: holder_name
+        account_type: account_type
+        balance: balance
+        opened_date: opened_date
+    - label: Customer
+      database: db_composite_id
+      table: customers
+      node_id: customer_id
+      property_mappings:
+        customer_id: customer_id
+        name: name
+        email: email
+        city: city
+    edges:
+    - type: OWNS
+      database: db_composite_id
+      table: account_ownership
+      from_id: customer_id
+      to_id:
+      - bank_id
+      - account_number
+      from_node: Customer
+      to_node: Account
+      property_mappings:
+        role: role
+        since: since
+    - type: TRANSFERRED
+      database: db_composite_id
+      table: transfers
+      from_id:
+      - from_bank_id
+      - from_account_number
+      to_id:
+      - to_bank_id
+      - to_account_number
+      from_node: Account
+      to_node: Account
+      edge_id: transfer_id
+      property_mappings:
+        transfer_id: transfer_id
+        amount: amount
+        transfer_date: transfer_date
+- name: social_multi_tenant
+  graph_schema:
+    nodes:
+    - label: User
+      database: db_multi_tenant
+      table: users_by_tenant
+      node_id: user_id
+      view_parameters:
+      - tenant_id
+      property_mappings:
+        user_id: user_id
+        name: full_name
+        email: email_address
+        registration_date: registration_date
+        is_active: is_active
+        country: country
+        city: city
+    - label: Post
+      database: db_multi_tenant
+      table: posts_by_tenant
+      node_id: post_id
+      view_parameters:
+      - tenant_id
+      property_mappings:
+        post_id: post_id
+        content: content
+        date: created_at
+    edges:
+    - type: FOLLOWS
+      database: db_multi_tenant
+      table: follows_by_tenant
+      from_id: follower_id
+      to_id: followed_id
+      from_node: User
+      to_node: User
+      view_parameters:
+      - tenant_id
+      property_mappings:
+        follow_date: follow_date
+    - type: AUTHORED
+      database: db_multi_tenant
+      table: posts_by_tenant
+      from_id: user_id
+      to_id: post_id
+      edge_id: post_id
+      from_node: User
+      to_node: Post
+      view_parameters:
+      - tenant_id
+      property_mappings: {}
+    - type: LIKED
+      database: db_multi_tenant
+      table: likes_by_tenant
+      from_id: user_id
+      to_id: post_id
+      from_node: User
+      to_node: Post
+      view_parameters:
+      - tenant_id
+      property_mappings:
+        like_date: liked_at
