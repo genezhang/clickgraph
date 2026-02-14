@@ -8193,6 +8193,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         &pc_meta.rel_types,
                         &pc_meta.agg_type,
                         schema,
+                        pc_meta.target_label.as_deref(),
+                        pc_meta.target_property.as_deref(),
                     ) {
                         log::info!(
                             "🔧 Pattern comp CTE '{}': SQL = {}",
@@ -12508,13 +12510,34 @@ pub(super) fn build_pattern_comprehension_sql(
     rel_types: &Option<Vec<String>>,
     agg_type: &crate::query_planner::logical_plan::AggregationType,
     schema: &GraphSchema,
+    target_label: Option<&str>,
+    target_property: Option<&str>,
 ) -> Option<String> {
     use crate::open_cypher_parser::ast::Direction;
     use crate::query_planner::logical_plan::AggregationType;
 
+    // Resolve target node table/column for property-based aggregation (e.g., collect(f.name))
+    let target_join_info = target_label
+        .and_then(|tl| {
+            target_property.and_then(|tp| {
+                schema.node_schema(tl).ok().map(|ns| {
+                    let target_table = format!("{}.{}", ns.database, ns.table_name);
+                    let target_id = ns.node_id.id.to_pipe_joined_sql("__tgt");
+                    let db_column = ns
+                        .property_mappings
+                        .get(tp)
+                        .map(|pv| pv.raw().to_string())
+                        .unwrap_or_else(|| tp.to_string());
+                    (target_table, target_id, db_column, tl.to_string())
+                })
+            })
+        });
+
     let mut branches: Vec<String> = Vec::new();
 
-    for (rel_name, rel_schema) in schema.get_relationships_schemas() {
+    for (rel_key, rel_schema) in schema.get_relationships_schemas() {
+        // Extract base relationship type from key (keys may be "TYPE::From::To")
+        let rel_name = rel_key.split("::").next().unwrap_or(rel_key);
         // If specific rel types are requested, filter
         if let Some(types) = rel_types {
             if !types.iter().any(|t| t.eq_ignore_ascii_case(rel_name)) {
@@ -12552,12 +12575,37 @@ pub(super) fn build_pattern_comprehension_sql(
             } else {
                 format!(" WHERE {}", branch_where.join(" AND "))
             };
-            branches.push(format!(
-                "SELECT {} AS node_id FROM {}{}",
-                rel_schema.from_id.to_pipe_joined_sql(""),
-                db_table,
-                where_str
-            ));
+            // For property aggregation, JOIN the target node table
+            if let Some((ref tgt_table, ref _tgt_id, ref tgt_col, ref _tgt_label)) =
+                target_join_info
+            {
+                // Build JOIN condition: edge.to_id = target_node.node_id
+                let join_cond = {
+                    let edge_cols = rel_schema.to_id.columns();
+                    let tgt_ns = schema.node_schema(&rel_schema.to_node).ok();
+                    let tgt_cols = tgt_ns.map(|ns| ns.node_id.id.columns()).unwrap_or_default();
+                    edge_cols.iter().zip(tgt_cols.iter())
+                        .map(|(e, t)| format!("{} = __tgt.{}", e, t))
+                        .collect::<Vec<_>>()
+                        .join(" AND ")
+                };
+                branches.push(format!(
+                    "SELECT {} AS node_id, __tgt.{} AS target_prop FROM {} INNER JOIN {} AS __tgt ON {}{}",
+                    rel_schema.from_id.to_pipe_joined_sql(""),
+                    tgt_col,
+                    db_table,
+                    tgt_table,
+                    join_cond,
+                    where_str
+                ));
+            } else {
+                branches.push(format!(
+                    "SELECT {} AS node_id FROM {}{}",
+                    rel_schema.from_id.to_pipe_joined_sql(""),
+                    db_table,
+                    where_str
+                ));
+            }
         }
 
         // Check incoming: correlation_label is the to_node
@@ -12576,12 +12624,36 @@ pub(super) fn build_pattern_comprehension_sql(
             } else {
                 format!(" WHERE {}", branch_where.join(" AND "))
             };
-            branches.push(format!(
-                "SELECT {} AS node_id FROM {}{}",
-                rel_schema.to_id.to_pipe_joined_sql(""),
-                db_table,
-                where_str
-            ));
+            // For property aggregation, JOIN the target (from) node table
+            if let Some((ref tgt_table, ref _tgt_id, ref tgt_col, ref _tgt_label)) =
+                target_join_info
+            {
+                let join_cond = {
+                    let edge_cols = rel_schema.from_id.columns();
+                    let tgt_ns = schema.node_schema(&rel_schema.from_node).ok();
+                    let tgt_cols = tgt_ns.map(|ns| ns.node_id.id.columns()).unwrap_or_default();
+                    edge_cols.iter().zip(tgt_cols.iter())
+                        .map(|(e, t)| format!("{} = __tgt.{}", e, t))
+                        .collect::<Vec<_>>()
+                        .join(" AND ")
+                };
+                branches.push(format!(
+                    "SELECT {} AS node_id, __tgt.{} AS target_prop FROM {} INNER JOIN {} AS __tgt ON {}{}",
+                    rel_schema.to_id.to_pipe_joined_sql(""),
+                    tgt_col,
+                    db_table,
+                    tgt_table,
+                    join_cond,
+                    where_str
+                ));
+            } else {
+                branches.push(format!(
+                    "SELECT {} AS node_id FROM {}{}",
+                    rel_schema.to_id.to_pipe_joined_sql(""),
+                    db_table,
+                    where_str
+                ));
+            }
         }
     }
 
@@ -12593,12 +12665,18 @@ pub(super) fn build_pattern_comprehension_sql(
     // Aggregate outside: COUNT(*) counts all rows per node_id across all edge tables.
     let union_sql = branches.join(" UNION ALL ");
     let agg_fn = match agg_type {
-        AggregationType::Count => "COUNT(*)",
-        AggregationType::GroupArray => "groupArray(1)", // placeholder
-        AggregationType::Sum => "SUM(1)",
-        AggregationType::Avg => "AVG(1)",
-        AggregationType::Min => "MIN(1)",
-        AggregationType::Max => "MAX(1)",
+        AggregationType::Count => "COUNT(*)".to_string(),
+        AggregationType::GroupArray => {
+            if target_join_info.is_some() {
+                "groupArray(target_prop)".to_string()
+            } else {
+                "groupArray(1)".to_string()
+            }
+        }
+        AggregationType::Sum => "SUM(1)".to_string(),
+        AggregationType::Avg => "AVG(1)".to_string(),
+        AggregationType::Min => "MIN(1)".to_string(),
+        AggregationType::Max => "MAX(1)".to_string(),
     };
 
     Some(format!(

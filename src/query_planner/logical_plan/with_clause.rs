@@ -262,6 +262,8 @@ fn rewrite_with_pattern_comprehensions<'a>(
                     rel_types,
                     agg_type,
                     result_alias: result_alias.clone(),
+                    target_label: None,
+                    target_property: None,
                 },
             );
 

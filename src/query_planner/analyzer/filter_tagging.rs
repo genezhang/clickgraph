@@ -856,48 +856,21 @@ impl FilterTagging {
                 // would convert to a function call. For now, we always try property lookup first.
 
                 // Get the table context for this alias
-                let table_ctx = plan_ctx
-                    .get_table_ctx(&property_access.table_alias.0)
-                    .map_err(|e| {
-                        // DEBUG: Write to file when table_ctx lookup fails
-                        use std::io::Write;
-                        if let Ok(mut file) = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open("/tmp/clickgraph_debug_labels.txt")
-                        {
-                            writeln!(file, "\n=== FilterTagging get_table_ctx Failed ===").ok();
-                            writeln!(
-                                file,
-                                "Looking for alias: '{}'",
-                                property_access.table_alias.0
-                            )
-                            .ok();
-                            writeln!(file, "Error: {:?}", e).ok();
-                            writeln!(file, "Available aliases in plan_ctx:").ok();
-                            for (alias, ctx) in plan_ctx.iter_table_contexts() {
-                                writeln!(
-                                    file,
-                                    "  - '{}': is_rel={}, label={:?}",
-                                    alias,
-                                    ctx.is_relation(),
-                                    ctx.get_label_opt()
-                                )
-                                .ok();
-                            }
-                            writeln!(file, "=== End ===\n").ok();
-                        }
+                let table_ctx_result = plan_ctx
+                    .get_table_ctx(&property_access.table_alias.0);
 
-                        crate::debug_print!(
-                            "FilterTagging: ERROR - Failed to get table_ctx for alias '{}': {:?}",
-                            property_access.table_alias.0,
-                            e
+                // If alias not found (e.g., pattern comprehension inner variables),
+                // return the expression unchanged — render phase handles scoped aliases
+                let table_ctx = match table_ctx_result {
+                    Ok(ctx) => ctx,
+                    Err(_e) => {
+                        log::debug!(
+                            "FilterTagging: alias '{}' not in plan_ctx, passing through unchanged",
+                            property_access.table_alias.0
                         );
-                        AnalyzerError::PlanCtx {
-                            pass: Pass::FilterTagging,
-                            source: e,
-                        }
-                    })?;
+                        return Ok(LogicalExpr::PropertyAccessExp(property_access));
+                    }
+                };
 
                 println!(
                     "FilterTagging: Found table_ctx, is_relation={}, label={:?}",

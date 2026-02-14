@@ -408,6 +408,10 @@ pub struct PatternComprehensionMeta {
     pub agg_type: AggregationType,
     /// The alias assigned to this pattern comprehension result in the WITH clause
     pub result_alias: String,
+    /// Label of the target node (e.g., "User" in `[(a)-[:FOLLOWS]->(b:User) | b.name]`)
+    pub target_label: Option<String>,
+    /// Property name from the projection (e.g., "name" in `| b.name`)
+    pub target_property: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

@@ -848,6 +848,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                 &pc_meta.rel_types,
                                 &pc_meta.agg_type,
                                 schema,
+                                pc_meta.target_label.as_deref(),
+                                pc_meta.target_property.as_deref(),
                             )
                         {
                             let pc_cte = super::Cte::new(
@@ -892,8 +894,13 @@ impl RenderPlanBuilder for LogicalPlan {
                                 graph_rel: None,
                             });
 
-                            // Replace count(*) with coalesce(__pc_N.result, 0)
+                            // Replace with coalesce(__pc_N.result, default)
                             let result_alias = pc_meta.result_alias.clone();
+                            let default_val = if matches!(pc_meta.agg_type, crate::query_planner::logical_plan::AggregationType::GroupArray) {
+                                RenderExpr::List(vec![])
+                            } else {
+                                RenderExpr::Literal(Literal::Integer(0))
+                            };
                             let coalesce_expr = RenderExpr::ScalarFnCall(
                                 super::render_expr::ScalarFnCall {
                                     name: "coalesce".to_string(),
@@ -902,7 +909,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                             table_alias: TableAlias(pc_alias),
                                             column: crate::graph_catalog::expression_parser::PropertyValue::Column("result".to_string()),
                                         }),
-                                        RenderExpr::Literal(Literal::Integer(0)),
+                                        default_val,
                                     ],
                                 }
                             );
@@ -1202,6 +1209,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                 &pc_meta.rel_types,
                                 &pc_meta.agg_type,
                                 schema,
+                                pc_meta.target_label.as_deref(),
+                                pc_meta.target_property.as_deref(),
                             )
                         {
                             // Add the pattern comp CTE
@@ -1249,8 +1258,13 @@ impl RenderPlanBuilder for LogicalPlan {
                                 graph_rel: None,
                             });
 
-                            // Replace the count(*) select item with coalesce(__pc_N.result, 0)
+                            // Replace the select item with coalesce(__pc_N.result, default)
                             let result_alias = pc_meta.result_alias.clone();
+                            let default_val = if matches!(pc_meta.agg_type, crate::query_planner::logical_plan::AggregationType::GroupArray) {
+                                RenderExpr::List(vec![])
+                            } else {
+                                RenderExpr::Literal(Literal::Integer(0))
+                            };
                             let coalesce_expr = RenderExpr::ScalarFnCall(
                                 super::render_expr::ScalarFnCall {
                                     name: "coalesce".to_string(),
@@ -1259,7 +1273,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                             table_alias: super::render_expr::TableAlias(pc_alias),
                                             column: crate::graph_catalog::expression_parser::PropertyValue::Column("result".to_string()),
                                         }),
-                                        RenderExpr::Literal(Literal::Integer(0)),
+                                        default_val,
                                     ],
                                 }
                             );
@@ -2869,6 +2883,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                 &pc_meta.rel_types,
                                 &pc_meta.agg_type,
                                 schema,
+                                pc_meta.target_label.as_deref(),
+                                pc_meta.target_property.as_deref(),
                             )
                         {
                             let pc_cte = super::Cte::new(
@@ -2913,8 +2929,13 @@ impl RenderPlanBuilder for LogicalPlan {
                                 graph_rel: None,
                             });
 
-                            // Replace count(*) with coalesce(__pc_N.result, 0)
+                            // Replace with coalesce(__pc_N.result, default)
                             let result_alias = pc_meta.result_alias.clone();
+                            let default_val = if matches!(pc_meta.agg_type, crate::query_planner::logical_plan::AggregationType::GroupArray) {
+                                RenderExpr::List(vec![])
+                            } else {
+                                RenderExpr::Literal(Literal::Integer(0))
+                            };
                             let coalesce_expr = RenderExpr::ScalarFnCall(
                                 super::render_expr::ScalarFnCall {
                                     name: "coalesce".to_string(),
@@ -2923,7 +2944,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                             table_alias: TableAlias(pc_alias),
                                             column: crate::graph_catalog::expression_parser::PropertyValue::Column("result".to_string()),
                                         }),
-                                        RenderExpr::Literal(Literal::Integer(0)),
+                                        default_val,
                                     ],
                                 }
                             );
