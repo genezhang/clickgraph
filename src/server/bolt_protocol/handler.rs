@@ -875,10 +875,13 @@ impl BoltHandler {
                 context.schema_name.clone()
             };
 
-            // Extract tenant_id from RUN message metadata (Phase 2)
-            let tenant_id = message.extract_run_tenant_id();
+            // Extract tenant_id from RUN message metadata, or fall back to session-level
+            // value set via CALL sys.set('tenant_id', '...')
+            let tenant_id = message
+                .extract_run_tenant_id()
+                .or_else(|| context.tenant_id.clone());
             if let Some(ref tid) = tenant_id {
-                log::debug!("✅ RUN message contains tenant_id: {}", tid);
+                log::debug!("✅ Using tenant_id: {}", tid);
             }
 
             // Extract role from RUN message metadata (Phase 2 RBAC)

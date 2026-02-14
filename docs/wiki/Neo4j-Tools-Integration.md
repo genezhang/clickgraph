@@ -395,7 +395,31 @@ Future: Configurable connection pool limits
 - ✅ Connection works
 - ✅ Schema exploration via procedures
 - ✅ Query execution
+- ✅ Session commands (`CALL sys.set()`, `CALL dbms.setConfigValue()`)
 - ⚠️ Some visualization features may not work (depends on query results format)
+
+#### Session Commands for Multi-Tenancy
+
+Neo4j Browser cannot pass custom parameters (like `tenant_id`) in Bolt RUN messages.
+Use session commands to set parameters that persist for the duration of the browser session:
+
+```cypher
+// Set tenant_id for multi-tenancy
+CALL sys.set('tenant_id', '1234')
+
+// Browser-friendly alternative (same effect)
+CALL dbms.setConfigValue('tenant_id', '1234')
+
+// Arbitrary session parameters
+CALL sys.set('custom_param', 'value')
+```
+
+After setting `tenant_id`, all subsequent queries in that browser session will use it
+for parameterized view resolution. The setting persists until you set a new value or
+disconnect.
+
+**Note:** The `EXPLAIN` keyword is silently handled — browser autocomplete probes
+won't produce error messages.
 
 ### Neodash
 
