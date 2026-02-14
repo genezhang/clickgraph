@@ -2056,9 +2056,10 @@ impl JoinBuilder for LogicalPlan {
                 let is_bidirectional = graph_rel.direction == Direction::Either;
 
                 // JOIN 1: Start node -> Relationship table
-                //   For outgoing: r.from_id = a.user_id
-                //   For incoming: r.to_id = a.user_id
-                //   For either: (r.from_id = a.user_id) OR (r.to_id = a.user_id)
+                // Direction is normalized upstream (match_clause/helpers.rs::compute_connection_aliases):
+                //   left_connection = schema source (from), right_connection = schema target (to)
+                // So directional always uses: r.from_id = left_node.id
+                // Only Direction::Either needs OR of both sides.
                 let rel_join_condition = if is_bidirectional {
                     // Bidirectional: (rel.from_id = left.id) OR (rel.to_id = left.id)
                     // For composite IDs, each side becomes AND of per-column equalities
@@ -2086,8 +2087,9 @@ impl JoinBuilder for LogicalPlan {
                         ],
                     }
                 } else {
-                    // Directional: left is always source (from), right is always target (to)
-                    // (traversal.rs compute_connection_aliases swaps for Incoming direction)
+                    // Directional: left_connection is always source (from_id), right is target (to_id).
+                    // Normalization in match_clause/helpers.rs::compute_connection_aliases
+                    // ensures this holds for both Outgoing and Incoming patterns.
                     // JOIN 1: relationship.from_id = left_node.id
                     // For composite IDs, generates AND of per-column equalities
                     let (_left_table_alias, _left_column) =
@@ -2301,11 +2303,9 @@ impl JoinBuilder for LogicalPlan {
                 }
 
                 // JOIN 2: Relationship table -> End node
-                //   For outgoing: b.user_id = r.to_id
-                //   For incoming: b.user_id = r.from_id
-                //   For either: (b.user_id = r.to_id AND r.from_id = a.user_id) OR (b.user_id = r.from_id AND r.to_id = a.user_id)
-                //   Simplified for bidirectional: b.user_id = CASE WHEN r.from_id = a.user_id THEN r.to_id ELSE r.from_id END
-                //   Actually simpler: just check b connects to whichever end of r that's NOT a
+                // Direction is normalized upstream (match_clause/helpers.rs::compute_connection_aliases):
+                //   right_connection = schema target (to), so directional uses: right_node.id = r.to_id
+                // Only Direction::Either needs OR of both sides.
                 let end_join_condition = if is_bidirectional {
                     // Bidirectional JOIN 2:
                     // (b.id = r.to_id AND r.from_id = a.id) OR (b.id = r.from_id AND r.to_id = a.id)
@@ -2373,8 +2373,9 @@ impl JoinBuilder for LogicalPlan {
                         ],
                     }
                 } else {
-                    // Directional: right is always target (to)
-                    // (traversal.rs compute_connection_aliases swaps for Incoming direction)
+                    // Directional: right_connection is always target (to_id).
+                    // Normalization in match_clause/helpers.rs::compute_connection_aliases
+                    // ensures this holds for both Outgoing and Incoming patterns.
                     // JOIN 2: right_node.id = relationship.to_id
                     // For composite IDs, generates AND of per-column equalities
                     let (_right_table_alias, _right_column) =

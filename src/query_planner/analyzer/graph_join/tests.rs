@@ -18,7 +18,9 @@ use crate::{
     graph_catalog::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema},
     query_planner::{
         analyzer::analyzer_pass::AnalyzerPass,
-        logical_expr::{Direction, LogicalExpr, Operator, PropertyAccess, TableAlias},
+        logical_expr::{
+            Direction, LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias,
+        },
         logical_plan::{GraphNode, GraphRel, JoinType, LogicalPlan, Projection, ProjectionItem},
         plan_ctx::{PlanCtx, TableCtx},
         transformed::Transformed,
@@ -1370,5 +1372,317 @@ fn test_uniqueness_constraints_with_different_relationship_types() {
         constraints.len(),
         1,
         "Different relationship types should still generate constraints"
+    );
+}
+
+// ============================================================
+// Composite Node ID + Direction Tests (regression for PR #81)
+// ============================================================
+
+/// Creates a graph schema with composite node IDs for testing direction handling.
+/// - Customer node: single ID (customer_id)
+/// - Account node: composite ID (bank_id, account_number)
+/// - OWNS relationship: Customer -> Account (customer_id -> bank_id, account_number)
+fn create_composite_id_graph_schema() -> GraphSchema {
+    let mut nodes = HashMap::new();
+    let mut relationships = HashMap::new();
+
+    nodes.insert(
+        "Customer".to_string(),
+        NodeSchema {
+            database: "default".to_string(),
+            table_name: "customers".to_string(),
+            column_names: vec!["customer_id".to_string(), "name".to_string()],
+            primary_keys: "customer_id".to_string(),
+            node_id: NodeIdSchema::single("customer_id".to_string(), "UInt64".to_string()),
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
+            node_id_types: None,
+        },
+    );
+
+    nodes.insert(
+        "Account".to_string(),
+        NodeSchema {
+            database: "default".to_string(),
+            table_name: "accounts".to_string(),
+            column_names: vec![
+                "bank_id".to_string(),
+                "account_number".to_string(),
+                "balance".to_string(),
+            ],
+            primary_keys: "bank_id".to_string(),
+            node_id: NodeIdSchema::composite(
+                vec!["bank_id".to_string(), "account_number".to_string()],
+                "String".to_string(),
+            ),
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
+            node_id_types: None,
+        },
+    );
+
+    // OWNS: Customer -> Account
+    // from_id = customer_id (single), to_id = [bank_id, account_number] (composite)
+    relationships.insert(
+        "OWNS::Customer::Account".to_string(),
+        RelationshipSchema {
+            database: "default".to_string(),
+            table_name: "account_ownership".to_string(),
+            column_names: vec![
+                "customer_id".to_string(),
+                "bank_id".to_string(),
+                "account_number".to_string(),
+            ],
+            from_node: "Customer".to_string(),
+            to_node: "Account".to_string(),
+            from_node_table: "customers".to_string(),
+            to_node_table: "accounts".to_string(),
+            from_id: Identifier::from("customer_id"),
+            to_id: Identifier::Composite(vec!["bank_id".to_string(), "account_number".to_string()]),
+            from_node_id_dtype: "UInt64".to_string(),
+            to_node_id_dtype: "String".to_string(),
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_label_values: None,
+            to_label_values: None,
+            from_node_properties: None,
+            to_node_properties: None,
+            is_fk_edge: false,
+            constraints: None,
+            edge_id_types: None,
+        },
+    );
+
+    GraphSchema::build(1, "default".to_string(), nodes, relationships)
+}
+
+fn setup_composite_plan_ctx() -> PlanCtx {
+    let mut plan_ctx = PlanCtx::new_empty();
+
+    plan_ctx.insert_table_ctx(
+        "c".to_string(),
+        TableCtx::build(
+            "c".to_string(),
+            Some(vec!["Customer".to_string()]),
+            vec![],
+            false,
+            true,
+        ),
+    );
+    plan_ctx.insert_table_ctx(
+        "a".to_string(),
+        TableCtx::build(
+            "a".to_string(),
+            Some(vec!["Account".to_string()]),
+            vec![],
+            false,
+            true,
+        ),
+    );
+    plan_ctx.insert_table_ctx(
+        "r".to_string(),
+        TableCtx::build(
+            "r".to_string(),
+            Some(vec!["OWNS".to_string()]),
+            vec![],
+            true,
+            true,
+        ),
+    );
+
+    plan_ctx
+}
+
+/// Helper to format join conditions as a debug string for assertions.
+/// Returns a sorted list of "left.col = right.col" strings.
+fn format_join_conditions(joins: &[OperatorApplication]) -> Vec<String> {
+    let mut result: Vec<String> = joins.iter().map(|j| format!("{:?}", j)).collect();
+    result.sort();
+    result
+}
+
+/// Regression test for PR #81: Composite ID Incoming direction JOIN.
+///
+/// Tests that (a:Account)<-[r:OWNS]-(c:Customer) produces the same join
+/// column pairing as (c:Customer)-[r:OWNS]->(a:Account).
+///
+/// After normalization by compute_connection_aliases(), both directions should
+/// have left=Customer (from), right=Account (to), so:
+///   - JOIN 1: r.customer_id = c.customer_id (from_id matches source node)
+///   - JOIN 2: a.bank_id = r.bank_id AND a.account_number = r.account_number (to_id matches target node)
+///
+/// The bug (before fix) was a double-swap in inference.rs that reversed
+/// from_id/to_id for Incoming direction, producing wrong column pairings.
+#[test]
+fn test_composite_id_incoming_direction_traditional() {
+    let analyzer = GraphJoinInference::new();
+    let graph_schema = create_composite_id_graph_schema();
+
+    // Test both directions and verify they produce equivalent join conditions
+
+    // --- Outgoing: (c:Customer)-[r:OWNS]->(a:Account) ---
+    let mut plan_ctx_out = setup_composite_plan_ctx();
+
+    let c_scan = create_scan_plan("c", "Customer");
+    let c_node = create_graph_node(c_scan, "c", false);
+    let r_scan = create_scan_plan("r", "OWNS");
+    let a_scan = create_scan_plan("a", "Account");
+    let a_node = create_graph_node(a_scan, "a", false);
+
+    let graph_rel_out = create_graph_rel(
+        c_node.clone(),
+        r_scan.clone(),
+        a_node.clone(),
+        "r",
+        Direction::Outgoing,
+        "c", // left = from (Customer)
+        "a", // right = to (Account)
+        Some(vec!["OWNS".to_string()]),
+    );
+    let plan_out = Arc::new(LogicalPlan::Projection(Projection {
+        input: graph_rel_out,
+        items: vec![
+            ProjectionItem {
+                expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias("c".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        "name".to_string(),
+                    ),
+                }),
+                col_alias: None,
+            },
+            ProjectionItem {
+                expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias("a".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        "balance".to_string(),
+                    ),
+                }),
+                col_alias: None,
+            },
+        ],
+        distinct: false,
+        pattern_comprehensions: vec![],
+    }));
+
+    let result_out = analyzer
+        .analyze_with_graph_schema(plan_out, &mut plan_ctx_out, &graph_schema)
+        .unwrap();
+
+    // --- Incoming: (a:Account)<-[r:OWNS]-(c:Customer) ---
+    // After normalization: left=Customer (from), right=Account (to), direction=Incoming
+    let mut plan_ctx_in = setup_composite_plan_ctx();
+
+    let c_scan2 = create_scan_plan("c", "Customer");
+    let c_node2 = create_graph_node(c_scan2, "c", false);
+    let r_scan2 = create_scan_plan("r", "OWNS");
+    let a_scan2 = create_scan_plan("a", "Account");
+    let a_node2 = create_graph_node(a_scan2, "a", false);
+
+    let graph_rel_in = create_graph_rel(
+        c_node2,
+        r_scan2,
+        a_node2,
+        "r",
+        Direction::Incoming,
+        "c", // left = from (Customer, after normalization)
+        "a", // right = to (Account, after normalization)
+        Some(vec!["OWNS".to_string()]),
+    );
+    let plan_in = Arc::new(LogicalPlan::Projection(Projection {
+        input: graph_rel_in,
+        items: vec![
+            ProjectionItem {
+                expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias("c".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        "name".to_string(),
+                    ),
+                }),
+                col_alias: None,
+            },
+            ProjectionItem {
+                expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias("a".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        "balance".to_string(),
+                    ),
+                }),
+                col_alias: None,
+            },
+        ],
+        distinct: false,
+        pattern_comprehensions: vec![],
+    }));
+
+    let result_in = analyzer
+        .analyze_with_graph_schema(plan_in, &mut plan_ctx_in, &graph_schema)
+        .unwrap();
+
+    // Extract join conditions from both results
+    let extract_joins = |result: Transformed<Arc<LogicalPlan>>| -> Vec<Vec<String>> {
+        match result {
+            Transformed::Yes(plan) => match plan.as_ref() {
+                LogicalPlan::GraphJoins(gj) => gj
+                    .joins
+                    .iter()
+                    .map(|j| format_join_conditions(&j.joining_on))
+                    .collect(),
+                other => panic!(
+                    "Expected GraphJoins, got {:?}",
+                    std::mem::discriminant(other)
+                ),
+            },
+            _ => panic!("Expected transformation"),
+        }
+    };
+
+    let joins_out = extract_joins(result_out);
+    let joins_in = extract_joins(result_in);
+
+    // Both directions should produce the same join conditions
+    // (same number of joins with same column pairings)
+    assert_eq!(
+        joins_out.len(),
+        joins_in.len(),
+        "Outgoing and Incoming should produce same number of joins.\n  Outgoing: {:?}\n  Incoming: {:?}",
+        joins_out,
+        joins_in
+    );
+
+    // The join conditions should be identical since normalization
+    // ensures left=from, right=to regardless of Cypher direction
+    assert_eq!(
+        joins_out,
+        joins_in,
+        "Outgoing and Incoming should produce identical join conditions.\n  Outgoing: {:?}\n  Incoming: {:?}",
+        joins_out,
+        joins_in
     );
 }

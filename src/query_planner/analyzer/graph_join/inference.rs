@@ -2621,10 +2621,11 @@ impl GraphJoinInference {
             } => {
                 crate::debug_print!("    🔗 Traditional: Creating node-edge-node JOINs");
 
-                // No direction-based swap needed here: compute_connection_aliases() in
-                // traversal.rs already swaps left_connection/right_connection for Incoming
-                // direction, so left is always the schema source (from_id) and right is
-                // always the schema target (to_id), regardless of Cypher pattern direction.
+                // No direction-based swap needed here: GraphRel is defined with
+                // normalized source/target semantics (see logical_plan::GraphRel docs).
+                // Earlier helpers (e.g., compute_connection_aliases() in match_clause/helpers.rs)
+                // ensure left/right aliases line up with schema source (from_id) and target (to_id)
+                // regardless of the original Cypher pattern direction.
                 let left_join_col = orig_left_join_col;
                 let right_join_col = orig_right_join_col;
 
