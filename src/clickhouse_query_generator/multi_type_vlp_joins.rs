@@ -456,9 +456,8 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 );
                 end_node_type = hop.to_node_type.clone();
 
-                let join_cond = start_id_col.to_sql_equality(
-                    &current_alias, &join_from_col, &end_node_alias,
-                );
+                let join_cond =
+                    start_id_col.to_sql_equality(&current_alias, &join_from_col, &end_node_alias);
                 let join_sql = format!(
                     "INNER JOIN {} {} ON {}",
                     rel_table, end_node_alias, join_cond
@@ -474,9 +473,8 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 // Standard pattern: separate relationship table and target node table
                 let rel_alias = format!("r{}", hop_num);
 
-                let rel_join_cond = start_id_col.to_sql_equality(
-                    &current_alias, &join_from_col, &rel_alias,
-                );
+                let rel_join_cond =
+                    start_id_col.to_sql_equality(&current_alias, &join_from_col, &rel_alias);
                 let rel_join_sql = format!(
                     "INNER JOIN {} {} ON {}",
                     rel_table, rel_alias, rel_join_cond
@@ -527,9 +525,8 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 );
                 end_node_type = hop.to_node_type.clone();
 
-                let node_join_cond = join_to_col.to_sql_equality(
-                    &rel_alias, &end_id_col, &end_node_alias,
-                );
+                let node_join_cond =
+                    join_to_col.to_sql_equality(&rel_alias, &end_id_col, &end_node_alias);
                 let node_join_sql = format!(
                     "INNER JOIN {} {} ON {}",
                     end_table, end_node_alias, node_join_cond

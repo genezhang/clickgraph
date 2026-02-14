@@ -3037,8 +3037,14 @@ pub fn rewrite_cte_expression_with_alias_resolution(
             // Case 2: Table alias is the CTE name itself (or same base with different counter)
             else if table_alias == cte_name || {
                 // Match CTE names with same base but different _cte_N suffix
-                let base_a = table_alias.rfind("_cte_").map(|pos| &table_alias[..pos]).unwrap_or(table_alias);
-                let base_b = cte_name.rfind("_cte_").map(|pos| &cte_name[..pos]).unwrap_or(cte_name);
+                let base_a = table_alias
+                    .rfind("_cte_")
+                    .map(|pos| &table_alias[..pos])
+                    .unwrap_or(table_alias);
+                let base_b = cte_name
+                    .rfind("_cte_")
+                    .map(|pos| &cte_name[..pos])
+                    .unwrap_or(cte_name);
                 table_alias.starts_with("with_") && base_a == base_b
             } {
                 // Extract column name to check if we need resolution
@@ -8195,7 +8201,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 .unwrap_or_else(|| pc_meta.correlation_var.clone());
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: RenderTableAlias("__union".to_string()),
-                                column: PropertyValue::Column(format!("{}_{}", node_alias, id_column)),
+                                column: PropertyValue::Column(format!(
+                                    "{}_{}",
+                                    node_alias, id_column
+                                )),
                             })
                         } else {
                             // Normal case: use composite-aware helper
@@ -8488,7 +8497,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
             );
 
             // Extract original WITH exported aliases for cte_references mapping
-            let original_exported_aliases: Vec<String> = with_plans.iter()
+            let original_exported_aliases: Vec<String> = with_plans
+                .iter()
                 .find_map(|plan| {
                     if let LogicalPlan::WithClause(wc) = plan {
                         Some(wc.exported_aliases.clone())
@@ -8911,7 +8921,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 if combined_alias != preserved_alias && !combined_alias.is_empty() {
                     log::debug!(
                         "🔧 Rewriting stale alias '{}' → '{}' in render plan",
-                        combined_alias, preserved_alias
+                        combined_alias,
+                        preserved_alias
                     );
                     rewrite_table_alias_in_render_plan(
                         &mut render_plan,
@@ -9147,27 +9158,39 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                         // the pipe-joined start_id/end_id in the VLP CTE
                                         let rhs_expr = {
                                             use crate::server::query_context::get_current_schema;
-                                            let composite_cols = get_current_schema().and_then(|schema| {
-                                                // Determine the node label from vlp_alias
-                                                let label = if is_start {
-                                                    vlp_cte.vlp_cypher_start_alias.as_deref()
-                                                } else {
-                                                    vlp_cte.vlp_cypher_end_alias.as_deref()
-                                                };
-                                                // Look up by label_constraints or try all schemas
-                                                for ns in schema.all_node_schemas().values() {
-                                                    if ns.node_id.is_composite() {
-                                                        // Check if the id_col_name matches one of this schema's columns
-                                                        let prefix = format!("{}_", vlp_alias.to_owned());
-                                                        let id_cols = ns.node_id.columns();
-                                                        let first_cte_col = format!("{}{}", prefix, id_cols[0]);
-                                                        if id_col_name == first_cte_col || id_col_name == id_cols[0] {
-                                                            return Some(id_cols.iter().map(|c| c.to_string()).collect::<Vec<_>>());
+                                            let composite_cols =
+                                                get_current_schema().and_then(|schema| {
+                                                    // Determine the node label from vlp_alias
+                                                    let label = if is_start {
+                                                        vlp_cte.vlp_cypher_start_alias.as_deref()
+                                                    } else {
+                                                        vlp_cte.vlp_cypher_end_alias.as_deref()
+                                                    };
+                                                    // Look up by label_constraints or try all schemas
+                                                    for ns in schema.all_node_schemas().values() {
+                                                        if ns.node_id.is_composite() {
+                                                            // Check if the id_col_name matches one of this schema's columns
+                                                            let prefix = format!(
+                                                                "{}_",
+                                                                vlp_alias.to_owned()
+                                                            );
+                                                            let id_cols = ns.node_id.columns();
+                                                            let first_cte_col =
+                                                                format!("{}{}", prefix, id_cols[0]);
+                                                            if id_col_name == first_cte_col
+                                                                || id_col_name == id_cols[0]
+                                                            {
+                                                                return Some(
+                                                                    id_cols
+                                                                        .iter()
+                                                                        .map(|c| c.to_string())
+                                                                        .collect::<Vec<_>>(),
+                                                                );
+                                                            }
                                                         }
                                                     }
-                                                }
-                                                None
-                                            });
+                                                    None
+                                                });
 
                                             if let Some(cols) = composite_cols {
                                                 // Composite ID: concat(toString(cte.a_col1), '|', toString(cte.a_col2))
@@ -9518,11 +9541,17 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 let with_aliases: HashSet<String> = {
                     // Find the CTE by name and use its stored exported aliases
                     let from_cte_name = &from_ref.name;
-                    let exported = all_ctes.iter()
+                    let exported = all_ctes
+                        .iter()
                         .find(|cte| &cte.cte_name == from_cte_name)
                         .and_then(|cte| {
                             if !cte.with_exported_aliases.is_empty() {
-                                Some(cte.with_exported_aliases.iter().cloned().collect::<HashSet<String>>())
+                                Some(
+                                    cte.with_exported_aliases
+                                        .iter()
+                                        .cloned()
+                                        .collect::<HashSet<String>>(),
+                                )
                             } else {
                                 None
                             }
@@ -12463,7 +12492,9 @@ pub(super) fn build_pattern_comprehension_sql(
             };
             branches.push(format!(
                 "SELECT {} AS node_id FROM {}{}",
-                rel_schema.from_id.to_pipe_joined_sql(""), db_table, where_str
+                rel_schema.from_id.to_pipe_joined_sql(""),
+                db_table,
+                where_str
             ));
         }
 
@@ -12485,7 +12516,9 @@ pub(super) fn build_pattern_comprehension_sql(
             };
             branches.push(format!(
                 "SELECT {} AS node_id FROM {}{}",
-                rel_schema.to_id.to_pipe_joined_sql(""), db_table, where_str
+                rel_schema.to_id.to_pipe_joined_sql(""),
+                db_table,
+                where_str
             ));
         }
     }
@@ -12536,24 +12569,32 @@ pub(super) fn build_node_id_expr_for_join(
 
 /// Convert an Identifier to a RenderExpr with the given alias.
 /// Single: `alias.col`, Composite: `concat(toString(alias.c1), '|', toString(alias.c2))`
-pub(super) fn build_id_render_expr(id: &crate::graph_catalog::config::Identifier, alias: &str) -> RenderExpr {
+pub(super) fn build_id_render_expr(
+    id: &crate::graph_catalog::config::Identifier,
+    alias: &str,
+) -> RenderExpr {
     use crate::graph_catalog::expression_parser::PropertyValue;
 
     if id.is_composite() {
-        let parts: Vec<RenderExpr> = id.columns().iter().enumerate().flat_map(|(i, col)| {
-            let mut items = Vec::new();
-            if i > 0 {
-                items.push(RenderExpr::Literal(Literal::String("|".to_string())));
-            }
-            items.push(RenderExpr::ScalarFnCall(ScalarFnCall {
-                name: "toString".to_string(),
-                args: vec![RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: TableAlias(alias.to_string()),
-                    column: PropertyValue::Column(col.to_string()),
-                })],
-            }));
-            items
-        }).collect();
+        let parts: Vec<RenderExpr> = id
+            .columns()
+            .iter()
+            .enumerate()
+            .flat_map(|(i, col)| {
+                let mut items = Vec::new();
+                if i > 0 {
+                    items.push(RenderExpr::Literal(Literal::String("|".to_string())));
+                }
+                items.push(RenderExpr::ScalarFnCall(ScalarFnCall {
+                    name: "toString".to_string(),
+                    args: vec![RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(alias.to_string()),
+                        column: PropertyValue::Column(col.to_string()),
+                    })],
+                }));
+                items
+            })
+            .collect();
         RenderExpr::ScalarFnCall(ScalarFnCall {
             name: "concat".to_string(),
             args: parts,

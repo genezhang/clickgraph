@@ -2686,7 +2686,9 @@ impl RenderExpr {
                                 if let Some(first_col) = cols.first() {
                                     log::info!(
                                         "🔧 Resolved {}.id → {}.{} (schema id column)",
-                                        table_alias.0, table_alias.0, first_col
+                                        table_alias.0,
+                                        table_alias.0,
+                                        first_col
                                     );
                                     return format!("{}.{}", table_alias.0, first_col);
                                 }
