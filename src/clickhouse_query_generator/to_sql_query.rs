@@ -1479,6 +1479,12 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
 
                 // With aggregation: extract_union already put all branches in union.input,
                 // so don't also render the base plan as first branch.
+                //
+                // The `plan.from.0.is_some()` guard handles literal-only aggregations
+                // (e.g., `RETURN 'test' AS label, count(*) AS cnt`) where extract_union
+                // moved all branches into union.input and left plan.from empty. When
+                // plan.from is None, the base plan is not a separate branch, so we must
+                // fall through to the else branch that iterates only over union.input.
                 if !has_aggregation && plan.from.0.is_some() {
                     let first_branch_sql = {
                         let mut branch_sql = String::new();
