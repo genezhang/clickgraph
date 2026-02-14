@@ -35,10 +35,31 @@ plan_builder.rs          ← trait RenderPlanBuilder: LogicalPlan → RenderPlan
 ## Critical Invariants
 
 ### 1. CTE Column Naming Convention
-WITH CTE columns are named `{alias}_{property}`:
-- Node alias `a` with property `user_id` → CTE column `a_user_id`
-- Node alias `a` with property `name` → CTE column `a_name`
-- Scalar alias `allNeighboursCount` → CTE column `allNeighboursCount` (no prefix)
+
+WITH CTE columns use the **unambiguous `p{N}` format** (defined in `src/utils/cte_column_naming.rs`):
+
+```
+p{N}_{alias}_{property}
+```
+
+Where `N` is the character length of the alias (decimal digits). This eliminates
+ambiguity when aliases contain underscores (e.g., `person_1_name` — is that
+alias=`person_1` property=`name`, or alias=`person` property=`1_name`?).
+
+**Examples**:
+- `("u", "name")` → `p1_u_name`
+- `("person_1", "user_id")` → `p8_person_1_user_id`
+- `("a", "user_id")` → `p1_a_user_id`
+- Scalar alias `allNeighboursCount` → `allNeighboursCount` (no prefix, no encoding)
+
+**Three patterns recognized** (in priority order, for backward compatibility):
+1. `alias.property` (dotted) — used in VLP CTEs
+2. `p{N}_alias_property` (new unambiguous) — primary WITH CTE format
+3. `alias_property` (legacy underscore) — fallback
+
+Key functions:
+- `cte_column_name(alias, property)` — generate
+- `parse_cte_column(col_name)` — parse back to `(alias, property)`
 
 **NEVER** reference VLP internal columns (`start_id`, `end_id`) in WITH CTE schemas.
 The WITH CTE uses the node's actual ID column, not the VLP's.
