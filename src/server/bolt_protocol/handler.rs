@@ -404,6 +404,7 @@ impl BoltHandler {
             if let Some(ref db_name) = database {
                 let mut context = lock_context!(self.context);
                 context.schema_name = Some(db_name.clone());
+                context.id_mapper.set_scope(Some(db_name.clone()), None);
                 log::info!("Database/schema specified in HELLO: {}", db_name);
             }
 
@@ -461,6 +462,8 @@ impl BoltHandler {
                         let mut context = lock_context!(self.context);
                         context.set_user(user.username.clone());
                         context.schema_name = database.clone();
+                        let tenant_id = context.tenant_id.clone();
+                        context.id_mapper.set_scope(database.clone(), tenant_id);
                         context.set_state(ConnectionState::Ready);
                     }
 
@@ -602,6 +605,7 @@ impl BoltHandler {
                     let mut context = lock_context!(self.context);
                     context.set_user(user.username.clone());
                     context.schema_name = database.clone();
+                    context.id_mapper.set_scope(database.clone(), None);
                     context.set_state(ConnectionState::Ready);
                 }
 
@@ -670,6 +674,8 @@ impl BoltHandler {
             let mut context = lock_context!(self.context);
             context.set_user(String::new());
             context.schema_name = None;
+            context.tenant_id = None;
+            context.id_mapper.set_scope(None, None);
             context.set_state(ConnectionState::Authentication(negotiated_version));
         }
 
@@ -709,6 +715,88 @@ impl BoltHandler {
         Ok(vec![BoltMessage::success(HashMap::new())])
     }
 
+    /// Handle session commands like `CALL sys.set('key', 'value')` or
+    /// `CALL dbms.setConfigValue('key', 'value')` (browser-friendly alias).
+    /// These are intercepted before Cypher parsing and modify BoltContext state.
+    /// Returns Some(response) if the query was a session command, None otherwise.
+    async fn handle_session_command(
+        &mut self,
+        query: &str,
+    ) -> BoltResult<Option<Vec<BoltMessage>>> {
+        let trimmed = query.trim();
+        let lower = trimmed.to_lowercase();
+
+        // Accept both CALL sys.set(...) and CALL dbms.setConfigValue(...)
+        let is_session_cmd =
+            lower.starts_with("call sys.set") || lower.starts_with("call dbms.setconfigvalue");
+        if !is_session_cmd {
+            return Ok(None);
+        }
+
+        // Bare command without parens — usage error
+        if !trimmed.contains('(') {
+            return Ok(Some(vec![BoltMessage::failure(
+                "Neo.ClientError.Statement.SyntaxError".to_string(),
+                "Usage: CALL sys.set('key', 'value') or CALL dbms.setConfigValue('key', 'value')"
+                    .to_string(),
+            )]));
+        }
+
+        // Parse arguments from CALL sys.set(arg1, arg2)
+        let inner = trimmed.trim_end_matches(|c| c == ';' || c == ')');
+        let inner = if let Some(pos) = inner.find('(') {
+            &inner[pos + 1..]
+        } else {
+            return Ok(Some(vec![BoltMessage::failure(
+                "Neo.ClientError.Statement.SyntaxError".to_string(),
+                "Usage: CALL dbms.setConfigValue('key', 'value')".to_string(),
+            )]));
+        };
+
+        let parts: Vec<&str> = inner.splitn(2, ',').collect();
+        if parts.len() != 2 {
+            return Ok(Some(vec![BoltMessage::failure(
+                "Neo.ClientError.Statement.SyntaxError".to_string(),
+                "Usage: CALL dbms.setConfigValue('key', 'value')".to_string(),
+            )]));
+        }
+
+        let key = parts[0].trim().trim_matches('\'').trim_matches('"');
+        let value = parts[1].trim().trim_matches('\'').trim_matches('"');
+
+        log::info!("Session command: setting {} = {}", key, value);
+
+        // Store in BoltContext metadata and update IdMapper scope
+        {
+            let mut context = lock_context!(self.context);
+            context.metadata.insert(key.to_string(), value.to_string());
+
+            // Special handling for tenant_id
+            if key == "tenant_id" {
+                context.tenant_id = Some(value.to_string());
+                let schema = context.schema_name.clone();
+                context.id_mapper.set_scope(schema, Some(value.to_string()));
+            }
+
+            // Set state to Streaming so PULL can deliver the cached result
+            context.set_state(ConnectionState::Streaming);
+        }
+
+        // Return SUCCESS with fields metadata so browser can PULL the result
+        let mut meta = HashMap::new();
+        meta.insert(
+            "fields".to_string(),
+            Value::Array(vec![Value::String("result".to_string())]),
+        );
+        // Store confirmation message for PULL
+        self.cached_results = Some(vec![vec![BoltValue::Json(Value::String(format!(
+            "Session {} set to {}",
+            key, value
+        )))]]);
+
+        Ok(Some(vec![BoltMessage::success(meta)]))
+    }
+
     /// Handle RUN message (execute Cypher query)
     async fn handle_run(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         // Verify connection state
@@ -726,6 +814,27 @@ impl BoltHandler {
         let query = message
             .extract_query()
             .ok_or_else(|| BoltError::invalid_message("RUN message missing query"))?;
+
+        // Handle EXPLAIN queries — browser sends "EXPLAIN <partial_query>" as autocomplete
+        // probes while the user types. Return empty SUCCESS so probes don't show errors.
+        // For fully-formed EXPLAIN queries, this also prevents unnecessary execution.
+        if query.trim().to_lowercase().starts_with("explain ") {
+            log::debug!("EXPLAIN query (returning empty plan): {}", query.trim());
+            let mut meta = HashMap::new();
+            meta.insert("fields".to_string(), Value::Array(vec![]));
+            // Set state to Streaming so the subsequent PULL gets a clean completion
+            {
+                let mut context = lock_context!(self.context);
+                context.set_state(ConnectionState::Streaming);
+            }
+            self.cached_results = Some(vec![]);
+            return Ok(vec![BoltMessage::success(meta)]);
+        }
+
+        // Intercept session commands before Cypher parsing
+        if let Some(response) = self.handle_session_command(&query).await? {
+            return Ok(response);
+        }
 
         let parameters = message.extract_parameters().unwrap_or_default();
 
@@ -768,10 +877,13 @@ impl BoltHandler {
                 context.schema_name.clone()
             };
 
-            // Extract tenant_id from RUN message metadata (Phase 2)
-            let tenant_id = message.extract_run_tenant_id();
+            // Extract tenant_id from RUN message metadata, or fall back to session-level
+            // value set via CALL sys.set('tenant_id', '...')
+            let tenant_id = message
+                .extract_run_tenant_id()
+                .or_else(|| context.tenant_id.clone());
             if let Some(ref tid) = tenant_id {
-                log::debug!("✅ RUN message contains tenant_id: {}", tid);
+                log::debug!("✅ Using tenant_id: {}", tid);
             }
 
             // Extract role from RUN message metadata (Phase 2 RBAC)
@@ -788,6 +900,12 @@ impl BoltHandler {
 
             (schema_name, tenant_id, role, view_parameters)
         };
+
+        // Store tenant_id on context (needed for execute_cypher_query fallback)
+        if let Some(ref tid) = tenant_id {
+            let mut context = lock_context!(self.context);
+            context.tenant_id = Some(tid.clone());
+        }
 
         log::info!("Executing Cypher query: {}", query);
 
@@ -943,7 +1061,9 @@ impl BoltHandler {
                     context.schema_name,
                     db
                 );
-                context.schema_name = Some(db);
+                context.schema_name = Some(db.clone());
+                let scope_tenant = context.tenant_id.clone();
+                context.id_mapper.set_scope(Some(db), scope_tenant);
             }
         } else {
             log::debug!("BEGIN message does NOT contain database field");
@@ -1123,6 +1243,17 @@ impl BoltHandler {
         // Load the actual GraphSchema object for id() transformation.
         // Set schema name in task-local context so downstream code can use it.
         crate::server::query_context::set_current_schema_name(Some(effective_schema.clone()));
+
+        // Update IdMapper scope using effective schema (may differ from connection
+        // schema if query contains a USE clause)
+        {
+            let mut context = lock_context!(self.context);
+            let scope_tenant = context.tenant_id.clone();
+            context
+                .id_mapper
+                .set_scope(Some(effective_schema.clone()), scope_tenant);
+        }
+
         let graph_schema = if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
             if let Ok(schemas) = schemas_lock.try_read() {
                 schemas.get(&effective_schema).cloned()

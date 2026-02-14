@@ -395,7 +395,71 @@ Future: Configurable connection pool limits
 - ✅ Connection works
 - ✅ Schema exploration via procedures
 - ✅ Query execution
+- ✅ Session commands (`CALL sys.set()`, `CALL dbms.setConfigValue()`)
 - ⚠️ Some visualization features may not work (depends on query results format)
+
+#### Session Commands for Multi-Tenancy
+
+Neo4j Browser cannot pass custom parameters (like `tenant_id`) in Bolt RUN messages.
+Use session commands to set parameters that persist for the duration of the browser session:
+
+```cypher
+// Set tenant_id for multi-tenancy
+CALL sys.set('tenant_id', '1234')
+
+// Browser-friendly alternative (same effect)
+CALL dbms.setConfigValue('tenant_id', '1234')
+
+// Arbitrary session parameters
+CALL sys.set('custom_param', 'value')
+```
+
+After setting `tenant_id`, all subsequent queries in that browser session will use it
+for parameterized view resolution. The setting persists until you set a new value or
+disconnect.
+
+**Example: Multi-Tenant Workflow in Neo4j Browser**
+
+```cypher
+// Step 1: Set tenant context
+CALL sys.set('tenant_id', 'acme')
+
+// Step 2: Query — only returns data for tenant 'acme'
+MATCH (u:User) RETURN u.name, u.email
+
+// Step 3: Switch to another tenant
+CALL sys.set('tenant_id', 'globex')
+
+// Step 4: Same query — now returns data for tenant 'globex'
+MATCH (u:User) RETURN u.name, u.email
+```
+
+This requires a parameterized view in ClickHouse and a schema that references it:
+
+```yaml
+# Schema referencing a parameterized view
+nodes:
+  - label: User
+    table_name: "my_users_by_tenant"
+    id_column: user_id
+    view_parameters: ["tenant_id"]
+    properties:
+      - { name: name, column: name }
+      - { name: email, column: email }
+```
+
+The ClickHouse parameterized view filters by `tenant_id`:
+
+```sql
+CREATE VIEW my_users_by_tenant AS
+  SELECT * FROM users WHERE tenant_id = {tenant_id:String}
+```
+
+**Note on types:** ClickHouse automatically coerces `tenant_id` from String to Integer
+if the underlying column is an integer type.
+
+**Note:** The `EXPLAIN` keyword is silently handled — browser autocomplete probes
+won't produce error messages.
 
 ### Neodash
 

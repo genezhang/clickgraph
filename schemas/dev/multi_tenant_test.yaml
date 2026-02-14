@@ -1,0 +1,14 @@
+name: multi_tenant_test
+
+graph_schema:
+  nodes:
+    - label: User
+      database: brahmand
+      table: mt_users_by_tenant
+      view_parameters: [tenant_id]
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: name
+        email: email
+        tenant_id: tenant_id
