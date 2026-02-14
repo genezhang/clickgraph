@@ -40,6 +40,7 @@
 
 #![allow(dead_code)]
 
+use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::GraphSchema;
 use crate::query_planner::join_context::{
@@ -58,7 +59,7 @@ use crate::render_plan::cte_extraction::{
 };
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::render_expr::{
-    AggregateFnCall, Column, ColumnAlias, InSubquery, Operator, OperatorApplication,
+    AggregateFnCall, Column, ColumnAlias, InSubquery, Literal, Operator, OperatorApplication,
     PropertyAccess, RenderCase, RenderExpr, ScalarFnCall, TableAlias,
 };
 use crate::render_plan::view_table_ref::{from_table_to_view_ref, view_ref_to_from_table};
@@ -1468,15 +1469,15 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
 
                         let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
                             RelationshipColumns {
-                                from_id: "from_node_id".to_string(),
-                                to_id: "to_node_id".to_string(),
+                                from_id: Identifier::Single("from_node_id".to_string()),
+                                to_id: Identifier::Single("to_node_id".to_string()),
                             },
                         );
 
                         // For denormalized, use relationship columns directly
                         // For normal, use node ID columns
                         let (start_id_col, end_id_col) = if is_denormalized {
-                            (rel_cols.from_id.clone(), rel_cols.to_id.clone())
+                            (rel_cols.from_id.to_string(), rel_cols.to_id.to_string())
                         } else {
                             let start = extract_id_column(&graph_rel.left)
                                 .unwrap_or_else(|| table_to_id_column(&start_table));
@@ -1486,12 +1487,14 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
                         };
 
                         // Generate cycle prevention filters
+                        let rel_to_id_str = rel_cols.to_id.to_string();
+                        let rel_from_id_str = rel_cols.from_id.to_string();
                         if let Some(cycle_filter) =
                             crate::render_plan::cte_extraction::generate_cycle_prevention_filters(
                                 exact_hops,
                                 &start_id_col,
-                                &rel_cols.to_id,
-                                &rel_cols.from_id,
+                                &rel_to_id_str,
+                                &rel_from_id_str,
                                 &end_id_col,
                                 &graph_rel.left_connection,
                                 &graph_rel.right_connection,
@@ -2850,6 +2853,85 @@ pub fn remap_cte_names_in_render_plan(
     }
 }
 
+/// Rewrite all occurrences of `old_alias` → `new_alias` in PropertyAccessExp table_alias
+/// across SELECT, JOINs, WHERE, ORDER BY, and UNION branches.
+/// Used when preserving the original node alias (e.g., "a") instead of
+/// the combined CTE alias (e.g., "a_allNeighboursCount").
+fn rewrite_table_alias_in_render_plan(
+    plan: &mut crate::render_plan::RenderPlan,
+    old_alias: &str,
+    new_alias: &str,
+) {
+    use crate::render_plan::render_expr::RenderExpr;
+
+    fn rewrite_expr(expr: RenderExpr, old: &str, new: &str) -> RenderExpr {
+        match expr {
+            RenderExpr::PropertyAccessExp(mut pa) => {
+                if pa.table_alias.0 == old {
+                    pa.table_alias.0 = new.to_string();
+                }
+                RenderExpr::PropertyAccessExp(pa)
+            }
+            RenderExpr::OperatorApplicationExp(mut op) => {
+                op.operands = op
+                    .operands
+                    .into_iter()
+                    .map(|o| rewrite_expr(o, old, new))
+                    .collect();
+                RenderExpr::OperatorApplicationExp(op)
+            }
+            RenderExpr::ScalarFnCall(mut f) => {
+                f.args = f
+                    .args
+                    .into_iter()
+                    .map(|a| rewrite_expr(a, old, new))
+                    .collect();
+                RenderExpr::ScalarFnCall(f)
+            }
+            other => other,
+        }
+    }
+
+    // SELECT items
+    for item in &mut plan.select.items {
+        item.expression = rewrite_expr(item.expression.clone(), old_alias, new_alias);
+    }
+
+    // JOIN conditions
+    for join in &mut plan.joins.0 {
+        // Rewrite table_alias in JOIN itself
+        if join.table_alias == old_alias {
+            join.table_alias = new_alias.to_string();
+        }
+        for op in &mut join.joining_on {
+            if let RenderExpr::OperatorApplicationExp(new_op) = rewrite_expr(
+                RenderExpr::OperatorApplicationExp(op.clone()),
+                old_alias,
+                new_alias,
+            ) {
+                *op = new_op;
+            }
+        }
+    }
+
+    // WHERE
+    if let Some(filter) = &plan.filters.0 {
+        plan.filters.0 = Some(rewrite_expr(filter.clone(), old_alias, new_alias));
+    }
+
+    // ORDER BY
+    for item in &mut plan.order_by.0 {
+        item.expression = rewrite_expr(item.expression.clone(), old_alias, new_alias);
+    }
+
+    // UNION branches
+    if let Some(ref mut union) = plan.union.0 {
+        for branch in &mut union.input {
+            rewrite_table_alias_in_render_plan(branch, old_alias, new_alias);
+        }
+    }
+}
+
 /// Rewrite expressions to use the FROM alias and CTE column names.
 ///
 /// Handles three cases:
@@ -2952,8 +3034,19 @@ pub fn rewrite_cte_expression_with_alias_resolution(
                     })
                 }
             }
-            // Case 2: Table alias is the CTE name itself
-            else if table_alias == cte_name {
+            // Case 2: Table alias is the CTE name itself (or same base with different counter)
+            else if table_alias == cte_name || {
+                // Match CTE names with same base but different _cte_N suffix
+                let base_a = table_alias
+                    .rfind("_cte_")
+                    .map(|pos| &table_alias[..pos])
+                    .unwrap_or(table_alias);
+                let base_b = cte_name
+                    .rfind("_cte_")
+                    .map(|pos| &cte_name[..pos])
+                    .unwrap_or(cte_name);
+                table_alias.starts_with("with_") && base_a == base_b
+            } {
                 // Extract column name to check if we need resolution
                 let column_name = match &pa.column {
                     PropertyValue::Column(col) => col,
@@ -3556,7 +3649,7 @@ pub fn get_node_id_column_for_alias_with_schema(
     let node_schema = schema.node_schema(&table_name).ok()?;
 
     // Return first ID column
-    node_schema.node_id.columns().first().map(|s| s.to_string())
+    Some(node_schema.node_id.id.first_column().to_string())
 }
 
 /// Find table name for a given alias by traversing the logical plan
@@ -4164,8 +4257,8 @@ pub(crate) fn generate_swapped_joins_for_optional_match(
 
     // Get relationship columns
     let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(RelationshipColumns {
-        from_id: "from_node_id".to_string(),
-        to_id: "to_node_id".to_string(),
+        from_id: Identifier::Single("from_node_id".to_string()),
+        to_id: Identifier::Single("to_node_id".to_string()),
     });
 
     // For OPTIONAL MATCH with swapped anchor:
@@ -4180,13 +4273,13 @@ pub(crate) fn generate_swapped_joins_for_optional_match(
         Direction::Incoming => {
             // (liker)<-[:LIKES]-(post) means rel points from post to liker
             // rel.from_id = anchor (post), rel.to_id = new (liker)
-            (&rel_cols.from_id, &rel_cols.to_id)
+            (rel_cols.from_id.to_string(), rel_cols.to_id.to_string())
         }
         _ => {
             // Direction::Outgoing or Direction::Either
             // (liker)-[:LIKES]->(post) means rel points from liker to post
             // rel.to_id = anchor (post), rel.from_id = new (liker)
-            (&rel_cols.to_id, &rel_cols.from_id)
+            (rel_cols.to_id.to_string(), rel_cols.from_id.to_string())
         }
     };
 
@@ -5452,31 +5545,19 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
             alias
         );
         if let Some(node_schema) = schema.node_schema_opt(&label) {
-            // Handle both single and composite node_id
-            if node_schema.node_id.is_composite() {
-                // For composite IDs, return multiple PropertyAccessExp (one per column)
-                log::warn!("🔧 expand_table_alias_to_group_by_id_only: Using composite node_id {:?} for alias '{}'",
-                    node_schema.node_id.columns(), alias);
-                return node_schema
-                    .node_id
-                    .columns()
-                    .iter()
-                    .map(|col| {
-                        RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias(alias.to_string()),
-                            column: PropertyValue::Column(col.to_string()),
-                        })
+            // Unified: columns() works for both single and composite IDs
+            let cols = node_schema.node_id.columns();
+            log::info!("🔧 expand_table_alias_to_group_by_id_only: Using node_id columns {:?} for alias '{}'",
+                cols, alias);
+            return cols
+                .iter()
+                .map(|col| {
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(alias.to_string()),
+                        column: PropertyValue::Column(col.to_string()),
                     })
-                    .collect();
-            } else {
-                // Single ID column
-                let id_col = node_schema.node_id.columns()[0];
-                log::warn!("🔧 expand_table_alias_to_group_by_id_only: Using schema node_id column '{}' for alias '{}'", id_col, alias);
-                return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: TableAlias(alias.to_string()),
-                    column: PropertyValue::Column(id_col.to_string()),
-                })];
-            }
+                })
+                .collect();
         } else {
             log::warn!(
                 "⚠️ expand_table_alias_to_group_by_id_only: Label '{}' not found in schema",
@@ -7130,12 +7211,19 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 .insert(cte.cte_name.clone(), (from_alias, cte.columns.clone()));
                         }
 
-                        // Extract aliases from CTE name to mark as processed
-                        // CTE name format: "with_{aliases}_cte_{n}" e.g., "with_total_cte_1"
-                        if let Some(aliases) =
+                        // Extract aliases from the CTE's stored exported_aliases (preferred)
+                        // or from CTE name (fallback, may fail for aliases with underscores)
+                        let aliases = if !cte.with_exported_aliases.is_empty() {
+                            cte.with_exported_aliases.clone()
+                        } else if let Some(extracted) =
                             crate::utils::cte_naming::extract_aliases_from_cte_name(&cte.cte_name)
                         {
-                            for alias in aliases {
+                            extracted
+                        } else {
+                            Vec::new()
+                        };
+                        for alias in aliases {
+                            if !alias.is_empty() {
                                 processed_cte_aliases.insert(alias.clone());
                                 cte_references.insert(alias, cte.cte_name.clone());
                             }
@@ -8085,28 +8173,23 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         all_ctes.push(pc_cte);
 
                         // Find the ID column for the correlation variable in the WITH CTE's FROM table
-                        let id_column = find_node_id_column_from_schema(
-                            &pc_meta.correlation_var,
-                            &pc_meta.correlation_label,
-                            schema,
-                        );
-
-                        // Add LEFT JOIN to the WITH CTE render plan
-                        let pc_alias = format!("__pc_{}", pc_idx);
-
-                        // Build JOIN ON clause using OperatorApplication
+                        // For denormalized Union wrapped as subquery, the JOIN references
+                        // __union alias with renamed columns instead of the original table alias
                         use crate::graph_catalog::expression_parser::PropertyValue;
                         use crate::render_plan::render_expr::{
                             ColumnAlias, Operator, PropertyAccess, RenderExpr,
                             TableAlias as RenderTableAlias,
                         };
 
-                        // For denormalized Union wrapped as subquery, the JOIN references
-                        // __union alias with renamed columns instead of the original table alias
-                        let (join_table_alias, join_column) = if with_cte_render.union.0.is_some()
+                        let lhs_expr = if with_cte_render.union.0.is_some()
                             && with_cte_render.from.0.is_none()
                         {
-                            // Use node alias (first exported alias) matching the rename prefix
+                            // Denormalized Union: use __union alias with prefixed column name
+                            let id_column = find_node_id_column_from_schema(
+                                &pc_meta.correlation_var,
+                                &pc_meta.correlation_label,
+                                schema,
+                            );
                             let node_alias = with_plans
                                 .first()
                                 .and_then(|p| match p {
@@ -8116,21 +8199,29 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                     _ => None,
                                 })
                                 .unwrap_or_else(|| pc_meta.correlation_var.clone());
-                            (
-                                "__union".to_string(),
-                                format!("{}_{}", node_alias, id_column),
-                            )
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: RenderTableAlias("__union".to_string()),
+                                column: PropertyValue::Column(format!(
+                                    "{}_{}",
+                                    node_alias, id_column
+                                )),
+                            })
                         } else {
-                            (pc_meta.correlation_var.clone(), id_column.clone())
+                            // Normal case: use composite-aware helper
+                            build_node_id_expr_for_join(
+                                &pc_meta.correlation_var,
+                                &pc_meta.correlation_label,
+                                schema,
+                            )
                         };
+
+                        // Add LEFT JOIN to the WITH CTE render plan
+                        let pc_alias = format!("__pc_{}", pc_idx);
 
                         let on_clause = crate::render_plan::render_expr::OperatorApplication {
                             operator: Operator::Equal,
                             operands: vec![
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: RenderTableAlias(join_table_alias),
-                                    column: PropertyValue::Column(join_column),
-                                }),
+                                lhs_expr,
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: RenderTableAlias(pc_alias.clone()),
                                     column: PropertyValue::Column("node_id".to_string()),
@@ -8405,6 +8496,18 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 cte_name
             );
 
+            // Extract original WITH exported aliases for cte_references mapping
+            let original_exported_aliases: Vec<String> = with_plans
+                .iter()
+                .find_map(|plan| {
+                    if let LogicalPlan::WithClause(wc) = plan {
+                        Some(wc.exported_aliases.clone())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| with_alias.split('_').map(|s| s.to_string()).collect());
+
             // Create the CTE with column metadata
             let mut with_cte = Cte::new(
                 cte_name.clone(),
@@ -8412,6 +8515,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 false,
             );
             with_cte.columns = cte_columns;
+            with_cte.with_exported_aliases = original_exported_aliases.clone();
 
             // 🔧 CRITICAL FIX: Populate task-local CTE property mappings for SQL rendering
             // The PropertyAccessExp renderer checks get_cte_property_from_context() to resolve
@@ -8581,19 +8685,21 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // This allows "WITH a, b, c" to find columns for both "a" and "b" from the "with_a_b_cte_1"
             cte_references.insert(with_alias.clone(), cte_name.clone());
 
-            // Also add individual aliases
-            let individual_aliases: Vec<&str> = with_alias.split('_').collect();
-            for alias in &individual_aliases {
-                cte_references.insert(alias.to_string(), cte_name.clone());
-                log::info!(
-                    "🔧 build_chained_with_match_cte_plan: Added individual mapping: '{}' → '{}'",
-                    alias,
-                    cte_name
-                );
+            // Also add individual aliases — use exported_aliases from the WITH clause
+            // (splitting with_alias by '_' fails for aliases containing underscores like "__expand")
+            for alias in &original_exported_aliases {
+                if !alias.is_empty() {
+                    cte_references.insert(alias.clone(), cte_name.clone());
+                    log::info!(
+                        "🔧 build_chained_with_match_cte_plan: Added individual mapping: '{}' → '{}'",
+                        alias,
+                        cte_name
+                    );
+                }
             }
 
             log::warn!("🔧 build_chained_with_match_cte_plan: Updated cte_references: '{}' → '{}' (plus {} individual aliases)",
-                       with_alias, cte_name, individual_aliases.len());
+                       with_alias, cte_name, original_exported_aliases.len());
 
             // CRITICAL: Also update cte_references_for_rendering!
             // This allows subsequent WITH clauses in THIS ITERATION to reference the new CTE
@@ -8785,28 +8891,50 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     cte_name
                 );
 
-                // Extract aliases from CTE name for the FROM alias
-                let with_alias_part = if let Some(stripped) = cte_name.strip_prefix("with_") {
+                // Keep the original alias (e.g., "a") as the FROM alias.
+                // The rest of the rendered plan (SELECT, WHERE, JOINs) references "a.xxx",
+                // so the FROM alias must match. The CTE columns are prefixed with the
+                // original alias (e.g., "a_customer_id"), which works with FROM alias "a".
+                let preserved_alias = alias.clone();
+
+                // Compute what the combined alias WOULD have been (e.g., "a_allNeighboursCount")
+                // so we can rewrite any stale references in SELECT/WHERE/ORDER BY
+                let combined_alias = if let Some(stripped) = cte_name.strip_prefix("with_") {
                     if let Some(cte_pos) = stripped.rfind("_cte") {
-                        &stripped[..cte_pos]
+                        stripped[..cte_pos].to_string()
                     } else {
-                        stripped
+                        stripped.to_string()
                     }
                 } else {
-                    ""
+                    String::new()
                 };
 
                 render_plan.from = FromTableItem(Some(ViewTableRef {
                     source: std::sync::Arc::new(LogicalPlan::Empty),
                     name: cte_name.clone(),
-                    alias: Some(with_alias_part.to_string()),
+                    alias: Some(preserved_alias.clone()),
                     use_final: false,
                 }));
+
+                // Rewrite stale references: combined alias → preserved alias
+                // e.g., "a_allNeighboursCount.xxx" → "a.xxx" in SELECT, WHERE, JOINs
+                if combined_alias != preserved_alias && !combined_alias.is_empty() {
+                    log::debug!(
+                        "🔧 Rewriting stale alias '{}' → '{}' in render plan",
+                        combined_alias,
+                        preserved_alias
+                    );
+                    rewrite_table_alias_in_render_plan(
+                        &mut render_plan,
+                        &combined_alias,
+                        &preserved_alias,
+                    );
+                }
 
                 log::info!(
                     "🔧 build_chained_with_match_cte_plan: Replaced FROM with: {} AS '{}'",
                     cte_name,
-                    with_alias_part
+                    preserved_alias
                 );
             }
         }
@@ -9024,14 +9152,75 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                     &render_plan.ctes,
                                                 )
                                             };
-                                        let join_cond = OperatorApplication {
-                                            operator: Operator::Equal,
-                                            operands: vec![
-                                                RenderExpr::Column(Column(
-                                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                        format!("{}.{}", from_alias, vlp_id_col)
-                                                    )
-                                                )),
+
+                                        // Check if this node has a composite ID — if so, generate
+                                        // concat(toString(col1), '|', toString(col2)) to match
+                                        // the pipe-joined start_id/end_id in the VLP CTE
+                                        let rhs_expr = {
+                                            use crate::server::query_context::get_current_schema;
+                                            let composite_cols =
+                                                get_current_schema().and_then(|schema| {
+                                                    // Determine the node label from vlp_alias
+                                                    let label = if is_start {
+                                                        vlp_cte.vlp_cypher_start_alias.as_deref()
+                                                    } else {
+                                                        vlp_cte.vlp_cypher_end_alias.as_deref()
+                                                    };
+                                                    // Look up by label_constraints or try all schemas
+                                                    for ns in schema.all_node_schemas().values() {
+                                                        if ns.node_id.is_composite() {
+                                                            // Check if the id_col_name matches one of this schema's columns
+                                                            let prefix = format!(
+                                                                "{}_",
+                                                                vlp_alias.to_owned()
+                                                            );
+                                                            let id_cols = ns.node_id.columns();
+                                                            let first_cte_col =
+                                                                format!("{}{}", prefix, id_cols[0]);
+                                                            if id_col_name == first_cte_col
+                                                                || id_col_name == id_cols[0]
+                                                            {
+                                                                return Some(
+                                                                    id_cols
+                                                                        .iter()
+                                                                        .map(|c| c.to_string())
+                                                                        .collect::<Vec<_>>(),
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                    None
+                                                });
+
+                                            if let Some(cols) = composite_cols {
+                                                // Composite ID: concat(toString(cte.a_col1), '|', toString(cte.a_col2))
+                                                let prefix = format!("{}_", vlp_alias);
+                                                let parts: Vec<RenderExpr> = cols.iter().enumerate().flat_map(|(i, col)| {
+                                                    let cte_col = format!("{}{}", prefix, col);
+                                                    let mut items = Vec::new();
+                                                    if i > 0 {
+                                                        items.push(RenderExpr::Literal(Literal::String("|".to_string())));
+                                                    }
+                                                    items.push(RenderExpr::ScalarFnCall(ScalarFnCall {
+                                                        name: "toString".to_string(),
+                                                        args: vec![RenderExpr::Column(Column(
+                                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                                format!("{}.{}", cte_alias, cte_col)
+                                                            )
+                                                        ))],
+                                                    }));
+                                                    items
+                                                }).collect();
+                                                log::warn!(
+                                                    "🔧 VLP+WITH: Composite ID JOIN - concat {} columns for alias '{}'",
+                                                    cols.len(), vlp_alias
+                                                );
+                                                RenderExpr::ScalarFnCall(ScalarFnCall {
+                                                    name: "concat".to_string(),
+                                                    args: parts,
+                                                })
+                                            } else {
+                                                // Single ID: toString(cte.a_col)
                                                 RenderExpr::ScalarFnCall(ScalarFnCall {
                                                     name: "toString".to_string(),
                                                     args: vec![
@@ -9041,12 +9230,24 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                             )
                                                         )),
                                                     ],
-                                                }),
+                                                })
+                                            }
+                                        };
+
+                                        let join_cond = OperatorApplication {
+                                            operator: Operator::Equal,
+                                            operands: vec![
+                                                RenderExpr::Column(Column(
+                                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                        format!("{}.{}", from_alias, vlp_id_col)
+                                                    )
+                                                )),
+                                                rhs_expr,
                                             ],
                                         };
                                         log::warn!(
-                                            "🔧 VLP+WITH: Generated JOIN condition: {}.{} = toString({}.{})",
-                                            from_alias, vlp_id_col, cte_alias, id_col_name
+                                            "🔧 VLP+WITH: Generated JOIN condition for alias '{}' (is_start={})",
+                                            vlp_alias, is_start
                                         );
                                         join_conditions.push(join_cond);
                                     }
@@ -9072,12 +9273,19 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 // Insert the CTE join at the BEGINNING of the joins list
                 // (CTE should be joined first so its columns are available)
                 // BUT: skip if a JOIN for this CTE alias already exists (from extract_joins)
+                // OR if the FROM table already uses this alias (avoid duplicate alias error)
                 let already_has_cte_join = render_plan
                     .joins
                     .0
                     .iter()
                     .any(|j| j.table_alias == cte_alias);
-                if !already_has_cte_join {
+                let from_already_uses_alias = render_plan
+                    .from
+                    .0
+                    .as_ref()
+                    .map(|vr| vr.alias.as_deref() == Some(&cte_alias))
+                    .unwrap_or(false);
+                if !already_has_cte_join && !from_already_uses_alias {
                     render_plan.joins.0.insert(0, cte_join.clone());
                     log::info!(
                         "🔧 build_chained_with_match_cte_plan: Added CTE JOIN: {} AS {}",
@@ -9329,10 +9537,28 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 log::warn!("🔧 build_chained_with_match_cte_plan: Rewriting SELECT items to use FROM alias '{}'", from_alias);
 
                 // Extract all WITH aliases from CTE name for rewriting
-                // Using the original approach but with a fix:
-                // If a column is expanded to a single item, treat it as a scalar (don't expand with *)
-                let with_aliases: HashSet<String> =
-                    if let Some(stripped) = from_ref.name.strip_prefix("with_") {
+                // Prefer with_exported_aliases stored on Cte struct (handles underscored aliases like "__expand")
+                let with_aliases: HashSet<String> = {
+                    // Find the CTE by name and use its stored exported aliases
+                    let from_cte_name = &from_ref.name;
+                    let exported = all_ctes
+                        .iter()
+                        .find(|cte| &cte.cte_name == from_cte_name)
+                        .and_then(|cte| {
+                            if !cte.with_exported_aliases.is_empty() {
+                                Some(
+                                    cte.with_exported_aliases
+                                        .iter()
+                                        .cloned()
+                                        .collect::<HashSet<String>>(),
+                                )
+                            } else {
+                                None
+                            }
+                        });
+                    if let Some(aliases) = exported {
+                        aliases
+                    } else if let Some(stripped) = from_ref.name.strip_prefix("with_") {
                         if let Some(cte_pos) = stripped.rfind("_cte") {
                             stripped[..cte_pos]
                                 .split('_')
@@ -9343,7 +9569,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         }
                     } else {
                         HashSet::new()
-                    };
+                    }
+                };
 
                 log::info!(
                     "🔧 build_chained_with_match_cte_plan: WITH aliases from CTE: {:?}",
@@ -12265,7 +12492,9 @@ pub(super) fn build_pattern_comprehension_sql(
             };
             branches.push(format!(
                 "SELECT {} AS node_id FROM {}{}",
-                rel_schema.from_id, db_table, where_str
+                rel_schema.from_id.to_pipe_joined_sql(""),
+                db_table,
+                where_str
             ));
         }
 
@@ -12287,7 +12516,9 @@ pub(super) fn build_pattern_comprehension_sql(
             };
             branches.push(format!(
                 "SELECT {} AS node_id FROM {}{}",
-                rel_schema.to_id, db_table, where_str
+                rel_schema.to_id.to_pipe_joined_sql(""),
+                db_table,
+                where_str
             ));
         }
     }
@@ -12314,6 +12545,68 @@ pub(super) fn build_pattern_comprehension_sql(
     ))
 }
 
+/// Build a RenderExpr for a node's ID, handling composite keys.
+/// For single IDs: `alias.col` (PropertyAccess)
+/// For composite IDs: `concat(toString(alias.col1), '|', toString(alias.col2))`
+pub(super) fn build_node_id_expr_for_join(
+    from_alias: &str,
+    label: &str,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+) -> RenderExpr {
+    use crate::graph_catalog::expression_parser::PropertyValue;
+
+    if let Ok(ns) = schema.node_schema(label) {
+        return build_id_render_expr(&ns.node_id.id, from_alias);
+    }
+
+    // Fallback: use find_node_id_column_from_schema
+    let id_col = find_node_id_column_from_schema("", label, schema);
+    RenderExpr::PropertyAccessExp(PropertyAccess {
+        table_alias: TableAlias(from_alias.to_string()),
+        column: PropertyValue::Column(id_col),
+    })
+}
+
+/// Convert an Identifier to a RenderExpr with the given alias.
+/// Single: `alias.col`, Composite: `concat(toString(alias.c1), '|', toString(alias.c2))`
+pub(super) fn build_id_render_expr(
+    id: &crate::graph_catalog::config::Identifier,
+    alias: &str,
+) -> RenderExpr {
+    use crate::graph_catalog::expression_parser::PropertyValue;
+
+    if id.is_composite() {
+        let parts: Vec<RenderExpr> = id
+            .columns()
+            .iter()
+            .enumerate()
+            .flat_map(|(i, col)| {
+                let mut items = Vec::new();
+                if i > 0 {
+                    items.push(RenderExpr::Literal(Literal::String("|".to_string())));
+                }
+                items.push(RenderExpr::ScalarFnCall(ScalarFnCall {
+                    name: "toString".to_string(),
+                    args: vec![RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(alias.to_string()),
+                        column: PropertyValue::Column(col.to_string()),
+                    })],
+                }));
+                items
+            })
+            .collect();
+        RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: "concat".to_string(),
+            args: parts,
+        })
+    } else {
+        RenderExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias(alias.to_string()),
+            column: PropertyValue::Column(id.first_column().to_string()),
+        })
+    }
+}
+
 /// Find the ID column for a node label in the schema.
 /// E.g., for label "User" in the social benchmark, returns "user_id".
 pub(super) fn find_node_id_column_from_schema(
@@ -12323,16 +12616,16 @@ pub(super) fn find_node_id_column_from_schema(
 ) -> String {
     // Look through node schemas to find the ID column
     if let Ok(node_schema) = schema.node_schema(label) {
-        return node_schema.node_id.column().to_string();
+        return node_schema.node_id.id.first_column().to_string();
     }
 
     // Fallback: look through relationship schemas for from_node/to_node matching
     for rel_schema in schema.get_relationships_schemas().values() {
         if rel_schema.from_node.eq_ignore_ascii_case(label) {
-            return rel_schema.from_id.clone();
+            return rel_schema.from_id.first_column().to_string();
         }
         if rel_schema.to_node.eq_ignore_ascii_case(label) {
-            return rel_schema.to_id.clone();
+            return rel_schema.to_id.first_column().to_string();
         }
     }
 

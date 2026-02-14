@@ -520,9 +520,14 @@ fn collect_relationship_info_inner(
             if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
                 let from_id = scan
                     .from_id
-                    .clone()
+                    .as_ref()
+                    .map(|id| id.to_string())
                     .unwrap_or_else(|| "from_id".to_string());
-                let to_id = scan.to_id.clone().unwrap_or_else(|| "to_id".to_string());
+                let to_id = scan
+                    .to_id
+                    .as_ref()
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "to_id".to_string());
 
                 // Look up edge_id from schema using relationship labels
                 let edge_id_cols = graph_rel

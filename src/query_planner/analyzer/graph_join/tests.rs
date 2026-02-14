@@ -14,6 +14,7 @@ use std::sync::Arc;
 use super::metadata::{PatternEdgeInfo, PatternGraphMetadata};
 use super::GraphJoinInference;
 use crate::{
+    graph_catalog::config::Identifier,
     graph_catalog::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema},
     query_planner::{
         analyzer::analyzer_pass::AnalyzerPass,
@@ -91,8 +92,8 @@ fn create_test_graph_schema() -> GraphSchema {
             to_node: "Person".to_string(),
             from_node_table: "Person".to_string(),
             to_node_table: "Person".to_string(),
-            from_id: "from_id".to_string(),
-            to_id: "to_id".to_string(),
+            from_id: Identifier::from("from_id"),
+            to_id: Identifier::from("to_id"),
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: HashMap::new(),
@@ -129,8 +130,8 @@ fn create_test_graph_schema() -> GraphSchema {
             to_node: "Company".to_string(),
             from_node_table: "Person".to_string(),
             to_node_table: "Company".to_string(),
-            from_id: "from_id".to_string(),
-            to_id: "to_id".to_string(),
+            from_id: Identifier::from("from_id"),
+            to_id: Identifier::from("to_id"),
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: HashMap::new(),
@@ -941,8 +942,8 @@ fn create_self_referencing_fk_schema() -> GraphSchema {
             to_node: "Object".to_string(), // Self-referencing
             from_node_table: "fs_objects".to_string(),
             to_node_table: "fs_objects".to_string(),
-            from_id: "parent_id".to_string(), // FK column
-            to_id: "object_id".to_string(),   // PK column
+            from_id: Identifier::from("parent_id"), // FK column
+            to_id: Identifier::from("object_id"),   // PK column
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: HashMap::new(),
@@ -1059,8 +1060,8 @@ fn create_non_self_referencing_fk_schema() -> GraphSchema {
             to_node: "Customer".to_string(), // Different table
             from_node_table: "orders".to_string(),
             to_node_table: "customers".to_string(),
-            from_id: "order_id".to_string(),  // Order's PK
-            to_id: "customer_id".to_string(), // FK pointing to Customer
+            from_id: Identifier::from("order_id"), // Order's PK
+            to_id: Identifier::from("customer_id"), // FK pointing to Customer
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: HashMap::new(),
@@ -1098,8 +1099,8 @@ fn test_fk_edge_pattern_self_referencing() {
     );
     assert_eq!(rel_schema.from_node, "Object");
     assert_eq!(rel_schema.to_node, "Object");
-    assert_eq!(rel_schema.from_id, "parent_id"); // FK column
-    assert_eq!(rel_schema.to_id, "object_id"); // PK column
+    assert_eq!(rel_schema.from_id, Identifier::from("parent_id")); // FK column
+    assert_eq!(rel_schema.to_id, Identifier::from("object_id")); // PK column
 }
 
 #[test]
@@ -1115,8 +1116,8 @@ fn test_fk_edge_pattern_non_self_referencing() {
     );
     assert_eq!(rel_schema.from_node, "Order");
     assert_eq!(rel_schema.to_node, "Customer");
-    assert_eq!(rel_schema.from_id, "order_id"); // Order's PK
-    assert_eq!(rel_schema.to_id, "customer_id"); // FK to Customer
+    assert_eq!(rel_schema.from_id, Identifier::from("order_id")); // Order's PK
+    assert_eq!(rel_schema.to_id, Identifier::from("customer_id")); // FK to Customer
 }
 
 #[test]

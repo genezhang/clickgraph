@@ -856,13 +856,6 @@ impl RenderPlanBuilder for LogicalPlan {
                             );
                             render_plan.ctes.0.push(pc_cte);
 
-                            let id_column =
-                                super::plan_builder_utils::find_node_id_column_from_schema(
-                                    &pc_meta.correlation_var,
-                                    &pc_meta.correlation_label,
-                                    schema,
-                                );
-
                             let from_alias = render_plan
                                 .from
                                 .0
@@ -871,13 +864,15 @@ impl RenderPlanBuilder for LogicalPlan {
                                 .unwrap_or_else(|| pc_meta.correlation_var.clone());
 
                             let pc_alias = format!("__pc_{}", pc_idx);
+                            let lhs_expr = super::plan_builder_utils::build_node_id_expr_for_join(
+                                &from_alias,
+                                &pc_meta.correlation_label,
+                                schema,
+                            );
                             let on_clause = OperatorApplication {
                                 operator: Operator::Equal,
                                 operands: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(from_alias),
-                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_column),
-                                    }),
+                                    lhs_expr,
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(pc_alias.clone()),
                                         column: crate::graph_catalog::expression_parser::PropertyValue::Column("node_id".to_string()),
@@ -1216,14 +1211,6 @@ impl RenderPlanBuilder for LogicalPlan {
                             );
                             render_plan.ctes.0.push(pc_cte);
 
-                            // Find the ID column for the correlation variable
-                            let id_column =
-                                super::plan_builder_utils::find_node_id_column_from_schema(
-                                    &pc_meta.correlation_var,
-                                    &pc_meta.correlation_label,
-                                    schema,
-                                );
-
                             // Determine the FROM table alias for the correlation variable
                             let from_alias = render_plan
                                 .from
@@ -1234,13 +1221,15 @@ impl RenderPlanBuilder for LogicalPlan {
 
                             // Add LEFT JOIN to the render plan
                             let pc_alias = format!("__pc_{}", pc_idx);
+                            let lhs_expr = super::plan_builder_utils::build_node_id_expr_for_join(
+                                &from_alias,
+                                &pc_meta.correlation_label,
+                                schema,
+                            );
                             let on_clause = super::render_expr::OperatorApplication {
                                 operator: super::render_expr::Operator::Equal,
                                 operands: vec![
-                                    RenderExpr::PropertyAccessExp(super::render_expr::PropertyAccess {
-                                        table_alias: super::render_expr::TableAlias(from_alias),
-                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_column),
-                                    }),
+                                    lhs_expr,
                                     RenderExpr::PropertyAccessExp(super::render_expr::PropertyAccess {
                                         table_alias: super::render_expr::TableAlias(pc_alias.clone()),
                                         column: crate::graph_catalog::expression_parser::PropertyValue::Column("node_id".to_string()),
@@ -1776,7 +1765,8 @@ impl RenderPlanBuilder for LogicalPlan {
                     );
                     generate_cte_base_name(&with.exported_aliases)
                 });
-                let cte = Cte::new(cte_name.clone(), cte_content, false);
+                let mut cte = Cte::new(cte_name.clone(), cte_content, false);
+                cte.with_exported_aliases = with.exported_aliases.clone();
                 let ctes = CteItems(vec![cte]);
 
                 let from = FromTableItem(Some(ViewTableRef {
@@ -2887,13 +2877,6 @@ impl RenderPlanBuilder for LogicalPlan {
                             );
                             render_plan.ctes.0.push(pc_cte);
 
-                            let id_column =
-                                super::plan_builder_utils::find_node_id_column_from_schema(
-                                    &pc_meta.correlation_var,
-                                    &pc_meta.correlation_label,
-                                    schema,
-                                );
-
                             let from_alias = render_plan
                                 .from
                                 .0
@@ -2902,13 +2885,15 @@ impl RenderPlanBuilder for LogicalPlan {
                                 .unwrap_or_else(|| pc_meta.correlation_var.clone());
 
                             let pc_alias = format!("__pc_{}", pc_idx);
+                            let lhs_expr = super::plan_builder_utils::build_node_id_expr_for_join(
+                                &from_alias,
+                                &pc_meta.correlation_label,
+                                schema,
+                            );
                             let on_clause = OperatorApplication {
                                 operator: Operator::Equal,
                                 operands: vec![
-                                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(from_alias),
-                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_column),
-                                    }),
+                                    lhs_expr,
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
                                         table_alias: TableAlias(pc_alias.clone()),
                                         column: crate::graph_catalog::expression_parser::PropertyValue::Column("node_id".to_string()),

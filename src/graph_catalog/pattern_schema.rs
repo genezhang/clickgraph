@@ -38,6 +38,7 @@
 //! }
 //! ```
 
+use super::config::Identifier;
 use super::graph_schema::{
     classify_edge_table_pattern, EdgeTablePattern, GraphSchema, NodeSchema, RelationshipSchema,
 };
@@ -86,8 +87,8 @@ pub enum NodeAccessStrategy {
     OwnTable {
         /// Fully qualified table name (e.g., "brahmand.users")
         table: String,
-        /// Primary ID column for JOIN condition
-        id_column: String,
+        /// Primary ID column(s) for JOIN condition — single or composite
+        id_column: Identifier,
         /// Property name → column mappings
         properties: PropertyMappings,
     },
@@ -400,10 +401,10 @@ pub enum JoinStrategy {
     /// JOIN users u2 ON u2.user_id = r.followed_id
     /// ```
     Traditional {
-        /// Column on edge for left node join (e.g., "follower_id")
-        left_join_col: String,
-        /// Column on edge for right node join (e.g., "followed_id")
-        right_join_col: String,
+        /// Column(s) on edge for left node join — single or composite Identifier
+        left_join_col: Identifier,
+        /// Column(s) on edge for right node join — single or composite Identifier
+        right_join_col: Identifier,
     },
 
     /// Fully denormalized: single table scan, no JOINs needed.
@@ -776,14 +777,14 @@ impl PatternSchemaContext {
     /// For denormalized edge schemas, the mapping is in from_properties/to_properties
     /// of the node schema (which correspond to the edge's table). For standalone nodes,
     /// the mapping is in property_mappings.
-    fn resolve_id_column(node_schema: &NodeSchema, is_from_node: bool) -> Result<String, String> {
-        // Get the node ID property name from schema (Cypher name)
-        let id_property = node_schema
-            .node_id
-            .columns()
-            .first()
-            .ok_or_else(|| "Node schema has no ID columns defined".to_string())?
-            .to_string();
+    fn resolve_id_column(
+        node_schema: &NodeSchema,
+        is_from_node: bool,
+    ) -> Result<Identifier, String> {
+        let id_columns = node_schema.node_id.columns();
+        if id_columns.is_empty() {
+            return Err("Node schema has no ID columns defined".to_string());
+        }
 
         // Try to resolve through from_properties or to_properties (for denormalized edges)
         let node_props_opt = if is_from_node {
@@ -793,10 +794,12 @@ impl PatternSchemaContext {
         };
 
         if let Some(node_props) = node_props_opt {
-            if let Some(column_name) = node_props.get(&id_property) {
+            // For denormalized edges, resolve each ID column through property mapping
+            let first_prop = id_columns[0];
+            if let Some(column_name) = node_props.get(first_prop) {
                 log::info!(
                     "🔧 resolve_id_column: '{}' (Cypher) → '{}' (DB column) via {} for table {}",
-                    id_property,
+                    first_prop,
                     column_name,
                     if is_from_node {
                         "from_properties"
@@ -805,26 +808,35 @@ impl PatternSchemaContext {
                     },
                     node_schema.table_name
                 );
-                return Ok(column_name.clone());
+                // For denormalized edges, composite node IDs are not expected
+                return Ok(Identifier::Single(column_name.clone()));
             }
         }
 
-        // Fallback: Try property_mappings (for standalone node tables)
-        if let Some(property_value) = node_schema.property_mappings.get(&id_property) {
-            let resolved = property_value.raw().to_string(); // Use raw() instead of to_sql_column_only()
-            log::info!("🔧 resolve_id_column: '{}' (Cypher) → '{}' (DB column) via property_mappings for table {}", 
-                id_property, resolved, node_schema.table_name);
-            return Ok(resolved);
-        }
+        // Standalone node table: resolve each ID column through property_mappings
+        let resolved: Vec<String> = id_columns
+            .iter()
+            .map(|col| {
+                if let Some(property_value) = node_schema.property_mappings.get(*col) {
+                    property_value.raw().to_string()
+                } else {
+                    col.to_string()
+                }
+            })
+            .collect();
 
-        // No mapping found - use the property name directly
-        // (this is OK for simple schemas where Cypher name = DB column name)
         log::info!(
-            "🔧 resolve_id_column: '{}' used as-is (no mapping) for table {}",
-            id_property,
+            "🔧 resolve_id_column: {:?} → {:?} for table {}",
+            id_columns,
+            resolved,
             node_schema.table_name
         );
-        Ok(id_property)
+
+        if resolved.len() == 1 {
+            Ok(Identifier::Single(resolved.into_iter().next().unwrap()))
+        } else {
+            Ok(Identifier::Composite(resolved))
+        }
     }
 
     /// Build edge access strategy from relationship schema
@@ -840,8 +852,8 @@ impl PatternSchemaContext {
         if has_type_column || has_label_columns {
             EdgeAccessStrategy::Polymorphic {
                 table: rel_schema.full_table_name(),
-                from_id: rel_schema.from_id.clone(),
-                to_id: rel_schema.to_id.clone(),
+                from_id: rel_schema.from_id.to_string(),
+                to_id: rel_schema.to_id.to_string(),
                 type_column: rel_schema.type_column.clone(),
                 type_values: rel_types.to_vec(),
                 from_label_column: rel_schema.from_label_column.clone(),
@@ -856,8 +868,8 @@ impl PatternSchemaContext {
             // Standard separate table
             EdgeAccessStrategy::SeparateTable {
                 table: rel_schema.full_table_name(),
-                from_id: rel_schema.from_id.clone(),
-                to_id: rel_schema.to_id.clone(),
+                from_id: rel_schema.from_id.to_string(),
+                to_id: rel_schema.to_id.to_string(),
                 properties: rel_schema
                     .property_mappings
                     .iter()
@@ -1003,17 +1015,7 @@ impl PatternSchemaContext {
         } else {
             Ok(NodeAccessStrategy::OwnTable {
                 table: node_schema.full_table_name(),
-                id_column: node_schema
-                    .node_id
-                    .columns()
-                    .first()
-                    .ok_or_else(|| {
-                        format!(
-                            "Node schema for '{}' has no ID columns defined",
-                            node_schema.table_name
-                        )
-                    })?
-                    .to_string(),
+                id_column: node_schema.node_id.id.clone(),
                 properties: node_schema
                     .property_mappings
                     .iter()
@@ -1075,15 +1077,15 @@ impl PatternSchemaContext {
                     } else {
                         // Multi-hop denormalized but NOT coupled - edge-to-edge JOIN
                         let prev_col = if is_from_node {
-                            prev_rel_schema.from_id.clone()
+                            prev_rel_schema.from_id.to_string()
                         } else {
-                            prev_rel_schema.to_id.clone()
+                            prev_rel_schema.to_id.to_string()
                         };
                         return (
                             JoinStrategy::EdgeToEdge {
                                 prev_edge_alias: prev_alias.to_string(),
                                 prev_edge_col: prev_col,
-                                curr_edge_col: rel_schema.from_id.clone(),
+                                curr_edge_col: rel_schema.from_id.to_string(),
                             },
                             None,
                         );
@@ -1116,8 +1118,8 @@ impl PatternSchemaContext {
 
             return (
                 JoinStrategy::FkEdgeJoin {
-                    from_id: rel_schema.from_id.clone(),
-                    to_id: rel_schema.to_id.clone(),
+                    from_id: rel_schema.from_id.to_string(),
+                    to_id: rel_schema.to_id.to_string(),
                     join_side,
                     is_self_referencing,
                 },
@@ -1148,7 +1150,7 @@ impl PatternSchemaContext {
                     (
                         JoinStrategy::MixedAccess {
                             joined_node: NodePosition::Right,
-                            join_col: rel_schema.to_id.clone(),
+                            join_col: rel_schema.to_id.to_string(),
                         },
                         None,
                     )
@@ -1156,7 +1158,7 @@ impl PatternSchemaContext {
                     (
                         JoinStrategy::MixedAccess {
                             joined_node: NodePosition::Left,
-                            join_col: rel_schema.from_id.clone(),
+                            join_col: rel_schema.from_id.to_string(),
                         },
                         None,
                     )
@@ -1308,6 +1310,7 @@ impl PatternSchemaContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph_catalog::config::Identifier;
     use crate::graph_catalog::expression_parser::PropertyValue;
     use crate::graph_catalog::graph_schema::NodeIdSchema;
 
@@ -1370,8 +1373,8 @@ mod tests {
             to_node: "User".to_string(),
             from_node_table: "users".to_string(),
             to_node_table: "users".to_string(),
-            from_id: "from_id".to_string(),
-            to_id: "to_id".to_string(),
+            from_id: Identifier::from("from_id"),
+            to_id: Identifier::from("to_id"),
             from_node_id_dtype: "Int64".to_string(),
             to_node_id_dtype: "Int64".to_string(),
             property_mappings: HashMap::new(),
@@ -1407,8 +1410,8 @@ mod tests {
             to_node: "Airport".to_string(),
             from_node_table: "airports".to_string(),
             to_node_table: "airports".to_string(),
-            from_id: "Origin".to_string(),
-            to_id: "Dest".to_string(),
+            from_id: Identifier::from("Origin"),
+            to_id: Identifier::from("Dest"),
             from_node_id_dtype: "String".to_string(),
             to_node_id_dtype: "String".to_string(),
             property_mappings: HashMap::new(),
@@ -1440,7 +1443,7 @@ mod tests {
     fn test_node_access_strategy_requires_join() {
         let own_table = NodeAccessStrategy::OwnTable {
             table: "users".to_string(),
-            id_column: "id".to_string(),
+            id_column: Identifier::from("id"),
             properties: HashMap::new(),
         };
         assert!(own_table.requires_join());
@@ -1643,8 +1646,8 @@ mod tests {
         assert!(coupled.is_joinless());
 
         let traditional = JoinStrategy::Traditional {
-            left_join_col: "from_id".to_string(),
-            right_join_col: "to_id".to_string(),
+            left_join_col: Identifier::from("from_id"),
+            right_join_col: Identifier::from("to_id"),
         };
         assert!(!traditional.is_joinless());
     }

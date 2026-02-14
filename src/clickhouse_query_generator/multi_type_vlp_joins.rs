@@ -27,6 +27,7 @@
 //! ```
 
 use crate::clickhouse_query_generator::json_builder::generate_json_properties_from_schema_without_aliases;
+use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::analyzer::multi_type_vlp_expansion::{
@@ -455,14 +456,11 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 );
                 end_node_type = hop.to_node_type.clone();
 
+                let join_cond =
+                    start_id_col.to_sql_equality(&current_alias, &join_from_col, &end_node_alias);
                 let join_sql = format!(
-                    "INNER JOIN {} {} ON {}.{} = {}.{}",
-                    rel_table,
-                    end_node_alias,
-                    current_alias,
-                    start_id_col,
-                    end_node_alias,
-                    join_from_col
+                    "INNER JOIN {} {} ON {}",
+                    rel_table, end_node_alias, join_cond
                 );
                 from_clauses.push(join_sql);
 
@@ -475,9 +473,11 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 // Standard pattern: separate relationship table and target node table
                 let rel_alias = format!("r{}", hop_num);
 
+                let rel_join_cond =
+                    start_id_col.to_sql_equality(&current_alias, &join_from_col, &rel_alias);
                 let rel_join_sql = format!(
-                    "INNER JOIN {} {} ON {}.{} = {}.{}",
-                    rel_table, rel_alias, current_alias, start_id_col, rel_alias, join_from_col
+                    "INNER JOIN {} {} ON {}",
+                    rel_table, rel_alias, rel_join_cond
                 );
                 log::info!("   Standard path rel JOIN: {}", rel_join_sql);
                 from_clauses.push(rel_join_sql);
@@ -525,9 +525,11 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 );
                 end_node_type = hop.to_node_type.clone();
 
+                let node_join_cond =
+                    join_to_col.to_sql_equality(&rel_alias, &end_id_col, &end_node_alias);
                 let node_join_sql = format!(
-                    "INNER JOIN {} {} ON {}.{} = {}.{}",
-                    end_table, end_node_alias, rel_alias, join_to_col, end_node_alias, end_id_col
+                    "INNER JOIN {} {} ON {}",
+                    end_table, end_node_alias, node_join_cond
                 );
                 log::info!("   Standard path node JOIN: {}", node_join_sql);
                 from_clauses.push(node_join_sql);
@@ -612,24 +614,11 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             .get(node_type)
             .ok_or("Node not found")
         {
-            let end_id_sql = if node_schema.node_id.is_composite() {
-                // Composite ID: pipe-join columns to match element_id format "val1|val2"
-                let cols: Vec<String> = node_schema
-                    .node_id
-                    .columns()
-                    .iter()
-                    .map(|col| format!("toString({}.{})", node_alias, col))
-                    .collect();
-                format!("concat({}) AS {}", cols.join(", '|', "), VLP_END_ID_COLUMN)
-            } else {
-                // Single ID: cast to String
-                format!(
-                    "toString({}.{}) AS {}",
-                    node_alias,
-                    node_schema.node_id.column(),
-                    VLP_END_ID_COLUMN
-                )
-            };
+            let end_id_sql = format!(
+                "{} AS {}",
+                node_schema.node_id.id.to_pipe_joined_sql(node_alias),
+                VLP_END_ID_COLUMN
+            );
             items.push(end_id_sql);
         }
 
@@ -641,27 +630,11 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 .get(start_type)
                 .ok_or("Node not found")
             {
-                let start_id_sql = if node_schema.node_id.is_composite() {
-                    // Composite ID: pipe-join columns to match element_id format "val1|val2"
-                    let cols: Vec<String> = node_schema
-                        .node_id
-                        .columns()
-                        .iter()
-                        .map(|col| format!("toString({}.{})", start_alias_sql, col))
-                        .collect();
-                    format!(
-                        "concat({}) AS {}",
-                        cols.join(", '|', "),
-                        VLP_START_ID_COLUMN
-                    )
-                } else {
-                    format!(
-                        "toString({}.{}) AS {}",
-                        start_alias_sql,
-                        node_schema.node_id.column(),
-                        VLP_START_ID_COLUMN
-                    )
-                };
+                let start_id_sql = format!(
+                    "{} AS {}",
+                    node_schema.node_id.id.to_pipe_joined_sql(start_alias_sql),
+                    VLP_START_ID_COLUMN
+                );
                 items.push(start_id_sql);
             }
         }
@@ -1050,39 +1023,34 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
     }
 
     /// Get from_id and to_id columns for a relationship type with node context
-    /// Uses composite key lookup for schemas that use TYPE::FROM::TO keys
+    /// Returns Identifier types to support composite keys
     fn get_rel_columns(
         &self,
         rel_type: &str,
         from_node: &str,
         to_node: &str,
-    ) -> Result<(String, String), String> {
-        let result = self
-            .schema
+    ) -> Result<(Identifier, Identifier), String> {
+        self.schema
             .get_rel_schema_with_nodes(rel_type, Some(from_node), Some(to_node))
             .map(|r| {
-                let cols = (r.from_id.clone(), r.to_id.clone());
-                log::error!(
+                log::info!(
                     "📋 Schema lookup for rel_type '{}' ({}->{}): from_id='{}', to_id='{}'",
                     rel_type,
                     from_node,
                     to_node,
-                    cols.0,
-                    cols.1
+                    r.from_id,
+                    r.to_id
                 );
-                cols
+                (r.from_id.clone(), r.to_id.clone())
             })
             .map_err(|e| {
-                format!(
+                let msg = format!(
                     "Relationship columns not found for type '{}' ({}->{}): {}",
                     rel_type, from_node, to_node, e
-                )
-            });
-
-        if let Err(ref e) = result {
-            log::error!("❌ Failed to get relationship columns: {}", e);
-        }
-        result
+                );
+                log::error!("❌ {}", msg);
+                msg
+            })
     }
 
     /// Get denormalized node properties from the relationship schema.
@@ -1131,12 +1099,12 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         props.clone()
     }
 
-    /// Get ID column for a node type
-    fn get_node_id_column(&self, node_type: &str) -> Result<String, String> {
+    /// Get ID column(s) for a node type as an Identifier (supports composite keys)
+    fn get_node_id_column(&self, node_type: &str) -> Result<Identifier, String> {
         self.schema
             .all_node_schemas()
             .get(node_type)
-            .map(|n| n.node_id.column().to_string())
+            .map(|n| n.node_id.id.clone())
             .ok_or_else(|| format!("Node ID column not found for type '{}'", node_type))
     }
 
@@ -1163,8 +1131,10 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                     .values()
                     .map(|col| col.raw().to_string())
                     .collect();
-                // Also include the ID column
-                cols.insert(node_schema.node_id.column().to_string());
+                // Also include the ID column(s)
+                for col in node_schema.node_id.id.columns() {
+                    cols.insert(col.to_string());
+                }
                 cols
             } else {
                 // Can't validate — return filter as-is

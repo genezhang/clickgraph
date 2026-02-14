@@ -6,6 +6,7 @@
 
 use clickgraph::{
     graph_catalog::{
+        config::Identifier,
         expression_parser::PropertyValue,
         graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema},
     },
@@ -140,8 +141,8 @@ fn create_test_schema() -> GraphSchema {
             to_node: "User".to_string(),
             from_node_table: "users".to_string(),
             to_node_table: "users".to_string(),
-            from_id: "follower_id".to_string(),
-            to_id: "followed_id".to_string(),
+            from_id: Identifier::from("follower_id"),
+            to_id: Identifier::from("followed_id"),
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: {
@@ -181,8 +182,8 @@ fn create_test_schema() -> GraphSchema {
             to_node: "Post".to_string(),
             from_node_table: "users".to_string(),
             to_node_table: "posts".to_string(),
-            from_id: "author_id".to_string(),
-            to_id: "post_id".to_string(),
+            from_id: Identifier::from("author_id"),
+            to_id: Identifier::from("post_id"),
             from_node_id_dtype: "UInt64".to_string(),
             to_node_id_dtype: "UInt64".to_string(),
             property_mappings: HashMap::new(),

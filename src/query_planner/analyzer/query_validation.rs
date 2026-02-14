@@ -189,8 +189,14 @@ impl AnalyzerPass for QueryValidation {
                     graph_rel.alias, from, to, rel_schema.from_node, rel_schema.to_node, from_matches, to_matches, graph_rel.direction
                 );
 
+                // For undirected patterns that BidirectionalUnion expanded,
+                // was_undirected is set. Allow swapped from/to labels since the
+                // original query had no direction constraint.
+                let is_undirected = graph_rel.direction == Direction::Either
+                    || graph_rel.was_undirected == Some(true);
+
                 if (from_matches && to_matches)
-                    || (graph_rel.direction == Direction::Either
+                    || (is_undirected
                         && (rel_schema.from_node == "$any"
                             || rel_schema.to_node == "$any"
                             || ([rel_schema.from_node.clone(), rel_schema.to_node.clone()]

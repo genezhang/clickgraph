@@ -788,7 +788,7 @@ pub fn try_generate_relationship_view_scan(
         full_table_name,
         None,
         property_mapping,
-        rel_schema.from_id.clone(),
+        rel_schema.from_id.to_string(),
         vec!["id".to_string()],
         vec![],
         rel_schema.from_id.clone(),

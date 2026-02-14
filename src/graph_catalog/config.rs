@@ -86,6 +86,85 @@ impl Identifier {
             }
         }
     }
+
+    /// Generate SQL equality condition between this identifier and another.
+    /// Handles mixed single/composite by pairing columns element-wise.
+    /// For single: "left.col = right.col"
+    /// For composite: "left.c1 = right.c1 AND left.c2 = right.c2"
+    pub fn to_sql_equality(
+        &self,
+        left_alias: &str,
+        other: &Identifier,
+        right_alias: &str,
+    ) -> String {
+        let left_cols = self.columns();
+        let right_cols = other.columns();
+        if left_cols.len() != right_cols.len() {
+            log::warn!(
+                "Identifier column count mismatch in to_sql_equality: {} vs {}",
+                left_cols.len(),
+                right_cols.len()
+            );
+        }
+        left_cols
+            .iter()
+            .zip(right_cols.iter())
+            .map(|(l, r)| format!("{}.{} = {}.{}", left_alias, l, right_alias, r))
+            .collect::<Vec<_>>()
+            .join(" AND ")
+    }
+
+    /// Generate SQL "column AS alias" expressions for SELECT.
+    /// For single: vec!["alias.col AS as_name"]
+    /// For composite: vec!["alias.col1 AS as_name_1", "alias.col2 AS as_name_2"]
+    pub fn to_sql_select(&self, alias: &str, as_prefix: &str) -> Vec<String> {
+        match self {
+            Identifier::Single(col) => vec![format!("{}.{} AS {}", alias, col, as_prefix)],
+            Identifier::Composite(cols) => cols
+                .iter()
+                .enumerate()
+                .map(|(i, c)| format!("{}.{} AS {}_{}", alias, c, as_prefix, i + 1))
+                .collect(),
+        }
+    }
+
+    /// Generate a pipe-joined SQL expression for use as a string ID.
+    /// If alias is non-empty: `toString(alias.col)` / `concat(toString(alias.c1), '|', toString(alias.c2))`
+    /// If alias is empty: `toString(col)` / `concat(toString(c1), '|', toString(c2))`
+    /// For single non-composite IDs without alias, just returns the column name (no toString).
+    pub fn to_pipe_joined_sql(&self, alias: &str) -> String {
+        let qualify = |col: &str| -> String {
+            if alias.is_empty() {
+                col.to_string()
+            } else {
+                format!("{}.{}", alias, col)
+            }
+        };
+        match self {
+            Identifier::Single(col) => {
+                if alias.is_empty() {
+                    col.clone()
+                } else {
+                    format!("toString({})", qualify(col))
+                }
+            }
+            Identifier::Composite(cols) => {
+                let parts: Vec<String> = cols
+                    .iter()
+                    .map(|c| format!("toString({})", qualify(c)))
+                    .collect();
+                format!("concat({})", parts.join(", '|', "))
+            }
+        }
+    }
+
+    /// Get the first (or only) column name. Falls back to "id" if empty.
+    pub fn first_column(&self) -> &str {
+        match self {
+            Identifier::Single(col) => col.as_str(),
+            Identifier::Composite(cols) => cols.first().map(|s| s.as_str()).unwrap_or("id"),
+        }
+    }
 }
 
 impl From<String> for Identifier {
@@ -94,9 +173,26 @@ impl From<String> for Identifier {
     }
 }
 
+impl From<&str> for Identifier {
+    fn from(s: &str) -> Self {
+        Identifier::Single(s.to_string())
+    }
+}
+
 impl From<Vec<String>> for Identifier {
     fn from(v: Vec<String>) -> Self {
         Identifier::Composite(v)
+    }
+}
+
+impl std::fmt::Display for Identifier {
+    /// Display single column as-is, composite as comma-separated.
+    /// For SQL generation, prefer `to_sql_tuple()` instead.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Identifier::Single(col) => write!(f, "{}", col),
+            Identifier::Composite(cols) => write!(f, "{}", cols.join(", ")),
+        }
     }
 }
 /// Graph view configuration management.
@@ -307,10 +403,10 @@ pub struct RelationshipDefinition {
     pub database: String,
     /// Source table name
     pub table: String,
-    /// From ID column name
-    pub from_id: String,
-    /// To ID column name
-    pub to_id: String,
+    /// From ID column(s) — single column or composite (matches source node's ID columns)
+    pub from_id: Identifier,
+    /// To ID column(s) — single column or composite (matches target node's ID columns)
+    pub to_id: Identifier,
     /// Node label for source (from) node - optional, defaults to first node label
     #[serde(default)]
     pub from_node: Option<String>,
@@ -401,10 +497,10 @@ pub struct StandardEdgeDefinition {
     pub database: String,
     /// Source table name
     pub table: String,
-    /// From ID column name
-    pub from_id: String,
-    /// To ID column name
-    pub to_id: String,
+    /// From ID column(s) — single column or composite (matches source node's ID columns)
+    pub from_id: Identifier,
+    /// To ID column(s) — single column or composite (matches target node's ID columns)
+    pub to_id: Identifier,
     /// Source node label (known at config time)
     pub from_node: String,
     /// Target node label (known at config time)
@@ -490,10 +586,10 @@ pub struct PolymorphicEdgeDefinition {
     pub database: String,
     /// Source table name
     pub table: String,
-    /// From ID column name
-    pub from_id: String,
-    /// To ID column name
-    pub to_id: String,
+    /// From ID column(s) — single column or composite (matches source node's ID columns)
+    pub from_id: Identifier,
+    /// To ID column(s) — single column or composite (matches target node's ID columns)
+    pub to_id: Identifier,
 
     /// Column containing edge type discriminator (optional if single type_value)
     /// Example: "relation_type"
@@ -2110,8 +2206,8 @@ graph_schema:
                     type_name: "FLIGHT".to_string(),
                     database: "brahmand".to_string(),
                     table: "ontime_flights".to_string(),
-                    from_id: "Origin".to_string(),
-                    to_id: "Dest".to_string(),
+                    from_id: Identifier::from("Origin"),
+                    to_id: Identifier::from("Dest"),
                     from_node: "Airport".to_string(),
                     to_node: "Airport".to_string(),
                     edge_id: Some(Identifier::Composite(vec![
@@ -2173,8 +2269,8 @@ graph_schema:
                     type_name: "FLIGHT".to_string(),
                     database: "brahmand".to_string(),
                     table: "ontime_flights".to_string(),
-                    from_id: "Origin".to_string(),
-                    to_id: "Dest".to_string(),
+                    from_id: Identifier::from("Origin"),
+                    to_id: Identifier::from("Dest"),
                     from_node: "Airport".to_string(),
                     to_node: "Airport".to_string(),
                     edge_id: None,
@@ -2230,8 +2326,8 @@ graph_schema:
                     polymorphic: true,
                     database: "brahmand".to_string(),
                     table: "interactions".to_string(),
-                    from_id: "from_id".to_string(),
-                    to_id: "to_id".to_string(),
+                    from_id: Identifier::from("from_id"),
+                    to_id: Identifier::from("to_id"),
                     type_column: Some("interaction_type".to_string()),
                     from_label_column: Some("from_type".to_string()),
                     to_label_column: Some("to_type".to_string()),
@@ -2288,8 +2384,8 @@ graph_schema:
                     polymorphic: true,
                     database: "brahmand".to_string(),
                     table: "interactions".to_string(),
-                    from_id: "from_id".to_string(),
-                    to_id: "to_id".to_string(),
+                    from_id: Identifier::from("from_id"),
+                    to_id: Identifier::from("to_id"),
                     type_column: Some("interaction_type".to_string()),
                     from_label_column: Some("from_type".to_string()),
                     to_label_column: Some("to_type".to_string()),
@@ -2368,8 +2464,8 @@ graph_schema:
                     polymorphic: true,
                     database: "brahmand".to_string(),
                     table: "memberships".to_string(),
-                    from_id: "parent_id".to_string(),
-                    to_id: "member_id".to_string(),
+                    from_id: Identifier::from("parent_id"),
+                    to_id: Identifier::from("member_id"),
                     type_column: None,       // Not needed with single type_value
                     from_label_column: None, // Using fixed from_node instead
                     to_label_column: Some("member_type".to_string()), // Polymorphic target
@@ -2430,8 +2526,8 @@ graph_schema:
                     polymorphic: true,
                     database: "brahmand".to_string(),
                     table: "memberships".to_string(),
-                    from_id: "parent_id".to_string(),
-                    to_id: "member_id".to_string(),
+                    from_id: Identifier::from("parent_id"),
+                    to_id: Identifier::from("member_id"),
                     type_column: None,
                     from_label_column: Some("from_type".to_string()), // Both!
                     to_label_column: Some("to_type".to_string()),
@@ -2494,8 +2590,8 @@ graph_schema:
                     polymorphic: true,
                     database: "brahmand".to_string(),
                     table: "memberships".to_string(),
-                    from_id: "parent_id".to_string(),
-                    to_id: "member_id".to_string(),
+                    from_id: Identifier::from("parent_id"),
+                    to_id: Identifier::from("member_id"),
                     type_column: None,
                     from_label_column: None, // Neither!
                     to_label_column: Some("to_type".to_string()),

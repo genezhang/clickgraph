@@ -41,7 +41,7 @@ use crate::{
         logical_expr::LogicalExpr,
         logical_plan::{LogicalPlan, Projection},
         plan_ctx::PlanCtx,
-        typed_variable::TypedVariable,
+        typed_variable::{TypedVariable, VariableSource},
     },
     server::bolt_protocol::{
         graph_objects::{Node, Path, Relationship},
@@ -154,9 +154,25 @@ pub fn extract_return_metadata(
             LogicalExpr::TableAlias(table_alias) => {
                 // Lookup in plan_ctx.variables
                 match plan_ctx.lookup_variable(&table_alias.to_string()) {
-                    Some(TypedVariable::Node(node_var)) => ReturnItemType::Node {
-                        labels: node_var.labels.clone(),
-                    },
+                    Some(TypedVariable::Node(node_var)) => {
+                        if node_var.labels.is_empty()
+                            && !matches!(node_var.source, VariableSource::Match)
+                        {
+                            // Non-MATCH node with empty labels is a computed alias
+                            // (e.g., pattern comprehension result), treat as Scalar
+                            log::debug!(
+                                "Treating '{}' as Scalar (non-MATCH node with empty labels)",
+                                table_alias
+                            );
+                            ReturnItemType::Scalar
+                        } else {
+                            // MATCH nodes with empty labels are unlabeled nodes (e.g., MATCH (n))
+                            // — still need graph-object transformation
+                            ReturnItemType::Node {
+                                labels: node_var.labels.clone(),
+                            }
+                        }
+                    }
                     Some(TypedVariable::Relationship(rel_var)) => ReturnItemType::Relationship {
                         rel_types: rel_var.rel_types.clone(),
                         from_label: rel_var.from_node_label.clone(),
@@ -1007,11 +1023,13 @@ fn transform_to_relationship(
     let from_id_columns = from_node_schema.node_id.id.columns();
     let from_id_values: Vec<String> = from_id_columns
         .iter()
-        .map(|col_name| {
+        .enumerate()
+        .map(|(i, col_name)| {
             properties
                 .get(*col_name)
                 .or_else(|| properties.get("start_id")) // For CTE: use generic start_id
                 .or_else(|| properties.get("from_id")) // Fallback to generic name for single column
+                .or_else(|| properties.get(&format!("from_id_{}", i + 1))) // Composite: from_id_1, from_id_2, ...
                 .and_then(value_to_string)
                 .ok_or_else(|| {
                     format!(
@@ -1026,11 +1044,13 @@ fn transform_to_relationship(
     let to_id_columns = to_node_schema.node_id.id.columns();
     let to_id_values: Vec<String> = to_id_columns
         .iter()
-        .map(|col_name| {
+        .enumerate()
+        .map(|(i, col_name)| {
             properties
                 .get(*col_name)
                 .or_else(|| properties.get("end_id")) // For CTE: use generic end_id
                 .or_else(|| properties.get("to_id")) // Fallback to generic name for single column
+                .or_else(|| properties.get(&format!("to_id_{}", i + 1))) // Composite: to_id_1, to_id_2, ...
                 .and_then(value_to_string)
                 .ok_or_else(|| {
                     format!(
@@ -1044,6 +1064,19 @@ fn transform_to_relationship(
     // Join composite IDs with pipe separator
     let from_id_str = from_id_values.join("|");
     let to_id_str = to_id_values.join("|");
+
+    // Remove internal from_id/to_id keys from properties (they're FK columns, not user properties)
+    properties.remove("from_id");
+    properties.remove("to_id");
+    properties.remove("start_id");
+    properties.remove("end_id");
+    // Remove composite variants: from_id_1, from_id_2, to_id_1, to_id_2, ...
+    for i in 1..=from_id_columns.len() {
+        properties.remove(&format!("from_id_{}", i));
+    }
+    for i in 1..=to_id_columns.len() {
+        properties.remove(&format!("to_id_{}", i));
+    }
 
     // Generate relationship elementId: "FOLLOWS:1->2" or "BELONGS_TO:tenant1|user1->tenant1|org1"
     let element_id = generate_relationship_element_id(&rel_type, &from_id_str, &to_id_str);
@@ -1170,6 +1203,45 @@ fn transform_to_path(
         }
     } else {
         end_labels.to_vec()
+    };
+
+    // If labels are still empty, infer from relationship schema
+    let effective_start_labels = if effective_start_labels.is_empty() && !rel_types.is_empty() {
+        if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_types[0]) {
+            if rel_schema.from_node != "$any" {
+                log::debug!(
+                    "Inferred start label '{}' from rel schema '{}'",
+                    rel_schema.from_node,
+                    rel_types[0]
+                );
+                vec![rel_schema.from_node.clone()]
+            } else {
+                effective_start_labels
+            }
+        } else {
+            effective_start_labels
+        }
+    } else {
+        effective_start_labels
+    };
+
+    let effective_end_labels = if effective_end_labels.is_empty() && !rel_types.is_empty() {
+        if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_types[0]) {
+            if rel_schema.to_node != "$any" {
+                log::debug!(
+                    "Inferred end label '{}' from rel schema '{}'",
+                    rel_schema.to_node,
+                    rel_types[0]
+                );
+                vec![rel_schema.to_node.clone()]
+            } else {
+                effective_end_labels
+            }
+        } else {
+            effective_end_labels
+        }
+    } else {
+        effective_end_labels
     };
 
     // Original format: individual columns for each property
@@ -1853,6 +1925,24 @@ fn find_relationship_in_row_with_type(
     let rel_element_id = format!("{}:{}->{}", rel_type, start_element_id, end_element_id);
     let rel_id = generate_id_from_element_id(&rel_element_id);
 
+    // Remove internal from_id/to_id keys from properties (FK columns, not user properties)
+    properties.remove("from_id");
+    properties.remove("to_id");
+    // Remove composite variants
+    let composite_keys: Vec<String> = properties
+        .keys()
+        .filter(|k| {
+            (k.starts_with("from_id_") || k.starts_with("to_id_"))
+                && k.rsplit('_')
+                    .next()
+                    .map_or(false, |s| s.parse::<usize>().is_ok())
+        })
+        .cloned()
+        .collect();
+    for key in composite_keys {
+        properties.remove(&key);
+    }
+
     // Create relationship with extracted properties
     Some(Relationship {
         id: rel_id,
@@ -2010,6 +2100,7 @@ fn try_transform_multi_label_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph_catalog::config::Identifier;
 
     #[test]
     fn test_value_to_string_integer() {
@@ -2086,8 +2177,8 @@ mod tests {
                 to_node: "User".to_string(),
                 from_node_table: "users".to_string(),
                 to_node_table: "users".to_string(),
-                from_id: "follower_id".to_string(),
-                to_id: "followed_id".to_string(),
+                from_id: Identifier::from("follower_id"),
+                to_id: Identifier::from("followed_id"),
                 from_node_id_dtype: "UInt64".to_string(),
                 to_node_id_dtype: "UInt64".to_string(),
                 property_mappings: HashMap::new(),

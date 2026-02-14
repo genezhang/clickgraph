@@ -1073,8 +1073,8 @@ impl ProjectionTagging {
                                                         .map(|s| s.to_string())
                                                         .collect(),
                                                     None => vec![
-                                                        rel_schema.from_id.clone(),
-                                                        rel_schema.to_id.clone(),
+                                                        rel_schema.from_id.to_string(),
+                                                        rel_schema.to_id.to_string(),
                                                     ],
                                                 };
 

@@ -64,6 +64,24 @@ pub fn resolve_column(schema_column: &str, table_name: &str, plan_ctx: &PlanCtx)
     schema_column.to_string()
 }
 
+/// Resolve an Identifier's columns through CTE mappings.
+/// Returns a new Identifier with resolved column names.
+pub fn resolve_identifier(
+    id: &crate::graph_catalog::config::Identifier,
+    table_name: &str,
+    plan_ctx: &PlanCtx,
+) -> crate::graph_catalog::config::Identifier {
+    use crate::graph_catalog::config::Identifier;
+    match id {
+        Identifier::Single(col) => Identifier::Single(resolve_column(col, table_name, plan_ctx)),
+        Identifier::Composite(cols) => Identifier::Composite(
+            cols.iter()
+                .map(|c| resolve_column(c, table_name, plan_ctx))
+                .collect(),
+        ),
+    }
+}
+
 // =============================================================================
 // Join Deduplication
 // =============================================================================
@@ -446,6 +464,49 @@ impl JoinBuilder {
     /// Add a raw OperatorApplication condition
     pub fn add_raw_condition(mut self, condition: OperatorApplication) -> Self {
         self.joining_on.push(condition);
+        self
+    }
+
+    /// Add equality condition(s) for Identifier (handles single and composite).
+    /// For single: adds one condition. For composite: adds one condition per column pair.
+    /// If column counts differ (e.g., edge from_id has 1 col but to_id has 2),
+    /// pairs as many as possible and logs a warning.
+    pub fn add_identifier_condition(
+        mut self,
+        left_alias: &str,
+        left_id: &crate::graph_catalog::config::Identifier,
+        right_alias: &str,
+        right_id: &crate::graph_catalog::config::Identifier,
+    ) -> Self {
+        let left_cols = left_id.columns();
+        let right_cols = right_id.columns();
+        if left_cols.len() != right_cols.len() {
+            log::warn!(
+                "Identifier column count mismatch in JOIN: {}.{:?} ({}) vs {}.{:?} ({}). \
+                 Pairing available columns.",
+                left_alias,
+                left_cols,
+                left_cols.len(),
+                right_alias,
+                right_cols,
+                right_cols.len()
+            );
+        }
+        for (l, r) in left_cols.iter().zip(right_cols.iter()) {
+            self.joining_on.push(OperatorApplication {
+                operator: Operator::Equal,
+                operands: vec![
+                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(left_alias.to_string()),
+                        column: PropertyValue::Column(l.to_string()),
+                    }),
+                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(right_alias.to_string()),
+                        column: PropertyValue::Column(r.to_string()),
+                    }),
+                ],
+            });
+        }
         self
     }
 

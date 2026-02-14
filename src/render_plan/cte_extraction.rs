@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 use crate::clickhouse_query_generator::variable_length_cte::NodeProperty;
+use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::graph_catalog::pattern_schema::{JoinStrategy, PatternSchemaContext};
@@ -204,6 +205,7 @@ pub fn generate_vlp_cte_via_manager(
         from_alias: Some(result.from_alias.clone()),
         // Pass through outer_where_filters for denormalized VLP end node filtering
         outer_where_filters: result.outer_where_filters.clone(),
+        with_exported_aliases: Vec::new(),
     };
 
     log::info!(
@@ -1042,8 +1044,8 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
 /// Relationship column information
 #[derive(Debug, Clone)]
 pub struct RelationshipColumns {
-    pub from_id: String,
-    pub to_id: String,
+    pub from_id: Identifier,
+    pub to_id: Identifier,
 }
 
 /// Convert a label to its corresponding table name using provided schema
@@ -1235,8 +1237,8 @@ pub fn extract_relationship_columns_from_table_with_schema(
     // NO FALLBACK - log error and return generic columns that will cause SQL error
     log::error!("\u{274c} SCHEMA ERROR: Relationship table '{}' not found in schema. Using generic from_id/to_id columns which will likely fail.", table_name);
     RelationshipColumns {
-        from_id: "from_id".to_string(),
-        to_id: "to_id".to_string(),
+        from_id: Identifier::from("from_id"),
+        to_id: Identifier::from("to_id"),
     }
 }
 
@@ -1254,8 +1256,8 @@ pub fn extract_relationship_columns_from_table(table_name: &str) -> Relationship
         table_name
     );
     RelationshipColumns {
-        from_id: "from_id".to_string(),
-        to_id: "to_id".to_string(),
+        from_id: Identifier::from("from_id"),
+        to_id: Identifier::from("to_id"),
     }
 }
 
@@ -1356,13 +1358,13 @@ fn table_to_id_column_for_label(label: &str) -> String {
 fn get_relationship_columns_from_schema(rel_type: &str) -> Option<(String, String)> {
     let table = rel_type_to_table_name(rel_type);
     let cols = extract_relationship_columns_from_table(&table);
-    Some((cols.from_id, cols.to_id))
+    Some((cols.from_id.to_string(), cols.to_id.to_string()))
 }
 
 /// Get relationship columns by table name
 fn get_relationship_columns_by_table(table_name: &str) -> Option<(String, String)> {
     let cols = extract_relationship_columns_from_table(table_name);
-    Some((cols.from_id, cols.to_id))
+    Some((cols.from_id.to_string(), cols.to_id.to_string()))
 }
 
 /// Get node info from schema
@@ -1580,13 +1582,13 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
                 // Check if node is the "from" node (left_connection)
                 if alias == rel.left_connection {
                     if let Some(from_id) = &scan.from_id {
-                        return Some((rel.alias.clone(), from_id.clone()));
+                        return Some((rel.alias.clone(), from_id.to_string()));
                     }
                 }
                 // Check if node is the "to" node (right_connection)
                 if alias == rel.right_connection {
                     if let Some(to_id) = &scan.to_id {
-                        return Some((rel.alias.clone(), to_id.clone()));
+                        return Some((rel.alias.clone(), to_id.to_string()));
                     }
                 }
             }
@@ -1608,7 +1610,7 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
                 if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
                     if let Some(from_id) = &scan.from_id {
                         // Use a placeholder alias since standalone nodes don't have a rel alias
-                        return Some((alias.to_string(), from_id.clone()));
+                        return Some((alias.to_string(), from_id.to_string()));
                     }
                 }
             }
@@ -1909,38 +1911,50 @@ pub fn extract_ctes_with_context(
                     if let Ok(node_schema) = schema.node_schema(&start_label) {
                         if node_schema.is_denormalized {
                             // For denormalized nodes, use relationship column
-                            from_col.clone()
+                            from_col.to_string()
                         } else {
-                            // For traditional nodes, use node schema's node_id
-                            node_schema.node_id.column().to_string()
+                            // For traditional nodes, use node schema's node_id (first column for composite)
+                            node_schema
+                                .node_id
+                                .id
+                                .columns()
+                                .first()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| from_col.to_string())
                         }
                     } else {
                         // Fallback: use relationship's from_id
                         log::warn!("⚠️ VLP: Could not find node schema for '{}', using relationship from_id '{}'", start_label, from_col);
-                        from_col.clone()
+                        from_col.to_string()
                     }
                 } else {
                     // No label available, use relationship columns
-                    from_col.clone()
+                    from_col.to_string()
                 };
 
                 let end_id_col = if !end_label.is_empty() {
                     if let Ok(node_schema) = schema.node_schema(&end_label) {
                         if node_schema.is_denormalized {
                             // For denormalized nodes, use relationship column
-                            to_col.clone()
+                            to_col.to_string()
                         } else {
-                            // For traditional nodes, use node schema's node_id
-                            node_schema.node_id.column().to_string()
+                            // For traditional nodes, use node schema's node_id (first column for composite)
+                            node_schema
+                                .node_id
+                                .id
+                                .columns()
+                                .first()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| to_col.to_string())
                         }
                     } else {
                         // Fallback: use relationship's to_id
                         log::warn!("⚠️ VLP: Could not find node schema for '{}', using relationship to_id '{}'", end_label, to_col);
-                        to_col.clone()
+                        to_col.to_string()
                     }
                 } else {
                     // No label available, use relationship columns
-                    to_col.clone()
+                    to_col.to_string()
                 };
 
                 log::debug!(
@@ -2691,6 +2705,7 @@ pub fn extract_ctes_with_context(
                                     ],
                                     from_alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
                                     outer_where_filters: None, // Multi-type VLP doesn't need outer filters
+                                    with_exported_aliases: Vec::new(),
                                 };
 
                                 // Register CTE name in context for deterministic FROM/JOIN references
@@ -2972,9 +2987,8 @@ pub fn extract_ctes_with_context(
                     .iter()
                     .map(|combo| {
                         // Get schemas for this combination
-                        let from_node_schema = schema
-                            .node_schema(&combo.from_label)
-                            .map_err(|_| {
+                        let from_node_schema =
+                            schema.node_schema(&combo.from_label).map_err(|_| {
                                 RenderBuildError::NodeSchemaNotFound(format!(
                                     "Node schema not found for '{}'",
                                     combo.from_label
@@ -2985,34 +2999,35 @@ pub fn extract_ctes_with_context(
                             .get_rel_schema_with_nodes(
                                 &combo.rel_type,
                                 Some(&combo.from_label),
-                                Some(&combo.to_label)
+                                Some(&combo.to_label),
                             )
                             .map_err(|_| {
                                 RenderBuildError::MissingTableInfo(format!(
                                     "Relationship schema not found for '{}' between '{}' and '{}'",
-                                    combo.rel_type,
-                                    combo.from_label,
-                                    combo.to_label
+                                    combo.rel_type, combo.from_label, combo.to_label
                                 ))
                             })?;
 
-                        let to_node_schema = schema
-                            .node_schema(&combo.to_label)
-                            .map_err(|_| {
-                                RenderBuildError::NodeSchemaNotFound(format!(
-                                    "Node schema not found for '{}'",
-                                    combo.to_label
-                                ))
-                            })?;
+                        let to_node_schema = schema.node_schema(&combo.to_label).map_err(|_| {
+                            RenderBuildError::NodeSchemaNotFound(format!(
+                                "Node schema not found for '{}'",
+                                combo.to_label
+                            ))
+                        })?;
 
                         // Table names
-                        let from_table = format!("{}.{}", from_node_schema.database, from_node_schema.table_name);
-                        let rel_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
-                        let to_table = format!("{}.{}", to_node_schema.database, to_node_schema.table_name);
+                        let from_table = format!(
+                            "{}.{}",
+                            from_node_schema.database, from_node_schema.table_name
+                        );
+                        let rel_table =
+                            format!("{}.{}", rel_schema.database, rel_schema.table_name);
+                        let to_table =
+                            format!("{}.{}", to_node_schema.database, to_node_schema.table_name);
 
-                        // ID columns
-                        let from_id_col = from_node_schema.node_id.column();
-                        let to_id_col = to_node_schema.node_id.column();
+                        // ID columns (as Identifier for composite support)
+                        let from_node_id = &from_node_schema.node_id.id;
+                        let to_node_id = &to_node_schema.node_id.id;
                         let rel_from_col = &rel_schema.from_id;
                         let rel_to_col = &rel_schema.to_id;
 
@@ -3038,13 +3053,18 @@ pub fn extract_ctes_with_context(
                         let rel_properties_json = if rel_prop_cols.is_empty() {
                             "'{}'".to_string() // Empty JSON object
                         } else {
-                            format!("formatRowNoNewline('JSONEachRow', {})", rel_prop_cols.join(", "))
+                            format!(
+                                "formatRowNoNewline('JSONEachRow', {})",
+                                rel_prop_cols.join(", ")
+                            )
                         };
 
                         // Collect node properties for start_properties and end_properties
                         // This enables path queries: MATCH p=()-->() RETURN p
                         let start_prop_cols: Vec<String> = from_node_schema
-                            .property_mappings.values().map(|prop_val| {
+                            .property_mappings
+                            .values()
+                            .map(|prop_val| {
                                 let col_name = match prop_val {
                                     PropertyValue::Column(c) => c.clone(),
                                     PropertyValue::Expression(e) => e.clone(),
@@ -3055,7 +3075,9 @@ pub fn extract_ctes_with_context(
                             .collect();
 
                         let end_prop_cols: Vec<String> = to_node_schema
-                            .property_mappings.values().map(|prop_val| {
+                            .property_mappings
+                            .values()
+                            .map(|prop_val| {
                                 let col_name = match prop_val {
                                     PropertyValue::Column(c) => c.clone(),
                                     PropertyValue::Expression(e) => e.clone(),
@@ -3067,24 +3089,30 @@ pub fn extract_ctes_with_context(
                         let start_properties_json = if start_prop_cols.is_empty() {
                             "'{}'".to_string()
                         } else {
-                            format!("formatRowNoNewline('JSONEachRow', {})", start_prop_cols.join(", "))
+                            format!(
+                                "formatRowNoNewline('JSONEachRow', {})",
+                                start_prop_cols.join(", ")
+                            )
                         };
 
                         let end_properties_json = if end_prop_cols.is_empty() {
                             "'{}'".to_string()
                         } else {
-                            format!("formatRowNoNewline('JSONEachRow', {})", end_prop_cols.join(", "))
+                            format!(
+                                "formatRowNoNewline('JSONEachRow', {})",
+                                end_prop_cols.join(", ")
+                            )
                         };
 
                         // Extract base relationship type (strip ::FromLabel::ToLabel suffix)
-                        let base_rel_type = combo.rel_type.split("::").next().unwrap_or(&combo.rel_type);
+                        let base_rel_type =
+                            combo.rel_type.split("::").next().unwrap_or(&combo.rel_type);
 
                         // Build WHERE clauses for polymorphic type filtering
                         let mut where_clauses = Vec::new();
                         if let Some(ref type_col) = rel_schema.type_column {
-                            where_clauses.push(format!(
-                                "{rel_table}.{type_col} = '{base_rel_type}'"
-                            ));
+                            where_clauses
+                                .push(format!("{rel_table}.{type_col} = '{base_rel_type}'"));
                         }
                         if let Some(ref from_lbl_col) = rel_schema.from_label_column {
                             where_clauses.push(format!(
@@ -3093,10 +3121,8 @@ pub fn extract_ctes_with_context(
                             ));
                         }
                         if let Some(ref to_lbl_col) = rel_schema.to_label_column {
-                            where_clauses.push(format!(
-                                "{rel_table}.{to_lbl_col} = '{}'",
-                                combo.to_label
-                            ));
+                            where_clauses
+                                .push(format!("{rel_table}.{to_lbl_col} = '{}'", combo.to_label));
                         }
                         let where_clause = if where_clauses.is_empty() {
                             String::new()
@@ -3104,19 +3130,58 @@ pub fn extract_ctes_with_context(
                             format!(" WHERE {}", where_clauses.join(" AND "))
                         };
 
+                        // Generate start_id and end_id expressions for composite support
+                        let start_id_expr = match from_node_id {
+                            Identifier::Single(col) => format!("toString({from_table}.{col})"),
+                            Identifier::Composite(cols) => {
+                                let parts: Vec<String> = cols
+                                    .iter()
+                                    .map(|c| format!("toString({from_table}.{c})"))
+                                    .collect();
+                                format!("concat({})", parts.join(", '|', "))
+                            }
+                        };
+                        let end_id_expr = match to_node_id {
+                            Identifier::Single(col) => format!("toString({to_table}.{col})"),
+                            Identifier::Composite(cols) => {
+                                let parts: Vec<String> = cols
+                                    .iter()
+                                    .map(|c| format!("toString({to_table}.{c})"))
+                                    .collect();
+                                format!("concat({})", parts.join(", '|', "))
+                            }
+                        };
+
+                        // Generate JOIN conditions for composite support
+                        let from_join_parts: Vec<String> = from_node_id
+                            .columns()
+                            .iter()
+                            .zip(rel_from_col.columns().iter())
+                            .map(|(n, r)| format!("{from_table}.{n} = {rel_table}.{r}"))
+                            .collect();
+                        let from_join_cond = from_join_parts.join(" AND ");
+
+                        let to_join_parts: Vec<String> = to_node_id
+                            .columns()
+                            .iter()
+                            .zip(rel_to_col.columns().iter())
+                            .map(|(n, r)| format!("{to_table}.{n} = {rel_table}.{r}"))
+                            .collect();
+                        let to_join_cond = to_join_parts.join(" AND ");
+
                         let branch_sql = format!(
                             "SELECT \
                                 '{from_label}' AS start_type, \
-                                toString({from_table}.{from_id_col}) as start_id, \
-                                toString({to_table}.{to_id_col}) as end_id, \
+                                {start_id_expr} as start_id, \
+                                {end_id_expr} as end_id, \
                                 '{to_label}' AS end_type, \
                                 ['{}'] as path_relationships, \
                                 [{}] as rel_properties, \
                                 {} as start_properties, \
                                 {} as end_properties \
                             FROM {rel_table} \
-                            INNER JOIN {from_table} ON {from_table}.{from_id_col} = {rel_table}.{rel_from_col} \
-                            INNER JOIN {to_table} ON {to_table}.{to_id_col} = {rel_table}.{rel_to_col}{where_clause} \
+                            INNER JOIN {from_table} ON {from_join_cond} \
+                            INNER JOIN {to_table} ON {to_join_cond}{where_clause} \
                             LIMIT 1000",
                             base_rel_type,
                             rel_properties_json,
@@ -4124,8 +4189,8 @@ pub fn get_variable_length_rel_info(plan: &LogicalPlan) -> Option<VariableLength
             let cols = extract_relationship_columns(&rel.center)?;
             Some(VariableLengthRelInfo {
                 rel_alias: rel.alias.clone(),
-                from_col: cols.from_id,
-                to_col: cols.to_id,
+                from_col: cols.from_id.to_string(),
+                to_col: cols.to_id.to_string(),
             })
         }
         LogicalPlan::GraphNode(node) => get_variable_length_rel_info(&node.input),
@@ -4320,12 +4385,15 @@ fn collect_path_aliases_with_ids_recursive(
                 if !node_id_columns.contains_key(&rel.left_connection) {
                     node_id_columns.insert(
                         rel.left_connection.clone(),
-                        (rel.alias.clone(), from_id.clone()),
+                        (rel.alias.clone(), from_id.to_string()),
                     );
                 }
 
                 // Map right node to this relationship's to_id
-                node_id_columns.insert(rel.right_connection.clone(), (rel.alias.clone(), to_id));
+                node_id_columns.insert(
+                    rel.right_connection.clone(),
+                    (rel.alias.clone(), to_id.to_string()),
+                );
             }
 
             // Add this relationship
@@ -4709,8 +4777,8 @@ pub fn build_vlp_context(
         end_table_parameterized,
         rel_alias,
         rel_table,
-        rel_from_col: rel_cols.from_id,
-        rel_to_col: rel_cols.to_id,
+        rel_from_col: rel_cols.from_id.to_string(),
+        rel_to_col: rel_cols.to_id.to_string(),
         rel_table_parameterized,
         type_column,
         type_value,
@@ -4738,7 +4806,7 @@ fn extract_node_info(
                     let rel_cols = extract_relationship_columns(rel_center)?;
                     // Determine if this is start or end node by checking if it's the left or right
                     // For now, use from_id - caller should determine correct column
-                    Some((alias, table, rel_cols.from_id))
+                    Some((alias, table, rel_cols.from_id.to_string()))
                 }
                 _ => {
                     // Normal/Polymorphic: get from node's ViewScan

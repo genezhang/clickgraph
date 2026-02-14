@@ -215,45 +215,58 @@ impl SelectBuilder for LogicalPlan {
                                                     if let Some(gr) = self
                                                         .find_graph_rel_for_alias(&table_alias.0)
                                                     {
-                                                        if let Some(ref labels) = gr.labels {
-                                                            if labels.len() > 1 {
-                                                                log::info!(
-                                                                    "🎯 Multi-type VLP node '{}' detected ({} rel types), using JSON columns",
-                                                                    table_alias.0, labels.len()
-                                                                );
-                                                                let position = if gr.left_connection
-                                                                    == table_alias.0
-                                                                {
-                                                                    "start"
+                                                        // Detect CTE-based node: multi-type VLP (labels > 1) OR pattern_combinations
+                                                        let is_multi_type_vlp = gr
+                                                            .labels
+                                                            .as_ref()
+                                                            .is_some_and(|l| l.len() > 1);
+                                                        let is_pattern_combinations =
+                                                            gr.pattern_combinations.is_some();
+                                                        if is_multi_type_vlp
+                                                            || is_pattern_combinations
+                                                        {
+                                                            let cte_alias =
+                                                                if is_pattern_combinations {
+                                                                    gr.alias.as_str()
                                                                 } else {
-                                                                    "end"
+                                                                    "t"
                                                                 };
-                                                                // Emit JSON properties column
-                                                                select_items.push(SelectItem {
-                                                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                                                                        table_alias: RenderTableAlias("t".to_string()),
-                                                                        column: PropertyValue::Column(format!("{}_properties", position)),
-                                                                    }),
-                                                                    col_alias: Some(ColumnAlias(format!("{}.properties", table_alias.0))),
-                                                                });
-                                                                // Emit ID column
-                                                                select_items.push(SelectItem {
-                                                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                                                                        table_alias: RenderTableAlias("t".to_string()),
-                                                                        column: PropertyValue::Column(format!("{}_id", position)),
-                                                                    }),
-                                                                    col_alias: Some(ColumnAlias(format!("{}.id", table_alias.0))),
-                                                                });
-                                                                // Emit type column
-                                                                select_items.push(SelectItem {
-                                                                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                                                                        table_alias: RenderTableAlias("t".to_string()),
-                                                                        column: PropertyValue::Column(format!("{}_type", position)),
-                                                                    }),
-                                                                    col_alias: Some(ColumnAlias(format!("{}.__label__", table_alias.0))),
-                                                                });
-                                                                continue; // skip expand_base_table_entity
-                                                            }
+                                                            log::info!(
+                                                                "🎯 CTE node '{}' detected (multi_vlp={}, pattern_comb={}), using JSON columns from '{}'",
+                                                                table_alias.0, is_multi_type_vlp, is_pattern_combinations, cte_alias
+                                                            );
+                                                            let position = if gr.left_connection
+                                                                == table_alias.0
+                                                            {
+                                                                "start"
+                                                            } else {
+                                                                "end"
+                                                            };
+                                                            // Emit JSON properties column
+                                                            select_items.push(SelectItem {
+                                                                expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                                    table_alias: RenderTableAlias(cte_alias.to_string()),
+                                                                    column: PropertyValue::Column(format!("{}_properties", position)),
+                                                                }),
+                                                                col_alias: Some(ColumnAlias(format!("{}.properties", table_alias.0))),
+                                                            });
+                                                            // Emit ID column
+                                                            select_items.push(SelectItem {
+                                                                expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                                    table_alias: RenderTableAlias(cte_alias.to_string()),
+                                                                    column: PropertyValue::Column(format!("{}_id", position)),
+                                                                }),
+                                                                col_alias: Some(ColumnAlias(format!("{}.id", table_alias.0))),
+                                                            });
+                                                            // Emit type column
+                                                            select_items.push(SelectItem {
+                                                                expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                                    table_alias: RenderTableAlias(cte_alias.to_string()),
+                                                                    column: PropertyValue::Column(format!("{}_type", position)),
+                                                                }),
+                                                                col_alias: Some(ColumnAlias(format!("{}.__label__", table_alias.0))),
+                                                            });
+                                                            continue; // skip expand_base_table_entity
                                                         }
                                                     }
                                                 }
@@ -944,7 +957,7 @@ impl SelectBuilder for LogicalPlan {
                                                                     .first()
                                                                     .map(|s| s.to_string())
                                                             } else {
-                                                                Some(rs.from_id.clone())
+                                                                Some(rs.from_id.to_string())
                                                             }
                                                         })
                                                 } else {

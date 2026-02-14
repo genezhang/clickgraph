@@ -679,6 +679,13 @@ impl VariableRegistry {
         self.variables.insert(name.into(), var);
     }
 
+    /// Update labels on an existing node variable (e.g., after type inference)
+    pub fn update_node_labels(&mut self, name: &str, labels: Vec<String>) {
+        if let Some(TypedVariable::Node(node_var)) = self.variables.get_mut(name) {
+            node_var.labels = labels;
+        }
+    }
+
     /// Define a relationship variable
     ///
     /// # Arguments

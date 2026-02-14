@@ -1445,7 +1445,7 @@ pub(super) fn get_relationship_columns_from_schema(rel_type: &str) -> Option<(St
 
     let schema = get_current_schema()?;
     if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
-        return Some((rel_schema.from_id.clone(), rel_schema.to_id.clone()));
+        return Some((rel_schema.from_id.to_string(), rel_schema.to_id.to_string()));
     }
     None
 }
@@ -1458,7 +1458,7 @@ pub(super) fn get_relationship_columns_by_table(table_name: &str) -> Option<(Str
     let schema = get_current_schema()?;
     for (_key, rel_schema) in schema.get_relationships_schemas().iter() {
         if rel_schema.table_name == table_name {
-            return Some((rel_schema.from_id.clone(), rel_schema.to_id.clone()));
+            return Some((rel_schema.from_id.to_string(), rel_schema.to_id.to_string()));
         }
     }
     None
@@ -1524,7 +1524,7 @@ pub(super) fn get_node_id_column_for_alias_with_schema(
     let node_schema = schema.node_schema(&label).ok()?;
 
     // Return first ID column
-    node_schema.node_id.columns().first().map(|s| s.to_string())
+    Some(node_schema.node_id.id.first_column().to_string())
 }
 
 /// Get node ID columns (for composite keys) using plan context and schema
@@ -1573,7 +1573,7 @@ pub(super) fn get_relationship_columns_with_schema(
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
 ) -> Option<(String, String)> {
     let rel_schema = schema.get_rel_schema(rel_type).ok()?;
-    Some((rel_schema.from_id.clone(), rel_schema.to_id.clone()))
+    Some((rel_schema.from_id.to_string(), rel_schema.to_id.to_string()))
 }
 
 /// Check if a node with the given alias is polymorphic ($any)
@@ -2483,7 +2483,7 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
                     // Only remap if this is a denormalized node (properties on edge table)
                     if scan.from_node_properties.is_some() {
                         if let Some(from_id) = &scan.from_id {
-                            return Some((rel.alias.clone(), from_id.clone()));
+                            return Some((rel.alias.clone(), from_id.to_string()));
                         }
                     }
                 }
@@ -2493,7 +2493,7 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
                     // Only remap if this is a denormalized node (properties on edge table)
                     if scan.to_node_properties.is_some() {
                         if let Some(to_id) = &scan.to_id {
-                            return Some((rel.alias.clone(), to_id.clone()));
+                            return Some((rel.alias.clone(), to_id.to_string()));
                         }
                     }
                 }
@@ -2513,7 +2513,7 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
             if node.is_denormalized && node.alias == alias {
                 if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
                     if let Some(from_id) = &scan.from_id {
-                        return Some((alias.to_string(), from_id.clone()));
+                        return Some((alias.to_string(), from_id.to_string()));
                     }
                 }
             }

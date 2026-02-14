@@ -164,11 +164,31 @@ impl PropertiesBuilder for LogicalPlan {
 
                         // Add from_id and to_id columns for relationships
                         // These are required for RETURN r to expand correctly
+                        // For composite IDs, expand into multiple columns
                         if let Some(ref from_id) = scan.from_id {
-                            properties.insert(0, ("from_id".to_string(), from_id.clone()));
+                            for (i, col) in from_id.columns().iter().enumerate() {
+                                let key = if from_id.is_composite() {
+                                    format!("from_id_{}", i + 1)
+                                } else {
+                                    "from_id".to_string()
+                                };
+                                properties.insert(i, (key, col.to_string()));
+                            }
                         }
                         if let Some(ref to_id) = scan.to_id {
-                            properties.insert(1, ("to_id".to_string(), to_id.clone()));
+                            let offset = scan
+                                .from_id
+                                .as_ref()
+                                .map(|id| id.columns().len())
+                                .unwrap_or(0);
+                            for (i, col) in to_id.columns().iter().enumerate() {
+                                let key = if to_id.is_composite() {
+                                    format!("to_id_{}", i + 1)
+                                } else {
+                                    "to_id".to_string()
+                                };
+                                properties.insert(offset + i, (key, col.to_string()));
+                            }
                         }
 
                         return Ok((properties, None));

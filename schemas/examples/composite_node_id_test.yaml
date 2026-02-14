@@ -11,8 +11,6 @@
 # Database: db_composite_id (neutral name, simulates real user data)
 
 name: composite_node_id
-version: "1.0"
-description: "Multi-bank accounts with composite node IDs"
 
 graph_schema:
   nodes:

@@ -12,6 +12,7 @@
 
 use crate::{
     clickhouse_query_generator,
+    graph_catalog::config::Identifier,
     graph_catalog::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema},
     open_cypher_parser,
     query_planner::logical_plan::plan_builder::build_logical_plan,
@@ -128,8 +129,8 @@ fn setup_test_graph_schema() -> GraphSchema {
         to_node: "User".to_string(),
         from_node_table: "users".to_string(),
         to_node_table: "users".to_string(),
-        from_id: "from_id".to_string(),
-        to_id: "to_id".to_string(),
+        from_id: Identifier::from("from_id"),
+        to_id: Identifier::from("to_id"),
         from_node_id_dtype: "UInt64".to_string(),
         to_node_id_dtype: "UInt64".to_string(),
         property_mappings: HashMap::new(),
