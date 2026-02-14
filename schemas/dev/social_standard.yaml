@@ -1,0 +1,74 @@
+# Standard social network schema for db_standard
+# Database: db_standard
+# Setup: scripts/setup/setup_standard_data.sh
+#
+# This is the db_standard version of social_dev.yaml, using isolated
+# database for browser testing and development.
+
+name: social_standard
+
+graph_schema:
+  nodes:
+    - label: User
+      database: db_standard
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: full_name
+        email: email_address
+        registration_date: registration_date
+        is_active: is_active
+        country: country
+        city: city
+
+    - label: Post
+      database: db_standard
+      table: posts
+      node_id: post_id
+      property_mappings:
+        post_id: post_id
+        content: content
+        date: created_at
+
+  edges:
+    - type: FOLLOWS
+      database: db_standard
+      table: user_follows
+      from_id: follower_id
+      to_id: followed_id
+      from_node: User
+      to_node: User
+      property_mappings:
+        follow_date: follow_date
+
+    - type: AUTHORED
+      database: db_standard
+      table: posts
+      from_id: user_id
+      to_id: post_id
+      edge_id: post_id
+      from_node: User
+      to_node: Post
+      property_mappings: {}
+
+    - type: LIKED
+      database: db_standard
+      table: post_likes
+      from_id: user_id
+      to_id: post_id
+      from_node: User
+      to_node: Post
+      property_mappings:
+        like_date: liked_at
+
+    - type: FRIENDS_WITH
+      database: db_standard
+      table: friendships
+      from_id: user_id_1
+      to_id: user_id_2
+      edge_id: [user_id_1, user_id_2]
+      from_node: User
+      to_node: User
+      property_mappings:
+        since_date: since

@@ -1,0 +1,38 @@
+# FK-edge schema for db_fk_edge
+# Database: db_fk_edge
+# Setup: scripts/setup/setup_fk_edge_data.sh
+#
+# FK-edge pattern: The orders_fk table has a customer_id FK column.
+# The relationship PLACED_BY uses the orders_fk table as its edge table.
+# No separate edge table exists — the FK column IS the relationship.
+
+name: orders_customers_fk
+
+graph_schema:
+  nodes:
+    - label: Order
+      database: db_fk_edge
+      table: orders_fk
+      node_id: order_id
+      property_mappings:
+        order_id: order_id
+        order_date: order_date
+        total_amount: total_amount
+
+    - label: Customer
+      database: db_fk_edge
+      table: customers_fk
+      node_id: customer_id
+      property_mappings:
+        customer_id: customer_id
+        name: name
+        email: email
+
+  edges:
+    - type: PLACED_BY
+      database: db_fk_edge
+      table: orders_fk
+      from_id: order_id
+      to_id: customer_id
+      from_node: Order
+      to_node: Customer
