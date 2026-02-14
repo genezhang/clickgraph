@@ -567,6 +567,22 @@ impl PlanCtx {
         view_parameter_values: Option<HashMap<String, String>>,
         max_inferred_types: usize,
     ) -> Self {
+        // Merge tenant_id into view_parameter_values so ViewScan can use it
+        let merged_view_params = match (&tenant_id, &view_parameter_values) {
+            (Some(tid), Some(params)) => {
+                let mut merged = params.clone();
+                merged.entry("tenant_id".to_string()).or_insert(tid.clone());
+                Some(merged)
+            }
+            (Some(tid), None) => {
+                let mut params = HashMap::new();
+                params.insert("tenant_id".to_string(), tid.clone());
+                Some(params)
+            }
+            (None, Some(params)) => Some(params.clone()),
+            (None, None) => None,
+        };
+
         PlanCtx {
             alias_table_ctx_map: HashMap::new(),
             optional_aliases: HashSet::new(),
@@ -574,7 +590,7 @@ impl PlanCtx {
             in_optional_match_mode: false,
             schema,
             tenant_id,
-            view_parameter_values,
+            view_parameter_values: merged_view_params,
             denormalized_node_edges: HashMap::new(),
             parent_scope: None,
             is_with_scope: false,
