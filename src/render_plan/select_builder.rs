@@ -441,66 +441,70 @@ impl SelectBuilder for LogicalPlan {
                                 prop.table_alias.0
                             );
 
-                            // Multi-type VLP nodes: use JSON columns instead of individual properties
+                            // Multi-type nodes: use JSON columns instead of individual properties
+                            // Handles both VLP multi-type (labels > 1) and pattern_combinations paths
                             if let Some(gr) = self.find_graph_rel_for_alias(&prop.table_alias.0) {
-                                if let Some(ref labels) = gr.labels {
-                                    if labels.len() > 1 {
-                                        log::info!(
-                                            "🎯 Multi-type VLP node '{}' detected ({} rel types), using JSON columns for wildcard",
-                                            prop.table_alias.0, labels.len()
-                                        );
-                                        let position = if gr.left_connection == prop.table_alias.0 {
-                                            "start"
-                                        } else {
-                                            "end"
-                                        };
-                                        select_items.push(SelectItem {
-                                            expression: RenderExpr::PropertyAccessExp(
-                                                PropertyAccess {
-                                                    table_alias: RenderTableAlias("t".to_string()),
-                                                    column: PropertyValue::Column(format!(
-                                                        "{}_properties",
-                                                        position
-                                                    )),
-                                                },
-                                            ),
-                                            col_alias: Some(ColumnAlias(format!(
-                                                "{}.properties",
-                                                prop.table_alias.0
-                                            ))),
-                                        });
-                                        select_items.push(SelectItem {
-                                            expression: RenderExpr::PropertyAccessExp(
-                                                PropertyAccess {
-                                                    table_alias: RenderTableAlias("t".to_string()),
-                                                    column: PropertyValue::Column(format!(
-                                                        "{}_id",
-                                                        position
-                                                    )),
-                                                },
-                                            ),
-                                            col_alias: Some(ColumnAlias(format!(
-                                                "{}.id",
-                                                prop.table_alias.0
-                                            ))),
-                                        });
-                                        select_items.push(SelectItem {
-                                            expression: RenderExpr::PropertyAccessExp(
-                                                PropertyAccess {
-                                                    table_alias: RenderTableAlias("t".to_string()),
-                                                    column: PropertyValue::Column(format!(
-                                                        "{}_type",
-                                                        position
-                                                    )),
-                                                },
-                                            ),
-                                            col_alias: Some(ColumnAlias(format!(
-                                                "{}.__label__",
-                                                prop.table_alias.0
-                                            ))),
-                                        });
-                                        continue;
-                                    }
+                                let is_multi_type_vlp =
+                                    gr.labels.as_ref().is_some_and(|l| l.len() > 1);
+                                let has_pattern_combinations = gr.pattern_combinations.is_some();
+
+                                if is_multi_type_vlp || has_pattern_combinations {
+                                    // For VLP multi-type, CTE alias is "t"
+                                    // For pattern_combinations, CTE alias is the relationship alias
+                                    let cte_alias = if has_pattern_combinations {
+                                        gr.alias.clone()
+                                    } else {
+                                        "t".to_string()
+                                    };
+                                    let position = if gr.left_connection == prop.table_alias.0 {
+                                        "start"
+                                    } else {
+                                        "end"
+                                    };
+                                    log::info!(
+                                        "🎯 Multi-type node '{}' detected (pattern_combinations={}, VLP={}), using CTE '{}' {}_properties",
+                                        prop.table_alias.0, has_pattern_combinations, is_multi_type_vlp, cte_alias, position
+                                    );
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: RenderTableAlias(cte_alias.clone()),
+                                            column: PropertyValue::Column(format!(
+                                                "{}_properties",
+                                                position
+                                            )),
+                                        }),
+                                        col_alias: Some(ColumnAlias(format!(
+                                            "{}.properties",
+                                            prop.table_alias.0
+                                        ))),
+                                    });
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: RenderTableAlias(cte_alias.clone()),
+                                            column: PropertyValue::Column(format!(
+                                                "{}_id",
+                                                position
+                                            )),
+                                        }),
+                                        col_alias: Some(ColumnAlias(format!(
+                                            "{}.id",
+                                            prop.table_alias.0
+                                        ))),
+                                    });
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: RenderTableAlias(cte_alias),
+                                            column: PropertyValue::Column(format!(
+                                                "{}_type",
+                                                position
+                                            )),
+                                        }),
+                                        col_alias: Some(ColumnAlias(format!(
+                                            "{}.__label__",
+                                            prop.table_alias.0
+                                        ))),
+                                    });
+                                    continue;
                                 }
                             }
 
@@ -605,6 +609,83 @@ impl SelectBuilder for LogicalPlan {
                                         });
                                         continue;
                                     }
+                                }
+                            }
+
+                            // Pattern combinations relationship: use CTE relationship columns
+                            if let Some(gr) = self.find_graph_rel_by_rel_alias(&prop.table_alias.0)
+                            {
+                                if gr.pattern_combinations.is_some() {
+                                    let cte_alias = gr.alias.clone();
+                                    log::info!(
+                                        "🎯 Pattern combinations relationship '{}' detected, using CTE '{}' columns",
+                                        prop.table_alias.0, cte_alias
+                                    );
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: RenderTableAlias(cte_alias.clone()),
+                                            column: PropertyValue::Column(
+                                                "path_relationships".to_string(),
+                                            ),
+                                        }),
+                                        col_alias: Some(ColumnAlias(format!(
+                                            "{}.type",
+                                            prop.table_alias.0
+                                        ))),
+                                    });
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: RenderTableAlias(cte_alias.clone()),
+                                            column: PropertyValue::Column(
+                                                "rel_properties".to_string(),
+                                            ),
+                                        }),
+                                        col_alias: Some(ColumnAlias(format!(
+                                            "{}.properties",
+                                            prop.table_alias.0
+                                        ))),
+                                    });
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: RenderTableAlias(cte_alias.clone()),
+                                            column: PropertyValue::Column("start_id".to_string()),
+                                        }),
+                                        col_alias: Some(ColumnAlias(format!(
+                                            "{}.start_id",
+                                            prop.table_alias.0
+                                        ))),
+                                    });
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: RenderTableAlias(cte_alias.clone()),
+                                            column: PropertyValue::Column("end_id".to_string()),
+                                        }),
+                                        col_alias: Some(ColumnAlias(format!(
+                                            "{}.end_id",
+                                            prop.table_alias.0
+                                        ))),
+                                    });
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: RenderTableAlias(cte_alias.clone()),
+                                            column: PropertyValue::Column("start_type".to_string()),
+                                        }),
+                                        col_alias: Some(ColumnAlias(format!(
+                                            "{}.start_type",
+                                            prop.table_alias.0
+                                        ))),
+                                    });
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: RenderTableAlias(cte_alias),
+                                            column: PropertyValue::Column("end_type".to_string()),
+                                        }),
+                                        col_alias: Some(ColumnAlias(format!(
+                                            "{}.end_type",
+                                            prop.table_alias.0
+                                        ))),
+                                    });
+                                    continue;
                                 }
                             }
 

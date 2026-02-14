@@ -2699,6 +2699,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                             || n.starts_with("pattern_union_")
                                     })
                                     && render.select.items.len() == kept.select.items.len()
+                                    && render.filters == kept.filters
                                 {
                                     render
                                         .select
