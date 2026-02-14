@@ -4,6 +4,7 @@ use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN}
 use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::{LogicalPlan, ProjectionItem};
 use crate::query_planner::plan_ctx::PlanCtx;
+use crate::utils::cte_column_naming::{cte_column_name, parse_cte_column};
 use crate::utils::cte_naming::generate_cte_base_name;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -3304,9 +3305,8 @@ fn remap_select_item_aliases(
             );
             // Check if the column alias starts with a source alias
             for (source_alias, output_alias) in alias_mapping.iter() {
-                // Handle both formats: "u.name" and "u_name"
+                // Handle dot format: "u.name"
                 let prefix_dot = format!("{}.", source_alias);
-                let prefix_underscore = format!("{}_", source_alias);
 
                 if col_alias.0.starts_with(&prefix_dot) {
                     // Format: "u.name" -> "person.name"
@@ -3318,20 +3318,38 @@ fn remap_select_item_aliases(
                         col_alias: Some(ColumnAlias(new_alias)),
                     });
                     return remapped; // Early return per item
-                } else if col_alias.0.starts_with(&prefix_underscore) {
-                    // Format: "u_name" -> "person_name"
-                    let property_part = &col_alias.0[prefix_underscore.len()..];
-                    let new_alias = format!("{}_{}", output_alias, property_part);
-                    log::info!(
-                        "  -> Remapped (underscore) {} to {}",
-                        col_alias.0,
-                        new_alias
-                    );
-                    remapped.push(SelectItem {
-                        expression: item.expression.clone(),
-                        col_alias: Some(ColumnAlias(new_alias)),
-                    });
-                    return remapped; // Early return per item
+                } else if let Some((parsed_alias, property_part)) = parse_cte_column(&col_alias.0) {
+                    // Handle new p{N} format: "p1_u_name" -> "p6_person_name"
+                    if &parsed_alias == source_alias {
+                        let new_alias = cte_column_name(output_alias, &property_part);
+                        log::info!(
+                            "  -> Remapped (p{{N}} format) {} to {}",
+                            col_alias.0,
+                            new_alias
+                        );
+                        remapped.push(SelectItem {
+                            expression: item.expression.clone(),
+                            col_alias: Some(ColumnAlias(new_alias)),
+                        });
+                        return remapped; // Early return per item
+                    }
+                } else {
+                    // Fallback: old underscore format "u_name"
+                    let prefix_underscore = format!("{}_", source_alias);
+                    if col_alias.0.starts_with(&prefix_underscore) {
+                        let property_part = &col_alias.0[prefix_underscore.len()..];
+                        let new_alias = cte_column_name(output_alias, property_part);
+                        log::info!(
+                            "  -> Remapped (underscore) {} to {}",
+                            col_alias.0,
+                            new_alias
+                        );
+                        remapped.push(SelectItem {
+                            expression: item.expression.clone(),
+                            col_alias: Some(ColumnAlias(new_alias)),
+                        });
+                        return remapped; // Early return per item
+                    }
                 }
             }
             log::info!("  -> Not remapped (no prefix match)");

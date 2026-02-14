@@ -123,10 +123,7 @@ mod tests {
 
     #[test]
     fn test_property_with_underscore() {
-        assert_eq!(
-            cte_column_name("u", "full_name"),
-            "p1_u_full_name"
-        );
+        assert_eq!(cte_column_name("u", "full_name"), "p1_u_full_name");
         assert_eq!(
             parse_cte_column("p1_u_full_name"),
             Some(("u".to_string(), "full_name".to_string()))

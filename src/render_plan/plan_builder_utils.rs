@@ -72,6 +72,7 @@ use crate::render_plan::{
     UnionItems,
 };
 use crate::render_plan::{FromTable, ViewTableRef};
+use crate::utils::cte_column_naming::{cte_column_name, parse_cte_column};
 use crate::utils::cte_naming::{generate_cte_name, is_generated_cte_name};
 use log::{self, debug};
 
@@ -93,8 +94,9 @@ type RenderPlanBuilderResult<T> = Result<T, RenderBuildError>;
 ///
 /// This function handles three patterns:
 /// 1. "alias.property" (dotted, used in VLP CTEs)
-/// 2. "alias_property" (underscore, used in WITH CTEs)
-/// 3. No separator - aggregate column like "friends" from collect()
+/// 2. "p{N}_alias_property" (new unambiguous CTE format)
+/// 3. "alias_property" (legacy underscore, fallback for backward compat)
+/// 4. No separator - aggregate column like "friends" from collect()
 pub fn build_property_mapping_from_columns(
     select_items: &[SelectItem],
 ) -> HashMap<(String, String), String> {
@@ -118,10 +120,8 @@ pub fn build_property_mapping_from_columns(
                 );
 
                 // ALSO add mapping from ClickHouse column name (from expression) to CTE column
-                // This is needed because SELECT items in outer query use resolved ClickHouse columns
                 if let RenderExpr::PropertyAccessExp(ref pa) = item.expression {
                     if let PropertyValue::Column(ref expr_col) = pa.column {
-                        // Only add if different from the Cypher property name
                         if expr_col != &property {
                             property_mapping
                                 .insert((alias.clone(), expr_col.clone()), col_name.clone());
@@ -135,23 +135,19 @@ pub fn build_property_mapping_from_columns(
                     }
                 }
             }
-            // Pattern 2: "alias_property" (underscore, used in WITH CTEs)
-            else if let Some(underscore_pos) = col_name.find('_') {
-                let alias = col_name[..underscore_pos].to_string();
-                let property = col_name[underscore_pos + 1..].to_string();
+            // Pattern 2: "p{N}_alias_property" (new unambiguous CTE format)
+            else if let Some((alias, property)) = parse_cte_column(col_name) {
                 property_mapping.insert((alias.clone(), property.clone()), col_name.clone());
                 log::debug!(
-                    "  Property mapping: ({}, {}) → {}",
+                    "  Property mapping (p{{N}}): ({}, {}) → {}",
                     alias,
                     property,
                     col_name
                 );
 
                 // ALSO add mapping from ClickHouse column name (from expression) to CTE column
-                // This is needed because SELECT items in outer query use resolved ClickHouse columns
                 if let RenderExpr::PropertyAccessExp(ref pa) = item.expression {
                     if let PropertyValue::Column(ref expr_col) = pa.column {
-                        // Only add if different from the Cypher property name
                         if expr_col != &property {
                             property_mapping
                                 .insert((alias.clone(), expr_col.clone()), col_name.clone());
@@ -165,7 +161,35 @@ pub fn build_property_mapping_from_columns(
                     }
                 }
             }
-            // Pattern 3: No separator - aggregate column like "friends" from collect()
+            // Pattern 3: "alias_property" (legacy underscore fallback)
+            else if let Some(underscore_pos) = col_name.find('_') {
+                let alias = col_name[..underscore_pos].to_string();
+                let property = col_name[underscore_pos + 1..].to_string();
+                property_mapping.insert((alias.clone(), property.clone()), col_name.clone());
+                log::debug!(
+                    "  Property mapping (legacy underscore): ({}, {}) → {}",
+                    alias,
+                    property,
+                    col_name
+                );
+
+                // ALSO add mapping from ClickHouse column name (from expression) to CTE column
+                if let RenderExpr::PropertyAccessExp(ref pa) = item.expression {
+                    if let PropertyValue::Column(ref expr_col) = pa.column {
+                        if expr_col != &property {
+                            property_mapping
+                                .insert((alias.clone(), expr_col.clone()), col_name.clone());
+                            log::debug!(
+                                "  Property mapping (clickhouse): ({}, {}) → {}",
+                                alias,
+                                expr_col,
+                                col_name
+                            );
+                        }
+                    }
+                }
+            }
+            // Pattern 4: No separator - aggregate column like "friends" from collect()
             // Store with empty alias so ARRAY JOIN can find it: ("", column_name) → column_name
             else {
                 property_mapping.insert(("".to_string(), col_name.clone()), col_name.clone());
@@ -828,14 +852,7 @@ fn rewrite_render_expr_for_cte_simple(
             if cte_references.contains_key(&pa.table_alias.0) {
                 // Rewrite column to use CTE naming: alias_column
                 // Keep the same table alias (e.g., "o" stays "o")
-                let cte_column = format!("{}_{}", pa.table_alias.0, pa.column.raw());
-                log::info!(
-                    "🔧 Rewriting CTE column: {}.{} -> {}.{}",
-                    pa.table_alias.0,
-                    pa.column.raw(),
-                    pa.table_alias.0,
-                    cte_column
-                );
+                let cte_column = cte_column_name(&pa.table_alias.0, &pa.column.raw());
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: pa.table_alias.clone(), // Keep same table alias
                     column: PropertyValue::Column(cte_column),
@@ -864,8 +881,7 @@ fn rewrite_render_expr_for_cte_operand(
             // Check if this alias is from a CTE
             if cte_references.contains_key(&pa.table_alias.0) {
                 // Rewrite to use CTE alias and column naming
-                // E.g., a.user_id -> a_b.a_user_id
-                let cte_column = format!("{}_{}", pa.table_alias.0, pa.column.raw());
+                let cte_column = cte_column_name(&pa.table_alias.0, &pa.column.raw());
                 log::info!(
                     "🔧 Rewriting property access: {}.{} -> {}.{}",
                     pa.table_alias.0,
@@ -922,8 +938,7 @@ fn rewrite_render_expr_for_cte_with_context(
             // Check if this alias is from a CTE
             if ctx.cte_references.contains_key(&pa.table_alias.0) {
                 // Rewrite to use CTE alias and column naming
-                // E.g., a.user_id -> a_b.a_user_id
-                let cte_column = format!("{}_{}", pa.table_alias.0, pa.column.raw());
+                let cte_column = cte_column_name(&pa.table_alias.0, &pa.column.raw());
                 log::warn!(
                     "🔧 Rewriting property access: {}.{} -> {}.{}",
                     pa.table_alias.0,
@@ -3088,7 +3103,14 @@ pub fn rewrite_cte_expression_with_alias_resolution(
                             None
                         }
                     })
-                    .next();
+                    .next()
+                    // Fallback: try plan_ctx alias source (handles WITH u AS person rename)
+                    .or_else(|| {
+                        plan_ctx.and_then(|ctx| {
+                            ctx.get_cte_alias_source(from_alias)
+                                .map(|(source_alias, _)| source_alias.clone())
+                        })
+                    });
 
                 log::debug!(
                     "🔧 Case 2: Extracted original_var={:?} from from_alias='{}'",
@@ -5020,12 +5042,12 @@ pub(crate) fn compute_cte_id_column_for_alias(alias: &str, plan: &LogicalPlan) -
             alias,
             cypher_id
         );
-        return Some(format!("{}_{}", alias, cypher_id));
+        return Some(cte_column_name(alias, &cypher_id));
     }
 
     // Fallback: use find_id_column_for_alias (returns ClickHouse column name)
     if let Ok(id_col) = plan.find_id_column_for_alias(alias) {
-        Some(format!("{}_{}", alias, id_col))
+        Some(cte_column_name(alias, &id_col))
     } else {
         None
     }
@@ -5277,7 +5299,7 @@ pub(crate) fn expand_table_alias_to_select_items(
                         expression: RenderExpr::Column(Column(PropertyValue::Column(
                             vlp_col_name.clone(),
                         ))),
-                        col_alias: Some(ColumnAlias(format!("{}_{}", alias, id_col))),
+                        col_alias: Some(ColumnAlias(cte_column_name(alias, &id_col))),
                     });
                 }
 
@@ -5319,7 +5341,7 @@ pub(crate) fn expand_table_alias_to_select_items(
 
                     items.push(SelectItem {
                         expression: expr,
-                        col_alias: Some(ColumnAlias(format!("{}_{}", alias, prop_name))),
+                        col_alias: Some(ColumnAlias(cte_column_name(alias, prop_name))),
                     });
                 }
 
@@ -6470,11 +6492,21 @@ fn populate_cte_property_mappings_from_render_plan(
             }
 
             // CTE columns can be:
-            // 1. Prefixed: "a_name", "a_user_id" → property is after underscore
-            // 2. Unprefixed: "follows" (aggregate result) → property is the column name itself
+            // 1. New p{N} format: "p1_a_name" → alias="a", property="name"
+            // 2. Legacy prefixed: "a_name", "a_user_id" → property is after underscore
+            // 3. Unprefixed: "follows" (aggregate result) → property is the column name itself
 
-            if let Some(underscore_pos) = col_name.find('_') {
-                // Case 1: Prefixed column like "a_name"
+            if let Some((_alias, property)) = parse_cte_column(&col_name) {
+                // Case 1: New p{N} format
+                log::debug!(
+                    "🔧 CTE mapping (p{{N}} format): {}.{} → {}",
+                    from_alias,
+                    property,
+                    col_name
+                );
+                alias_mapping.insert(property, col_name.clone());
+            } else if let Some(underscore_pos) = col_name.find('_') {
+                // Case 2: Legacy prefixed column like "a_name"
                 let property = &col_name[underscore_pos + 1..];
                 log::debug!(
                     "🔧 CTE mapping (prefixed): {}.{} → {}",
@@ -7722,12 +7754,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                     .unwrap_or_else(|| with_alias.clone());
 
                                 fn rename_branch_aliases(select: &mut SelectItems, alias: &str) {
+                                    use crate::utils::cte_column_naming::cte_column_name;
                                     for item in &mut select.items {
                                         if let Some(ref mut col_alias) = item.col_alias {
                                             if col_alias.0 == "__label__" {
                                                 continue;
                                             }
-                                            let new_name = format!("{}_{}", alias, col_alias.0);
+                                            let new_name = cte_column_name(alias, &col_alias.0);
                                             col_alias.0 = new_name;
                                         }
                                     }
@@ -8201,9 +8234,9 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 .unwrap_or_else(|| pc_meta.correlation_var.clone());
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: RenderTableAlias("__union".to_string()),
-                                column: PropertyValue::Column(format!(
-                                    "{}_{}",
-                                    node_alias, id_column
+                                column: PropertyValue::Column(cte_column_name(
+                                    &node_alias,
+                                    &id_column,
                                 )),
                             })
                         } else {
@@ -8453,37 +8486,57 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
             // Build column metadata from SELECT items
             // This extracts: (cypher_alias, cypher_property) -> cte_column_name
-            // E.g., from SELECT a.user_id AS a_user_id, extract: ("a", "user_id") -> "a_user_id"
+            // Supports both new p{N} format and legacy underscore format
             let mut cte_columns: Vec<crate::render_plan::cte_manager::CteColumnMetadata> =
                 Vec::new();
             for item in &select_items_for_schema {
                 if let Some(col_alias) = &item.col_alias {
-                    let cte_column_name = col_alias.0.clone();
+                    let cte_col_name = col_alias.0.clone();
 
-                    // Try to extract (alias, property) from the CTE column name
-                    // Format: {alias}_{property} (e.g., "a_user_id" -> ("a", "user_id"))
-                    if let Some(first_underscore) = cte_column_name.find('_') {
-                        let potential_alias = &cte_column_name[..first_underscore];
-                        let potential_property = &cte_column_name[first_underscore + 1..];
+                    // Try new p{N} format first
+                    if let Some((parsed_alias, parsed_property)) = parse_cte_column(&cte_col_name) {
+                        // Verify alias appears in with_alias
+                        let alias_parts: Vec<&str> = with_alias.split('_').collect();
+                        if alias_parts.contains(&parsed_alias.as_str()) {
+                            cte_columns.push(crate::render_plan::cte_manager::CteColumnMetadata {
+                                cypher_alias: parsed_alias.clone(),
+                                cypher_property: parsed_property.clone(),
+                                cte_column_name: cte_col_name.clone(),
+                                db_column: parsed_property.clone(), // Approximation
+                                is_id_column: parsed_property.ends_with("_id")
+                                    || parsed_property == "id",
+                                vlp_position: None,
+                            });
+                            log::debug!(
+                                "  Added CTE column metadata (p{{N}}): ({}, {}) -> {}",
+                                parsed_alias,
+                                parsed_property,
+                                cte_col_name
+                            );
+                        }
+                    }
+                    // Fallback: legacy underscore format
+                    else if let Some(first_underscore) = cte_col_name.find('_') {
+                        let potential_alias = &cte_col_name[..first_underscore];
+                        let potential_property = &cte_col_name[first_underscore + 1..];
 
                         // Verify this is likely correct by checking if alias appears in with_alias
-                        // For "a_b" (composite alias), split by '_' to check components
                         let alias_parts: Vec<&str> = with_alias.split('_').collect();
                         if alias_parts.contains(&potential_alias) {
                             cte_columns.push(crate::render_plan::cte_manager::CteColumnMetadata {
                                 cypher_alias: potential_alias.to_string(),
                                 cypher_property: potential_property.to_string(),
-                                cte_column_name: cte_column_name.clone(),
+                                cte_column_name: cte_col_name.clone(),
                                 db_column: potential_property.to_string(), // Approximation
                                 is_id_column: potential_property.ends_with("_id")
                                     || potential_property == "id",
                                 vlp_position: None,
                             });
                             log::debug!(
-                                "  Added CTE column metadata: ({}, {}) -> {}",
+                                "  Added CTE column metadata (legacy): ({}, {}) -> {}",
                                 potential_alias,
                                 potential_property,
-                                cte_column_name
+                                cte_col_name
                             );
                         }
                     }
@@ -9697,10 +9750,19 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             if let Some(col_alias) = &item.col_alias {
                                 let cte_column = &col_alias.0;
 
-                                // Extract alias and property from CTE column (e.g., "u_name" → ("u", "name"))
-                                if let Some(underscore_pos) = cte_column.find('_') {
-                                    let alias_str = &cte_column[..underscore_pos];
+                                // Extract alias and property from CTE column
+                                // Try new p{N} format first, fall back to legacy underscore
+                                let parsed = if let Some((alias, _property)) =
+                                    parse_cte_column(cte_column)
+                                {
+                                    Some(alias)
+                                } else if let Some(underscore_pos) = cte_column.find('_') {
+                                    Some(cte_column[..underscore_pos].to_string())
+                                } else {
+                                    None
+                                };
 
+                                if let Some(alias_str) = parsed {
                                     // Try to extract database column name from the expression
                                     let db_col = if let RenderExpr::AggregateFnCall(agg) =
                                         &item.expression

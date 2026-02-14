@@ -25,6 +25,7 @@ use crate::render_plan::render_expr::{
     TableAlias as RenderTableAlias,
 };
 use crate::render_plan::SelectItem;
+use crate::utils::cte_column_naming::{cte_column_name, parse_cte_column};
 
 /// SelectBuilder trait for extracting SELECT items from logical plans
 pub trait SelectBuilder {
@@ -763,10 +764,17 @@ impl SelectBuilder for LogicalPlan {
                             // Expand to multiple SelectItems, one per CTE column
                             // CTE columns are already prefixed (u_name, u_email, etc.)
                             for col_name in &cte_ref.columns {
-                                // Extract property name from prefixed column (e.g., "u_name" -> "name")
-                                let prop_name = col_name
-                                    .strip_prefix(&format!("{}_", cte_ref.alias))
-                                    .unwrap_or(col_name);
+                                // Extract property name from prefixed column
+                                // Try new p{N} format first, fall back to old underscore prefix strip
+                                let prop_name =
+                                    if let Some((_alias, property)) = parse_cte_column(col_name) {
+                                        property
+                                    } else {
+                                        col_name
+                                            .strip_prefix(&format!("{}_", cte_ref.alias))
+                                            .unwrap_or(col_name)
+                                            .to_string()
+                                    };
 
                                 select_items.push(SelectItem {
                                     expression: RenderExpr::PropertyAccessExp(PropertyAccess {
@@ -1441,7 +1449,7 @@ impl LogicalPlan {
         for (prop_name, _db_column) in properties {
             let cte_column =
                 crate::server::query_context::get_cte_property_mapping(&from_alias, &prop_name)
-                    .unwrap_or_else(|| format!("{}_{}", alias, prop_name));
+                    .unwrap_or_else(|| cte_column_name(alias, &prop_name));
             select_items.push(SelectItem {
                 expression: RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: RenderTableAlias(table_ref.clone()),
