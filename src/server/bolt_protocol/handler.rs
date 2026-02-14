@@ -462,6 +462,10 @@ impl BoltHandler {
                         let mut context = lock_context!(self.context);
                         context.set_user(user.username.clone());
                         context.schema_name = database.clone();
+                        let tenant_id = context.tenant_id.clone();
+                        context
+                            .id_mapper
+                            .set_scope(database.clone(), tenant_id);
                         context.set_state(ConnectionState::Ready);
                     }
 
@@ -741,7 +745,7 @@ impl BoltHandler {
         }
 
         // Parse arguments from CALL sys.set(arg1, arg2)
-        let inner = trimmed.trim_end_matches(')').trim_end_matches(';');
+        let inner = trimmed.trim_end_matches(|c| c == ';' || c == ')');
         let inner = if let Some(pos) = inner.find('(') {
             &inner[pos + 1..]
         } else {
@@ -899,16 +903,10 @@ impl BoltHandler {
             (schema_name, tenant_id, role, view_parameters)
         };
 
-        // Update IdMapper scope for cross-session isolation
-        {
+        // Store tenant_id on context (needed for execute_cypher_query fallback)
+        if let Some(ref tid) = tenant_id {
             let mut context = lock_context!(self.context);
-            if let Some(ref tid) = tenant_id {
-                context.tenant_id = Some(tid.clone());
-            }
-            let scope_tenant = context.tenant_id.clone();
-            context
-                .id_mapper
-                .set_scope(schema_name.clone(), scope_tenant);
+            context.tenant_id = Some(tid.clone());
         }
 
         log::info!("Executing Cypher query: {}", query);
@@ -1247,6 +1245,17 @@ impl BoltHandler {
         // Load the actual GraphSchema object for id() transformation.
         // Set schema name in task-local context so downstream code can use it.
         crate::server::query_context::set_current_schema_name(Some(effective_schema.clone()));
+
+        // Update IdMapper scope using effective schema (may differ from connection
+        // schema if query contains a USE clause)
+        {
+            let mut context = lock_context!(self.context);
+            let scope_tenant = context.tenant_id.clone();
+            context
+                .id_mapper
+                .set_scope(Some(effective_schema.clone()), scope_tenant);
+        }
+
         let graph_schema = if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
             if let Ok(schemas) = schemas_lock.try_read() {
                 schemas.get(&effective_schema).cloned()

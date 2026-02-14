@@ -141,9 +141,22 @@ impl IdMapper {
     /// Update the scope (schema + tenant) for this session.
     /// Called when schema_name or tenant_id becomes known (HELLO, LOGON, or RUN).
     /// Updates both the local fields and the global registry entry.
+    /// Clears the session cache when scope changes to prevent stale mappings
+    /// from a previous scope leaking into the new one.
     pub fn set_scope(&mut self, schema_name: Option<String>, tenant_id: Option<String>) {
+        let scope_changed =
+            self.schema_name != schema_name || self.tenant_id != tenant_id;
+
         self.schema_name = schema_name.clone();
         self.tenant_id = tenant_id.clone();
+
+        // Clear cache when scope changes so stale reverse mappings don't bleed across
+        if scope_changed {
+            if let Ok(mut cache) = self.cache.write() {
+                cache.element_to_int.clear();
+                cache.int_to_element.clear();
+            }
+        }
 
         // Update the registry entry
         if let Ok(mut registry) = ACTIVE_SESSION_CACHES.write() {
