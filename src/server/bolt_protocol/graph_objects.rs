@@ -522,15 +522,48 @@ fn encode_json_value(value: &Value) -> Vec<u8> {
             }
         }
         Value::String(s) => encode_string(s),
-        Value::Array(_arr) => {
-            // TODO: Implement array encoding if needed
-            // For now, encode as empty list
-            vec![0x90] // TINY_LIST with 0 items
+        Value::Array(arr) => {
+            let mut result = Vec::new();
+            let len = arr.len();
+            // List header
+            if len < 16 {
+                result.push(0x90 | (len as u8));
+            } else if len <= 255 {
+                result.push(0xD4);
+                result.push(len as u8);
+            } else if len <= 65535 {
+                result.push(0xD5);
+                result.extend_from_slice(&(len as u16).to_be_bytes());
+            } else {
+                result.push(0xD6);
+                result.extend_from_slice(&(len as u32).to_be_bytes());
+            }
+            for item in arr {
+                result.extend_from_slice(&encode_json_value(item));
+            }
+            result
         }
-        Value::Object(_obj) => {
-            // TODO: Implement nested object encoding if needed
-            // For now, encode as empty map
-            vec![0xA0] // TINY_MAP with 0 entries
+        Value::Object(obj) => {
+            let mut result = Vec::new();
+            let len = obj.len();
+            // Map header
+            if len < 16 {
+                result.push(0xA0 | (len as u8));
+            } else if len <= 255 {
+                result.push(0xD8);
+                result.push(len as u8);
+            } else if len <= 65535 {
+                result.push(0xD9);
+                result.extend_from_slice(&(len as u16).to_be_bytes());
+            } else {
+                result.push(0xDA);
+                result.extend_from_slice(&(len as u32).to_be_bytes());
+            }
+            for (key, val) in obj {
+                result.extend_from_slice(&encode_string(key));
+                result.extend_from_slice(&encode_json_value(val));
+            }
+            result
         }
     }
 }
@@ -712,5 +745,64 @@ mod tests {
 
         // Verify 2 labels
         assert_eq!(encoded[3], 0x92); // TINY_LIST with 2 items
+    }
+
+    #[test]
+    fn test_encode_json_array() {
+        // Array of integers
+        let val = Value::Array(vec![
+            Value::Number(serde_json::Number::from(1)),
+            Value::Number(serde_json::Number::from(2)),
+            Value::Number(serde_json::Number::from(3)),
+        ]);
+        let encoded = encode_json_value(&val);
+        assert_eq!(encoded[0], 0x93); // TINY_LIST with 3 items
+        assert_eq!(encoded[1], 0x01); // integer 1
+        assert_eq!(encoded[2], 0x02); // integer 2
+        assert_eq!(encoded[3], 0x03); // integer 3
+    }
+
+    #[test]
+    fn test_encode_json_array_strings() {
+        let val = Value::Array(vec![
+            Value::String("tcp".to_string()),
+            Value::String("udp".to_string()),
+        ]);
+        let encoded = encode_json_value(&val);
+        assert_eq!(encoded[0], 0x92); // TINY_LIST with 2 items
+                                      // First string: 0x83 (TINY_STRING len 3) + "tcp"
+        assert_eq!(encoded[1], 0x83);
+        assert_eq!(&encoded[2..5], b"tcp");
+        // Second string: 0x83 + "udp"
+        assert_eq!(encoded[5], 0x83);
+        assert_eq!(&encoded[6..9], b"udp");
+    }
+
+    #[test]
+    fn test_encode_json_empty_array() {
+        let val = Value::Array(vec![]);
+        let encoded = encode_json_value(&val);
+        assert_eq!(encoded, vec![0x90]); // TINY_LIST with 0 items
+    }
+
+    #[test]
+    fn test_encode_json_object() {
+        let mut map = serde_json::Map::new();
+        map.insert("key".to_string(), Value::String("value".to_string()));
+        let val = Value::Object(map);
+        let encoded = encode_json_value(&val);
+        assert_eq!(encoded[0], 0xA1); // TINY_MAP with 1 entry
+    }
+
+    #[test]
+    fn test_encode_json_nested_array() {
+        // Array containing mixed types including nested array
+        let val = Value::Array(vec![
+            Value::Number(serde_json::Number::from(42)),
+            Value::String("hello".to_string()),
+            Value::Array(vec![Value::Bool(true)]),
+        ]);
+        let encoded = encode_json_value(&val);
+        assert_eq!(encoded[0], 0x93); // TINY_LIST with 3 items
     }
 }
