@@ -496,34 +496,51 @@ fn encode_properties_map(properties: &HashMap<String, Value>) -> Vec<u8> {
     // Map entries (key-value pairs)
     for (key, value) in properties {
         result.extend_from_slice(&encode_string(key));
-        result.extend_from_slice(&encode_json_value(value));
+        encode_json_value_into(value, &mut result, 0);
     }
 
     result
 }
 
-/// Encode a JSON value to packstream format
+/// Maximum nesting depth for recursive JSON encoding to prevent stack overflow.
+const MAX_JSON_NESTING_DEPTH: usize = 64;
+
+/// Encode a JSON value to packstream format.
 fn encode_json_value(value: &Value) -> Vec<u8> {
+    let mut result = Vec::new();
+    encode_json_value_into(value, &mut result, 0);
+    result
+}
+
+/// Encode a JSON value directly into an existing buffer, avoiding per-element allocation.
+/// Tracks nesting depth to guard against stack overflow from deeply nested structures.
+fn encode_json_value_into(value: &Value, result: &mut Vec<u8>, depth: usize) {
+    if depth > MAX_JSON_NESTING_DEPTH {
+        result.push(0xC0); // NULL sentinel for excessively nested values
+        return;
+    }
     match value {
-        Value::Null => vec![0xC0],        // NULL
-        Value::Bool(true) => vec![0xC3],  // TRUE
-        Value::Bool(false) => vec![0xC2], // FALSE
+        Value::Null => result.push(0xC0),        // NULL
+        Value::Bool(true) => result.push(0xC3),  // TRUE
+        Value::Bool(false) => result.push(0xC2), // FALSE
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                encode_integer(i)
+                let bytes = encode_integer(i);
+                result.extend_from_slice(&bytes);
             } else if let Some(f) = n.as_f64() {
                 // FLOAT_64: 0xC1 + 8 bytes (big-endian)
-                let mut result = vec![0xC1];
+                result.push(0xC1);
                 result.extend_from_slice(&f.to_be_bytes());
-                result
             } else {
-                // Fallback to 0 if neither i64 nor f64
-                encode_integer(0)
+                let bytes = encode_integer(0);
+                result.extend_from_slice(&bytes);
             }
         }
-        Value::String(s) => encode_string(s),
+        Value::String(s) => {
+            let bytes = encode_string(s);
+            result.extend_from_slice(&bytes);
+        }
         Value::Array(arr) => {
-            let mut result = Vec::new();
             let len = arr.len();
             // List header
             if len < 16 {
@@ -536,15 +553,14 @@ fn encode_json_value(value: &Value) -> Vec<u8> {
                 result.extend_from_slice(&(len as u16).to_be_bytes());
             } else {
                 result.push(0xD6);
-                result.extend_from_slice(&(len as u32).to_be_bytes());
+                let len32 = u32::try_from(len).unwrap_or(u32::MAX);
+                result.extend_from_slice(&len32.to_be_bytes());
             }
             for item in arr {
-                result.extend_from_slice(&encode_json_value(item));
+                encode_json_value_into(item, result, depth + 1);
             }
-            result
         }
         Value::Object(obj) => {
-            let mut result = Vec::new();
             let len = obj.len();
             // Map header
             if len < 16 {
@@ -557,13 +573,14 @@ fn encode_json_value(value: &Value) -> Vec<u8> {
                 result.extend_from_slice(&(len as u16).to_be_bytes());
             } else {
                 result.push(0xDA);
-                result.extend_from_slice(&(len as u32).to_be_bytes());
+                let len32 = u32::try_from(len).unwrap_or(u32::MAX);
+                result.extend_from_slice(&len32.to_be_bytes());
             }
             for (key, val) in obj {
-                result.extend_from_slice(&encode_string(key));
-                result.extend_from_slice(&encode_json_value(val));
+                let key_bytes = encode_string(key);
+                result.extend_from_slice(&key_bytes);
+                encode_json_value_into(val, result, depth + 1);
             }
-            result
         }
     }
 }
@@ -792,6 +809,13 @@ mod tests {
         let val = Value::Object(map);
         let encoded = encode_json_value(&val);
         assert_eq!(encoded[0], 0xA1); // TINY_MAP with 1 entry
+                                      // Key: TINY_STRING len 3 + "key"
+        assert_eq!(encoded[1], 0x83);
+        assert_eq!(&encoded[2..5], b"key");
+        // Value: TINY_STRING len 5 + "value"
+        assert_eq!(encoded[5], 0x85);
+        assert_eq!(&encoded[6..11], b"value");
+        assert_eq!(encoded.len(), 11);
     }
 
     #[test]
@@ -804,5 +828,26 @@ mod tests {
         ]);
         let encoded = encode_json_value(&val);
         assert_eq!(encoded[0], 0x93); // TINY_LIST with 3 items
+                                      // Item 1: integer 42
+        assert_eq!(encoded[1], 0x2A);
+        // Item 2: TINY_STRING len 5 + "hello"
+        assert_eq!(encoded[2], 0x85);
+        assert_eq!(&encoded[3..8], b"hello");
+        // Item 3: nested TINY_LIST with 1 item
+        assert_eq!(encoded[8], 0x91); // TINY_LIST with 1 item
+        assert_eq!(encoded[9], 0xC3); // TRUE
+        assert_eq!(encoded.len(), 10);
+    }
+
+    #[test]
+    fn test_encode_json_depth_guard() {
+        // Build deeply nested array beyond MAX_JSON_NESTING_DEPTH
+        let mut val = Value::Bool(true);
+        for _ in 0..=MAX_JSON_NESTING_DEPTH + 1 {
+            val = Value::Array(vec![val]);
+        }
+        let encoded = encode_json_value(&val);
+        // Should not stack overflow; excessively nested values become NULL
+        assert!(!encoded.is_empty());
     }
 }
