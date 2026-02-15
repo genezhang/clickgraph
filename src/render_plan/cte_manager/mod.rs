@@ -504,13 +504,34 @@ impl CteStrategy {
         filters: &CategorizedFilters,
     ) -> Result<CteGenerationResult, CteError> {
         match self {
-            CteStrategy::Traditional(s) => s.generate_sql(context, properties, filters),
-            CteStrategy::Denormalized(s) => s.generate_sql(context, properties, filters),
-            CteStrategy::FkEdge(s) => s.generate_sql(context, properties, filters),
-            CteStrategy::MixedAccess(s) => s.generate_sql(context, properties, filters),
-            CteStrategy::EdgeToEdge(s) => s.generate_sql(context, properties, filters),
-            CteStrategy::Coupled(s) => s.generate_sql(context, properties, filters),
-            CteStrategy::VariableLength(s) => s.generate_sql(context, properties, filters),
+            CteStrategy::Traditional(s) => {
+                log::warn!("🔍 Using TraditionalCteStrategy");
+                s.generate_sql(context, properties, filters)
+            }
+            CteStrategy::Denormalized(s) => {
+                log::warn!("🔍 Using DenormalizedCteStrategy");
+                s.generate_sql(context, properties, filters)
+            }
+            CteStrategy::FkEdge(s) => {
+                log::warn!("🔍 Using FkEdgeCteStrategy");
+                s.generate_sql(context, properties, filters)
+            }
+            CteStrategy::MixedAccess(s) => {
+                log::warn!("🔍 Using MixedAccessCteStrategy");
+                s.generate_sql(context, properties, filters)
+            }
+            CteStrategy::EdgeToEdge(s) => {
+                log::warn!("🔍 Using EdgeToEdgeCteStrategy");
+                s.generate_sql(context, properties, filters)
+            }
+            CteStrategy::Coupled(s) => {
+                log::warn!("🔍 Using CoupledCteStrategy");
+                s.generate_sql(context, properties, filters)
+            }
+            CteStrategy::VariableLength(s) => {
+                log::warn!("🔍 Using VariableLengthCteStrategy");
+                s.generate_sql(context, properties, filters)
+            }
         }
     }
 
@@ -819,6 +840,7 @@ impl FkEdgeCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
+            log::warn!("🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'", prop.alias, prop.cypher_alias, prop.column_name);
             // Skip ID column as it's already explicitly added as start_id/end_id
             if prop.alias == "id" {
                 continue;
@@ -1191,6 +1213,7 @@ impl TraditionalCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
+            log::warn!("🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'", prop.alias, prop.cypher_alias, prop.column_name);
             // Skip ID column as it's already explicitly added as start_id/end_id
             if prop.alias == "id" {
                 continue;
@@ -1627,6 +1650,7 @@ impl DenormalizedCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
+            log::warn!("🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'", prop.alias, prop.cypher_alias, prop.column_name);
             // Skip ID column as it's already explicitly added as start_id/end_id
             if prop.alias == "id" {
                 continue;
@@ -2086,6 +2110,7 @@ impl MixedAccessCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
+            log::warn!("🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'", prop.alias, prop.cypher_alias, prop.column_name);
             // Skip ID column as it's already explicitly added as start_id/end_id
             if prop.alias == "id" {
                 continue;
@@ -2358,6 +2383,7 @@ impl EdgeToEdgeCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
+            log::warn!("🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'", prop.alias, prop.cypher_alias, prop.column_name);
             // Skip ID column as it's already explicitly added as start_id/end_id
             if prop.alias == "id" {
                 continue;
