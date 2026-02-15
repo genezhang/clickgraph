@@ -3,7 +3,7 @@ use crate::graph_catalog::graph_schema::NodeIdSchema;
 
 #[test]
 fn test_single_node_id_sql_tuple() {
-    let single_id = NodeIdSchema::single("user_id".to_string(), "UInt64".to_string());
+    let single_id = NodeIdSchema::single("user_id".to_string(), SchemaType::Integer);
 
     // Should return plain column reference (no tuple)
     assert_eq!(single_id.sql_tuple("u"), "u.user_id");
@@ -43,7 +43,7 @@ fn test_identifier_to_sql_tuple() {
 
 #[test]
 fn test_node_id_schema_columns() {
-    let single = NodeIdSchema::single("user_id".to_string(), "UInt64".to_string());
+    let single = NodeIdSchema::single("user_id".to_string(), SchemaType::Integer);
     assert_eq!(single.columns(), vec!["user_id"]);
     assert!(!single.is_composite());
 

@@ -29,7 +29,7 @@ fn create_test_schema() -> GraphSchema {
         table_name: "nodes".to_string(),
         column_names: vec!["id".to_string()],
         primary_keys: "id".to_string(),
-        node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+        node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
         property_mappings,
         view_parameters: None,
         engine: None,

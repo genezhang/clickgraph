@@ -45,7 +45,7 @@ fn create_test_schema() -> GraphSchema {
             "email_address".to_string(),
         ],
         primary_keys: "user_id".to_string(),
-        node_id: NodeIdSchema::single("user_id".to_string(), "UInt64".to_string()),
+        node_id: NodeIdSchema::single("user_id".to_string(), SchemaType::Integer),
         property_mappings,
         view_parameters: None,
         engine: None,

@@ -95,6 +95,73 @@ pub async fn query_table_columns(
     Ok(columns)
 }
 
+/// Query column names AND types from a ClickHouse table
+///
+/// Uses system.columns to retrieve full column metadata including data types.
+/// Returns column info in their original order.
+///
+/// # Arguments
+/// * `client` - ClickHouse client
+/// * `database` - Database name
+/// * `table` - Table name
+///
+/// # Returns
+/// Vec of ColumnInfo (name + type), or error if query fails
+///
+/// # Example
+/// ```ignore
+/// let columns = query_table_column_info(&client, "my_db", "users").await?;
+/// // columns = [ColumnInfo { name: "user_id", data_type: "UInt64" }, ...]
+/// ```
+pub async fn query_table_column_info(
+    client: &Client,
+    database: &str,
+    table: &str,
+) -> Result<Vec<ColumnInfo>> {
+    #[derive(Debug, serde::Deserialize, clickhouse::Row)]
+    struct ColumnRow {
+        name: String,
+        #[serde(rename = "type")]
+        data_type: String,
+    }
+
+    let query = format!(
+        "SELECT name, type FROM system.columns WHERE database = '{}' AND table = '{}' ORDER BY position",
+        database, table
+    );
+
+    debug!(
+        "Querying column info for table {}.{}: {}",
+        database, table, query
+    );
+
+    let rows: Vec<ColumnRow> =
+        client
+            .query(&query)
+            .fetch_all()
+            .await
+            .map_err(|e| ColumnQueryError::QueryError {
+                database: database.to_string(),
+                table: table.to_string(),
+                source: e,
+            })?;
+
+    let columns: Vec<ColumnInfo> = rows
+        .into_iter()
+        .map(|row| ColumnInfo::new(row.name, row.data_type))
+        .collect();
+
+    debug!(
+        "Found {} columns with types for {}.{}: {:?}",
+        columns.len(),
+        database,
+        table,
+        columns
+    );
+
+    Ok(columns)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

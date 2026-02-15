@@ -34,7 +34,7 @@ fn create_test_schema() -> GraphSchema {
                 "is_active".to_string(),
             ],
             primary_keys: "user_id".to_string(),
-            node_id: NodeIdSchema::single("user_id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("user_id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert(
@@ -87,7 +87,7 @@ fn create_test_schema() -> GraphSchema {
                 "post_date".to_string(),
             ],
             primary_keys: "post_id".to_string(),
-            node_id: NodeIdSchema::single("post_id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("post_id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert(

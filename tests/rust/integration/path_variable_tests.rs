@@ -23,7 +23,7 @@ fn create_test_schema() -> GraphSchema {
             table_name: "persons".to_string(),
             column_names: vec!["id".to_string(), "name".to_string()],
             primary_keys: "id".to_string(),
-            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
