@@ -17,7 +17,7 @@ fn test_single_node_id_sql_tuple() {
 fn test_composite_node_id_sql_tuple() {
     let composite_id = NodeIdSchema::composite(
         vec!["bank_id".to_string(), "account_number".to_string()],
-        "Tuple(String, String)".to_string(),
+        SchemaType::String,
     );
 
     // Should return tuple expression
@@ -50,7 +50,7 @@ fn test_node_id_schema_columns() {
 
     let composite = NodeIdSchema::composite(
         vec!["col1".to_string(), "col2".to_string()],
-        "Tuple".to_string(),
+        SchemaType::String,
     );
     assert_eq!(composite.columns(), vec!["col1", "col2"]);
     assert!(composite.is_composite());
@@ -60,7 +60,7 @@ fn test_node_id_schema_columns() {
 fn test_columns_with_alias() {
     let composite = NodeIdSchema::composite(
         vec!["bank_id".to_string(), "account_number".to_string()],
-        "Tuple".to_string(),
+        SchemaType::String,
     );
 
     assert_eq!(

@@ -2829,6 +2829,7 @@ mod node_id_identity_mapping_tests {
 
         let discovery = TableDiscovery {
             columns: None,
+            column_info: None,
             engine: None,
         };
 
@@ -2881,6 +2882,7 @@ mod node_id_identity_mapping_tests {
 
         let discovery = TableDiscovery {
             columns: None,
+            column_info: None,
             engine: None,
         };
 
@@ -2934,6 +2936,7 @@ mod node_id_identity_mapping_tests {
 
         let discovery = TableDiscovery {
             columns: None,
+            column_info: None,
             engine: None,
         };
 
