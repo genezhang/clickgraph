@@ -819,6 +819,10 @@ impl FkEdgeCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
+            // Skip ID column as it's already explicitly added as start_id/end_id
+            if prop.alias == "id" {
+                continue;
+            }
             if prop.cypher_alias == self.pattern_ctx.left_node_alias {
                 select_items.push(format!(
                     "{}.{} as start_{}",
@@ -1187,6 +1191,10 @@ impl TraditionalCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
+            // Skip ID column as it's already explicitly added as start_id/end_id
+            if prop.alias == "id" {
+                continue;
+            }
             if prop.cypher_alias == self.pattern_ctx.left_node_alias {
                 select_items.push(format!(
                     "{}.{} as start_{}",
@@ -1619,6 +1627,10 @@ impl DenormalizedCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
+            // Skip ID column as it's already explicitly added as start_id/end_id
+            if prop.alias == "id" {
+                continue;
+            }
             // Determine if this property belongs to start (from) or end (to) node
             let is_from_node = prop.cypher_alias == self.pattern_ctx.left_node_alias;
             let prefix = if is_from_node { "start_" } else { "end_" };
@@ -2074,6 +2086,10 @@ impl MixedAccessCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
+            // Skip ID column as it's already explicitly added as start_id/end_id
+            if prop.alias == "id" {
+                continue;
+            }
             if prop.cypher_alias == self.pattern_ctx.left_node_alias {
                 select_items.push(format!(
                     "{}.{} as start_{}",
@@ -2342,6 +2358,10 @@ impl EdgeToEdgeCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
+            // Skip ID column as it's already explicitly added as start_id/end_id
+            if prop.alias == "id" {
+                continue;
+            }
             // All properties come from the single table
             select_items.push(format!(
                 "{}.{} as {}",
