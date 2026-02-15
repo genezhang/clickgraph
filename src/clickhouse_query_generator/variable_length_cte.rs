@@ -1359,11 +1359,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Add properties for start node (which is also the end node)
         for prop in &self.properties {
             if prop.cypher_alias == self.start_cypher_alias {
-                // 🔧 BUG #8 FIX: Don't skip node_id if it's also a user-visible property
-                // Some schemas (like filesystem) have node_id as a queryable property
-                // Skip only avoids adding it again, but we still need it accessible by its Cypher name
-                // OLD: if prop.column_name == self.start_node_id_column { continue; }
-                // NEW: Always add the property, even if it duplicates start_id
+                // Skip ID column when it's the actual id property (already added as start_id)
+                // But keep it if it's a different property that happens to be the ID column
+                // (e.g., "node_id" as a separate property in some schemas)
+                if prop.column_name == self.start_node_id_column && prop.alias == "id" {
+                    continue;
+                }
+                
                 select_items.push(format!(
                     "{}.{} as start_{}",
                     self.start_node_alias, prop.column_name, prop.alias
@@ -1371,9 +1373,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
             }
             // For zero-hop, end properties are same as start properties
             if prop.cypher_alias == self.end_cypher_alias {
-                // 🔧 BUG #8 FIX: Don't skip node_id if it's also a user-visible property
-                // OLD: if prop.column_name == self.end_node_id_column { continue; }
-                // NEW: Always add the property, even if it duplicates end_id
+                // Skip ID column when it's the actual id property (already added as end_id)
+                if prop.column_name == self.end_node_id_column && prop.alias == "id" {
+                    continue;
+                }
+                
                 select_items.push(format!(
                     "{}.{} as end_{}",
                     self.start_node_alias, prop.column_name, prop.alias
@@ -1471,19 +1475,19 @@ impl<'a> VariableLengthCteGenerator<'a> {
             // CRITICAL: Use separate if statements (not else-if) for self-loops
             // When start_cypher_alias == end_cypher_alias, both conditions are true
             for prop in &self.properties {
-                // Skip the node ID column since it's already added as start_id/end_id above
-                if prop.column_name == self.start_node_id_column || prop.column_name == self.end_node_id_column {
-                    continue;
-                }
+                // Skip the ID column when it's the actual "id" property (already added as start_id/end_id)
+                // But keep it if it's a different property that uses the ID column (e.g., "node_id")
+                let is_start_id = prop.column_name == self.start_node_id_column && prop.alias == "id";
+                let is_end_id = prop.column_name == self.end_node_id_column && prop.alias == "id";
                 
-                if prop.cypher_alias == self.start_cypher_alias {
+                if prop.cypher_alias == self.start_cypher_alias && !is_start_id {
                     // Property belongs to start node
                     select_items.push(format!(
                         "{}.{} as start_{}",
                         self.start_node_alias, prop.column_name, prop.alias
                     ));
                 }
-                if prop.cypher_alias == self.end_cypher_alias {
+                if prop.cypher_alias == self.end_cypher_alias && !is_end_id {
                     // Property belongs to end node
                     select_items.push(format!(
                         "{}.{} as end_{}",
@@ -1625,16 +1629,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // CRITICAL: Use separate if statements (not else-if) for self-loops
         // When start_cypher_alias == end_cypher_alias, both conditions are true
         for prop in &self.properties {
-            // Skip the node ID column since it's already added as start_id/end_id above
-            if prop.column_name == self.start_node_id_column || prop.column_name == self.end_node_id_column {
-                continue;
-            }
+            // Skip the ID column when it's the actual "id" property (already added as start_id/end_id)
+            let is_start_id = prop.column_name == self.start_node_id_column && prop.alias == "id";
+            let is_end_id = prop.column_name == self.end_node_id_column && prop.alias == "id";
             
-            if prop.cypher_alias == self.start_cypher_alias {
+            if prop.cypher_alias == self.start_cypher_alias && !is_start_id {
                 // Start node properties pass through from CTE
                 select_items.push(format!("vp.start_{} as start_{}", prop.alias, prop.alias));
             }
-            if prop.cypher_alias == self.end_cypher_alias {
+            if prop.cypher_alias == self.end_cypher_alias && !is_end_id {
                 // End node properties come from the newly joined node
                 select_items.push(format!(
                     "{}.{} as end_{}",
