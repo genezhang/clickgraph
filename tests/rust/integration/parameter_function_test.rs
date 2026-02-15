@@ -2,6 +2,7 @@ use clickgraph::{
     graph_catalog::{
         expression_parser::PropertyValue,
         graph_schema::{GraphSchema, NodeIdSchema, NodeSchema},
+        schema_types::SchemaType,
     },
     open_cypher_parser::parse_query,
     query_planner::logical_plan::plan_builder::build_logical_plan,
