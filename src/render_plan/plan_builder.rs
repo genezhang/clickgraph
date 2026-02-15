@@ -827,11 +827,9 @@ impl RenderPlanBuilder for LogicalPlan {
                     self, schema, &context,
                 )?;
                 
-                log::warn!("🔍 PRE-DEDUPE: Extracted {} joins", raw_joins.len());
-                
-                // Deduplicate table aliases via JoinItems::new()
+                // Extract joins and deduplicate aliases
+                let raw_joins = JoinBuilder::extract_joins(self, schema)?;
                 let joins = JoinItems::new(raw_joins);
-                log::warn!("🔍 POST-DEDUPE: Have {} joins", joins.0.len());
                 
                 let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
                 let filters = FilterItems(FilterBuilder::extract_filters(self)?);
