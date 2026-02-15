@@ -1,13 +1,12 @@
 //! SHOW DATABASES procedure
 //! Returns a list of available databases (schemas) in a format compatible with Neo4j Browser
 
-use crate::graph_catalog::graph_schema::GraphSchema;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
 /// Execute SHOW DATABASES command
 /// Returns available schemas as database records compatible with Neo4j Browser
-pub fn execute(_schema: &GraphSchema) -> Result<Vec<HashMap<String, Value>>, String> {
+pub fn execute_show_databases() -> Result<Vec<HashMap<String, Value>>, String> {
     // Get available schemas from global registry
     let mut databases = Vec::new();
 

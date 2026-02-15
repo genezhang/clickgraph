@@ -449,9 +449,9 @@ impl IdMapper {
         let label = Self::get_label_from_code(label_code)?;
 
         // For simple numeric IDs (common case), id_hash IS the raw value
-        // We can't distinguish hashed vs raw values, but for small numbers
-        // (< 2^31), it's almost certainly the raw value
-        //  NOTE: 0 is a valid ID value, so we use >= 0 not > 0
+        // We can't distinguish hashed vs raw values, but for small non-negative numbers
+        // (0 to 2^31-1), it's almost certainly the raw value
+        // NOTE: 0 is a valid ID value (e.g., user_id=0), so we accept the range [0, 2^31)
         if id_hash >= 0 && id_hash < (1i64 << 31) {
             return Some((label, id_hash.to_string()));
         }

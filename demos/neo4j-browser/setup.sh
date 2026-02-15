@@ -3,7 +3,7 @@
 # One-command setup to launch Neo4j Browser with ClickGraph Bolt connection
 # Uses simple docker run for Neo4j (more reliable than docker-compose)
 
-REPO_ROOT="/home/gz/clickgraph"
+REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
 echo "=========================================="
 echo "ClickGraph + Neo4j Browser Demo Setup"

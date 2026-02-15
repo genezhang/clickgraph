@@ -82,7 +82,7 @@ bolt://localhost:7687
 - **Visual queries**: Enter Cypher queries in the command bar (`:`)
 - **Click to expand**: Click on nodes to see relationships
 - **Explore neighbors**: Double-click relationships to expand
-- **Beautif ul graphs**: Auto-layout of nodes and edges
+- **Beautiful graphs**: Auto-layout of nodes and edges
 
 ### Sample Queries
 

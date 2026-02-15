@@ -212,7 +212,7 @@ class TestBrowserExpandQuerySequence:
         MATCH (a)--(o) 
         WHERE id(a) = {test_element_id} {exclude_clause}
         RETURN o LIMIT 100
-```        """
+        """
         
         start = time.time()
         response = execute_cypher(query)

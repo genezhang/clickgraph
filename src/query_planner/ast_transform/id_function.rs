@@ -465,7 +465,7 @@ impl<'a> IdFunctionTransformer<'a> {
 
         // Cannot decode - return false to indicate no match
         log::warn!(
-            "id() transform: id({}) = {} cannot be decoded (invalid format)",
+            "id() transform: id({}) = {} cannot be decoded (not in cache and not a simple numeric ID)",
             var,
             id_value
         );

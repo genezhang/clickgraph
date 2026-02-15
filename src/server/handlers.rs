@@ -193,39 +193,16 @@ pub async fn query_handler(
     if clean_upper.starts_with("SHOW DATABASES") {
         log::info!("📊 SHOW DATABASES query detected - returning available schemas");
 
-        // Build database list from registered schemas
-        let mut databases = Vec::new();
-        if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-            let schemas_map = schemas_lock.blocking_read();
-            for (name, _) in schemas_map.iter() {
-                let mut record = serde_json::Map::new();
-                record.insert("name".to_string(), serde_json::Value::String(name.clone()));
-                record.insert(
-                    "type".to_string(),
-                    serde_json::Value::String("standard".to_string()),
-                );
-                record.insert("aliases".to_string(), serde_json::Value::Array(vec![]));
-                record.insert(
-                    "access".to_string(),
-                    serde_json::Value::String("read-write".to_string()),
-                );
-                record.insert(
-                    "role".to_string(),
-                    serde_json::Value::String("primary".to_string()),
-                );
-                record.insert("writer".to_string(), serde_json::Value::Bool(true));
-                record.insert(
-                    "default".to_string(),
-                    serde_json::Value::Bool(name == "default"),
-                );
-                record.insert(
-                    "home".to_string(),
-                    serde_json::Value::Bool(name == "default"),
-                );
-
-                databases.push(serde_json::Value::Object(record));
+        // Use shared SHOW DATABASES implementation
+        let databases_result = crate::procedures::show_databases::execute_show_databases();
+        
+        let databases: Vec<serde_json::Value> = match databases_result {
+            Ok(db_list) => db_list.into_iter().map(|db| serde_json::to_value(db).unwrap()).collect(),
+            Err(e) => {
+                log::error!("Failed to execute SHOW DATABASES: {}", e);
+                vec![]
             }
-        }
+        };
 
         let response = DatabaseListResponse { databases };
         return Ok(Json(response).into_response());
