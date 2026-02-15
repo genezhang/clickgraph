@@ -827,8 +827,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     self, schema, &context,
                 )?;
                 
-                // Extract joins and deduplicate aliases
-                let raw_joins = JoinBuilder::extract_joins(self, schema)?;
+                // Deduplicate aliases
                 let joins = JoinItems::new(raw_joins);
                 
                 let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
