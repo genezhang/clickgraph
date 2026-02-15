@@ -942,40 +942,74 @@ impl BoltHandler {
 
             // Use shared SHOW DATABASES implementation
             let databases_result = crate::procedures::show_databases::execute_show_databases();
-            
-            let databases: Vec<Vec<BoltValue>> = match databases_result {
-                Ok(db_list) => {
-                    db_list.into_iter().map(|db| {
-                        vec![
-                            BoltValue::Json(db.get("name").cloned().unwrap_or_else(|| serde_json::Value::String("default".to_string()))),
-                            BoltValue::Json(db.get("type").cloned().unwrap_or_else(|| serde_json::Value::String("system".to_string()))),
-                            BoltValue::Json(db.get("access").cloned().unwrap_or_else(|| serde_json::Value::String("read".to_string()))),
-                            BoltValue::Json(db.get("role").cloned().unwrap_or_else(|| serde_json::Value::String("admin".to_string()))),
-                            BoltValue::Json(db.get("writer").cloned().unwrap_or_else(|| serde_json::Value::Bool(true))),
-                            BoltValue::Json(db.get("default").cloned().unwrap_or_else(|| serde_json::Value::Bool(false))),
-                            BoltValue::Json(db.get("home").cloned().unwrap_or_else(|| serde_json::Value::Bool(false))),
-                            BoltValue::Json(db.get("aliases").cloned().unwrap_or_else(|| serde_json::Value::Array(vec![]))),
-                            BoltValue::Json(db.get("constituents").cloned().unwrap_or_else(|| serde_json::Value::Array(vec![]))),
-                            BoltValue::Json(serde_json::Value::String("00000000-0000-0000-0000-000000000000".to_string())),
-                        ]
-                    }).collect()
-                }
-                Err(e) => {
-                    log::error!("Failed to execute SHOW DATABASES: {}", e);
-                    vec![vec![
-                        BoltValue::Json(serde_json::Value::String("default".to_string())),
-                        BoltValue::Json(serde_json::Value::String("system".to_string())),
-                        BoltValue::Json(serde_json::Value::String("read".to_string())),
-                        BoltValue::Json(serde_json::Value::String("admin".to_string())),
-                        BoltValue::Json(serde_json::json!(true)),
-                        BoltValue::Json(serde_json::json!(true)),
-                        BoltValue::Json(serde_json::json!(true)),
-                        BoltValue::Json(serde_json::json!([])),
-                        BoltValue::Json(serde_json::json!([])),
-                        BoltValue::Json(serde_json::Value::String("00000000-0000-0000-0000-000000000000".to_string())),
-                    ]]
-                }
-            };
+
+            let databases: Vec<Vec<BoltValue>> =
+                match databases_result {
+                    Ok(db_list) => db_list
+                        .into_iter()
+                        .map(|db| {
+                            vec![
+                                BoltValue::Json(db.get("name").cloned().unwrap_or_else(|| {
+                                    serde_json::Value::String("default".to_string())
+                                })),
+                                BoltValue::Json(db.get("type").cloned().unwrap_or_else(|| {
+                                    serde_json::Value::String("system".to_string())
+                                })),
+                                BoltValue::Json(db.get("access").cloned().unwrap_or_else(|| {
+                                    serde_json::Value::String("read".to_string())
+                                })),
+                                BoltValue::Json(db.get("role").cloned().unwrap_or_else(|| {
+                                    serde_json::Value::String("admin".to_string())
+                                })),
+                                BoltValue::Json(
+                                    db.get("writer")
+                                        .cloned()
+                                        .unwrap_or_else(|| serde_json::Value::Bool(true)),
+                                ),
+                                BoltValue::Json(
+                                    db.get("default")
+                                        .cloned()
+                                        .unwrap_or_else(|| serde_json::Value::Bool(false)),
+                                ),
+                                BoltValue::Json(
+                                    db.get("home")
+                                        .cloned()
+                                        .unwrap_or_else(|| serde_json::Value::Bool(false)),
+                                ),
+                                BoltValue::Json(
+                                    db.get("aliases")
+                                        .cloned()
+                                        .unwrap_or_else(|| serde_json::Value::Array(vec![])),
+                                ),
+                                BoltValue::Json(
+                                    db.get("constituents")
+                                        .cloned()
+                                        .unwrap_or_else(|| serde_json::Value::Array(vec![])),
+                                ),
+                                BoltValue::Json(serde_json::Value::String(
+                                    "00000000-0000-0000-0000-000000000000".to_string(),
+                                )),
+                            ]
+                        })
+                        .collect(),
+                    Err(e) => {
+                        log::error!("Failed to execute SHOW DATABASES: {}", e);
+                        vec![vec![
+                            BoltValue::Json(serde_json::Value::String("default".to_string())),
+                            BoltValue::Json(serde_json::Value::String("system".to_string())),
+                            BoltValue::Json(serde_json::Value::String("read".to_string())),
+                            BoltValue::Json(serde_json::Value::String("admin".to_string())),
+                            BoltValue::Json(serde_json::json!(true)),
+                            BoltValue::Json(serde_json::json!(true)),
+                            BoltValue::Json(serde_json::json!(true)),
+                            BoltValue::Json(serde_json::json!([])),
+                            BoltValue::Json(serde_json::json!([])),
+                            BoltValue::Json(serde_json::Value::String(
+                                "00000000-0000-0000-0000-000000000000".to_string(),
+                            )),
+                        ]]
+                    }
+                };
 
             log::info!("📊 Returning {} databases via Bolt", databases.len());
 

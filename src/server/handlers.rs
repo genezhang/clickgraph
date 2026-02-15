@@ -195,9 +195,12 @@ pub async fn query_handler(
 
         // Use shared SHOW DATABASES implementation
         let databases_result = crate::procedures::show_databases::execute_show_databases();
-        
+
         let databases: Vec<serde_json::Value> = match databases_result {
-            Ok(db_list) => db_list.into_iter().map(|db| serde_json::to_value(db).unwrap()).collect(),
+            Ok(db_list) => db_list
+                .into_iter()
+                .map(|db| serde_json::to_value(db).unwrap())
+                .collect(),
             Err(e) => {
                 log::error!("Failed to execute SHOW DATABASES: {}", e);
                 vec![]
