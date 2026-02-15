@@ -425,6 +425,23 @@ impl BoltHandler {
                 Value::String("bolt-1".to_string()),
             );
 
+            // Add available databases (schemas) so browser can show them
+            // Neo4j 2025.10+ browser uses this to populate database selection menu
+            if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+                let schemas_map = schemas_lock.read().await;
+                let available_databases: Vec<Value> = schemas_map
+                    .iter()
+                    .filter(|(name, _)| name != &"default") // Don't duplicate "default"
+                    .map(|(name, _)| Value::String(name.clone()))
+                    .collect();
+
+                let db_count = available_databases.len();
+                if db_count > 0 {
+                    metadata.insert("databases".to_string(), Value::Array(available_databases));
+                    log::info!("📚 Advertised {} database(s) in HELLO response", db_count);
+                }
+            }
+
             // Add server capabilities
             let mut hints = HashMap::new();
             hints.insert("utc_patch".to_string(), Value::Bool(false));
@@ -815,6 +832,9 @@ impl BoltHandler {
             .extract_query()
             .ok_or_else(|| BoltError::invalid_message("RUN message missing query"))?;
 
+        // Log incoming Cypher query for debugging
+        log::info!("📨 BROWSER SENT CYPHER QUERY: {}", query.trim());
+
         // Handle EXPLAIN queries — browser sends "EXPLAIN <partial_query>" as autocomplete
         // probes while the user types. Return empty SUCCESS so probes don't show errors.
         // For fully-formed EXPLAIN queries, this also prevents unnecessary execution.
@@ -913,6 +933,115 @@ impl BoltHandler {
             log::debug!("Query execution using schema: {}", schema);
         } else {
             log::debug!("Query execution using schema: default");
+        }
+
+        // Check for SHOW DATABASES command before normal query processing
+        let query_upper = query.trim().to_uppercase();
+        if query_upper == "SHOW DATABASES" || query_upper.starts_with("SHOW DATABASES ") {
+            log::info!("🔍 Detected SHOW DATABASES command in Bolt handler");
+
+            // Use shared SHOW DATABASES implementation
+            let databases_result = crate::procedures::show_databases::execute_show_databases();
+
+            let databases: Vec<Vec<BoltValue>> =
+                match databases_result {
+                    Ok(db_list) => db_list
+                        .into_iter()
+                        .map(|db| {
+                            vec![
+                                BoltValue::Json(db.get("name").cloned().unwrap_or_else(|| {
+                                    serde_json::Value::String("default".to_string())
+                                })),
+                                BoltValue::Json(db.get("type").cloned().unwrap_or_else(|| {
+                                    serde_json::Value::String("system".to_string())
+                                })),
+                                BoltValue::Json(db.get("access").cloned().unwrap_or_else(|| {
+                                    serde_json::Value::String("read".to_string())
+                                })),
+                                BoltValue::Json(db.get("role").cloned().unwrap_or_else(|| {
+                                    serde_json::Value::String("admin".to_string())
+                                })),
+                                BoltValue::Json(
+                                    db.get("writer")
+                                        .cloned()
+                                        .unwrap_or_else(|| serde_json::Value::Bool(true)),
+                                ),
+                                BoltValue::Json(
+                                    db.get("default")
+                                        .cloned()
+                                        .unwrap_or_else(|| serde_json::Value::Bool(false)),
+                                ),
+                                BoltValue::Json(
+                                    db.get("home")
+                                        .cloned()
+                                        .unwrap_or_else(|| serde_json::Value::Bool(false)),
+                                ),
+                                BoltValue::Json(
+                                    db.get("aliases")
+                                        .cloned()
+                                        .unwrap_or_else(|| serde_json::Value::Array(vec![])),
+                                ),
+                                BoltValue::Json(
+                                    db.get("constituents")
+                                        .cloned()
+                                        .unwrap_or_else(|| serde_json::Value::Array(vec![])),
+                                ),
+                                BoltValue::Json(serde_json::Value::String(
+                                    "00000000-0000-0000-0000-000000000000".to_string(),
+                                )),
+                            ]
+                        })
+                        .collect(),
+                    Err(e) => {
+                        log::error!("Failed to execute SHOW DATABASES: {}", e);
+                        vec![vec![
+                            BoltValue::Json(serde_json::Value::String("default".to_string())),
+                            BoltValue::Json(serde_json::Value::String("system".to_string())),
+                            BoltValue::Json(serde_json::Value::String("read".to_string())),
+                            BoltValue::Json(serde_json::Value::String("admin".to_string())),
+                            BoltValue::Json(serde_json::json!(true)),
+                            BoltValue::Json(serde_json::json!(true)),
+                            BoltValue::Json(serde_json::json!(true)),
+                            BoltValue::Json(serde_json::json!([])),
+                            BoltValue::Json(serde_json::json!([])),
+                            BoltValue::Json(serde_json::Value::String(
+                                "00000000-0000-0000-0000-000000000000".to_string(),
+                            )),
+                        ]]
+                    }
+                };
+
+            log::info!("📊 Returning {} databases via Bolt", databases.len());
+
+            // Update context to streaming state
+            {
+                let mut context = lock_context!(self.context);
+                context.set_state(ConnectionState::Streaming);
+            }
+
+            // Store the database records for PULL to stream
+            self.cached_results = Some(databases);
+
+            // Build result metadata for SUCCESS
+            let mut result_metadata = HashMap::new();
+            result_metadata.insert(
+                "fields".to_string(),
+                serde_json::json!([
+                    "name",
+                    "type",
+                    "access",
+                    "role",
+                    "writer",
+                    "default",
+                    "home",
+                    "aliases",
+                    "constituents",
+                    "storeUuid"
+                ]),
+            );
+            result_metadata.insert("result_consumed_after".to_string(), serde_json::json!(-1));
+
+            return Ok(vec![BoltMessage::success(result_metadata)]);
         }
 
         // Parse and execute the query with task-local schema context

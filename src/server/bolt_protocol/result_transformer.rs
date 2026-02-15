@@ -36,6 +36,7 @@ use crate::{
     graph_catalog::{
         element_id::{generate_node_element_id, generate_relationship_element_id},
         graph_schema::GraphSchema,
+        schema_types::SchemaType,
     },
     query_planner::{
         logical_expr::LogicalExpr,
@@ -2179,8 +2180,8 @@ mod tests {
                 to_node_table: "users".to_string(),
                 from_id: Identifier::from("follower_id"),
                 to_id: Identifier::from("followed_id"),
-                from_node_id_dtype: "UInt64".to_string(),
-                to_node_id_dtype: "UInt64".to_string(),
+                from_node_id_dtype: SchemaType::Integer,
+                to_node_id_dtype: SchemaType::Integer,
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,

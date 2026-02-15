@@ -728,6 +728,8 @@ use super::engine_detection::TableEngine;
 struct TableDiscovery {
     /// Auto-discovered columns (if auto_discover_columns is enabled)
     columns: Option<Vec<String>>,
+    /// Auto-discovered column information (names + types)
+    column_info: Option<HashMap<String, String>>, // column_name -> data_type
     /// Detected table engine type
     engine: Option<TableEngine>,
 }
@@ -1027,6 +1029,36 @@ fn build_node_schema(
     // Parse node_id types from YAML (if provided)
     let node_id_types = parse_node_id_types(node_def, &node_def.label)?;
 
+    // Determine the dtype for NodeIdSchema from discovered column types
+    // Priority: 1) Discovered column type 2) Default to Integer
+    let node_id_dtype = if let Some(col_info) = &discovery.column_info {
+        // Get the first ID column's type
+        let id_column = match &node_def.node_id {
+            Identifier::Single(col) => col.as_str(),
+            Identifier::Composite(cols) => cols.first().map(|s| s.as_str()).unwrap_or(""),
+        };
+
+        if let Some(ch_type) = col_info.get(id_column) {
+            log::debug!(
+                "Node '{}': ID column '{}' has ClickHouse type '{}', mapping to SchemaType",
+                node_def.label,
+                id_column,
+                ch_type
+            );
+            crate::graph_catalog::schema_types::map_clickhouse_type(ch_type)
+        } else {
+            log::warn!(
+                "Node '{}': ID column '{}' not found in discovered columns, defaulting to Integer",
+                node_def.label,
+                id_column
+            );
+            SchemaType::Integer
+        }
+    } else {
+        // No discovery, default to Integer (common case for numeric PKs)
+        SchemaType::Integer
+    };
+
     Ok(NodeSchema {
         database: node_def.database.clone(),
         table_name: node_def.table.clone(),
@@ -1037,7 +1069,7 @@ fn build_node_schema(
         primary_keys: node_def.node_id.columns().join(", "),
         node_id: NodeIdSchema {
             id: node_def.node_id.clone(),
-            dtype: "UInt64".to_string(),
+            dtype: node_id_dtype,
         },
         property_mappings,
         view_parameters: node_def.view_parameters.clone(),
@@ -1182,8 +1214,8 @@ fn build_relationship_schema(
         to_node_table,   // 🔵 RELATIONAL: Resolved table name
         from_id: rel_def.from_id.clone(),
         to_id: rel_def.to_id.clone(),
-        from_node_id_dtype: "UInt64".to_string(),
-        to_node_id_dtype: "UInt64".to_string(),
+        from_node_id_dtype: SchemaType::Integer,
+        to_node_id_dtype: SchemaType::Integer,
         property_mappings,
         view_parameters: rel_def.view_parameters.clone(),
         engine: discovery.engine.clone(),
@@ -1318,8 +1350,8 @@ fn build_standard_edge_schema(
         to_node_table: resolved_to_node,       // 🔵 RELATIONAL: Resolved table name
         from_id: std_edge.from_id.clone(),
         to_id: std_edge.to_id.clone(),
-        from_node_id_dtype: "UInt64".to_string(),
-        to_node_id_dtype: "UInt64".to_string(),
+        from_node_id_dtype: SchemaType::Integer,
+        to_node_id_dtype: SchemaType::Integer,
         property_mappings,
         view_parameters: std_edge.view_parameters.clone(),
         engine: discovery.engine.clone(),
@@ -1390,8 +1422,8 @@ fn build_polymorphic_edge_schemas(
             to_node_table: to_node.clone(), // 🔵 RELATIONAL: Same as label for polymorphic
             from_id: poly_edge.from_id.clone(),
             to_id: poly_edge.to_id.clone(),
-            from_node_id_dtype: "UInt64".to_string(),
-            to_node_id_dtype: "UInt64".to_string(),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
             property_mappings: property_mappings.clone(),
             view_parameters: poly_edge.view_parameters.clone(),
             engine: discovery.engine.clone(),
@@ -1889,26 +1921,35 @@ impl GraphSchemaConfig {
         // Store with BOTH composite key (table::label) AND label-only for backward compat
         for node_def in &self.graph_schema.nodes {
             // Gather discovery data
-            let columns = if node_def.auto_discover_columns {
-                Some(
-                    query_table_columns(client, &node_def.database, &node_def.table)
-                        .await
-                        .map_err(|e| GraphSchemaError::ConfigReadError {
-                            error: format!(
-                                "Failed to query columns for node '{}': {}",
-                                node_def.label, e
-                            ),
-                        })?,
-                )
+            let (columns, column_info) = if node_def.auto_discover_columns {
+                use super::column_info::query_table_column_info;
+                let col_info = query_table_column_info(client, &node_def.database, &node_def.table)
+                    .await
+                    .map_err(|e| GraphSchemaError::ConfigReadError {
+                        error: format!(
+                            "Failed to query columns for node '{}': {}",
+                            node_def.label, e
+                        ),
+                    })?;
+                let names: Vec<String> = col_info.iter().map(|c| c.name.clone()).collect();
+                let types: HashMap<String, String> = col_info
+                    .into_iter()
+                    .map(|c| (c.name, c.data_type))
+                    .collect();
+                (Some(names), Some(types))
             } else {
-                None
+                (None, None)
             };
 
             let engine = detect_table_engine(client, &node_def.database, &node_def.table)
                 .await
                 .ok();
 
-            let discovery = TableDiscovery { columns, engine };
+            let discovery = TableDiscovery {
+                columns,
+                column_info,
+                engine,
+            };
 
             let node_schema = build_node_schema(node_def, &discovery)?;
             // Composite key for table-specific lookup
@@ -1950,7 +1991,11 @@ impl GraphSchemaConfig {
                 .await
                 .ok();
 
-            let discovery = TableDiscovery { columns, engine };
+            let discovery = TableDiscovery {
+                columns,
+                column_info: None,
+                engine,
+            };
 
             let rel_schema =
                 build_relationship_schema(rel_def, &default_node_type, &nodes, &discovery)?;
@@ -1986,7 +2031,11 @@ impl GraphSchemaConfig {
                         .await
                         .ok();
 
-                    let discovery = TableDiscovery { columns, engine };
+                    let discovery = TableDiscovery {
+                        columns,
+                        column_info: None,
+                        engine,
+                    };
 
                     let rel_schema = build_standard_edge_schema(std_edge, &nodes, &discovery)?;
                     // Use composite key: TYPE::FROM::TO
@@ -2006,6 +2055,7 @@ impl GraphSchemaConfig {
 
                     let discovery = TableDiscovery {
                         columns: None,
+                        column_info: None,
                         engine,
                     };
 
@@ -2794,6 +2844,7 @@ mod node_id_identity_mapping_tests {
 
         let discovery = TableDiscovery {
             columns: None,
+            column_info: None,
             engine: None,
         };
 
@@ -2846,6 +2897,7 @@ mod node_id_identity_mapping_tests {
 
         let discovery = TableDiscovery {
             columns: None,
+            column_info: None,
             engine: None,
         };
 
@@ -2899,6 +2951,7 @@ mod node_id_identity_mapping_tests {
 
         let discovery = TableDiscovery {
             columns: None,
+            column_info: None,
             engine: None,
         };
 

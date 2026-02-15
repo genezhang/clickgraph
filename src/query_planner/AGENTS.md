@@ -53,7 +53,9 @@ mod.rs                   ← Entry points: evaluate_read_query(), evaluate_read_
     │
     ├─ ast_transform/    ← Pre-planning AST transformations
     │   mod.rs (943)        id() function rewriting, UNION splitting by labels
-    │   id_function.rs      IdFunctionTransformer for Bolt protocol encoded IDs
+    │   id_function.rs      IdFunctionTransformer: stateless ID decoding with SchemaType validation
+    │                       Validates node_id.dtype is SchemaType::Integer before accepting
+    │                       bit-pattern decoded IDs (enables browser click-to-expand)
     │   string_arena.rs     Arena allocator for transformed string lifetimes
     │
     ├─ join_context.rs   ← VLP naming conventions + JOIN state tracking
@@ -290,8 +292,8 @@ trait OptimizerPass {
 | `plan_ctx/table_ctx.rs` | 333 | TableCtx: per-alias metadata |
 | `plan_ctx/builder.rs` | 289 | PlanCtx constructors |
 | `translator/property_resolver.rs` | 765 | Unified property resolution |
-| `ast_transform/mod.rs` | 943 | id() function rewriting |
-| `ast_transform/id_function.rs` | 577 | IdFunctionTransformer |
+| `ast_transform/mod.rs` | 943 | id() function rewriting with type validation |
+| `ast_transform/id_function.rs` | 577 | IdFunctionTransformer: SchemaType-validated ID decoding |
 | `logical_expr/mod.rs` | 944 | LogicalExpr enum definitions |
 | `logical_expr/ast_conversion.rs` | 524 | AST → LogicalExpr |
 | `logical_expr/expression_rewriter.rs` | 441 | Property mapping transforms |
@@ -333,6 +335,18 @@ Every pass returns `Transformed::Yes(plan)` if it modified the plan, `Transforme
 
 ### 7. PlanCtx Dual Registration
 `PlanCtx::insert_table_ctx()` registers variables in BOTH the legacy `alias_table_ctx_map` AND the new `VariableRegistry`. Both systems must stay in sync during the migration period.
+
+## Recent Changes (Feb 2026)
+
+### Schema Type System Migration
+**What Changed**: `NodeIdSchema.dtype` and `RelationshipSchema.from/to_node_id_dtype` migrated from `String` to `SchemaType` enum.
+
+**Impact on query_planner**:
+- ✅ `id_function.rs` now validates type safety: `matches!(node_schema.node_id.dtype, SchemaType::Integer)` before applying bit-pattern ID decoding
+- ✅ HTTP handler `id()` transformation now works correctly (matches Bolt protocol)
+- ✅ Stateless ID decoding without session cache (browser compatibility)
+
+**For developers**: When creating test schemas, use `SchemaType::Integer` instead of `"Integer".to_string()`
 
 ## Common Bug Patterns
 

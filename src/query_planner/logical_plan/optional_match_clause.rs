@@ -97,6 +97,7 @@ pub fn evaluate_optional_match_clause<'a>(
 mod tests {
     use super::*;
     use crate::graph_catalog::config::Identifier;
+    use crate::graph_catalog::schema_types::SchemaType;
     use crate::graph_catalog::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema};
     use crate::open_cypher_parser::ast;
 
@@ -120,7 +121,7 @@ mod tests {
                 "user_id".to_string(),
             ],
             primary_keys: "id".to_string(),
-            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
             property_mappings: [
                 (
                     "name".to_string(),
@@ -167,8 +168,8 @@ mod tests {
             to_node_table: "users".to_string(),
             from_id: Identifier::from("from_id"),
             to_id: Identifier::from("to_id"),
-            from_node_id_dtype: "UInt64".to_string(),
-            to_node_id_dtype: "UInt64".to_string(),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,

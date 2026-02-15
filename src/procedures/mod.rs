@@ -39,6 +39,7 @@ pub mod dbms_components;
 pub mod dbms_stubs;
 pub mod executor;
 pub mod return_evaluator;
+pub mod show_databases;
 
 // Re-export key functions for easier access
 pub use executor::{

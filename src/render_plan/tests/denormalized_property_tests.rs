@@ -9,6 +9,7 @@ use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::{
     GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema,
 };
+use crate::graph_catalog::schema_types::SchemaType;
 use crate::render_plan::cte_generation::{
     map_property_to_column_with_relationship_context, NodeRole,
 };
@@ -46,7 +47,7 @@ fn setup_denormalized_schema() -> GraphSchema {
             table_name: "flights".to_string(), // Partially denormalized: node properties embedded in edge table
             column_names: vec!["airport_id".to_string(), "airport_code".to_string()],
             primary_keys: "airport_id".to_string(),
-            node_id: NodeIdSchema::single("airport_id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("airport_id".to_string(), SchemaType::Integer),
             property_mappings: airport_props,
             view_parameters: None,
             engine: None,
@@ -116,8 +117,8 @@ fn setup_denormalized_schema() -> GraphSchema {
             to_node_table: "airports".to_string(),
             from_id: Identifier::from("origin_id"),
             to_id: Identifier::from("dest_id"),
-            from_node_id_dtype: "UInt64".to_string(),
-            to_node_id_dtype: "UInt64".to_string(),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
             property_mappings: flight_props,
             view_parameters: None,
             engine: None,
@@ -346,8 +347,8 @@ fn test_multiple_relationships_same_node() {
             to_node_table: "posts".to_string(),
             from_id: Identifier::from("author_id"),
             to_id: Identifier::from("post_id"),
-            from_node_id_dtype: "UInt64".to_string(),
-            to_node_id_dtype: "UInt64".to_string(),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
             property_mappings: authored_props,
             view_parameters: None,
             engine: None,
@@ -445,7 +446,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
             primary_keys: "code".to_string(), // Logical ID property
             node_id: NodeIdSchema::single(
                 "code".to_string(), // Maps to origin_code/dest_code
-                "String".to_string(),
+                SchemaType::String,
             ),
             property_mappings: airport_props, // Empty - derived from edge
             view_parameters: None,
@@ -514,8 +515,8 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
             to_node_table: "flights".to_string(),
             from_id: Identifier::from("origin_code"),
             to_id: Identifier::from("dest_code"),
-            from_node_id_dtype: "String".to_string(),
-            to_node_id_dtype: "String".to_string(),
+            from_node_id_dtype: SchemaType::String,
+            to_node_id_dtype: SchemaType::String,
             property_mappings: flight_props,
             view_parameters: None,
             engine: None,

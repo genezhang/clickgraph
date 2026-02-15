@@ -4,6 +4,7 @@ use clickgraph::{
         config::Identifier,
         expression_parser::PropertyValue,
         graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema},
+        schema_types::SchemaType,
     },
     open_cypher_parser::parse_query,
     query_planner::logical_plan::plan_builder::build_logical_plan,
@@ -23,7 +24,7 @@ fn create_test_schema() -> GraphSchema {
             table_name: "persons".to_string(),
             column_names: vec!["id".to_string(), "name".to_string()],
             primary_keys: "id".to_string(),
-            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
@@ -60,8 +61,8 @@ fn create_test_schema() -> GraphSchema {
             to_node_table: "persons".to_string(),
             from_id: Identifier::from("follower_id"),
             to_id: Identifier::from("followed_id"),
-            from_node_id_dtype: "UInt64".to_string(),
-            to_node_id_dtype: "UInt64".to_string(),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,

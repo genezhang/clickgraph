@@ -2974,6 +2974,7 @@ mod tests {
     use super::*;
     use crate::graph_catalog::config::Identifier;
     use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema};
+    use crate::graph_catalog::schema_types::SchemaType;
     use std::collections::HashMap;
 
     #[test]
@@ -3157,7 +3158,7 @@ mod tests {
                     "parent_id".to_string(),
                 ],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+                node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,

@@ -2,6 +2,7 @@
 
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
+use crate::graph_catalog::schema_types::SchemaType;
 use crate::query_planner::analyzer::view_resolver::ViewResolver;
 use std::collections::HashMap;
 
@@ -21,7 +22,7 @@ mod tests {
             primary_keys: "user_id".to_string(),
             node_id: crate::graph_catalog::graph_schema::NodeIdSchema::single(
                 "user_id".to_string(),
-                "UInt64".to_string(),
+                crate::graph_catalog::schema_types::SchemaType::Integer,
             ),
             property_mappings: HashMap::new(),
             view_parameters: None,
@@ -49,8 +50,8 @@ mod tests {
             to_node_table: "users".to_string(),
             from_id: Identifier::from("follower_id"),
             to_id: Identifier::from("followed_id"),
-            from_node_id_dtype: "UInt64".to_string(),
-            to_node_id_dtype: "UInt64".to_string(),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,

@@ -16,6 +16,7 @@ use super::GraphJoinInference;
 use crate::{
     graph_catalog::config::Identifier,
     graph_catalog::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema},
+    graph_catalog::schema_types::SchemaType,
     query_planner::{
         analyzer::analyzer_pass::AnalyzerPass,
         logical_expr::{
@@ -39,7 +40,7 @@ fn create_test_graph_schema() -> GraphSchema {
             table_name: "Person".to_string(),
             column_names: vec!["id".to_string(), "name".to_string(), "age".to_string()],
             primary_keys: "id".to_string(),
-            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -63,7 +64,7 @@ fn create_test_graph_schema() -> GraphSchema {
             table_name: "Company".to_string(),
             column_names: vec!["id".to_string(), "name".to_string(), "founded".to_string()],
             primary_keys: "id".to_string(),
-            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -96,8 +97,8 @@ fn create_test_graph_schema() -> GraphSchema {
             to_node_table: "Person".to_string(),
             from_id: Identifier::from("from_id"),
             to_id: Identifier::from("to_id"),
-            from_node_id_dtype: "UInt64".to_string(),
-            to_node_id_dtype: "UInt64".to_string(),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -134,8 +135,8 @@ fn create_test_graph_schema() -> GraphSchema {
             to_node_table: "Company".to_string(),
             from_id: Identifier::from("from_id"),
             to_id: Identifier::from("to_id"),
-            from_node_id_dtype: "UInt64".to_string(),
-            to_node_id_dtype: "UInt64".to_string(),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -901,7 +902,7 @@ fn create_self_referencing_fk_schema() -> GraphSchema {
                 "parent_id".to_string(),
             ],
             primary_keys: "object_id".to_string(),
-            node_id: NodeIdSchema::single("object_id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("object_id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert(
@@ -946,8 +947,8 @@ fn create_self_referencing_fk_schema() -> GraphSchema {
             to_node_table: "fs_objects".to_string(),
             from_id: Identifier::from("parent_id"), // FK column
             to_id: Identifier::from("object_id"),   // PK column
-            from_node_id_dtype: "UInt64".to_string(),
-            to_node_id_dtype: "UInt64".to_string(),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -988,7 +989,7 @@ fn create_non_self_referencing_fk_schema() -> GraphSchema {
                 "total".to_string(),
             ],
             primary_keys: "order_id".to_string(),
-            node_id: NodeIdSchema::single("order_id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("order_id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert(
@@ -1023,7 +1024,7 @@ fn create_non_self_referencing_fk_schema() -> GraphSchema {
             table_name: "customers".to_string(),
             column_names: vec!["customer_id".to_string(), "name".to_string()],
             primary_keys: "customer_id".to_string(),
-            node_id: NodeIdSchema::single("customer_id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("customer_id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert(
@@ -1064,8 +1065,8 @@ fn create_non_self_referencing_fk_schema() -> GraphSchema {
             to_node_table: "customers".to_string(),
             from_id: Identifier::from("order_id"), // Order's PK
             to_id: Identifier::from("customer_id"), // FK pointing to Customer
-            from_node_id_dtype: "UInt64".to_string(),
-            to_node_id_dtype: "UInt64".to_string(),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -1394,7 +1395,7 @@ fn create_composite_id_graph_schema() -> GraphSchema {
             table_name: "customers".to_string(),
             column_names: vec!["customer_id".to_string(), "name".to_string()],
             primary_keys: "customer_id".to_string(),
-            node_id: NodeIdSchema::single("customer_id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("customer_id".to_string(), SchemaType::Integer),
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -1423,7 +1424,7 @@ fn create_composite_id_graph_schema() -> GraphSchema {
             primary_keys: "bank_id".to_string(),
             node_id: NodeIdSchema::composite(
                 vec!["bank_id".to_string(), "account_number".to_string()],
-                "String".to_string(),
+                SchemaType::String,
             ),
             property_mappings: HashMap::new(),
             view_parameters: None,
@@ -1458,8 +1459,8 @@ fn create_composite_id_graph_schema() -> GraphSchema {
             to_node_table: "accounts".to_string(),
             from_id: Identifier::from("customer_id"),
             to_id: Identifier::Composite(vec!["bank_id".to_string(), "account_number".to_string()]),
-            from_node_id_dtype: "UInt64".to_string(),
-            to_node_id_dtype: "String".to_string(),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::String,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,

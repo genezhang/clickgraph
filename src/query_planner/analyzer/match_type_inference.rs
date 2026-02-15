@@ -20,6 +20,7 @@
 //! ```
 
 use crate::graph_catalog::graph_schema::GraphSchema;
+use crate::graph_catalog::schema_types::SchemaType;
 use crate::open_cypher_parser::ast;
 use crate::query_planner::logical_plan::errors::LogicalPlanError;
 use crate::query_planner::logical_plan::plan_builder::LogicalPlanResult;
@@ -514,7 +515,7 @@ mod tests {
                 table_name: "users".to_string(),
                 column_names: vec!["user_id".to_string()],
                 primary_keys: "user_id".to_string(),
-                node_id: NodeIdSchema::single("user_id".to_string(), "UInt64".to_string()),
+                node_id: NodeIdSchema::single("user_id".to_string(), SchemaType::Integer),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -536,7 +537,7 @@ mod tests {
                 table_name: "posts".to_string(),
                 column_names: vec!["post_id".to_string()],
                 primary_keys: "post_id".to_string(),
-                node_id: NodeIdSchema::single("post_id".to_string(), "UInt64".to_string()),
+                node_id: NodeIdSchema::single("post_id".to_string(), SchemaType::Integer),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -565,8 +566,8 @@ mod tests {
                 to_node_table: "users".to_string(),
                 from_id: Identifier::from("follower_id"),
                 to_id: Identifier::from("followed_id"),
-                from_node_id_dtype: "UInt64".to_string(),
-                to_node_id_dtype: "UInt64".to_string(),
+                from_node_id_dtype: SchemaType::Integer,
+                to_node_id_dtype: SchemaType::Integer,
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -597,8 +598,8 @@ mod tests {
                 to_node_table: "posts".to_string(),
                 from_id: Identifier::from("user_id"),
                 to_id: Identifier::from("post_id"),
-                from_node_id_dtype: "UInt64".to_string(),
-                to_node_id_dtype: "UInt64".to_string(),
+                from_node_id_dtype: SchemaType::Integer,
+                to_node_id_dtype: SchemaType::Integer,
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -630,7 +631,7 @@ mod tests {
                 table_name: "nodes".to_string(),
                 column_names: vec!["id".to_string()],
                 primary_keys: "id".to_string(),
-                node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+                node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -659,8 +660,8 @@ mod tests {
                 to_node_table: "nodes".to_string(),
                 from_id: Identifier::from("from_id"),
                 to_id: Identifier::from("to_id"),
-                from_node_id_dtype: "UInt64".to_string(),
-                to_node_id_dtype: "UInt64".to_string(),
+                from_node_id_dtype: SchemaType::Integer,
+                to_node_id_dtype: SchemaType::Integer,
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,

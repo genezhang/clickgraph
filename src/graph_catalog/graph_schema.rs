@@ -171,8 +171,8 @@ pub struct RelationshipSchema {
     pub to_node_table: String,
     pub from_id: Identifier, // FK column(s) for source node ID (e.g., "user1_id" or ["bank_id", "account_number"])
     pub to_id: Identifier, // FK column(s) for target node ID (e.g., "user2_id" or ["to_bank_id", "to_account_number"])
-    pub from_node_id_dtype: String,
-    pub to_node_id_dtype: String,
+    pub from_node_id_dtype: SchemaType,
+    pub to_node_id_dtype: SchemaType,
     pub property_mappings: HashMap<String, PropertyValue>,
     /// Optional: List of view parameters for parameterized views
     pub view_parameters: Option<Vec<String>>,
@@ -355,13 +355,13 @@ pub enum GraphSchemaElement {
 pub struct NodeIdSchema {
     /// The identifier - can be single column or composite
     pub id: Identifier,
-    /// Data type (e.g., "UInt64", "String") - informational, may be unused
-    pub dtype: String,
+    /// Generic data type (Integer, String, etc.) - used for validation
+    pub dtype: crate::graph_catalog::schema_types::SchemaType,
 }
 
 impl NodeIdSchema {
     /// Create a new NodeIdSchema with a single column identifier
-    pub fn single(column: String, dtype: String) -> Self {
+    pub fn single(column: String, dtype: crate::graph_catalog::schema_types::SchemaType) -> Self {
         NodeIdSchema {
             id: Identifier::Single(column),
             dtype,
@@ -369,7 +369,10 @@ impl NodeIdSchema {
     }
 
     /// Create a new NodeIdSchema with a composite identifier
-    pub fn composite(columns: Vec<String>, dtype: String) -> Self {
+    pub fn composite(
+        columns: Vec<String>,
+        dtype: crate::graph_catalog::schema_types::SchemaType,
+    ) -> Self {
         NodeIdSchema {
             id: Identifier::Composite(columns),
             dtype,
@@ -1566,8 +1569,8 @@ mod tests {
             to_node_table: "airports".to_string(),
             from_id: Identifier::from("Origin"),
             to_id: Identifier::from("Dest"),
-            from_node_id_dtype: "String".to_string(),
-            to_node_id_dtype: "String".to_string(),
+            from_node_id_dtype: SchemaType::String,
+            to_node_id_dtype: SchemaType::String,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -1636,8 +1639,8 @@ mod tests {
             to_node_table: "posts".to_string(),
             from_id: Identifier::from("user_id"),
             to_id: Identifier::from("post_id"),
-            from_node_id_dtype: "UInt64".to_string(),
-            to_node_id_dtype: "UInt64".to_string(),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -1689,7 +1692,7 @@ mod tests {
             table_name: "flights".to_string(),
             column_names: vec![],
             primary_keys: "code".to_string(),
-            node_id: NodeIdSchema::single("code".to_string(), "String".to_string()),
+            node_id: NodeIdSchema::single("code".to_string(), SchemaType::String),
             property_mappings: HashMap::new(), // Empty = denormalized
             view_parameters: None,
             engine: None,
@@ -1714,8 +1717,8 @@ mod tests {
             to_node_table: "airports".to_string(),
             from_id: Identifier::from("origin_code"),
             to_id: Identifier::from("dest_code"),
-            from_node_id_dtype: "String".to_string(),
-            to_node_id_dtype: "String".to_string(),
+            from_node_id_dtype: SchemaType::String,
+            to_node_id_dtype: SchemaType::String,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -1755,7 +1758,7 @@ mod tests {
             table_name: "airports".to_string(), // Different table
             column_names: vec![],
             primary_keys: "code".to_string(),
-            node_id: NodeIdSchema::single("code".to_string(), "String".to_string()),
+            node_id: NodeIdSchema::single("code".to_string(), SchemaType::String),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert(
@@ -1791,8 +1794,8 @@ mod tests {
             to_node_table: "airports".to_string(),
             from_id: Identifier::from("origin_code"),
             to_id: Identifier::from("dest_code"),
-            from_node_id_dtype: "String".to_string(),
-            to_node_id_dtype: "String".to_string(),
+            from_node_id_dtype: SchemaType::String,
+            to_node_id_dtype: SchemaType::String,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -1836,7 +1839,7 @@ mod tests {
             table_name: "flights".to_string(), // Same as edge
             column_names: vec![],
             primary_keys: "code".to_string(),
-            node_id: NodeIdSchema::single("code".to_string(), "String".to_string()),
+            node_id: NodeIdSchema::single("code".to_string(), SchemaType::String),
             property_mappings: HashMap::new(), // Empty
             view_parameters: None,
             engine: None,
@@ -1856,7 +1859,7 @@ mod tests {
             table_name: "users".to_string(), // Different from edge
             column_names: vec![],
             primary_keys: "user_id".to_string(),
-            node_id: NodeIdSchema::single("user_id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("user_id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert(
@@ -1896,8 +1899,8 @@ mod tests {
             to_node_table: "users".to_string(),
             from_id: Identifier::from("origin_code"),
             to_id: Identifier::from("user_id"),
-            from_node_id_dtype: "String".to_string(),
-            to_node_id_dtype: "UInt64".to_string(),
+            from_node_id_dtype: SchemaType::String,
+            to_node_id_dtype: SchemaType::Integer,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -1943,7 +1946,7 @@ mod tests {
             table_name: "users".to_string(),
             column_names: vec![],
             primary_keys: "user_id".to_string(),
-            node_id: NodeIdSchema::single("user_id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("user_id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert(
@@ -1974,7 +1977,7 @@ mod tests {
             table_name: "posts".to_string(), // Same as edge
             column_names: vec![],
             primary_keys: "post_id".to_string(),
-            node_id: NodeIdSchema::single("post_id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("post_id".to_string(), SchemaType::Integer),
             property_mappings: HashMap::new(), // Empty - denormalized
             view_parameters: None,
             engine: None,
@@ -2003,8 +2006,8 @@ mod tests {
             to_node_table: "posts".to_string(),
             from_id: Identifier::from("author_id"),
             to_id: Identifier::from("id"),
-            from_node_id_dtype: "UInt64".to_string(),
-            to_node_id_dtype: "UInt64".to_string(),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -2053,7 +2056,7 @@ mod tests {
             table_name: "flights".to_string(),
             column_names: vec![],
             primary_keys: "code".to_string(),
-            node_id: NodeIdSchema::single("code".to_string(), "String".to_string()),
+            node_id: NodeIdSchema::single("code".to_string(), SchemaType::String),
             property_mappings: {
                 let mut props = HashMap::new();
                 // One or two direct mappings allowed
@@ -2093,8 +2096,8 @@ mod tests {
             to_node_table: "airports".to_string(),
             from_id: Identifier::from("origin_code"),
             to_id: Identifier::from("dest_code"),
-            from_node_id_dtype: "String".to_string(),
-            to_node_id_dtype: "String".to_string(),
+            from_node_id_dtype: SchemaType::String,
+            to_node_id_dtype: SchemaType::String,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -2131,7 +2134,7 @@ mod tests {
             table_name: "flights".to_string(),
             column_names: vec![],
             primary_keys: "code".to_string(),
-            node_id: NodeIdSchema::single("code".to_string(), "String".to_string()),
+            node_id: NodeIdSchema::single("code".to_string(), SchemaType::String),
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -2156,8 +2159,8 @@ mod tests {
             to_node_table: "airports".to_string(),
             from_id: Identifier::from("origin_code"),
             to_id: Identifier::from("dest_code"),
-            from_node_id_dtype: "String".to_string(),
-            to_node_id_dtype: "String".to_string(),
+            from_node_id_dtype: SchemaType::String,
+            to_node_id_dtype: SchemaType::String,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -2198,7 +2201,7 @@ mod tests {
             table_name: "flights".to_string(),
             column_names: vec![],
             primary_keys: "code".to_string(),
-            node_id: NodeIdSchema::single("code".to_string(), "String".to_string()),
+            node_id: NodeIdSchema::single("code".to_string(), SchemaType::String),
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -2226,8 +2229,8 @@ mod tests {
             to_node_table: "airports".to_string(),
             from_id: Identifier::from("origin_code"),
             to_id: Identifier::from("dest_code"),
-            from_node_id_dtype: "String".to_string(),
-            to_node_id_dtype: "String".to_string(),
+            from_node_id_dtype: SchemaType::String,
+            to_node_id_dtype: SchemaType::String,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -2259,7 +2262,7 @@ mod tests {
             table_name: "flights".to_string(),
             column_names: vec![],
             primary_keys: "code".to_string(),
-            node_id: NodeIdSchema::single("code".to_string(), "String".to_string()),
+            node_id: NodeIdSchema::single("code".to_string(), SchemaType::String),
             is_denormalized: false,
             from_properties: None,
             to_properties: None,
@@ -2306,8 +2309,8 @@ mod tests {
             to_node_table: "airports".to_string(),
             from_id: Identifier::from("origin_code"),
             to_id: Identifier::from("dest_code"),
-            from_node_id_dtype: "String".to_string(),
-            to_node_id_dtype: "String".to_string(),
+            from_node_id_dtype: SchemaType::String,
+            to_node_id_dtype: SchemaType::String,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -2350,8 +2353,8 @@ mod tests {
             to_node_table: "domains".to_string(),
             from_id: Identifier::from("id.orig_h"),
             to_id: Identifier::from("query"),
-            from_node_id_dtype: "String".to_string(),
-            to_node_id_dtype: "String".to_string(),
+            from_node_id_dtype: SchemaType::String,
+            to_node_id_dtype: SchemaType::String,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -2381,8 +2384,8 @@ mod tests {
             to_node_table: "resolved_ips".to_string(),
             from_id: Identifier::from("query"),
             to_id: Identifier::from("answers"),
-            from_node_id_dtype: "String".to_string(),
-            to_node_id_dtype: "String".to_string(),
+            from_node_id_dtype: SchemaType::String,
+            to_node_id_dtype: SchemaType::String,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -2435,8 +2438,8 @@ mod tests {
             to_node_table: "b_nodes".to_string(),
             from_id: Identifier::from("a_id"),
             to_id: Identifier::from("b_id"),
-            from_node_id_dtype: "String".to_string(),
-            to_node_id_dtype: "String".to_string(),
+            from_node_id_dtype: SchemaType::String,
+            to_node_id_dtype: SchemaType::String,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -2465,8 +2468,8 @@ mod tests {
             to_node_table: "c_nodes".to_string(),
             from_id: Identifier::from("b_id"),
             to_id: Identifier::from("c_id"),
-            from_node_id_dtype: "String".to_string(),
-            to_node_id_dtype: "String".to_string(),
+            from_node_id_dtype: SchemaType::String,
+            to_node_id_dtype: SchemaType::String,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -2510,8 +2513,8 @@ mod tests {
             to_node_table: "b_nodes".to_string(),
             from_id: Identifier::from("a_id"),
             to_id: Identifier::from("b_id"),
-            from_node_id_dtype: "String".to_string(),
-            to_node_id_dtype: "String".to_string(),
+            from_node_id_dtype: SchemaType::String,
+            to_node_id_dtype: SchemaType::String,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -2540,8 +2543,8 @@ mod tests {
             to_node_table: "d_nodes".to_string(),
             from_id: Identifier::from("c_id"),
             to_id: Identifier::from("d_id"),
-            from_node_id_dtype: "String".to_string(),
-            to_node_id_dtype: "String".to_string(),
+            from_node_id_dtype: SchemaType::String,
+            to_node_id_dtype: SchemaType::String,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,

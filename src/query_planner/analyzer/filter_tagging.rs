@@ -24,6 +24,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     graph_catalog::graph_schema::GraphSchema,
+    graph_catalog::schema_types::SchemaType,
     query_planner::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
@@ -2458,7 +2459,7 @@ mod tests {
                     "status".to_string(),
                 ],
                 primary_keys: "user_id".to_string(),
-                node_id: NodeIdSchema::single("user_id".to_string(), "UInt32".to_string()),
+                node_id: NodeIdSchema::single("user_id".to_string(), SchemaType::Integer),
                 property_mappings: person_props,
                 view_parameters: None,
                 engine: None,
@@ -2496,7 +2497,7 @@ mod tests {
                     "owner_id".to_string(),
                 ],
                 primary_keys: "company_id".to_string(),
-                node_id: NodeIdSchema::single("company_id".to_string(), "UInt32".to_string()),
+                node_id: NodeIdSchema::single("company_id".to_string(), SchemaType::Integer),
                 property_mappings: company_props,
                 view_parameters: None,
                 engine: None,
@@ -2537,8 +2538,8 @@ mod tests {
                 to_node_table: "persons".to_string(),
                 from_id: Identifier::from("from_node_id"),
                 to_id: Identifier::from("to_node_id"),
-                from_node_id_dtype: "UInt32".to_string(),
-                to_node_id_dtype: "UInt32".to_string(),
+                from_node_id_dtype: SchemaType::Integer,
+                to_node_id_dtype: SchemaType::Integer,
                 property_mappings: follows_props,
                 view_parameters: None,
                 engine: None,

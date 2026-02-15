@@ -1,9 +1,10 @@
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::NodeIdSchema;
+use crate::graph_catalog::schema_types::SchemaType;
 
 #[test]
 fn test_single_node_id_sql_tuple() {
-    let single_id = NodeIdSchema::single("user_id".to_string(), "UInt64".to_string());
+    let single_id = NodeIdSchema::single("user_id".to_string(), SchemaType::Integer);
 
     // Should return plain column reference (no tuple)
     assert_eq!(single_id.sql_tuple("u"), "u.user_id");
@@ -16,7 +17,7 @@ fn test_single_node_id_sql_tuple() {
 fn test_composite_node_id_sql_tuple() {
     let composite_id = NodeIdSchema::composite(
         vec!["bank_id".to_string(), "account_number".to_string()],
-        "Tuple(String, String)".to_string(),
+        SchemaType::String,
     );
 
     // Should return tuple expression
@@ -43,13 +44,13 @@ fn test_identifier_to_sql_tuple() {
 
 #[test]
 fn test_node_id_schema_columns() {
-    let single = NodeIdSchema::single("user_id".to_string(), "UInt64".to_string());
+    let single = NodeIdSchema::single("user_id".to_string(), SchemaType::Integer);
     assert_eq!(single.columns(), vec!["user_id"]);
     assert!(!single.is_composite());
 
     let composite = NodeIdSchema::composite(
         vec!["col1".to_string(), "col2".to_string()],
-        "Tuple".to_string(),
+        SchemaType::String,
     );
     assert_eq!(composite.columns(), vec!["col1", "col2"]);
     assert!(composite.is_composite());
@@ -59,7 +60,7 @@ fn test_node_id_schema_columns() {
 fn test_columns_with_alias() {
     let composite = NodeIdSchema::composite(
         vec!["bank_id".to_string(), "account_number".to_string()],
-        "Tuple".to_string(),
+        SchemaType::String,
     );
 
     assert_eq!(

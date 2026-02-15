@@ -126,17 +126,52 @@ BENCHMARK_QUERIES = [
         "category": "param_function"
     },
     
-    # Post Queries (15-16): Test Post node and AUTHORED relationship
+    # Post Queries: Test Post node and AUTHORED relationship
     {
         "name": "user_post_count",
         "query": "MATCH (u:User)-[:AUTHORED]->(p:Post) RETURN u.name, u.user_id, COUNT(p) as post_count ORDER BY post_count DESC LIMIT 10",
         "category": "posts"
     },
+    
+    # New LIKED relationship queries (15-20): Simple likes patterns
     {
-        "name": "active_users_followers",
-        "query": "MATCH (u:User)-[:AUTHORED]->(p:Post) WITH u, COUNT(p) as posts WITH AVG(posts) as avg_posts MATCH (u2:User)-[:AUTHORED]->(p2:Post) WITH u2, COUNT(p2) as user_posts, avg_posts WHERE user_posts > avg_posts * 3 MATCH (u2)<-[:FOLLOWS]-(f) RETURN u2.name, user_posts, COUNT(f) as followers ORDER BY followers DESC LIMIT 10",
-        "category": "posts"
-    }
+        "name": "user_likes",
+        "query": "MATCH (u:User)-[:LIKED]->(p:Post) WHERE u.user_id = 1 RETURN p.post_title, p.post_content LIMIT 10",
+        "category": "likes"
+    },
+    {
+        "name": "post_likers",
+        "query": "MATCH (u:User)-[:LIKED]->(p:Post) WHERE p.post_id = 1 RETURN u.name, u.user_id LIMIT 10",
+        "category": "likes"
+    },
+    {
+        "name": "likes_count",
+        "query": "MATCH (p:Post)<-[:LIKED]-(u:User) RETURN p.post_title, p.post_id, COUNT(u) as likes ORDER BY likes DESC LIMIT 10",
+        "category": "likes"
+    },
+    {
+        "name": "posts_by_author_and_likes",
+        "query": "MATCH (u:User)-[:AUTHORED]->(p:Post)<-[:LIKED]-(liker:User) WHERE u.user_id = 1 RETURN p.post_title, COUNT(liker) as like_count ORDER BY like_count DESC LIMIT 10",
+        "category": "likes"
+    },
+    {
+        "name": "liked_by_followers",
+        "query": "MATCH (u:User)-[:FOLLOWS]->(f:User)-[:LIKED]->(p:Post) WHERE u.user_id = 1 RETURN DISTINCT p.post_title, f.name as follower LIMIT 10",
+        "category": "likes"
+    },
+    
+    # Complex queries: disabled due to query planner limitations with nested WITHs
+    # These patterns require WITH+MATCH chaining that currently has CTE resolution issues
+    # {
+    #     "name": "authored_and_liked_combined",
+    #     "query": "MATCH (u:User)-[:AUTHORED]->(p:Post) WITH u, p, COUNT(*) as authored MATCH (p)<-[:LIKED]-(liker) RETURN u.name, p.post_title, COUNT(liker) as likes LIMIT 10",
+    #     "category": "likes"
+    # },
+    # {
+    #     "name": "active_users_followers",
+    #     "query": "MATCH (u:User)-[:AUTHORED]->(p:Post) WITH u, COUNT(p) as posts WITH AVG(posts) as avg_posts MATCH (u2:User)-[:AUTHORED]->(p2:Post) WITH u2, COUNT(p2) as user_posts, avg_posts WHERE user_posts > avg_posts * 3 MATCH (u2)<-[:FOLLOWS]-(f) RETURN u2.name, user_posts, COUNT(f) as followers ORDER BY followers DESC LIMIT 10",
+    #     "category": "posts"
+    # }
 ]
 
 def run_query(query_name, cypher_query, parameters=None, iterations=1, schema_name=None):

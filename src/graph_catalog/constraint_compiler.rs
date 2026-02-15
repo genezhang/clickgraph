@@ -30,6 +30,7 @@
 use crate::graph_catalog::errors::GraphSchemaError;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::NodeSchema;
+use crate::graph_catalog::schema_types::SchemaType;
 
 /// Compile an edge constraint expression into SQL predicate
 ///
@@ -170,7 +171,10 @@ mod tests {
             table_name: format!("{}_table", label),
             column_names,
             primary_keys: label.to_string(),
-            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single(
+                "id".to_string(),
+                crate::graph_catalog::schema_types::SchemaType::Integer,
+            ),
             property_mappings,
             view_parameters: None,
             engine: None,

@@ -410,16 +410,65 @@ impl<'a> IdFunctionTransformer<'a> {
             }
         }
 
-        // ID not in cache - this happens when looking up an ID never seen before
-        // We cannot resolve it without knowing which table/label it belongs to
+        // ID not in cache - try fallback bit-pattern decoding
+        // LIMITATION: Only works for simple numeric primary keys (< 2^31)
+        // Won't work for: string IDs, UUIDs, composite keys, or hashed values
         log::warn!(
-            "id() transform: id({}) = {} cannot be resolved (not in global cache)",
+            "id() transform: id({}) = {} not in cache, trying bit-pattern decode",
             var,
             id_value
         );
 
-        // Return false to indicate no match
-        // The user should use label filters like MATCH (n:User) WHERE id(n) = X
+        // Try direct decoding from bit pattern
+        use crate::server::bolt_protocol::id_mapper::IdMapper;
+        if let Some((label, id_str)) = IdMapper::decode_for_query(id_value) {
+            // Validate that the label's ID column is actually a numeric type
+            if let Some(schema) = self.schema {
+                if let Ok(node_schema) = schema.node_schema(&label) {
+                    // Check if ID column type is numeric (Integer type in our SchemaType enum)
+                    use crate::graph_catalog::schema_types::SchemaType;
+                    let is_numeric = matches!(node_schema.node_id.dtype, SchemaType::Integer);
+
+                    if !is_numeric {
+                        log::warn!(
+                            "id() transform: Skipping bit-pattern decode for {}:{} - ID column type '{:?}' is not Integer",
+                            label, id_str, node_schema.node_id.dtype
+                        );
+                        return Expression::Literal(Literal::Boolean(false));
+                    }
+                } else {
+                    log::warn!("id() transform: Label '{}' not found in schema", label);
+                    return Expression::Literal(Literal::Boolean(false));
+                }
+            }
+
+            log::info!(
+                "id() transform: id({}) = {} → {}:{} (from bit pattern, validated numeric type)",
+                var,
+                id_value,
+                label,
+                id_str
+            );
+            // Record label constraint for UNION pruning
+            self.label_constraints
+                .entry(var.to_string())
+                .or_default()
+                .insert(label.to_string());
+            self.id_values_by_label
+                .entry(var.to_string())
+                .or_default()
+                .entry(label.to_string())
+                .or_default()
+                .push(id_str.clone());
+            return self.build_label_and_id_check(var, &label, &id_str);
+        }
+
+        // Cannot decode - return false to indicate no match
+        log::warn!(
+            "id() transform: id({}) = {} cannot be decoded (not in cache and not a simple numeric ID)",
+            var,
+            id_value
+        );
         Expression::Literal(Literal::Boolean(false))
     }
 
@@ -450,12 +499,50 @@ impl<'a> IdFunctionTransformer<'a> {
             }
 
             // Fallback: Decode label from bit pattern
-            // NOTE: Bit-pattern decoding is unreliable across server restarts because
-            // label codes depend on registration order. Only the element_id cache
-            // (populated during the current session) is reliable. Skip unknown IDs
-            // rather than risk wrong-label SQL predicates.
+            // LIMITATION: Only works for simple numeric primary keys
+            use crate::server::bolt_protocol::id_mapper::IdMapper;
+            if let Some((label, id_str)) = IdMapper::decode_for_query(id_value) {
+                // Validate that the label's ID column is actually numeric
+                let mut is_valid = true;
+                if let Some(schema) = self.schema {
+                    if let Ok(node_schema) = schema.node_schema(&label) {
+                        use crate::graph_catalog::schema_types::SchemaType;
+                        let is_numeric = matches!(node_schema.node_id.dtype, SchemaType::Integer);
+                        if !is_numeric {
+                            log::warn!(
+                                "id() transform: Skipping {}:{} - ID type '{:?}' is not Integer",
+                                label,
+                                id_str,
+                                node_schema.node_id.dtype
+                            );
+                            is_valid = false;
+                        }
+                    } else {
+                        is_valid = false;
+                    }
+                }
+
+                if is_valid {
+                    log::info!(
+                        "id() transform: id({}) = {} → {}:{} (from bit pattern, validated)",
+                        var,
+                        id_value,
+                        label,
+                        id_str
+                    );
+                    labels_for_var.insert(label.to_string());
+                    ids_by_label
+                        .entry(label.to_string())
+                        .or_default()
+                        .push(id_str.clone());
+                    filters.push(self.build_label_and_id_check(var, &label, &id_str));
+                    continue;
+                }
+            }
+
+            // Cannot decode - skip this ID with warning
             log::warn!(
-                "id() transform: id({}) = {} cannot be resolved (not in session cache, skipping)",
+                "id() transform: id({}) = {} cannot be decoded (invalid format, skipping)",
                 var,
                 id_value
             );

@@ -31,6 +31,7 @@
 //! ```
 
 use crate::graph_catalog::graph_schema::{NodeSchema, RelationshipSchema};
+use crate::graph_catalog::schema_types::SchemaType;
 
 /// Check if a node is denormalized (has properties defined in relationships)
 ///
@@ -148,7 +149,10 @@ mod tests {
             "test_table".to_string(),
             vec!["id".to_string()],
             "id".to_string(),
-            NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            NodeIdSchema::single(
+                "id".to_string(),
+                crate::graph_catalog::schema_types::SchemaType::Integer,
+            ),
             HashMap::new(),
             None,
             None,
@@ -166,7 +170,10 @@ mod tests {
             "test_table".to_string(),
             vec!["id".to_string()],
             "id".to_string(),
-            NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            NodeIdSchema::single(
+                "id".to_string(),
+                crate::graph_catalog::schema_types::SchemaType::Integer,
+            ),
             HashMap::new(),
             None,
             None,
@@ -187,7 +194,10 @@ mod tests {
             "test_table".to_string(),
             vec!["id".to_string()],
             "id".to_string(),
-            NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            NodeIdSchema::single(
+                "id".to_string(),
+                crate::graph_catalog::schema_types::SchemaType::Integer,
+            ),
             HashMap::new(),
             None,
             None,
@@ -204,7 +214,10 @@ mod tests {
             "test_table".to_string(),
             vec!["id".to_string()],
             "id".to_string(),
-            NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            NodeIdSchema::single(
+                "id".to_string(),
+                crate::graph_catalog::schema_types::SchemaType::Integer,
+            ),
             HashMap::new(),
             None,
             None,

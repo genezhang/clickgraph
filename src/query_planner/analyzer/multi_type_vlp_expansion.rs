@@ -420,6 +420,7 @@ mod tests {
     use super::*;
     use crate::graph_catalog::config::Identifier;
     use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema};
+    use crate::graph_catalog::schema_types::SchemaType;
     use std::collections::HashMap;
 
     fn create_test_schema() -> GraphSchema {
@@ -434,7 +435,7 @@ mod tests {
                 table_name: "users".to_string(),
                 column_names: vec![],
                 primary_keys: "user_id".to_string(),
-                node_id: NodeIdSchema::single("user_id".to_string(), "UInt64".to_string()),
+                node_id: NodeIdSchema::single("user_id".to_string(), SchemaType::Integer),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -458,7 +459,7 @@ mod tests {
                 table_name: "posts".to_string(),
                 column_names: vec![],
                 primary_keys: "post_id".to_string(),
-                node_id: NodeIdSchema::single("post_id".to_string(), "UInt64".to_string()),
+                node_id: NodeIdSchema::single("post_id".to_string(), SchemaType::Integer),
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -487,8 +488,8 @@ mod tests {
                 to_node_table: "users".to_string(),
                 from_id: Identifier::from("follower_id"),
                 to_id: Identifier::from("followed_id"),
-                from_node_id_dtype: "UInt64".to_string(),
-                to_node_id_dtype: "UInt64".to_string(),
+                from_node_id_dtype: SchemaType::Integer,
+                to_node_id_dtype: SchemaType::Integer,
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,
@@ -521,8 +522,8 @@ mod tests {
                 to_node_table: "posts".to_string(),
                 from_id: Identifier::from("user_id"),
                 to_id: Identifier::from("post_id"),
-                from_node_id_dtype: "UInt64".to_string(),
-                to_node_id_dtype: "UInt64".to_string(),
+                from_node_id_dtype: SchemaType::Integer,
+                to_node_id_dtype: SchemaType::Integer,
                 property_mappings: HashMap::new(),
                 view_parameters: None,
                 engine: None,

@@ -2,6 +2,7 @@ use clickgraph::{
     graph_catalog::{
         expression_parser::PropertyValue,
         graph_schema::{GraphSchema, NodeIdSchema, NodeSchema},
+        schema_types::SchemaType,
     },
     open_cypher_parser::parse_query,
     query_planner::logical_plan::plan_builder::build_logical_plan,
@@ -23,7 +24,7 @@ fn create_test_schema() -> GraphSchema {
             table_name: "users".to_string(),
             column_names: vec!["id".to_string(), "name".to_string(), "age".to_string()],
             primary_keys: "id".to_string(),
-            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
@@ -56,7 +57,7 @@ fn create_test_schema() -> GraphSchema {
             table_name: "orders".to_string(),
             column_names: vec!["id".to_string(), "total".to_string()],
             primary_keys: "id".to_string(),
-            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
@@ -88,7 +89,7 @@ fn create_test_schema() -> GraphSchema {
             table_name: "products".to_string(),
             column_names: vec!["id".to_string(), "name".to_string(), "price".to_string()],
             primary_keys: "id".to_string(),
-            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
@@ -124,7 +125,7 @@ fn create_test_schema() -> GraphSchema {
             table_name: "persons".to_string(),
             column_names: vec!["id".to_string(), "name".to_string()],
             primary_keys: "id".to_string(),
-            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
@@ -156,7 +157,7 @@ fn create_test_schema() -> GraphSchema {
             table_name: "numbers".to_string(),
             column_names: vec!["id".to_string(), "value".to_string()],
             primary_keys: "id".to_string(),
-            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
@@ -188,7 +189,7 @@ fn create_test_schema() -> GraphSchema {
             table_name: "texts".to_string(),
             column_names: vec!["id".to_string(), "content".to_string()],
             primary_keys: "id".to_string(),
-            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert("id".to_string(), PropertyValue::Column("id".to_string()));
