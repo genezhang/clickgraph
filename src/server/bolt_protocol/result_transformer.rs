@@ -1094,6 +1094,27 @@ fn transform_to_relationship(
     let start_node_id = generate_id_from_element_id(&start_node_element_id);
     let end_node_id = generate_id_from_element_id(&end_node_element_id);
 
+    log::info!(
+        "🔗 Bolt Relationship BEFORE: var_name={}, rel_type={}, from_label={}, to_label={}, from_id_str={}, to_id_str={}",
+        var_name,
+        rel_type,
+        from_node_label,
+        to_node_label,
+        from_id_str,
+        to_id_str
+    );
+
+    log::debug!(
+        "🔗 Bolt Relationship DEBUG: type={}, from_label={}, to_label={}, from_id_str={}, to_id_str={}, from_node_element_id={}, to_node_element_id={}",
+        rel_type,
+        from_node_label,
+        to_node_label,
+        from_id_str,
+        to_id_str,
+        start_node_element_id,
+        end_node_element_id
+    );
+
     log::debug!(
         "🔗 Bolt Relationship: type={}, start={}({}) end={}({}), element_id={}",
         rel_type,
