@@ -1037,17 +1037,20 @@ fn build_node_schema(
             Identifier::Single(col) => col.as_str(),
             Identifier::Composite(cols) => cols.first().map(|s| s.as_str()).unwrap_or(""),
         };
-        
+
         if let Some(ch_type) = col_info.get(id_column) {
             log::debug!(
                 "Node '{}': ID column '{}' has ClickHouse type '{}', mapping to SchemaType",
-                node_def.label, id_column, ch_type
+                node_def.label,
+                id_column,
+                ch_type
             );
             crate::graph_catalog::schema_types::map_clickhouse_type(ch_type)
         } else {
             log::warn!(
                 "Node '{}': ID column '{}' not found in discovered columns, defaulting to Integer",
-                node_def.label, id_column
+                node_def.label,
+                id_column
             );
             SchemaType::Integer
         }
@@ -1942,7 +1945,11 @@ impl GraphSchemaConfig {
                 .await
                 .ok();
 
-            let discovery = TableDiscovery { columns, column_info, engine };
+            let discovery = TableDiscovery {
+                columns,
+                column_info,
+                engine,
+            };
 
             let node_schema = build_node_schema(node_def, &discovery)?;
             // Composite key for table-specific lookup
@@ -1984,7 +1991,11 @@ impl GraphSchemaConfig {
                 .await
                 .ok();
 
-            let discovery = TableDiscovery { columns, column_info: None, engine };
+            let discovery = TableDiscovery {
+                columns,
+                column_info: None,
+                engine,
+            };
 
             let rel_schema =
                 build_relationship_schema(rel_def, &default_node_type, &nodes, &discovery)?;
@@ -2020,7 +2031,11 @@ impl GraphSchemaConfig {
                         .await
                         .ok();
 
-                    let discovery = TableDiscovery { columns, column_info: None, engine };
+                    let discovery = TableDiscovery {
+                        columns,
+                        column_info: None,
+                        engine,
+                    };
 
                     let rel_schema = build_standard_edge_schema(std_edge, &nodes, &discovery)?;
                     // Use composite key: TYPE::FROM::TO

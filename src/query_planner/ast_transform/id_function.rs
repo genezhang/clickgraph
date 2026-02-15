@@ -428,7 +428,7 @@ impl<'a> IdFunctionTransformer<'a> {
                     // Check if ID column type is numeric (Integer type in our SchemaType enum)
                     use crate::graph_catalog::schema_types::SchemaType;
                     let is_numeric = matches!(node_schema.node_id.dtype, SchemaType::Integer);
-                    
+
                     if !is_numeric {
                         log::warn!(
                             "id() transform: Skipping bit-pattern decode for {}:{} - ID column type '{:?}' is not Integer",
@@ -441,7 +441,7 @@ impl<'a> IdFunctionTransformer<'a> {
                     return Expression::Literal(Literal::Boolean(false));
                 }
             }
-            
+
             log::info!(
                 "id() transform: id({}) = {} → {}:{} (from bit pattern, validated numeric type)",
                 var,
@@ -511,7 +511,9 @@ impl<'a> IdFunctionTransformer<'a> {
                         if !is_numeric {
                             log::warn!(
                                 "id() transform: Skipping {}:{} - ID type '{:?}' is not Integer",
-                                label, id_str, node_schema.node_id.dtype
+                                label,
+                                id_str,
+                                node_schema.node_id.dtype
                             );
                             is_valid = false;
                         }
@@ -519,7 +521,7 @@ impl<'a> IdFunctionTransformer<'a> {
                         is_valid = false;
                     }
                 }
-                
+
                 if is_valid {
                     log::info!(
                         "id() transform: id({}) = {} → {}:{} (from bit pattern, validated)",

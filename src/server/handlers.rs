@@ -192,7 +192,7 @@ pub async fn query_handler(
     let clean_upper = clean_query.trim().to_uppercase();
     if clean_upper.starts_with("SHOW DATABASES") {
         log::info!("📊 SHOW DATABASES query detected - returning available schemas");
-        
+
         // Build database list from registered schemas
         let mut databases = Vec::new();
         if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
@@ -200,18 +200,33 @@ pub async fn query_handler(
             for (name, _) in schemas_map.iter() {
                 let mut record = serde_json::Map::new();
                 record.insert("name".to_string(), serde_json::Value::String(name.clone()));
-                record.insert("type".to_string(), serde_json::Value::String("standard".to_string()));
+                record.insert(
+                    "type".to_string(),
+                    serde_json::Value::String("standard".to_string()),
+                );
                 record.insert("aliases".to_string(), serde_json::Value::Array(vec![]));
-                record.insert("access".to_string(), serde_json::Value::String("read-write".to_string()));
-                record.insert("role".to_string(), serde_json::Value::String("primary".to_string()));
+                record.insert(
+                    "access".to_string(),
+                    serde_json::Value::String("read-write".to_string()),
+                );
+                record.insert(
+                    "role".to_string(),
+                    serde_json::Value::String("primary".to_string()),
+                );
                 record.insert("writer".to_string(), serde_json::Value::Bool(true));
-                record.insert("default".to_string(), serde_json::Value::Bool(name == "default"));
-                record.insert("home".to_string(), serde_json::Value::Bool(name == "default"));
-                
+                record.insert(
+                    "default".to_string(),
+                    serde_json::Value::Bool(name == "default"),
+                );
+                record.insert(
+                    "home".to_string(),
+                    serde_json::Value::Bool(name == "default"),
+                );
+
                 databases.push(serde_json::Value::Object(record));
             }
         }
-        
+
         let response = DatabaseListResponse { databases };
         return Ok(Json(response).into_response());
     }
@@ -579,7 +594,7 @@ async fn query_handler_inner(
         // NOTE: HTTP is stateless, so we create a temporary IdMapper per request
         use crate::query_planner::ast_transform;
         use crate::server::bolt_protocol::id_mapper::IdMapper;
-        
+
         let mut id_mapper = IdMapper::new();
         id_mapper.set_scope(Some(schema_name.clone()), None); // HTTP has no tenant_id
         let ast_arena = ast_transform::StringArena::new();
@@ -589,7 +604,7 @@ async fn query_handler_inner(
             &id_mapper,
             Some(&graph_schema),
         );
-        
+
         metrics.parse_time = parse_start.elapsed().as_secs_f64();
 
         let query_type = query_planner::get_statement_query_type(&cypher_statement);

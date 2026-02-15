@@ -1321,7 +1321,10 @@ mod tests {
             table_name: table.to_string(),
             column_names: vec![id_col.to_string(), "name".to_string()],
             primary_keys: id_col.to_string(),
-            node_id: NodeIdSchema::single(id_col.to_string(), crate::graph_catalog::schema_types::SchemaType::Integer),
+            node_id: NodeIdSchema::single(
+                id_col.to_string(),
+                crate::graph_catalog::schema_types::SchemaType::Integer,
+            ),
             property_mappings: HashMap::from([
                 ("id".to_string(), PropertyValue::Column(id_col.to_string())),
                 (
@@ -1349,7 +1352,10 @@ mod tests {
             table_name: table.to_string(),
             column_names: vec![id_col.to_string()],
             primary_keys: id_col.to_string(),
-            node_id: NodeIdSchema::single(id_col.to_string(), crate::graph_catalog::schema_types::SchemaType::String),
+            node_id: NodeIdSchema::single(
+                id_col.to_string(),
+                crate::graph_catalog::schema_types::SchemaType::String,
+            ),
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,

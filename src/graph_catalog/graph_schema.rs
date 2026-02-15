@@ -369,7 +369,10 @@ impl NodeIdSchema {
     }
 
     /// Create a new NodeIdSchema with a composite identifier
-    pub fn composite(columns: Vec<String>, dtype: crate::graph_catalog::schema_types::SchemaType) -> Self {
+    pub fn composite(
+        columns: Vec<String>,
+        dtype: crate::graph_catalog::schema_types::SchemaType,
+    ) -> Self {
         NodeIdSchema {
             id: Identifier::Composite(columns),
             dtype,
