@@ -17,8 +17,8 @@ from datetime import datetime
 
 # ClickHouse connection
 CLICKHOUSE_URL = "http://localhost:18123"
-CLICKHOUSE_USER = "default"
-CLICKHOUSE_PASSWORD = "mypass"
+CLICKHOUSE_USER = "test_user"
+CLICKHOUSE_PASSWORD = "test_pass"
 
 # ClickGraph connection (for SQL generation verification)
 CLICKGRAPH_URL = "http://localhost:8080"
