@@ -1,0 +1,76 @@
+# ClickGraph Demo Schema
+# Small, simple dataset for end-user quick start with Neo4j Browser
+# Tables: users, posts, user_follows (relationships), post_likes (relationships)
+# Total rows: ~1000 (quick to generate, fast queries)
+
+database: social
+
+nodes:
+  User:
+    table: users
+    id_columns:
+      - user_id
+    properties:
+      user_id:
+        column: user_id
+        type: Int32
+      name:
+        column: name
+        type: String
+      email:
+        column: email
+        type: String
+      created_at:
+        column: created_at
+        type: DateTime
+
+  Post:
+    table: posts
+    id_columns:
+      - post_id
+    properties:
+      post_id:
+        column: post_id
+        type: Int32
+      content:
+        column: content
+        type: String
+      created_at:
+        column: created_at
+        type: DateTime
+
+relationships:
+  FOLLOWS:
+    table: user_follows
+    from_node: User
+    to_node: User
+    from_id_columns:
+      - follower_id
+    to_id_columns:
+      - followed_id
+    properties:
+      created_at:
+        column: created_at
+        type: DateTime
+
+  AUTHORED:
+    table: post_authored
+    from_node: User
+    to_node: Post
+    from_id_columns:
+      - user_id
+    to_id_columns:
+      - post_id
+
+  LIKED:
+    table: post_likes
+    from_node: User
+    to_node: Post
+    from_id_columns:
+      - user_id
+    to_id_columns:
+      - post_id
+    properties:
+      created_at:
+        column: created_at
+        type: DateTime
