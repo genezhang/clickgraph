@@ -46,7 +46,7 @@ pattern_schema.rs         ← PatternSchemaContext: unified pattern analysis abs
 | expression_parser.rs | 768 | nom parser for ClickHouse scalar expressions in property mappings |
 | filter_parser.rs | 681 | nom parser for SQL WHERE clause filters in schema definitions |
 | element_id.rs | 564 | Neo4j elementId generation and parsing |
-| schema_types.rs | 532 | Database-agnostic type enum with dialect-specific SQL literal generation |
+| schema_types.rs | 532 | **Database-agnostic SchemaType enum** (Integer, Float, String, Boolean, DateTime, Date, Uuid) with dialect-specific SQL literal generation. Used for node ID types and property types. |
 | engine_detection.rs | 481 | MergeTree engine family detection, FINAL keyword support |
 | composite_key_utils.rs | 318 | `TYPE::FROM::TO` composite key building, parsing, matching |
 | constraint_compiler.rs | 289 | Edge constraint expressions → SQL compilation |
@@ -114,17 +114,34 @@ queried from the context, NEVER re-derived by downstream code.
 Previously, schema detection logic was scattered across ~4800 lines in `graph_join_inference.rs`.
 `PatternSchemaContext` consolidates this into a single analysis point.
 
-### 5. GraphSchema.build() Constructs rel_type_index
+### 5. Schema Type Discovery (Feb 2026)
+`NodeIdSchema` and `RelationshipSchema` now use **strongly-typed `SchemaType` enum** instead of raw strings.
+
+**Type Discovery Pipeline**:
+1. `query_table_column_info()` — fetches actual column types from ClickHouse `system.columns`
+2. `map_clickhouse_type()` — converts database-specific types (UInt64, String, DateTime, etc.) to generic `SchemaType` enum
+3. `build_node_schema()` — populates `NodeIdSchema.dtype` with discovered type, falls back to `SchemaType::Integer`
+4. Type validation in `id()` function — validates `matches!(dtype, SchemaType::Integer)` before accepting bit-pattern decoded IDs
+
+**Benefits**:
+- ✅ Compile-time type safety (prevents typos like "Intger", "Sting")
+- ✅ Enables stateless ID decoding without session cache (browser click-to-expand works)
+- ✅ Database-agnostic (easy to add PostgreSQL, MySQL mappings)
+- ✅ Consistent with property type system
+
+**Breaking Change**: Test code must use `SchemaType::Integer` instead of `"Integer".to_string()` when creating schemas programmatically. YAML configs remain unchanged.
+
+### 6. GraphSchema.build() Constructs rel_type_index
 The `GraphSchema::build()` constructor (not `new()`) automatically builds the `rel_type_index`
 secondary index. **Always use `build()`** — `new()` is only for direct struct construction in
 tests that don't need type-based lookups.
 
-### 6. Polymorphic Edges Use `$any` Sentinel
+### 7. Polymorphic Edges Use `$any` Sentinel
 When a polymorphic edge definition uses `from_label_column` / `to_label_column`, the
 endpoint node labels are dynamically determined. The sentinel value `$any` in
 `from_label_values` / `to_label_values` means "match any label in this column."
 
-### 7. Two Conversion Paths in config.rs
+### 8. Two Conversion Paths in config.rs
 - **`to_graph_schema()`** — Sync, no DB connection. Used in tests and simple configs.
 - **`to_graph_schema_with_client()`** — Async, queries ClickHouse for auto-discovery
   (`system.columns`) and engine detection (`system.tables`). Used in production startup.
@@ -269,7 +286,7 @@ JoinStrategy:
 - `GraphSchema` — Container: `nodes: HashMap<label, NodeSchema>`, `relationships: HashMap<composite_key, RelationshipSchema>`, `rel_type_index`
 - `NodeSchema` — Node definition: `table_name`, `node_id`, `property_mappings`, `is_denormalized`, `from_properties`, `to_properties`, `filter`, `engine`
 - `RelationshipSchema` — Edge definition: `from_node`/`to_node` (labels), `from_id`/`to_id` (columns), `property_mappings`, `is_fk_edge`, `type_column`, `constraints`
-- `NodeIdSchema` — `Single { column, dtype }` | `Composite { columns, types }`
+- `NodeIdSchema` — `Single { column, dtype: SchemaType }` | `Composite { columns, types: Vec<SchemaType> }` (dtype migrated from String to SchemaType enum for type safety)
 - `Direction` — `Outgoing` | `Incoming` | `Both`
 - `EdgeTablePattern` — `Traditional` | `FullyDenormalized` | `Mixed { from_denormalized, to_denormalized }`
 
