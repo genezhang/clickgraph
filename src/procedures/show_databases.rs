@@ -11,9 +11,15 @@ pub fn execute_show_databases() -> Result<Vec<HashMap<String, Value>>, String> {
     let mut databases = Vec::new();
 
     if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-        // Use blocking_lock() for sync context
-        // Note: This is called from sync procedure context, not async
-        let schemas_map = schemas_lock.blocking_read();
+        // Use try_read() to avoid blocking in async context
+        // If lock is held, fall back to empty list
+        let schemas_map = match schemas_lock.try_read() {
+            Ok(map) => map,
+            Err(_) => {
+                // Lock is held elsewhere, return empty list
+                return Ok(Vec::new());
+            }
+        };
 
         // Add each schema as a database record
         for (name, _) in schemas_map.iter() {
