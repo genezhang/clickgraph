@@ -3,74 +3,54 @@
 # Tables: users, posts, user_follows (relationships), post_likes (relationships)
 # Total rows: ~1000 (quick to generate, fast queries)
 
-database: social
+name: social_demo
 
-nodes:
-  User:
-    table: users
-    id_columns:
-      - user_id
-    properties:
-      user_id:
-        column: user_id
-        type: Int32
-      name:
-        column: name
-        type: String
-      email:
-        column: email
-        type: String
-      created_at:
-        column: created_at
-        type: DateTime
+graph_schema:
+  nodes:
+    - label: User
+      database: social
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: name
+        email: email
+        created_at: created_at
 
-  Post:
-    table: posts
-    id_columns:
-      - post_id
-    properties:
-      post_id:
-        column: post_id
-        type: Int32
-      content:
-        column: content
-        type: String
-      created_at:
-        column: created_at
-        type: DateTime
+    - label: Post
+      database: social
+      table: posts
+      node_id: post_id
+      property_mappings:
+        post_id: post_id
+        content: content
+        created_at: created_at
 
-relationships:
-  FOLLOWS:
-    table: user_follows
-    from_node: User
-    to_node: User
-    from_id_columns:
-      - follower_id
-    to_id_columns:
-      - followed_id
-    properties:
-      created_at:
-        column: created_at
-        type: DateTime
+  edges:
+    - type: FOLLOWS
+      database: social
+      table: user_follows
+      from_node: User
+      to_node: User
+      from_id: follower_id
+      to_id: followed_id
+      property_mappings:
+        created_at: created_at
 
-  AUTHORED:
-    table: post_authored
-    from_node: User
-    to_node: Post
-    from_id_columns:
-      - user_id
-    to_id_columns:
-      - post_id
+    - type: AUTHORED
+      database: social
+      table: post_authored
+      from_node: User
+      to_node: Post
+      from_id: user_id
+      to_id: post_id
 
-  LIKED:
-    table: post_likes
-    from_node: User
-    to_node: Post
-    from_id_columns:
-      - user_id
-    to_id_columns:
-      - post_id
-    properties:
-      created_at:
-        column: created_at
-        type: DateTime
+    - type: LIKED
+      database: social
+      table: post_likes
+      from_node: User
+      to_node: Post
+      from_id: user_id
+      to_id: post_id
+      property_mappings:
+        created_at: created_at
