@@ -68,6 +68,7 @@ graph_schema:
       table: Message
       node_id: id
       label_column: type  # Polymorphic: type='Post' or type='Comment'
+      label_value: "Post|Comment"  # Values in type column that represent Message
       property_mappings:
         id: id
         creationDate: creationDate
