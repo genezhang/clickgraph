@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::{
+use crate::graph_catalog::schema_types::SchemaType;
     GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema,
 };
 use crate::render_plan::cte_generation::{

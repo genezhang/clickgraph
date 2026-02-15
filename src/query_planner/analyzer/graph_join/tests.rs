@@ -16,6 +16,7 @@ use super::GraphJoinInference;
 use crate::{
     graph_catalog::config::Identifier,
     graph_catalog::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema},
+    graph_catalog::schema_types::SchemaType,
     query_planner::{
         analyzer::analyzer_pass::AnalyzerPass,
         logical_expr::{
@@ -39,7 +40,7 @@ fn create_test_graph_schema() -> GraphSchema {
             table_name: "Person".to_string(),
             column_names: vec!["id".to_string(), "name".to_string(), "age".to_string()],
             primary_keys: "id".to_string(),
-            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -63,7 +64,7 @@ fn create_test_graph_schema() -> GraphSchema {
             table_name: "Company".to_string(),
             column_names: vec!["id".to_string(), "name".to_string(), "founded".to_string()],
             primary_keys: "id".to_string(),
-            node_id: NodeIdSchema::single("id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -901,7 +902,7 @@ fn create_self_referencing_fk_schema() -> GraphSchema {
                 "parent_id".to_string(),
             ],
             primary_keys: "object_id".to_string(),
-            node_id: NodeIdSchema::single("object_id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("object_id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert(
@@ -988,7 +989,7 @@ fn create_non_self_referencing_fk_schema() -> GraphSchema {
                 "total".to_string(),
             ],
             primary_keys: "order_id".to_string(),
-            node_id: NodeIdSchema::single("order_id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("order_id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert(
@@ -1023,7 +1024,7 @@ fn create_non_self_referencing_fk_schema() -> GraphSchema {
             table_name: "customers".to_string(),
             column_names: vec!["customer_id".to_string(), "name".to_string()],
             primary_keys: "customer_id".to_string(),
-            node_id: NodeIdSchema::single("customer_id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("customer_id".to_string(), SchemaType::Integer),
             property_mappings: {
                 let mut props = HashMap::new();
                 props.insert(
@@ -1394,7 +1395,7 @@ fn create_composite_id_graph_schema() -> GraphSchema {
             table_name: "customers".to_string(),
             column_names: vec!["customer_id".to_string(), "name".to_string()],
             primary_keys: "customer_id".to_string(),
-            node_id: NodeIdSchema::single("customer_id".to_string(), "UInt64".to_string()),
+            node_id: NodeIdSchema::single("customer_id".to_string(), SchemaType::Integer),
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,

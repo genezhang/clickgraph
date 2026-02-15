@@ -4,8 +4,11 @@
 //! generate correct UNION CTEs in the render plan.
 
 use crate::{
-    graph_catalog::config::Identifier, graph_catalog::graph_schema::GraphSchema,
-    open_cypher_parser, query_planner::logical_plan::plan_builder::build_logical_plan,
+    graph_catalog::config::Identifier, 
+    graph_catalog::graph_schema::GraphSchema,
+    graph_catalog::schema_types::SchemaType,
+    open_cypher_parser, 
+    query_planner::logical_plan::plan_builder::build_logical_plan,
     render_plan::plan_builder::RenderPlanBuilder,
 };
 use serial_test::serial;

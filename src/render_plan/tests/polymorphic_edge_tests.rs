@@ -10,6 +10,7 @@ use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::{
     GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema,
 };
+use crate::graph_catalog::schema_types::SchemaType;
 use crate::render_plan::plan_builder_helpers::generate_polymorphic_edge_filters;
 #[allow(unused_imports)]
 use crate::render_plan::render_expr::{

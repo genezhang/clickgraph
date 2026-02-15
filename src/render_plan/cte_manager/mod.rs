@@ -2974,6 +2974,7 @@ mod tests {
     use super::*;
     use crate::graph_catalog::config::Identifier;
     use crate::graph_catalog::graph_schema::{NodeIdSchema, NodeSchema};
+    use crate::graph_catalog::schema_types::SchemaType;
     use std::collections::HashMap;
 
     #[test]

@@ -31,6 +31,7 @@
 //! ```
 
 use crate::graph_catalog::graph_schema::{NodeSchema, RelationshipSchema};
+use crate::graph_catalog::schema_types::SchemaType;
 
 /// Check if a node is denormalized (has properties defined in relationships)
 ///

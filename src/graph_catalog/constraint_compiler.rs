@@ -30,6 +30,7 @@
 use crate::graph_catalog::errors::GraphSchemaError;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::NodeSchema;
+use crate::graph_catalog::schema_types::SchemaType;
 
 /// Compile an edge constraint expression into SQL predicate
 ///

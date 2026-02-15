@@ -14,6 +14,7 @@ use crate::{
     clickhouse_query_generator,
     graph_catalog::config::Identifier,
     graph_catalog::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema},
+    graph_catalog::schema_types::SchemaType,
     open_cypher_parser,
     query_planner::logical_plan::plan_builder::build_logical_plan,
     render_plan::plan_builder::RenderPlanBuilder,

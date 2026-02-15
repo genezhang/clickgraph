@@ -78,6 +78,12 @@ impl Default for QueryPerformanceMetrics {
     }
 }
 
+/// Response for SHOW DATABASES command (Neo4j browser compatibility)
+#[derive(Debug, Clone, Serialize)]
+pub struct DatabaseListResponse {
+    pub databases: Vec<serde_json::Value>,
+}
+
 impl QueryPerformanceMetrics {
     pub fn new() -> Self {
         Self::default()
@@ -181,6 +187,34 @@ pub async fn query_handler(
     // Strip SQL-style comments (-- and /* */) before parsing
     let clean_query_string = open_cypher_parser::strip_comments(clean_query_with_comments);
     let clean_query = clean_query_string.clone();
+
+    // Handle SHOW DATABASES early (special case for Neo4j browser compatibility)
+    let clean_upper = clean_query.trim().to_uppercase();
+    if clean_upper.starts_with("SHOW DATABASES") {
+        log::info!("📊 SHOW DATABASES query detected - returning available schemas");
+        
+        // Build database list from registered schemas
+        let mut databases = Vec::new();
+        if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
+            let schemas_map = schemas_lock.blocking_read();
+            for (name, _) in schemas_map.iter() {
+                let mut record = serde_json::Map::new();
+                record.insert("name".to_string(), serde_json::Value::String(name.clone()));
+                record.insert("type".to_string(), serde_json::Value::String("standard".to_string()));
+                record.insert("aliases".to_string(), serde_json::Value::Array(vec![]));
+                record.insert("access".to_string(), serde_json::Value::String("read-write".to_string()));
+                record.insert("role".to_string(), serde_json::Value::String("primary".to_string()));
+                record.insert("writer".to_string(), serde_json::Value::Bool(true));
+                record.insert("default".to_string(), serde_json::Value::Bool(name == "default"));
+                record.insert("home".to_string(), serde_json::Value::Bool(name == "default"));
+                
+                databases.push(serde_json::Value::Object(record));
+            }
+        }
+        
+        let response = DatabaseListResponse { databases };
+        return Ok(Json(response).into_response());
+    }
 
     // Handle procedure calls early (before query context)
     // Parse to check if it's a procedure call or procedure-only query
@@ -530,7 +564,7 @@ async fn query_handler_inner(
         // Phase 1: Parse query with UNION support
         // IMPORTANT: Parse the CLEAN query without CYPHER prefix
         let parse_start = Instant::now();
-        let cypher_statement = match open_cypher_parser::parse_cypher_statement(&clean_query) {
+        let parsed_stmt = match open_cypher_parser::parse_cypher_statement(&clean_query) {
             Ok((_remaining, stmt)) => stmt,
             Err(e) => {
                 metrics.parse_time = parse_start.elapsed().as_secs_f64();
@@ -539,6 +573,23 @@ async fn query_handler_inner(
                 return Err((StatusCode::BAD_REQUEST, format!("Parse error: {}", e)));
             }
         };
+
+        // Phase 1.5: Transform id() functions (same as Bolt protocol does)
+        // This converts id(alias) = N to proper property comparisons
+        // NOTE: HTTP is stateless, so we create a temporary IdMapper per request
+        use crate::query_planner::ast_transform;
+        use crate::server::bolt_protocol::id_mapper::IdMapper;
+        
+        let mut id_mapper = IdMapper::new();
+        id_mapper.set_scope(Some(schema_name.clone()), None); // HTTP has no tenant_id
+        let ast_arena = ast_transform::StringArena::new();
+        let (cypher_statement, _label_constraints) = ast_transform::transform_id_functions(
+            &ast_arena,
+            parsed_stmt,
+            &id_mapper,
+            Some(&graph_schema),
+        );
+        
         metrics.parse_time = parse_start.elapsed().as_secs_f64();
 
         let query_type = query_planner::get_statement_query_type(&cypher_statement);

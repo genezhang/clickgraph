@@ -5,10 +5,10 @@ services:
     image: clickhouse/clickhouse-server:25.8.11
     container_name: clickhouse-benchmark
     environment:
-      CLICKHOUSE_DB: "brahmand"
-      CLICKHOUSE_USER: "default"
+      CLICKHOUSE_DB: "social"
+      CLICKHOUSE_USER: "test_user"
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
-      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_PASSWORD: "test_pass"
     ports:
       - "9000:9000"
       - "8123:8123"
@@ -19,7 +19,7 @@ services:
       retries: 5
       start_period: 30s
     volumes:
-      - clickhouse_benchmark_data:/var/lib/clickhouse
+      - clickhouse_social:/var/lib/clickhouse
 
   clickgraph-benchmark:
     build:
@@ -31,9 +31,9 @@ services:
         condition: service_healthy
     environment:
       CLICKHOUSE_URL: "http://clickhouse-benchmark:8123"
-      CLICKHOUSE_USER: "default"
-      CLICKHOUSE_PASSWORD: ""
-      CLICKHOUSE_DATABASE: "brahmand"
+      CLICKHOUSE_USER: "test_user"
+      CLICKHOUSE_PASSWORD: "test_pass"
+      CLICKHOUSE_DATABASE: "social"
       RUST_LOG: "info"
     ports:
       - "8080:8080"
@@ -41,4 +41,4 @@ services:
       - ./schemas:/app/schemas:ro
 
 volumes:
-  clickhouse_benchmark_data:
+  clickhouse_social:

@@ -11,6 +11,7 @@ mod tests {
     use crate::{
         graph_catalog::config::Identifier,
         graph_catalog::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema},
+        graph_catalog::schema_types::SchemaType,
         query_planner::{
             analyzer::{analyzer_pass::AnalyzerPass, type_inference::TypeInference},
             logical_plan::{evaluate_query, reset_alias_counter},

@@ -1,5 +1,6 @@
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::NodeIdSchema;
+use crate::graph_catalog::schema_types::SchemaType;
 
 #[test]
 fn test_single_node_id_sql_tuple() {

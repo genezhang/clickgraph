@@ -98,6 +98,7 @@ mod tests {
     use super::*;
     use crate::graph_catalog::config::Identifier;
     use crate::graph_catalog::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema};
+    use crate::graph_catalog::schema_types::SchemaType;
     use crate::open_cypher_parser::ast;
 
     /// Create a test graph schema with User nodes and FOLLOWS relationships

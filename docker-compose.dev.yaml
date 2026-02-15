@@ -28,7 +28,7 @@ services:
       - clickhouse_data:/var/lib/clickhouse
 
   neo4j:
-    image: neo4j:5.15-community
+    image: neo4j:latest
     container_name: neo4j-dev
     environment:
       NEO4J_AUTH: neo4j/test_password
@@ -38,7 +38,6 @@ services:
       NEO4J_apoc_import_file_use__neo4j__config: "true"
     ports:
       - "7474:7474"
-      - "7687:7687"
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
@@ -62,15 +61,16 @@ services:
       CLICKHOUSE_URL: "http://clickhouse-service:8123"
       CLICKHOUSE_USER: "test_user"
       CLICKHOUSE_PASSWORD: "test_pass"
-      CLICKHOUSE_DATABASE: "test_integration"
-      GRAPH_CONFIG_PATH: "/app/test_integration.yaml"
+      CLICKHOUSE_DATABASE: "social"
+      GRAPH_CONFIG_PATH: "/app/benchmarks/social_network/schemas/social_benchmark.yaml"
       # Override max CTE depth for complex variable-length path testing
       # Default is 100, increase if you get "CTE depth limit exceeded" errors
       CLICKGRAPH_MAX_CTE_DEPTH: "1000"
     ports:
       - "8080:8080"
+      - "7687:7687"
     volumes:
-      - ./tests/integration/test_integration.yaml:/app/test_integration.yaml:ro
+      - ./benchmarks:/app/benchmarks:ro
       - ./schemas:/app/schemas:ro
 
 volumes:

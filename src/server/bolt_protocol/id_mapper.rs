@@ -408,11 +408,22 @@ impl IdMapper {
     /// Try to decode an encoded ID to get the raw ID value for database lookup
     ///
     /// This is the key function for WHERE clause rewriting. Given an encoded ID,
-    /// it returns the raw ID value that should be used in SQL comparisons.
+    /// it attempts to return the raw ID value that should be used in SQL comparisons.
+    ///
+    /// **IMPORTANT LIMITATIONS**:
+    /// - Only works for **simple numeric primary keys** with values < 2^31 (2.1 billion)
+    /// - Does NOT work for:
+    ///   - String IDs (e.g., "LAX", "USER_123")  
+    ///   - UUIDs
+    ///   - Composite keys (e.g., "bank_id|account_num")
+    ///   - Large numbers that get hashed (>= 2^31)
+    ///
+    /// **Callers should validate** that the decoded label's ID column is actually
+    /// a numeric type before using the result, to avoid false positives.
     ///
     /// Priority:
-    /// 1. Cache lookup - get exact element_id from session caches
-    /// 2. Direct extraction - if id_hash looks like a simple numeric ID
+    /// 1. Cache lookup - get exact element_id from session caches (always reliable)
+    /// 2. Direct extraction - if id_hash looks like a simple numeric ID (heuristic)
     ///
     /// Returns (label, raw_id_value) if decodable, None otherwise.
     pub fn decode_for_query(encoded_id: i64) -> Option<(String, String)> {
@@ -440,7 +451,8 @@ impl IdMapper {
         // For simple numeric IDs (common case), id_hash IS the raw value
         // We can't distinguish hashed vs raw values, but for small numbers
         // (< 2^31), it's almost certainly the raw value
-        if id_hash > 0 && id_hash < (1i64 << 31) {
+        //  NOTE: 0 is a valid ID value, so we use >= 0 not > 0
+        if id_hash >= 0 && id_hash < (1i64 << 31) {
             return Some((label, id_hash.to_string()));
         }
 
