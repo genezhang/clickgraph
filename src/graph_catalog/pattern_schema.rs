@@ -42,6 +42,7 @@ use super::config::Identifier;
 use super::graph_schema::{
     classify_edge_table_pattern, EdgeTablePattern, GraphSchema, NodeSchema, RelationshipSchema,
 };
+use super::schema_types::SchemaType;
 use std::collections::HashMap;
 
 // ============================================================================
@@ -1375,8 +1376,8 @@ mod tests {
             to_node_table: "users".to_string(),
             from_id: Identifier::from("from_id"),
             to_id: Identifier::from("to_id"),
-            from_node_id_dtype: "Int64".to_string(),
-            to_node_id_dtype: "Int64".to_string(),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,
@@ -1412,8 +1413,8 @@ mod tests {
             to_node_table: "airports".to_string(),
             from_id: Identifier::from("Origin"),
             to_id: Identifier::from("Dest"),
-            from_node_id_dtype: "String".to_string(),
-            to_node_id_dtype: "String".to_string(),
+            from_node_id_dtype: SchemaType::String,
+            to_node_id_dtype: SchemaType::String,
             property_mappings: HashMap::new(),
             view_parameters: None,
             engine: None,

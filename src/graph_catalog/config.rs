@@ -1211,8 +1211,8 @@ fn build_relationship_schema(
         to_node_table,   // 🔵 RELATIONAL: Resolved table name
         from_id: rel_def.from_id.clone(),
         to_id: rel_def.to_id.clone(),
-        from_node_id_dtype: "UInt64".to_string(),
-        to_node_id_dtype: "UInt64".to_string(),
+        from_node_id_dtype: SchemaType::Integer,
+        to_node_id_dtype: SchemaType::Integer,
         property_mappings,
         view_parameters: rel_def.view_parameters.clone(),
         engine: discovery.engine.clone(),
@@ -1347,8 +1347,8 @@ fn build_standard_edge_schema(
         to_node_table: resolved_to_node,       // 🔵 RELATIONAL: Resolved table name
         from_id: std_edge.from_id.clone(),
         to_id: std_edge.to_id.clone(),
-        from_node_id_dtype: "UInt64".to_string(),
-        to_node_id_dtype: "UInt64".to_string(),
+        from_node_id_dtype: SchemaType::Integer,
+        to_node_id_dtype: SchemaType::Integer,
         property_mappings,
         view_parameters: std_edge.view_parameters.clone(),
         engine: discovery.engine.clone(),
@@ -1419,8 +1419,8 @@ fn build_polymorphic_edge_schemas(
             to_node_table: to_node.clone(), // 🔵 RELATIONAL: Same as label for polymorphic
             from_id: poly_edge.from_id.clone(),
             to_id: poly_edge.to_id.clone(),
-            from_node_id_dtype: "UInt64".to_string(),
-            to_node_id_dtype: "UInt64".to_string(),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
             property_mappings: property_mappings.clone(),
             view_parameters: poly_edge.view_parameters.clone(),
             engine: discovery.engine.clone(),
