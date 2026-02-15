@@ -39,7 +39,7 @@ use crate::{
         schema_types::SchemaType,
     },
     query_planner::{
-        logical_expr::LogicalExpr,
+        logical_expr::{LogicalExpr, Direction},
         logical_plan::{LogicalPlan, Projection},
         plan_ctx::PlanCtx,
         typed_variable::{TypedVariable, VariableSource},
@@ -77,6 +77,9 @@ pub enum ReturnItemType {
         from_label: Option<String>,
         /// To node label (for polymorphic relationships)
         to_label: Option<String>,
+        /// Relationship direction: "Outgoing", "Incoming", or "Either"
+        /// Used to determine if start/end nodes should be swapped for undirected queries
+        direction: Option<String>,
     },
     /// Path variable - needs transformation to Path struct
     Path {
@@ -131,6 +134,62 @@ pub enum ReturnItemType {
 ///     ReturnItemMetadata { field_name: "n.name", item_type: Scalar }
 /// ]
 /// ```
+
+/// Helper function to find the direction of a relationship in a GraphRel within the logical plan
+fn find_relationship_direction(plan: &LogicalPlan, rel_alias: &str) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphRel(graph_rel) => {
+            if graph_rel.alias == rel_alias {
+                // Found the relationship - return its direction as a string
+                let direction_str = match graph_rel.direction {
+                    Direction::Outgoing => "Outgoing",
+                    Direction::Incoming => "Incoming",
+                    Direction::Either => "Either",
+                };
+                return Some(direction_str.to_string());
+            }
+            // Recursively search in child plans
+            if let Some(dir) = find_relationship_direction(&graph_rel.left, rel_alias) {
+                return Some(dir);
+            }
+            if let Some(dir) = find_relationship_direction(&graph_rel.center, rel_alias) {
+                return Some(dir);
+            }
+            if let Some(dir) = find_relationship_direction(&graph_rel.right, rel_alias) {
+                return Some(dir);
+            }
+            None
+        }
+        LogicalPlan::Projection(proj) => find_relationship_direction(&proj.input, rel_alias),
+        LogicalPlan::Filter(filter) => find_relationship_direction(&filter.input, rel_alias),
+        LogicalPlan::WithClause(with_clause) => find_relationship_direction(&with_clause.input, rel_alias),
+        LogicalPlan::CartesianProduct(cart) => {
+            if let Some(dir) = find_relationship_direction(&cart.left, rel_alias) {
+                return Some(dir);
+            }
+            find_relationship_direction(&cart.right, rel_alias)
+        }
+        LogicalPlan::Union(union) => {
+            for input in &union.inputs {
+                if let Some(dir) = find_relationship_direction(input, rel_alias) {
+                    return Some(dir);
+                }
+            }
+            None
+        }
+        LogicalPlan::GroupBy(gb) => find_relationship_direction(&gb.input, rel_alias),
+        LogicalPlan::Limit(lim) => find_relationship_direction(&lim.input, rel_alias),
+        LogicalPlan::OrderBy(ob) => find_relationship_direction(&ob.input, rel_alias),
+        LogicalPlan::Skip(skip) => find_relationship_direction(&skip.input, rel_alias),
+        LogicalPlan::Cte(cte) => find_relationship_direction(&cte.input, rel_alias),
+        LogicalPlan::PageRank(_pr) => None, // PageRank doesn't have input in our case
+        LogicalPlan::Unwind(uw) => find_relationship_direction(&uw.input, rel_alias),
+        LogicalPlan::GraphNode(gn) => find_relationship_direction(&gn.input, rel_alias),
+        LogicalPlan::GraphJoins(gj) => find_relationship_direction(&gj.input, rel_alias),
+        LogicalPlan::ViewScan(_) | LogicalPlan::Empty => None,
+    }
+}
+
 pub fn extract_return_metadata(
     logical_plan: &LogicalPlan,
     plan_ctx: &PlanCtx,
@@ -174,10 +233,21 @@ pub fn extract_return_metadata(
                             }
                         }
                     }
-                    Some(TypedVariable::Relationship(rel_var)) => ReturnItemType::Relationship {
-                        rel_types: rel_var.rel_types.clone(),
-                        from_label: rel_var.from_node_label.clone(),
-                        to_label: rel_var.to_node_label.clone(),
+                    Some(TypedVariable::Relationship(rel_var)) => {
+                        // Get direction: first check if it's set in the variable, otherwise look it up in the logical plan
+                        let direction = if rel_var.direction.is_some() {
+                            rel_var.direction.clone()
+                        } else {
+                            // Try to find direction from GraphRel in the logical plan
+                            find_relationship_direction(logical_plan, &table_alias.to_string())
+                        };
+                        
+                        ReturnItemType::Relationship {
+                            rel_types: rel_var.rel_types.clone(),
+                            from_label: rel_var.from_node_label.clone(),
+                            to_label: rel_var.to_node_label.clone(),
+                            direction,
+                        }
                     },
                     Some(TypedVariable::Path(path_var)) => {
                         // VLP has length_bounds set, fixed single-hop doesn't
@@ -325,10 +395,18 @@ pub fn extract_return_metadata(
                         }
                         Some(TypedVariable::Relationship(rel_var)) => {
                             log::debug!("  Found Relationship with types: {:?}", rel_var.rel_types);
+                            // Get direction: first check if it's set in the variable, otherwise look it up in the logical plan
+                            let direction = if rel_var.direction.is_some() {
+                                rel_var.direction.clone()
+                            } else {
+                                find_relationship_direction(logical_plan, &var_name)
+                            };
+                            
                             ReturnItemType::Relationship {
                                 rel_types: rel_var.rel_types.clone(),
                                 from_label: rel_var.from_node_label.clone(),
                                 to_label: rel_var.to_node_label.clone(),
+                                direction,
                             }
                         }
                         _ => ReturnItemType::Scalar,
@@ -504,6 +582,7 @@ pub fn transform_row(
                 rel_types,
                 from_label,
                 to_label,
+                direction,
             } => {
                 // Strip ".*" suffix from field_name if present (wildcard expansion)
                 let var_name = meta
@@ -518,6 +597,20 @@ pub fn transform_row(
                     to_label.as_deref(),
                     schema,
                 )?;
+                // If relationship direction is "Incoming" or "Either", we may need to swap start/end nodes
+                // This handles undirected patterns like (a)--(b) where we need to match query semantics
+                if let Some(dir) = direction {
+                    if dir == "Incoming" || dir == "Either" {
+                        // Swap start and end nodes to match query pattern semantics
+                        std::mem::swap(&mut rel.start_node_element_id, &mut rel.end_node_element_id);
+                        log::debug!(
+                            "Swapped relationship direction for undirected pattern: {} (was {}->{})",
+                            var_name,
+                            rel.end_node_element_id,
+                            rel.start_node_element_id
+                        );
+                    }
+                }
                 // Assign session-scoped integer IDs from id_mapper
                 rel.id = id_mapper.get_or_assign(&rel.element_id);
                 rel.start_node_id = id_mapper.get_or_assign(&rel.start_node_element_id);
@@ -1898,6 +1991,7 @@ fn find_relationship_in_row_with_type(
                 rel_types,
                 from_label,
                 to_label,
+                direction,
             } = &meta.item_type
             {
                 return transform_to_relationship(
