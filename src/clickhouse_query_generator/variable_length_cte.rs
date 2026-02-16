@@ -1365,7 +1365,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 if prop.column_name == self.start_node_id_column && prop.alias == "id" {
                     continue;
                 }
-                
+
                 select_items.push(format!(
                     "{}.{} as start_{}",
                     self.start_node_alias, prop.column_name, prop.alias
@@ -1377,7 +1377,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 if prop.column_name == self.end_node_id_column && prop.alias == "id" {
                     continue;
                 }
-                
+
                 select_items.push(format!(
                     "{}.{} as end_{}",
                     self.start_node_alias, prop.column_name, prop.alias
@@ -1477,9 +1477,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
             for prop in &self.properties {
                 // Skip the ID column when it's the actual "id" property (already added as start_id/end_id)
                 // But keep it if it's a different property that uses the ID column (e.g., "node_id")
-                let is_start_id = prop.column_name == self.start_node_id_column && prop.alias == "id";
+                let is_start_id =
+                    prop.column_name == self.start_node_id_column && prop.alias == "id";
                 let is_end_id = prop.column_name == self.end_node_id_column && prop.alias == "id";
-                
+
                 if prop.cypher_alias == self.start_cypher_alias && !is_start_id {
                     // Property belongs to start node
                     select_items.push(format!(
@@ -1632,7 +1633,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             // Skip the ID column when it's the actual "id" property (already added as start_id/end_id)
             let is_start_id = prop.column_name == self.start_node_id_column && prop.alias == "id";
             let is_end_id = prop.column_name == self.end_node_id_column && prop.alias == "id";
-            
+
             if prop.cypher_alias == self.start_cypher_alias && !is_start_id {
                 // Start node properties pass through from CTE
                 select_items.push(format!("vp.start_{} as start_{}", prop.alias, prop.alias));

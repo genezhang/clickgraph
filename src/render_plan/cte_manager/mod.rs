@@ -840,7 +840,12 @@ impl FkEdgeCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
-            log::warn!("🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'", prop.alias, prop.cypher_alias, prop.column_name);
+            log::warn!(
+                "🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'",
+                prop.alias,
+                prop.cypher_alias,
+                prop.column_name
+            );
             // Skip ID column as it's already explicitly added as start_id/end_id
             if prop.alias == "id" {
                 continue;
@@ -1213,7 +1218,12 @@ impl TraditionalCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
-            log::warn!("🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'", prop.alias, prop.cypher_alias, prop.column_name);
+            log::warn!(
+                "🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'",
+                prop.alias,
+                prop.cypher_alias,
+                prop.column_name
+            );
             // Skip ID column as it's already explicitly added as start_id/end_id
             if prop.alias == "id" {
                 continue;
@@ -1650,7 +1660,12 @@ impl DenormalizedCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
-            log::warn!("🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'", prop.alias, prop.cypher_alias, prop.column_name);
+            log::warn!(
+                "🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'",
+                prop.alias,
+                prop.cypher_alias,
+                prop.column_name
+            );
             // Skip ID column as it's already explicitly added as start_id/end_id
             if prop.alias == "id" {
                 continue;
@@ -2110,7 +2125,12 @@ impl MixedAccessCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
-            log::warn!("🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'", prop.alias, prop.cypher_alias, prop.column_name);
+            log::warn!(
+                "🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'",
+                prop.alias,
+                prop.cypher_alias,
+                prop.column_name
+            );
             // Skip ID column as it's already explicitly added as start_id/end_id
             if prop.alias == "id" {
                 continue;
@@ -2383,7 +2403,12 @@ impl EdgeToEdgeCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
-            log::warn!("🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'", prop.alias, prop.cypher_alias, prop.column_name);
+            log::warn!(
+                "🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'",
+                prop.alias,
+                prop.cypher_alias,
+                prop.column_name
+            );
             // Skip ID column as it's already explicitly added as start_id/end_id
             if prop.alias == "id" {
                 continue;

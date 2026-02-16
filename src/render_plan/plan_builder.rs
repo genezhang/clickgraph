@@ -826,10 +826,10 @@ impl RenderPlanBuilder for LogicalPlan {
                 let raw_joins = <LogicalPlan as JoinBuilder>::extract_joins_with_context(
                     self, schema, &context,
                 )?;
-                
+
                 // Deduplicate aliases
                 let joins = JoinItems::new(raw_joins);
-                
+
                 let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
                 let filters = FilterItems(FilterBuilder::extract_filters(self)?);
                 let group_by =
