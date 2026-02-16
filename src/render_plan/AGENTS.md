@@ -205,6 +205,57 @@ If even one function misses the new variant, infinite iteration or lost WITH cla
 
 **Root cause**: Deep recursive traversal in plan_builder_utils.rs functions (build_chained_with_match_cte_plan, replace_with_clause_with_cte_reference_v2, etc.). Long-term fix: convert recursive traversal to iterative using an explicit stack.
 
+### 8. Projection-Guided UNION Rendering
+
+**Problem**: When TypeInference generates UNION branches for untyped nodes, should we add `__label__` column?
+
+**Answer**: Only when the query returns the whole entity (`RETURN n`), not specific properties (`RETURN n.name`).
+
+**Implementation** (plan_builder.rs ~line 2557):
+```rust
+fn returns_whole_entity(plan: &LogicalPlan) -> bool {
+    // Check if Projection contains TableAlias (whole entity)
+    // vs PropertyAccessExp (specific property)
+    // Must traverse: Limit, Skip, OrderBy, Filter, GraphJoins
+}
+```
+
+**UNION normalization always runs**, but `__label__` injection is conditional:
+```rust
+if returns_whole_entity(&branch.input) {
+    // Add: SELECT ... , '<label>' AS "__label__" FROM ...
+    normalized_columns.push(SelectItem::column_expr(...));
+}
+```
+
+**Why**: `RETURN n.name` doesn't need label info, but Neo4j Browser's `RETURN n` needs `__label__` to color nodes.
+
+### 9. Self-Join Alias Handling for Same-Table Relationships
+
+**Problem**: When a relationship connects the same node type (e.g., User→FOLLOWS→User), the SQL generator creates two JOINs to the same table without aliases:
+
+```sql
+-- ❌ WRONG (ClickHouse can't distinguish):
+INNER JOIN social.users ON ...
+INNER JOIN social.users ON ...
+
+-- ✅ CORRECT:
+INNER JOIN social.users AS from_node ON ...
+INNER JOIN social.users AS to_node ON ...
+```
+
+**Detection** (cte_extraction.rs ~line 3055):
+```rust
+let needs_alias = from_table == to_table;
+let from_join_expr = if needs_alias {
+    format!("{} AS from_node", from_table)
+} else {
+    from_table.clone()
+};
+```
+
+**Impact**: Without aliases, ClickHouse silently returns empty results for same-table relationships (e.g., User→FOLLOWS→User, Person→KNOWS→Person).
+
 ## Common Bug Patterns
 
 | Pattern | Symptom | Root Cause |
@@ -217,6 +268,8 @@ If even one function misses the new variant, infinite iteration or lost WITH cla
 | Duplicate CTEs | Same CTE name generated twice | CTE name collision, missing dedup check |
 | Passthrough WITH not collapsed | Extra unnecessary CTE layer | `is_passthrough` detection failure |
 | CTE name remapping missed | Old CTE name referenced | `cte_name_remaps` not applied to all expressions |
+| **`__label__` always injected** | **Extra column in property queries** | **`returns_whole_entity()` not checking Projection items** |
+| **Same-table relationship empty** | **User→FOLLOWS→User returns nothing** | **Missing `AS from_node` / `AS to_node` aliases for self-joins** |
 
 ## Files You Should NOT Touch Casually
 

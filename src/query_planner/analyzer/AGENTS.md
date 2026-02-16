@@ -22,11 +22,14 @@ mod.rs                       ← Pipeline orchestrator: initial → intermediate
     ├─ errors.rs (108)           ← AnalyzerError enum, Pass enum for error attribution
     │
     ├─── Phase 1: Initial Analysis ──────────────────────────────────────────
-    │ schema_inference.rs (1,309)     ← Labels → tables, ViewScan creation
-    │ type_inference.rs (1,528)       ← **UNIFIED**: Infer labels, extract WHERE constraints,
-    │                                    generate UNION for valid combinations, validate direction
-    │ pattern_resolver.rs (1,229)     ← [DEPRECATED] Legacy untyped resolver (use TypeInference)
-    │ pattern_resolver_config.rs (60) ← Max combinations config (default: 38)
+    │ type_inference.rs (4,238)       ← **UNIFIED TYPE RESOLUTION** (5 phases):
+    │                                    Phase 0: Relationship-based label inference
+    │                                    Phase 1: WHERE constraint extraction + direction validation
+    │                                    Phase 2: Untyped node UNION generation
+    │                                    Phase 3: ViewScan resolution
+    │                                    Phase 4: Cypher-level UNION handling
+    │ [DELETED: schema_inference.rs]  ← Merged into type_inference.rs
+    │ [DELETED: pattern_resolver.rs]  ← Merged into type_inference.rs Phase 2
     │ vlp_transitivity_check.rs (375) ← Validate VLP patterns are transitive
     │ cte_schema_resolver.rs (223)    ← Register WITH CTE schemas in PlanCtx
     │ bidirectional_union.rs (1,236)  ← Undirected (a)--(b) → UNION ALL of both directions
@@ -72,15 +75,13 @@ mod.rs                       ← Pipeline orchestrator: initial → intermediate
 
 | File | Lines | Responsibility |
 |------|------:|----------------|
+| **type_inference.rs** | **4,238** | **UNIFIED type resolution (5 phases): label inference, UNION generation, direction validation, ViewScan resolution** |
 | graph_join/inference.rs | 4,049 | Core JOIN generation from graph patterns — THE most complex file |
 | filter_tagging.rs | 3,122 | Property→column mapping, filter extraction, id() decoding |
-| type_inference.rs | 1,528 | Infer node labels & edge types from schema context |
 | graph_join/tests.rs | 1,374 | Unit tests for graph join inference |
 | variable_resolver.rs | 1,335 | Resolve variable references to CTE sources |
-| projection_tagging.rs | 1,327 | RETURN * expansion, property tagging |
-| schema_inference.rs | 1,309 | Label→table resolution, ViewScan creation |
+| projection_tagging.rs | 1,327 | RETURN * expansion, property tagging, **count(*) semantics** |
 | bidirectional_union.rs | 1,236 | Undirected patterns → UNION ALL |
-| pattern_resolver.rs | 1,229 | Untyped vars → systematic UNION ALL expansion |
 | property_requirements_analyzer.rs | 1,095 | Determine required properties for pruning |
 | graph_traversal_planning.rs | 850 | Multi-hop CTE planning, [:A\|B] UNION |
 | match_type_inference.rs | 760 | MATCH clause type inference helpers |
@@ -122,21 +123,23 @@ called sequentially from `query_planner/mod.rs`. **Pass ordering within each pha
 Resolves types, validates patterns, maps properties, and generates JOINs.
 
 ```
-Step 1:  SchemaInference         — Labels → tables, ViewScan creation
-Step 2:  UnifiedTypeInference    — Infer labels, extract WHERE constraints,
-                                    generate UNION for valid combinations,
-                                    validate direction against schema
-         [REMOVED: PatternResolver - merged into UnifiedTypeInference]
-Step 2.5: VlpTransitivityCheck   — Validate VLP patterns are transitive
+Step 1:  UnifiedTypeInference    — ALL type resolution in 5 phases:
+                                    Phase 0: Relationship-based label inference
+                                    Phase 1: WHERE label extraction + direction validation
+                                    Phase 2: Untyped node UNION generation (with schema filtering)
+                                    Phase 3: ViewScan resolution (GraphNode → ViewScan)
+                                    Phase 4: Cypher-level UNION handling
+         [CONSOLIDATED: Merged SchemaInference + PatternResolver into TypeInference]
+Step 2:  VlpTransitivityCheck    — Validate VLP patterns are transitive
 Step 3:  CteSchemaResolver       — Register WITH CTE schemas in PlanCtx
-Step 3.5: BidirectionalUnion     — (a)--(b) → UNION ALL (MUST be before GraphJoinInference!)
-Step 4:  GraphJoinInference      — Graph patterns → JOIN trees + PatternSchemaContext
-Step 5:  ProjectedColumnsResolver — Pre-compute GraphNode.projected_columns
-Step 6:  QueryValidation         — Validate relationship patterns
-Step 7:  FilterTagging           — Property→column mapping, filter extraction
-Step 3.5*: CartesianJoinExtraction — Cross-pattern filters → join_condition (optimizer pass)
-Step 4*: ProjectionTagging       — RETURN * expansion, column tagging
-Step 5*: GroupByBuilding         — Detect aggregates → GROUP BY
+Step 4:  BidirectionalUnion      — (a)--(b) → UNION ALL (MUST be before GraphJoinInference!)
+Step 5:  GraphJoinInference      — Graph patterns → JOIN trees + PatternSchemaContext
+Step 6:  ProjectedColumnsResolver — Pre-compute GraphNode.projected_columns
+Step 7:  QueryValidation         — Validate relationship patterns
+Step 8:  FilterTagging           — Property→column mapping, filter extraction
+Step 9:  CartesianJoinExtraction — Cross-pattern filters → join_condition (optimizer pass)
+Step 10: ProjectionTagging       — RETURN * expansion, column tagging, **count(*) semantics**
+Step 11: GroupByBuilding         — Detect aggregates → GROUP BY
 ```
 
 *Note: Step numbers in code comments are historical and don't match sequential order.*
@@ -147,15 +150,14 @@ Plans complex traversals, resolves variables, manages CTEs, optimizes.
 
 ```
 Step 1:  GraphTraversalPlanning      — Multi-hop/[:A|B] → CTE/UNION
-Step 2:  SchemaInference (push)      — Push inferred table names to ViewScans
-Step 3:  DuplicateScansRemoving      — Deduplicate same-alias scans
-Step 4:  VariableResolver            — TableAlias("cnt") → PropertyAccess("cte", "cnt")
-Step 5:  CteReferencePopulator       — Populate GraphRel.cte_references
-Step 6:  CteColumnResolver           — PropertyAccess("p","firstName") → ("p","p_firstName")
-Step 7:  UnwindTupleEnricher         — Enrich Unwind with tuple structure metadata
-Step 8:  CollectUnwindElimination    — Remove no-op collect+UNWIND patterns (optimizer)
-Step 9:  TrivialWithElimination      — Remove pass-through WITH clauses (optimizer)
-Step 10: PropertyRequirementsAnalyzer — Determine needed properties per alias
+Step 2:  DuplicateScansRemoving      — Deduplicate same-alias scans
+Step 3:  VariableResolver            — TableAlias("cnt") → PropertyAccess("cte", "cnt")
+Step 4:  CteReferencePopulator       — Populate GraphRel.cte_references
+Step 5:  CteColumnResolver           — PropertyAccess("p","firstName") → ("p","p_firstName")
+Step 6:  UnwindTupleEnricher         — Enrich Unwind with tuple structure metadata
+Step 7:  CollectUnwindElimination    — Remove no-op collect+UNWIND patterns (optimizer)
+Step 8:  TrivialWithElimination      — Remove pass-through WITH clauses (optimizer)
+Step 9:  PropertyRequirementsAnalyzer — Determine needed properties per alias
 ```
 
 ### Phase 3: `final_analyzing()` — Cleanup & Last-Mile Rewriting
@@ -403,7 +405,49 @@ Validation uses: `get_rel_schema_with_direction_check()` ensuring schema directi
 - `is_valid_combination_with_direction()` - Validate combo against schema + direction
 - `get_rel_schema_with_direction_check()` - Lookup with direction validation
 
-### 6. CTE Naming Convention
+### 6. Aggregation Placement in UNION Generation ⚠️ CRITICAL
+
+**Problem**: When `MATCH (n) RETURN count(n)` has untyped nodes, TypeInference generates UNION branches. Where should the aggregation be placed?
+
+**WRONG** (aggregation INSIDE each branch):
+```rust
+Union([
+    Projection(count(*), GraphJoins(GraphNode(Post))),  // → 50 rows
+    Projection(count(*), GraphJoins(GraphNode(User)))   // → 30 rows
+])
+// Result: 2 rows returned, outer query does count(*) = 1 ❌
+```
+
+**CORRECT** (aggregation ABOVE the union):
+```rust
+Projection(count(*), Union([
+    GraphJoins(GraphNode(Post)),  // 50 rows
+    GraphJoins(GraphNode(User))   // 30 rows  
+]))
+// Result: Single row with count = 80 ✅
+```
+
+**Implementation** (type_inference.rs):
+1. `plan_has_aggregation(plan)` - Detect if plan has GroupBy or aggregate functions
+2. `extract_scan_part(plan)` - Extract the scan portion (below aggregation)
+3. Clone only scan parts into UNION branches
+4. `rewrap_aggregation(original, union)` - Re-wrap aggregation layers above UNION
+
+**When aggregation is detected**:
+```rust
+if has_aggregation {
+    for combo in valid_combinations {
+        let scan_branch = clone_plan_with_labels(&extract_scan_part(&plan), &combo);
+        union_branches.push(scan_branch);
+    }
+    let union_arc = Arc::new(LogicalPlan::Union(union_plan));
+    rewrap_aggregation(&plan, union_arc)  // Put aggregation back on top
+}
+```
+
+**Key Insight**: `clone_plan_with_labels` was cloning the ENTIRE plan tree including Projection/GroupBy wrappers. For aggregations, we must split at the aggregation boundary.
+
+### 7. CTE Naming Convention
 
 WITH CTE columns are named `{alias}_{property}`:
 - Node alias `a` with property `name` → CTE column `a_name`
@@ -427,6 +471,7 @@ CTE names are generated by `utils::cte_naming::generate_cte_name()` using export
 | Stale PatternSchemaContext | Wrong join strategy | GraphJoinInference ran but PlanCtx not updated for branch |
 | **Invalid UNION branch** | **Wrong data in results** | **UnifiedTypeInference didn't validate direction** |
 | **Post→User relationship** | **Schema defines User→Post** | **Direction not checked during type combination validation** |
+| **count(n) returns 1 instead of total** | **Aggregation inside UNION branches** | **TypeInference didn't inject UNION below aggregation layer** |
 
 ## Dangerous Files — Handle With Extreme Care
 
@@ -445,15 +490,24 @@ affect every query with a WHERE clause.
 Resolves all variable references to CTE sources. Scope semantics are complex.
 Bugs here cause variables to silently reference wrong CTE or fail to resolve.
 
-### 🔴 type_inference.rs (1,528 lines)
-**UNIFIED SYSTEM**: Infers types, extracts WHERE constraints, generates UNION, validates direction.
+### 🔴 type_inference.rs (4,238 lines)
+**UNIFIED SYSTEM**: Infers types, extracts WHERE constraints, generates UNION, validates direction, resolves ViewScans — 5 phases in one pass.
 Must respect parser direction normalization (invariant #2) AND schema direction constraints.
-Incorrect inference or direction validation causes downstream cascading failures.
-**Changes here affect EVERY query with multiple possible type interpretations.**
+**CRITICAL**: Aggregation placement logic (Phase 2) — must inject UNION *below* aggregation layer, not inside branches.
+Incorrect inference, direction validation, or aggregation placement causes downstream cascading failures.
+**Changes here affect EVERY query with multiple possible type interpretations or untyped nodes.**
 
 ### 🟡 bidirectional_union.rs (1,236 lines)
 Generates 2^n UNION branches for n undirected edges. Must correctly handle VLP
 multi-type patterns (skip splitting — CTE handles both directions internally).
+
+### 🟡 projection_tagging.rs (1,327 lines)
+RETURN * expansion, property tagging, **count() semantics**:
+- `count(n)` without DISTINCT → `count(*)` (counting rows = counting nodes/relationships)
+- `count(DISTINCT n)` → `count(DISTINCT n.id_column)` (requires label resolution)
+- `count(DISTINCT n.prop)` → `count(DISTINCT n.prop)` (direct property)
+**Key decision**: Non-DISTINCT count treats nodes like relationships (both are rows in result set).
+Changes here affect all aggregation queries.
 
 ### 🟢 Most other files are relatively safe
 Single-purpose passes with clear inputs/outputs and limited blast radius.

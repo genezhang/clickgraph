@@ -112,7 +112,10 @@ cause the server to exit with error code 1 (in `main.rs`).
 - `env_logger` — logging initialization (main.rs)
 - `validator` — struct validation (config.rs)
 - `serde` / `serde_yaml` — YAML config deserialization (config.rs)
+- `serde_json` (with **`preserve_order`** feature) — JSON serialization maintaining column order
 - `thiserror` — error types (config.rs)
+
+**Key Feature**: `serde_json` `preserve_order` feature uses `IndexMap` instead of `BTreeMap`, maintaining insertion order in JSON responses. Without this, ClickHouse's JSONEachRow column order (matching SQL SELECT order) would be alphabetized during parsing, breaking Neo4j Browser and API expectations.
 
 **What uses these files**:
 - `config::ServerConfig` is used by `server::run_with_config()`
