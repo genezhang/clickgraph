@@ -68,6 +68,7 @@ graph_schema:
       table: Message
       node_id: id
       label_column: type  # Polymorphic: type='Post' or type='Comment'
+      label_value: "Post|Comment"  # Values in type column that represent Message
       property_mappings:
         id: id
         creationDate: creationDate
@@ -136,6 +137,7 @@ graph_schema:
       database: ldbc
       table: Place
       node_id: id
+      filter: "type = 'City'"
       property_mappings:
         id: id
         name: name
@@ -145,6 +147,7 @@ graph_schema:
       database: ldbc
       table: Place
       node_id: id
+      filter: "type = 'Country'"
       property_mappings:
         id: id
         name: name
@@ -154,6 +157,7 @@ graph_schema:
       database: ldbc
       table: Place
       node_id: id
+      filter: "type = 'Continent'"
       property_mappings:
         id: id
         name: name
@@ -176,6 +180,7 @@ graph_schema:
       database: ldbc
       table: Organisation
       node_id: id
+      filter: "type = 'University'"
       property_mappings:
         id: id
         name: name
@@ -185,6 +190,7 @@ graph_schema:
       database: ldbc
       table: Organisation
       node_id: id
+      filter: "type = 'Company'"
       property_mappings:
         id: id
         name: name
@@ -212,7 +218,7 @@ graph_schema:
     # -------------------------------------------------------------------------
     - type: IS_LOCATED_IN
       database: ldbc
-      table: Person_isLocatedIn_City
+      table: Person_isLocatedIn_Place
       from_id: PersonId
       to_id: CityId
       from_node: Person
@@ -238,7 +244,7 @@ graph_schema:
     # -------------------------------------------------------------------------
     - type: STUDY_AT
       database: ldbc
-      table: Person_studyAt_University
+      table: Person_studyAt_Organisation
       from_id: PersonId
       to_id: UniversityId
       from_node: Person
@@ -252,7 +258,7 @@ graph_schema:
     # -------------------------------------------------------------------------
     - type: WORK_AT
       database: ldbc
-      table: Person_workAt_Company
+      table: Person_workAt_Organisation
       from_id: PersonId
       to_id: CompanyId
       from_node: Person
@@ -264,7 +270,7 @@ graph_schema:
     # -------------------------------------------------------------------------
     # Person LIKES Post
     # -------------------------------------------------------------------------
-    - type: LIKES_POST
+    - type: LIKES
       database: ldbc
       table: Person_likes_Post
       from_id: PersonId
@@ -277,7 +283,7 @@ graph_schema:
     # -------------------------------------------------------------------------
     # Person LIKES Comment
     # -------------------------------------------------------------------------
-    - type: LIKES_COMMENT
+    - type: LIKES
       database: ldbc
       table: Person_likes_Comment
       from_id: PersonId
@@ -293,15 +299,28 @@ graph_schema:
     - type: LIKES
       database: ldbc
       table: Person_likes_Message
-      from_id: Person_id
-      to_id: Message_id
+      from_id: PersonId
+      to_id: MessageId
       from_node: Person
       to_node: Message
       property_mappings:
         creationDate: creationDate
 
     # -------------------------------------------------------------------------
-    # Post HAS_CREATOR Person
+    # Message HAS_CREATOR Person (unified view for polymorphic Message node)
+    # -------------------------------------------------------------------------
+    - type: HAS_CREATOR
+      database: ldbc
+      table: Message_hasCreator_Person
+      from_id: MessageId
+      to_id: PersonId
+      from_node: Message
+      to_node: Person
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Post HAS_CREATOR Person (specific - use HAS_CREATOR for Message queries)
     # -------------------------------------------------------------------------
     - type: HAS_CREATOR
       database: ldbc
@@ -310,50 +329,90 @@ graph_schema:
       to_id: PersonId
       from_node: Post
       to_node: Person
+      property_mappings:
+        creationDate: creationDate
 
     # -------------------------------------------------------------------------
     # Comment HAS_CREATOR Person
     # -------------------------------------------------------------------------
-    - type: COMMENT_HAS_CREATOR
+    - type: HAS_CREATOR
       database: ldbc
       table: Comment_hasCreator_Person
       from_id: CommentId
       to_id: PersonId
       from_node: Comment
       to_node: Person
+      property_mappings:
+        creationDate: creationDate
 
     # -------------------------------------------------------------------------
     # Message HAS_CREATOR Person (unified view)
     # -------------------------------------------------------------------------
-    - type: MESSAGE_HAS_CREATOR
+    - type: HAS_CREATOR
       database: ldbc
       table: Message_hasCreator_Person
-      from_id: Message_id
-      to_id: Person_id
+      from_id: MessageId
+      to_id: PersonId
       from_node: Message
       to_node: Person
+      property_mappings:
+        creationDate: creationDate
 
     # -------------------------------------------------------------------------
     # Comment REPLY_OF Post
     # -------------------------------------------------------------------------
-    - type: REPLY_OF_POST
+    - type: REPLY_OF
       database: ldbc
       table: Comment_replyOf_Post
       from_id: CommentId
       to_id: PostId
       from_node: Comment
       to_node: Post
+      property_mappings:
+        creationDate: creationDate
 
     # -------------------------------------------------------------------------
     # Comment REPLY_OF Comment
     # -------------------------------------------------------------------------
-    - type: REPLY_OF_COMMENT
+    - type: REPLY_OF
       database: ldbc
       table: Comment_replyOf_Comment
       from_id: Comment1Id
       to_id: Comment2Id
       from_node: Comment
       to_node: Comment
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Comment REPLY_OF Message (unified view for polymorphic Message queries)
+    # This allows queries like (message:Message)<-[:REPLY_OF]-(comment:Comment)
+    # Uses Comment_replyOf_Message view which unions Post and Comment replies
+    # -------------------------------------------------------------------------
+    - type: REPLY_OF
+      database: ldbc
+      table: Comment_replyOf_Message
+      from_id: CommentId
+      to_id: MessageId
+      from_node: Comment
+      to_node: Message
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Message REPLY_OF Message (unified view for VLP queries)
+    # This allows queries like (m:Message)-[:REPLY_OF*0..]->(p:Message)
+    # Uses Message_replyOf_Message view which handles polymorphic traversal
+    # -------------------------------------------------------------------------
+    - type: REPLY_OF
+      database: ldbc
+      table: Message_replyOf_Message
+      from_id: MessageId
+      to_id: TargetMessageId
+      from_node: Message
+      to_node: Message
+      property_mappings:
+        creationDate: creationDate
 
     # -------------------------------------------------------------------------
     # Forum CONTAINER_OF Post
@@ -365,6 +424,8 @@ graph_schema:
       to_id: PostId
       from_node: Forum
       to_node: Post
+      property_mappings:
+        creationDate: creationDate
 
     # -------------------------------------------------------------------------
     # Forum HAS_MODERATOR Person
@@ -376,6 +437,8 @@ graph_schema:
       to_id: PersonId
       from_node: Forum
       to_node: Person
+      property_mappings:
+        creationDate: creationDate
 
     # -------------------------------------------------------------------------
     # Forum HAS_MEMBER Person
@@ -388,40 +451,62 @@ graph_schema:
       from_node: Forum
       to_node: Person
       property_mappings:
+        creationDate: creationDate
         joinDate: joinDate
+
+    # -------------------------------------------------------------------------
+    # Message HAS_TAG Tag (unified view for polymorphic Message node)
+    # This is the proper relationship for (Message)-[:HAS_TAG]->(Tag) queries
+    # Uses Message_hasTag_Tag view which unions Post and Comment edges
+    # -------------------------------------------------------------------------
+    - type: HAS_TAG
+      database: ldbc
+      table: Message_hasTag_Tag
+      from_id: MessageId
+      to_id: TagId
+      from_node: Message
+      to_node: Tag
+      property_mappings:
+        creationDate: creationDate
 
     # -------------------------------------------------------------------------
     # Forum HAS_TAG Tag
     # -------------------------------------------------------------------------
-    - type: FORUM_HAS_TAG
+    - type: HAS_TAG
       database: ldbc
       table: Forum_hasTag_Tag
       from_id: ForumId
       to_id: TagId
       from_node: Forum
       to_node: Tag
+      property_mappings:
+        creationDate: creationDate
 
     # -------------------------------------------------------------------------
     # Post HAS_TAG Tag
     # -------------------------------------------------------------------------
-    - type: POST_HAS_TAG
+    - type: HAS_TAG
       database: ldbc
       table: Post_hasTag_Tag
       from_id: PostId
       to_id: TagId
       from_node: Post
       to_node: Tag
+      property_mappings:
+        creationDate: creationDate
 
     # -------------------------------------------------------------------------
     # Comment HAS_TAG Tag
     # -------------------------------------------------------------------------
-    - type: COMMENT_HAS_TAG
+    - type: HAS_TAG
       database: ldbc
       table: Comment_hasTag_Tag
       from_id: CommentId
       to_id: TagId
       from_node: Comment
       to_node: Tag
+      property_mappings:
+        creationDate: creationDate
 
     # -------------------------------------------------------------------------
     # Tag HAS_TYPE TagClass
@@ -429,8 +514,8 @@ graph_schema:
     - type: HAS_TYPE
       database: ldbc
       table: Tag_hasType_TagClass
-      from_id: Tag_id
-      to_id: TagClass_id
+      from_id: TagId
+      to_id: TagClassId
       from_node: Tag
       to_node: TagClass
 
@@ -440,8 +525,8 @@ graph_schema:
     - type: IS_SUBCLASS_OF
       database: ldbc
       table: TagClass_isSubclassOf_TagClass
-      from_id: TagClass_id
-      to_id: TagClass_id_2
+      from_id: TagClass1Id
+      to_id: TagClass2Id
       from_node: TagClass
       to_node: TagClass
 
@@ -451,29 +536,29 @@ graph_schema:
     - type: IS_PART_OF
       database: ldbc
       table: Place_isPartOf_Place
-      from_id: Place_id
-      to_id: Place_id_2
+      from_id: Place1Id
+      to_id: Place2Id
       from_node: Place
       to_node: Place
 
     # -------------------------------------------------------------------------
     # Organisation IS_LOCATED_IN Place
     # -------------------------------------------------------------------------
-    - type: ORG_IS_LOCATED_IN
+    - type: IS_LOCATED_IN
       database: ldbc
       table: Organisation_isLocatedIn_Place
-      from_id: Organisation_id
-      to_id: Place_id
+      from_id: OrganisationId
+      to_id: PlaceId
       from_node: Organisation
       to_node: Place
 
     # -------------------------------------------------------------------------
     # Post IS_LOCATED_IN Place
-    # NOTE: Post_isLocatedIn_Place has bad data, use Post_isLocatedIn_Country instead
+    # Data from Post_isLocatedIn_Country directory loaded into Post_isLocatedIn_Place table
     # -------------------------------------------------------------------------
-    - type: POST_IS_LOCATED_IN
+    - type: IS_LOCATED_IN
       database: ldbc
-      table: Post_isLocatedIn_Country
+      table: Post_isLocatedIn_Place
       from_id: PostId
       to_id: CountryId
       from_node: Post
@@ -482,11 +567,11 @@ graph_schema:
         creationDate: creationDate
 
     # -------------------------------------------------------------------------
-    # Post POST_LOCATED_IN Country (for IC3 query)
+    # Post IS_LOCATED_IN Country (for IC3 query)
     # -------------------------------------------------------------------------
-    - type: POST_LOCATED_IN
+    - type: IS_LOCATED_IN
       database: ldbc
-      table: Post_isLocatedIn_Country
+      table: Post_isLocatedIn_Place
       from_id: PostId
       to_id: CountryId
       from_node: Post
@@ -494,11 +579,11 @@ graph_schema:
 
     # -------------------------------------------------------------------------
     # Comment IS_LOCATED_IN Place
-    # NOTE: Comment_isLocatedIn_Place has bad data, use Comment_isLocatedIn_Country instead
+    # Data from Comment_isLocatedIn_Country directory loaded into Comment_isLocatedIn_Place table
     # -------------------------------------------------------------------------
-    - type: COMMENT_IS_LOCATED_IN
+    - type: IS_LOCATED_IN
       database: ldbc
-      table: Comment_isLocatedIn_Country
+      table: Comment_isLocatedIn_Place
       from_id: CommentId
       to_id: CountryId
       from_node: Comment
