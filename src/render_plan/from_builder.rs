@@ -448,23 +448,78 @@ impl LogicalPlan {
         // For GraphRel with labeled nodes, we need to include the start node in the FROM clause
         // This handles simple relationship queries where the start node should be FROM
 
-        // ALWAYS use left node as FROM for relationship patterns.
-        // The is_optional flag determines JOIN type (INNER vs LEFT), not FROM table selection.
-        //
-        // For `MATCH (a) OPTIONAL MATCH (a)-[:R]->(b)`:
-        //   - a is the left connection (required, already defined)
-        //   - b is the right connection (optional, newly introduced)
-        //   - FROM should be `a`, with LEFT JOIN to relationship and `b`
-        //
-        // For `MATCH (a) OPTIONAL MATCH (b)-[:R]->(a)`:
-        //   - b is the left connection (optional, newly introduced)
-        //   - a is the right connection (required, already defined)
-        //   - FROM should be `a` (the required one), but the pattern structure has `b` on left
-        //   - This case needs special handling: find which connection is NOT optional
-
         log::debug!("graph_rel.is_optional = {:?}", graph_rel.is_optional);
 
-        // Use left as primary, right as fallback
+        // SPECIAL HANDLING for OPTIONAL MATCH patterns:
+        // The anchor_connection field (set by analyzer) indicates which node should be FROM.
+        // This is critical for patterns like: MATCH (a) OPTIONAL MATCH (b)-[:R]->(a)
+        // where b is left connection (optional, new) but a is right connection (required, existing).
+        // Without this check, we'd incorrectly use b as FROM, causing forward references to a.
+        if let Some(ref anchor_alias) = graph_rel.anchor_connection {
+            log::info!(
+                "🎯 GraphRel.extract_from(): anchor_connection='{}', left='{}', right='{}'",
+                anchor_alias,
+                graph_rel.left_connection,
+                graph_rel.right_connection
+            );
+
+            // The anchor_connection contains the ALIAS of the node that should be FROM.
+            // We need to find which actual GraphNode has that alias.
+
+            // Check if left node matches
+            if let LogicalPlan::GraphNode(left_node) = graph_rel.left.as_ref() {
+                if &left_node.alias == anchor_alias {
+                    log::info!(
+                        "  ✓ Anchor '{}' matches left GraphNode - using as FROM",
+                        anchor_alias
+                    );
+                    return Ok(from_table_to_view_ref(graph_rel.left.extract_from()?));
+                }
+            }
+
+            // Check if right is a GraphNode that matches
+            if let LogicalPlan::GraphNode(right_node) = graph_rel.right.as_ref() {
+                if &right_node.alias == anchor_alias {
+                    log::info!(
+                        "  ✓ Anchor '{}' matches right GraphNode - using as FROM",
+                        anchor_alias
+                    );
+                    return Ok(from_table_to_view_ref(graph_rel.right.extract_from()?));
+                }
+            }
+
+            // If right is a nested GraphRel, search its nodes
+            if let LogicalPlan::GraphRel(nested) = graph_rel.right.as_ref() {
+                // Check nested left node
+                if let LogicalPlan::GraphNode(nested_left_node) = nested.left.as_ref() {
+                    if &nested_left_node.alias == anchor_alias {
+                        log::info!(
+                            "  ✓ Anchor '{}' found in nested.left GraphNode - using as FROM",
+                            anchor_alias
+                        );
+                        return Ok(from_table_to_view_ref(nested.left.extract_from()?));
+                    }
+                }
+                // Check nested right node
+                if let LogicalPlan::GraphNode(nested_right_node) = nested.right.as_ref() {
+                    if &nested_right_node.alias == anchor_alias {
+                        log::info!(
+                            "  ✓ Anchor '{}' found in nested.right GraphNode - using as FROM",
+                            anchor_alias
+                        );
+                        return Ok(from_table_to_view_ref(nested.right.extract_from()?));
+                    }
+                }
+            }
+
+            log::warn!(
+                "⚠️ anchor_connection='{}' specified but matching GraphNode not found, falling back to default",
+                anchor_alias
+            );
+        }
+
+        // DEFAULT BEHAVIOR: Use left as primary, right as fallback
+        // This works for most patterns where the required node is on the left.
         let (primary_from, fallback_from) = (
             graph_rel.left.extract_from(),
             graph_rel.right.extract_from(),

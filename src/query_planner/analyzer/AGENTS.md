@@ -287,7 +287,65 @@ The Cypher parser ALREADY normalizes relationship direction:
 
 **Each pass reads from previous passes' PlanCtx writes and writes its own data.**
 
-### 4. Schema Access via Task-Local QueryContext
+### 4. GraphJoins Structure and Deprecated Fields ⚠️ CRITICAL
+
+**Key Fact**: `GraphJoins.joins` list is often **EMPTY and DEPRECATED**!
+
+```rust
+pub struct GraphJoins {
+    pub input: Arc<LogicalPlan>,
+    
+    /// DEPRECATED: Pre-computed joins, incorrect for multi-hop patterns.
+    /// Often EMPTY! Joins are extracted during rendering via input.extract_joins()
+    pub joins: Vec<Join>,
+    
+    pub optional_aliases: HashSet<String>,  // ✅ Used for LEFT JOIN decisions
+    
+    /// Computed anchor table (FROM clause) - set by reorder_joins_by_dependencies
+    /// BUT only if joins list is non-empty!
+    pub anchor_table: Option<String>,
+    
+    pub cte_references: HashMap<String, String>,
+    pub correlation_predicates: Vec<LogicalExpr>,
+}
+```
+
+**When GraphJoins.joins is EMPTY** (common for WITH+MATCH patterns):
+- `anchor_table` is None
+- Joins extracted during rendering, not analysis
+- FROM clause selection happens in `render_plan/from_builder.rs::extract_from()`
+- **NOT** in `reorder_joins_by_dependencies()` (which never runs)
+
+**When GraphJoins.joins is NON-EMPTY**:
+- Legacy case, still used for some simple patterns
+- `reorder_joins_by_dependencies()` runs and sets `anchor_table`
+- FROM clause uses `anchor_table` value
+
+**OPTIONAL MATCH Anchor Selection**: GraphRel structure has critical fields:
+
+```rust
+pub struct GraphRel {
+    // ... other fields ...
+    pub is_optional: Option<bool>,  // ✅ Marks this pattern as optional
+    pub anchor_connection: Option<String>,  // ✅ CRITICAL: Required node from prior MATCH
+    // ... other fields ...
+}
+```
+
+**Analysis Phase Responsibility** (`graph_join/inference.rs`):
+- When processing OPTIONAL MATCH, set `anchor_connection` to the required node
+- Example: For `MATCH (tag) OPTIONAL MATCH (m)-[:R]->(tag)`, set `anchor_connection: Some("tag")`
+
+**Rendering Phase Responsibility** (`render_plan/from_builder.rs`):
+- `extract_from()` MUST check `anchor_connection` field FIRST
+- If set, use that node as FROM (not the left node!)
+- See `render_plan/AGENTS.md` section 5 for details
+
+**Investigation Time Waster** (Feb 2026): Don't add logging to `reorder_joins_by_dependencies()`
+if `GraphJoins.joins` is empty - it will never run! Check for empty joins list first,
+then investigate `extract_from()` logic instead.
+
+### 5. Schema Access via Task-Local QueryContext
 
 Query-processing code MUST access schema via `get_current_schema()` / `get_current_schema_with_fallback()`, never directly from `GLOBAL_SCHEMAS`. See copilot-instructions.md for details.
 

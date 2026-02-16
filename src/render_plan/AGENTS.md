@@ -105,11 +105,81 @@ When FROM is a VLP CTE and a WITH CTE needs to be JOINed:
 The `alias_to_id` map is populated by `compute_cte_id_column_for_alias()` which calls
 `find_id_column_for_alias()`. See invariant #2 above.
 
+### 5. FROM Clause & JOIN Order for OPTIONAL MATCH ⚠️ CRITICAL
+
+**The Problem**: When processing `MATCH...OPTIONAL MATCH...WITH`, which node becomes the FROM table, and how should JOINs be ordered?
+
+```cypher
+MATCH (tag:Tag)-[:HAS_TYPE]->(:TagClass)      -- Required pattern
+OPTIONAL MATCH (m:Message)-[:HAS_TAG]->(tag)  -- Optional pattern
+WITH tag, count(m) AS cnt
+```
+
+**Standard case**: When anchor == left_connection (e.g., `OPTIONAL MATCH (u)-[:KNOWS]->(f)`), standard logic works — left is FROM, joins go left→rel→right.
+
+**Reversed case**: When anchor == right_connection (Bug #3), the FROM table and JOIN order must be reversed.
+
+**Wrong SQL** (Bug #3 - before fix):
+```sql
+FROM Message AS m            -- ❌ Optional node used as FROM
+INNER JOIN ... ON tag.id ... -- ❌ tag doesn't exist yet!
+LEFT JOIN Tag AS tag ...     -- ✅ Joined too late
+```
+
+**Correct SQL** (after fix):
+```sql
+FROM Tag AS tag                                                     -- ✅ Required anchor
+INNER JOIN Tag_hasType_TagClass AS t2 ON t2.TagId = tag.id          -- ✅ Inner pattern
+INNER JOIN TagClass AS t1 ON t1.id = t2.TagClassId                  -- ✅ Inner pattern
+LEFT JOIN Message_hasTag_Tag AS t3 ON t3.TagId = tag.id             -- ✅ rel→anchor (reversed)
+LEFT JOIN (SELECT * FROM Message WHERE (...)) AS m ON m.id = t3.MessageId  -- ✅ Optional left node
+WHERE t1.name = 'MusicalArtist'                                    -- ✅ Anchor filter in WHERE
+```
+
+**How This Works — Three-Layer Fix**:
+
+1. **FROM Clause Selection** (`from_builder.rs::extract_from_graph_rel()`, lines 451-506):
+   - Checks `anchor_connection` field FIRST
+   - Searches for GraphNode with matching alias in left/right/nested positions
+   - Returns FROM for the anchor node when found
+   - Falls back to left node if anchor_connection is None
+
+2. **JOIN Order Reversal** (`join_builder.rs::extract_joins()`, lines 2075-2176):
+   - When `anchor_connection == right_connection` AND right is nested GraphRel:
+   - Resolves anchor node's primary key from schema via nested GraphRel inspection
+   - **JOIN 1**: `rel.to_id = anchor.id` (connect relationship to FROM/anchor)
+   - **JOIN 2**: `left.id = rel.from_id` (connect optional node to relationship)
+   - Skips the standard shared-node JOIN (anchor is already FROM)
+   - Returns early to avoid duplicate JOINs
+
+3. **Predicate Extraction for Optional Node** (`join_builder.rs`, lines 1943-1990):
+   - Standard: extracts user predicates for right_connection (optional)
+   - Reversed: also extracts predicates for left_connection (optional when anchor is right)
+   - Optional node predicates become `pre_filter` (subquery) for LEFT JOIN semantics
+   - Anchor node predicates remain in WHERE clause
+
+**Key Variable: `anchor_on_right`** — computed from `graph_rel.anchor_connection`:
+```rust
+let anchor_on_right = graph_rel.anchor_connection.as_ref()
+    .map(|a| a == &graph_rel.right_connection).unwrap_or(false);
+```
+
+**Key Insights**:
+- `GraphJoins.joins` list is **EMPTY and DEPRECATED** for OPTIONAL MATCH patterns
+- Joins are extracted during rendering via `input.extract_joins()`
+- `reorder_joins_by_dependencies()` is NOT called for these cases
+- Anchor selection happens in `extract_from()`, not in join reordering
+- `end_node_id`/`end_id_col` are UNRELIABLE when right is nested GraphRel (falls back to wrong column)
+- Anchor node ID must be resolved from schema via nested GraphRel node label lookup
+
+**Bug History**: Code comment (lines 459-463) described this scenario since initial implementation, stating "This case needs special handling", but the handling was never implemented until Feb 2026. Fixed in three commits: FROM clause, JOIN order reversal, predicate extraction.
+
 ## Common Bug Patterns
 
 | Pattern | Symptom | Root Cause |
 |---------|---------|------------|
 | `a_start_id` in JOIN | ClickHouse: "cannot be resolved" | `find_id_column_for_alias` VLP shortcut before GraphNode |
+| **Forward reference in OPTIONAL MATCH** | **"Unknown identifier `tag.id`"** | **FROM/JOIN order not using `anchor_connection` when anchor is right_connection** |
 | Wrong property mapping | Properties from wrong table | Denormalized vs standard property source confusion |
 | Missing CTE columns | Column not found in subquery | `cte_schemas` not populated for this CTE |
 | Duplicate CTEs | Same CTE name generated twice | CTE name collision, missing dedup check |
