@@ -94,72 +94,82 @@ impl SchemaInference {
             LogicalPlan::GraphNode(graph_node) => {
                 // Check if input is Empty - need to resolve to ViewScan
                 if matches!(graph_node.input.as_ref(), LogicalPlan::Empty) {
-                    // Get inferred label from TableCtx
-                    match plan_ctx.get_table_ctx(&graph_node.alias) {
-                        Ok(table_ctx) => {
-                            log::debug!(
-                                "SchemaInference: Found table_ctx for node '{}' with labels {:?}",
-                                graph_node.alias,
-                                table_ctx.get_labels()
-                            );
-                            if let Some(labels) = table_ctx.get_labels() {
-                                if !labels.is_empty() && labels[0] != "$any" {
-                                    let label = &labels[0];
-                                    log::info!(
-                                        "SchemaInference: Resolving Empty → ViewScan for node '{}' with inferred label '{}'",
-                                        graph_node.alias, label
-                                    );
-
-                                    // Create ViewScan using the inferred label
-                                    match crate::query_planner::logical_plan::match_clause::try_generate_view_scan(
-                                        &graph_node.alias,
-                                        label,
-                                        plan_ctx,
-                                    ) {
-                                        Ok(Some(view_scan)) => {
-                                            log::info!("SchemaInference: ✓ Successfully created ViewScan for node '{}' with label '{}'", graph_node.alias, label);
-                                            // Rebuild GraphNode with ViewScan instead of Empty
-                                            return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(
-                                                crate::query_planner::logical_plan::GraphNode {
-                                                    input: view_scan,
-                                                    alias: graph_node.alias.clone(),
-                                                    label: Some(label.clone()),
-                                                    is_denormalized: graph_node.is_denormalized,
-                                                    projected_columns: graph_node.projected_columns.clone(),
-                                                    node_types: None,
-                                                },
-                                            ))));
-                                        }
-                                        Ok(None) => {
-                                            log::warn!(
-                                                "SchemaInference: Failed to create ViewScan for node '{}' with label '{}' (returned None)",
-                                                graph_node.alias, label
-                                            );
-                                        }
-                                        Err(e) => {
-                                            log::warn!(
-                                                "SchemaInference: Error creating ViewScan for node '{}' with label '{}': {:?}",
-                                                graph_node.alias, label, e
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    log::debug!("SchemaInference: Node '{}' has no labels or $any label, skipping ViewScan creation", graph_node.alias);
-                                }
-                            } else {
+                    // First check if GraphNode already has a label (set by TypeInference Phase 2)
+                    let label_to_use = if let Some(ref node_label) = graph_node.label {
+                        if node_label != "$any" {
+                            Some(node_label.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        // Fallback: Get inferred label from TableCtx
+                        match plan_ctx.get_table_ctx(&graph_node.alias) {
+                            Ok(table_ctx) => {
                                 log::debug!(
-                                    "SchemaInference: No labels found for node '{}' in table_ctx",
-                                    graph_node.alias
+                                    "SchemaInference: Found table_ctx for node '{}' with labels {:?}",
+                                    graph_node.alias,
+                                    table_ctx.get_labels()
+                                );
+                                table_ctx.get_labels().and_then(|labels| {
+                                    if !labels.is_empty() && labels[0] != "$any" {
+                                        Some(labels[0].clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            }
+                            Err(e) => {
+                                log::debug!(
+                                    "SchemaInference: No table_ctx found for node '{}': {:?}",
+                                    graph_node.alias,
+                                    e
+                                );
+                                None
+                            }
+                        }
+                    };
+
+                    if let Some(label) = label_to_use {
+                        log::info!(
+                            "SchemaInference: Resolving Empty → ViewScan for node '{}' with label '{}'",
+                            graph_node.alias, label
+                        );
+
+                        // Create ViewScan using the label
+                        match crate::query_planner::logical_plan::match_clause::try_generate_view_scan(
+                            &graph_node.alias,
+                            &label,
+                            plan_ctx,
+                        ) {
+                            Ok(Some(view_scan)) => {
+                                log::info!("SchemaInference: ✓ Successfully created ViewScan for node '{}' with label '{}'", graph_node.alias, label);
+                                // Rebuild GraphNode with ViewScan instead of Empty
+                                return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(
+                                    crate::query_planner::logical_plan::GraphNode {
+                                        input: view_scan,
+                                        alias: graph_node.alias.clone(),
+                                        label: Some(label.clone()),
+                                        is_denormalized: graph_node.is_denormalized,
+                                        projected_columns: graph_node.projected_columns.clone(),
+                                        node_types: None,
+                                    },
+                                ))));
+                            }
+                            Ok(None) => {
+                                log::warn!(
+                                    "SchemaInference: Failed to create ViewScan for node '{}' with label '{}' (returned None)",
+                                    graph_node.alias, label
+                                );
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "SchemaInference: Error creating ViewScan for node '{}' with label '{}': {:?}",
+                                    graph_node.alias, label, e
                                 );
                             }
                         }
-                        Err(e) => {
-                            log::debug!(
-                                "SchemaInference: No table_ctx found for node '{}': {:?}",
-                                graph_node.alias,
-                                e
-                            );
-                        }
+                    } else {
+                        log::debug!("SchemaInference: Node '{}' has no valid label, skipping ViewScan creation", graph_node.alias);
                     }
                 }
 

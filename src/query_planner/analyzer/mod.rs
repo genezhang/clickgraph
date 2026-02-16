@@ -100,7 +100,7 @@ mod plan_sanitization;
 mod projected_columns_resolver;
 mod projection_tagging;
 mod query_validation;
-mod schema_inference;
+mod schema_inference;  // NOTE: Still needed for Phase 3 ViewScan resolution (Feb 16, 2026)
 mod type_inference;
 mod unwind_property_rewriter;
 mod unwind_tuple_enricher;
@@ -118,7 +118,12 @@ pub fn initial_analyzing(
 ) -> AnalyzerResult<Arc<LogicalPlan>> {
     log::info!("🔍 ANALYZER: Entering initial_analyzing");
 
-    // Step 1: Schema Inference - infer missing schema information
+    // Step 1: Schema Inference - REMOVED (merged into TypeInference Phase 0+3)
+    // SchemaInference functionality has been fully merged into UnifiedTypeInference:
+    // - Phase 0: Relationship-based label inference (infer_missing_labels logic)
+    // - Phase 3: ViewScan resolution (push_inferred_table_names_to_scan logic)
+    // Removed: February 16, 2026
+    /*
     let schema_inference = SchemaInference::new();
     let plan = if let Ok(transformed_plan) =
         schema_inference.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)
@@ -127,11 +132,15 @@ pub fn initial_analyzing(
     } else {
         plan
     };
+    */
 
     // Step 2: Type Inference - infer missing node labels AND edge types from schema
-    // This runs early to ensure all downstream passes have complete type information
-    // Works across WITH boundaries using existing plan_ctx scope barriers
-    // Infers: node labels from edge types, edge types from node labels, defaults from schema
+    // Now runs as FIRST pass (after SchemaInference consolidation)
+    // 4-phase unified type inference:
+    // - Phase 0: Relationship-based label inference
+    // - Phase 1: Filter→GraphRel UNION generation  
+    // - Phase 2: Untyped node UNION generation
+    // - Phase 3: ViewScan resolution
     let type_inference = TypeInference::new();
     let plan = if let Ok(transformed_plan) =
         type_inference.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)
@@ -397,6 +406,8 @@ pub fn intermediate_analyzing(
     )?;
     let plan = transformed_plan.get_plan();
 
+    // NOTE: Still using SchemaInference for Phase 3 ViewScan resolution
+    // TypeInference Phase 3 is placeholder - full implementation deferred
     let transformed_plan = SchemaInference::push_inferred_table_names_to_scan(plan, plan_ctx)?;
     let plan = transformed_plan.get_plan();
 
