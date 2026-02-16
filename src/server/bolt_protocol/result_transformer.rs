@@ -97,6 +97,9 @@ pub enum ReturnItemType {
         rel_types: Vec<String>,
         /// Whether this is a VLP (variable-length path)
         is_vlp: bool,
+        /// Relationship direction: "Outgoing", "Incoming", or "Either"
+        /// Used to determine if nodes should be swapped in undirected paths
+        direction: Option<String>,
     },
     /// Neo4j id() function - compute encoded ID from element_id at result time
     IdFunction {
@@ -356,6 +359,19 @@ pub fn extract_return_metadata(
                             }
                         }
 
+                        // Get direction from the relationship variable
+                        let direction = path_var
+                            .relationship
+                            .as_ref()
+                            .and_then(|alias| plan_ctx.lookup_variable(alias))
+                            .and_then(|tv| tv.as_relationship())
+                            .and_then(|rel_var| rel_var.direction.clone())
+                            .or_else(|| {
+                                // Try to find direction from GraphRel in the logical plan
+                                path_var.relationship.as_ref()
+                                    .and_then(|alias| find_relationship_direction(logical_plan, alias))
+                            });
+
                         ReturnItemType::Path {
                             start_alias: path_var.start_node.clone(),
                             end_alias: path_var.end_node.clone(),
@@ -364,6 +380,7 @@ pub fn extract_return_metadata(
                             end_labels,
                             rel_types,
                             is_vlp,
+                            direction,
                         }
                     }
                     _ => {
@@ -627,6 +644,7 @@ pub fn transform_row(
                 end_labels,
                 rel_types,
                 is_vlp,
+                direction,
             } => {
                 // Transform fixed-hop path to Neo4j Path structure
                 // For now, we support fixed single-hop paths: (a)-[r]->(b)
@@ -666,6 +684,26 @@ pub fn transform_row(
                     schema,
                     metadata,
                 )?;
+
+                // If relationship direction is "Incoming" or "Either", swap nodes in path
+                // This handles undirected patterns like (a)--(b) where we need to match query semantics
+                if let Some(dir) = direction {
+                    if dir == "Incoming" || dir == "Either" {
+                        // Swap start and end nodes in the path to match query pattern semantics
+                        if path.nodes.len() >= 2 {
+                            path.nodes.swap(0, 1);
+                            log::debug!(
+                                "Swapped path nodes for undirected pattern (nodes now: {} -> {})",
+                                path.nodes[0].labels.iter().next().unwrap_or(&"?".to_string()),
+                                path.nodes[1].labels.iter().next().unwrap_or(&"?".to_string())
+                            );
+                        }
+                        // Also swap the relationship's start/end node element IDs
+                        for rel in &mut path.relationships {
+                            std::mem::swap(&mut rel.start_node_element_id, &mut rel.end_node_element_id);
+                        }
+                    }
+                }
 
                 // Assign session-scoped integer IDs to all nodes and relationships in path
                 for node in &mut path.nodes {
