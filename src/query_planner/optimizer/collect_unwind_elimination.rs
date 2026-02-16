@@ -335,8 +335,29 @@ impl CollectUnwindElimination {
                             // Found the definition - check if it's collect(TableAlias)
                             if let LogicalExpr::AggregateFnCall(ref agg) = item.expression {
                                 if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
-                                    if let LogicalExpr::TableAlias(ref source_alias) = agg.args[0] {
-                                        let source = &source_alias.0;
+                                    // Extract source alias from collect argument, handling
+                                    // both collect(x) and collect(DISTINCT x) patterns
+                                    let (source_alias_opt, has_distinct) = match &agg.args[0] {
+                                        LogicalExpr::TableAlias(ref ta) => (Some(&ta.0), false),
+                                        // Handle both Operator and OperatorApplicationExp variants
+                                        LogicalExpr::Operator(ref op)
+                                        | LogicalExpr::OperatorApplicationExp(ref op)
+                                            if op.operator
+                                                == crate::query_planner::logical_expr::Operator::Distinct
+                                                && op.operands.len() == 1 =>
+                                        {
+                                            if let LogicalExpr::TableAlias(ref ta) = op.operands[0]
+                                            {
+                                                (Some(&ta.0), true)
+                                            } else {
+                                                (None, true)
+                                            }
+                                        }
+                                        _ => (None, false),
+                                    };
+
+                                    if let Some(source) = source_alias_opt {
+                                        let source = source.clone();
                                         let unwound = &unwind.alias;
 
                                         log::info!(
@@ -362,8 +383,8 @@ impl CollectUnwindElimination {
                                             // Eliminate both WITH and UNWIND completely
                                             // Map unwind alias -> source so RETURN can find the right variable
                                             log::info!(
-                                                "🔥 CollectUnwindElimination: Simple elimination - WITH only has collect({}), removing WITH+UNWIND, mapping {} -> {}",
-                                                source, unwound, source
+                                                "🔥 CollectUnwindElimination: Simple elimination - WITH only has collect({}), removing WITH+UNWIND, mapping {} -> {} (has_distinct={})",
+                                                source, unwound, source, has_distinct
                                             );
 
                                             // Build alias mapping: UNWIND alias -> source variable
@@ -376,6 +397,35 @@ impl CollectUnwindElimination {
 
                                             // Merge alias maps
                                             alias_map.extend(input_alias_map);
+
+                                            if has_distinct {
+                                                // collect(DISTINCT x) needs dedup: keep a
+                                                // minimal WITH DISTINCT that passes through
+                                                // the source variable
+                                                let passthrough_item = ProjectionItem {
+                                                    expression: LogicalExpr::TableAlias(
+                                                        crate::query_planner::logical_expr::TableAlias(
+                                                            source.clone(),
+                                                        ),
+                                                    ),
+                                                    col_alias: None,
+                                                };
+                                                let distinct_with =
+                                                    Arc::new(LogicalPlan::WithClause(WithClause {
+                                                        cte_name: None,
+                                                        input: optimized_input,
+                                                        items: vec![passthrough_item],
+                                                        distinct: true,
+                                                        order_by: None,
+                                                        skip: None,
+                                                        limit: None,
+                                                        where_clause: None,
+                                                        exported_aliases: vec![source.clone()],
+                                                        cte_references: with.cte_references.clone(),
+                                                        pattern_comprehensions: vec![],
+                                                    }));
+                                                return Ok((distinct_with, alias_map));
+                                            }
 
                                             return Ok((optimized_input, alias_map));
                                         } else {
@@ -418,7 +468,7 @@ impl CollectUnwindElimination {
                                                     cte_name: None,
                                                     input: optimized_input,
                                                     items: new_items,
-                                                    distinct: with.distinct,
+                                                    distinct: with.distinct || has_distinct,
                                                     order_by: with.order_by.clone(),
                                                     skip: with.skip,
                                                     limit: with.limit,
@@ -566,6 +616,63 @@ mod tests {
             assert_eq!(with.exported_aliases[0], "u");
         } else {
             panic!("Expected WithClause, got {:?}", plan);
+        }
+    }
+
+    #[test]
+    fn test_collect_distinct_unwind_elimination() {
+        // WITH collect(DISTINCT f) as friends
+        // UNWIND friends as friend
+        // Should eliminate collect+UNWIND but preserve DISTINCT semantics via WITH DISTINCT
+        use crate::query_planner::logical_expr::{Operator, OperatorApplication};
+
+        let base = Arc::new(LogicalPlan::Empty);
+
+        let with_plan = Arc::new(LogicalPlan::WithClause(WithClause {
+            cte_name: None,
+            input: base,
+            items: vec![ProjectionItem {
+                expression: LogicalExpr::AggregateFnCall(AggregateFnCall {
+                    name: "collect".to_string(),
+                    args: vec![LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::Distinct,
+                        operands: vec![LogicalExpr::TableAlias(TableAlias("f".to_string()))],
+                    })],
+                }),
+                col_alias: Some(ColumnAlias("friends".to_string())),
+            }],
+            distinct: false,
+            order_by: None,
+            skip: None,
+            limit: None,
+            where_clause: None,
+            exported_aliases: vec!["friends".to_string()],
+            cte_references: Default::default(),
+            pattern_comprehensions: vec![],
+        }));
+
+        let unwind_plan = Arc::new(LogicalPlan::Unwind(Unwind {
+            input: with_plan,
+            expression: LogicalExpr::TableAlias(TableAlias("friends".to_string())),
+            alias: "friend".to_string(),
+            label: None,
+            tuple_properties: None,
+        }));
+
+        let optimizer = CollectUnwindElimination;
+        let mut plan_ctx = PlanCtx::new_empty();
+        let result = optimizer.optimize(unwind_plan, &mut plan_ctx).unwrap();
+
+        // Should produce a WITH DISTINCT passthrough (not Empty, because DISTINCT must be preserved)
+        let plan = result.get_plan();
+        if let LogicalPlan::WithClause(with) = &*plan {
+            assert!(with.distinct, "WITH should be marked DISTINCT");
+            assert_eq!(with.items.len(), 1);
+        } else {
+            panic!(
+                "Expected WithClause (DISTINCT), got {:?}",
+                std::mem::discriminant(&*plan)
+            );
         }
     }
 }
