@@ -2112,27 +2112,83 @@ impl JoinBuilder for LogicalPlan {
                             .as_ref()
                             .and_then(|lbl| schema.node_schema_opt(lbl))
                             .map(|ns| ns.node_id.id.clone())
+                            // Fallback to a single "id" column if schema is missing
                             .unwrap_or_else(|| Identifier::Single("id".to_string()))
                     };
 
+                    // Derive the logical anchor ID column name from the schema-driven identifier.
+                    let anchor_id_col_name = match &anchor_node_id {
+                        Identifier::Single(col) => col.clone(),
+                        Identifier::Composite(cols) => {
+                            // CTE resolution only supports a single column name;
+                            // use the first component for compatibility.
+                            cols.first().cloned().unwrap_or_else(|| "id".to_string())
+                        }
+                    };
+
                     // JOIN 1: Relationship table → anchor (right_connection, already FROM)
-                    // rel.to_id = anchor.id
+                    // rel.to_id = anchor.id (or schema-specific primary key)
                     let (_right_table_alias, _right_column) =
-                        resolve_cte_reference(&graph_rel.right_connection, &"id".to_string());
+                        resolve_cte_reference(&graph_rel.right_connection, &anchor_id_col_name);
+                    let anchor_join_id = Identifier::Single(_right_column.clone());
                     let rel_to_anchor_conditions = build_identifier_join_conditions(
                         &graph_rel.alias,
                         &rel_cols.to_id,
                         &_right_table_alias,
-                        &anchor_node_id,
+                        &anchor_join_id,
                     );
                     let rel_join_cond = wrap_conditions_and(rel_to_anchor_conditions);
+
+                    // Compile edge constraints for relationship JOIN (same as standard path)
+                    let mut rel_combined_pre_filter = rel_pre_filter.clone();
+                    if let Some(labels_vec) = &graph_rel.labels {
+                        if let Some(rel_type) = labels_vec.first() {
+                            if let Some(rel_schema) = schema.get_relationships_schema_opt(rel_type)
+                            {
+                                if let Some(ref constraint_expr) = rel_schema.constraints {
+                                    if let (Some(start_label), Some(end_label)) =
+                                        (&start_label, &end_label)
+                                    {
+                                        if let (Some(from_node_schema), Some(to_node_schema)) = (
+                                            schema.node_schema_opt(start_label),
+                                            schema.node_schema_opt(end_label),
+                                        ) {
+                                            match crate::graph_catalog::constraint_compiler::compile_constraint(
+                                                constraint_expr,
+                                                from_node_schema,
+                                                to_node_schema,
+                                                &graph_rel.left_connection,
+                                                &graph_rel.right_connection,
+                                            ) {
+                                                Ok(compiled_sql) => {
+                                                    log::info!("✅ Compiled edge constraint for reversed anchor: {}", compiled_sql);
+                                                    let constraint_render_expr = RenderExpr::Raw(compiled_sql);
+                                                    rel_combined_pre_filter = if let Some(existing) = rel_combined_pre_filter {
+                                                        Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                                            operator: Operator::And,
+                                                            operands: vec![existing, constraint_render_expr],
+                                                        }))
+                                                    } else {
+                                                        Some(constraint_render_expr)
+                                                    };
+                                                }
+                                                Err(e) => {
+                                                    log::warn!("⚠️  Failed to compile edge constraint for reversed anchor: {}", e);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     joins.push(Join {
                         table_name: rel_table.clone(),
                         table_alias: graph_rel.alias.clone(),
                         joining_on: vec![rel_join_cond],
                         join_type: join_type.clone(),
-                        pre_filter: rel_pre_filter.clone(),
+                        pre_filter: rel_combined_pre_filter,
                         from_id_column: Some(rel_cols.from_id.to_string()),
                         to_id_column: Some(rel_cols.to_id.to_string()),
                         graph_rel: None,

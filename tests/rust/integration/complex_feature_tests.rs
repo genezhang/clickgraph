@@ -1140,3 +1140,59 @@ async fn test_vlp_with_cte_join_uses_node_id_not_start_id() {
         "Should contain WITH CTE for allNeighboursCount"
     );
 }
+
+/// Test reversed-anchor OPTIONAL MATCH with WHERE predicate on optional node.
+/// When the anchor (already-matched node) is on the right side of the OPTIONAL MATCH
+/// pattern, join order must be reversed. This tests that WHERE predicates on the
+/// optional (left) node are still correctly applied.
+#[tokio::test]
+async fn test_reversed_anchor_optional_match_with_where_predicate() {
+    let schema = create_test_schema();
+
+    // Pattern: MATCH establishes 'u', then OPTIONAL MATCH has 'u' as right_connection
+    // (anchor on the right) with WHERE filtering on the optional left node 'f'
+    let cypher = r#"
+        MATCH (u:User)-[:AUTHORED]->(p:Post)
+        OPTIONAL MATCH (f:User)-[:FOLLOWS]->(u)
+        WHERE f.is_active = true
+        RETURN u.name, p.title, f.name AS follower_name
+    "#;
+
+    let ast = parse_query(cypher)
+        .expect("Failed to parse reversed-anchor OPTIONAL MATCH with WHERE predicate");
+
+    let result = build_logical_plan(&ast, &schema, None, None, None);
+    assert!(
+        result.is_ok(),
+        "Failed to build logical plan: {:?}",
+        result.err()
+    );
+
+    let (logical_plan, _plan_ctx) = result.unwrap();
+    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL: {:?}",
+        render_result.err()
+    );
+
+    let render_plan = render_result.unwrap();
+    let sql = render_plan.to_sql();
+    println!("Generated SQL:\n{}", sql);
+
+    let sql_lower = sql.to_lowercase();
+
+    // Must contain LEFT JOIN for the optional relationship and node
+    assert!(
+        sql_lower.contains("left join"),
+        "Should contain LEFT JOIN for OPTIONAL MATCH.\nSQL:\n{}",
+        sql
+    );
+
+    // The WHERE predicate on the optional node (f.is_active) must appear in the SQL
+    assert!(
+        sql_lower.contains("is_active"),
+        "Should contain is_active predicate from WHERE clause.\nSQL:\n{}",
+        sql
+    );
+}
