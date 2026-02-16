@@ -116,7 +116,7 @@ use crate::{
         },
         logical_expr::{LogicalExpr, Direction, Literal},
         logical_plan::{GraphNode, GraphRel, LogicalPlan, ViewScan, Union, UnionType},
-        plan_ctx::PlanCtx,
+        plan_ctx::{PlanCtx, TableCtx},  // Added TableCtx
         transformed::Transformed,
     },
 };
@@ -2093,6 +2093,238 @@ impl TypeInference {
         );
         None
     }
+
+    // ================================================================================================
+    // Phase 0: Relationship-Based Label Inference (from SchemaInference)
+    // ================================================================================================
+
+    /// Phase 0: Infer missing node/relationship labels from GraphRel patterns
+    ///
+    /// This mirrors SchemaInference.infer_schema() logic but runs as Phase 0 of
+    /// UnifiedTypeInference. Walks the plan tree and infers labels based on the
+    /// 8 combinations of known/unknown in (a)-[r]->(b) patterns.
+    fn infer_schema_relationships(
+        &self,
+        logical_plan: Arc<LogicalPlan>,
+        plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<()> {
+        match logical_plan.as_ref() {
+            LogicalPlan::Projection(projection) => {
+                self.infer_schema_relationships(projection.input.clone(), plan_ctx, graph_schema)
+            }
+            LogicalPlan::GraphNode(graph_node) => {
+                self.infer_schema_relationships(graph_node.input.clone(), plan_ctx, graph_schema)
+            }
+            LogicalPlan::GraphRel(graph_rel) => {
+                let left_alias = &graph_rel.left_connection;
+                let right_alias = &graph_rel.right_connection;
+
+                // Try to get table contexts - may not exist yet
+                let left_table_ctx_opt =
+                    plan_ctx.get_table_ctx_from_alias_opt(&Some(left_alias.clone()));
+                let right_table_ctx_opt =
+                    plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone()));
+
+                // If contexts don't exist yet, skip (will be handled in later phases)
+                if let (Ok(left_table_ctx), Ok(right_table_ctx)) =
+                    (left_table_ctx_opt, right_table_ctx_opt)
+                {
+                    if let Ok(rel_table_ctx) = plan_ctx.get_rel_table_ctx(&graph_rel.alias) {
+                        // Skip label inference for relationships with multiple types
+                        let should_infer_labels = !rel_table_ctx
+                            .get_labels()
+                            .map(|labels| labels.len() > 1)
+                            .unwrap_or(false);
+
+                        if should_infer_labels {
+                            // Use the 8-case inference logic from SchemaInference
+                            if let Ok((left_label, rel_label, right_label)) = self
+                                .infer_missing_labels_from_schema(
+                                    graph_schema,
+                                    left_table_ctx,
+                                    rel_table_ctx,
+                                    right_table_ctx,
+                                )
+                            {
+                                // Update plan_ctx with inferred labels
+                                for (alias, label) in [
+                                    (left_alias, left_label),
+                                    (&graph_rel.alias, rel_label),
+                                    (right_alias, right_label),
+                                ] {
+                                    if let Ok(table_ctx) = plan_ctx.get_mut_table_ctx(alias) {
+                                        if table_ctx.get_label_opt().is_none() {
+                                            log::info!(
+                                                "🏷️ Phase 0: Inferred label '{}' for alias '{}'",
+                                                label,
+                                                alias
+                                            );
+                                            table_ctx.set_labels(Some(vec![label]));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Recurse into child patterns
+                self.infer_schema_relationships(graph_rel.left.clone(), plan_ctx, graph_schema)?;
+                self.infer_schema_relationships(graph_rel.right.clone(), plan_ctx, graph_schema)?;
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Infer missing labels using the 8-case logic from SchemaInference
+    ///
+    /// This is the core label inference algorithm that handles all combinations of
+    /// known/unknown labels in (a)-[r]->(b) patterns.
+    fn infer_missing_labels_from_schema(
+        &self,
+        graph_schema: &GraphSchema,
+        left_table_ctx: &TableCtx,
+        rel_table_ctx: &TableCtx,
+        right_table_ctx: &TableCtx,
+    ) -> AnalyzerResult<(String, String, String)> {
+        use crate::query_planner::analyzer::errors::{AnalyzerError, Pass};
+
+        // Case 1: All labels present - return as-is
+        if left_table_ctx.get_label_opt().is_some()
+            && rel_table_ctx.get_label_opt().is_some()
+            && right_table_ctx.get_label_opt().is_some()
+        {
+            return Ok((
+                left_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
+                    pass: Pass::SchemaInference,
+                    source: e,
+                })?,
+                rel_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
+                    pass: Pass::SchemaInference,
+                    source: e,
+                })?,
+                right_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
+                    pass: Pass::SchemaInference,
+                    source: e,
+                })?,
+            ));
+        }
+
+        // Case 2: Only left missing
+        if left_table_ctx.get_label_opt().is_none()
+            && rel_table_ctx.get_label_opt().is_some()
+            && right_table_ctx.get_label_opt().is_some()
+        {
+            let rel_label = rel_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
+                pass: Pass::SchemaInference,
+                source: e,
+            })?;
+            let right_label = right_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
+                pass: Pass::SchemaInference,
+                source: e,
+            })?;
+            let rel_schema = graph_schema.get_rel_schema(&rel_label).map_err(|e| {
+                AnalyzerError::GraphSchema {
+                    pass: Pass::SchemaInference,
+                    source: e,
+                }
+            })?;
+
+            let left_label = if right_label == rel_schema.from_node {
+                rel_schema.to_node.clone()
+            } else {
+                rel_schema.from_node.clone()
+            };
+            return Ok((left_label, rel_label, right_label));
+        }
+
+        // Case 3: Only right missing
+        if left_table_ctx.get_label_opt().is_some()
+            && rel_table_ctx.get_label_opt().is_some()
+            && right_table_ctx.get_label_opt().is_none()
+        {
+            let left_label = left_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
+                pass: Pass::SchemaInference,
+                source: e,
+            })?;
+            let rel_label = rel_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
+                pass: Pass::SchemaInference,
+                source: e,
+            })?;
+            let rel_schema = graph_schema.get_rel_schema(&rel_label).map_err(|e| {
+                AnalyzerError::GraphSchema {
+                    pass: Pass::SchemaInference,
+                    source: e,
+                }
+            })?;
+
+            let right_label = if left_label == rel_schema.from_node {
+                rel_schema.to_node.clone()
+            } else {
+                rel_schema.from_node.clone()
+            };
+            return Ok((left_label, rel_label, right_label));
+        }
+
+        // Case 4: Only relationship missing
+        if left_table_ctx.get_label_opt().is_some()
+            && rel_table_ctx.get_label_opt().is_none()
+            && right_table_ctx.get_label_opt().is_some()
+        {
+            let left_label = left_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
+                pass: Pass::SchemaInference,
+                source: e,
+            })?;
+            let right_label = right_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
+                pass: Pass::SchemaInference,
+                source: e,
+            })?;
+
+            // Find relationship that connects these nodes
+            for (_, rel_schema) in graph_schema.get_relationships_schemas().iter() {
+                if (rel_schema.from_node == left_label && rel_schema.to_node == right_label)
+                    || (rel_schema.from_node == right_label && rel_schema.to_node == left_label)
+                {
+                    return Ok((left_label, rel_schema.table_name.clone(), right_label));
+                }
+            }
+            return Err(AnalyzerError::MissingRelationLabel {
+                pass: Pass::SchemaInference,
+            });
+        }
+
+        // Case 5-8: Multiple unknowns - defer to existing inference logic
+        // These cases are handled by infer_pattern_types() in Phase 1
+        Ok((
+            left_table_ctx.get_label_opt().unwrap_or_default(),
+            rel_table_ctx.get_label_opt().unwrap_or_default(),
+            right_table_ctx.get_label_opt().unwrap_or_default(),
+        ))
+    }
+
+    // ================================================================================================
+    // Phase 3: ViewScan Resolution (from SchemaInference)
+    // ================================================================================================
+
+    /// Phase 3: Resolve GraphNode(input=Empty) → ViewScan based on inferred labels
+    ///
+    /// This mirrors SchemaInference.push_inferred_table_names_to_scan() logic.
+    /// After phases 0-2 have inferred labels, this phase creates concrete ViewScan
+    /// nodes from the inferred label information in TableCtx.
+    ///
+    /// **NOTE**: Currently a placeholder. SchemaInference still handles ViewScan creation.
+    /// This will be fully implemented after Phase B testing confirms Phase 0 works correctly.
+    fn push_inferred_table_names_to_scan(
+        logical_plan: Arc<LogicalPlan>,
+        _plan_ctx: &mut PlanCtx,
+        _graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<Arc<LogicalPlan>> {
+        // TODO Phase B: Implement full ViewScan resolution logic
+        // For now, just return the plan unchanged - SchemaInference still handles this
+        Ok(logical_plan)
+    }
 }
 
 impl AnalyzerPass for TypeInference {
@@ -2102,14 +2334,20 @@ impl AnalyzerPass for TypeInference {
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
-        log::info!("🏷️ UnifiedTypeInference: Starting type inference pass");
+        log::info!("🏷️ UnifiedTypeInference: Starting 4-phase type inference pass");
+        
+        // Phase 0: Relationship-based label inference (from SchemaInference)
+        // Walk the plan and infer missing labels from GraphRel patterns
+        log::info!("🏷️ UnifiedTypeInference: Phase 0 - Relationship-based label inference");
+        self.infer_schema_relationships(logical_plan.clone(), plan_ctx, graph_schema)?;
         
         // Phase 1: Incremental type inference + Filter→GraphRel UNION generation
-        let result = self.infer_labels_recursive(logical_plan, plan_ctx, graph_schema)?;
+        log::info!("🏷️ UnifiedTypeInference: Phase 1 - Filter→GraphRel UNION generation");
+        let result = self.infer_labels_recursive(logical_plan.clone(), plan_ctx, graph_schema)?;
         let phase1_transformed = result.is_yes();
         let mut plan = result.get_plan();
         
-        log::info!("🏷️ UnifiedTypeInference: Phase 1 complete, checking for untyped nodes");
+        log::info!("🏷️ UnifiedTypeInference: Phase 2 - Checking for untyped nodes");
         
         // Phase 2: Discover remaining untyped nodes and generate UNION
         let untyped_nodes = discover_untyped_nodes(&plan, plan_ctx);
@@ -2132,7 +2370,16 @@ impl AnalyzerPass for TypeInference {
             log::info!("🏷️ UnifiedTypeInference: No untyped nodes found");
         }
         
-        log::info!("🏷️ UnifiedTypeInference: Completed - phase1={}, phase2={}", phase1_transformed, !untyped_nodes.is_empty());
+        // Phase 3: ViewScan resolution (from SchemaInference)  
+        // Resolve GraphNode(input=Empty) → ViewScan based on inferred labels
+        log::info!("🏷️ UnifiedTypeInference: Phase 3 - ViewScan resolution");
+        plan = Self::push_inferred_table_names_to_scan(plan, plan_ctx, graph_schema)?;
+        
+        log::info!(
+            "🏷️ UnifiedTypeInference: Completed - phase0=yes, phase1={}, phase2={}, phase3=yes",
+            phase1_transformed,
+            !untyped_nodes.is_empty()
+        );
         Ok(Transformed::Yes(plan))
     }
 }
