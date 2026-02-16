@@ -49,17 +49,21 @@ Then open: http://localhost:7474
    - Username: `neo4j`
    - Password: `test_password`
 
-2. **Connect to ClickGraph**
-   - Click **Database** dropdown (top right)
-   - Click **Connect to another database**
-   - Enter URI: `bolt://localhost:7687`
-   - Leave username/password empty
+2. **Connect to ClickGraph via Bolt**
+   - Click the **gear icon** (⚙️) in bottom left corner
+   - Or go to Settings → Server bolt://localhost:7687
+   - Authentication: **No authentication** (leave unchecked)
    - Click **Connect**
+
+   > Note: Bolt protocol connection (bolt://) doesn't show database field - this is expected.
+   > The database is determined by the schema file (social_demo.yaml).
 
 3. **Try a query**
    ```cypher
    MATCH (u:User) RETURN u LIMIT 5
    ```
+
+   You should see user nodes with properties visualized as a graph!
 
 ---
 
