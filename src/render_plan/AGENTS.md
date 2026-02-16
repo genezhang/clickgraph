@@ -105,11 +105,74 @@ When FROM is a VLP CTE and a WITH CTE needs to be JOINed:
 The `alias_to_id` map is populated by `compute_cte_id_column_for_alias()` which calls
 `find_id_column_for_alias()`. See invariant #2 above.
 
+### 5. FROM Clause Anchor Selection for OPTIONAL MATCH ⚠️ CRITICAL
+
+**The Problem**: When processing `MATCH...OPTIONAL MATCH...WITH`, which node becomes the FROM table?
+
+```cypher
+MATCH (tag:Tag)-[:HAS_TYPE]->(:TagClass)      -- Required pattern
+OPTIONAL MATCH (m:Message)-[:HAS_TAG]->(tag)  -- Optional pattern
+WITH tag, count(m) AS cnt
+```
+
+**Wrong SQL** (Bug #3 - FIXED in Feb 2026):
+```sql
+FROM Message AS m            -- ❌ Optional node used as FROM
+INNER JOIN ... ON tag.id ... -- ❌ tag doesn't exist yet!
+LEFT JOIN Tag AS tag ...     -- ✅ Joined too late
+```
+
+**Correct SQL**:
+```sql
+FROM Tag AS tag              -- ✅ Required node from first MATCH
+INNER JOIN ...               -- ✅ tag is available
+LEFT JOIN Message AS m ...   -- ✅ Optional node joined correctly
+```
+
+**How This Works**:
+
+1. **Analysis Phase** (`query_planner/logical_plan/match_clause/helpers.rs::determine_optional_anchor()`):
+   - Checks which node already exists in `alias_table_ctx_map`
+   - Sets `GraphRel.anchor_connection` to the existing (required) node's alias
+   - Example: For `(m)-[:R]->(tag)` where tag exists, sets `anchor_connection: Some("tag")`
+
+2. **Rendering Phase** (`render_plan/from_builder.rs::extract_from_graph_rel()`):
+   - **Checks `anchor_connection` field FIRST** (lines 451-506)
+   - Searches for GraphNode with matching alias:
+     - Direct left/right nodes
+     - Nested GraphRel nodes (common for MATCH + OPTIONAL MATCH patterns)
+   - Returns FROM for the anchor node when found
+   - Falls back to left node if anchor_connection is None
+
+**The Fix** (Feb 2026):
+```rust
+// In extract_from_graph_rel(), added anchor_connection check:
+if let Some(ref anchor_alias) = graph_rel.anchor_connection {
+    // Search for GraphNode with matching alias
+    if let LogicalPlan::GraphNode(left_node) = graph_rel.left.as_ref() {
+        if &left_node.alias == anchor_alias {
+            return Ok(from_table_to_view_ref(graph_rel.left.extract_from()?));
+        }
+    }
+    // Also check right and nested GraphRel nodes...
+}
+// Fall back to default left/right logic
+```
+
+**Key Insights**:
+- `GraphJoins.joins` list is **EMPTY and DEPRECATED** for OPTIONAL MATCH patterns
+- Joins are extracted during rendering via `input.extract_joins()`
+- `reorder_joins_by_dependencies()` is NOT called for these cases
+- Anchor selection happens in `extract_from()`, not in join reordering
+
+**Bug History**: Code comment (lines 459-463) described this scenario since initial implementation, stating "This case needs special handling", but the handling was never implemented until Feb 2026. This caused 8 LDBC queries (BI-2/4/5/18, COMPLEX-3/4/5/7) to fail with forward reference errors.
+
 ## Common Bug Patterns
 
 | Pattern | Symptom | Root Cause |
 |---------|---------|------------|
 | `a_start_id` in JOIN | ClickHouse: "cannot be resolved" | `find_id_column_for_alias` VLP shortcut before GraphNode |
+| **Forward reference in OPTIONAL MATCH** | **"Unknown identifier `tag.id`"** | **`extract_from()` ignoring `anchor_connection` field** |
 | Wrong property mapping | Properties from wrong table | Denormalized vs standard property source confusion |
 | Missing CTE columns | Column not found in subquery | `cte_schemas` not populated for this CTE |
 | Duplicate CTEs | Same CTE name generated twice | CTE name collision, missing dedup check |
