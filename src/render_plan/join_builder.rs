@@ -1945,13 +1945,17 @@ impl JoinBuilder for LogicalPlan {
                 // 2. User WHERE predicates that reference ONLY optional aliases
                 // Both go into pre_filter (subquery form) for correct LEFT JOIN semantics
                 //
-                // IMPORTANT: In OPTIONAL MATCH (a)-[r]->(b):
-                // - left_connection (a) is the REQUIRED anchor - do NOT extract its predicates!
-                // - alias (r) is optional - extract its predicates
-                // - right_connection (b) is optional - extract its predicates
+                // IMPORTANT: In OPTIONAL MATCH, the ANCHOR node is the required side.
+                // When anchor_connection == left_connection (standard): left is required, right is optional
+                // When anchor_connection == right_connection (reversed): right is required, left is optional
+                let anchor_on_right = graph_rel
+                    .anchor_connection
+                    .as_ref()
+                    .map(|a| a == &graph_rel.right_connection)
+                    .unwrap_or(false);
 
-                // Extract user predicates ONLY for optional aliases (rel and right)
-                // DO NOT extract for left_connection - it's the required anchor!
+                // Extract user predicates for optional aliases only.
+                // Relationship (alias) is always optional.
                 let (rel_user_pred, remaining_after_rel) = if is_optional {
                     extract_predicates_for_alias_logical(
                         &graph_rel.where_predicate,
@@ -1961,13 +1965,24 @@ impl JoinBuilder for LogicalPlan {
                     (None, graph_rel.where_predicate.clone())
                 };
 
-                let (right_user_pred, _remaining) = if is_optional {
+                // Extract for right_connection (optional when anchor is NOT on right)
+                let (right_user_pred, remaining_after_right) = if is_optional && !anchor_on_right {
                     extract_predicates_for_alias_logical(
                         &remaining_after_rel,
                         &graph_rel.right_connection,
                     )
                 } else {
                     (None, remaining_after_rel)
+                };
+
+                // Extract for left_connection (optional when anchor IS on right)
+                let (left_user_pred, _remaining) = if is_optional && anchor_on_right {
+                    extract_predicates_for_alias_logical(
+                        &remaining_after_right,
+                        &graph_rel.left_connection,
+                    )
+                } else {
+                    (None, remaining_after_right)
                 };
 
                 // Get schema filters from YAML config
@@ -2001,11 +2016,14 @@ impl JoinBuilder for LogicalPlan {
                 );
 
                 // Combine schema filter + user predicates for each alias's pre_filter
-                // Note: left_connection is anchor, so we only use schema filter (no user predicate extraction)
-                // Using combine_optional_filters_with_and from plan_builder_helpers
+                // When anchor is on right, left is optional and needs user predicates.
+                // When anchor is on left (standard), right is optional.
 
-                // left_node uses ONLY schema filter (no user predicates - anchor node predicates stay in WHERE)
-                let _left_node_pre_filter = left_schema_filter;
+                let left_node_pre_filter = if anchor_on_right {
+                    combine_optional_filters_with_and(vec![left_schema_filter, left_user_pred])
+                } else {
+                    left_schema_filter
+                };
                 // Relationship pre_filter combines: schema filter + polymorphic filter + user predicates
                 let rel_pre_filter = combine_optional_filters_with_and(vec![
                     rel_schema_filter,
@@ -2054,6 +2072,103 @@ impl JoinBuilder for LogicalPlan {
 
                 // Determine if this is an undirected pattern (Direction::Either)
                 let is_bidirectional = graph_rel.direction == Direction::Either;
+
+                // ANCHOR-AWARE JOIN GENERATION for OPTIONAL MATCH with reversed anchor.
+                // When anchor_connection points to right_connection and right is a nested
+                // GraphRel (i.e., the first MATCH pattern), the FROM table is the right/anchor
+                // node. We reverse join direction:
+                //   JOIN 1: rel.to_id = anchor(right).id   (connect rel to FROM table)
+                //   JOIN 2: left.id = rel.from_id          (connect optional left node)
+                // This avoids the standard logic which assumes left = FROM.
+                let right_is_nested = matches!(graph_rel.right.as_ref(), LogicalPlan::GraphRel(_));
+                let anchor_is_right = graph_rel
+                    .anchor_connection
+                    .as_ref()
+                    .map(|a| a == &graph_rel.right_connection)
+                    .unwrap_or(false);
+
+                if anchor_is_right && right_is_nested {
+                    log::info!(
+                        "🎯 ANCHOR-AWARE JOINS: anchor='{}' is right_connection, reversing join direction for '{}'",
+                        graph_rel.right_connection, graph_rel.alias
+                    );
+
+                    // Resolve anchor node's primary key from schema.
+                    // end_node_id/end_id_col are unreliable when right is a nested GraphRel,
+                    // so we look up the anchor node label from the nested GraphRel.
+                    let anchor_node_id = {
+                        let anchor_label =
+                            if let LogicalPlan::GraphRel(inner) = graph_rel.right.as_ref() {
+                                // Anchor is right_connection of outer = one of inner's nodes
+                                if inner.left_connection == graph_rel.right_connection {
+                                    extract_node_label_from_viewscan(&inner.left)
+                                } else {
+                                    extract_node_label_from_viewscan(&inner.right)
+                                }
+                            } else {
+                                None
+                            };
+                        anchor_label
+                            .as_ref()
+                            .and_then(|lbl| schema.node_schema_opt(lbl))
+                            .map(|ns| ns.node_id.id.clone())
+                            .unwrap_or_else(|| Identifier::Single("id".to_string()))
+                    };
+
+                    // JOIN 1: Relationship table → anchor (right_connection, already FROM)
+                    // rel.to_id = anchor.id
+                    let (_right_table_alias, _right_column) =
+                        resolve_cte_reference(&graph_rel.right_connection, &"id".to_string());
+                    let rel_to_anchor_conditions = build_identifier_join_conditions(
+                        &graph_rel.alias,
+                        &rel_cols.to_id,
+                        &_right_table_alias,
+                        &anchor_node_id,
+                    );
+                    let rel_join_cond = wrap_conditions_and(rel_to_anchor_conditions);
+
+                    joins.push(Join {
+                        table_name: rel_table.clone(),
+                        table_alias: graph_rel.alias.clone(),
+                        joining_on: vec![rel_join_cond],
+                        join_type: join_type.clone(),
+                        pre_filter: rel_pre_filter.clone(),
+                        from_id_column: Some(rel_cols.from_id.to_string()),
+                        to_id_column: Some(rel_cols.to_id.to_string()),
+                        graph_rel: None,
+                    });
+
+                    // JOIN 2: Left node (optional) → relationship table
+                    // left.id = rel.from_id
+                    let (_left_table_alias, _left_column) =
+                        resolve_cte_reference(&graph_rel.left_connection, &start_id_col);
+                    let left_to_rel_conditions = build_identifier_join_conditions(
+                        &_left_table_alias,
+                        &start_node_id,
+                        &graph_rel.alias,
+                        &rel_cols.from_id,
+                    );
+                    let left_join_cond = wrap_conditions_and(left_to_rel_conditions);
+
+                    joins.push(Join {
+                        table_name: start_table.clone(),
+                        table_alias: graph_rel.left_connection.clone(),
+                        joining_on: vec![left_join_cond],
+                        join_type: join_type.clone(),
+                        pre_filter: left_node_pre_filter,
+                        from_id_column: None,
+                        to_id_column: None,
+                        graph_rel: None,
+                    });
+
+                    log::info!(
+                        "  ✅ Anchor-aware joins: {} → {} (reversed), {} total joins",
+                        graph_rel.alias,
+                        graph_rel.left_connection,
+                        joins.len()
+                    );
+                    return Ok(joins);
+                }
 
                 // JOIN 1: Start node -> Relationship table
                 // Direction is normalized upstream (match_clause/helpers.rs::compute_connection_aliases):
