@@ -32,8 +32,6 @@ services:
     volumes:
       - clickhouse_demo_data:/var/lib/clickhouse
 
-  # Neo4j Browser UI only - no Bolt port exposed to public
-  # ClickGraph connects to Neo4j Bolt internally if needed, or browser connects directly to ClickGraph
   neo4j:
     image: neo4j:latest
     container_name: neo4j-demo
