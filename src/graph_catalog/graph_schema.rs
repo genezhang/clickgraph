@@ -108,6 +108,25 @@ impl NodeSchema {
         }
     }
 
+    /// Check if this node type has a given Cypher property name.
+    /// Checks property_mappings (standard), from_properties, and to_properties (denormalized).
+    pub fn has_cypher_property(&self, cypher_prop: &str) -> bool {
+        if self.property_mappings.contains_key(cypher_prop) {
+            return true;
+        }
+        if let Some(ref from_props) = self.from_properties {
+            if from_props.contains_key(cypher_prop) {
+                return true;
+            }
+        }
+        if let Some(ref to_props) = self.to_properties {
+            if to_props.contains_key(cypher_prop) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Check if this engine supports FINAL (regardless of whether we use it by default)
     pub fn can_use_final(&self) -> bool {
         if let Some(ref engine) = self.engine {

@@ -59,17 +59,24 @@ use crate::{
     graph_catalog::graph_schema::GraphSchema,
     query_planner::{
         analyzer::{
-            analyzer_pass::AnalyzerPass, bidirectional_union::BidirectionalUnion,
-            cte_column_resolver::CteColumnResolver, cte_reference_populator::CteReferencePopulator,
+            analyzer_pass::AnalyzerPass,
+            bidirectional_union::BidirectionalUnion,
+            cte_column_resolver::CteColumnResolver,
+            cte_reference_populator::CteReferencePopulator,
             cte_schema_resolver::CteSchemaResolver,
-            duplicate_scans_removing::DuplicateScansRemoving, filter_tagging::FilterTagging,
+            duplicate_scans_removing::DuplicateScansRemoving,
+            filter_tagging::FilterTagging,
             graph_join_inference::GraphJoinInference,
-            graph_traversal_planning::GraphTRaversalPlanning, group_by_building::GroupByBuilding,
+            graph_traversal_planning::GraphTRaversalPlanning,
+            group_by_building::GroupByBuilding,
             plan_sanitization::PlanSanitization,
             projected_columns_resolver::ProjectedColumnsResolver,
-            projection_tagging::ProjectionTagging, query_validation::QueryValidation,
-            schema_inference::SchemaInference, type_inference::TypeInference,
-            variable_resolver::VariableResolver, vlp_transitivity_check::VlpTransitivityCheck,
+            projection_tagging::ProjectionTagging,
+            query_validation::QueryValidation,
+            // SchemaInference REMOVED (Feb 16, 2026) - Merged into TypeInference
+            type_inference::TypeInference,
+            variable_resolver::VariableResolver,
+            vlp_transitivity_check::VlpTransitivityCheck,
         },
         logical_plan::LogicalPlan,
         optimizer::{
@@ -100,7 +107,7 @@ mod plan_sanitization;
 mod projected_columns_resolver;
 mod projection_tagging;
 mod query_validation;
-mod schema_inference;
+// mod schema_inference;  // REMOVED (Feb 16, 2026) - Fully merged into TypeInference
 mod type_inference;
 mod unwind_property_rewriter;
 mod unwind_tuple_enricher;
@@ -118,7 +125,12 @@ pub fn initial_analyzing(
 ) -> AnalyzerResult<Arc<LogicalPlan>> {
     log::info!("🔍 ANALYZER: Entering initial_analyzing");
 
-    // Step 1: Schema Inference - infer missing schema information
+    // Step 1: Schema Inference - REMOVED (merged into TypeInference Phase 0+3)
+    // SchemaInference functionality has been fully merged into UnifiedTypeInference:
+    // - Phase 0: Relationship-based label inference (infer_missing_labels logic)
+    // - Phase 3: ViewScan resolution (push_inferred_table_names_to_scan logic)
+    // Removed: February 16, 2026
+    /*
     let schema_inference = SchemaInference::new();
     let plan = if let Ok(transformed_plan) =
         schema_inference.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)
@@ -127,11 +139,15 @@ pub fn initial_analyzing(
     } else {
         plan
     };
+    */
 
     // Step 2: Type Inference - infer missing node labels AND edge types from schema
-    // This runs early to ensure all downstream passes have complete type information
-    // Works across WITH boundaries using existing plan_ctx scope barriers
-    // Infers: node labels from edge types, edge types from node labels, defaults from schema
+    // Now runs as FIRST pass (after SchemaInference consolidation)
+    // 4-phase unified type inference:
+    // - Phase 0: Relationship-based label inference
+    // - Phase 1: Filter→GraphRel UNION generation
+    // - Phase 2: Untyped node UNION generation
+    // - Phase 3: ViewScan resolution
     let type_inference = TypeInference::new();
     let plan = if let Ok(transformed_plan) =
         type_inference.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)
@@ -142,10 +158,21 @@ pub fn initial_analyzing(
     };
 
     // Step 2.1: Pattern Resolver - enumerate type combinations for remaining untyped nodes
-    // This runs AFTER TypeInference to handle cases where types cannot be uniquely inferred
-    // Discovers untyped graph variables, generates all valid type combinations from schema
-    // Clones query for each valid combination and combines with UNION ALL
-    // Example: MATCH (o) RETURN o → MATCH (o:User) ... UNION ALL MATCH (o:Post) ...
+    // Step 2.1: PatternResolver - DEPRECATED (merged into TypeInference)
+    //
+    // PatternResolver functionality has been fully absorbed into UnifiedTypeInference.
+    // TypeInference now handles BOTH:
+    // - Filter→GraphRel patterns with WHERE constraints (Phase 1)
+    // - Untyped node discovery and UNION generation (Phase 2)
+    //
+    // Key improvements over old PatternResolver:
+    // - Direction validation: check_relationship_exists_with_direction()
+    // - Undirected optimization: optimize_undirected_pattern()
+    // - Filters invalid branches like (Post)-[AUTHORED]->(User)
+    //
+    // Removed: February 16, 2026
+    // See: src/query_planner/analyzer/type_inference.rs (lines 2100-2450)
+    /*
     log::info!("🔍 ANALYZER: Running PatternResolver (handle ambiguous types)");
     use crate::query_planner::analyzer::pattern_resolver::PatternResolver;
     let pattern_resolver = PatternResolver::new();
@@ -163,6 +190,7 @@ pub fn initial_analyzing(
             plan
         }
     };
+    */
 
     // Step 2.5: VLP Transitivity Check - validate variable-length path patterns
     // This runs after TypeInference to ensure we have relationship types resolved
@@ -385,8 +413,10 @@ pub fn intermediate_analyzing(
     )?;
     let plan = transformed_plan.get_plan();
 
-    let transformed_plan = SchemaInference::push_inferred_table_names_to_scan(plan, plan_ctx)?;
-    let plan = transformed_plan.get_plan();
+    // NOTE: SchemaInference removed (Feb 16, 2026)
+    // ViewScan resolution now handled by TypeInference Phase 3
+    // let transformed_plan = SchemaInference::push_inferred_table_names_to_scan(plan, plan_ctx)?;
+    // let plan = transformed_plan.get_plan();
 
     let duplicate_scans_removing = DuplicateScansRemoving::new();
     let transformed_plan = duplicate_scans_removing.analyze(plan.clone(), plan_ctx)?;

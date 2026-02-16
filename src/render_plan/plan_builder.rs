@@ -2495,7 +2495,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Render each branch with plan_ctx
                     let mut branch_renders = Vec::new();
                     for (idx, branch) in union.inputs.iter().enumerate() {
-                        log::warn!(
+                        log::debug!(
                             "🔀 Rendering Union branch {} type: {:?}, with plan_ctx",
                             idx,
                             std::mem::discriminant(branch.as_ref())
@@ -2557,49 +2557,89 @@ impl RenderPlanBuilder for LogicalPlan {
                             Some(&union.inputs),
                         );
                     } else {
-                        // Regular UNION - normalize with NULL padding
+                        // Always normalize UNION branches for consistent column schema.
+                        // NULL padding + toString wrapping ensures ClickHouse UNION ALL works.
                         log::warn!("🔀 Normalizing {} UNION branches for consistent column schema (is_path_union={}, inputs.len={})",
                                   branch_renders.len(), is_path_union, union.inputs.len());
                         branch_renders =
                             super::plan_builder_helpers::normalize_union_branches(branch_renders);
 
-                        // Add __label__ column only for node-only UNION queries (no GraphRel)
-                        // This is for MATCH (n) queries that expand to UNION of all node types
-                        let has_graph_rel = union.inputs.iter().any(|input| {
-                            fn contains_graph_rel(plan: &LogicalPlan) -> bool {
-                                match plan {
-                                    LogicalPlan::GraphRel(_) => true,
-                                    LogicalPlan::GraphNode(gn) => contains_graph_rel(&gn.input),
-                                    LogicalPlan::Projection(p) => contains_graph_rel(&p.input),
-                                    LogicalPlan::Filter(f) => contains_graph_rel(&f.input),
-                                    LogicalPlan::GraphJoins(gj) => contains_graph_rel(&gj.input),
-                                    LogicalPlan::Limit(l) => contains_graph_rel(&l.input),
-                                    LogicalPlan::Skip(s) => contains_graph_rel(&s.input),
-                                    LogicalPlan::OrderBy(o) => contains_graph_rel(&o.input),
-                                    _ => false,
-                                }
+                        // Classify each branch as node-only or has-relationship
+                        fn contains_graph_rel(plan: &LogicalPlan) -> bool {
+                            match plan {
+                                LogicalPlan::GraphRel(_) => true,
+                                LogicalPlan::GraphNode(gn) => contains_graph_rel(&gn.input),
+                                LogicalPlan::Projection(p) => contains_graph_rel(&p.input),
+                                LogicalPlan::Filter(f) => contains_graph_rel(&f.input),
+                                LogicalPlan::GraphJoins(gj) => contains_graph_rel(&gj.input),
+                                LogicalPlan::Limit(l) => contains_graph_rel(&l.input),
+                                LogicalPlan::Skip(s) => contains_graph_rel(&s.input),
+                                LogicalPlan::OrderBy(o) => contains_graph_rel(&o.input),
+                                _ => false,
                             }
-                            contains_graph_rel(input.as_ref())
-                        });
+                        }
 
-                        // Only add __label__ for pure node UNION queries (no relationships)
-                        if !has_graph_rel {
-                            log::info!("🏷️ Adding __label__ column for node-only UNION query");
+                        // Check if the RETURN clause returns whole nodes/relationships
+                        // (bare variable like `RETURN n`) vs specific properties
+                        // (`RETURN n.name`). __label__ is only needed for whole-node returns.
+                        fn returns_whole_entity(plan: &LogicalPlan) -> bool {
+                            match plan {
+                                LogicalPlan::Projection(p) => p.items.iter().any(|item| {
+                                    matches!(
+                                        &item.expression,
+                                        crate::query_planner::logical_expr::LogicalExpr::TableAlias(
+                                            _
+                                        )
+                                    )
+                                }),
+                                LogicalPlan::Limit(l) => returns_whole_entity(&l.input),
+                                LogicalPlan::Skip(s) => returns_whole_entity(&s.input),
+                                LogicalPlan::OrderBy(o) => returns_whole_entity(&o.input),
+                                LogicalPlan::Filter(f) => returns_whole_entity(&f.input),
+                                LogicalPlan::GraphJoins(gj) => returns_whole_entity(&gj.input),
+                                _ => false,
+                            }
+                        }
+
+                        let rel_count = union
+                            .inputs
+                            .iter()
+                            .filter(|input| contains_graph_rel(input.as_ref()))
+                            .count();
+                        let all_have_rels = rel_count == union.inputs.len();
+                        let none_have_rels = rel_count == 0;
+                        let has_whole_entity_return = union
+                            .inputs
+                            .iter()
+                            .any(|input| returns_whole_entity(input.as_ref()));
+                        log::debug!(
+                            "🔀 Label decision: none_have_rels={}, all_have_rels={}, has_whole_entity_return={}",
+                            none_have_rels, all_have_rels, has_whole_entity_return
+                        );
+
+                        // Add label columns only when:
+                        // 1. ALL branches are the same kind (all nodes or all rels)
+                        // 2. The RETURN clause returns whole entities (RETURN n, not RETURN n.name)
+                        if none_have_rels && has_whole_entity_return {
+                            log::info!("🏷️ Adding __label__ column for whole-node UNION return");
                             branch_renders =
                                 super::plan_builder_helpers::add_label_column_to_union_branches(
                                     branch_renders,
                                     &union.inputs,
                                     schema,
                                 );
-                        } else {
-                            // For path UNION queries (with GraphRel), add start/end label columns
-                            log::info!("🏷️ Adding __start_label__/__end_label__ columns for path UNION query");
+                        } else if all_have_rels && has_whole_entity_return {
+                            log::info!("🏷️ Adding __start_label__/__end_label__ columns for whole-relationship UNION return");
                             branch_renders =
                                 super::plan_builder_helpers::add_path_label_columns_to_union_branches(
                                     branch_renders,
                                     &union.inputs,
                                     schema,
                                 );
+                        } else {
+                            log::info!(
+                                "🔀 UNION with specific property returns: no label columns needed"
+                            );
                         }
                     }
 
@@ -2767,11 +2807,66 @@ impl RenderPlanBuilder for LogicalPlan {
                         all_renders = kept_renders;
                     }
 
-                    // Take first as base, rest become union inputs
+                    // Each rendered branch may have its own inner union (from
+                    // TypeInference expanding unlabeled nodes) and per-arm LIMIT.
+                    // When any branch is complex, put ALL branches in union.input
+                    // so render_union_branch_sql wraps each in a subquery.
+                    let any_complex = all_renders
+                        .iter()
+                        .any(|r| r.union.0.is_some() || r.limit.0.is_some());
+
                     let mut base_render = all_renders.remove(0);
                     base_render.ctes.0 = all_ctes;
 
-                    if !all_renders.is_empty() {
+                    if any_complex && base_render.union.0.is_some() {
+                        // Base has inner union — can't use it as first branch directly.
+                        // Put ALL branches (including base) into union.input.
+                        let mut all_branches = vec![base_render];
+                        all_branches.extend(all_renders);
+
+                        // Create shell base that holds CTEs + union list
+                        let all_ctes_collected: Vec<super::Cte> = all_branches
+                            .iter()
+                            .flat_map(|b| b.ctes.0.iter().cloned())
+                            .collect();
+                        // Dedup CTEs by name (keep first occurrence)
+                        let mut seen_cte_names = std::collections::HashSet::new();
+                        let deduped_ctes: Vec<super::Cte> = all_ctes_collected
+                            .into_iter()
+                            .filter(|cte| seen_cte_names.insert(cte.cte_name.clone()))
+                            .collect();
+                        // Clear CTEs from branches (they live on the shell base)
+                        for branch in &mut all_branches {
+                            branch.ctes.0.clear();
+                        }
+
+                        let render_union_type =
+                            super::UnionType::try_from(union.union_type.clone())
+                                .unwrap_or(super::UnionType::All);
+
+                        base_render = RenderPlan {
+                            ctes: CteItems(deduped_ctes),
+                            select: SelectItems {
+                                items: vec![],
+                                distinct: false,
+                            },
+                            from: FromTableItem(None),
+                            joins: JoinItems::new(vec![]),
+                            array_join: ArrayJoinItem(vec![]),
+                            filters: FilterItems(None),
+                            group_by: GroupByExpressions(vec![]),
+                            having_clause: None,
+                            order_by: OrderByItems(vec![]),
+                            skip: SkipItem(None),
+                            limit: LimitItem(None),
+                            union: UnionItems(Some(super::Union {
+                                input: all_branches,
+                                union_type: render_union_type,
+                            })),
+                            fixed_path_info: None,
+                            is_multi_label_scan: false,
+                        };
+                    } else if !all_renders.is_empty() {
                         let render_union_type =
                             super::UnionType::try_from(union.union_type.clone())
                                 .unwrap_or(super::UnionType::All);

@@ -1289,7 +1289,7 @@ impl PlanCtx {
     ///
     /// # Example
     /// ```text
-    /// MATCH (a)-[r:FOLLOWS]->(b) → plan_ctx.define_relationship("r", vec!["FOLLOWS"], Some("User"), Some("User"))
+    /// MATCH (a)-[r:FOLLOWS]->(b) → plan_ctx.define_relationship("r", vec!["FOLLOWS"], Some("User"), Some("User"), Some("Outgoing"))
     /// ```
     pub fn define_relationship(
         &mut self,
@@ -1297,13 +1297,15 @@ impl PlanCtx {
         rel_types: Vec<String>,
         from_label: Option<String>,
         to_label: Option<String>,
+        direction: Option<String>,
     ) {
-        self.variables.define_relationship(
+        self.variables.define_relationship_with_direction(
             name,
             rel_types,
             from_label,
             to_label,
             VariableSource::Match,
+            direction,
         );
     }
 
@@ -1315,13 +1317,15 @@ impl PlanCtx {
         from_label: Option<String>,
         to_label: Option<String>,
         cte_name: String,
+        direction: Option<String>,
     ) {
-        self.variables.define_relationship(
+        self.variables.define_relationship_with_direction(
             name,
             rel_types,
             from_label,
             to_label,
             VariableSource::Cte { cte_name },
+            direction,
         );
     }
 

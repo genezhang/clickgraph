@@ -1,0 +1,82 @@
+# End-User Quick Start: ClickGraph + Neo4j Browser Demo
+# Simple, self-contained setup for exploring graph queries with visualization
+# 
+# Usage: docker-compose up
+# Then open: http://localhost:7474
+#
+# Connect Neo4j Browser to ClickGraph:
+#   1. Click "Database" dropdown (top right)
+#   2. Select "Connect to another database"
+#   3. URI: bolt://localhost:7687 (leave username/password empty)
+#   4. Try: MATCH (u:User {user_id: 1}) RETURN u
+
+version: '3.8'
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8.12
+    container_name: clickhouse-demo
+    environment:
+      CLICKHOUSE_DB: "social"
+      CLICKHOUSE_USER: "demo_user"
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      CLICKHOUSE_PASSWORD: "demo_pass"
+    ports:
+      - "8123:8123"
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    volumes:
+      - clickhouse_demo_data:/var/lib/clickhouse
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+      - ./001-init.sh:/docker-entrypoint-initdb.d/001-init.sh:ro
+
+  neo4j:
+    image: neo4j:latest
+    container_name: neo4j-demo
+    environment:
+      NEO4J_AUTH: neo4j/test_password
+      NEO4J_PLUGINS: '["apoc"]'
+    ports:
+      - "7474:7474"
+      # Note: 7687 (Bolt) not exposed - users connect via ClickGraph's Bolt port
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7474"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    volumes:
+      - neo4j_demo_data:/data
+      - neo4j_demo_logs:/logs
+
+  clickgraph:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: clickgraph-demo
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      CLICKHOUSE_URL: "http://clickhouse:8123"
+      CLICKHOUSE_USER: "demo_user"
+      CLICKHOUSE_PASSWORD: "demo_pass"
+      CLICKHOUSE_DATABASE: "social"
+      # Use demo schema with small dataset
+      GRAPH_CONFIG_PATH: "/app/demos/neo4j-browser/social_demo.yaml"
+      # Reasonable CTE depth for demo queries
+      CLICKGRAPH_MAX_CTE_DEPTH: "500"
+    ports:
+      - "8080:8080"
+      - "7687:7687"
+    volumes:
+      - ./social_demo.yaml:/app/demos/neo4j-browser/social_demo.yaml:ro
+
+volumes:
+  clickhouse_demo_data:
+  neo4j_demo_data:
+  neo4j_demo_logs:

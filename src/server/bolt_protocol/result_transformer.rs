@@ -39,7 +39,7 @@ use crate::{
         schema_types::SchemaType,
     },
     query_planner::{
-        logical_expr::LogicalExpr,
+        logical_expr::{Direction, LogicalExpr},
         logical_plan::{LogicalPlan, Projection},
         plan_ctx::PlanCtx,
         typed_variable::{TypedVariable, VariableSource},
@@ -77,6 +77,9 @@ pub enum ReturnItemType {
         from_label: Option<String>,
         /// To node label (for polymorphic relationships)
         to_label: Option<String>,
+        /// Relationship direction: "Outgoing", "Incoming", or "Either"
+        /// Used to determine if start/end nodes should be swapped for undirected queries
+        direction: Option<String>,
     },
     /// Path variable - needs transformation to Path struct
     Path {
@@ -94,6 +97,9 @@ pub enum ReturnItemType {
         rel_types: Vec<String>,
         /// Whether this is a VLP (variable-length path)
         is_vlp: bool,
+        /// Relationship direction: "Outgoing", "Incoming", or "Either"
+        /// Used to determine if nodes should be swapped in undirected paths
+        direction: Option<String>,
     },
     /// Neo4j id() function - compute encoded ID from element_id at result time
     IdFunction {
@@ -131,6 +137,64 @@ pub enum ReturnItemType {
 ///     ReturnItemMetadata { field_name: "n.name", item_type: Scalar }
 /// ]
 /// ```
+
+/// Helper function to find the direction of a relationship in a GraphRel within the logical plan
+fn find_relationship_direction(plan: &LogicalPlan, rel_alias: &str) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphRel(graph_rel) => {
+            if graph_rel.alias == rel_alias {
+                // Found the relationship - return its direction as a string
+                let direction_str = match graph_rel.direction {
+                    Direction::Outgoing => "Outgoing",
+                    Direction::Incoming => "Incoming",
+                    Direction::Either => "Either",
+                };
+                return Some(direction_str.to_string());
+            }
+            // Recursively search in child plans
+            if let Some(dir) = find_relationship_direction(&graph_rel.left, rel_alias) {
+                return Some(dir);
+            }
+            if let Some(dir) = find_relationship_direction(&graph_rel.center, rel_alias) {
+                return Some(dir);
+            }
+            if let Some(dir) = find_relationship_direction(&graph_rel.right, rel_alias) {
+                return Some(dir);
+            }
+            None
+        }
+        LogicalPlan::Projection(proj) => find_relationship_direction(&proj.input, rel_alias),
+        LogicalPlan::Filter(filter) => find_relationship_direction(&filter.input, rel_alias),
+        LogicalPlan::WithClause(with_clause) => {
+            find_relationship_direction(&with_clause.input, rel_alias)
+        }
+        LogicalPlan::CartesianProduct(cart) => {
+            if let Some(dir) = find_relationship_direction(&cart.left, rel_alias) {
+                return Some(dir);
+            }
+            find_relationship_direction(&cart.right, rel_alias)
+        }
+        LogicalPlan::Union(union) => {
+            for input in &union.inputs {
+                if let Some(dir) = find_relationship_direction(input, rel_alias) {
+                    return Some(dir);
+                }
+            }
+            None
+        }
+        LogicalPlan::GroupBy(gb) => find_relationship_direction(&gb.input, rel_alias),
+        LogicalPlan::Limit(lim) => find_relationship_direction(&lim.input, rel_alias),
+        LogicalPlan::OrderBy(ob) => find_relationship_direction(&ob.input, rel_alias),
+        LogicalPlan::Skip(skip) => find_relationship_direction(&skip.input, rel_alias),
+        LogicalPlan::Cte(cte) => find_relationship_direction(&cte.input, rel_alias),
+        LogicalPlan::PageRank(_pr) => None, // PageRank doesn't have input in our case
+        LogicalPlan::Unwind(uw) => find_relationship_direction(&uw.input, rel_alias),
+        LogicalPlan::GraphNode(gn) => find_relationship_direction(&gn.input, rel_alias),
+        LogicalPlan::GraphJoins(gj) => find_relationship_direction(&gj.input, rel_alias),
+        LogicalPlan::ViewScan(_) | LogicalPlan::Empty => None,
+    }
+}
+
 pub fn extract_return_metadata(
     logical_plan: &LogicalPlan,
     plan_ctx: &PlanCtx,
@@ -174,11 +238,22 @@ pub fn extract_return_metadata(
                             }
                         }
                     }
-                    Some(TypedVariable::Relationship(rel_var)) => ReturnItemType::Relationship {
-                        rel_types: rel_var.rel_types.clone(),
-                        from_label: rel_var.from_node_label.clone(),
-                        to_label: rel_var.to_node_label.clone(),
-                    },
+                    Some(TypedVariable::Relationship(rel_var)) => {
+                        // Get direction: first check if it's set in the variable, otherwise look it up in the logical plan
+                        let direction = if rel_var.direction.is_some() {
+                            rel_var.direction.clone()
+                        } else {
+                            // Try to find direction from GraphRel in the logical plan
+                            find_relationship_direction(logical_plan, &table_alias.to_string())
+                        };
+
+                        ReturnItemType::Relationship {
+                            rel_types: rel_var.rel_types.clone(),
+                            from_label: rel_var.from_node_label.clone(),
+                            to_label: rel_var.to_node_label.clone(),
+                            direction,
+                        }
+                    }
                     Some(TypedVariable::Path(path_var)) => {
                         // VLP has length_bounds set, fixed single-hop doesn't
                         let is_vlp = path_var.length_bounds.is_some();
@@ -286,6 +361,20 @@ pub fn extract_return_metadata(
                             }
                         }
 
+                        // Get direction from the relationship variable
+                        let direction = path_var
+                            .relationship
+                            .as_ref()
+                            .and_then(|alias| plan_ctx.lookup_variable(alias))
+                            .and_then(|tv| tv.as_relationship())
+                            .and_then(|rel_var| rel_var.direction.clone())
+                            .or_else(|| {
+                                // Try to find direction from GraphRel in the logical plan
+                                path_var.relationship.as_ref().and_then(|alias| {
+                                    find_relationship_direction(logical_plan, alias)
+                                })
+                            });
+
                         ReturnItemType::Path {
                             start_alias: path_var.start_node.clone(),
                             end_alias: path_var.end_node.clone(),
@@ -294,6 +383,7 @@ pub fn extract_return_metadata(
                             end_labels,
                             rel_types,
                             is_vlp,
+                            direction,
                         }
                     }
                     _ => {
@@ -325,10 +415,18 @@ pub fn extract_return_metadata(
                         }
                         Some(TypedVariable::Relationship(rel_var)) => {
                             log::debug!("  Found Relationship with types: {:?}", rel_var.rel_types);
+                            // Get direction: first check if it's set in the variable, otherwise look it up in the logical plan
+                            let direction = if rel_var.direction.is_some() {
+                                rel_var.direction.clone()
+                            } else {
+                                find_relationship_direction(logical_plan, &var_name)
+                            };
+
                             ReturnItemType::Relationship {
                                 rel_types: rel_var.rel_types.clone(),
                                 from_label: rel_var.from_node_label.clone(),
                                 to_label: rel_var.to_node_label.clone(),
+                                direction,
                             }
                         }
                         _ => ReturnItemType::Scalar,
@@ -504,6 +602,7 @@ pub fn transform_row(
                 rel_types,
                 from_label,
                 to_label,
+                direction,
             } => {
                 // Strip ".*" suffix from field_name if present (wildcard expansion)
                 let var_name = meta
@@ -518,6 +617,23 @@ pub fn transform_row(
                     to_label.as_deref(),
                     schema,
                 )?;
+                // If relationship direction is "Incoming" or "Either", we may need to swap start/end nodes
+                // This handles undirected patterns like (a)--(b) where we need to match query semantics
+                if let Some(dir) = direction {
+                    if dir == "Incoming" || dir == "Either" {
+                        // Swap start and end nodes to match query pattern semantics
+                        std::mem::swap(
+                            &mut rel.start_node_element_id,
+                            &mut rel.end_node_element_id,
+                        );
+                        log::debug!(
+                            "Swapped relationship direction for undirected pattern: {} (was {}->{})",
+                            var_name,
+                            rel.end_node_element_id,
+                            rel.start_node_element_id
+                        );
+                    }
+                }
                 // Assign session-scoped integer IDs from id_mapper
                 rel.id = id_mapper.get_or_assign(&rel.element_id);
                 rel.start_node_id = id_mapper.get_or_assign(&rel.start_node_element_id);
@@ -534,6 +650,7 @@ pub fn transform_row(
                 end_labels,
                 rel_types,
                 is_vlp,
+                direction,
             } => {
                 // Transform fixed-hop path to Neo4j Path structure
                 // For now, we support fixed single-hop paths: (a)-[r]->(b)
@@ -573,6 +690,37 @@ pub fn transform_row(
                     schema,
                     metadata,
                 )?;
+
+                // If relationship direction is "Incoming" or "Either", swap nodes in path
+                // This handles undirected patterns like (a)--(b) where we need to match query semantics
+                if let Some(dir) = direction {
+                    if dir == "Incoming" || dir == "Either" {
+                        // Swap start and end nodes in the path to match query pattern semantics
+                        if path.nodes.len() >= 2 {
+                            path.nodes.swap(0, 1);
+                            log::debug!(
+                                "Swapped path nodes for undirected pattern (nodes now: {} -> {})",
+                                path.nodes[0]
+                                    .labels
+                                    .iter()
+                                    .next()
+                                    .unwrap_or(&"?".to_string()),
+                                path.nodes[1]
+                                    .labels
+                                    .iter()
+                                    .next()
+                                    .unwrap_or(&"?".to_string())
+                            );
+                        }
+                        // Also swap the relationship's start/end node element IDs
+                        for rel in &mut path.relationships {
+                            std::mem::swap(
+                                &mut rel.start_node_element_id,
+                                &mut rel.end_node_element_id,
+                            );
+                        }
+                    }
+                }
 
                 // Assign session-scoped integer IDs to all nodes and relationships in path
                 for node in &mut path.nodes {
@@ -1094,6 +1242,27 @@ fn transform_to_relationship(
     let start_node_id = generate_id_from_element_id(&start_node_element_id);
     let end_node_id = generate_id_from_element_id(&end_node_element_id);
 
+    log::info!(
+        "🔗 Bolt Relationship BEFORE: var_name={}, rel_type={}, from_label={}, to_label={}, from_id_str={}, to_id_str={}",
+        var_name,
+        rel_type,
+        from_node_label,
+        to_node_label,
+        from_id_str,
+        to_id_str
+    );
+
+    log::debug!(
+        "🔗 Bolt Relationship DEBUG: type={}, from_label={}, to_label={}, from_id_str={}, to_id_str={}, from_node_element_id={}, to_node_element_id={}",
+        rel_type,
+        from_node_label,
+        to_node_label,
+        from_id_str,
+        to_id_str,
+        start_node_element_id,
+        end_node_element_id
+    );
+
     log::debug!(
         "🔗 Bolt Relationship: type={}, start={}({}) end={}({}), element_id={}",
         rel_type,
@@ -1300,15 +1469,60 @@ fn transform_to_path(
         )
     })?;
 
-    // Extract relationship - require either metadata lookup success or known types
+    // Determine correct node order for the relationship based on schema direction
+    // The relationship should ALWAYS follow schema direction (from -> to), regardless of query order
+    let (from_node, to_node, needs_swap) = {
+        // Check if there's a schema relationship from start_labels -> end_labels
+        let forward_match = rel_types.iter().any(|rel_type| {
+            if let Some(rel_schema) = schema.get_relationships_schema_opt(rel_type) {
+                (rel_schema.from_node == "$any" || start_labels.contains(&rel_schema.from_node))
+                    && (rel_schema.to_node == "$any" || end_labels.contains(&rel_schema.to_node))
+            } else {
+                false
+            }
+        });
+
+        if forward_match {
+            // Query order matches schema direction
+            (start_node.clone(), end_node.clone(), false)
+        } else {
+            // Try reverse direction
+            let reverse_match = rel_types.iter().any(|rel_type| {
+                if let Some(rel_schema) = schema.get_relationships_schema_opt(rel_type) {
+                    (rel_schema.from_node == "$any" || end_labels.contains(&rel_schema.from_node))
+                        && (rel_schema.to_node == "$any"
+                            || start_labels.contains(&rel_schema.to_node))
+                } else {
+                    false
+                }
+            });
+
+            if reverse_match {
+                // Need to swap nodes to match schema direction
+                log::debug!(
+                    "Swapping nodes for path: schema expects {:?}->{:?}, but query gave {:?}->{:?}",
+                    end_labels,
+                    start_labels,
+                    start_labels,
+                    end_labels
+                );
+                (end_node.clone(), start_node.clone(), true)
+            } else {
+                // Can't determine - use query order (fallback)
+                (start_node.clone(), end_node.clone(), false)
+            }
+        }
+    };
+
+    // Extract relationship with schema-order nodes
     let relationship = find_relationship_in_row_with_type(
         row,
         rel_alias,
-        &start_node.element_id,
-        &end_node.element_id,
+        &from_node.element_id,
+        &to_node.element_id,
         rel_types,
-        start_labels,
-        end_labels,
+        &from_node.labels,
+        &to_node.labels,
         return_metadata,
         schema,
     )
@@ -1316,7 +1530,7 @@ fn transform_to_path(
         // If we have a known type, create relationship with that type
         rel_types.first().map(|rel_type| {
             log::debug!("Creating relationship with known type: {}", rel_type);
-            create_relationship_with_type(rel_type, &start_node.element_id, &end_node.element_id)
+            create_relationship_with_type(rel_type, &from_node.element_id, &to_node.element_id)
         })
     })
     .ok_or_else(|| {
@@ -1332,16 +1546,17 @@ fn transform_to_path(
     })?;
 
     log::info!(
-        "Path created: start_node.labels={:?}, end_node.labels={:?}, rel.type={}",
-        start_node.labels,
-        end_node.labels,
-        relationship.rel_type
+        "Path created: start_node.labels={:?}, end_node.labels={:?}, rel.type={}, node_swap={}",
+        from_node.labels,
+        to_node.labels,
+        relationship.rel_type,
+        needs_swap
     );
 
     // Create Path with single-hop structure
     // Indices for single hop: [1, 1] means "relationship index 1, then node index 1"
     // (Neo4j uses 1-based indexing in path indices)
-    Ok(Path::single_hop(start_node, relationship, end_node))
+    Ok(Path::single_hop(from_node, relationship, to_node))
 }
 
 /// Transform path from JSON format (UNION path queries)
@@ -1426,7 +1641,7 @@ fn transform_path_from_json(
         start_id,
         vec![start_label.clone()],
         start_props_clean,
-        start_element_id,
+        start_element_id.clone(),
     );
 
     // Create end node - element_id is source of truth, integer id derived from it
@@ -1439,34 +1654,90 @@ fn transform_path_from_json(
         end_id,
         vec![end_label.clone()],
         end_props_clean,
-        end_element_id,
+        end_element_id.clone(),
     );
 
-    // Create relationship - element_id is source of truth, integer id derived from it
-    let rel_element_id = generate_relationship_element_id(&rel_type, &start_id_str, &end_id_str);
+    // Determine correct node order based on schema direction
+    // The relationship should ALWAYS follow schema direction (from -> to), regardless of query order
+    let (from_node, to_node, from_id_str, to_id_str) =
+        {
+            // Check if there's a schema relationship from start_label -> end_label
+            let forward_match =
+                if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_type) {
+                    (rel_schema.from_node == "$any" || rel_schema.from_node == start_label)
+                        && (rel_schema.to_node == "$any" || rel_schema.to_node == end_label)
+                } else {
+                    false
+                };
+
+            if forward_match {
+                // Query order matches schema direction
+                (
+                    start_node.clone(),
+                    end_node.clone(),
+                    start_id_str.clone(),
+                    end_id_str.clone(),
+                )
+            } else {
+                // Try reverse direction
+                let reverse_match =
+                    if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_type) {
+                        (rel_schema.from_node == "$any" || rel_schema.from_node == end_label)
+                            && (rel_schema.to_node == "$any" || rel_schema.to_node == start_label)
+                    } else {
+                        false
+                    };
+
+                if reverse_match {
+                    // Need to swap nodes to match schema direction
+                    log::debug!(
+                    "Swapping nodes for path: schema expects {:?}->{:?}, but query gave {:?}->{:?}",
+                    end_label, start_label,
+                    start_label, end_label
+                );
+                    (
+                        end_node.clone(),
+                        start_node.clone(),
+                        end_id_str.clone(),
+                        start_id_str.clone(),
+                    )
+                } else {
+                    // Can't determine - use query order (fallback)
+                    (
+                        start_node.clone(),
+                        end_node.clone(),
+                        start_id_str.clone(),
+                        end_id_str.clone(),
+                    )
+                }
+            }
+        };
+
+    // Create relationship with schema-order nodes
+    let rel_element_id = generate_relationship_element_id(&rel_type, &from_id_str, &to_id_str);
     let rel_id = generate_id_from_element_id(&rel_element_id);
     let rel_props_clean = clean_property_keys(rel_props);
     let relationship = Relationship::new(
         rel_id,
-        start_id, // start_node_id - derived from start_element_id
-        end_id,   // end_node_id - derived from end_element_id
+        from_node.id, // from_node_id - derived from from_element_id
+        to_node.id,   // to_node_id - derived from to_element_id
         rel_type.clone(),
         rel_props_clean,
         rel_element_id,
-        start_node.element_id.clone(),
-        end_node.element_id.clone(),
+        from_node.element_id.clone(),
+        to_node.element_id.clone(),
     );
 
     log::info!(
-        "✅ Path from JSON: start={} ({}), end={} ({}), rel={}",
-        start_node.labels[0],
-        start_node.id,
-        end_node.labels[0],
-        end_node.id,
+        "✅ Path from JSON: from={} ({}), to={} ({}), rel={}",
+        from_node.labels[0],
+        from_node.id,
+        to_node.labels[0],
+        to_node.id,
         relationship.rel_type
     );
 
-    Ok(Path::single_hop(start_node, relationship, end_node))
+    Ok(Path::single_hop(from_node, relationship, to_node))
 }
 
 /// Transform a VLP multi-type path from its tuple representation.
@@ -1568,7 +1839,7 @@ fn transform_vlp_path(
         start_id,
         vec![start_type.clone()],
         clean_property_keys(start_props),
-        start_element_id,
+        start_element_id.clone(),
     );
 
     // Build end node
@@ -1578,29 +1849,85 @@ fn transform_vlp_path(
         end_id,
         vec![end_type.clone()],
         clean_property_keys(end_props),
-        end_element_id,
+        end_element_id.clone(),
     );
 
-    // Build relationship
-    let rel_element_id = generate_relationship_element_id(&rel_type, &start_id_str, &end_id_str);
+    // Determine correct node order based on schema direction
+    // The relationship should ALWAYS follow schema direction (from -> to), regardless of query order
+    let (from_node, to_node, from_id_str, to_id_str) =
+        {
+            // Check if there's a schema relationship from start_type -> end_type
+            let forward_match =
+                if let Some(rel_schema) = _schema.get_relationships_schema_opt(&rel_type) {
+                    (rel_schema.from_node == "$any" || rel_schema.from_node == start_type)
+                        && (rel_schema.to_node == "$any" || rel_schema.to_node == end_type)
+                } else {
+                    false
+                };
+
+            if forward_match {
+                // Query order matches schema direction
+                (
+                    start_node.clone(),
+                    end_node.clone(),
+                    start_id_str.clone(),
+                    end_id_str.clone(),
+                )
+            } else {
+                // Try reverse direction
+                let reverse_match =
+                    if let Some(rel_schema) = _schema.get_relationships_schema_opt(&rel_type) {
+                        (rel_schema.from_node == "$any" || rel_schema.from_node == end_type)
+                            && (rel_schema.to_node == "$any" || rel_schema.to_node == start_type)
+                    } else {
+                        false
+                    };
+
+                if reverse_match {
+                    // Need to swap nodes to match schema direction
+                    log::debug!(
+                    "Swapping VLP path nodes: schema expects {:?}->{:?}, but query gave {:?}->{:?}",
+                    end_type, start_type,
+                    start_type, end_type
+                );
+                    (
+                        end_node.clone(),
+                        start_node.clone(),
+                        end_id_str.clone(),
+                        start_id_str.clone(),
+                    )
+                } else {
+                    // Can't determine - use query order (fallback)
+                    (
+                        start_node.clone(),
+                        end_node.clone(),
+                        start_id_str.clone(),
+                        end_id_str.clone(),
+                    )
+                }
+            }
+        };
+
+    // Build relationship with schema-order nodes
+    let rel_element_id = generate_relationship_element_id(&rel_type, &from_id_str, &to_id_str);
     let rel_id = generate_id_from_element_id(&rel_element_id);
     let relationship = Relationship::new(
         rel_id,
-        start_id,
-        end_id,
+        from_node.id,
+        to_node.id,
         rel_type,
         clean_property_keys(rel_props),
         rel_element_id,
-        start_node.element_id.clone(),
-        end_node.element_id.clone(),
+        from_node.element_id.clone(),
+        to_node.element_id.clone(),
     );
 
     log::debug!(
-        "VLP Path: start={} (id={}), end={} (id={}), rel={}",
-        start_node.labels[0],
-        start_node.id,
-        end_node.labels[0],
-        end_node.id,
+        "VLP Path: from={} (id={}), to={} (id={}), rel={}",
+        from_node.labels[0],
+        from_node.id,
+        to_node.labels[0],
+        to_node.id,
         relationship.rel_type
     );
 
@@ -1615,7 +1942,7 @@ fn transform_vlp_path(
         );
     }
 
-    Ok(Path::single_hop(start_node, relationship, end_node))
+    Ok(Path::single_hop(from_node, relationship, to_node))
 }
 
 /// Clean property keys by removing:
@@ -1877,6 +2204,7 @@ fn find_relationship_in_row_with_type(
                 rel_types,
                 from_label,
                 to_label,
+                direction,
             } = &meta.item_type
             {
                 return transform_to_relationship(

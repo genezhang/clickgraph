@@ -159,6 +159,10 @@ pub struct RelVariable {
 
     /// Which properties are known to be accessed
     pub accessed_properties: Vec<String>,
+
+    /// Relationship direction: "Outgoing" (->), "Incoming" (<-), or "Either" (--)
+    /// Used by Bolt transformer to determine if start/end nodes should be swapped
+    pub direction: Option<String>,
 }
 
 impl RelVariable {
@@ -174,6 +178,7 @@ impl RelVariable {
             from_node_label,
             to_node_label,
             accessed_properties: Vec::new(),
+            direction: None,
         }
     }
 
@@ -190,6 +195,7 @@ impl RelVariable {
             from_node_label,
             to_node_label,
             accessed_properties: Vec::new(),
+            direction: None,
         }
     }
 
@@ -709,6 +715,38 @@ impl VariableRegistry {
             }
             _ => TypedVariable::rel_from_match(rel_types, from_label, to_label), // Fallback
         };
+        self.variables.insert(name.into(), var);
+    }
+
+    /// Define a relationship variable with direction information
+    ///
+    /// # Arguments
+    /// * `name` - Variable name (e.g., "r")
+    /// * `rel_types` - Relationship types (e.g., ["FOLLOWS"])
+    /// * `from_label` - Label of source node (for polymorphic resolution)
+    /// * `to_label` - Label of target node (for polymorphic resolution)
+    /// * `source` - Where the variable came from
+    /// * `direction` - "Outgoing", "Incoming", or "Either"
+    pub fn define_relationship_with_direction(
+        &mut self,
+        name: impl Into<String>,
+        rel_types: Vec<String>,
+        from_label: Option<String>,
+        to_label: Option<String>,
+        source: VariableSource,
+        direction: Option<String>,
+    ) {
+        let mut var = match source {
+            VariableSource::Match => TypedVariable::rel_from_match(rel_types, from_label, to_label),
+            VariableSource::Cte { cte_name } => {
+                TypedVariable::rel_from_cte(rel_types, cte_name, from_label, to_label)
+            }
+            _ => TypedVariable::rel_from_match(rel_types, from_label, to_label), // Fallback
+        };
+        // Set direction on the RelVariable
+        if let TypedVariable::Relationship(ref mut rel_var) = var {
+            rel_var.direction = direction;
+        }
         self.variables.insert(name.into(), var);
     }
 

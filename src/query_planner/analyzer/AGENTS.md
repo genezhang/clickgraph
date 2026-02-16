@@ -23,8 +23,9 @@ mod.rs                       ← Pipeline orchestrator: initial → intermediate
     │
     ├─── Phase 1: Initial Analysis ──────────────────────────────────────────
     │ schema_inference.rs (1,309)     ← Labels → tables, ViewScan creation
-    │ type_inference.rs (1,528)       ← Infer missing node labels & edge types
-    │ pattern_resolver.rs (1,229)     ← Untyped nodes → UNION ALL of typed branches
+    │ type_inference.rs (1,528)       ← **UNIFIED**: Infer labels, extract WHERE constraints,
+    │                                    generate UNION for valid combinations, validate direction
+    │ pattern_resolver.rs (1,229)     ← [DEPRECATED] Legacy untyped resolver (use TypeInference)
     │ pattern_resolver_config.rs (60) ← Max combinations config (default: 38)
     │ vlp_transitivity_check.rs (375) ← Validate VLP patterns are transitive
     │ cte_schema_resolver.rs (223)    ← Register WITH CTE schemas in PlanCtx
@@ -122,8 +123,10 @@ Resolves types, validates patterns, maps properties, and generates JOINs.
 
 ```
 Step 1:  SchemaInference         — Labels → tables, ViewScan creation
-Step 2:  TypeInference           — Infer missing labels/types from schema
-Step 2.1: PatternResolver        — Untyped nodes → UNION ALL branches
+Step 2:  UnifiedTypeInference    — Infer labels, extract WHERE constraints,
+                                    generate UNION for valid combinations,
+                                    validate direction against schema
+         [REMOVED: PatternResolver - merged into UnifiedTypeInference]
 Step 2.5: VlpTransitivityCheck   — Validate VLP patterns are transitive
 Step 3:  CteSchemaResolver       — Register WITH CTE schemas in PlanCtx
 Step 3.5: BidirectionalUnion     — (a)--(b) → UNION ALL (MUST be before GraphJoinInference!)
@@ -247,10 +250,10 @@ Many passes have hard dependencies on previous passes:
 
 | Pass | Requires | Reason |
 |------|----------|--------|
-| TypeInference | SchemaInference | Needs table contexts to exist |
-| PatternResolver | TypeInference | Handles remaining untyped nodes |
+| UnifiedTypeInference | SchemaInference | Needs table contexts to exist |
+| [REMOVED: PatternResolver] | — | Merged into UnifiedTypeInference |
 | BidirectionalUnion | — | MUST run BEFORE GraphJoinInference |
-| GraphJoinInference | BidirectionalUnion | GraphRel must already be direction-resolved |
+| GraphJoinInference | BidirectionalUnion, UnifiedTypeInference | GraphRel must be direction-resolved, types inferred |
 | FilterTagging | GraphJoinInference | Needs PatternSchemaContext for property mapping |
 | CartesianJoinExtraction | FilterTagging | Needs property-mapped predicates |
 | VariableResolver | FilterTagging | Needs property-mapped expressions |
@@ -349,7 +352,58 @@ then investigate `extract_from()` logic instead.
 
 Query-processing code MUST access schema via `get_current_schema()` / `get_current_schema_with_fallback()`, never directly from `GLOBAL_SCHEMAS`. See copilot-instructions.md for details.
 
-### 5. CTE Naming Convention
+### 5. Unified Type Inference and UNION Generation
+
+**UnifiedTypeInference** (type_inference.rs) is responsible for:
+1. Inferring missing node labels from schema relationships
+2. Extracting label constraints from WHERE id() filters
+3. Generating UNION branches for multiple valid type combinations
+4. **Validating combinations against schema + direction** ← CRITICAL!
+
+**Replaces/merges**:
+- Old TypeInference (incremental, incomplete)
+- PatternResolver (systematic UNION generation)
+- Parts of union_pruning (WHERE constraint extraction)
+
+**Output Structure** for patterns with multiple valid interpretations:
+
+```rust
+LogicalPlan::Union {
+    inputs: Vec<Arc<LogicalPlan>>,  // Each branch with concrete labels
+    union_type: UnionType::All      // UNION ALL
+}
+```
+
+Each branch is a COMPLETE plan with:
+- All nodes typed: `GraphNode { labels: Some(vec!["User"]) }`
+- All edges typed: `GraphRel { labels: Some(vec!["AUTHORED"]) }`
+- Direction resolved: `Direction::Outgoing` (never `Either`)
+
+**Direction Validation** (CRITICAL):
+
+For directed patterns (`->`), only schema-valid directions allowed:
+
+```cypher
+// Schema: AUTHORED from User to Post
+✅ Valid:   (User)-[AUTHORED]->(Post)
+❌ Invalid: (Post)-[AUTHORED]->(User)  ← MUST BE FILTERED OUT
+```
+
+Validation uses: `get_rel_schema_with_direction_check()` ensuring schema direction matches pattern direction.
+
+**Algorithm**:
+1. Collect ALL constraints (explicit labels + WHERE id() + schema relationships + direction)
+2. Compute possible types for each variable
+3. Generate cartesian product of type combinations
+4. **Filter by schema validity + direction** ← Prevents invalid branches
+5. Create Union if multiple valid combinations, single branch if one
+
+**Key Functions**:
+- `extract_labels_from_id_where()` - Extract labels from `WHERE id(x) IN [...]`
+- `is_valid_combination_with_direction()` - Validate combo against schema + direction
+- `get_rel_schema_with_direction_check()` - Lookup with direction validation
+
+### 6. CTE Naming Convention
 
 WITH CTE columns are named `{alias}_{property}`:
 - Node alias `a` with property `name` → CTE column `a_name`
@@ -371,6 +425,8 @@ CTE names are generated by `utils::cte_naming::generate_cte_name()` using export
 | GROUP BY includes aggregate | Invalid SQL | GroupByBuilding `contains_aggregate()` missed nested case |
 | Direction-dependent bug | Works outgoing, fails incoming | Code checking `direction` field instead of left/right connections |
 | Stale PatternSchemaContext | Wrong join strategy | GraphJoinInference ran but PlanCtx not updated for branch |
+| **Invalid UNION branch** | **Wrong data in results** | **UnifiedTypeInference didn't validate direction** |
+| **Post→User relationship** | **Schema defines User→Post** | **Direction not checked during type combination validation** |
 
 ## Dangerous Files — Handle With Extreme Care
 
@@ -389,9 +445,11 @@ affect every query with a WHERE clause.
 Resolves all variable references to CTE sources. Scope semantics are complex.
 Bugs here cause variables to silently reference wrong CTE or fail to resolve.
 
-### 🟡 type_inference.rs (1,528 lines)
-Infers missing types using schema. Must respect parser direction normalization
-(invariant #2 above). Incorrect inference causes downstream cascading failures.
+### 🔴 type_inference.rs (1,528 lines)
+**UNIFIED SYSTEM**: Infers types, extracts WHERE constraints, generates UNION, validates direction.
+Must respect parser direction normalization (invariant #2) AND schema direction constraints.
+Incorrect inference or direction validation causes downstream cascading failures.
+**Changes here affect EVERY query with multiple possible type interpretations.**
 
 ### 🟡 bidirectional_union.rs (1,236 lines)
 Generates 2^n UNION branches for n undirected edges. Must correctly handle VLP

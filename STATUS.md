@@ -1,13 +1,14 @@
 # ClickGraph Status
 
-*Updated: February 15, 2026*
+*Updated: February 16, 2026*
 
-## Current Version: v0.6.1
+## Current Version: v0.6.1 (Schema Consolidation Complete)
 
 Read-only Cypher-to-ClickHouse SQL query engine with Neo4j Browser compatibility.
 
-**Tests**: 1,013 unit + 35 integration + 7 Bolt + 28 doc = **1,083 passing (100%)**  
-**Benchmark**: 18/18 queries (100%) at 5000 scale (954.9M rows)
+**Tests**: 1,022 unit + 36 integration + 7 Bolt + 28 doc = **1,093 passing (100%)**  
+**Benchmark**: 18/18 queries (100%) at 5000 scale (954.9M rows)  
+**Architecture**: ✅ UnifiedTypeInference (SchemaInference merged, -668 lines net)
 
 ## What Works
 
@@ -17,7 +18,11 @@ Read-only Cypher-to-ClickHouse SQL query engine with Neo4j Browser compatibility
 - **Aggregations**: count, sum, avg, min, max, collect — with GROUP BY
 - **Functions**: String, numeric, date, type coercion, list operations
 - **Multi-relationship**: `[:TYPE1|TYPE2]` with UNION SQL generation
-- **Untyped patterns**: `MATCH (n) RETURN n` auto-expands via PatternResolver UNION ALL
+- **Unified Type Inference**: Single 4-phase pass (SchemaInference merged Feb 2026) with direction-aware UNION generation
+  - **Phase 0**: Relationship-based label inference
+  - **Phase 1**: Filter→GraphRel UNION with WHERE constraint extraction
+  - **Phase 2**: Untyped node UNION with direction validation (🎯 Neo4j Browser expand fix)
+  - **Phase 3**: ViewScan resolution (Empty → table scans)
 - **Property pruning**: Untyped queries skip tables missing referenced properties (10x–50x speedup)
 - **Multi-schema**: USE clause, per-request schema selection, GLOBAL_SCHEMAS registry
 - **Multi-tenancy**: Parameterized views with `tenant_id`, session commands (`CALL sys.set`)

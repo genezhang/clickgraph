@@ -83,18 +83,19 @@ mod.rs                   ← Entry points: evaluate_read_query(), evaluate_read_
     ┌────────────────────────────────────┼─────────────────────────────────┐
     │                    Phase 1: initial_analyzing()                      │
     │  1. SchemaInference        → label → table/ViewScan                 │
-    │  2. TypeInference          → infer missing node/edge types          │
-    │  3. PatternResolver        → UNION ALL for ambiguous types          │
-    │  4. VlpTransitivityCheck   → validate VLP patterns                  │
-    │  5. CteSchemaResolver      → register CTE schemas                   │
-    │  6. BidirectionalUnion     → undirected → UNION ALL (both dirs)     │
-    │  7. GraphJoinInference     → graph patterns → SQL JOINs             │
-    │  8. ProjectedColumnsResolver → pre-compute projected columns        │
-    │  9. QueryValidation        → validate query structure               │
-    │ 10. FilterTagging          → property mapping + filter pushdown     │
-    │ 11. CartesianJoinExtraction → cross-pattern filter → ON clause      │
-    │ 12. ProjectionTagging      → expand RETURN *, tag columns           │
-    │ 13. GroupByBuilding        → aggregation → GROUP BY                 │
+    │  2. UnifiedTypeInference   → infer labels, extract WHERE constraints,│
+    │                               generate UNION, validate direction     │
+    │  [REMOVED: PatternResolver - merged into UnifiedTypeInference]      │
+    │  3. VlpTransitivityCheck   → validate VLP patterns                  │
+    │  4. CteSchemaResolver      → register CTE schemas                   │
+    │  5. BidirectionalUnion     → undirected → UNION ALL (both dirs)     │
+    │  6. GraphJoinInference     → graph patterns → SQL JOINs             │
+    │  7. ProjectedColumnsResolver → pre-compute projected columns        │
+    │  8. QueryValidation        → validate query structure               │
+    │  9. FilterTagging          → property mapping + filter pushdown     │
+    │ 10. CartesianJoinExtraction → cross-pattern filter → ON clause      │
+    │ 11. ProjectionTagging      → expand RETURN *, tag columns           │
+    │ 12. GroupByBuilding        → aggregation → GROUP BY                 │
     └────────────────────────────────────┬─────────────────────────────────┘
                                          │
     ┌────────────────────────────────────┼─────────────────────────────────┐

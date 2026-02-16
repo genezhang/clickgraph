@@ -1,6 +1,15 @@
-//! Type Inference Analyzer Pass
+//! Unified Type Inference Analyzer Pass
 //!
-//! **Purpose**: Infer missing node labels AND relationship types from graph schema.
+//! **Purpose**: Comprehensive type inference system that:
+//! 1. Infers missing node labels and relationship types from graph schema
+//! 2. Extracts label constraints from WHERE clause id() filters
+//! 3. Generates UNION branches for multiple valid type combinations
+//! 4. **Validates combinations against schema + direction** ← CRITICAL!
+//!
+//! This unified pass replaces and merges:
+//! - Old TypeInference (incremental, incomplete)
+//! - PatternResolver (systematic UNION generation)
+//! - Parts of union_pruning (WHERE constraint extraction)
 //!
 //! **CRITICAL INVARIANT** ⚠️ **Parser Normalization**:
 //! The Cypher parser ALREADY normalizes relationship direction in the logical plan:
@@ -19,60 +28,81 @@
 //! // b is FROM, a is TO ✓ (parser swapped them!)
 //! ```
 //!
-//! **TypeInference Strategy** (query schema like a database):
-//! Use KNOWN facts as filters to find candidates for UNKNOWN labels:
+//! **Unified TypeInference Algorithm**:
 //!
-//! **Known Facts**:
-//! - Relationship type (if specified): `[:KNOWS]`
-//! - Node labels (if specified): `(a:Person)`
-//! - Direction (normalized in plan structure, not the field!)
-//! - Graph schema (relationship definitions: FROM→TO)
+//! **Step 1: Collect ALL Constraints**
+//! For each variable in the pattern, gather:
+//! - Explicit labels from pattern: `(a:User)`
+//! - WHERE id() constraints: `WHERE id(a) IN [...]` → extract labels via ID decoding
+//! - Schema relationship constraints: connected edges constrain node types
+//! - Direction constraints: pattern direction MUST match schema direction
 //!
-//! **Inference Rules**:
-//! 1. If relationship type known → look up schema → infer node labels from from_node/to_node
-//! 2. If both node labels known → look up schema → infer relationship type
-//! 3. Always use: left_connection → from_node, right_connection → to_node
-//!    (DO NOT check direction field - parser already normalized!)
+//! **Step 2: Compute Possible Types**
+//! For each variable:
+//! - Start with all possible types (all node labels in schema)
+//! - Filter by explicit label (if any)
+//! - Filter by WHERE id() constraints (if any)
+//! - Filter by schema relationships (considering direction!)
 //!
-//! **Problem**: Cypher allows omitting types when they can be inferred:
-//! ```cypher
-//! MATCH (a:Person)-[r]->(b)        -- r has no type, b has no label
-//! MATCH ()-[r:KNOWS]->()           -- nodes have no labels
-//! MATCH ()-[r]->()                 -- nothing specified!
+//! **Step 3: Generate Valid Combinations**
+//! - Cartesian product of all possible types
+//! - **Filter by schema validity + direction** ← Prevents invalid branches
+//! - For directed patterns (->), validate: schema.has_relationship(from, type, to, direction)
+//! - For undirected patterns (--), defer to BidirectionalUnion pass
+//!
+//! **Step 4: Create UNION Structure**
+//! ```ignore
+//! if valid_combinations.len() == 1 {
+//!     // Single valid combination, no Union needed
+//!     return single_branch_with_labels(valid_combinations[0])
+//! } else {
+//!     // Multiple valid combinations, create Union
+//!     return LogicalPlan::Union {
+//!         inputs: valid_combinations.map(|combo| create_branch_with_labels(combo)),
+//!         union_type: UnionType::All
+//!     }
+//! }
 //! ```
 //!
-//! **Solution**: Smart inference using graph schema:
+//! **Direction Validation** (CRITICAL):
 //!
-//! **Node Label Inference**:
-//! 1. From relationship: If KNOWS connects Person → Person, infer node labels
-//! 2. From schema: If only one node type exists, use it
-//! 3. From connected relationships: Propagate labels through patterns
+//! For directed patterns (`->`), only schema-valid directions allowed:
+//! ```cypher
+//! // Schema: AUTHORED from User to Post
+//! ✅ Valid:   (User)-[AUTHORED]->(Post)
+//! ❌ Invalid: (Post)-[AUTHORED]->(User)  ← MUST BE FILTERED OUT
+//! ```
 //!
-//! **Edge Type Inference**:
-//! 1. From nodes: If Person-?->City and only LIVES_IN connects them, infer LIVES_IN
-//! 2. From schema: If only one relationship type exists, use it
-//! 3. From pattern: Use relationship properties to disambiguate
-//!
-//! **When to run**: Early in analyzer pipeline (position 2, after SchemaInference)
-//! This ensures all downstream passes have complete type information.
+//! **Key Functions**:
+//! - `extract_labels_from_where()` - Extract labels from WHERE id() filters
+//! - `compute_possible_types()` - Compute valid types for each variable
+//! - `is_valid_combination_with_direction()` - Validate against schema + direction
+//! - `generate_union_branches()` - Create Union with valid branches
 //!
 //! **Examples**:
 //! ```cypher
 //! // Infer node labels from edge type
 //! MATCH (a)-[:KNOWS]->(b)           → a:Person, b:Person
 //!
+//! // WHERE constraint + direction validation
+//! MATCH (a)-[r]->(b) WHERE id(a) IN [Post.1, User.2] AND id(b) IN [...]
+//! → Generates UNION with ONLY valid branches:
+//!    (User)-[AUTHORED|LIKED]->(Post)  ✓
+//!    (User)-[FOLLOWS]->(User)          ✓
+//!    [NOT: (Post)-[*]->(User) ❌ Invalid direction!]
+//!
 //! // Infer edge type from node labels  
 //! MATCH (a:Person)-[r]->(b:City)    → r:LIVES_IN
 //!
-//! // Infer everything (if only one edge type exists)
-//! MATCH (a)-[r]->(b)                → a:Person, r:KNOWS, b:Person
-//!
-//! // Cross-WITH inference
-//! MATCH (a:Person)-[:KNOWS]->(b)
-//! WITH b
-//! MATCH (b)-[:LIVES_IN]->(c)        → b:Person, c:City
+//! // Multiple valid combinations → UNION
+//! MATCH (a)-[r]->(b) WHERE id(a) IN [User.1, User.2]
+//! → UNION of: (User)-[FOLLOWS]->(User), (User)-[AUTHORED]->(Post), (User)-[LIKED]->(Post)
 //! ```
+//!
+//! **When to run**: Early in analyzer pipeline (position 2, after SchemaInference)
+//! This ensures all downstream passes have complete type information.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::{
@@ -83,11 +113,12 @@ use crate::{
             errors::AnalyzerError,
             pattern_resolver_config::get_max_combinations,
         },
-        logical_expr::LogicalExpr,
-        logical_plan::{GraphNode, GraphRel, LogicalPlan, ViewScan},
-        plan_ctx::PlanCtx,
+        logical_expr::{Direction, Literal, LogicalExpr},
+        logical_plan::{GraphNode, GraphRel, LogicalPlan, Union, UnionType, ViewScan},
+        plan_ctx::{PlanCtx, TableCtx}, // Added TableCtx
         transformed::Transformed,
     },
+    utils::id_encoding::IdEncoding,
 };
 
 // Note: MAX_INFERRED_TYPES constant was removed as dead code.
@@ -120,6 +151,52 @@ impl TypeInference {
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         match plan.as_ref() {
+            // CRITICAL: Check for Filter wrapping pattern - extract WHERE constraints for UNION generation
+            LogicalPlan::Filter(filter) => {
+                // Extract label constraints from WHERE clause
+                let where_constraints = extract_labels_from_where(&Some(filter.predicate.clone()));
+
+                if !where_constraints.is_empty() {
+                    log::info!(
+                        "🔍 UnifiedTypeInference: Extracted WHERE constraints: {:?}",
+                        where_constraints
+                    );
+
+                    // Check if input is GraphRel - if so, try UNION generation
+                    if let LogicalPlan::GraphRel(_) = filter.input.as_ref() {
+                        // Try to generate UNION with WHERE constraints
+                        let result = self.try_generate_union_with_constraints(
+                            filter.input.clone(),
+                            &where_constraints,
+                            plan_ctx,
+                            graph_schema,
+                        )?;
+
+                        if result.is_yes() {
+                            // Union generated - wrap it in Filter
+                            let new_filter = crate::query_planner::logical_plan::Filter {
+                                input: result.get_plan().clone(),
+                                predicate: filter.predicate.clone(),
+                            };
+                            return Ok(Transformed::Yes(Arc::new(LogicalPlan::Filter(new_filter))));
+                        }
+                    }
+                }
+
+                // Default: process input recursively
+                let input_transformed =
+                    self.infer_labels_recursive(filter.input.clone(), plan_ctx, graph_schema)?;
+                if input_transformed.is_yes() {
+                    let new_filter = crate::query_planner::logical_plan::Filter {
+                        input: input_transformed.get_plan().clone(),
+                        predicate: filter.predicate.clone(),
+                    };
+                    Ok(Transformed::Yes(Arc::new(LogicalPlan::Filter(new_filter))))
+                } else {
+                    Ok(Transformed::No(plan))
+                }
+            }
+
             LogicalPlan::GraphRel(rel) => {
                 log::debug!(
                     "🔍 TypeInference: Processing GraphRel '{}' (edge_types: {:?})",
@@ -482,20 +559,6 @@ impl TypeInference {
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
                         new_proj,
                     ))))
-                } else {
-                    Ok(Transformed::No(plan))
-                }
-            }
-
-            LogicalPlan::Filter(filter) => {
-                let input_transformed =
-                    self.infer_labels_recursive(filter.input.clone(), plan_ctx, graph_schema)?;
-                if input_transformed.is_yes() {
-                    let new_filter = crate::query_planner::logical_plan::Filter {
-                        input: input_transformed.get_plan().clone(),
-                        predicate: filter.predicate.clone(),
-                    };
-                    Ok(Transformed::Yes(Arc::new(LogicalPlan::Filter(new_filter))))
                 } else {
                     Ok(Transformed::No(plan))
                 }
@@ -922,6 +985,649 @@ impl TypeInference {
                 }
             }
         }
+    }
+
+    /// Try to generate UNION branches when WHERE constraints indicate multiple possible types
+    ///
+    /// This is the core of unified type inference with direction validation.
+    ///
+    /// # Arguments
+    /// * `graph_rel_plan` - The GraphRel plan node
+    /// * `where_constraints` - Label constraints extracted from WHERE id() filters
+    /// * `plan_ctx` - Planning context
+    /// * `graph_schema` - Graph schema
+    ///
+    /// # Returns
+    /// * `Transformed::Yes(Union)` if multiple valid branches generated
+    /// * `Transformed::No(plan)` if single branch or generation not applicable
+    fn try_generate_union_with_constraints(
+        &self,
+        graph_rel_plan: Arc<LogicalPlan>,
+        where_constraints: &HashMap<String, HashSet<String>>,
+        plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
+        let rel = match graph_rel_plan.as_ref() {
+            LogicalPlan::GraphRel(r) => r,
+            _ => return Ok(Transformed::No(graph_rel_plan)),
+        };
+
+        // Skip UNION generation for variable-length paths (handled by GraphTraversalPlanning)
+        if rel.variable_length.is_some() {
+            log::debug!(
+                "🔍 UnifiedTypeInference: Skipping UNION generation for VLP pattern '{}'",
+                rel.alias
+            );
+            return self.infer_labels_recursive(graph_rel_plan, plan_ctx, graph_schema);
+        }
+
+        // NOTE: We DO handle Direction::Either (undirected patterns) here!
+        // check_relationship_exists_with_direction() validates bidirectionally for Either
+        // This is critical for Neo4j Browser expand: (Post)--(User) should return ONLY
+        // valid directions from schema (User→Post), not invalid (Post→User)
+
+        // Get possible types for left and right nodes
+        let left_types = self.get_possible_types_for_variable(
+            &rel.left_connection,
+            where_constraints,
+            plan_ctx,
+            graph_schema,
+        )?;
+
+        let right_types = self.get_possible_types_for_variable(
+            &rel.right_connection,
+            where_constraints,
+            plan_ctx,
+            graph_schema,
+        )?;
+
+        // Get possible relationship types
+        let rel_types = if let Some(labels) = &rel.labels {
+            labels.clone()
+        } else {
+            // No relationship type specified - collect all types from schema
+            graph_schema
+                .get_relationships_schemas()
+                .keys()
+                .map(|k| {
+                    // Handle composite keys TYPE::FROM::TO
+                    if k.contains("::") {
+                        k.split("::").next().unwrap_or(k).to_string()
+                    } else {
+                        k.clone()
+                    }
+                })
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect()
+        };
+
+        log::info!(
+            "🔍 UnifiedTypeInference: Checking combinations for pattern '{}': left_types={:?}, right_types={:?}, rel_types={:?}, direction={:?}",
+            rel.alias,
+            left_types,
+            right_types,
+            rel_types,
+            rel.direction
+        );
+
+        // For undirected patterns (Direction::Either), check if all valid combinations
+        // go in the same direction. If so, convert to that direction to prevent
+        // BidirectionalUnion from creating invalid duplicate branches.
+        let optimized_direction = if matches!(rel.direction, Direction::Either) {
+            self.optimize_undirected_pattern(&left_types, &right_types, &rel_types, graph_schema)
+        } else {
+            rel.direction.clone()
+        };
+
+        if optimized_direction != rel.direction {
+            log::info!(
+                "🎯 UnifiedTypeInference: Optimized undirected pattern: {:?} → {:?} (only one direction valid in schema)",
+                rel.direction,
+                optimized_direction
+            );
+        }
+
+        // Generate all combinations and validate with optimized direction
+        let mut valid_combinations = Vec::new();
+
+        for left_type in &left_types {
+            for right_type in &right_types {
+                for rel_type in &rel_types {
+                    // CRITICAL: Validate direction matches schema
+                    if check_relationship_exists_with_direction(
+                        left_type,
+                        right_type,
+                        rel_type,
+                        optimized_direction.clone(),
+                        graph_schema,
+                    ) {
+                        valid_combinations.push((
+                            left_type.clone(),
+                            rel_type.clone(),
+                            right_type.clone(),
+                        ));
+                    } else {
+                        log::debug!(
+                            "🚫 UnifiedTypeInference: Invalid combination filtered: ({left_type})-[{rel_type}:{:?}]->({right_type})",
+                            optimized_direction
+                        );
+                    }
+                }
+            }
+        }
+
+        log::info!(
+            "🔍 UnifiedTypeInference: Found {} valid combinations after direction validation",
+            valid_combinations.len()
+        );
+
+        // Check max combinations limit
+        let max_combinations = get_max_combinations();
+        if valid_combinations.len() > max_combinations {
+            log::warn!(
+                "⚠️ UnifiedTypeInference: Too many combinations ({} > {}), limiting to first {}",
+                valid_combinations.len(),
+                max_combinations,
+                max_combinations
+            );
+            valid_combinations.truncate(max_combinations);
+        }
+
+        if valid_combinations.is_empty() {
+            log::warn!(
+                "⚠️ UnifiedTypeInference: No valid combinations found for pattern '{}' - query may return empty results",
+                rel.alias
+            );
+            // Return original plan - query will likely return empty but that's semantically correct
+            return self.infer_labels_recursive(graph_rel_plan, plan_ctx, graph_schema);
+        }
+
+        if valid_combinations.len() == 1 {
+            // Single valid combination - no UNION needed
+            let (left_type, rel_type, right_type) = &valid_combinations[0];
+            log::info!(
+                "✅ UnifiedTypeInference: Single valid combination, no UNION needed: ({:?})-[{:?}:{:?}]->({:?})",
+                left_type,
+                rel_type,
+                optimized_direction,
+                right_type
+            );
+
+            // If direction was optimized, update the GraphRel plan
+            if optimized_direction != rel.direction {
+                let mut updated_rel = rel.clone();
+                updated_rel.direction = optimized_direction;
+                let updated_plan = Arc::new(LogicalPlan::GraphRel(updated_rel));
+                return self.infer_labels_recursive(updated_plan, plan_ctx, graph_schema);
+            }
+
+            return self.infer_labels_recursive(graph_rel_plan, plan_ctx, graph_schema);
+        }
+
+        // Multiple valid combinations - generate UNION
+        log::info!(
+            "🔀 UnifiedTypeInference: Generating UNION with {} branches (direction: {:?})",
+            valid_combinations.len(),
+            optimized_direction
+        );
+
+        let mut union_branches = Vec::new();
+
+        for (left_type, rel_type, right_type) in valid_combinations {
+            // Create a branch with specific types
+            let mut branch = self.create_typed_branch(
+                rel,
+                &left_type,
+                &vec![rel_type],
+                &right_type,
+                plan_ctx,
+                graph_schema,
+            )?;
+
+            // Update direction if optimized
+            if optimized_direction != rel.direction {
+                if let LogicalPlan::GraphRel(graph_rel) = Arc::make_mut(&mut branch) {
+                    graph_rel.direction = optimized_direction.clone();
+                }
+            }
+
+            union_branches.push(branch);
+        }
+
+        // Create Union node
+        let union_plan = crate::query_planner::logical_plan::Union {
+            inputs: union_branches,
+            union_type: crate::query_planner::logical_plan::UnionType::All,
+        };
+
+        Ok(Transformed::Yes(Arc::new(LogicalPlan::Union(union_plan))))
+    }
+
+    /// Get possible types for a variable considering explicit labels and WHERE constraints
+    fn get_possible_types_for_variable(
+        &self,
+        var_name: &str,
+        where_constraints: &HashMap<String, HashSet<String>>,
+        plan_ctx: &PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<Vec<String>> {
+        // First check: explicit label in plan_ctx
+        if let Ok(table_ctx) = plan_ctx.get_table_ctx(var_name) {
+            if let Some(labels) = table_ctx.get_labels() {
+                if !labels.is_empty() {
+                    log::debug!(
+                        "🏷️ Variable '{}' has explicit label from plan_ctx: {:?}",
+                        var_name,
+                        labels
+                    );
+                    return Ok(labels.clone());
+                }
+            }
+        }
+
+        // Second check: WHERE constraints
+        if let Some(constraint_labels) = where_constraints.get(var_name) {
+            log::debug!(
+                "🏷️ Variable '{}' has WHERE constraint labels: {:?}",
+                var_name,
+                constraint_labels
+            );
+            return Ok(constraint_labels.iter().cloned().collect());
+        }
+
+        // No constraints - return all possible node types
+        let all_types: Vec<String> = graph_schema.all_node_schemas().keys().cloned().collect();
+
+        log::debug!(
+            "🏷️ Variable '{}' has no constraints, using all node types: {:?}",
+            var_name,
+            all_types
+        );
+
+        Ok(all_types)
+    }
+
+    /// Optimize undirected patterns by checking if all valid combinations go in same direction
+    ///
+    /// Strategy: Check ALL possible type combinations. If they all go in ONE direction,
+    /// convert Direction::Either to that direction. Only keep Either if we have actual
+    /// bidirectional relationships (some go forward, some go backward).
+    ///
+    /// Example: `(Post)--(User)` where schema only has User→Post
+    /// → Convert to Direction::Incoming (Post←User)
+    fn optimize_undirected_pattern(
+        &self,
+        left_types: &[String],
+        right_types: &[String],
+        rel_types: &[String],
+        graph_schema: &GraphSchema,
+    ) -> Direction {
+        let mut has_forward = false; // Any combination where left→right exists in schema
+        let mut has_backward = false; // Any combination where right→left exists in schema
+
+        for left_type in left_types {
+            for right_type in right_types {
+                for rel_type in rel_types {
+                    if let Some(rel_schema) = graph_schema.get_relationships_schema_opt(rel_type) {
+                        // Check forward direction: left→right matches schema from→to
+                        if node_type_matches(&rel_schema.from_node, left_type)
+                            && node_type_matches(&rel_schema.to_node, right_type)
+                        {
+                            has_forward = true;
+                        }
+                        // Check backward direction: right→left matches schema from→to
+                        if node_type_matches(&rel_schema.from_node, right_type)
+                            && node_type_matches(&rel_schema.to_node, left_type)
+                        {
+                            has_backward = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Convert to unidirectional only if ALL valid combinations go the same way
+        match (has_forward, has_backward) {
+            (true, false) => {
+                log::info!("🎯 All combinations go forward only (left→right)");
+                Direction::Outgoing
+            }
+            (false, true) => {
+                log::info!("🎯 All combinations go backward only (right→left)");
+                Direction::Incoming
+            }
+            (true, true) => {
+                log::debug!(
+                    "↔️ Combinations go both directions, keeping Either (truly bidirectional)"
+                );
+                Direction::Either
+            }
+            (false, false) => {
+                log::warn!("⚠️ No valid directions found!");
+                Direction::Either // Keep original, query will return empty
+            }
+        }
+    }
+
+    /// Generate UNION for untyped nodes with direction validation
+    ///
+    /// This is Phase 2 of unified type inference. After initial inference (Phase 1),
+    /// we discover any remaining untyped nodes and generate UNION branches for all
+    /// valid type combinations, applying direction validation.
+    ///
+    /// Key difference from old PatternResolver: We apply check_relationship_exists_with_direction()
+    /// and optimize_undirected_pattern() to ensure only schema-valid branches are generated.
+    fn generate_union_for_untyped_nodes(
+        &self,
+        plan: Arc<LogicalPlan>,
+        untyped_nodes: &HashSet<String>,
+        plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
+        relationships: &[RelationshipPattern],
+        property_accesses: &HashMap<String, HashSet<String>>,
+    ) -> AnalyzerResult<Arc<LogicalPlan>> {
+        log::info!(
+            "🔀 UnifiedTypeInference: Generating UNION for {} untyped nodes",
+            untyped_nodes.len()
+        );
+
+        log::debug!(
+            "🔍 Phase 2: {} relationships, {} property accesses from original plan",
+            relationships.len(),
+            property_accesses.len()
+        );
+        for rel in relationships {
+            log::debug!(
+                "🔍 Phase 2: Relationship: left={}, right={}, types={:?}, dir={:?}",
+                rel.left_alias,
+                rel.right_alias,
+                rel.rel_types,
+                rel.direction
+            );
+        }
+        for (var, props) in property_accesses {
+            log::debug!("🔍 Phase 2: PropertyAccess: var={}, props={:?}", var, props);
+        }
+
+        // Collect type candidates for each untyped variable, constrained by:
+        // 1. Labeled relationships (from schema from_node/to_node)
+        // 2. Property accesses (only types that have the accessed properties)
+        let mut untyped_vars: Vec<(String, Vec<String>)> = Vec::new();
+        for var_name in untyped_nodes {
+            let mut candidates: Vec<String> =
+                graph_schema.all_node_schemas().keys().cloned().collect();
+
+            // Constraint 1: Filter by labeled relationships involving this variable
+            for rel_pattern in relationships {
+                if rel_pattern.rel_types.is_empty() {
+                    continue;
+                }
+                if rel_pattern.left_alias == *var_name {
+                    let valid_types: HashSet<String> = rel_pattern
+                        .rel_types
+                        .iter()
+                        .filter_map(|rel_type| {
+                            graph_schema.get_rel_schema(rel_type).ok().and_then(|rs| {
+                                match rel_pattern.direction {
+                                    Direction::Outgoing => Some(rs.from_node.clone()),
+                                    Direction::Incoming => Some(rs.to_node.clone()),
+                                    Direction::Either => None,
+                                }
+                            })
+                        })
+                        .collect();
+                    if !valid_types.is_empty() {
+                        candidates.retain(|c| valid_types.contains(c));
+                        log::debug!(
+                            "🔍 Constrained '{}' (left) by rel {:?}: valid={:?}",
+                            var_name,
+                            rel_pattern.rel_types,
+                            valid_types
+                        );
+                    }
+                } else if rel_pattern.right_alias == *var_name {
+                    let valid_types: HashSet<String> = rel_pattern
+                        .rel_types
+                        .iter()
+                        .filter_map(|rel_type| {
+                            graph_schema.get_rel_schema(rel_type).ok().and_then(|rs| {
+                                match rel_pattern.direction {
+                                    Direction::Outgoing => Some(rs.to_node.clone()),
+                                    Direction::Incoming => Some(rs.from_node.clone()),
+                                    Direction::Either => None,
+                                }
+                            })
+                        })
+                        .collect();
+                    if !valid_types.is_empty() {
+                        candidates.retain(|c| valid_types.contains(c));
+                        log::debug!(
+                            "🔍 Constrained '{}' (right) by rel {:?}: valid={:?}",
+                            var_name,
+                            rel_pattern.rel_types,
+                            valid_types
+                        );
+                    }
+                }
+            }
+
+            // Constraint 2: Filter by accessed properties
+            // Uses property_mappings keys (Cypher names), NOT column_names (ClickHouse names)
+            if let Some(props) = property_accesses.get(var_name) {
+                candidates.retain(|type_name| {
+                    if let Ok(node_schema) = graph_schema.node_schema(type_name) {
+                        props
+                            .iter()
+                            .all(|prop| node_schema.has_cypher_property(prop))
+                    } else {
+                        false
+                    }
+                });
+                log::debug!(
+                    "🔍 Constrained '{}' by properties {:?}: {:?}",
+                    var_name,
+                    props,
+                    candidates
+                );
+            }
+
+            if candidates.is_empty() {
+                log::warn!("🔍 No valid types for '{}' after constraints", var_name);
+                continue;
+            }
+
+            log::debug!(
+                "🔍 Variable '{}': {} candidates after constraints: {:?}",
+                var_name,
+                candidates.len(),
+                candidates
+            );
+            untyped_vars.push((var_name.clone(), candidates));
+        }
+
+        if untyped_vars.is_empty() {
+            return Ok(plan);
+        }
+
+        // Collect already-typed nodes from plan_ctx
+        let typed_nodes: HashMap<String, String> = plan_ctx
+            .iter_table_contexts()
+            .filter_map(|(var_name, table_ctx)| {
+                table_ctx
+                    .get_labels()
+                    .and_then(|labels| labels.first().map(|l| (var_name.clone(), l.clone())))
+            })
+            .collect();
+
+        log::info!(
+            "🔍 Found {} relationship patterns, {} typed nodes",
+            relationships.len(),
+            typed_nodes.len()
+        );
+
+        // Generate type combinations (cartesian product)
+        let max_combinations = get_max_combinations();
+        let combinations = generate_type_combinations(&untyped_vars, max_combinations);
+
+        log::info!(
+            "🔍 Generated {} type combinations (max: {})",
+            combinations.len(),
+            max_combinations
+        );
+
+        // Filter combinations by schema validity + direction
+        let valid_combinations: Vec<_> = combinations
+            .into_iter()
+            .filter(|combo| {
+                is_valid_combination_with_direction(
+                    combo,
+                    &relationships,
+                    graph_schema,
+                    &typed_nodes,
+                )
+            })
+            .collect();
+
+        log::info!(
+            "✅ UnifiedTypeInference: {} valid combinations after direction validation",
+            valid_combinations.len()
+        );
+
+        if valid_combinations.is_empty() {
+            log::warn!("⚠️ No valid combinations found - query may return empty results");
+            return Ok(plan);
+        }
+
+        if valid_combinations.len() == 1 {
+            log::info!("✅ Single valid combination, no UNION needed");
+            // Update plan_ctx with the single valid combination
+            for (var_name, type_name) in &valid_combinations[0] {
+                self.update_plan_ctx_with_label(var_name, type_name, plan_ctx)?;
+            }
+            return Ok(plan);
+        }
+
+        // Multiple valid combinations - generate UNION branches
+        log::info!(
+            "🔀 Generating UNION with {} branches",
+            valid_combinations.len()
+        );
+
+        // Update plan_ctx with all labels for each untyped variable so downstream
+        // passes (e.g., ProjectionTagging) can resolve label-dependent logic.
+        // Each branch has a specific label in its GraphNode, but plan_ctx is shared.
+        let mut all_labels_per_var: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for combo in &valid_combinations {
+            for (var_name, type_name) in combo {
+                all_labels_per_var
+                    .entry(var_name.clone())
+                    .or_default()
+                    .push(type_name.clone());
+            }
+        }
+        for (var_name, labels) in &all_labels_per_var {
+            if let Ok(mut table_ctx) = plan_ctx.get_table_ctx(var_name).cloned() {
+                table_ctx.set_labels(Some(labels.clone()));
+                plan_ctx.insert_table_ctx(var_name.clone(), table_ctx);
+            }
+        }
+
+        let mut union_branches = Vec::new();
+
+        // Check if the plan has aggregation (GroupBy or aggregate functions in Projection).
+        // If so, inject the UNION *below* the aggregation layer so the aggregate
+        // operates on the combined rows from all branches, rather than each branch
+        // independently computing its own aggregate.
+        let has_aggregation = plan_has_aggregation(&plan);
+
+        if has_aggregation {
+            log::info!("🔀 Plan has aggregation: injecting UNION below aggregation layer");
+            // Split plan into aggregation wrapper + scan part.
+            // Clone only scan parts per combination, then re-wrap.
+            for combo in valid_combinations {
+                let scan_branch = clone_plan_with_labels(&extract_scan_part(&plan), &combo);
+                log::debug!("✅ Generated scan branch for combination: {:?}", combo);
+                union_branches.push(Arc::new(scan_branch));
+            }
+
+            let union_plan = Union {
+                inputs: union_branches,
+                union_type: UnionType::All,
+            };
+            let union_arc = Arc::new(LogicalPlan::Union(union_plan));
+
+            // Re-wrap with the aggregation layers from the original plan
+            Ok(rewrap_aggregation(&plan, union_arc))
+        } else {
+            for combo in valid_combinations {
+                let branch_plan = clone_plan_with_labels(&plan, &combo);
+                log::debug!("✅ Generated UNION branch for combination: {:?}", combo);
+                union_branches.push(Arc::new(branch_plan));
+            }
+
+            let union_plan = Union {
+                inputs: union_branches,
+                union_type: UnionType::All,
+            };
+
+            Ok(Arc::new(LogicalPlan::Union(union_plan)))
+        }
+    }
+
+    /// Create a typed branch for UNION with specific node and relationship types
+    fn create_typed_branch(
+        &self,
+        rel: &GraphRel,
+        left_type: &str,
+        rel_types: &[String],
+        right_type: &str,
+        plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<Arc<LogicalPlan>> {
+        // Update plan_ctx with inferred types for this branch
+        self.update_plan_ctx_with_label(&rel.left_connection, left_type, plan_ctx)?;
+        self.update_plan_ctx_with_label(&rel.right_connection, right_type, plan_ctx)?;
+
+        // Create GraphRel with specific types
+        let typed_rel = GraphRel {
+            left: rel.left.clone(),
+            center: rel.center.clone(),
+            right: rel.right.clone(),
+            alias: rel.alias.clone(),
+            direction: rel.direction.clone(),
+            left_connection: rel.left_connection.clone(),
+            right_connection: rel.right_connection.clone(),
+            is_rel_anchor: rel.is_rel_anchor,
+            variable_length: rel.variable_length.clone(),
+            shortest_path_mode: rel.shortest_path_mode.clone(),
+            path_variable: rel.path_variable.clone(),
+            where_predicate: rel.where_predicate.clone(),
+            labels: Some(rel_types.to_vec()),
+            is_optional: rel.is_optional,
+            anchor_connection: rel.anchor_connection.clone(),
+            cte_references: rel.cte_references.clone(),
+            pattern_combinations: None,
+            was_undirected: rel.was_undirected,
+        };
+
+        Ok(Arc::new(LogicalPlan::GraphRel(typed_rel)))
+    }
+
+    /// Update plan_ctx with inferred label for a variable
+    fn update_plan_ctx_with_label(
+        &self,
+        var_name: &str,
+        label: &str,
+        plan_ctx: &mut PlanCtx,
+    ) -> AnalyzerResult<()> {
+        if let Ok(mut table_ctx) = plan_ctx.get_table_ctx(var_name).cloned() {
+            // Update existing table_ctx with label
+            table_ctx.set_labels(Some(vec![label.to_string()]));
+            plan_ctx.insert_table_ctx(var_name.to_string(), table_ctx);
+        }
+        Ok(())
     }
 
     /// Infer edge type(s) from node labels or schema.
@@ -1514,6 +2220,921 @@ impl TypeInference {
         );
         None
     }
+
+    // ================================================================================================
+    // Phase 0: Relationship-Based Label Inference (from SchemaInference)
+    // ================================================================================================
+
+    /// Phase 0: Infer missing node/relationship labels from GraphRel patterns
+    ///
+    /// This mirrors SchemaInference.infer_schema() logic but runs as Phase 0 of
+    /// UnifiedTypeInference. Walks the plan tree and infers labels based on the
+    /// 8 combinations of known/unknown in (a)-[r]->(b) patterns.
+    fn infer_schema_relationships(
+        &self,
+        logical_plan: Arc<LogicalPlan>,
+        plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<()> {
+        match logical_plan.as_ref() {
+            LogicalPlan::Projection(projection) => {
+                self.infer_schema_relationships(projection.input.clone(), plan_ctx, graph_schema)
+            }
+            LogicalPlan::GraphNode(graph_node) => {
+                self.infer_schema_relationships(graph_node.input.clone(), plan_ctx, graph_schema)
+            }
+            LogicalPlan::GraphRel(graph_rel) => {
+                let left_alias = &graph_rel.left_connection;
+                let right_alias = &graph_rel.right_connection;
+
+                // Try to get table contexts - may not exist yet
+                let left_table_ctx_opt =
+                    plan_ctx.get_table_ctx_from_alias_opt(&Some(left_alias.clone()));
+                let right_table_ctx_opt =
+                    plan_ctx.get_table_ctx_from_alias_opt(&Some(right_alias.clone()));
+
+                // If contexts don't exist yet, skip (will be handled in later phases)
+                if let (Ok(left_table_ctx), Ok(right_table_ctx)) =
+                    (left_table_ctx_opt, right_table_ctx_opt)
+                {
+                    if let Ok(rel_table_ctx) = plan_ctx.get_rel_table_ctx(&graph_rel.alias) {
+                        // Skip label inference for relationships with multiple types
+                        let should_infer_labels = !rel_table_ctx
+                            .get_labels()
+                            .map(|labels| labels.len() > 1)
+                            .unwrap_or(false);
+
+                        if should_infer_labels {
+                            // Use the 8-case inference logic from SchemaInference
+                            if let Ok((left_label, rel_label, right_label)) = self
+                                .infer_missing_labels_from_schema(
+                                    graph_schema,
+                                    left_table_ctx,
+                                    rel_table_ctx,
+                                    right_table_ctx,
+                                )
+                            {
+                                // Update plan_ctx with inferred labels
+                                for (alias, label) in [
+                                    (left_alias, left_label),
+                                    (&graph_rel.alias, rel_label),
+                                    (right_alias, right_label),
+                                ] {
+                                    if let Ok(table_ctx) = plan_ctx.get_mut_table_ctx(alias) {
+                                        if table_ctx.get_label_opt().is_none() {
+                                            log::info!(
+                                                "🏷️ Phase 0: Inferred label '{}' for alias '{}'",
+                                                label,
+                                                alias
+                                            );
+                                            table_ctx.set_labels(Some(vec![label]));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Recurse into child patterns
+                self.infer_schema_relationships(graph_rel.left.clone(), plan_ctx, graph_schema)?;
+                self.infer_schema_relationships(graph_rel.right.clone(), plan_ctx, graph_schema)?;
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Infer missing labels using the 8-case logic from SchemaInference
+    ///
+    /// This is the core label inference algorithm that handles all combinations of
+    /// known/unknown labels in (a)-[r]->(b) patterns.
+    fn infer_missing_labels_from_schema(
+        &self,
+        graph_schema: &GraphSchema,
+        left_table_ctx: &TableCtx,
+        rel_table_ctx: &TableCtx,
+        right_table_ctx: &TableCtx,
+    ) -> AnalyzerResult<(String, String, String)> {
+        use crate::query_planner::analyzer::errors::{AnalyzerError, Pass};
+
+        // Case 1: All labels present - return as-is
+        if left_table_ctx.get_label_opt().is_some()
+            && rel_table_ctx.get_label_opt().is_some()
+            && right_table_ctx.get_label_opt().is_some()
+        {
+            return Ok((
+                left_table_ctx
+                    .get_label_str()
+                    .map_err(|e| AnalyzerError::PlanCtx {
+                        pass: Pass::SchemaInference,
+                        source: e,
+                    })?,
+                rel_table_ctx
+                    .get_label_str()
+                    .map_err(|e| AnalyzerError::PlanCtx {
+                        pass: Pass::SchemaInference,
+                        source: e,
+                    })?,
+                right_table_ctx
+                    .get_label_str()
+                    .map_err(|e| AnalyzerError::PlanCtx {
+                        pass: Pass::SchemaInference,
+                        source: e,
+                    })?,
+            ));
+        }
+
+        // Case 2: Only left missing
+        if left_table_ctx.get_label_opt().is_none()
+            && rel_table_ctx.get_label_opt().is_some()
+            && right_table_ctx.get_label_opt().is_some()
+        {
+            let rel_label = rel_table_ctx
+                .get_label_str()
+                .map_err(|e| AnalyzerError::PlanCtx {
+                    pass: Pass::SchemaInference,
+                    source: e,
+                })?;
+            let right_label =
+                right_table_ctx
+                    .get_label_str()
+                    .map_err(|e| AnalyzerError::PlanCtx {
+                        pass: Pass::SchemaInference,
+                        source: e,
+                    })?;
+            let rel_schema = graph_schema.get_rel_schema(&rel_label).map_err(|e| {
+                AnalyzerError::GraphSchema {
+                    pass: Pass::SchemaInference,
+                    source: e,
+                }
+            })?;
+
+            let left_label = if right_label == rel_schema.from_node {
+                rel_schema.to_node.clone()
+            } else {
+                rel_schema.from_node.clone()
+            };
+            return Ok((left_label, rel_label, right_label));
+        }
+
+        // Case 3: Only right missing
+        if left_table_ctx.get_label_opt().is_some()
+            && rel_table_ctx.get_label_opt().is_some()
+            && right_table_ctx.get_label_opt().is_none()
+        {
+            let left_label =
+                left_table_ctx
+                    .get_label_str()
+                    .map_err(|e| AnalyzerError::PlanCtx {
+                        pass: Pass::SchemaInference,
+                        source: e,
+                    })?;
+            let rel_label = rel_table_ctx
+                .get_label_str()
+                .map_err(|e| AnalyzerError::PlanCtx {
+                    pass: Pass::SchemaInference,
+                    source: e,
+                })?;
+            let rel_schema = graph_schema.get_rel_schema(&rel_label).map_err(|e| {
+                AnalyzerError::GraphSchema {
+                    pass: Pass::SchemaInference,
+                    source: e,
+                }
+            })?;
+
+            let right_label = if left_label == rel_schema.from_node {
+                rel_schema.to_node.clone()
+            } else {
+                rel_schema.from_node.clone()
+            };
+            return Ok((left_label, rel_label, right_label));
+        }
+
+        // Case 4: Only relationship missing
+        if left_table_ctx.get_label_opt().is_some()
+            && rel_table_ctx.get_label_opt().is_none()
+            && right_table_ctx.get_label_opt().is_some()
+        {
+            let left_label =
+                left_table_ctx
+                    .get_label_str()
+                    .map_err(|e| AnalyzerError::PlanCtx {
+                        pass: Pass::SchemaInference,
+                        source: e,
+                    })?;
+            let right_label =
+                right_table_ctx
+                    .get_label_str()
+                    .map_err(|e| AnalyzerError::PlanCtx {
+                        pass: Pass::SchemaInference,
+                        source: e,
+                    })?;
+
+            // Find relationship that connects these nodes
+            for (_, rel_schema) in graph_schema.get_relationships_schemas().iter() {
+                if (rel_schema.from_node == left_label && rel_schema.to_node == right_label)
+                    || (rel_schema.from_node == right_label && rel_schema.to_node == left_label)
+                {
+                    return Ok((left_label, rel_schema.table_name.clone(), right_label));
+                }
+            }
+            return Err(AnalyzerError::MissingRelationLabel {
+                pass: Pass::SchemaInference,
+            });
+        }
+
+        // Case 5: Both nodes missing, relationship present
+        // Infer node types directly from relationship schema's from_node/to_node
+        if left_table_ctx.get_label_opt().is_none()
+            && rel_table_ctx.get_label_opt().is_some()
+            && right_table_ctx.get_label_opt().is_none()
+        {
+            let rel_label = rel_table_ctx
+                .get_label_str()
+                .map_err(|e| AnalyzerError::PlanCtx {
+                    pass: Pass::SchemaInference,
+                    source: e,
+                })?;
+            let rel_schema = graph_schema.get_rel_schema(&rel_label).map_err(|e| {
+                AnalyzerError::GraphSchema {
+                    pass: Pass::SchemaInference,
+                    source: e,
+                }
+            })?;
+            return Ok((
+                rel_schema.from_node.clone(),
+                rel_label,
+                rel_schema.to_node.clone(),
+            ));
+        }
+
+        // Cases 6-8: Multiple unknowns without relationship - defer to Phase 2
+        Ok((
+            left_table_ctx.get_label_opt().unwrap_or_default(),
+            rel_table_ctx.get_label_opt().unwrap_or_default(),
+            right_table_ctx.get_label_opt().unwrap_or_default(),
+        ))
+    }
+
+    // ================================================================================================
+    // Phase 3: ViewScan Resolution (from SchemaInference)
+    // ================================================================================================
+
+    /// Phase 3: Resolve GraphNode(input=Empty) → ViewScan based on inferred labels
+    ///
+    /// This mirrors SchemaInference.push_inferred_table_names_to_scan() logic.
+    /// After phases 0-2 have inferred labels, this phase creates concrete ViewScan
+    /// nodes from the inferred label information in TableCtx.
+    ///
+    /// **NOTE**: Currently a placeholder. SchemaInference still handles ViewScan creation.
+    /// This will be fully implemented after Phase B testing confirms Phase 0 works correctly.
+    /// Phase 3: ViewScan Resolution
+    ///
+    /// Converts GraphNode(label=Some, input=Empty) → GraphNode(label=Some, input=ViewScan)
+    /// This is the final step that materializes the type inference into actual table scans.
+    ///
+    /// Handles:
+    /// - Node ViewScans: GraphNode with inferred label
+    /// - Relationship ViewScans: GraphRel center with inferred type
+    /// - Denormalized patterns: Node properties in edge tables
+    fn push_inferred_table_names_to_scan(
+        logical_plan: Arc<LogicalPlan>,
+        plan_ctx: &mut PlanCtx,
+        _graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<Arc<LogicalPlan>> {
+        use crate::query_planner::transformed::Transformed;
+
+        let transformed_plan = match logical_plan.as_ref() {
+            LogicalPlan::Projection(projection) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    projection.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
+                projection.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::GraphNode(graph_node) => {
+                // Check if input is Empty - need to resolve to ViewScan
+                if matches!(graph_node.input.as_ref(), LogicalPlan::Empty) {
+                    // First check if GraphNode already has a label (set by TypeInference Phase 2)
+                    let label_to_use = if let Some(ref node_label) = graph_node.label {
+                        if node_label != "$any" {
+                            Some(node_label.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        // Fallback: Get inferred label from TableCtx
+                        match plan_ctx.get_table_ctx(&graph_node.alias) {
+                            Ok(table_ctx) => {
+                                log::debug!(
+                                    "TypeInference Phase 3: Found table_ctx for node '{}' with labels {:?}",
+                                    graph_node.alias,
+                                    table_ctx.get_labels()
+                                );
+                                table_ctx.get_labels().and_then(|labels| {
+                                    if !labels.is_empty() && labels[0] != "$any" {
+                                        Some(labels[0].clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            }
+                            Err(e) => {
+                                log::debug!(
+                                    "TypeInference Phase 3: No table_ctx found for node '{}': {:?}",
+                                    graph_node.alias,
+                                    e
+                                );
+                                None
+                            }
+                        }
+                    };
+
+                    if let Some(label) = label_to_use {
+                        log::info!(
+                            "TypeInference Phase 3: Resolving Empty → ViewScan for node '{}' with label '{}'",
+                            graph_node.alias, label
+                        );
+
+                        // Create ViewScan using the label
+                        match crate::query_planner::logical_plan::match_clause::try_generate_view_scan(
+                            &graph_node.alias,
+                            &label,
+                            plan_ctx,
+                        ) {
+                            Ok(Some(view_scan)) => {
+                                log::info!("TypeInference Phase 3: ✓ Successfully created ViewScan for node '{}' with label '{}'", graph_node.alias, label);
+                                // Rebuild GraphNode with ViewScan instead of Empty
+                                return Ok(Arc::new(LogicalPlan::GraphNode(
+                                    crate::query_planner::logical_plan::GraphNode {
+                                        input: view_scan,
+                                        alias: graph_node.alias.clone(),
+                                        label: Some(label.clone()),
+                                        is_denormalized: graph_node.is_denormalized,
+                                        projected_columns: graph_node.projected_columns.clone(),
+                                        node_types: None,
+                                    },
+                                )));
+                            }
+                            Ok(None) => {
+                                log::warn!(
+                                    "TypeInference Phase 3: Failed to create ViewScan for node '{}' with label '{}' (returned None)",
+                                    graph_node.alias, label
+                                );
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "TypeInference Phase 3: Error creating ViewScan for node '{}' with label '{}': {:?}",
+                                    graph_node.alias, label, e
+                                );
+                            }
+                        }
+                    } else {
+                        log::debug!("TypeInference Phase 3: Node '{}' has no valid label, skipping ViewScan creation", graph_node.alias);
+                    }
+                }
+
+                // Recurse into input (for ViewScan or other plan types)
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    graph_node.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
+                graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::GraphRel(graph_rel) => {
+                // First recurse into left and right nodes
+                let left_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    graph_rel.left.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
+                let right_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    graph_rel.right.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
+
+                // Check if center (relationship) is Empty - need to resolve to ViewScan
+                let center_tf = if matches!(graph_rel.center.as_ref(), LogicalPlan::Empty) {
+                    // Get inferred relationship type from TableCtx
+                    if let Ok(rel_ctx) = plan_ctx.get_rel_table_ctx(&graph_rel.alias) {
+                        if let Some(labels) = rel_ctx.get_labels() {
+                            if labels.len() == 1 {
+                                let rel_type = &labels[0];
+                                log::info!(
+                                    "TypeInference Phase 3: Resolving Empty → ViewScan for relationship '{}' with inferred type '{}'",
+                                    graph_rel.alias, rel_type
+                                );
+
+                                // Get left and right node labels for context
+                                let left_label = if let LogicalPlan::GraphNode(left_node) =
+                                    graph_rel.left.as_ref()
+                                {
+                                    left_node.label.as_deref()
+                                } else {
+                                    None
+                                };
+
+                                let right_label = if let LogicalPlan::GraphNode(right_node) =
+                                    graph_rel.right.as_ref()
+                                {
+                                    right_node.label.as_deref()
+                                } else {
+                                    None
+                                };
+
+                                // Create ViewScan for the relationship
+                                if let Some(view_scan) = crate::query_planner::logical_plan::match_clause::try_generate_relationship_view_scan(
+                                    &graph_rel.alias,
+                                    rel_type,
+                                    left_label,
+                                    right_label,
+                                    plan_ctx,
+                                ) {
+                                    Transformed::Yes(view_scan)
+                                } else {
+                                    log::warn!(
+                                        "TypeInference Phase 3: Failed to create ViewScan for relationship '{}' with type '{}'",
+                                        graph_rel.alias, rel_type
+                                    );
+                                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, _graph_schema)?
+                                }
+                            } else {
+                                // Multiple relationship types - keep Empty, will be handled by UNION generation
+                                log::debug!(
+                                    "TypeInference Phase 3: Relationship '{}' has multiple types {:?}, keeping Empty for UNION generation",
+                                    graph_rel.alias, labels
+                                );
+                                Self::push_inferred_table_names_to_scan_transformed(
+                                    graph_rel.center.clone(),
+                                    plan_ctx,
+                                    _graph_schema,
+                                )?
+                            }
+                        } else {
+                            Self::push_inferred_table_names_to_scan_transformed(
+                                graph_rel.center.clone(),
+                                plan_ctx,
+                                _graph_schema,
+                            )?
+                        }
+                    } else {
+                        Self::push_inferred_table_names_to_scan_transformed(
+                            graph_rel.center.clone(),
+                            plan_ctx,
+                            _graph_schema,
+                        )?
+                    }
+                } else {
+                    Self::push_inferred_table_names_to_scan_transformed(
+                        graph_rel.center.clone(),
+                        plan_ctx,
+                        _graph_schema,
+                    )?
+                };
+
+                graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
+            }
+            LogicalPlan::Cte(cte) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    cte.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
+                cte.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
+            LogicalPlan::GraphJoins(graph_joins) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    graph_joins.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
+                graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Filter(filter) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    filter.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
+                filter.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::GroupBy(group_by) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    group_by.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
+                group_by.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::OrderBy(order_by) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    order_by.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
+                order_by.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Skip(skip) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    skip.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
+                skip.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Limit(limit) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    limit.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
+                limit.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Union(union) => {
+                let mut inputs_tf: Vec<Transformed<Arc<LogicalPlan>>> = vec![];
+                for input_plan in union.inputs.iter() {
+                    let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                        input_plan.clone(),
+                        plan_ctx,
+                        _graph_schema,
+                    )?;
+                    inputs_tf.push(child_tf);
+                }
+                union.rebuild_or_clone(inputs_tf, logical_plan.clone())
+            }
+            LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
+            LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
+            LogicalPlan::Unwind(u) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    u.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
+                match child_tf {
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
+                        crate::query_planner::logical_plan::Unwind {
+                            input: new_input,
+                            expression: u.expression.clone(),
+                            alias: u.alias.clone(),
+                            label: u.label.clone(),
+                            tuple_properties: u.tuple_properties.clone(),
+                        },
+                    ))),
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                }
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                let left_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    cp.left.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
+                let right_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    cp.right.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
+                match (&left_tf, &right_tf) {
+                    (Transformed::No(_), Transformed::No(_)) => {
+                        Transformed::No(logical_plan.clone())
+                    }
+                    _ => Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(
+                        crate::query_planner::logical_plan::CartesianProduct {
+                            left: left_tf.get_plan().clone(),
+                            right: right_tf.get_plan().clone(),
+                            is_optional: cp.is_optional,
+                            join_condition: cp.join_condition.clone(),
+                        },
+                    ))),
+                }
+            }
+            LogicalPlan::WithClause(with_clause) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    with_clause.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
+                match child_tf {
+                    Transformed::Yes(new_input) => {
+                        let new_with = crate::query_planner::logical_plan::WithClause {
+                            cte_name: None,
+                            input: new_input,
+                            items: with_clause.items.clone(),
+                            distinct: with_clause.distinct,
+                            order_by: with_clause.order_by.clone(),
+                            skip: with_clause.skip,
+                            limit: with_clause.limit,
+                            where_clause: with_clause.where_clause.clone(),
+                            exported_aliases: with_clause.exported_aliases.clone(),
+                            cte_references: with_clause.cte_references.clone(),
+                            pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
+                        };
+                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
+                    }
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                }
+            }
+        };
+        Ok(transformed_plan.get_plan().clone())
+    }
+
+    // Helper that returns Transformed for recursive calls
+    fn push_inferred_table_names_to_scan_transformed(
+        logical_plan: Arc<LogicalPlan>,
+        plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
+        use crate::query_planner::transformed::Transformed;
+
+        let transformed_plan = match logical_plan.as_ref() {
+            LogicalPlan::Projection(projection) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    projection.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                projection.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::GraphNode(graph_node) => {
+                // Check if input is Empty - need to resolve to ViewScan
+                if matches!(graph_node.input.as_ref(), LogicalPlan::Empty) {
+                    // First check if GraphNode already has a label (set by TypeInference Phase 2)
+                    let label_to_use = if let Some(ref node_label) = graph_node.label {
+                        if node_label != "$any" {
+                            Some(node_label.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        // Fallback: Get inferred label from TableCtx
+                        match plan_ctx.get_table_ctx(&graph_node.alias) {
+                            Ok(table_ctx) => table_ctx.get_labels().and_then(|labels| {
+                                if !labels.is_empty() && labels[0] != "$any" {
+                                    Some(labels[0].clone())
+                                } else {
+                                    None
+                                }
+                            }),
+                            Err(_) => None,
+                        }
+                    };
+
+                    if let Some(label) = label_to_use {
+                        // Create ViewScan using the label
+                        match crate::query_planner::logical_plan::match_clause::try_generate_view_scan(
+                            &graph_node.alias,
+                            &label,
+                            plan_ctx,
+                        ) {
+                            Ok(Some(view_scan)) => {
+                                // Rebuild GraphNode with ViewScan instead of Empty
+                                return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(
+                                    crate::query_planner::logical_plan::GraphNode {
+                                        input: view_scan,
+                                        alias: graph_node.alias.clone(),
+                                        label: Some(label.clone()),
+                                        is_denormalized: graph_node.is_denormalized,
+                                        projected_columns: graph_node.projected_columns.clone(),
+                                        node_types: None,
+                                    },
+                                ))));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Recurse into input
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    graph_node.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::GraphRel(graph_rel) => {
+                let left_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    graph_rel.left.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                let right_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    graph_rel.right.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+
+                let center_tf = if matches!(graph_rel.center.as_ref(), LogicalPlan::Empty) {
+                    if let Ok(rel_ctx) = plan_ctx.get_rel_table_ctx(&graph_rel.alias) {
+                        if let Some(labels) = rel_ctx.get_labels() {
+                            if labels.len() == 1 {
+                                let rel_type = &labels[0];
+                                let left_label = if let LogicalPlan::GraphNode(left_node) =
+                                    graph_rel.left.as_ref()
+                                {
+                                    left_node.label.as_deref()
+                                } else {
+                                    None
+                                };
+                                let right_label = if let LogicalPlan::GraphNode(right_node) =
+                                    graph_rel.right.as_ref()
+                                {
+                                    right_node.label.as_deref()
+                                } else {
+                                    None
+                                };
+
+                                if let Some(view_scan) = crate::query_planner::logical_plan::match_clause::try_generate_relationship_view_scan(
+                                    &graph_rel.alias,
+                                    rel_type,
+                                    left_label,
+                                    right_label,
+                                    plan_ctx,
+                                ) {
+                                    Transformed::Yes(view_scan)
+                                } else {
+                                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, graph_schema)?
+                                }
+                            } else {
+                                Self::push_inferred_table_names_to_scan_transformed(
+                                    graph_rel.center.clone(),
+                                    plan_ctx,
+                                    graph_schema,
+                                )?
+                            }
+                        } else {
+                            Self::push_inferred_table_names_to_scan_transformed(
+                                graph_rel.center.clone(),
+                                plan_ctx,
+                                graph_schema,
+                            )?
+                        }
+                    } else {
+                        Self::push_inferred_table_names_to_scan_transformed(
+                            graph_rel.center.clone(),
+                            plan_ctx,
+                            graph_schema,
+                        )?
+                    }
+                } else {
+                    Self::push_inferred_table_names_to_scan_transformed(
+                        graph_rel.center.clone(),
+                        plan_ctx,
+                        graph_schema,
+                    )?
+                };
+
+                graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
+            }
+            LogicalPlan::Cte(cte) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    cte.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                cte.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
+            LogicalPlan::GraphJoins(graph_joins) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    graph_joins.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Filter(filter) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    filter.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                filter.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::GroupBy(group_by) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    group_by.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                group_by.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::OrderBy(order_by) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    order_by.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                order_by.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Skip(skip) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    skip.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                skip.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Limit(limit) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    limit.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                limit.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Union(union) => {
+                let mut inputs_tf: Vec<Transformed<Arc<LogicalPlan>>> = vec![];
+                for input_plan in union.inputs.iter() {
+                    let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                        input_plan.clone(),
+                        plan_ctx,
+                        graph_schema,
+                    )?;
+                    inputs_tf.push(child_tf);
+                }
+                union.rebuild_or_clone(inputs_tf, logical_plan.clone())
+            }
+            LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
+            LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
+            LogicalPlan::Unwind(u) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    u.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                match child_tf {
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
+                        crate::query_planner::logical_plan::Unwind {
+                            input: new_input,
+                            expression: u.expression.clone(),
+                            alias: u.alias.clone(),
+                            label: u.label.clone(),
+                            tuple_properties: u.tuple_properties.clone(),
+                        },
+                    ))),
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                }
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                let left_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    cp.left.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                let right_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    cp.right.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                match (&left_tf, &right_tf) {
+                    (Transformed::No(_), Transformed::No(_)) => {
+                        Transformed::No(logical_plan.clone())
+                    }
+                    _ => Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(
+                        crate::query_planner::logical_plan::CartesianProduct {
+                            left: left_tf.get_plan().clone(),
+                            right: right_tf.get_plan().clone(),
+                            is_optional: cp.is_optional,
+                            join_condition: cp.join_condition.clone(),
+                        },
+                    ))),
+                }
+            }
+            LogicalPlan::WithClause(with_clause) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    with_clause.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                match child_tf {
+                    Transformed::Yes(new_input) => {
+                        let new_with = crate::query_planner::logical_plan::WithClause {
+                            cte_name: None,
+                            input: new_input,
+                            items: with_clause.items.clone(),
+                            distinct: with_clause.distinct,
+                            order_by: with_clause.order_by.clone(),
+                            skip: with_clause.skip,
+                            limit: with_clause.limit,
+                            where_clause: with_clause.where_clause.clone(),
+                            exported_aliases: with_clause.exported_aliases.clone(),
+                            cte_references: with_clause.cte_references.clone(),
+                            pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
+                        };
+                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
+                    }
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                }
+            }
+        };
+        Ok(transformed_plan)
+    }
 }
 
 impl AnalyzerPass for TypeInference {
@@ -1523,12 +3144,1095 @@ impl AnalyzerPass for TypeInference {
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
-        log::info!("🏷️ TypeInference: Starting type inference pass");
-        let result = self.infer_labels_recursive(logical_plan, plan_ctx, graph_schema)?;
+        log::info!("🏷️ UnifiedTypeInference: Starting 4-phase type inference pass");
+
+        // Phase 0: Relationship-based label inference (from SchemaInference)
+        // Walk the plan and infer missing labels from GraphRel patterns
+        log::info!("🏷️ UnifiedTypeInference: Phase 0 - Relationship-based label inference");
+        self.infer_schema_relationships(logical_plan.clone(), plan_ctx, graph_schema)?;
+
+        // Phase 1: Incremental type inference + Filter→GraphRel UNION generation
+        log::info!("🏷️ UnifiedTypeInference: Phase 1 - Filter→GraphRel UNION generation");
+
+        // Extract relationship patterns and property accesses from the ORIGINAL plan
+        // BEFORE Phase 1 transforms it (Phase 1 may wrap/replace GraphRel nodes)
+        let original_relationships = extract_relationship_patterns(&logical_plan, plan_ctx);
+        let original_property_accesses = extract_property_accesses(&logical_plan);
+
+        let result = self.infer_labels_recursive(logical_plan.clone(), plan_ctx, graph_schema)?;
+        let phase1_transformed = result.is_yes();
+        let mut plan = result.get_plan();
+
+        log::info!("🏷️ UnifiedTypeInference: Phase 2 - Checking for untyped nodes");
+
+        // Phase 2: Discover remaining untyped nodes and generate UNION
+        let untyped_nodes = discover_untyped_nodes(&plan, plan_ctx);
+
+        if !untyped_nodes.is_empty() {
+            log::info!(
+                "🏷️ UnifiedTypeInference: Found {} untyped nodes: {:?}",
+                untyped_nodes.len(),
+                untyped_nodes
+            );
+
+            // For top-level Cypher UNION, process each arm independently so that
+            // arms without untyped nodes don't get duplicated across combinations.
+            if let LogicalPlan::Union(top_union) = plan.as_ref() {
+                let mut new_inputs = Vec::new();
+                for arm in &top_union.inputs {
+                    let arm_untyped = discover_untyped_nodes(arm, plan_ctx);
+                    if arm_untyped.is_empty() {
+                        // This arm has no untyped nodes — keep as-is
+                        new_inputs.push(arm.clone());
+                    } else {
+                        // Extract relationships/properties scoped to this arm
+                        let arm_rels: Vec<_> = original_relationships
+                            .iter()
+                            .filter(|r| {
+                                arm_untyped.contains(&r.left_alias)
+                                    || arm_untyped.contains(&r.right_alias)
+                            })
+                            .cloned()
+                            .collect();
+                        let arm_props: HashMap<_, _> = original_property_accesses
+                            .iter()
+                            .filter(|(k, _)| arm_untyped.contains(k.as_str()))
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        let expanded = self.generate_union_for_untyped_nodes(
+                            arm.clone(),
+                            &arm_untyped,
+                            plan_ctx,
+                            graph_schema,
+                            &arm_rels,
+                            &arm_props,
+                        )?;
+                        new_inputs.push(expanded);
+                    }
+                }
+                plan = Arc::new(LogicalPlan::Union(
+                    crate::query_planner::logical_plan::Union {
+                        inputs: new_inputs,
+                        union_type: top_union.union_type.clone(),
+                    },
+                ));
+            } else {
+                // Not a top-level Union — process normally
+                plan = self.generate_union_for_untyped_nodes(
+                    plan,
+                    &untyped_nodes,
+                    plan_ctx,
+                    graph_schema,
+                    &original_relationships,
+                    &original_property_accesses,
+                )?;
+            }
+        } else {
+            log::info!("🏷️ UnifiedTypeInference: No untyped nodes found");
+        }
+
+        // Phase 3: ViewScan resolution (from SchemaInference)
+        // Resolve GraphNode(input=Empty) → ViewScan based on inferred labels
+        log::info!("🏷️ UnifiedTypeInference: Phase 3 - ViewScan resolution");
+        plan = Self::push_inferred_table_names_to_scan(plan, plan_ctx, graph_schema)?;
+
         log::info!(
-            "🏷️ TypeInference: Completed - plan transformed: {}",
-            result.is_yes()
+            "🏷️ UnifiedTypeInference: Completed - phase0=yes, phase1={}, phase2={}, phase3=yes",
+            phase1_transformed,
+            !untyped_nodes.is_empty()
         );
-        Ok(result)
+        Ok(Transformed::Yes(plan))
     }
+}
+
+// ================================================================================================
+// WHERE Clause Label Extraction
+// ================================================================================================
+
+/// Extract node labels from WHERE clause containing `id(var) IN [...]` or `id(var) = X` patterns
+///
+/// This function decodes ClickGraph's bit-pattern encoded IDs to extract label information,
+/// enabling type inference from browser queries like:
+/// `MATCH (a)-[r]->(b) WHERE id(a) IN [281474976710657, ...]`
+///
+/// # Arguments
+/// * `where_expr` - The WHERE clause logical expression
+///
+/// # Returns
+/// * Map of variable names to their possible label sets
+///
+/// # Example
+/// ```ignore
+/// // WHERE id(a) IN [281474976710657, 281474976710658]  (both User IDs)
+/// // Returns: {"a": {"User"}}
+///
+/// // WHERE id(a) = 281474976710657 AND id(b) = 844424930131969
+/// // Returns: {"a": {"User"}, "b": {"Post"}}
+/// ```
+fn extract_labels_from_where(where_expr: &Option<LogicalExpr>) -> HashMap<String, HashSet<String>> {
+    let mut label_constraints = HashMap::new();
+    if let Some(expr) = where_expr {
+        extract_labels_from_logical_expr(expr, &mut label_constraints, false);
+    }
+    label_constraints
+}
+
+/// Recursively traverse logical WHERE expression to find `id(var) IN [...]` or `id(var) = X` patterns
+fn extract_labels_from_logical_expr(
+    expr: &LogicalExpr,
+    constraints: &mut HashMap<String, HashSet<String>>,
+    negated: bool,
+) {
+    match expr {
+        LogicalExpr::Operator(op_app) => {
+            use crate::query_planner::logical_expr::Operator;
+            match op_app.operator {
+                // NOT operator - flip negation flag and recurse
+                Operator::Not => {
+                    for operand in &op_app.operands {
+                        extract_labels_from_logical_expr(operand, constraints, !negated);
+                    }
+                }
+                Operator::In => {
+                    // Skip extraction if we're inside a NOT (e.g., NOT id(a) IN [...])
+                    if negated {
+                        return;
+                    }
+
+                    // Check if first operand is ScalarFnCall("id", [Variable])
+                    if let Some(LogicalExpr::ScalarFnCall(func)) = op_app.operands.first() {
+                        if func.name == "id" && func.args.len() == 1 {
+                            if let LogicalExpr::Column(col) = &func.args[0] {
+                                let var_name = &col.0;
+                                // Extract IDs from second operand (list)
+                                if let Some(LogicalExpr::List(id_list)) = op_app.operands.get(1) {
+                                    for item in id_list {
+                                        if let LogicalExpr::Literal(Literal::Integer(id_value)) =
+                                            item
+                                        {
+                                            if let Some((label, _)) =
+                                                IdEncoding::decode_with_label(*id_value)
+                                            {
+                                                constraints
+                                                    .entry(var_name.clone())
+                                                    .or_default()
+                                                    .insert(label);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Operator::Equal => {
+                    // Skip extraction if we're inside a NOT
+                    if negated {
+                        return;
+                    }
+
+                    // Handle: id(var) = X
+                    if let Some(LogicalExpr::ScalarFnCall(func)) = op_app.operands.first() {
+                        if func.name == "id" && func.args.len() == 1 {
+                            if let LogicalExpr::Column(col) = &func.args[0] {
+                                let var_name = &col.0;
+                                // Extract ID from second operand
+                                if let Some(LogicalExpr::Literal(Literal::Integer(id_value))) =
+                                    op_app.operands.get(1)
+                                {
+                                    if let Some((label, _)) =
+                                        IdEncoding::decode_with_label(*id_value)
+                                    {
+                                        constraints
+                                            .entry(var_name.clone())
+                                            .or_default()
+                                            .insert(label);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // AND, OR - recurse into operands without flipping negation
+                Operator::And | Operator::Or => {
+                    for operand in &op_app.operands {
+                        extract_labels_from_logical_expr(operand, constraints, negated);
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+// ================================================================================================
+// Schema Validation with Direction
+// ================================================================================================
+
+/// Check if a specific relationship exists in schema with direction validation
+///
+/// # Arguments
+/// * `from_type` - Source node type
+/// * `to_type` - Target node type
+/// * `rel_type` - Relationship type
+/// * `direction` - Pattern direction (must match schema for directed patterns)
+/// * `graph_schema` - Graph schema
+///
+/// # Returns
+/// * `true` if relationship exists in schema with correct direction
+fn check_relationship_exists_with_direction(
+    from_type: &str,
+    to_type: &str,
+    rel_type: &str,
+    direction: Direction,
+    graph_schema: &GraphSchema,
+) -> bool {
+    match direction {
+        Direction::Either => {
+            // Undirected pattern - allow either direction
+            check_relationship_exists_bidirectional(from_type, to_type, rel_type, graph_schema)
+        }
+        Direction::Outgoing | Direction::Incoming => {
+            // Directed pattern - must match schema direction exactly
+            if let Some(rel_schema) = graph_schema.get_relationships_schema_opt(rel_type) {
+                node_type_matches(&rel_schema.from_node, from_type)
+                    && node_type_matches(&rel_schema.to_node, to_type)
+            } else {
+                false
+            }
+        }
+    }
+}
+
+/// Match node type considering `$any` as wildcard (polymorphic schemas)
+fn node_type_matches(schema_node: &str, query_node: &str) -> bool {
+    schema_node == "$any" || schema_node == query_node
+}
+
+/// Check if a specific relationship exists in either direction
+fn check_relationship_exists_bidirectional(
+    from_type: &str,
+    to_type: &str,
+    rel_type: &str,
+    graph_schema: &GraphSchema,
+) -> bool {
+    // Iterate all relationships to find matching type with either direction
+    graph_schema
+        .get_relationships_schemas()
+        .iter()
+        .any(|(key, rel_schema)| {
+            // Match by relationship type (handle composite keys TYPE::FROM::TO)
+            let type_matches = if key.contains("::") {
+                key.split("::").next() == Some(rel_type)
+            } else {
+                key == rel_type
+            };
+            type_matches
+                && ((node_type_matches(&rel_schema.from_node, from_type)
+                    && node_type_matches(&rel_schema.to_node, to_type))
+                    || (node_type_matches(&rel_schema.from_node, to_type)
+                        && node_type_matches(&rel_schema.to_node, from_type)))
+        })
+}
+
+/// Check if ANY relationship exists between two node types with direction validation
+fn check_any_relationship_exists_with_direction(
+    from_type: &str,
+    to_type: &str,
+    direction: Direction,
+    graph_schema: &GraphSchema,
+) -> bool {
+    match direction {
+        Direction::Either => {
+            // Undirected - allow either direction
+            check_any_relationship_exists_bidirectional(from_type, to_type, graph_schema)
+        }
+        Direction::Outgoing | Direction::Incoming => {
+            // Directed - must match schema direction
+            graph_schema
+                .get_relationships_schemas()
+                .values()
+                .any(|rel_schema| {
+                    node_type_matches(&rel_schema.from_node, from_type)
+                        && node_type_matches(&rel_schema.to_node, to_type)
+                })
+        }
+    }
+}
+
+/// Check if ANY relationship exists between two node types in either direction
+fn check_any_relationship_exists_bidirectional(
+    from_type: &str,
+    to_type: &str,
+    graph_schema: &GraphSchema,
+) -> bool {
+    graph_schema
+        .get_relationships_schemas()
+        .values()
+        .any(|rel_schema| {
+            (node_type_matches(&rel_schema.from_node, from_type)
+                && node_type_matches(&rel_schema.to_node, to_type))
+                || (node_type_matches(&rel_schema.from_node, to_type)
+                    && node_type_matches(&rel_schema.to_node, from_type))
+        })
+}
+
+// ================================================================================================
+// Untyped Node Discovery (Phase 2 of Unified TypeInference)
+// ================================================================================================
+
+/// Discover all untyped node variables in the logical plan
+///
+/// Recursively traverses the plan tree to find:
+/// - GraphNode without label
+/// - GraphRel connections without labels in plan_ctx
+///
+/// This is Phase 2 of unified type inference, running after Filter→GraphRel handling
+fn discover_untyped_nodes(plan: &Arc<LogicalPlan>, plan_ctx: &PlanCtx) -> HashSet<String> {
+    log::debug!(
+        "🔍 discover_untyped_nodes: Starting discovery on plan type: {:?}",
+        std::mem::discriminant(plan.as_ref())
+    );
+    let mut untyped = HashSet::new();
+    discover_untyped_recursive(plan, plan_ctx, &mut untyped);
+    log::debug!(
+        "🔍 discover_untyped_nodes: Found {} untyped nodes: {:?}",
+        untyped.len(),
+        untyped
+    );
+    untyped
+}
+
+/// Recursive helper for untyped node discovery
+fn discover_untyped_recursive(
+    plan: &LogicalPlan,
+    plan_ctx: &PlanCtx,
+    untyped: &mut HashSet<String>,
+) {
+    match plan {
+        LogicalPlan::GraphRel(graph_rel) => {
+            // Check left connection (from node)
+            if !has_label_in_ctx(&graph_rel.left_connection, plan_ctx) {
+                log::debug!(
+                    "🔍 Found untyped left connection: {}",
+                    graph_rel.left_connection
+                );
+                untyped.insert(graph_rel.left_connection.clone());
+            }
+
+            // Check right connection (to node)
+            if !has_label_in_ctx(&graph_rel.right_connection, plan_ctx) {
+                log::debug!(
+                    "🔍 Found untyped right connection: {}",
+                    graph_rel.right_connection
+                );
+                untyped.insert(graph_rel.right_connection.clone());
+            }
+
+            // Recurse to sub-plans
+            discover_untyped_recursive(&graph_rel.left, plan_ctx, untyped);
+            discover_untyped_recursive(&graph_rel.center, plan_ctx, untyped);
+            discover_untyped_recursive(&graph_rel.right, plan_ctx, untyped);
+        }
+
+        LogicalPlan::GraphNode(graph_node) => {
+            // Check if node has label
+            log::debug!(
+                "🔍 discover_untyped: Checking GraphNode alias={}, label={:?}",
+                graph_node.alias,
+                graph_node.label
+            );
+            if graph_node.label.is_none() {
+                log::debug!("🔍 Found untyped GraphNode: {}", graph_node.alias);
+                untyped.insert(graph_node.alias.clone());
+            }
+
+            // Recurse to input
+            discover_untyped_recursive(&graph_node.input, plan_ctx, untyped);
+        }
+
+        // Handle other plan types with inputs
+        LogicalPlan::Filter(filter) => {
+            discover_untyped_recursive(&filter.input, plan_ctx, untyped);
+        }
+
+        LogicalPlan::Projection(proj) => {
+            discover_untyped_recursive(&proj.input, plan_ctx, untyped);
+        }
+
+        LogicalPlan::Union(union_plan) => {
+            for input in &union_plan.inputs {
+                discover_untyped_recursive(input, plan_ctx, untyped);
+            }
+        }
+
+        LogicalPlan::GroupBy(group_by) => {
+            discover_untyped_recursive(&group_by.input, plan_ctx, untyped);
+        }
+
+        LogicalPlan::OrderBy(order_by) => {
+            discover_untyped_recursive(&order_by.input, plan_ctx, untyped);
+        }
+
+        LogicalPlan::Limit(limit) => {
+            discover_untyped_recursive(&limit.input, plan_ctx, untyped);
+        }
+
+        LogicalPlan::Skip(skip) => {
+            discover_untyped_recursive(&skip.input, plan_ctx, untyped);
+        }
+
+        LogicalPlan::WithClause(wc) => {
+            discover_untyped_recursive(&wc.input, plan_ctx, untyped);
+        }
+
+        LogicalPlan::CartesianProduct(cp) => {
+            discover_untyped_recursive(&cp.left, plan_ctx, untyped);
+            discover_untyped_recursive(&cp.right, plan_ctx, untyped);
+        }
+
+        // Leaf nodes - no traversal needed
+        LogicalPlan::ViewScan(_) | LogicalPlan::Empty => {}
+
+        _ => {
+            log::debug!("🔍 discover_untyped: Unhandled plan type: {:?}", plan);
+        }
+    }
+}
+
+/// Check if a variable has labels in plan_ctx
+fn has_label_in_ctx(var_name: &str, plan_ctx: &PlanCtx) -> bool {
+    plan_ctx
+        .get_table_ctx(var_name)
+        .ok()
+        .and_then(|ctx| ctx.get_labels())
+        .is_some()
+}
+
+// ================================================================================================
+// UNION Generation Helpers (Phase 2 - Untyped Nodes)
+// ================================================================================================
+
+/// Relationship pattern extracted from logical plan for validation
+#[derive(Debug, Clone)]
+struct RelationshipPattern {
+    left_alias: String,
+    right_alias: String,
+    rel_types: Vec<String>, // Empty means any relationship
+    direction: Direction,
+}
+
+/// Extract all relationship patterns from the plan
+fn extract_relationship_patterns(
+    plan: &Arc<LogicalPlan>,
+    plan_ctx: &PlanCtx,
+) -> Vec<RelationshipPattern> {
+    let mut patterns = Vec::new();
+    extract_patterns_recursive(plan.as_ref(), plan_ctx, &mut patterns);
+    patterns
+}
+
+/// Recursive helper to extract relationship patterns
+fn extract_patterns_recursive(
+    plan: &LogicalPlan,
+    _plan_ctx: &PlanCtx,
+    patterns: &mut Vec<RelationshipPattern>,
+) {
+    match plan {
+        LogicalPlan::GraphRel(rel) => {
+            patterns.push(RelationshipPattern {
+                left_alias: rel.left_connection.clone(),
+                right_alias: rel.right_connection.clone(),
+                rel_types: rel.labels.clone().unwrap_or_default(),
+                direction: rel.direction.clone(),
+            });
+
+            // Recurse to children
+            extract_patterns_recursive(&rel.left, _plan_ctx, patterns);
+            extract_patterns_recursive(&rel.center, _plan_ctx, patterns);
+            extract_patterns_recursive(&rel.right, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::Filter(filter) => {
+            extract_patterns_recursive(&filter.input, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::Projection(proj) => {
+            extract_patterns_recursive(&proj.input, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::Union(union_plan) => {
+            for input in &union_plan.inputs {
+                extract_patterns_recursive(input, _plan_ctx, patterns);
+            }
+        }
+
+        LogicalPlan::WithClause(wc) => {
+            extract_patterns_recursive(&wc.input, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::CartesianProduct(cp) => {
+            extract_patterns_recursive(&cp.left, _plan_ctx, patterns);
+            extract_patterns_recursive(&cp.right, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::GraphNode(node) => {
+            extract_patterns_recursive(&node.input, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::Limit(lim) => {
+            extract_patterns_recursive(&lim.input, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::Skip(s) => {
+            extract_patterns_recursive(&s.input, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::OrderBy(ob) => {
+            extract_patterns_recursive(&ob.input, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::GroupBy(gb) => {
+            extract_patterns_recursive(&gb.input, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::GraphJoins(gj) => {
+            extract_patterns_recursive(&gj.input, _plan_ctx, patterns);
+        }
+
+        // Leaf nodes
+        _ => {}
+    }
+}
+
+/// Extract property accesses from the plan tree, grouped by variable name.
+/// Returns a map: variable_alias → set of Cypher property names accessed.
+/// Used to constrain node type candidates to only those types that have the accessed properties.
+fn extract_property_accesses(plan: &Arc<LogicalPlan>) -> HashMap<String, HashSet<String>> {
+    let mut accesses: HashMap<String, HashSet<String>> = HashMap::new();
+    extract_props_from_plan(plan.as_ref(), &mut accesses);
+    accesses
+}
+
+fn extract_props_from_plan(plan: &LogicalPlan, accesses: &mut HashMap<String, HashSet<String>>) {
+    match plan {
+        LogicalPlan::Filter(filter) => {
+            extract_props_from_expr(&filter.predicate, accesses);
+            extract_props_from_plan(&filter.input, accesses);
+        }
+        LogicalPlan::Projection(proj) => {
+            for item in &proj.items {
+                extract_props_from_expr(&item.expression, accesses);
+            }
+            extract_props_from_plan(&proj.input, accesses);
+        }
+        LogicalPlan::OrderBy(ob) => {
+            for item in &ob.items {
+                extract_props_from_expr(&item.expression, accesses);
+            }
+            extract_props_from_plan(&ob.input, accesses);
+        }
+        LogicalPlan::GroupBy(gb) => {
+            for item in &gb.expressions {
+                extract_props_from_expr(item, accesses);
+            }
+            if let Some(ref having) = gb.having_clause {
+                extract_props_from_expr(having, accesses);
+            }
+            extract_props_from_plan(&gb.input, accesses);
+        }
+        LogicalPlan::GraphRel(rel) => {
+            extract_props_from_plan(&rel.left, accesses);
+            extract_props_from_plan(&rel.center, accesses);
+            extract_props_from_plan(&rel.right, accesses);
+            if let Some(ref pred) = rel.where_predicate {
+                extract_props_from_expr(pred, accesses);
+            }
+        }
+        LogicalPlan::GraphNode(node) => {
+            extract_props_from_plan(&node.input, accesses);
+        }
+        LogicalPlan::Union(u) => {
+            for input in &u.inputs {
+                extract_props_from_plan(input, accesses);
+            }
+        }
+        LogicalPlan::WithClause(wc) => {
+            extract_props_from_plan(&wc.input, accesses);
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            extract_props_from_plan(&cp.left, accesses);
+            extract_props_from_plan(&cp.right, accesses);
+        }
+        LogicalPlan::Limit(lim) => {
+            extract_props_from_plan(&lim.input, accesses);
+        }
+        LogicalPlan::Skip(s) => {
+            extract_props_from_plan(&s.input, accesses);
+        }
+        _ => {}
+    }
+}
+
+fn extract_props_from_expr(expr: &LogicalExpr, accesses: &mut HashMap<String, HashSet<String>>) {
+    match expr {
+        LogicalExpr::PropertyAccessExp(pa) => {
+            let var = pa.table_alias.0.clone();
+            let prop = pa.column.raw().to_string();
+            accesses.entry(var).or_default().insert(prop);
+        }
+        LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
+            for operand in &op.operands {
+                extract_props_from_expr(operand, accesses);
+            }
+        }
+        LogicalExpr::ScalarFnCall(f) => {
+            for arg in &f.args {
+                extract_props_from_expr(arg, accesses);
+            }
+        }
+        LogicalExpr::AggregateFnCall(f) => {
+            for arg in &f.args {
+                extract_props_from_expr(arg, accesses);
+            }
+        }
+        LogicalExpr::Case(c) => {
+            if let Some(ref e) = c.expr {
+                extract_props_from_expr(e, accesses);
+            }
+            for (w, t) in &c.when_then {
+                extract_props_from_expr(w, accesses);
+                extract_props_from_expr(t, accesses);
+            }
+            if let Some(ref e) = c.else_expr {
+                extract_props_from_expr(e, accesses);
+            }
+        }
+        LogicalExpr::List(items) => {
+            for item in items {
+                extract_props_from_expr(item, accesses);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Generate all type combinations (cartesian product) for untyped variables
+fn generate_type_combinations(
+    untyped_vars: &[(String, Vec<String>)],
+    max_combinations: usize,
+) -> Vec<HashMap<String, String>> {
+    if untyped_vars.is_empty() {
+        return vec![HashMap::new()];
+    }
+
+    let mut combinations = vec![HashMap::new()];
+
+    for (var_name, candidates) in untyped_vars {
+        let mut new_combinations = Vec::new();
+
+        for combo in &combinations {
+            for candidate in candidates {
+                if new_combinations.len() >= max_combinations {
+                    log::warn!(
+                        "⚠️ Hit max combinations limit ({}), truncating",
+                        max_combinations
+                    );
+                    return new_combinations;
+                }
+
+                let mut new_combo = combo.clone();
+                new_combo.insert(var_name.clone(), candidate.clone());
+                new_combinations.push(new_combo);
+            }
+        }
+
+        combinations = new_combinations;
+    }
+
+    combinations
+}
+
+/// Validate a type combination against schema with direction checking
+///
+/// This is the CRITICAL function that prevents invalid branches.
+/// It checks EACH relationship pattern and validates direction against schema.
+fn is_valid_combination_with_direction(
+    combo: &HashMap<String, String>,
+    relationships: &[RelationshipPattern],
+    graph_schema: &GraphSchema,
+    typed_nodes: &HashMap<String, String>,
+) -> bool {
+    for rel_pattern in relationships {
+        // Get node types from combo (untyped) or typed_nodes (already typed)
+        let from_type = match combo.get(&rel_pattern.left_alias) {
+            Some(t) => t.as_str(),
+            None => match typed_nodes.get(&rel_pattern.left_alias) {
+                Some(t) => t.as_str(),
+                None => {
+                    log::debug!(
+                        "Unknown alias '{}', skipping validation",
+                        rel_pattern.left_alias
+                    );
+                    continue;
+                }
+            },
+        };
+
+        let to_type = match combo.get(&rel_pattern.right_alias) {
+            Some(t) => t.as_str(),
+            None => match typed_nodes.get(&rel_pattern.right_alias) {
+                Some(t) => t.as_str(),
+                None => {
+                    log::debug!(
+                        "Unknown alias '{}', skipping validation",
+                        rel_pattern.right_alias
+                    );
+                    continue;
+                }
+            },
+        };
+
+        // Check if relationship exists with direction validation
+        let edge_exists = if rel_pattern.rel_types.is_empty() {
+            // Untyped relationship - check if ANY relationship exists
+            check_any_relationship_exists_with_direction(
+                from_type,
+                to_type,
+                rel_pattern.direction.clone(),
+                graph_schema,
+            )
+        } else {
+            // Typed relationship - check specific type(s) with direction
+            rel_pattern.rel_types.iter().any(|rel_type| {
+                check_relationship_exists_with_direction(
+                    from_type,
+                    to_type,
+                    rel_type,
+                    rel_pattern.direction.clone(),
+                    graph_schema,
+                )
+            })
+        };
+
+        if !edge_exists {
+            log::debug!(
+                "🚫 Invalid combination: {}-[{}:{:?}]->{} (not in schema with direction)",
+                from_type,
+                if rel_pattern.rel_types.is_empty() {
+                    "any".to_string()
+                } else {
+                    rel_pattern.rel_types.join("|")
+                },
+                rel_pattern.direction,
+                to_type
+            );
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Check if a plan contains aggregation (GroupBy or aggregate functions in Projection).
+fn plan_has_aggregation(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::GroupBy(_) => true,
+        LogicalPlan::Projection(proj) => proj.items.iter().any(|item| {
+            matches!(
+                &item.expression,
+                crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)
+            )
+        }),
+        LogicalPlan::Limit(l) => plan_has_aggregation(&l.input),
+        LogicalPlan::Skip(s) => plan_has_aggregation(&s.input),
+        LogicalPlan::OrderBy(o) => plan_has_aggregation(&o.input),
+        LogicalPlan::GraphJoins(gj) => plan_has_aggregation(&gj.input),
+        _ => false,
+    }
+}
+
+/// Extract the scan part of a plan (everything below aggregation layers).
+/// For `Projection(count(n), GroupBy(GJ(GraphNode)))`, returns `GJ(GraphNode)`.
+/// For `Projection(count(n), GJ(GraphNode))`, returns `GJ(GraphNode)`.
+fn extract_scan_part(plan: &LogicalPlan) -> LogicalPlan {
+    match plan {
+        LogicalPlan::GroupBy(gb) => (*gb.input).clone(),
+        LogicalPlan::Projection(proj) => {
+            let has_agg = proj.items.iter().any(|item| {
+                matches!(
+                    &item.expression,
+                    crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)
+                )
+            });
+            if has_agg {
+                // Check if input is GroupBy — if so, extract below GroupBy
+                if let LogicalPlan::GroupBy(gb) = proj.input.as_ref() {
+                    (*gb.input).clone()
+                } else {
+                    (*proj.input).clone()
+                }
+            } else {
+                (*proj.input).clone()
+            }
+        }
+        LogicalPlan::Limit(l) => extract_scan_part(&l.input),
+        LogicalPlan::Skip(s) => extract_scan_part(&s.input),
+        LogicalPlan::OrderBy(o) => extract_scan_part(&o.input),
+        other => other.clone(),
+    }
+}
+
+/// Re-wrap aggregation layers from the original plan around a new input (the UNION).
+/// For original `Limit(Projection(count(n), GroupBy(GJ(GraphNode))))`:
+///   → `Limit(Projection(count(n), GroupBy(union_input)))`
+fn rewrap_aggregation(original: &LogicalPlan, new_input: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
+    match original {
+        LogicalPlan::Limit(l) => {
+            let inner = rewrap_aggregation(&l.input, new_input);
+            Arc::new(LogicalPlan::Limit(
+                crate::query_planner::logical_plan::Limit {
+                    input: inner,
+                    count: l.count,
+                },
+            ))
+        }
+        LogicalPlan::Skip(s) => {
+            let inner = rewrap_aggregation(&s.input, new_input);
+            Arc::new(LogicalPlan::Skip(
+                crate::query_planner::logical_plan::Skip {
+                    input: inner,
+                    count: s.count,
+                },
+            ))
+        }
+        LogicalPlan::OrderBy(o) => {
+            let inner = rewrap_aggregation(&o.input, new_input);
+            Arc::new(LogicalPlan::OrderBy(
+                crate::query_planner::logical_plan::OrderBy {
+                    input: inner,
+                    items: o.items.clone(),
+                },
+            ))
+        }
+        LogicalPlan::GroupBy(gb) => {
+            // GroupBy wraps the new_input directly
+            Arc::new(LogicalPlan::GroupBy(
+                crate::query_planner::logical_plan::GroupBy {
+                    input: new_input,
+                    expressions: gb.expressions.clone(),
+                    having_clause: gb.having_clause.clone(),
+                    is_materialization_boundary: gb.is_materialization_boundary,
+                    exposed_alias: gb.exposed_alias.clone(),
+                },
+            ))
+        }
+        LogicalPlan::Projection(proj) => {
+            let has_agg = proj.items.iter().any(|item| {
+                matches!(
+                    &item.expression,
+                    crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)
+                )
+            });
+            if has_agg {
+                // Rewrap inner first (might be GroupBy)
+                let inner = rewrap_aggregation(&proj.input, new_input);
+                Arc::new(LogicalPlan::Projection(
+                    crate::query_planner::logical_plan::Projection {
+                        input: inner,
+                        items: proj.items.clone(),
+                        distinct: proj.distinct,
+                        pattern_comprehensions: proj.pattern_comprehensions.clone(),
+                    },
+                ))
+            } else {
+                // Non-aggregate projection — shouldn't happen but just wrap
+                Arc::new(LogicalPlan::Projection(
+                    crate::query_planner::logical_plan::Projection {
+                        input: new_input,
+                        items: proj.items.clone(),
+                        distinct: proj.distinct,
+                        pattern_comprehensions: proj.pattern_comprehensions.clone(),
+                    },
+                ))
+            }
+        }
+        _ => new_input,
+    }
+}
+
+/// Clone a LogicalPlan, injecting labels from a type combination into untyped GraphNodes.
+///
+/// This function recursively traverses the plan tree. When it encounters a GraphNode
+/// whose alias appears in the type combination map:
+/// - If the node is untyped (label is None), it sets the label from the combination
+///   and prunes the Union input to select the matching ViewScan
+/// - If already typed, it just recurses
+///
+/// Used by generate_union_for_untyped_nodes to create properly typed plan branches.
+fn clone_plan_with_labels(plan: &LogicalPlan, combo: &HashMap<String, String>) -> LogicalPlan {
+    match plan {
+        LogicalPlan::GraphNode(node) => {
+            // If this node variable is in our combination, add the label
+            if let Some(label) = combo.get(&node.alias) {
+                if node.label.is_none() {
+                    // Untyped node - add the label from combination
+                    let mut cloned = node.clone();
+                    cloned.label = Some(label.clone());
+                    // Prune Union input to the ViewScan matching this label
+                    cloned.input = Arc::new(prune_union_for_label(&node.input, label, combo));
+                    LogicalPlan::GraphNode(cloned)
+                } else {
+                    // Already typed - just recurse
+                    let mut cloned = node.clone();
+                    cloned.input = Arc::new(clone_plan_with_labels(&node.input, combo));
+                    LogicalPlan::GraphNode(cloned)
+                }
+            } else {
+                // Not in combination - just recurse
+                let mut cloned = node.clone();
+                cloned.input = Arc::new(clone_plan_with_labels(&node.input, combo));
+                LogicalPlan::GraphNode(cloned)
+            }
+        }
+
+        LogicalPlan::GraphRel(graph_rel) => {
+            let mut cloned = graph_rel.clone();
+            cloned.left = Arc::new(clone_plan_with_labels(&graph_rel.left, combo));
+            cloned.center = Arc::new(clone_plan_with_labels(&graph_rel.center, combo));
+            cloned.right = Arc::new(clone_plan_with_labels(&graph_rel.right, combo));
+            LogicalPlan::GraphRel(cloned)
+        }
+
+        LogicalPlan::Filter(filter) => {
+            let mut cloned = filter.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&filter.input, combo));
+            LogicalPlan::Filter(cloned)
+        }
+
+        LogicalPlan::Projection(proj) => {
+            let mut cloned = proj.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&proj.input, combo));
+            LogicalPlan::Projection(cloned)
+        }
+
+        LogicalPlan::GraphJoins(joins) => {
+            let mut cloned = joins.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&joins.input, combo));
+            LogicalPlan::GraphJoins(cloned)
+        }
+
+        LogicalPlan::Union(union_plan) => {
+            let mut cloned = union_plan.clone();
+            cloned.inputs = union_plan
+                .inputs
+                .iter()
+                .map(|input| Arc::new(clone_plan_with_labels(input, combo)))
+                .collect();
+            LogicalPlan::Union(cloned)
+        }
+
+        LogicalPlan::GroupBy(group_by) => {
+            let mut cloned = group_by.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&group_by.input, combo));
+            LogicalPlan::GroupBy(cloned)
+        }
+
+        LogicalPlan::OrderBy(order_by) => {
+            let mut cloned = order_by.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&order_by.input, combo));
+            LogicalPlan::OrderBy(cloned)
+        }
+
+        LogicalPlan::Limit(limit) => {
+            let mut cloned = limit.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&limit.input, combo));
+            LogicalPlan::Limit(cloned)
+        }
+
+        LogicalPlan::Skip(skip) => {
+            let mut cloned = skip.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&skip.input, combo));
+            LogicalPlan::Skip(cloned)
+        }
+
+        LogicalPlan::WithClause(with_clause) => {
+            let mut cloned = with_clause.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&with_clause.input, combo));
+            LogicalPlan::WithClause(cloned)
+        }
+
+        LogicalPlan::Unwind(unwind) => {
+            let mut cloned = unwind.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&unwind.input, combo));
+            LogicalPlan::Unwind(cloned)
+        }
+
+        LogicalPlan::CartesianProduct(cart) => {
+            let mut cloned = cart.clone();
+            cloned.left = Arc::new(clone_plan_with_labels(&cart.left, combo));
+            cloned.right = Arc::new(clone_plan_with_labels(&cart.right, combo));
+            LogicalPlan::CartesianProduct(cloned)
+        }
+
+        LogicalPlan::Cte(cte) => {
+            let mut cloned = cte.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&cte.input, combo));
+            LogicalPlan::Cte(cloned)
+        }
+
+        LogicalPlan::PageRank(pagerank) => {
+            // PageRank doesn't have an input field, just clone it
+            LogicalPlan::PageRank(pagerank.clone())
+        }
+
+        // Base cases that don't need recursion
+        LogicalPlan::Empty => LogicalPlan::Empty,
+        LogicalPlan::ViewScan(view_scan) => LogicalPlan::ViewScan(view_scan.clone()),
+    }
+}
+
+/// Prune a Union input to the ViewScan matching the given label.
+///
+/// When TypeInference assigns a label to an untyped node, the node's input
+/// may still be a Union of ViewScans over all node types. This function
+/// selects the ViewScan whose source table matches the target label's schema table,
+/// effectively "resolving" the polymorphic node to a concrete type.
+fn prune_union_for_label(
+    input: &LogicalPlan,
+    label: &str,
+    combo: &HashMap<String, String>,
+) -> LogicalPlan {
+    if let LogicalPlan::Union(union_plan) = input {
+        // Look up the target table for this label
+        if let Some(schema) = crate::server::query_context::get_current_schema() {
+            if let Some(node_schema) = schema.node_schema_opt(label) {
+                let target_table = format!("{}.{}", node_schema.database, node_schema.table_name);
+                // Find the ViewScan matching this table
+                for vs_input in &union_plan.inputs {
+                    if let LogicalPlan::ViewScan(scan) = vs_input.as_ref() {
+                        if scan.source_table == target_table {
+                            log::debug!(
+                                "prune_union_for_label: selected '{}' for label '{}'",
+                                target_table,
+                                label
+                            );
+                            return LogicalPlan::ViewScan(scan.clone());
+                        }
+                    }
+                }
+            }
+        }
+        // Fallback: use first ViewScan
+        if let Some(first) = union_plan.inputs.first() {
+            log::warn!(
+                "prune_union_for_label: could not resolve table for label '{}', falling back to first ViewScan",
+                label
+            );
+            return clone_plan_with_labels(first, combo);
+        }
+    }
+    // Not a Union — just recurse
+    clone_plan_with_labels(input, combo)
 }

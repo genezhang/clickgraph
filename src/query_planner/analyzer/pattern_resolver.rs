@@ -1,40 +1,39 @@
 //! Pattern Resolver - Systematic type inference and query cloning
 //!
-//! Discovers untyped variables, enumerates valid type combinations from schema,
-//! and clones queries with UNION ALL for each valid combination.
+//! ⚠️ **DEPRECATED**: This module's functionality has been merged into TypeInference.
 //!
-//! # Purpose
+//! # Migration Notice (February 2026)
 //!
-//! Current type inference is ad-hoc and incomplete:
-//! - Works for some patterns but not others (e.g., simple `(a:User)--(o)`)
-//! - Doesn't systematically enumerate all type combinations
-//! - Doesn't validate combinations against schema
-//! - Query cloning infrastructure exists but isn't triggered
+//! PatternResolver has been **superseded by Unified TypeInference** in `type_inference.rs`.
+//! The unified implementation provides:
+//! - Complete WHERE constraint extraction (id() IN [...] patterns)
+//! - Direction-aware validation against schema
+//! - UNION generation with schema direction filtering
+//! - Integration with Filter→GraphRel interception
 //!
-//! PatternResolver provides systematic pattern resolution:
-//! 1. Discovers all untyped node variables
-//! 2. Queries schema for valid type candidates
-//! 3. Generates all valid type combinations
-//! 4. Validates against schema (e.g., User-[FOLLOWS]->Post is invalid)
-//! 5. Clones queries with proper types → UNION ALL
+//! This module remains for backward compatibility but is no longer used in the query pipeline.
+//! New code should use TypeInference directly.
 //!
-//! # Example
+//! # Original Purpose
+//!
+//! PatternResolver provided systematic pattern resolution for untyped variables:
+//! 1. Discovered all untyped node variables
+//! 2. Queried schema for valid type candidates
+//! 3. Generated all valid type combinations
+//! 4. Validated against schema (e.g., User-[FOLLOWS]->Post is invalid)
+//! 5. Cloned queries with proper types → UNION ALL
+//!
+//! # Example (Now handled by TypeInference)
 //!
 //! ```cypher
 //! MATCH (a:User)--(o) WHERE NOT id(o) IN [1,2,3] RETURN o.name
 //! ```
 //!
-//! PatternResolver discovers:
-//! - `o` is untyped
-//! - Schema has: User-[FOLLOWS]->User, User-[AUTHORED]->Post
-//! - Valid types for `o`: {User, Post}
-//!
-//! Result:
-//! ```cypher
-//! MATCH (a:User)--(o:User) WHERE NOT id(o) IN [1,2,3] RETURN o.name
-//! UNION ALL
-//! MATCH (a:User)--(o:Post) WHERE NOT id(o) IN [1,2,3] RETURN o.name
-//! ```
+//! Unified TypeInference now handles this by:
+//! - Extracting WHERE constraints during Filter→GraphRel processing
+//! - Combining explicit labels + WHERE constraints + schema
+//! - Validating direction: check_relationship_exists_with_direction()
+//! - Generating UNION with only schema-valid branches
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

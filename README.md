@@ -299,7 +299,23 @@ Or connect with Neo4j tools (cypher-shell, Neo4j Browser):
 cypher-shell -a bolt://localhost:7687 -u neo4j -p password
 ```
 
----
+### Visualize with Neo4j Browser (5 minutes)
+
+For an **interactive graph visualization experience**, use the included Neo4j Browser demo:
+
+```bash
+cd demos/neo4j-browser
+bash setup.sh
+```
+
+This starts:
+- ClickHouse (database)
+- ClickGraph (query engine)
+- Neo4j Browser UI (visualization)
+
+Then open http://localhost:7474 and connect to `bolt://localhost:7687` to visualize graph queries.
+
+See [demos/neo4j-browser/README.md](demos/neo4j-browser/README.md) for details.
    ```bash
    # Simple query
    curl -X POST http://localhost:8080/query \
