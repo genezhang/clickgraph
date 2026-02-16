@@ -1430,22 +1430,15 @@ impl TypeInference {
 
         let mut union_branches = Vec::new();
         for combo in valid_combinations {
-            // Clone plan_ctx for this branch
-            let mut branch_ctx = plan_ctx.clone();
+            // Clone plan with labels injected into GraphNodes
+            let branch_plan = clone_plan_with_labels(&plan, &combo);
             
-            // Update with typed labels for this combination
-            for (var_name, type_name) in &combo {
-                self.update_plan_ctx_with_label(var_name, type_name, &mut branch_ctx)?;
-            }
+            log::debug!(
+                "✅ Generated UNION branch for combination: {:?}",
+                combo
+            );
 
-            // Process plan with typed context - this will create ViewScans for typed nodes
-            let branch_plan = self.infer_labels_recursive(
-                plan.clone(),
-                &mut branch_ctx,
-                graph_schema,
-            )?;
-
-            union_branches.push(branch_plan.get_plan().clone());
+            union_branches.push(Arc::new(branch_plan));
         }
 
         let union_plan = Union {
@@ -2383,8 +2376,11 @@ fn check_any_relationship_exists_bidirectional(
 ///
 /// This is Phase 2 of unified type inference, running after Filter→GraphRel handling
 fn discover_untyped_nodes(plan: &Arc<LogicalPlan>, plan_ctx: &PlanCtx) -> HashSet<String> {
+    log::debug!("🔍 discover_untyped_nodes: Starting discovery on plan type: {:?}", 
+        std::mem::discriminant(plan.as_ref()));
     let mut untyped = HashSet::new();
     discover_untyped_recursive(plan, plan_ctx, &mut untyped);
+    log::debug!("🔍 discover_untyped_nodes: Found {} untyped nodes: {:?}", untyped.len(), untyped);
     untyped
 }
 
@@ -2416,6 +2412,8 @@ fn discover_untyped_recursive(
 
         LogicalPlan::GraphNode(graph_node) => {
             // Check if node has label
+            log::debug!("🔍 discover_untyped: Checking GraphNode alias={}, label={:?}", 
+                graph_node.alias, graph_node.label);
             if graph_node.label.is_none() {
                 log::debug!("🔍 Found untyped GraphNode: {}", graph_node.alias);
                 untyped.insert(graph_node.alias.clone());
@@ -2668,4 +2666,179 @@ fn is_valid_combination_with_direction(
     }
 
     true
+}
+
+/// Clone a LogicalPlan, injecting labels from a type combination into untyped GraphNodes.
+///
+/// This function recursively traverses the plan tree. When it encounters a GraphNode
+/// whose alias appears in the type combination map:
+/// - If the node is untyped (label is None), it sets the label from the combination
+///   and prunes the Union input to select the matching ViewScan
+/// - If already typed, it just recurses
+///
+/// Used by generate_union_for_untyped_nodes to create properly typed plan branches.
+fn clone_plan_with_labels(plan: &LogicalPlan, combo: &HashMap<String, String>) -> LogicalPlan {
+    match plan {
+        LogicalPlan::GraphNode(node) => {
+            // If this node variable is in our combination, add the label
+            if let Some(label) = combo.get(&node.alias) {
+                if node.label.is_none() {
+                    // Untyped node - add the label from combination
+                    let mut cloned = node.clone();
+                    cloned.label = Some(label.clone());
+                    // Prune Union input to the ViewScan matching this label
+                    cloned.input = Arc::new(prune_union_for_label(&node.input, label, combo));
+                    LogicalPlan::GraphNode(cloned)
+                } else {
+                    // Already typed - just recurse
+                    let mut cloned = node.clone();
+                    cloned.input = Arc::new(clone_plan_with_labels(&node.input, combo));
+                    LogicalPlan::GraphNode(cloned)
+                }
+            } else {
+                // Not in combination - just recurse
+                let mut cloned = node.clone();
+                cloned.input = Arc::new(clone_plan_with_labels(&node.input, combo));
+                LogicalPlan::GraphNode(cloned)
+            }
+        }
+
+        LogicalPlan::GraphRel(graph_rel) => {
+            let mut cloned = graph_rel.clone();
+            cloned.left = Arc::new(clone_plan_with_labels(&graph_rel.left, combo));
+            cloned.center = Arc::new(clone_plan_with_labels(&graph_rel.center, combo));
+            cloned.right = Arc::new(clone_plan_with_labels(&graph_rel.right, combo));
+            LogicalPlan::GraphRel(cloned)
+        }
+
+        LogicalPlan::Filter(filter) => {
+            let mut cloned = filter.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&filter.input, combo));
+            LogicalPlan::Filter(cloned)
+        }
+
+        LogicalPlan::Projection(proj) => {
+            let mut cloned = proj.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&proj.input, combo));
+            LogicalPlan::Projection(cloned)
+        }
+
+        LogicalPlan::GraphJoins(joins) => {
+            let mut cloned = joins.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&joins.input, combo));
+            LogicalPlan::GraphJoins(cloned)
+        }
+
+        LogicalPlan::Union(union_plan) => {
+            let mut cloned = union_plan.clone();
+            cloned.inputs = union_plan
+                .inputs
+                .iter()
+                .map(|input| Arc::new(clone_plan_with_labels(input, combo)))
+                .collect();
+            LogicalPlan::Union(cloned)
+        }
+
+        LogicalPlan::GroupBy(group_by) => {
+            let mut cloned = group_by.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&group_by.input, combo));
+            LogicalPlan::GroupBy(cloned)
+        }
+
+        LogicalPlan::OrderBy(order_by) => {
+            let mut cloned = order_by.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&order_by.input, combo));
+            LogicalPlan::OrderBy(cloned)
+        }
+
+        LogicalPlan::Limit(limit) => {
+            let mut cloned = limit.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&limit.input, combo));
+            LogicalPlan::Limit(cloned)
+        }
+
+        LogicalPlan::Skip(skip) => {
+            let mut cloned = skip.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&skip.input, combo));
+            LogicalPlan::Skip(cloned)
+        }
+
+        LogicalPlan::WithClause(with_clause) => {
+            let mut cloned = with_clause.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&with_clause.input, combo));
+            LogicalPlan::WithClause(cloned)
+        }
+
+        LogicalPlan::Unwind(unwind) => {
+            let mut cloned = unwind.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&unwind.input, combo));
+            LogicalPlan::Unwind(cloned)
+        }
+
+        LogicalPlan::CartesianProduct(cart) => {
+            let mut cloned = cart.clone();
+            cloned.left = Arc::new(clone_plan_with_labels(&cart.left, combo));
+            cloned.right = Arc::new(clone_plan_with_labels(&cart.right, combo));
+            LogicalPlan::CartesianProduct(cloned)
+        }
+
+        LogicalPlan::Cte(cte) => {
+            let mut cloned = cte.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&cte.input, combo));
+            LogicalPlan::Cte(cloned)
+        }
+
+        LogicalPlan::PageRank(pagerank) => {
+            // PageRank doesn't have an input field, just clone it
+            LogicalPlan::PageRank(pagerank.clone())
+        }
+
+        // Base cases that don't need recursion
+        LogicalPlan::Empty => LogicalPlan::Empty,
+        LogicalPlan::ViewScan(view_scan) => LogicalPlan::ViewScan(view_scan.clone()),
+    }
+}
+
+/// Prune a Union input to the ViewScan matching the given label.
+///
+/// When TypeInference assigns a label to an untyped node, the node's input
+/// may still be a Union of ViewScans over all node types. This function
+/// selects the ViewScan whose source table matches the target label's schema table,
+/// effectively "resolving" the polymorphic node to a concrete type.
+fn prune_union_for_label(
+    input: &LogicalPlan,
+    label: &str,
+    combo: &HashMap<String, String>,
+) -> LogicalPlan {
+    if let LogicalPlan::Union(union_plan) = input {
+        // Look up the target table for this label
+        if let Some(schema) = crate::server::query_context::get_current_schema() {
+            if let Some(node_schema) = schema.node_schema_opt(label) {
+                let target_table = format!("{}.{}", node_schema.database, node_schema.table_name);
+                // Find the ViewScan matching this table
+                for vs_input in &union_plan.inputs {
+                    if let LogicalPlan::ViewScan(scan) = vs_input.as_ref() {
+                        if scan.source_table == target_table {
+                            log::debug!(
+                                "prune_union_for_label: selected '{}' for label '{}'",
+                                target_table,
+                                label
+                            );
+                            return LogicalPlan::ViewScan(scan.clone());
+                        }
+                    }
+                }
+            }
+        }
+        // Fallback: use first ViewScan
+        if let Some(first) = union_plan.inputs.first() {
+            log::warn!(
+                "prune_union_for_label: could not resolve table for label '{}', falling back to first ViewScan",
+                label
+            );
+            return clone_plan_with_labels(first, combo);
+        }
+    }
+    // Not a Union — just recurse
+    clone_plan_with_labels(input, combo)
 }
