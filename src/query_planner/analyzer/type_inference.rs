@@ -2965,16 +2965,51 @@ impl AnalyzerPass for TypeInference {
                 untyped_nodes
             );
             
-            // Generate UNION for untyped nodes with direction validation
-            // Pass original plan's relationship patterns and property accesses
-            plan = self.generate_union_for_untyped_nodes(
-                plan,
-                &untyped_nodes,
-                plan_ctx,
-                graph_schema,
-                &original_relationships,
-                &original_property_accesses,
-            )?;
+            // For top-level Cypher UNION, process each arm independently so that
+            // arms without untyped nodes don't get duplicated across combinations.
+            if let LogicalPlan::Union(top_union) = plan.as_ref() {
+                let mut new_inputs = Vec::new();
+                for arm in &top_union.inputs {
+                    let arm_untyped = discover_untyped_nodes(arm, plan_ctx);
+                    if arm_untyped.is_empty() {
+                        // This arm has no untyped nodes — keep as-is
+                        new_inputs.push(arm.clone());
+                    } else {
+                        // Extract relationships/properties scoped to this arm
+                        let arm_rels: Vec<_> = original_relationships.iter()
+                            .filter(|r| arm_untyped.contains(&r.left_alias) || arm_untyped.contains(&r.right_alias))
+                            .cloned()
+                            .collect();
+                        let arm_props: HashMap<_, _> = original_property_accesses.iter()
+                            .filter(|(k, _)| arm_untyped.contains(k.as_str()))
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        let expanded = self.generate_union_for_untyped_nodes(
+                            arm.clone(),
+                            &arm_untyped,
+                            plan_ctx,
+                            graph_schema,
+                            &arm_rels,
+                            &arm_props,
+                        )?;
+                        new_inputs.push(expanded);
+                    }
+                }
+                plan = Arc::new(LogicalPlan::Union(crate::query_planner::logical_plan::Union {
+                    inputs: new_inputs,
+                    union_type: top_union.union_type.clone(),
+                }));
+            } else {
+                // Not a top-level Union — process normally
+                plan = self.generate_union_for_untyped_nodes(
+                    plan,
+                    &untyped_nodes,
+                    plan_ctx,
+                    graph_schema,
+                    &original_relationships,
+                    &original_property_accesses,
+                )?;
+            }
         } else {
             log::info!("🏷️ UnifiedTypeInference: No untyped nodes found");
         }

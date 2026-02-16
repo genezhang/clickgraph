@@ -1322,6 +1322,67 @@ fn lookup_denorm_node_id_property() -> Option<String> {
     }
     None
 }
+
+/// Render a single UNION branch to SQL. Simple branches produce
+/// `SELECT ... FROM ... WHERE ...`. Complex branches (with inner
+/// unions or per-arm LIMIT) wrap in a subselect.
+fn render_union_branch_sql(branch: &RenderPlan) -> String {
+    let has_inner_union = branch.union.0.is_some();
+    let has_limit = branch.limit.0.is_some();
+    let has_skip = branch.skip.0.is_some();
+    let has_order_by = !branch.order_by.0.is_empty();
+
+    if !has_inner_union && !has_limit && !has_skip && !has_order_by {
+        // Simple branch: select + from + joins + filters
+        let mut bsql = String::new();
+        bsql.push_str(&branch.select.to_sql());
+        bsql.push_str(&branch.from.to_sql());
+        bsql.push_str(&branch.joins.to_sql());
+        bsql.push_str(&branch.filters.to_sql());
+        return bsql;
+    }
+
+    // Complex branch: wrap in subselect to preserve inner union/limit semantics
+    let mut bsql = String::new();
+    bsql.push_str("SELECT * FROM (\n");
+
+    // First inner branch
+    bsql.push_str(&branch.select.to_sql());
+    bsql.push_str(&branch.from.to_sql());
+    bsql.push_str(&branch.joins.to_sql());
+    bsql.push_str(&branch.filters.to_sql());
+
+    // Inner union branches
+    if let Some(inner_union) = &branch.union.0 {
+        let inner_union_type = match inner_union.union_type {
+            UnionType::Distinct => "UNION DISTINCT \n",
+            UnionType::All => "UNION ALL \n",
+        };
+        for inner_branch in &inner_union.input {
+            bsql.push_str(inner_union_type);
+            bsql.push_str(&render_union_branch_sql(inner_branch));
+        }
+    }
+
+    bsql.push_str(")\n");
+
+    // Add ORDER BY, LIMIT, SKIP
+    if has_order_by {
+        bsql.push_str(&branch.order_by.to_sql());
+    }
+    if let Some(limit) = branch.limit.0 {
+        if let Some(skip) = branch.skip.0 {
+            bsql.push_str(&format!("LIMIT {skip}, {limit}\n"));
+        } else {
+            bsql.push_str(&format!("LIMIT {limit}\n"));
+        }
+    } else if let Some(skip) = branch.skip.0 {
+        bsql.push_str(&format!("OFFSET {skip}\n"));
+    }
+
+    bsql
+}
+
 pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
     // Extract fixed path information if not already set
     // This looks at the RenderPlan structure to infer path variable info
@@ -1498,15 +1559,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
 
                     for union_branch in &union.input {
                         sql.push_str(union_type_str);
-                        let branch_sql = {
-                            let mut bsql = String::new();
-                            bsql.push_str(&union_branch.select.to_sql());
-                            bsql.push_str(&union_branch.from.to_sql());
-                            bsql.push_str(&union_branch.joins.to_sql());
-                            bsql.push_str(&union_branch.filters.to_sql());
-                            bsql
-                        };
-                        sql.push_str(&branch_sql);
+                        sql.push_str(&render_union_branch_sql(union_branch));
                     }
                 } else {
                     // All branches in union.input
@@ -1514,15 +1567,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
                         if i > 0 {
                             sql.push_str(union_type_str);
                         }
-                        let branch_sql = {
-                            let mut bsql = String::new();
-                            bsql.push_str(&union_branch.select.to_sql());
-                            bsql.push_str(&union_branch.from.to_sql());
-                            bsql.push_str(&union_branch.joins.to_sql());
-                            bsql.push_str(&union_branch.filters.to_sql());
-                            bsql
-                        };
-                        sql.push_str(&branch_sql);
+                        sql.push_str(&render_union_branch_sql(union_branch));
                     }
                 }
             } else {
@@ -1582,35 +1627,48 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
             }
         } else {
             // No ordering/limiting - bare UNION is fine
-            // But we still need to output the first branch!
-            let first_branch_sql = {
-                let mut branch_sql = String::new();
-                branch_sql.push_str(&plan.select.to_sql());
-                branch_sql.push_str(&plan.from.to_sql());
-                branch_sql.push_str(&plan.joins.to_sql());
-                branch_sql.push_str(&plan.filters.to_sql());
-                branch_sql
-            };
-            sql.push_str(&first_branch_sql);
-
-            // Add remaining branches with UNION
             if let Some(union) = &plan.union.0 {
                 let union_type_str = match union.union_type {
                     UnionType::Distinct => "UNION DISTINCT \n",
                     UnionType::All => "UNION ALL \n",
                 };
-                for union_branch in &union.input {
-                    sql.push_str(union_type_str);
-                    let branch_sql = {
-                        let mut bsql = String::new();
-                        bsql.push_str(&union_branch.select.to_sql());
-                        bsql.push_str(&union_branch.from.to_sql());
-                        bsql.push_str(&union_branch.joins.to_sql());
-                        bsql.push_str(&union_branch.filters.to_sql());
-                        bsql
+
+                if plan.from.0.is_some() {
+                    // Base plan IS the first branch
+                    let first_branch_sql = {
+                        let mut branch_sql = String::new();
+                        branch_sql.push_str(&plan.select.to_sql());
+                        branch_sql.push_str(&plan.from.to_sql());
+                        branch_sql.push_str(&plan.joins.to_sql());
+                        branch_sql.push_str(&plan.filters.to_sql());
+                        branch_sql
                     };
-                    sql.push_str(&branch_sql);
+                    sql.push_str(&first_branch_sql);
+
+                    for union_branch in &union.input {
+                        sql.push_str(union_type_str);
+                        sql.push_str(&render_union_branch_sql(union_branch));
+                    }
+                } else {
+                    // Shell base: all branches in union.input
+                    for (i, union_branch) in union.input.iter().enumerate() {
+                        if i > 0 {
+                            sql.push_str(union_type_str);
+                        }
+                        sql.push_str(&render_union_branch_sql(union_branch));
+                    }
                 }
+            } else {
+                // No union branches — just use the base plan
+                let first_branch_sql = {
+                    let mut branch_sql = String::new();
+                    branch_sql.push_str(&plan.select.to_sql());
+                    branch_sql.push_str(&plan.from.to_sql());
+                    branch_sql.push_str(&plan.joins.to_sql());
+                    branch_sql.push_str(&plan.filters.to_sql());
+                    branch_sql
+                };
+                sql.push_str(&first_branch_sql);
             }
         }
 
