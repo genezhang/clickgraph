@@ -465,11 +465,14 @@ impl LogicalPlan {
 
             // The anchor_connection contains the ALIAS of the node that should be FROM.
             // We need to find which actual GraphNode has that alias.
-            
+
             // Check if left node matches
             if let LogicalPlan::GraphNode(left_node) = graph_rel.left.as_ref() {
                 if &left_node.alias == anchor_alias {
-                    log::info!("  ✓ Anchor '{}' matches left GraphNode - using as FROM", anchor_alias);
+                    log::info!(
+                        "  ✓ Anchor '{}' matches left GraphNode - using as FROM",
+                        anchor_alias
+                    );
                     return Ok(from_table_to_view_ref(graph_rel.left.extract_from()?));
                 }
             }
@@ -477,7 +480,10 @@ impl LogicalPlan {
             // Check if right is a GraphNode that matches
             if let LogicalPlan::GraphNode(right_node) = graph_rel.right.as_ref() {
                 if &right_node.alias == anchor_alias {
-                    log::info!("  ✓ Anchor '{}' matches right GraphNode - using as FROM", anchor_alias);
+                    log::info!(
+                        "  ✓ Anchor '{}' matches right GraphNode - using as FROM",
+                        anchor_alias
+                    );
                     return Ok(from_table_to_view_ref(graph_rel.right.extract_from()?));
                 }
             }
@@ -487,14 +493,20 @@ impl LogicalPlan {
                 // Check nested left node
                 if let LogicalPlan::GraphNode(nested_left_node) = nested.left.as_ref() {
                     if &nested_left_node.alias == anchor_alias {
-                        log::info!("  ✓ Anchor '{}' found in nested.left GraphNode - using as FROM", anchor_alias);
+                        log::info!(
+                            "  ✓ Anchor '{}' found in nested.left GraphNode - using as FROM",
+                            anchor_alias
+                        );
                         return Ok(from_table_to_view_ref(nested.left.extract_from()?));
                     }
                 }
                 // Check nested right node
                 if let LogicalPlan::GraphNode(nested_right_node) = nested.right.as_ref() {
                     if &nested_right_node.alias == anchor_alias {
-                        log::info!("  ✓ Anchor '{}' found in nested.right GraphNode - using as FROM", anchor_alias);
+                        log::info!(
+                            "  ✓ Anchor '{}' found in nested.right GraphNode - using as FROM",
+                            anchor_alias
+                        );
                         return Ok(from_table_to_view_ref(nested.right.extract_from()?));
                     }
                 }
