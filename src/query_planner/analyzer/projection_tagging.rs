@@ -1196,19 +1196,22 @@ impl ProjectionTagging {
                                         item.expression =
                                             LogicalExpr::AggregateFnCall(AggregateFnCall {
                                                 name: aggregate_fn_call.name.clone(),
-                                                args: vec![LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                                                    operator: Operator::Distinct,
-                                                    operands: vec![property_expr],
-                                                })],
+                                                args: vec![LogicalExpr::OperatorApplicationExp(
+                                                    OperatorApplication {
+                                                        operator: Operator::Distinct,
+                                                        operands: vec![property_expr],
+                                                    },
+                                                )],
                                             });
                                     } else {
                                         // Standard node - use node schema's ID column
-                                        let table_schema = graph_schema
-                                            .node_schema(&table_label)
-                                            .map_err(|e| AnalyzerError::GraphSchema {
-                                                pass: Pass::ProjectionTagging,
-                                                source: e,
-                                            })?;
+                                        let table_schema =
+                                            graph_schema.node_schema(&table_label).map_err(
+                                                |e| AnalyzerError::GraphSchema {
+                                                    pass: Pass::ProjectionTagging,
+                                                    source: e,
+                                                },
+                                            )?;
                                         let table_node_id = table_schema
                                             .node_id
                                             .columns()

@@ -102,23 +102,23 @@
 //! **When to run**: Early in analyzer pipeline (position 2, after SchemaInference)
 //! This ensures all downstream passes have complete type information.
 
-use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::{
     graph_catalog::graph_schema::GraphSchema,
-    utils::id_encoding::IdEncoding,
     query_planner::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
             errors::AnalyzerError,
             pattern_resolver_config::get_max_combinations,
         },
-        logical_expr::{LogicalExpr, Direction, Literal},
-        logical_plan::{GraphNode, GraphRel, LogicalPlan, ViewScan, Union, UnionType},
-        plan_ctx::{PlanCtx, TableCtx},  // Added TableCtx
+        logical_expr::{Direction, Literal, LogicalExpr},
+        logical_plan::{GraphNode, GraphRel, LogicalPlan, Union, UnionType, ViewScan},
+        plan_ctx::{PlanCtx, TableCtx}, // Added TableCtx
         transformed::Transformed,
     },
+    utils::id_encoding::IdEncoding,
 };
 
 // Note: MAX_INFERRED_TYPES constant was removed as dead code.
@@ -155,13 +155,13 @@ impl TypeInference {
             LogicalPlan::Filter(filter) => {
                 // Extract label constraints from WHERE clause
                 let where_constraints = extract_labels_from_where(&Some(filter.predicate.clone()));
-                
+
                 if !where_constraints.is_empty() {
                     log::info!(
                         "🔍 UnifiedTypeInference: Extracted WHERE constraints: {:?}",
                         where_constraints
                     );
-                    
+
                     // Check if input is GraphRel - if so, try UNION generation
                     if let LogicalPlan::GraphRel(_) = filter.input.as_ref() {
                         // Try to generate UNION with WHERE constraints
@@ -171,7 +171,7 @@ impl TypeInference {
                             plan_ctx,
                             graph_schema,
                         )?;
-                        
+
                         if result.is_yes() {
                             // Union generated - wrap it in Filter
                             let new_filter = crate::query_planner::logical_plan::Filter {
@@ -182,7 +182,7 @@ impl TypeInference {
                         }
                     }
                 }
-                
+
                 // Default: process input recursively
                 let input_transformed =
                     self.infer_labels_recursive(filter.input.clone(), plan_ctx, graph_schema)?;
@@ -196,7 +196,7 @@ impl TypeInference {
                     Ok(Transformed::No(plan))
                 }
             }
-            
+
             LogicalPlan::GraphRel(rel) => {
                 log::debug!(
                     "🔍 TypeInference: Processing GraphRel '{}' (edge_types: {:?})",
@@ -1020,7 +1020,7 @@ impl TypeInference {
             );
             return self.infer_labels_recursive(graph_rel_plan, plan_ctx, graph_schema);
         }
-        
+
         // NOTE: We DO handle Direction::Either (undirected patterns) here!
         // check_relationship_exists_with_direction() validates bidirectionally for Either
         // This is critical for Neo4j Browser expand: (Post)--(User) should return ONLY
@@ -1075,12 +1075,7 @@ impl TypeInference {
         // go in the same direction. If so, convert to that direction to prevent
         // BidirectionalUnion from creating invalid duplicate branches.
         let optimized_direction = if matches!(rel.direction, Direction::Either) {
-            self.optimize_undirected_pattern(
-                &left_types,
-                &right_types,
-                &rel_types,
-                graph_schema,
-            )
+            self.optimize_undirected_pattern(&left_types, &right_types, &rel_types, graph_schema)
         } else {
             rel.direction.clone()
         };
@@ -1158,7 +1153,7 @@ impl TypeInference {
                 optimized_direction,
                 right_type
             );
-            
+
             // If direction was optimized, update the GraphRel plan
             if optimized_direction != rel.direction {
                 let mut updated_rel = rel.clone();
@@ -1166,7 +1161,7 @@ impl TypeInference {
                 let updated_plan = Arc::new(LogicalPlan::GraphRel(updated_rel));
                 return self.infer_labels_recursive(updated_plan, plan_ctx, graph_schema);
             }
-            
+
             return self.infer_labels_recursive(graph_rel_plan, plan_ctx, graph_schema);
         }
 
@@ -1189,14 +1184,14 @@ impl TypeInference {
                 plan_ctx,
                 graph_schema,
             )?;
-            
+
             // Update direction if optimized
             if optimized_direction != rel.direction {
                 if let LogicalPlan::GraphRel(graph_rel) = Arc::make_mut(&mut branch) {
                     graph_rel.direction = optimized_direction.clone();
                 }
             }
-            
+
             union_branches.push(branch);
         }
 
@@ -1242,11 +1237,7 @@ impl TypeInference {
         }
 
         // No constraints - return all possible node types
-        let all_types: Vec<String> = graph_schema
-            .all_node_schemas()
-            .keys()
-            .cloned()
-            .collect();
+        let all_types: Vec<String> = graph_schema.all_node_schemas().keys().cloned().collect();
 
         log::debug!(
             "🏷️ Variable '{}' has no constraints, using all node types: {:?}",
@@ -1258,11 +1249,11 @@ impl TypeInference {
     }
 
     /// Optimize undirected patterns by checking if all valid combinations go in same direction
-    /// 
+    ///
     /// Strategy: Check ALL possible type combinations. If they all go in ONE direction,
     /// convert Direction::Either to that direction. Only keep Either if we have actual
     /// bidirectional relationships (some go forward, some go backward).
-    /// 
+    ///
     /// Example: `(Post)--(User)` where schema only has User→Post
     /// → Convert to Direction::Incoming (Post←User)
     fn optimize_undirected_pattern(
@@ -1272,7 +1263,7 @@ impl TypeInference {
         rel_types: &[String],
         graph_schema: &GraphSchema,
     ) -> Direction {
-        let mut has_forward = false;  // Any combination where left→right exists in schema
+        let mut has_forward = false; // Any combination where left→right exists in schema
         let mut has_backward = false; // Any combination where right→left exists in schema
 
         for left_type in left_types {
@@ -1307,7 +1298,9 @@ impl TypeInference {
                 Direction::Incoming
             }
             (true, true) => {
-                log::debug!("↔️ Combinations go both directions, keeping Either (truly bidirectional)");
+                log::debug!(
+                    "↔️ Combinations go both directions, keeping Either (truly bidirectional)"
+                );
                 Direction::Either
             }
             (false, false) => {
@@ -1347,7 +1340,10 @@ impl TypeInference {
         for rel in relationships {
             log::debug!(
                 "🔍 Phase 2: Relationship: left={}, right={}, types={:?}, dir={:?}",
-                rel.left_alias, rel.right_alias, rel.rel_types, rel.direction
+                rel.left_alias,
+                rel.right_alias,
+                rel.rel_types,
+                rel.direction
             );
         }
         for (var, props) in property_accesses {
@@ -1359,11 +1355,8 @@ impl TypeInference {
         // 2. Property accesses (only types that have the accessed properties)
         let mut untyped_vars: Vec<(String, Vec<String>)> = Vec::new();
         for var_name in untyped_nodes {
-            let mut candidates: Vec<String> = graph_schema
-                .all_node_schemas()
-                .keys()
-                .cloned()
-                .collect();
+            let mut candidates: Vec<String> =
+                graph_schema.all_node_schemas().keys().cloned().collect();
 
             // Constraint 1: Filter by labeled relationships involving this variable
             for rel_pattern in relationships {
@@ -1388,7 +1381,9 @@ impl TypeInference {
                         candidates.retain(|c| valid_types.contains(c));
                         log::debug!(
                             "🔍 Constrained '{}' (left) by rel {:?}: valid={:?}",
-                            var_name, rel_pattern.rel_types, valid_types
+                            var_name,
+                            rel_pattern.rel_types,
+                            valid_types
                         );
                     }
                 } else if rel_pattern.right_alias == *var_name {
@@ -1409,7 +1404,9 @@ impl TypeInference {
                         candidates.retain(|c| valid_types.contains(c));
                         log::debug!(
                             "🔍 Constrained '{}' (right) by rel {:?}: valid={:?}",
-                            var_name, rel_pattern.rel_types, valid_types
+                            var_name,
+                            rel_pattern.rel_types,
+                            valid_types
                         );
                     }
                 }
@@ -1420,14 +1417,18 @@ impl TypeInference {
             if let Some(props) = property_accesses.get(var_name) {
                 candidates.retain(|type_name| {
                     if let Ok(node_schema) = graph_schema.node_schema(type_name) {
-                        props.iter().all(|prop| node_schema.has_cypher_property(prop))
+                        props
+                            .iter()
+                            .all(|prop| node_schema.has_cypher_property(prop))
                     } else {
                         false
                     }
                 });
                 log::debug!(
                     "🔍 Constrained '{}' by properties {:?}: {:?}",
-                    var_name, props, candidates
+                    var_name,
+                    props,
+                    candidates
                 );
             }
 
@@ -1438,7 +1439,9 @@ impl TypeInference {
 
             log::debug!(
                 "🔍 Variable '{}': {} candidates after constraints: {:?}",
-                var_name, candidates.len(), candidates
+                var_name,
+                candidates.len(),
+                candidates
             );
             untyped_vars.push((var_name.clone(), candidates));
         }
@@ -1446,7 +1449,7 @@ impl TypeInference {
         if untyped_vars.is_empty() {
             return Ok(plan);
         }
-        
+
         // Collect already-typed nodes from plan_ctx
         let typed_nodes: HashMap<String, String> = plan_ctx
             .iter_table_contexts()
@@ -1456,7 +1459,7 @@ impl TypeInference {
                     .and_then(|labels| labels.first().map(|l| (var_name.clone(), l.clone())))
             })
             .collect();
-        
+
         log::info!(
             "🔍 Found {} relationship patterns, {} typed nodes",
             relationships.len(),
@@ -1506,7 +1509,10 @@ impl TypeInference {
         }
 
         // Multiple valid combinations - generate UNION branches
-        log::info!("🔀 Generating UNION with {} branches", valid_combinations.len());
+        log::info!(
+            "🔀 Generating UNION with {} branches",
+            valid_combinations.len()
+        );
 
         // Update plan_ctx with all labels for each untyped variable so downstream
         // passes (e.g., ProjectionTagging) can resolve label-dependent logic.
@@ -1541,14 +1547,8 @@ impl TypeInference {
             // Split plan into aggregation wrapper + scan part.
             // Clone only scan parts per combination, then re-wrap.
             for combo in valid_combinations {
-                let scan_branch = clone_plan_with_labels(
-                    &extract_scan_part(&plan),
-                    &combo,
-                );
-                log::debug!(
-                    "✅ Generated scan branch for combination: {:?}",
-                    combo
-                );
+                let scan_branch = clone_plan_with_labels(&extract_scan_part(&plan), &combo);
+                log::debug!("✅ Generated scan branch for combination: {:?}", combo);
                 union_branches.push(Arc::new(scan_branch));
             }
 
@@ -1563,10 +1563,7 @@ impl TypeInference {
         } else {
             for combo in valid_combinations {
                 let branch_plan = clone_plan_with_labels(&plan, &combo);
-                log::debug!(
-                    "✅ Generated UNION branch for combination: {:?}",
-                    combo
-                );
+                log::debug!("✅ Generated UNION branch for combination: {:?}", combo);
                 union_branches.push(Arc::new(branch_plan));
             }
 
@@ -2327,18 +2324,24 @@ impl TypeInference {
             && right_table_ctx.get_label_opt().is_some()
         {
             return Ok((
-                left_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
-                    pass: Pass::SchemaInference,
-                    source: e,
-                })?,
-                rel_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
-                    pass: Pass::SchemaInference,
-                    source: e,
-                })?,
-                right_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
-                    pass: Pass::SchemaInference,
-                    source: e,
-                })?,
+                left_table_ctx
+                    .get_label_str()
+                    .map_err(|e| AnalyzerError::PlanCtx {
+                        pass: Pass::SchemaInference,
+                        source: e,
+                    })?,
+                rel_table_ctx
+                    .get_label_str()
+                    .map_err(|e| AnalyzerError::PlanCtx {
+                        pass: Pass::SchemaInference,
+                        source: e,
+                    })?,
+                right_table_ctx
+                    .get_label_str()
+                    .map_err(|e| AnalyzerError::PlanCtx {
+                        pass: Pass::SchemaInference,
+                        source: e,
+                    })?,
             ));
         }
 
@@ -2347,14 +2350,19 @@ impl TypeInference {
             && rel_table_ctx.get_label_opt().is_some()
             && right_table_ctx.get_label_opt().is_some()
         {
-            let rel_label = rel_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
-                pass: Pass::SchemaInference,
-                source: e,
-            })?;
-            let right_label = right_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
-                pass: Pass::SchemaInference,
-                source: e,
-            })?;
+            let rel_label = rel_table_ctx
+                .get_label_str()
+                .map_err(|e| AnalyzerError::PlanCtx {
+                    pass: Pass::SchemaInference,
+                    source: e,
+                })?;
+            let right_label =
+                right_table_ctx
+                    .get_label_str()
+                    .map_err(|e| AnalyzerError::PlanCtx {
+                        pass: Pass::SchemaInference,
+                        source: e,
+                    })?;
             let rel_schema = graph_schema.get_rel_schema(&rel_label).map_err(|e| {
                 AnalyzerError::GraphSchema {
                     pass: Pass::SchemaInference,
@@ -2375,14 +2383,19 @@ impl TypeInference {
             && rel_table_ctx.get_label_opt().is_some()
             && right_table_ctx.get_label_opt().is_none()
         {
-            let left_label = left_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
-                pass: Pass::SchemaInference,
-                source: e,
-            })?;
-            let rel_label = rel_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
-                pass: Pass::SchemaInference,
-                source: e,
-            })?;
+            let left_label =
+                left_table_ctx
+                    .get_label_str()
+                    .map_err(|e| AnalyzerError::PlanCtx {
+                        pass: Pass::SchemaInference,
+                        source: e,
+                    })?;
+            let rel_label = rel_table_ctx
+                .get_label_str()
+                .map_err(|e| AnalyzerError::PlanCtx {
+                    pass: Pass::SchemaInference,
+                    source: e,
+                })?;
             let rel_schema = graph_schema.get_rel_schema(&rel_label).map_err(|e| {
                 AnalyzerError::GraphSchema {
                     pass: Pass::SchemaInference,
@@ -2403,14 +2416,20 @@ impl TypeInference {
             && rel_table_ctx.get_label_opt().is_none()
             && right_table_ctx.get_label_opt().is_some()
         {
-            let left_label = left_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
-                pass: Pass::SchemaInference,
-                source: e,
-            })?;
-            let right_label = right_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
-                pass: Pass::SchemaInference,
-                source: e,
-            })?;
+            let left_label =
+                left_table_ctx
+                    .get_label_str()
+                    .map_err(|e| AnalyzerError::PlanCtx {
+                        pass: Pass::SchemaInference,
+                        source: e,
+                    })?;
+            let right_label =
+                right_table_ctx
+                    .get_label_str()
+                    .map_err(|e| AnalyzerError::PlanCtx {
+                        pass: Pass::SchemaInference,
+                        source: e,
+                    })?;
 
             // Find relationship that connects these nodes
             for (_, rel_schema) in graph_schema.get_relationships_schemas().iter() {
@@ -2431,10 +2450,12 @@ impl TypeInference {
             && rel_table_ctx.get_label_opt().is_some()
             && right_table_ctx.get_label_opt().is_none()
         {
-            let rel_label = rel_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
-                pass: Pass::SchemaInference,
-                source: e,
-            })?;
+            let rel_label = rel_table_ctx
+                .get_label_str()
+                .map_err(|e| AnalyzerError::PlanCtx {
+                    pass: Pass::SchemaInference,
+                    source: e,
+                })?;
             let rel_schema = graph_schema.get_rel_schema(&rel_label).map_err(|e| {
                 AnalyzerError::GraphSchema {
                     pass: Pass::SchemaInference,
@@ -2469,10 +2490,10 @@ impl TypeInference {
     /// **NOTE**: Currently a placeholder. SchemaInference still handles ViewScan creation.
     /// This will be fully implemented after Phase B testing confirms Phase 0 works correctly.
     /// Phase 3: ViewScan Resolution
-    /// 
+    ///
     /// Converts GraphNode(label=Some, input=Empty) → GraphNode(label=Some, input=ViewScan)
     /// This is the final step that materializes the type inference into actual table scans.
-    /// 
+    ///
     /// Handles:
     /// - Node ViewScans: GraphNode with inferred label
     /// - Relationship ViewScans: GraphRel center with inferred type
@@ -2483,11 +2504,14 @@ impl TypeInference {
         _graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Arc<LogicalPlan>> {
         use crate::query_planner::transformed::Transformed;
-        
+
         let transformed_plan = match logical_plan.as_ref() {
             LogicalPlan::Projection(projection) => {
-                let child_tf =
-                    Self::push_inferred_table_names_to_scan_transformed(projection.input.clone(), plan_ctx, _graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    projection.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
                 projection.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GraphNode(graph_node) => {
@@ -2573,16 +2597,25 @@ impl TypeInference {
                 }
 
                 // Recurse into input (for ViewScan or other plan types)
-                let child_tf =
-                    Self::push_inferred_table_names_to_scan_transformed(graph_node.input.clone(), plan_ctx, _graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    graph_node.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GraphRel(graph_rel) => {
                 // First recurse into left and right nodes
-                let left_tf =
-                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.left.clone(), plan_ctx, _graph_schema)?;
-                let right_tf =
-                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.right.clone(), plan_ctx, _graph_schema)?;
+                let left_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    graph_rel.left.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
+                let right_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    graph_rel.right.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
 
                 // Check if center (relationship) is Empty - need to resolve to ViewScan
                 let center_tf = if matches!(graph_rel.center.as_ref(), LogicalPlan::Empty) {
@@ -2649,55 +2682,87 @@ impl TypeInference {
                             )?
                         }
                     } else {
-                        Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, _graph_schema)?
+                        Self::push_inferred_table_names_to_scan_transformed(
+                            graph_rel.center.clone(),
+                            plan_ctx,
+                            _graph_schema,
+                        )?
                     }
                 } else {
-                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, _graph_schema)?
+                    Self::push_inferred_table_names_to_scan_transformed(
+                        graph_rel.center.clone(),
+                        plan_ctx,
+                        _graph_schema,
+                    )?
                 };
 
                 graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
             }
             LogicalPlan::Cte(cte) => {
-                let child_tf =
-                    Self::push_inferred_table_names_to_scan_transformed(cte.input.clone(), plan_ctx, _graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    cte.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
-                let child_tf =
-                    Self::push_inferred_table_names_to_scan_transformed(graph_joins.input.clone(), plan_ctx, _graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    graph_joins.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
                 graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Filter(filter) => {
-                let child_tf =
-                    Self::push_inferred_table_names_to_scan_transformed(filter.input.clone(), plan_ctx, _graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    filter.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
                 filter.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GroupBy(group_by) => {
-                let child_tf =
-                    Self::push_inferred_table_names_to_scan_transformed(group_by.input.clone(), plan_ctx, _graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    group_by.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
                 group_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::OrderBy(order_by) => {
-                let child_tf =
-                    Self::push_inferred_table_names_to_scan_transformed(order_by.input.clone(), plan_ctx, _graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    order_by.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
                 order_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Skip(skip) => {
-                let child_tf =
-                    Self::push_inferred_table_names_to_scan_transformed(skip.input.clone(), plan_ctx, _graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    skip.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
                 skip.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Limit(limit) => {
-                let child_tf =
-                    Self::push_inferred_table_names_to_scan_transformed(limit.input.clone(), plan_ctx, _graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    limit.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
                 limit.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Union(union) => {
                 let mut inputs_tf: Vec<Transformed<Arc<LogicalPlan>>> = vec![];
                 for input_plan in union.inputs.iter() {
-                    let child_tf =
-                        Self::push_inferred_table_names_to_scan_transformed(input_plan.clone(), plan_ctx, _graph_schema)?;
+                    let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                        input_plan.clone(),
+                        plan_ctx,
+                        _graph_schema,
+                    )?;
                     inputs_tf.push(child_tf);
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())
@@ -2705,7 +2770,11 @@ impl TypeInference {
             LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::Unwind(u) => {
-                let child_tf = Self::push_inferred_table_names_to_scan_transformed(u.input.clone(), plan_ctx, _graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    u.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
                 match child_tf {
                     Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
                         crate::query_planner::logical_plan::Unwind {
@@ -2720,8 +2789,16 @@ impl TypeInference {
                 }
             }
             LogicalPlan::CartesianProduct(cp) => {
-                let left_tf = Self::push_inferred_table_names_to_scan_transformed(cp.left.clone(), plan_ctx, _graph_schema)?;
-                let right_tf = Self::push_inferred_table_names_to_scan_transformed(cp.right.clone(), plan_ctx, _graph_schema)?;
+                let left_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    cp.left.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
+                let right_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    cp.right.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
                 match (&left_tf, &right_tf) {
                     (Transformed::No(_), Transformed::No(_)) => {
                         Transformed::No(logical_plan.clone())
@@ -2737,8 +2814,11 @@ impl TypeInference {
                 }
             }
             LogicalPlan::WithClause(with_clause) => {
-                let child_tf =
-                    Self::push_inferred_table_names_to_scan_transformed(with_clause.input.clone(), plan_ctx, _graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    with_clause.input.clone(),
+                    plan_ctx,
+                    _graph_schema,
+                )?;
                 match child_tf {
                     Transformed::Yes(new_input) => {
                         let new_with = crate::query_planner::logical_plan::WithClause {
@@ -2762,7 +2842,7 @@ impl TypeInference {
         };
         Ok(transformed_plan.get_plan().clone())
     }
-    
+
     // Helper that returns Transformed for recursive calls
     fn push_inferred_table_names_to_scan_transformed(
         logical_plan: Arc<LogicalPlan>,
@@ -2770,11 +2850,14 @@ impl TypeInference {
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         use crate::query_planner::transformed::Transformed;
-        
+
         let transformed_plan = match logical_plan.as_ref() {
             LogicalPlan::Projection(projection) => {
-                let child_tf =
-                    Self::push_inferred_table_names_to_scan_transformed(projection.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    projection.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 projection.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GraphNode(graph_node) => {
@@ -2790,16 +2873,14 @@ impl TypeInference {
                     } else {
                         // Fallback: Get inferred label from TableCtx
                         match plan_ctx.get_table_ctx(&graph_node.alias) {
-                            Ok(table_ctx) => {
-                                table_ctx.get_labels().and_then(|labels| {
-                                    if !labels.is_empty() && labels[0] != "$any" {
-                                        Some(labels[0].clone())
-                                    } else {
-                                        None
-                                    }
-                                })
-                            }
-                            Err(_) => None
+                            Ok(table_ctx) => table_ctx.get_labels().and_then(|labels| {
+                                if !labels.is_empty() && labels[0] != "$any" {
+                                    Some(labels[0].clone())
+                                } else {
+                                    None
+                                }
+                            }),
+                            Err(_) => None,
                         }
                     };
 
@@ -2829,27 +2910,40 @@ impl TypeInference {
                 }
 
                 // Recurse into input
-                let child_tf =
-                    Self::push_inferred_table_names_to_scan_transformed(graph_node.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    graph_node.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GraphRel(graph_rel) => {
-                let left_tf =
-                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.left.clone(), plan_ctx, graph_schema)?;
-                let right_tf =
-                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.right.clone(), plan_ctx, graph_schema)?;
+                let left_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    graph_rel.left.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                let right_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    graph_rel.right.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
 
                 let center_tf = if matches!(graph_rel.center.as_ref(), LogicalPlan::Empty) {
                     if let Ok(rel_ctx) = plan_ctx.get_rel_table_ctx(&graph_rel.alias) {
                         if let Some(labels) = rel_ctx.get_labels() {
                             if labels.len() == 1 {
                                 let rel_type = &labels[0];
-                                let left_label = if let LogicalPlan::GraphNode(left_node) = graph_rel.left.as_ref() {
+                                let left_label = if let LogicalPlan::GraphNode(left_node) =
+                                    graph_rel.left.as_ref()
+                                {
                                     left_node.label.as_deref()
                                 } else {
                                     None
                                 };
-                                let right_label = if let LogicalPlan::GraphNode(right_node) = graph_rel.right.as_ref() {
+                                let right_label = if let LogicalPlan::GraphNode(right_node) =
+                                    graph_rel.right.as_ref()
+                                {
                                     right_node.label.as_deref()
                                 } else {
                                     None
@@ -2867,53 +2961,101 @@ impl TypeInference {
                                     Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, graph_schema)?
                                 }
                             } else {
-                                Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, graph_schema)?
+                                Self::push_inferred_table_names_to_scan_transformed(
+                                    graph_rel.center.clone(),
+                                    plan_ctx,
+                                    graph_schema,
+                                )?
                             }
                         } else {
-                            Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, graph_schema)?
+                            Self::push_inferred_table_names_to_scan_transformed(
+                                graph_rel.center.clone(),
+                                plan_ctx,
+                                graph_schema,
+                            )?
                         }
                     } else {
-                        Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, graph_schema)?
+                        Self::push_inferred_table_names_to_scan_transformed(
+                            graph_rel.center.clone(),
+                            plan_ctx,
+                            graph_schema,
+                        )?
                     }
                 } else {
-                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, graph_schema)?
+                    Self::push_inferred_table_names_to_scan_transformed(
+                        graph_rel.center.clone(),
+                        plan_ctx,
+                        graph_schema,
+                    )?
                 };
 
                 graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
             }
             LogicalPlan::Cte(cte) => {
-                let child_tf = Self::push_inferred_table_names_to_scan_transformed(cte.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    cte.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphJoins(graph_joins) => {
-                let child_tf = Self::push_inferred_table_names_to_scan_transformed(graph_joins.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    graph_joins.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Filter(filter) => {
-                let child_tf = Self::push_inferred_table_names_to_scan_transformed(filter.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    filter.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 filter.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::GroupBy(group_by) => {
-                let child_tf = Self::push_inferred_table_names_to_scan_transformed(group_by.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    group_by.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 group_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::OrderBy(order_by) => {
-                let child_tf = Self::push_inferred_table_names_to_scan_transformed(order_by.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    order_by.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 order_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Skip(skip) => {
-                let child_tf = Self::push_inferred_table_names_to_scan_transformed(skip.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    skip.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 skip.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Limit(limit) => {
-                let child_tf = Self::push_inferred_table_names_to_scan_transformed(limit.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    limit.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 limit.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Union(union) => {
                 let mut inputs_tf: Vec<Transformed<Arc<LogicalPlan>>> = vec![];
                 for input_plan in union.inputs.iter() {
-                    let child_tf = Self::push_inferred_table_names_to_scan_transformed(input_plan.clone(), plan_ctx, graph_schema)?;
+                    let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                        input_plan.clone(),
+                        plan_ctx,
+                        graph_schema,
+                    )?;
                     inputs_tf.push(child_tf);
                 }
                 union.rebuild_or_clone(inputs_tf, logical_plan.clone())
@@ -2921,7 +3063,11 @@ impl TypeInference {
             LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
             LogicalPlan::Unwind(u) => {
-                let child_tf = Self::push_inferred_table_names_to_scan_transformed(u.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    u.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 match child_tf {
                     Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
                         crate::query_planner::logical_plan::Unwind {
@@ -2936,10 +3082,20 @@ impl TypeInference {
                 }
             }
             LogicalPlan::CartesianProduct(cp) => {
-                let left_tf = Self::push_inferred_table_names_to_scan_transformed(cp.left.clone(), plan_ctx, graph_schema)?;
-                let right_tf = Self::push_inferred_table_names_to_scan_transformed(cp.right.clone(), plan_ctx, graph_schema)?;
+                let left_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    cp.left.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
+                let right_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    cp.right.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 match (&left_tf, &right_tf) {
-                    (Transformed::No(_), Transformed::No(_)) => Transformed::No(logical_plan.clone()),
+                    (Transformed::No(_), Transformed::No(_)) => {
+                        Transformed::No(logical_plan.clone())
+                    }
                     _ => Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(
                         crate::query_planner::logical_plan::CartesianProduct {
                             left: left_tf.get_plan().clone(),
@@ -2951,7 +3107,11 @@ impl TypeInference {
                 }
             }
             LogicalPlan::WithClause(with_clause) => {
-                let child_tf = Self::push_inferred_table_names_to_scan_transformed(with_clause.input.clone(), plan_ctx, graph_schema)?;
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(
+                    with_clause.input.clone(),
+                    plan_ctx,
+                    graph_schema,
+                )?;
                 match child_tf {
                     Transformed::Yes(new_input) => {
                         let new_with = crate::query_planner::logical_plan::WithClause {
@@ -2985,36 +3145,36 @@ impl AnalyzerPass for TypeInference {
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         log::info!("🏷️ UnifiedTypeInference: Starting 4-phase type inference pass");
-        
+
         // Phase 0: Relationship-based label inference (from SchemaInference)
         // Walk the plan and infer missing labels from GraphRel patterns
         log::info!("🏷️ UnifiedTypeInference: Phase 0 - Relationship-based label inference");
         self.infer_schema_relationships(logical_plan.clone(), plan_ctx, graph_schema)?;
-        
+
         // Phase 1: Incremental type inference + Filter→GraphRel UNION generation
         log::info!("🏷️ UnifiedTypeInference: Phase 1 - Filter→GraphRel UNION generation");
-        
+
         // Extract relationship patterns and property accesses from the ORIGINAL plan
         // BEFORE Phase 1 transforms it (Phase 1 may wrap/replace GraphRel nodes)
         let original_relationships = extract_relationship_patterns(&logical_plan, plan_ctx);
         let original_property_accesses = extract_property_accesses(&logical_plan);
-        
+
         let result = self.infer_labels_recursive(logical_plan.clone(), plan_ctx, graph_schema)?;
         let phase1_transformed = result.is_yes();
         let mut plan = result.get_plan();
-        
+
         log::info!("🏷️ UnifiedTypeInference: Phase 2 - Checking for untyped nodes");
-        
+
         // Phase 2: Discover remaining untyped nodes and generate UNION
         let untyped_nodes = discover_untyped_nodes(&plan, plan_ctx);
-        
+
         if !untyped_nodes.is_empty() {
             log::info!(
                 "🏷️ UnifiedTypeInference: Found {} untyped nodes: {:?}",
                 untyped_nodes.len(),
                 untyped_nodes
             );
-            
+
             // For top-level Cypher UNION, process each arm independently so that
             // arms without untyped nodes don't get duplicated across combinations.
             if let LogicalPlan::Union(top_union) = plan.as_ref() {
@@ -3026,11 +3186,16 @@ impl AnalyzerPass for TypeInference {
                         new_inputs.push(arm.clone());
                     } else {
                         // Extract relationships/properties scoped to this arm
-                        let arm_rels: Vec<_> = original_relationships.iter()
-                            .filter(|r| arm_untyped.contains(&r.left_alias) || arm_untyped.contains(&r.right_alias))
+                        let arm_rels: Vec<_> = original_relationships
+                            .iter()
+                            .filter(|r| {
+                                arm_untyped.contains(&r.left_alias)
+                                    || arm_untyped.contains(&r.right_alias)
+                            })
                             .cloned()
                             .collect();
-                        let arm_props: HashMap<_, _> = original_property_accesses.iter()
+                        let arm_props: HashMap<_, _> = original_property_accesses
+                            .iter()
                             .filter(|(k, _)| arm_untyped.contains(k.as_str()))
                             .map(|(k, v)| (k.clone(), v.clone()))
                             .collect();
@@ -3045,10 +3210,12 @@ impl AnalyzerPass for TypeInference {
                         new_inputs.push(expanded);
                     }
                 }
-                plan = Arc::new(LogicalPlan::Union(crate::query_planner::logical_plan::Union {
-                    inputs: new_inputs,
-                    union_type: top_union.union_type.clone(),
-                }));
+                plan = Arc::new(LogicalPlan::Union(
+                    crate::query_planner::logical_plan::Union {
+                        inputs: new_inputs,
+                        union_type: top_union.union_type.clone(),
+                    },
+                ));
             } else {
                 // Not a top-level Union — process normally
                 plan = self.generate_union_for_untyped_nodes(
@@ -3063,12 +3230,12 @@ impl AnalyzerPass for TypeInference {
         } else {
             log::info!("🏷️ UnifiedTypeInference: No untyped nodes found");
         }
-        
-        // Phase 3: ViewScan resolution (from SchemaInference)  
+
+        // Phase 3: ViewScan resolution (from SchemaInference)
         // Resolve GraphNode(input=Empty) → ViewScan based on inferred labels
         log::info!("🏷️ UnifiedTypeInference: Phase 3 - ViewScan resolution");
         plan = Self::push_inferred_table_names_to_scan(plan, plan_ctx, graph_schema)?;
-        
+
         log::info!(
             "🏷️ UnifiedTypeInference: Completed - phase0=yes, phase1={}, phase2={}, phase3=yes",
             phase1_transformed,
@@ -3102,9 +3269,7 @@ impl AnalyzerPass for TypeInference {
 /// // WHERE id(a) = 281474976710657 AND id(b) = 844424930131969
 /// // Returns: {"a": {"User"}, "b": {"Post"}}
 /// ```
-fn extract_labels_from_where(
-    where_expr: &Option<LogicalExpr>,
-) -> HashMap<String, HashSet<String>> {
+fn extract_labels_from_where(where_expr: &Option<LogicalExpr>) -> HashMap<String, HashSet<String>> {
     let mut label_constraints = HashMap::new();
     if let Some(expr) = where_expr {
         extract_labels_from_logical_expr(expr, &mut label_constraints, false);
@@ -3142,8 +3307,12 @@ fn extract_labels_from_logical_expr(
                                 // Extract IDs from second operand (list)
                                 if let Some(LogicalExpr::List(id_list)) = op_app.operands.get(1) {
                                     for item in id_list {
-                                        if let LogicalExpr::Literal(Literal::Integer(id_value)) = item {
-                                            if let Some((label, _)) = IdEncoding::decode_with_label(*id_value) {
+                                        if let LogicalExpr::Literal(Literal::Integer(id_value)) =
+                                            item
+                                        {
+                                            if let Some((label, _)) =
+                                                IdEncoding::decode_with_label(*id_value)
+                                            {
                                                 constraints
                                                     .entry(var_name.clone())
                                                     .or_default()
@@ -3168,8 +3337,12 @@ fn extract_labels_from_logical_expr(
                             if let LogicalExpr::Column(col) = &func.args[0] {
                                 let var_name = &col.0;
                                 // Extract ID from second operand
-                                if let Some(LogicalExpr::Literal(Literal::Integer(id_value))) = op_app.operands.get(1) {
-                                    if let Some((label, _)) = IdEncoding::decode_with_label(*id_value) {
+                                if let Some(LogicalExpr::Literal(Literal::Integer(id_value))) =
+                                    op_app.operands.get(1)
+                                {
+                                    if let Some((label, _)) =
+                                        IdEncoding::decode_with_label(*id_value)
+                                    {
                                         constraints
                                             .entry(var_name.clone())
                                             .or_default()
@@ -3317,11 +3490,17 @@ fn check_any_relationship_exists_bidirectional(
 ///
 /// This is Phase 2 of unified type inference, running after Filter→GraphRel handling
 fn discover_untyped_nodes(plan: &Arc<LogicalPlan>, plan_ctx: &PlanCtx) -> HashSet<String> {
-    log::debug!("🔍 discover_untyped_nodes: Starting discovery on plan type: {:?}", 
-        std::mem::discriminant(plan.as_ref()));
+    log::debug!(
+        "🔍 discover_untyped_nodes: Starting discovery on plan type: {:?}",
+        std::mem::discriminant(plan.as_ref())
+    );
     let mut untyped = HashSet::new();
     discover_untyped_recursive(plan, plan_ctx, &mut untyped);
-    log::debug!("🔍 discover_untyped_nodes: Found {} untyped nodes: {:?}", untyped.len(), untyped);
+    log::debug!(
+        "🔍 discover_untyped_nodes: Found {} untyped nodes: {:?}",
+        untyped.len(),
+        untyped
+    );
     untyped
 }
 
@@ -3335,13 +3514,19 @@ fn discover_untyped_recursive(
         LogicalPlan::GraphRel(graph_rel) => {
             // Check left connection (from node)
             if !has_label_in_ctx(&graph_rel.left_connection, plan_ctx) {
-                log::debug!("🔍 Found untyped left connection: {}", graph_rel.left_connection);
+                log::debug!(
+                    "🔍 Found untyped left connection: {}",
+                    graph_rel.left_connection
+                );
                 untyped.insert(graph_rel.left_connection.clone());
             }
 
             // Check right connection (to node)
             if !has_label_in_ctx(&graph_rel.right_connection, plan_ctx) {
-                log::debug!("🔍 Found untyped right connection: {}", graph_rel.right_connection);
+                log::debug!(
+                    "🔍 Found untyped right connection: {}",
+                    graph_rel.right_connection
+                );
                 untyped.insert(graph_rel.right_connection.clone());
             }
 
@@ -3353,8 +3538,11 @@ fn discover_untyped_recursive(
 
         LogicalPlan::GraphNode(graph_node) => {
             // Check if node has label
-            log::debug!("🔍 discover_untyped: Checking GraphNode alias={}, label={:?}", 
-                graph_node.alias, graph_node.label);
+            log::debug!(
+                "🔍 discover_untyped: Checking GraphNode alias={}, label={:?}",
+                graph_node.alias,
+                graph_node.label
+            );
             if graph_node.label.is_none() {
                 log::debug!("🔍 Found untyped GraphNode: {}", graph_node.alias);
                 untyped.insert(graph_node.alias.clone());
@@ -3527,10 +3715,7 @@ fn extract_property_accesses(plan: &Arc<LogicalPlan>) -> HashMap<String, HashSet
     accesses
 }
 
-fn extract_props_from_plan(
-    plan: &LogicalPlan,
-    accesses: &mut HashMap<String, HashSet<String>>,
-) {
+fn extract_props_from_plan(plan: &LogicalPlan, accesses: &mut HashMap<String, HashSet<String>>) {
     match plan {
         LogicalPlan::Filter(filter) => {
             extract_props_from_expr(&filter.predicate, accesses);
@@ -3590,10 +3775,7 @@ fn extract_props_from_plan(
     }
 }
 
-fn extract_props_from_expr(
-    expr: &LogicalExpr,
-    accesses: &mut HashMap<String, HashSet<String>>,
-) {
+fn extract_props_from_expr(expr: &LogicalExpr, accesses: &mut HashMap<String, HashSet<String>>) {
     match expr {
         LogicalExpr::PropertyAccessExp(pa) => {
             let var = pa.table_alias.0.clone();
@@ -3689,7 +3871,10 @@ fn is_valid_combination_with_direction(
             None => match typed_nodes.get(&rel_pattern.left_alias) {
                 Some(t) => t.as_str(),
                 None => {
-                    log::debug!("Unknown alias '{}', skipping validation", rel_pattern.left_alias);
+                    log::debug!(
+                        "Unknown alias '{}', skipping validation",
+                        rel_pattern.left_alias
+                    );
                     continue;
                 }
             },
@@ -3700,7 +3885,10 @@ fn is_valid_combination_with_direction(
             None => match typed_nodes.get(&rel_pattern.right_alias) {
                 Some(t) => t.as_str(),
                 None => {
-                    log::debug!("Unknown alias '{}', skipping validation", rel_pattern.right_alias);
+                    log::debug!(
+                        "Unknown alias '{}', skipping validation",
+                        rel_pattern.right_alias
+                    );
                     continue;
                 }
             },
@@ -3803,34 +3991,42 @@ fn rewrap_aggregation(original: &LogicalPlan, new_input: Arc<LogicalPlan>) -> Ar
     match original {
         LogicalPlan::Limit(l) => {
             let inner = rewrap_aggregation(&l.input, new_input);
-            Arc::new(LogicalPlan::Limit(crate::query_planner::logical_plan::Limit {
-                input: inner,
-                count: l.count,
-            }))
+            Arc::new(LogicalPlan::Limit(
+                crate::query_planner::logical_plan::Limit {
+                    input: inner,
+                    count: l.count,
+                },
+            ))
         }
         LogicalPlan::Skip(s) => {
             let inner = rewrap_aggregation(&s.input, new_input);
-            Arc::new(LogicalPlan::Skip(crate::query_planner::logical_plan::Skip {
-                input: inner,
-                count: s.count,
-            }))
+            Arc::new(LogicalPlan::Skip(
+                crate::query_planner::logical_plan::Skip {
+                    input: inner,
+                    count: s.count,
+                },
+            ))
         }
         LogicalPlan::OrderBy(o) => {
             let inner = rewrap_aggregation(&o.input, new_input);
-            Arc::new(LogicalPlan::OrderBy(crate::query_planner::logical_plan::OrderBy {
-                input: inner,
-                items: o.items.clone(),
-            }))
+            Arc::new(LogicalPlan::OrderBy(
+                crate::query_planner::logical_plan::OrderBy {
+                    input: inner,
+                    items: o.items.clone(),
+                },
+            ))
         }
         LogicalPlan::GroupBy(gb) => {
             // GroupBy wraps the new_input directly
-            Arc::new(LogicalPlan::GroupBy(crate::query_planner::logical_plan::GroupBy {
-                input: new_input,
-                expressions: gb.expressions.clone(),
-                having_clause: gb.having_clause.clone(),
-                is_materialization_boundary: gb.is_materialization_boundary,
-                exposed_alias: gb.exposed_alias.clone(),
-            }))
+            Arc::new(LogicalPlan::GroupBy(
+                crate::query_planner::logical_plan::GroupBy {
+                    input: new_input,
+                    expressions: gb.expressions.clone(),
+                    having_clause: gb.having_clause.clone(),
+                    is_materialization_boundary: gb.is_materialization_boundary,
+                    exposed_alias: gb.exposed_alias.clone(),
+                },
+            ))
         }
         LogicalPlan::Projection(proj) => {
             let has_agg = proj.items.iter().any(|item| {
@@ -3842,20 +4038,24 @@ fn rewrap_aggregation(original: &LogicalPlan, new_input: Arc<LogicalPlan>) -> Ar
             if has_agg {
                 // Rewrap inner first (might be GroupBy)
                 let inner = rewrap_aggregation(&proj.input, new_input);
-                Arc::new(LogicalPlan::Projection(crate::query_planner::logical_plan::Projection {
-                    input: inner,
-                    items: proj.items.clone(),
-                    distinct: proj.distinct,
-                    pattern_comprehensions: proj.pattern_comprehensions.clone(),
-                }))
+                Arc::new(LogicalPlan::Projection(
+                    crate::query_planner::logical_plan::Projection {
+                        input: inner,
+                        items: proj.items.clone(),
+                        distinct: proj.distinct,
+                        pattern_comprehensions: proj.pattern_comprehensions.clone(),
+                    },
+                ))
             } else {
                 // Non-aggregate projection — shouldn't happen but just wrap
-                Arc::new(LogicalPlan::Projection(crate::query_planner::logical_plan::Projection {
-                    input: new_input,
-                    items: proj.items.clone(),
-                    distinct: proj.distinct,
-                    pattern_comprehensions: proj.pattern_comprehensions.clone(),
-                }))
+                Arc::new(LogicalPlan::Projection(
+                    crate::query_planner::logical_plan::Projection {
+                        input: new_input,
+                        items: proj.items.clone(),
+                        distinct: proj.distinct,
+                        pattern_comprehensions: proj.pattern_comprehensions.clone(),
+                    },
+                ))
             }
         }
         _ => new_input,

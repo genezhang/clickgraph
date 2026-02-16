@@ -2584,12 +2584,14 @@ impl RenderPlanBuilder for LogicalPlan {
                         // (`RETURN n.name`). __label__ is only needed for whole-node returns.
                         fn returns_whole_entity(plan: &LogicalPlan) -> bool {
                             match plan {
-                                LogicalPlan::Projection(p) => {
-                                    p.items.iter().any(|item| {
-                                        matches!(&item.expression,
-                                            crate::query_planner::logical_expr::LogicalExpr::TableAlias(_))
-                                    })
-                                }
+                                LogicalPlan::Projection(p) => p.items.iter().any(|item| {
+                                    matches!(
+                                        &item.expression,
+                                        crate::query_planner::logical_expr::LogicalExpr::TableAlias(
+                                            _
+                                        )
+                                    )
+                                }),
                                 LogicalPlan::Limit(l) => returns_whole_entity(&l.input),
                                 LogicalPlan::Skip(s) => returns_whole_entity(&s.input),
                                 LogicalPlan::OrderBy(o) => returns_whole_entity(&o.input),
@@ -2599,12 +2601,16 @@ impl RenderPlanBuilder for LogicalPlan {
                             }
                         }
 
-                        let rel_count = union.inputs.iter()
+                        let rel_count = union
+                            .inputs
+                            .iter()
                             .filter(|input| contains_graph_rel(input.as_ref()))
                             .count();
                         let all_have_rels = rel_count == union.inputs.len();
                         let none_have_rels = rel_count == 0;
-                        let has_whole_entity_return = union.inputs.iter()
+                        let has_whole_entity_return = union
+                            .inputs
+                            .iter()
                             .any(|input| returns_whole_entity(input.as_ref()));
                         log::debug!(
                             "🔀 Label decision: none_have_rels={}, all_have_rels={}, has_whole_entity_return={}",
@@ -2631,7 +2637,9 @@ impl RenderPlanBuilder for LogicalPlan {
                                     schema,
                                 );
                         } else {
-                            log::info!("🔀 UNION with specific property returns: no label columns needed");
+                            log::info!(
+                                "🔀 UNION with specific property returns: no label columns needed"
+                            );
                         }
                     }
 
@@ -2803,9 +2811,9 @@ impl RenderPlanBuilder for LogicalPlan {
                     // TypeInference expanding unlabeled nodes) and per-arm LIMIT.
                     // When any branch is complex, put ALL branches in union.input
                     // so render_union_branch_sql wraps each in a subquery.
-                    let any_complex = all_renders.iter().any(|r| {
-                        r.union.0.is_some() || r.limit.0.is_some()
-                    });
+                    let any_complex = all_renders
+                        .iter()
+                        .any(|r| r.union.0.is_some() || r.limit.0.is_some());
 
                     let mut base_render = all_renders.remove(0);
                     base_render.ctes.0 = all_ctes;
@@ -2817,12 +2825,14 @@ impl RenderPlanBuilder for LogicalPlan {
                         all_branches.extend(all_renders);
 
                         // Create shell base that holds CTEs + union list
-                        let all_ctes_collected: Vec<super::Cte> = all_branches.iter()
+                        let all_ctes_collected: Vec<super::Cte> = all_branches
+                            .iter()
                             .flat_map(|b| b.ctes.0.iter().cloned())
                             .collect();
                         // Dedup CTEs by name (keep first occurrence)
                         let mut seen_cte_names = std::collections::HashSet::new();
-                        let deduped_ctes: Vec<super::Cte> = all_ctes_collected.into_iter()
+                        let deduped_ctes: Vec<super::Cte> = all_ctes_collected
+                            .into_iter()
                             .filter(|cte| seen_cte_names.insert(cte.cte_name.clone()))
                             .collect();
                         // Clear CTEs from branches (they live on the shell base)
@@ -2836,7 +2846,10 @@ impl RenderPlanBuilder for LogicalPlan {
 
                         base_render = RenderPlan {
                             ctes: CteItems(deduped_ctes),
-                            select: SelectItems { items: vec![], distinct: false },
+                            select: SelectItems {
+                                items: vec![],
+                                distinct: false,
+                            },
                             from: FromTableItem(None),
                             joins: JoinItems::new(vec![]),
                             array_join: ArrayJoinItem(vec![]),

@@ -3231,7 +3231,8 @@ pub fn extract_ctes_with_context(
                         let direct_rel_cols: String = all_rel_props
                             .iter()
                             .map(|prop_name| {
-                                if let Some(prop_val) = rel_schema.property_mappings.get(prop_name) {
+                                if let Some(prop_val) = rel_schema.property_mappings.get(prop_name)
+                                {
                                     let col_name = match prop_val {
                                         PropertyValue::Column(c) => c.clone(),
                                         PropertyValue::Expression(e) => e.clone(),

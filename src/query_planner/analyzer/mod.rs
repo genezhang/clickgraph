@@ -59,18 +59,24 @@ use crate::{
     graph_catalog::graph_schema::GraphSchema,
     query_planner::{
         analyzer::{
-            analyzer_pass::AnalyzerPass, bidirectional_union::BidirectionalUnion,
-            cte_column_resolver::CteColumnResolver, cte_reference_populator::CteReferencePopulator,
+            analyzer_pass::AnalyzerPass,
+            bidirectional_union::BidirectionalUnion,
+            cte_column_resolver::CteColumnResolver,
+            cte_reference_populator::CteReferencePopulator,
             cte_schema_resolver::CteSchemaResolver,
-            duplicate_scans_removing::DuplicateScansRemoving, filter_tagging::FilterTagging,
+            duplicate_scans_removing::DuplicateScansRemoving,
+            filter_tagging::FilterTagging,
             graph_join_inference::GraphJoinInference,
-            graph_traversal_planning::GraphTRaversalPlanning, group_by_building::GroupByBuilding,
+            graph_traversal_planning::GraphTRaversalPlanning,
+            group_by_building::GroupByBuilding,
             plan_sanitization::PlanSanitization,
             projected_columns_resolver::ProjectedColumnsResolver,
-            projection_tagging::ProjectionTagging, query_validation::QueryValidation,
+            projection_tagging::ProjectionTagging,
+            query_validation::QueryValidation,
             // SchemaInference REMOVED (Feb 16, 2026) - Merged into TypeInference
             type_inference::TypeInference,
-            variable_resolver::VariableResolver, vlp_transitivity_check::VlpTransitivityCheck,
+            variable_resolver::VariableResolver,
+            vlp_transitivity_check::VlpTransitivityCheck,
         },
         logical_plan::LogicalPlan,
         optimizer::{
@@ -139,7 +145,7 @@ pub fn initial_analyzing(
     // Now runs as FIRST pass (after SchemaInference consolidation)
     // 4-phase unified type inference:
     // - Phase 0: Relationship-based label inference
-    // - Phase 1: Filter→GraphRel UNION generation  
+    // - Phase 1: Filter→GraphRel UNION generation
     // - Phase 2: Untyped node UNION generation
     // - Phase 3: ViewScan resolution
     let type_inference = TypeInference::new();
@@ -153,7 +159,7 @@ pub fn initial_analyzing(
 
     // Step 2.1: Pattern Resolver - enumerate type combinations for remaining untyped nodes
     // Step 2.1: PatternResolver - DEPRECATED (merged into TypeInference)
-    // 
+    //
     // PatternResolver functionality has been fully absorbed into UnifiedTypeInference.
     // TypeInference now handles BOTH:
     // - Filter→GraphRel patterns with WHERE constraints (Phase 1)
