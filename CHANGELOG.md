@@ -1,6 +1,45 @@
 ## [Unreleased]
 
-### � Bug Fixes
+### 🚀 Features
+
+- **Unified Type Inference with Direction Validation** (Feb 16, 2026): 🎯 **NEO4J BROWSER FIX**
+  - **Problem**: Neo4j Browser expand feature showed relationships in wrong direction (Post→User instead of schema-defined User→Post)
+  - **Root Cause**: Browser queries like `MATCH (a)--(b) WHERE id(a) IN [Post.1]` had labels extracted from WHERE constraints, but no pass validated direction against schema. Invalid branches like (Post)-[AUTHORED]->(User) passed through despite schema defining User→Post.
+  - **Solution**: Extended TypeInference to merge PatternResolver functionality, extract WHERE constraints, validate direction, and optimize undirected patterns
+  - **Key Improvements**:
+    - **WHERE constraint extraction**: `extract_labels_from_where()` decodes `id() IN [...]` patterns from LogicalExpr
+    - **Direction validation**: `check_relationship_exists_with_direction()` enforces schema direction constraints  
+    - **Undirected optimization**: `optimize_undirected_pattern()` converts `Direction::Either` to unidirectional when all valid combinations go same direction
+    - **UNION generation**: `try_generate_union_with_constraints()` creates Union with only schema-valid branches
+  - **Architecture**:
+    ```
+    Filter(WHERE id(a) IN [...])
+      └─ GraphRel(a, r, b, direction=Either)
+    
+    ↓ UnifiedTypeInference
+    
+    1. Extract labels from WHERE: a ∈ {Post}, b ∈ {User}
+    2. Check schema: User→Post (AUTHORED, LIKED), User→User (FOLLOWS)
+    3. Optimize: All Post combinations go backward → Convert Either to Incoming
+    4. Generate Union with valid branches only
+    ```
+  - **Algorithm** (src/query_planner/analyzer/type_inference.rs):
+    1. Intercepts Filter→GraphRel patterns
+    2. Extracts WHERE constraints (labels from `id()` calls)
+    3. Computes possible types (explicit labels + WHERE + schema)
+    4. Optimizes undirected patterns (Either→Outgoing/Incoming when unidirectional)
+    5. Validates each (left, rel, right) combination with direction check
+    6. Generates Union if multiple branches, single branch if one, skips if zero
+  - **Results**:
+    - ✅ UNION generation: 3 branches for valid User→{User,Post} patterns
+    - ✅ Direction filtering: `MATCH (p:Post)--(u:User)` correctly uses schema direction (User→Post)
+    - ✅ Invalid branches excluded: `MATCH (p:Post)-[r]->(u:User)` returns 0 (correct!)
+    - ✅ Undirected optimization: `(Post)--(User)` with Direction::Either converts to Incoming
+  - **PatternResolver Deprecated**: Functionality merged into TypeInference
+  - **Testing**: Manual verification with Neo4j Browser patterns, direction validation tests
+  - **Impact**: 🎉 **Neo4j Browser expand feature now shows correct relationship directions**
+
+### 🐛 Bug Fixes
 
 - **OPTIONAL MATCH Schema Lookup Fix** (Feb 3, 2026): ✅ **ALL SMOKE TESTS PASSING**
   - **Problem**: OPTIONAL MATCH queries failed with "Relationship with type FOLLOWS not found" due to incomplete node label inference
