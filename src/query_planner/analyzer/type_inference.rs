@@ -1508,25 +1508,75 @@ impl TypeInference {
         // Multiple valid combinations - generate UNION branches
         log::info!("🔀 Generating UNION with {} branches", valid_combinations.len());
 
-        let mut union_branches = Vec::new();
-        for combo in valid_combinations {
-            // Clone plan with labels injected into GraphNodes
-            let branch_plan = clone_plan_with_labels(&plan, &combo);
-            
-            log::debug!(
-                "✅ Generated UNION branch for combination: {:?}",
-                combo
-            );
-
-            union_branches.push(Arc::new(branch_plan));
+        // Update plan_ctx with all labels for each untyped variable so downstream
+        // passes (e.g., ProjectionTagging) can resolve label-dependent logic.
+        // Each branch has a specific label in its GraphNode, but plan_ctx is shared.
+        let mut all_labels_per_var: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for combo in &valid_combinations {
+            for (var_name, type_name) in combo {
+                all_labels_per_var
+                    .entry(var_name.clone())
+                    .or_default()
+                    .push(type_name.clone());
+            }
+        }
+        for (var_name, labels) in &all_labels_per_var {
+            if let Ok(mut table_ctx) = plan_ctx.get_table_ctx(var_name).cloned() {
+                table_ctx.set_labels(Some(labels.clone()));
+                plan_ctx.insert_table_ctx(var_name.clone(), table_ctx);
+            }
         }
 
-        let union_plan = Union {
-            inputs: union_branches,
-            union_type: UnionType::All,
-        };
+        let mut union_branches = Vec::new();
 
-        Ok(Arc::new(LogicalPlan::Union(union_plan)))
+        // Check if the plan has aggregation (GroupBy or aggregate functions in Projection).
+        // If so, inject the UNION *below* the aggregation layer so the aggregate
+        // operates on the combined rows from all branches, rather than each branch
+        // independently computing its own aggregate.
+        let has_aggregation = plan_has_aggregation(&plan);
+
+        if has_aggregation {
+            log::info!("🔀 Plan has aggregation: injecting UNION below aggregation layer");
+            // Split plan into aggregation wrapper + scan part.
+            // Clone only scan parts per combination, then re-wrap.
+            for combo in valid_combinations {
+                let scan_branch = clone_plan_with_labels(
+                    &extract_scan_part(&plan),
+                    &combo,
+                );
+                log::debug!(
+                    "✅ Generated scan branch for combination: {:?}",
+                    combo
+                );
+                union_branches.push(Arc::new(scan_branch));
+            }
+
+            let union_plan = Union {
+                inputs: union_branches,
+                union_type: UnionType::All,
+            };
+            let union_arc = Arc::new(LogicalPlan::Union(union_plan));
+
+            // Re-wrap with the aggregation layers from the original plan
+            Ok(rewrap_aggregation(&plan, union_arc))
+        } else {
+            for combo in valid_combinations {
+                let branch_plan = clone_plan_with_labels(&plan, &combo);
+                log::debug!(
+                    "✅ Generated UNION branch for combination: {:?}",
+                    combo
+                );
+                union_branches.push(Arc::new(branch_plan));
+            }
+
+            let union_plan = Union {
+                inputs: union_branches,
+                union_type: UnionType::All,
+            };
+
+            Ok(Arc::new(LogicalPlan::Union(union_plan)))
+        }
     }
 
     /// Create a typed branch for UNION with specific node and relationship types
@@ -3695,6 +3745,121 @@ fn is_valid_combination_with_direction(
     }
 
     true
+}
+
+/// Check if a plan contains aggregation (GroupBy or aggregate functions in Projection).
+fn plan_has_aggregation(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::GroupBy(_) => true,
+        LogicalPlan::Projection(proj) => proj.items.iter().any(|item| {
+            matches!(
+                &item.expression,
+                crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)
+            )
+        }),
+        LogicalPlan::Limit(l) => plan_has_aggregation(&l.input),
+        LogicalPlan::Skip(s) => plan_has_aggregation(&s.input),
+        LogicalPlan::OrderBy(o) => plan_has_aggregation(&o.input),
+        LogicalPlan::GraphJoins(gj) => plan_has_aggregation(&gj.input),
+        _ => false,
+    }
+}
+
+/// Extract the scan part of a plan (everything below aggregation layers).
+/// For `Projection(count(n), GroupBy(GJ(GraphNode)))`, returns `GJ(GraphNode)`.
+/// For `Projection(count(n), GJ(GraphNode))`, returns `GJ(GraphNode)`.
+fn extract_scan_part(plan: &LogicalPlan) -> LogicalPlan {
+    match plan {
+        LogicalPlan::GroupBy(gb) => (*gb.input).clone(),
+        LogicalPlan::Projection(proj) => {
+            let has_agg = proj.items.iter().any(|item| {
+                matches!(
+                    &item.expression,
+                    crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)
+                )
+            });
+            if has_agg {
+                // Check if input is GroupBy — if so, extract below GroupBy
+                if let LogicalPlan::GroupBy(gb) = proj.input.as_ref() {
+                    (*gb.input).clone()
+                } else {
+                    (*proj.input).clone()
+                }
+            } else {
+                (*proj.input).clone()
+            }
+        }
+        LogicalPlan::Limit(l) => extract_scan_part(&l.input),
+        LogicalPlan::Skip(s) => extract_scan_part(&s.input),
+        LogicalPlan::OrderBy(o) => extract_scan_part(&o.input),
+        other => other.clone(),
+    }
+}
+
+/// Re-wrap aggregation layers from the original plan around a new input (the UNION).
+/// For original `Limit(Projection(count(n), GroupBy(GJ(GraphNode))))`:
+///   → `Limit(Projection(count(n), GroupBy(union_input)))`
+fn rewrap_aggregation(original: &LogicalPlan, new_input: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
+    match original {
+        LogicalPlan::Limit(l) => {
+            let inner = rewrap_aggregation(&l.input, new_input);
+            Arc::new(LogicalPlan::Limit(crate::query_planner::logical_plan::Limit {
+                input: inner,
+                count: l.count,
+            }))
+        }
+        LogicalPlan::Skip(s) => {
+            let inner = rewrap_aggregation(&s.input, new_input);
+            Arc::new(LogicalPlan::Skip(crate::query_planner::logical_plan::Skip {
+                input: inner,
+                count: s.count,
+            }))
+        }
+        LogicalPlan::OrderBy(o) => {
+            let inner = rewrap_aggregation(&o.input, new_input);
+            Arc::new(LogicalPlan::OrderBy(crate::query_planner::logical_plan::OrderBy {
+                input: inner,
+                items: o.items.clone(),
+            }))
+        }
+        LogicalPlan::GroupBy(gb) => {
+            // GroupBy wraps the new_input directly
+            Arc::new(LogicalPlan::GroupBy(crate::query_planner::logical_plan::GroupBy {
+                input: new_input,
+                expressions: gb.expressions.clone(),
+                having_clause: gb.having_clause.clone(),
+                is_materialization_boundary: gb.is_materialization_boundary,
+                exposed_alias: gb.exposed_alias.clone(),
+            }))
+        }
+        LogicalPlan::Projection(proj) => {
+            let has_agg = proj.items.iter().any(|item| {
+                matches!(
+                    &item.expression,
+                    crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)
+                )
+            });
+            if has_agg {
+                // Rewrap inner first (might be GroupBy)
+                let inner = rewrap_aggregation(&proj.input, new_input);
+                Arc::new(LogicalPlan::Projection(crate::query_planner::logical_plan::Projection {
+                    input: inner,
+                    items: proj.items.clone(),
+                    distinct: proj.distinct,
+                    pattern_comprehensions: proj.pattern_comprehensions.clone(),
+                }))
+            } else {
+                // Non-aggregate projection — shouldn't happen but just wrap
+                Arc::new(LogicalPlan::Projection(crate::query_planner::logical_plan::Projection {
+                    input: new_input,
+                    items: proj.items.clone(),
+                    distinct: proj.distinct,
+                    pattern_comprehensions: proj.pattern_comprehensions.clone(),
+                }))
+            }
+        }
+        _ => new_input,
+    }
 }
 
 /// Clone a LogicalPlan, injecting labels from a type combination into untyped GraphNodes.

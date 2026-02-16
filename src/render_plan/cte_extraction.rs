@@ -3053,14 +3053,35 @@ pub fn extract_ctes_with_context(
                         })?;
 
                         // Table names
-                        let from_table = format!(
+                        let raw_from_table = format!(
                             "{}.{}",
                             from_node_schema.database, from_node_schema.table_name
                         );
                         let rel_table =
                             format!("{}.{}", rel_schema.database, rel_schema.table_name);
-                        let to_table =
+                        let raw_to_table =
                             format!("{}.{}", to_node_schema.database, to_node_schema.table_name);
+
+                        // Self-join detection: when both endpoints are the same table,
+                        // we need distinct aliases so ClickHouse can distinguish them.
+                        let is_self_join = raw_from_table == raw_to_table;
+                        let (from_table, from_join_expr, to_table, to_join_expr) = if is_self_join {
+                            let from_alias = "from_node".to_string();
+                            let to_alias = "to_node".to_string();
+                            (
+                                from_alias.clone(),
+                                format!("{} AS {}", raw_from_table, from_alias),
+                                to_alias.clone(),
+                                format!("{} AS {}", raw_to_table, to_alias),
+                            )
+                        } else {
+                            (
+                                raw_from_table.clone(),
+                                raw_from_table.clone(),
+                                raw_to_table.clone(),
+                                raw_to_table.clone(),
+                            )
+                        };
 
                         // ID columns (as Identifier for composite support)
                         let from_node_id = &from_node_schema.node_id.id;
@@ -3234,8 +3255,8 @@ pub fn extract_ctes_with_context(
                                 {} as start_properties, \
                                 {} as end_properties{direct_rel_cols} \
                             FROM {rel_table} \
-                            INNER JOIN {from_table} ON {from_join_cond} \
-                            INNER JOIN {to_table} ON {to_join_cond}{where_clause} \
+                            INNER JOIN {from_join_expr} ON {from_join_cond} \
+                            INNER JOIN {to_join_expr} ON {to_join_cond}{where_clause} \
                             LIMIT 1000",
                             base_rel_type,
                             rel_properties_json,
