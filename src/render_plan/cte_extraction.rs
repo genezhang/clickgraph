@@ -3004,6 +3004,20 @@ pub fn extract_ctes_with_context(
                     combinations.len()
                 );
 
+                // Collect all unique relationship property names across all combinations
+                // so they can be exposed as direct CTE columns (with NULL for missing ones)
+                let all_rel_props: Vec<String> = {
+                    let mut props = std::collections::BTreeSet::new();
+                    for combo in combinations {
+                        if let Some(rs) = schema.get_relationships_schema_opt(&combo.rel_type) {
+                            for cypher_name in rs.property_mappings.keys() {
+                                props.insert(cypher_name.clone());
+                            }
+                        }
+                    }
+                    props.into_iter().collect()
+                };
+
                 // Generate a SELECT for each combination: full pattern JOIN
                 // Each branch: (from_node_table JOIN rel_table JOIN to_node_table)
                 let union_branches: Result<Vec<String>, RenderBuildError> = combinations
@@ -3192,6 +3206,23 @@ pub fn extract_ctes_with_context(
                             .collect();
                         let to_join_cond = to_join_parts.join(" AND ");
 
+                        // Build direct relationship property columns for outer query access
+                        let direct_rel_cols: String = all_rel_props
+                            .iter()
+                            .map(|prop_name| {
+                                if let Some(prop_val) = rel_schema.property_mappings.get(prop_name) {
+                                    let col_name = match prop_val {
+                                        PropertyValue::Column(c) => c.clone(),
+                                        PropertyValue::Expression(e) => e.clone(),
+                                    };
+                                    format!(", {rel_table}.{col_name} AS {prop_name}")
+                                } else {
+                                    format!(", NULL AS {prop_name}")
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("");
+
                         let branch_sql = format!(
                             "SELECT \
                                 '{from_label}' AS start_type, \
@@ -3201,7 +3232,7 @@ pub fn extract_ctes_with_context(
                                 ['{}'] as path_relationships, \
                                 [{}] as rel_properties, \
                                 {} as start_properties, \
-                                {} as end_properties \
+                                {} as end_properties{direct_rel_cols} \
                             FROM {rel_table} \
                             INNER JOIN {from_table} ON {from_join_cond} \
                             INNER JOIN {to_table} ON {to_join_cond}{where_clause} \

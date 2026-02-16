@@ -150,8 +150,10 @@ fn is_empty_or_filtered_branch(plan: &LogicalPlan) -> bool {
         }
 
         // Check if wrapped plan contains Empty
+        // BUT: GraphNode(input=Empty) with no label is a TypeInference placeholder,
+        // not a filtered-out branch. Only treat as empty if label was explicitly set.
         LogicalPlan::GraphNode(node) => {
-            matches!(node.input.as_ref(), LogicalPlan::Empty)
+            matches!(node.input.as_ref(), LogicalPlan::Empty) && node.label.is_some()
         }
 
         // Recursively check wrapped plans (common UNION branch structures)
@@ -206,27 +208,7 @@ pub fn evaluate_cypher_statement(
             #[allow(unused_assignments)]
             let mut combined_ctx: Option<PlanCtx> = None;
 
-            // Helper function to check if a branch is effectively empty
-            // (either LogicalPlan::Empty or a GraphRel with no relationship types)
-            fn is_empty_or_filtered_branch(plan: &LogicalPlan) -> bool {
-                match plan {
-                    LogicalPlan::Empty => true,
-                    // GraphRel with labels=None or labels=Some([]) means property filtering removed all types
-                    LogicalPlan::GraphRel(rel) => {
-                        matches!(&rel.labels, Some(labels) if labels.is_empty())
-                    }
-                    // Check wrapper nodes
-                    LogicalPlan::GraphNode(node) => is_empty_or_filtered_branch(&node.input),
-                    LogicalPlan::Projection(proj) => is_empty_or_filtered_branch(&proj.input),
-                    LogicalPlan::Filter(f) => is_empty_or_filtered_branch(&f.input),
-                    LogicalPlan::GraphJoins(joins) => is_empty_or_filtered_branch(&joins.input),
-                    LogicalPlan::OrderBy(ob) => is_empty_or_filtered_branch(&ob.input),
-                    LogicalPlan::Limit(l) => is_empty_or_filtered_branch(&l.input),
-                    LogicalPlan::Skip(s) => is_empty_or_filtered_branch(&s.input),
-                    LogicalPlan::GroupBy(gb) => is_empty_or_filtered_branch(&gb.input),
-                    _ => false,
-                }
-            }
+            // Use the module-level is_empty_or_filtered_branch (no need for duplicate)
 
             // First query
             let (first_plan, first_ctx) = plan_builder::build_logical_plan(
