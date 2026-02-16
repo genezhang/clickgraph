@@ -151,6 +151,42 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
             continue;
         }
 
+        // Try to parse temporal accessor postfix: expr.year, expr.month, etc.
+        // This handles cases like datetime('2013').year or (expr).month
+        let temporal_attempt: IResult<_, _, nom::error::Error<_>> = preceded(
+            char('.'),
+            alt((
+                map(tag_no_case::<_, _, nom::error::Error<_>>("year"), |_| {
+                    "year"
+                }),
+                map(tag_no_case("month"), |_| "month"),
+                map(tag_no_case("day"), |_| "day"),
+                map(tag_no_case("hour"), |_| "hour"),
+                map(tag_no_case("minute"), |_| "minute"),
+                map(tag_no_case("second"), |_| "second"),
+                map(tag_no_case("millisecond"), |_| "millisecond"),
+                map(tag_no_case("microsecond"), |_| "microsecond"),
+                map(tag_no_case("nanosecond"), |_| "nanosecond"),
+            )),
+        )
+        .parse(input);
+
+        if let Ok((new_input, accessor)) = temporal_attempt {
+            // Ensure the accessor isn't followed by alphanumeric (to avoid matching partial identifiers)
+            let is_complete_token = new_input
+                .chars()
+                .next()
+                .map_or(true, |c| !c.is_alphanumeric() && c != '_');
+            if is_complete_token {
+                expr = Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
+                    name: accessor.to_string(),
+                    args: vec![expr],
+                });
+                input = new_input;
+                continue;
+            }
+        }
+
         // No more postfix operations found
         break;
     }
@@ -1590,6 +1626,107 @@ mod tests {
                 eprintln!("FAILED: {:?}", e);
                 panic!("Parser should handle 100 * size([pattern])");
             }
+        }
+    }
+
+    #[test]
+    fn test_temporal_accessor_on_function_call() {
+        // datetime('2013').year should parse as year(datetime('2013'))
+        let input = "datetime('2013-01-01').year";
+        let result = parse_expression(input);
+        match result {
+            Ok((remaining, expr)) => {
+                assert_eq!(remaining, "");
+                if let Expression::FunctionCallExp(fc) = &expr {
+                    assert_eq!(fc.name, "year");
+                    assert_eq!(fc.args.len(), 1);
+                } else {
+                    panic!("Expected FunctionCallExp(year), got {:?}", expr);
+                }
+            }
+            Err(e) => panic!("Should parse datetime().year: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_temporal_accessor_in_parenthesized_expr() {
+        // (datetime('2013').year) should parse
+        let input = "(datetime('2013-01-01').year)";
+        let result = parse_expression(input);
+        match result {
+            Ok((remaining, expr)) => {
+                assert_eq!(remaining, "");
+                if let Expression::FunctionCallExp(fc) = &expr {
+                    assert_eq!(fc.name, "year");
+                } else {
+                    panic!("Expected FunctionCallExp(year), got {:?}", expr);
+                }
+            }
+            Err(e) => panic!("Should parse (datetime().year): {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_temporal_accessor_in_arithmetic() {
+        // (datetime('2013').year - n.creationDate.year) should parse as subtraction
+        let input = "(datetime('2013-01-01').year - n.creationDate.year)";
+        let result = parse_expression(input);
+        match result {
+            Ok((remaining, expr)) => {
+                assert_eq!(remaining, "");
+                if let Expression::OperatorApplicationExp(op) = &expr {
+                    assert_eq!(op.operator, Operator::Subtraction);
+                } else {
+                    panic!("Expected subtraction, got {:?}", expr);
+                }
+            }
+            Err(e) => panic!("Should parse temporal arithmetic: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_temporal_accessor_rejects_partial_identifiers() {
+        // "yearly" should NOT match as temporal accessor "year"
+        let input = "datetime('2013-01-01').yearly";
+        let result = parse_expression(input);
+        match result {
+            Ok((remaining, _)) => {
+                // Parser should consume datetime(...) but NOT .yearly as temporal
+                assert!(
+                    remaining.contains("yearly"),
+                    "Expected 'yearly' to remain unparsed, got remaining: {}",
+                    remaining
+                );
+            }
+            Err(_) => {} // Also acceptable — failing to parse is fine
+        }
+
+        // "months" should NOT match as temporal accessor "month"
+        let input = "datetime('2013-01-01').months";
+        let result = parse_expression(input);
+        match result {
+            Ok((remaining, _)) => {
+                assert!(
+                    remaining.contains("months"),
+                    "Expected 'months' to remain unparsed, got remaining: {}",
+                    remaining
+                );
+            }
+            Err(_) => {}
+        }
+
+        // "year_start" should NOT match as temporal accessor "year"
+        let input = "datetime('2013-01-01').year_start";
+        let result = parse_expression(input);
+        match result {
+            Ok((remaining, _)) => {
+                assert!(
+                    remaining.contains("year_start"),
+                    "Expected 'year_start' to remain unparsed, got remaining: {}",
+                    remaining
+                );
+            }
+            Err(_) => {}
         }
     }
 }
