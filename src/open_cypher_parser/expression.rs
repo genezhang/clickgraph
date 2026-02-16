@@ -156,15 +156,17 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
         let temporal_attempt: IResult<_, _, nom::error::Error<_>> = preceded(
             char('.'),
             alt((
-                tag_no_case::<_, _, nom::error::Error<_>>("millisecond"),
-                tag_no_case("microsecond"),
-                tag_no_case("nanosecond"),
-                tag_no_case("minute"),
-                tag_no_case("second"),
-                tag_no_case("month"),
-                tag_no_case("year"),
-                tag_no_case("hour"),
-                tag_no_case("day"),
+                map(tag_no_case::<_, _, nom::error::Error<_>>("year"), |_| {
+                    "year"
+                }),
+                map(tag_no_case("month"), |_| "month"),
+                map(tag_no_case("day"), |_| "day"),
+                map(tag_no_case("hour"), |_| "hour"),
+                map(tag_no_case("minute"), |_| "minute"),
+                map(tag_no_case("second"), |_| "second"),
+                map(tag_no_case("millisecond"), |_| "millisecond"),
+                map(tag_no_case("microsecond"), |_| "microsecond"),
+                map(tag_no_case("nanosecond"), |_| "nanosecond"),
             )),
         )
         .parse(input);
@@ -177,7 +179,7 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
                 .map_or(true, |c| !c.is_alphanumeric() && c != '_');
             if is_complete_token {
                 expr = Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
-                    name: accessor.to_lowercase(),
+                    name: accessor.to_string(),
                     args: vec![expr],
                 });
                 input = new_input;
@@ -1679,6 +1681,52 @@ mod tests {
                 }
             }
             Err(e) => panic!("Should parse temporal arithmetic: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_temporal_accessor_rejects_partial_identifiers() {
+        // "yearly" should NOT match as temporal accessor "year"
+        let input = "datetime('2013-01-01').yearly";
+        let result = parse_expression(input);
+        match result {
+            Ok((remaining, _)) => {
+                // Parser should consume datetime(...) but NOT .yearly as temporal
+                assert!(
+                    remaining.contains("yearly"),
+                    "Expected 'yearly' to remain unparsed, got remaining: {}",
+                    remaining
+                );
+            }
+            Err(_) => {} // Also acceptable — failing to parse is fine
+        }
+
+        // "months" should NOT match as temporal accessor "month"
+        let input = "datetime('2013-01-01').months";
+        let result = parse_expression(input);
+        match result {
+            Ok((remaining, _)) => {
+                assert!(
+                    remaining.contains("months"),
+                    "Expected 'months' to remain unparsed, got remaining: {}",
+                    remaining
+                );
+            }
+            Err(_) => {}
+        }
+
+        // "year_start" should NOT match as temporal accessor "year"
+        let input = "datetime('2013-01-01').year_start";
+        let result = parse_expression(input);
+        match result {
+            Ok((remaining, _)) => {
+                assert!(
+                    remaining.contains("year_start"),
+                    "Expected 'year_start' to remain unparsed, got remaining: {}",
+                    remaining
+                );
+            }
+            Err(_) => {}
         }
     }
 }
