@@ -1012,16 +1012,19 @@ impl TypeInference {
             _ => return Ok(Transformed::No(graph_rel_plan)),
         };
 
-        // Skip UNION generation for:
-        // 1. Undirected patterns (handled by BidirectionalUnion pass later)
-        // 2. Variable-length paths (handled by GraphTraversalPlanning)
-        if matches!(rel.direction, Direction::Either) || rel.variable_length.is_some() {
+        // Skip UNION generation for variable-length paths (handled by GraphTraversalPlanning)
+        if rel.variable_length.is_some() {
             log::debug!(
-                "🔍 UnifiedTypeInference: Skipping UNION generation for pattern '{}' (undirected or VLP)",
+                "🔍 UnifiedTypeInference: Skipping UNION generation for VLP pattern '{}'",
                 rel.alias
             );
             return self.infer_labels_recursive(graph_rel_plan, plan_ctx, graph_schema);
         }
+        
+        // NOTE: We DO handle Direction::Either (undirected patterns) here!
+        // check_relationship_exists_with_direction() validates bidirectionally for Either
+        // This is critical for Neo4j Browser expand: (Post)--(User) should return ONLY
+        // valid directions from schema (User→Post), not invalid (Post→User)
 
         // Get possible types for left and right nodes
         let left_types = self.get_possible_types_for_variable(
@@ -1068,7 +1071,29 @@ impl TypeInference {
             rel.direction
         );
 
-        // Generate all combinations and validate with direction
+        // For undirected patterns (Direction::Either), check if all valid combinations
+        // go in the same direction. If so, convert to that direction to prevent
+        // BidirectionalUnion from creating invalid duplicate branches.
+        let optimized_direction = if matches!(rel.direction, Direction::Either) {
+            self.optimize_undirected_pattern(
+                &left_types,
+                &right_types,
+                &rel_types,
+                graph_schema,
+            )
+        } else {
+            rel.direction.clone()
+        };
+
+        if optimized_direction != rel.direction {
+            log::info!(
+                "🎯 UnifiedTypeInference: Optimized undirected pattern: {:?} → {:?} (only one direction valid in schema)",
+                rel.direction,
+                optimized_direction
+            );
+        }
+
+        // Generate all combinations and validate with optimized direction
         let mut valid_combinations = Vec::new();
 
         for left_type in &left_types {
@@ -1079,7 +1104,7 @@ impl TypeInference {
                         left_type,
                         right_type,
                         rel_type,
-                        rel.direction.clone(),
+                        optimized_direction.clone(),
                         graph_schema,
                     ) {
                         valid_combinations.push((
@@ -1090,7 +1115,7 @@ impl TypeInference {
                     } else {
                         log::debug!(
                             "🚫 UnifiedTypeInference: Invalid combination filtered: ({left_type})-[{rel_type}:{:?}]->({right_type})",
-                            rel.direction
+                            optimized_direction
                         );
                     }
                 }
@@ -1125,26 +1150,38 @@ impl TypeInference {
 
         if valid_combinations.len() == 1 {
             // Single valid combination - no UNION needed
+            let (left_type, rel_type, right_type) = &valid_combinations[0];
             log::info!(
-                "✅ UnifiedTypeInference: Single valid combination, no UNION needed: ({:?})-[{:?}]->({:?})",
-                valid_combinations[0].0,
-                valid_combinations[0].1,
-                valid_combinations[0].2
+                "✅ UnifiedTypeInference: Single valid combination, no UNION needed: ({:?})-[{:?}:{:?}]->({:?})",
+                left_type,
+                rel_type,
+                optimized_direction,
+                right_type
             );
+            
+            // If direction was optimized, update the GraphRel plan
+            if optimized_direction != rel.direction {
+                let mut updated_rel = rel.clone();
+                updated_rel.direction = optimized_direction;
+                let updated_plan = Arc::new(LogicalPlan::GraphRel(updated_rel));
+                return self.infer_labels_recursive(updated_plan, plan_ctx, graph_schema);
+            }
+            
             return self.infer_labels_recursive(graph_rel_plan, plan_ctx, graph_schema);
         }
 
         // Multiple valid combinations - generate UNION
         log::info!(
-            "🔀 UnifiedTypeInference: Generating UNION with {} branches",
-            valid_combinations.len()
+            "🔀 UnifiedTypeInference: Generating UNION with {} branches (direction: {:?})",
+            valid_combinations.len(),
+            optimized_direction
         );
 
         let mut union_branches = Vec::new();
 
         for (left_type, rel_type, right_type) in valid_combinations {
             // Create a branch with specific types
-            let branch = self.create_typed_branch(
+            let mut branch = self.create_typed_branch(
                 rel,
                 &left_type,
                 &vec![rel_type],
@@ -1152,6 +1189,14 @@ impl TypeInference {
                 plan_ctx,
                 graph_schema,
             )?;
+            
+            // Update direction if optimized
+            if optimized_direction != rel.direction {
+                if let LogicalPlan::GraphRel(graph_rel) = Arc::make_mut(&mut branch) {
+                    graph_rel.direction = optimized_direction.clone();
+                }
+            }
+            
             union_branches.push(branch);
         }
 
@@ -1210,6 +1255,66 @@ impl TypeInference {
         );
 
         Ok(all_types)
+    }
+
+    /// Optimize undirected patterns by checking if all valid combinations go in same direction
+    /// 
+    /// Strategy: Check ALL possible type combinations. If they all go in ONE direction,
+    /// convert Direction::Either to that direction. Only keep Either if we have actual
+    /// bidirectional relationships (some go forward, some go backward).
+    /// 
+    /// Example: `(Post)--(User)` where schema only has User→Post
+    /// → Convert to Direction::Incoming (Post←User)
+    fn optimize_undirected_pattern(
+        &self,
+        left_types: &[String],
+        right_types: &[String],
+        rel_types: &[String],
+        graph_schema: &GraphSchema,
+    ) -> Direction {
+        let mut has_forward = false;  // Any combination where left→right exists in schema
+        let mut has_backward = false; // Any combination where right→left exists in schema
+
+        for left_type in left_types {
+            for right_type in right_types {
+                for rel_type in rel_types {
+                    if let Some(rel_schema) = graph_schema.get_relationships_schema_opt(rel_type) {
+                        // Check forward direction: left→right matches schema from→to
+                        if node_type_matches(&rel_schema.from_node, left_type)
+                            && node_type_matches(&rel_schema.to_node, right_type)
+                        {
+                            has_forward = true;
+                        }
+                        // Check backward direction: right→left matches schema from→to
+                        if node_type_matches(&rel_schema.from_node, right_type)
+                            && node_type_matches(&rel_schema.to_node, left_type)
+                        {
+                            has_backward = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Convert to unidirectional only if ALL valid combinations go the same way
+        match (has_forward, has_backward) {
+            (true, false) => {
+                log::info!("🎯 All combinations go forward only (left→right)");
+                Direction::Outgoing
+            }
+            (false, true) => {
+                log::info!("🎯 All combinations go backward only (right→left)");
+                Direction::Incoming
+            }
+            (true, true) => {
+                log::debug!("↔️ Combinations go both directions, keeping Either (truly bidirectional)");
+                Direction::Either
+            }
+            (false, false) => {
+                log::warn!("⚠️ No valid directions found!");
+                Direction::Either // Keep original, query will return empty
+            }
+        }
     }
 
     /// Create a typed branch for UNION with specific node and relationship types

@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: February 15, 2026*
+*Updated: February 16, 2026*
 
 ## Current Version: v0.6.1
 
@@ -17,7 +17,7 @@ Read-only Cypher-to-ClickHouse SQL query engine with Neo4j Browser compatibility
 - **Aggregations**: count, sum, avg, min, max, collect — with GROUP BY
 - **Functions**: String, numeric, date, type coercion, list operations
 - **Multi-relationship**: `[:TYPE1|TYPE2]` with UNION SQL generation
-- **Untyped patterns**: `MATCH (n) RETURN n` auto-expands via PatternResolver UNION ALL
+- **Unified Type Inference**: Direction-aware UNION generation from WHERE constraints (Neo4j Browser expand fix)
 - **Property pruning**: Untyped queries skip tables missing referenced properties (10x–50x speedup)
 - **Multi-schema**: USE clause, per-request schema selection, GLOBAL_SCHEMAS registry
 - **Multi-tenancy**: Parameterized views with `tenant_id`, session commands (`CALL sys.set`)
