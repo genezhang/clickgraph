@@ -68,7 +68,8 @@ use crate::{
             plan_sanitization::PlanSanitization,
             projected_columns_resolver::ProjectedColumnsResolver,
             projection_tagging::ProjectionTagging, query_validation::QueryValidation,
-            schema_inference::SchemaInference, type_inference::TypeInference,
+            // SchemaInference REMOVED (Feb 16, 2026) - Merged into TypeInference
+            type_inference::TypeInference,
             variable_resolver::VariableResolver, vlp_transitivity_check::VlpTransitivityCheck,
         },
         logical_plan::LogicalPlan,
@@ -100,7 +101,7 @@ mod plan_sanitization;
 mod projected_columns_resolver;
 mod projection_tagging;
 mod query_validation;
-mod schema_inference;  // NOTE: Still needed for Phase 3 ViewScan resolution (Feb 16, 2026)
+// mod schema_inference;  // REMOVED (Feb 16, 2026) - Fully merged into TypeInference
 mod type_inference;
 mod unwind_property_rewriter;
 mod unwind_tuple_enricher;
@@ -406,10 +407,10 @@ pub fn intermediate_analyzing(
     )?;
     let plan = transformed_plan.get_plan();
 
-    // NOTE: Still using SchemaInference for Phase 3 ViewScan resolution
-    // TypeInference Phase 3 is placeholder - full implementation deferred
-    let transformed_plan = SchemaInference::push_inferred_table_names_to_scan(plan, plan_ctx)?;
-    let plan = transformed_plan.get_plan();
+    // NOTE: SchemaInference removed (Feb 16, 2026)
+    // ViewScan resolution now handled by TypeInference Phase 3
+    // let transformed_plan = SchemaInference::push_inferred_table_names_to_scan(plan, plan_ctx)?;
+    // let plan = transformed_plan.get_plan();
 
     let duplicate_scans_removing = DuplicateScansRemoving::new();
     let transformed_plan = duplicate_scans_removing.analyze(plan.clone(), plan_ctx)?;
