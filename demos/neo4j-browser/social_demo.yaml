@@ -44,6 +44,8 @@ graph_schema:
       to_node: Post
       from_id: user_id
       to_id: post_id
+      property_mappings:
+        created_at: created_at
 
     - type: LIKED
       database: social
