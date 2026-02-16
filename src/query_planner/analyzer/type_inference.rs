@@ -1317,6 +1317,145 @@ impl TypeInference {
         }
     }
 
+    /// Generate UNION for untyped nodes with direction validation
+    ///
+    /// This is Phase 2 of unified type inference. After initial inference (Phase 1),
+    /// we discover any remaining untyped nodes and generate UNION branches for all
+    /// valid type combinations, applying direction validation.
+    ///
+    /// Key difference from old PatternResolver: We apply check_relationship_exists_with_direction()
+    /// and optimize_undirected_pattern() to ensure only schema-valid branches are generated.
+    fn generate_union_for_untyped_nodes(
+        &self,
+        plan: Arc<LogicalPlan>,
+        untyped_nodes: &HashSet<String>,
+        plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<Arc<LogicalPlan>> {
+        log::info!(
+            "🔀 UnifiedTypeInference: Generating UNION for {} untyped nodes",
+            untyped_nodes.len()
+        );
+
+        // Collect type candidates for each untyped variable
+        let mut untyped_vars: Vec<(String, Vec<String>)> = Vec::new();
+        for var_name in untyped_nodes {
+            let candidates: Vec<String> = graph_schema
+                .all_node_schemas()
+                .keys()
+                .cloned()
+                .collect();
+            
+            if candidates.is_empty() {
+                log::warn!("🔍 No schema types found for variable '{}'", var_name);
+                continue;
+            }
+            
+            log::debug!(
+                "🔍 Variable '{}' has {} type candidates: {:?}",
+                var_name,
+                candidates.len(),
+                candidates
+            );
+            untyped_vars.push((var_name.clone(), candidates));
+        }
+
+        if untyped_vars.is_empty() {
+            return Ok(plan);
+        }
+
+        // Extract relationship patterns from plan for validation
+        let relationships = extract_relationship_patterns(&plan, plan_ctx);
+        
+        // Collect already-typed nodes from plan_ctx
+        let typed_nodes: HashMap<String, String> = plan_ctx
+            .iter_table_contexts()
+            .filter_map(|(var_name, table_ctx)| {
+                table_ctx
+                    .get_labels()
+                    .and_then(|labels| labels.first().map(|l| (var_name.clone(), l.clone())))
+            })
+            .collect();
+        
+        log::info!(
+            "🔍 Found {} relationship patterns, {} typed nodes",
+            relationships.len(),
+            typed_nodes.len()
+        );
+
+        // Generate type combinations (cartesian product)
+        let max_combinations = get_max_combinations();
+        let combinations = generate_type_combinations(&untyped_vars, max_combinations);
+
+        log::info!(
+            "🔍 Generated {} type combinations (max: {})",
+            combinations.len(),
+            max_combinations
+        );
+
+        // Filter combinations by schema validity + direction
+        let valid_combinations: Vec<_> = combinations
+            .into_iter()
+            .filter(|combo| {
+                is_valid_combination_with_direction(
+                    combo,
+                    &relationships,
+                    graph_schema,
+                    &typed_nodes,
+                )
+            })
+            .collect();
+
+        log::info!(
+            "✅ UnifiedTypeInference: {} valid combinations after direction validation",
+            valid_combinations.len()
+        );
+
+        if valid_combinations.is_empty() {
+            log::warn!("⚠️ No valid combinations found - query may return empty results");
+            return Ok(plan);
+        }
+
+        if valid_combinations.len() == 1 {
+            log::info!("✅ Single valid combination, no UNION needed");
+            // Update plan_ctx with the single valid combination
+            for (var_name, type_name) in &valid_combinations[0] {
+                self.update_plan_ctx_with_label(var_name, type_name, plan_ctx)?;
+            }
+            return Ok(plan);
+        }
+
+        // Multiple valid combinations - generate UNION branches
+        log::info!("🔀 Generating UNION with {} branches", valid_combinations.len());
+
+        let mut union_branches = Vec::new();
+        for combo in valid_combinations {
+            // Clone plan_ctx for this branch
+            let mut branch_ctx = plan_ctx.clone();
+            
+            // Update with typed labels for this combination
+            for (var_name, type_name) in &combo {
+                self.update_plan_ctx_with_label(var_name, type_name, &mut branch_ctx)?;
+            }
+
+            // Process plan with typed context - this will create ViewScans for typed nodes
+            let branch_plan = self.infer_labels_recursive(
+                plan.clone(),
+                &mut branch_ctx,
+                graph_schema,
+            )?;
+
+            union_branches.push(branch_plan.get_plan().clone());
+        }
+
+        let union_plan = Union {
+            inputs: union_branches,
+            union_type: UnionType::All,
+        };
+
+        Ok(Arc::new(LogicalPlan::Union(union_plan)))
+    }
+
     /// Create a typed branch for UNION with specific node and relationship types
     fn create_typed_branch(
         &self,
@@ -1971,12 +2110,37 @@ impl AnalyzerPass for TypeInference {
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         log::info!("🏷️ UnifiedTypeInference: Starting type inference pass");
+        
+        // Phase 1: Incremental type inference + Filter→GraphRel UNION generation
         let result = self.infer_labels_recursive(logical_plan, plan_ctx, graph_schema)?;
-        log::info!(
-            "🏷️ UnifiedTypeInference: Completed - plan transformed: {}",
-            result.is_yes()
-        );
-        Ok(result)
+        let phase1_transformed = result.is_yes();
+        let mut plan = result.get_plan();
+        
+        log::info!("🏷️ UnifiedTypeInference: Phase 1 complete, checking for untyped nodes");
+        
+        // Phase 2: Discover remaining untyped nodes and generate UNION
+        let untyped_nodes = discover_untyped_nodes(&plan, plan_ctx);
+        
+        if !untyped_nodes.is_empty() {
+            log::info!(
+                "🏷️ UnifiedTypeInference: Found {} untyped nodes: {:?}",
+                untyped_nodes.len(),
+                untyped_nodes
+            );
+            
+            // Generate UNION for untyped nodes with direction validation
+            plan = self.generate_union_for_untyped_nodes(
+                plan,
+                &untyped_nodes,
+                plan_ctx,
+                graph_schema,
+            )?;
+        } else {
+            log::info!("🏷️ UnifiedTypeInference: No untyped nodes found");
+        }
+        
+        log::info!("🏷️ UnifiedTypeInference: Completed - phase1={}, phase2={}", phase1_transformed, !untyped_nodes.is_empty());
+        Ok(Transformed::Yes(plan))
     }
 }
 
@@ -2205,4 +2369,303 @@ fn check_any_relationship_exists_bidirectional(
                 || (node_type_matches(&rel_schema.from_node, to_type)
                     && node_type_matches(&rel_schema.to_node, from_type))
         })
+}
+
+// ================================================================================================
+// Untyped Node Discovery (Phase 2 of Unified TypeInference)
+// ================================================================================================
+
+/// Discover all untyped node variables in the logical plan
+///
+/// Recursively traverses the plan tree to find:
+/// - GraphNode without label
+/// - GraphRel connections without labels in plan_ctx
+///
+/// This is Phase 2 of unified type inference, running after Filter→GraphRel handling
+fn discover_untyped_nodes(plan: &Arc<LogicalPlan>, plan_ctx: &PlanCtx) -> HashSet<String> {
+    let mut untyped = HashSet::new();
+    discover_untyped_recursive(plan, plan_ctx, &mut untyped);
+    untyped
+}
+
+/// Recursive helper for untyped node discovery
+fn discover_untyped_recursive(
+    plan: &LogicalPlan,
+    plan_ctx: &PlanCtx,
+    untyped: &mut HashSet<String>,
+) {
+    match plan {
+        LogicalPlan::GraphRel(graph_rel) => {
+            // Check left connection (from node)
+            if !has_label_in_ctx(&graph_rel.left_connection, plan_ctx) {
+                log::debug!("🔍 Found untyped left connection: {}", graph_rel.left_connection);
+                untyped.insert(graph_rel.left_connection.clone());
+            }
+
+            // Check right connection (to node)
+            if !has_label_in_ctx(&graph_rel.right_connection, plan_ctx) {
+                log::debug!("🔍 Found untyped right connection: {}", graph_rel.right_connection);
+                untyped.insert(graph_rel.right_connection.clone());
+            }
+
+            // Recurse to sub-plans
+            discover_untyped_recursive(&graph_rel.left, plan_ctx, untyped);
+            discover_untyped_recursive(&graph_rel.center, plan_ctx, untyped);
+            discover_untyped_recursive(&graph_rel.right, plan_ctx, untyped);
+        }
+
+        LogicalPlan::GraphNode(graph_node) => {
+            // Check if node has label
+            if graph_node.label.is_none() {
+                log::debug!("🔍 Found untyped GraphNode: {}", graph_node.alias);
+                untyped.insert(graph_node.alias.clone());
+            }
+
+            // Recurse to input
+            discover_untyped_recursive(&graph_node.input, plan_ctx, untyped);
+        }
+
+        // Handle other plan types with inputs
+        LogicalPlan::Filter(filter) => {
+            discover_untyped_recursive(&filter.input, plan_ctx, untyped);
+        }
+
+        LogicalPlan::Projection(proj) => {
+            discover_untyped_recursive(&proj.input, plan_ctx, untyped);
+        }
+
+        LogicalPlan::Union(union_plan) => {
+            for input in &union_plan.inputs {
+                discover_untyped_recursive(input, plan_ctx, untyped);
+            }
+        }
+
+        LogicalPlan::GroupBy(group_by) => {
+            discover_untyped_recursive(&group_by.input, plan_ctx, untyped);
+        }
+
+        LogicalPlan::OrderBy(order_by) => {
+            discover_untyped_recursive(&order_by.input, plan_ctx, untyped);
+        }
+
+        LogicalPlan::Limit(limit) => {
+            discover_untyped_recursive(&limit.input, plan_ctx, untyped);
+        }
+
+        LogicalPlan::Skip(skip) => {
+            discover_untyped_recursive(&skip.input, plan_ctx, untyped);
+        }
+
+        LogicalPlan::WithClause(wc) => {
+            discover_untyped_recursive(&wc.input, plan_ctx, untyped);
+        }
+
+        LogicalPlan::CartesianProduct(cp) => {
+            discover_untyped_recursive(&cp.left, plan_ctx, untyped);
+            discover_untyped_recursive(&cp.right, plan_ctx, untyped);
+        }
+
+        // Leaf nodes - no traversal needed
+        LogicalPlan::ViewScan(_) | LogicalPlan::Empty => {}
+
+        _ => {
+            log::debug!("🔍 discover_untyped: Unhandled plan type: {:?}", plan);
+        }
+    }
+}
+
+/// Check if a variable has labels in plan_ctx
+fn has_label_in_ctx(var_name: &str, plan_ctx: &PlanCtx) -> bool {
+    plan_ctx
+        .get_table_ctx(var_name)
+        .ok()
+        .and_then(|ctx| ctx.get_labels())
+        .is_some()
+}
+
+// ================================================================================================
+// UNION Generation Helpers (Phase 2 - Untyped Nodes)
+// ================================================================================================
+
+/// Relationship pattern extracted from logical plan for validation
+#[derive(Debug, Clone)]
+struct RelationshipPattern {
+    left_alias: String,
+    right_alias: String,
+    rel_types: Vec<String>, // Empty means any relationship
+    direction: Direction,
+}
+
+/// Extract all relationship patterns from the plan
+fn extract_relationship_patterns(
+    plan: &Arc<LogicalPlan>,
+    plan_ctx: &PlanCtx,
+) -> Vec<RelationshipPattern> {
+    let mut patterns = Vec::new();
+    extract_patterns_recursive(plan.as_ref(), plan_ctx, &mut patterns);
+    patterns
+}
+
+/// Recursive helper to extract relationship patterns
+fn extract_patterns_recursive(
+    plan: &LogicalPlan,
+    _plan_ctx: &PlanCtx,
+    patterns: &mut Vec<RelationshipPattern>,
+) {
+    match plan {
+        LogicalPlan::GraphRel(rel) => {
+            patterns.push(RelationshipPattern {
+                left_alias: rel.left_connection.clone(),
+                right_alias: rel.right_connection.clone(),
+                rel_types: rel.labels.clone().unwrap_or_default(),
+                direction: rel.direction.clone(),
+            });
+
+            // Recurse to children
+            extract_patterns_recursive(&rel.left, _plan_ctx, patterns);
+            extract_patterns_recursive(&rel.center, _plan_ctx, patterns);
+            extract_patterns_recursive(&rel.right, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::Filter(filter) => {
+            extract_patterns_recursive(&filter.input, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::Projection(proj) => {
+            extract_patterns_recursive(&proj.input, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::Union(union_plan) => {
+            for input in &union_plan.inputs {
+                extract_patterns_recursive(input, _plan_ctx, patterns);
+            }
+        }
+
+        LogicalPlan::WithClause(wc) => {
+            extract_patterns_recursive(&wc.input, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::CartesianProduct(cp) => {
+            extract_patterns_recursive(&cp.left, _plan_ctx, patterns);
+            extract_patterns_recursive(&cp.right, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::GraphNode(node) => {
+            extract_patterns_recursive(&node.input, _plan_ctx, patterns);
+        }
+
+        // Leaf nodes
+        _ => {}
+    }
+}
+
+/// Generate all type combinations (cartesian product) for untyped variables
+fn generate_type_combinations(
+    untyped_vars: &[(String, Vec<String>)],
+    max_combinations: usize,
+) -> Vec<HashMap<String, String>> {
+    if untyped_vars.is_empty() {
+        return vec![HashMap::new()];
+    }
+
+    let mut combinations = vec![HashMap::new()];
+
+    for (var_name, candidates) in untyped_vars {
+        let mut new_combinations = Vec::new();
+
+        for combo in &combinations {
+            for candidate in candidates {
+                if new_combinations.len() >= max_combinations {
+                    log::warn!(
+                        "⚠️ Hit max combinations limit ({}), truncating",
+                        max_combinations
+                    );
+                    return new_combinations;
+                }
+
+                let mut new_combo = combo.clone();
+                new_combo.insert(var_name.clone(), candidate.clone());
+                new_combinations.push(new_combo);
+            }
+        }
+
+        combinations = new_combinations;
+    }
+
+    combinations
+}
+
+/// Validate a type combination against schema with direction checking
+///
+/// This is the CRITICAL function that prevents invalid branches.
+/// It checks EACH relationship pattern and validates direction against schema.
+fn is_valid_combination_with_direction(
+    combo: &HashMap<String, String>,
+    relationships: &[RelationshipPattern],
+    graph_schema: &GraphSchema,
+    typed_nodes: &HashMap<String, String>,
+) -> bool {
+    for rel_pattern in relationships {
+        // Get node types from combo (untyped) or typed_nodes (already typed)
+        let from_type = match combo.get(&rel_pattern.left_alias) {
+            Some(t) => t.as_str(),
+            None => match typed_nodes.get(&rel_pattern.left_alias) {
+                Some(t) => t.as_str(),
+                None => {
+                    log::debug!("Unknown alias '{}', skipping validation", rel_pattern.left_alias);
+                    continue;
+                }
+            },
+        };
+
+        let to_type = match combo.get(&rel_pattern.right_alias) {
+            Some(t) => t.as_str(),
+            None => match typed_nodes.get(&rel_pattern.right_alias) {
+                Some(t) => t.as_str(),
+                None => {
+                    log::debug!("Unknown alias '{}', skipping validation", rel_pattern.right_alias);
+                    continue;
+                }
+            },
+        };
+
+        // Check if relationship exists with direction validation
+        let edge_exists = if rel_pattern.rel_types.is_empty() {
+            // Untyped relationship - check if ANY relationship exists
+            check_any_relationship_exists_with_direction(
+                from_type,
+                to_type,
+                rel_pattern.direction.clone(),
+                graph_schema,
+            )
+        } else {
+            // Typed relationship - check specific type(s) with direction
+            rel_pattern.rel_types.iter().any(|rel_type| {
+                check_relationship_exists_with_direction(
+                    from_type,
+                    to_type,
+                    rel_type,
+                    rel_pattern.direction.clone(),
+                    graph_schema,
+                )
+            })
+        };
+
+        if !edge_exists {
+            log::debug!(
+                "🚫 Invalid combination: {}-[{}:{:?}]->{} (not in schema with direction)",
+                from_type,
+                if rel_pattern.rel_types.is_empty() {
+                    "any".to_string()
+                } else {
+                    rel_pattern.rel_types.join("|")
+                },
+                rel_pattern.direction,
+                to_type
+            );
+            return false;
+        }
+    }
+
+    true
 }

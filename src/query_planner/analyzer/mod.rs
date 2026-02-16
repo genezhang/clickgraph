@@ -142,10 +142,21 @@ pub fn initial_analyzing(
     };
 
     // Step 2.1: Pattern Resolver - enumerate type combinations for remaining untyped nodes
-    // This runs AFTER TypeInference to handle cases where types cannot be uniquely inferred
-    // Discovers untyped graph variables, generates all valid type combinations from schema
-    // Clones query for each valid combination and combines with UNION ALL
-    // Example: MATCH (o) RETURN o → MATCH (o:User) ... UNION ALL MATCH (o:Post) ...
+    // Step 2.1: PatternResolver - DEPRECATED (merged into TypeInference)
+    // 
+    // PatternResolver functionality has been fully absorbed into UnifiedTypeInference.
+    // TypeInference now handles BOTH:
+    // - Filter→GraphRel patterns with WHERE constraints (Phase 1)
+    // - Untyped node discovery and UNION generation (Phase 2)
+    //
+    // Key improvements over old PatternResolver:
+    // - Direction validation: check_relationship_exists_with_direction()
+    // - Undirected optimization: optimize_undirected_pattern()
+    // - Filters invalid branches like (Post)-[AUTHORED]->(User)
+    //
+    // Removed: February 16, 2026
+    // See: src/query_planner/analyzer/type_inference.rs (lines 2100-2450)
+    /*
     log::info!("🔍 ANALYZER: Running PatternResolver (handle ambiguous types)");
     use crate::query_planner::analyzer::pattern_resolver::PatternResolver;
     let pattern_resolver = PatternResolver::new();
@@ -163,6 +174,7 @@ pub fn initial_analyzing(
             plan
         }
     };
+    */
 
     // Step 2.5: VLP Transitivity Check - validate variable-length path patterns
     // This runs after TypeInference to ensure we have relationship types resolved
