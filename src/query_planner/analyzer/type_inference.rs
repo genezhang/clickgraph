@@ -51,7 +51,7 @@
 //! - For undirected patterns (--), defer to BidirectionalUnion pass
 //!
 //! **Step 4: Create UNION Structure**
-//! ```rust
+//! ```ignore
 //! if valid_combinations.len() == 1 {
 //!     // Single valid combination, no Union needed
 //!     return single_branch_with_labels(valid_combinations[0])
@@ -1331,31 +1331,114 @@ impl TypeInference {
         untyped_nodes: &HashSet<String>,
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
+        relationships: &[RelationshipPattern],
+        property_accesses: &HashMap<String, HashSet<String>>,
     ) -> AnalyzerResult<Arc<LogicalPlan>> {
         log::info!(
             "🔀 UnifiedTypeInference: Generating UNION for {} untyped nodes",
             untyped_nodes.len()
         );
 
-        // Collect type candidates for each untyped variable
+        log::debug!(
+            "🔍 Phase 2: {} relationships, {} property accesses from original plan",
+            relationships.len(),
+            property_accesses.len()
+        );
+        for rel in relationships {
+            log::debug!(
+                "🔍 Phase 2: Relationship: left={}, right={}, types={:?}, dir={:?}",
+                rel.left_alias, rel.right_alias, rel.rel_types, rel.direction
+            );
+        }
+        for (var, props) in property_accesses {
+            log::debug!("🔍 Phase 2: PropertyAccess: var={}, props={:?}", var, props);
+        }
+
+        // Collect type candidates for each untyped variable, constrained by:
+        // 1. Labeled relationships (from schema from_node/to_node)
+        // 2. Property accesses (only types that have the accessed properties)
         let mut untyped_vars: Vec<(String, Vec<String>)> = Vec::new();
         for var_name in untyped_nodes {
-            let candidates: Vec<String> = graph_schema
+            let mut candidates: Vec<String> = graph_schema
                 .all_node_schemas()
                 .keys()
                 .cloned()
                 .collect();
-            
+
+            // Constraint 1: Filter by labeled relationships involving this variable
+            for rel_pattern in relationships {
+                if rel_pattern.rel_types.is_empty() {
+                    continue;
+                }
+                if rel_pattern.left_alias == *var_name {
+                    let valid_types: HashSet<String> = rel_pattern
+                        .rel_types
+                        .iter()
+                        .filter_map(|rel_type| {
+                            graph_schema.get_rel_schema(rel_type).ok().and_then(|rs| {
+                                match rel_pattern.direction {
+                                    Direction::Outgoing => Some(rs.from_node.clone()),
+                                    Direction::Incoming => Some(rs.to_node.clone()),
+                                    Direction::Either => None,
+                                }
+                            })
+                        })
+                        .collect();
+                    if !valid_types.is_empty() {
+                        candidates.retain(|c| valid_types.contains(c));
+                        log::debug!(
+                            "🔍 Constrained '{}' (left) by rel {:?}: valid={:?}",
+                            var_name, rel_pattern.rel_types, valid_types
+                        );
+                    }
+                } else if rel_pattern.right_alias == *var_name {
+                    let valid_types: HashSet<String> = rel_pattern
+                        .rel_types
+                        .iter()
+                        .filter_map(|rel_type| {
+                            graph_schema.get_rel_schema(rel_type).ok().and_then(|rs| {
+                                match rel_pattern.direction {
+                                    Direction::Outgoing => Some(rs.to_node.clone()),
+                                    Direction::Incoming => Some(rs.from_node.clone()),
+                                    Direction::Either => None,
+                                }
+                            })
+                        })
+                        .collect();
+                    if !valid_types.is_empty() {
+                        candidates.retain(|c| valid_types.contains(c));
+                        log::debug!(
+                            "🔍 Constrained '{}' (right) by rel {:?}: valid={:?}",
+                            var_name, rel_pattern.rel_types, valid_types
+                        );
+                    }
+                }
+            }
+
+            // Constraint 2: Filter by accessed properties
+            // Uses property_mappings keys (Cypher names), NOT column_names (ClickHouse names)
+            if let Some(props) = property_accesses.get(var_name) {
+                candidates.retain(|type_name| {
+                    if let Ok(node_schema) = graph_schema.node_schema(type_name) {
+                        props.iter().all(|prop| node_schema.has_cypher_property(prop))
+                    } else {
+                        false
+                    }
+                });
+                log::debug!(
+                    "🔍 Constrained '{}' by properties {:?}: {:?}",
+                    var_name, props, candidates
+                );
+            }
+
             if candidates.is_empty() {
-                log::warn!("🔍 No schema types found for variable '{}'", var_name);
+                log::warn!("🔍 No valid types for '{}' after constraints", var_name);
                 continue;
             }
-            
+
             log::debug!(
-                "🔍 Variable '{}' has {} type candidates: {:?}",
-                var_name,
-                candidates.len(),
-                candidates
+                "🔍 Variable '{}': {} candidates after constraints: {:?}",
+                var_name, candidates.len(), candidates
             );
             untyped_vars.push((var_name.clone(), candidates));
         }
@@ -1363,9 +1446,6 @@ impl TypeInference {
         if untyped_vars.is_empty() {
             return Ok(plan);
         }
-
-        // Extract relationship patterns from plan for validation
-        let relationships = extract_relationship_patterns(&plan, plan_ctx);
         
         // Collect already-typed nodes from plan_ctx
         let typed_nodes: HashMap<String, String> = plan_ctx
@@ -2295,8 +2375,30 @@ impl TypeInference {
             });
         }
 
-        // Case 5-8: Multiple unknowns - defer to existing inference logic
-        // These cases are handled by infer_pattern_types() in Phase 1
+        // Case 5: Both nodes missing, relationship present
+        // Infer node types directly from relationship schema's from_node/to_node
+        if left_table_ctx.get_label_opt().is_none()
+            && rel_table_ctx.get_label_opt().is_some()
+            && right_table_ctx.get_label_opt().is_none()
+        {
+            let rel_label = rel_table_ctx.get_label_str().map_err(|e| AnalyzerError::PlanCtx {
+                pass: Pass::SchemaInference,
+                source: e,
+            })?;
+            let rel_schema = graph_schema.get_rel_schema(&rel_label).map_err(|e| {
+                AnalyzerError::GraphSchema {
+                    pass: Pass::SchemaInference,
+                    source: e,
+                }
+            })?;
+            return Ok((
+                rel_schema.from_node.clone(),
+                rel_label,
+                rel_schema.to_node.clone(),
+            ));
+        }
+
+        // Cases 6-8: Multiple unknowns without relationship - defer to Phase 2
         Ok((
             left_table_ctx.get_label_opt().unwrap_or_default(),
             rel_table_ctx.get_label_opt().unwrap_or_default(),
@@ -2841,6 +2943,12 @@ impl AnalyzerPass for TypeInference {
         
         // Phase 1: Incremental type inference + Filter→GraphRel UNION generation
         log::info!("🏷️ UnifiedTypeInference: Phase 1 - Filter→GraphRel UNION generation");
+        
+        // Extract relationship patterns and property accesses from the ORIGINAL plan
+        // BEFORE Phase 1 transforms it (Phase 1 may wrap/replace GraphRel nodes)
+        let original_relationships = extract_relationship_patterns(&logical_plan, plan_ctx);
+        let original_property_accesses = extract_property_accesses(&logical_plan);
+        
         let result = self.infer_labels_recursive(logical_plan.clone(), plan_ctx, graph_schema)?;
         let phase1_transformed = result.is_yes();
         let mut plan = result.get_plan();
@@ -2858,11 +2966,14 @@ impl AnalyzerPass for TypeInference {
             );
             
             // Generate UNION for untyped nodes with direction validation
+            // Pass original plan's relationship patterns and property accesses
             plan = self.generate_union_for_untyped_nodes(
                 plan,
                 &untyped_nodes,
                 plan_ctx,
                 graph_schema,
+                &original_relationships,
+                &original_property_accesses,
             )?;
         } else {
             log::info!("🏷️ UnifiedTypeInference: No untyped nodes found");
@@ -3297,7 +3408,145 @@ fn extract_patterns_recursive(
             extract_patterns_recursive(&node.input, _plan_ctx, patterns);
         }
 
+        LogicalPlan::Limit(lim) => {
+            extract_patterns_recursive(&lim.input, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::Skip(s) => {
+            extract_patterns_recursive(&s.input, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::OrderBy(ob) => {
+            extract_patterns_recursive(&ob.input, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::GroupBy(gb) => {
+            extract_patterns_recursive(&gb.input, _plan_ctx, patterns);
+        }
+
+        LogicalPlan::GraphJoins(gj) => {
+            extract_patterns_recursive(&gj.input, _plan_ctx, patterns);
+        }
+
         // Leaf nodes
+        _ => {}
+    }
+}
+
+/// Extract property accesses from the plan tree, grouped by variable name.
+/// Returns a map: variable_alias → set of Cypher property names accessed.
+/// Used to constrain node type candidates to only those types that have the accessed properties.
+fn extract_property_accesses(plan: &Arc<LogicalPlan>) -> HashMap<String, HashSet<String>> {
+    let mut accesses: HashMap<String, HashSet<String>> = HashMap::new();
+    extract_props_from_plan(plan.as_ref(), &mut accesses);
+    accesses
+}
+
+fn extract_props_from_plan(
+    plan: &LogicalPlan,
+    accesses: &mut HashMap<String, HashSet<String>>,
+) {
+    match plan {
+        LogicalPlan::Filter(filter) => {
+            extract_props_from_expr(&filter.predicate, accesses);
+            extract_props_from_plan(&filter.input, accesses);
+        }
+        LogicalPlan::Projection(proj) => {
+            for item in &proj.items {
+                extract_props_from_expr(&item.expression, accesses);
+            }
+            extract_props_from_plan(&proj.input, accesses);
+        }
+        LogicalPlan::OrderBy(ob) => {
+            for item in &ob.items {
+                extract_props_from_expr(&item.expression, accesses);
+            }
+            extract_props_from_plan(&ob.input, accesses);
+        }
+        LogicalPlan::GroupBy(gb) => {
+            for item in &gb.expressions {
+                extract_props_from_expr(item, accesses);
+            }
+            if let Some(ref having) = gb.having_clause {
+                extract_props_from_expr(having, accesses);
+            }
+            extract_props_from_plan(&gb.input, accesses);
+        }
+        LogicalPlan::GraphRel(rel) => {
+            extract_props_from_plan(&rel.left, accesses);
+            extract_props_from_plan(&rel.center, accesses);
+            extract_props_from_plan(&rel.right, accesses);
+            if let Some(ref pred) = rel.where_predicate {
+                extract_props_from_expr(pred, accesses);
+            }
+        }
+        LogicalPlan::GraphNode(node) => {
+            extract_props_from_plan(&node.input, accesses);
+        }
+        LogicalPlan::Union(u) => {
+            for input in &u.inputs {
+                extract_props_from_plan(input, accesses);
+            }
+        }
+        LogicalPlan::WithClause(wc) => {
+            extract_props_from_plan(&wc.input, accesses);
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            extract_props_from_plan(&cp.left, accesses);
+            extract_props_from_plan(&cp.right, accesses);
+        }
+        LogicalPlan::Limit(lim) => {
+            extract_props_from_plan(&lim.input, accesses);
+        }
+        LogicalPlan::Skip(s) => {
+            extract_props_from_plan(&s.input, accesses);
+        }
+        _ => {}
+    }
+}
+
+fn extract_props_from_expr(
+    expr: &LogicalExpr,
+    accesses: &mut HashMap<String, HashSet<String>>,
+) {
+    match expr {
+        LogicalExpr::PropertyAccessExp(pa) => {
+            let var = pa.table_alias.0.clone();
+            let prop = pa.column.raw().to_string();
+            accesses.entry(var).or_default().insert(prop);
+        }
+        LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
+            for operand in &op.operands {
+                extract_props_from_expr(operand, accesses);
+            }
+        }
+        LogicalExpr::ScalarFnCall(f) => {
+            for arg in &f.args {
+                extract_props_from_expr(arg, accesses);
+            }
+        }
+        LogicalExpr::AggregateFnCall(f) => {
+            for arg in &f.args {
+                extract_props_from_expr(arg, accesses);
+            }
+        }
+        LogicalExpr::Case(c) => {
+            if let Some(ref e) = c.expr {
+                extract_props_from_expr(e, accesses);
+            }
+            for (w, t) in &c.when_then {
+                extract_props_from_expr(w, accesses);
+                extract_props_from_expr(t, accesses);
+            }
+            if let Some(ref e) = c.else_expr {
+                extract_props_from_expr(e, accesses);
+            }
+        }
+        LogicalExpr::List(items) => {
+            for item in items {
+                extract_props_from_expr(item, accesses);
+            }
+        }
         _ => {}
     }
 }
