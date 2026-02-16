@@ -26,6 +26,7 @@ This will:
 - ✅ Start ClickHouse database
 - ✅ Start Neo4j Browser UI
 - ✅ Start ClickGraph server
+- ✅ Load sample data (30 users, 50 posts, relationships)
 - ✅ Open browser automatically
 
 **Done!** Neo4j Browser opens at `http://localhost:7474`
@@ -35,6 +36,7 @@ This will:
 ```bash
 cd demos/neo4j-browser
 docker-compose up -d
+bash setup_demo_data.sh
 ```
 
 Then open: http://localhost:7474
@@ -129,14 +131,15 @@ LIMIT 50
 
 ## 📚 Sample Data
 
-The demo includes small tables for quick testing:
+The demo includes small tables loaded automatically:
 
-- **Users** - ~100 users with names and emails
-- **Posts** - ~500 posts created by users
-- **Follows** - ~200 follow relationships between users
-- **Likes** - ~300 likes on posts
+- **Users** - 30 users with names and emails
+- **Posts** - 50 posts created by users
+- **Follows** - 60 follow relationships between users
+- **Likes** - 80 likes on posts
+- **Authored** - 50 authorship relationships
 
-Total: ~1000 rows (loads in seconds)
+Total: ~270 rows (loads in seconds)
 
 ---
 
