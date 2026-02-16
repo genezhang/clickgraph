@@ -165,7 +165,7 @@ causes duplicate filters. The comment in `final_optimization` explicitly warns a
 
 ### 3. CollectUnwindElimination
 
-**File**: `collect_unwind_elimination.rs` (572 lines)
+**File**: `collect_unwind_elimination.rs` (~670 lines)
 **Phase**: Analyzer-invoked (analyzer/mod.rs, after CTE resolution)
 **Depends on**: CTE resolution must have completed
 
@@ -183,6 +183,15 @@ MATCH (a)-[r]->(b) RETURN b.name
 **Two elimination modes**:
 1. **Simple**: WITH only contains `collect(x) as xs` → eliminate both WITH and UNWIND entirely
 2. **Complex**: WITH has other items alongside collect → keep WITH minus the collect item, remove UNWIND
+
+**DISTINCT handling** (Feb 2026 fix):
+`collect(DISTINCT x)` produces an AST where the argument is wrapped in `OperatorApplicationExp { operator: Distinct, operands: [TableAlias(x)] }` (or `Operator(...)` variant). The optimizer unwraps both forms to detect the inner `TableAlias`.
+
+When DISTINCT is present:
+- **Simple case** (only collect in WITH): Cannot eliminate entirely — emits a `WITH DISTINCT` passthrough to preserve deduplication semantics
+- **Complex case** (other items alongside collect): Sets `with.distinct = true` on the remaining WITH clause
+
+**⚠️ Two AST variants for DISTINCT**: Both `LogicalExpr::Operator(OperatorApplication { operator: Distinct, ... })` and `LogicalExpr::OperatorApplicationExp(OperatorApplication { operator: Distinct, ... })` can appear. Always check both.
 
 **Alias rewriting**: When eliminating, builds an alias map (`unwound_alias → source_alias`)
 and recursively rewrites all references in downstream Projection, Filter, OrderBy, GroupBy nodes
@@ -456,7 +465,7 @@ cargo test
 |------|:----------:|-------|
 | CartesianJoinExtraction | 1 test | Tests `collect_aliases_from_expr()` helper. Full coverage via integration tests. |
 | FilterIntoGraphRel | 2 tests | Minimal — tests parse + documents PlanCtx pattern. Complex struct setup needed for full unit tests. Relies on integration tests (test_where_simple.py). |
-| CollectUnwindElimination | 2 tests | Good coverage: simple + complex elimination patterns with plan construction. |
+| CollectUnwindElimination | 3 tests | Good coverage: simple + complex + DISTINCT elimination patterns with plan construction. |
 | TrivialWithElimination | 3 tests | Good coverage: trivial detection, DISTINCT rejection, aggregation rejection. |
 | ViewOptimizer | 4 tests | Constructor, filter simplification, AND flattening, ViewScan optimization. |
 | CleanupViewScanFilters | 0 tests | No unit tests. Behavior validated by integration tests. |

@@ -55,7 +55,11 @@ Uses `clap` for CLI argument parsing:
 | `--validate-schema` | `false` | Validate YAML schema against ClickHouse on startup |
 | `--daemon` | `false` | Run as background daemon |
 
-**Flow**: Parse CLI → Convert to `CliConfig` → Build `ServerConfig` → `server::run_with_config()`
+| `--neo4j-compat-mode` | `false` | Masquerade as Neo4j for tool compatibility |
+
+**Runtime configuration**: `main.rs` builds a custom tokio runtime with enlarged worker thread stacks (128 MB default, configurable via `CLICKGRAPH_THREAD_STACK_MB` env var). This prevents stack overflow in deeply recursive plan traversal (e.g., bidirectional + WITH chains + UNWIND).
+
+**Flow**: Parse CLI → Convert to `CliConfig` → Build `ServerConfig` → Build tokio runtime → `runtime.block_on(async_main())`
 
 **Logger**: `env_logger` with default level `debug`, overridable via `RUST_LOG` env var.
 
@@ -82,6 +86,7 @@ Uses `clap` for CLI argument parsing:
 | `CLICKGRAPH_BOLT_ENABLED` | `true` | `bolt_enabled` |
 | `CLICKGRAPH_MAX_CTE_DEPTH` | `100` | `max_cte_depth` |
 | `CLICKGRAPH_VALIDATE_SCHEMA` | `false` | `validate_schema` |
+| `CLICKGRAPH_THREAD_STACK_MB` | `128` | Tokio worker thread stack size (MB). Increase for complex queries in debug builds. |
 
 **Error handling**: Uses `thiserror` with `ConfigError` enum covering env var errors,
 parse errors, and validation errors.

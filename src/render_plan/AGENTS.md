@@ -174,12 +174,44 @@ let anchor_on_right = graph_rel.anchor_connection.as_ref()
 
 **Bug History**: Code comment (lines 459-463) described this scenario since initial implementation, stating "This case needs special handling", but the handling was never implemented until Feb 2026. Fixed in three commits: FROM clause, JOIN order reversal, predicate extraction.
 
+### 6. replace_with_clause_with_cte_reference_v2 Must Handle All Plan Node Types ⚠️ CRITICAL
+
+**Background**: `build_chained_with_match_cte_plan` iterates to extract WITH clauses. Each iteration:
+1. `has_with_clause_in_tree()` detects if a WITH clause exists in the plan
+2. `find_all_with_clauses_grouped()` finds and groups them
+3. `replace_with_clause_with_cte_reference_v2()` replaces the WITH with a CTE reference
+
+**The Trap**: These three functions must agree on plan traversal. If `has_with_clause_in_tree` and `find_all_with_clauses_grouped` traverse through a node type (e.g., `Unwind`) but `replace_with_clause_with_cte_reference_v2` falls through to the catch-all `other => Ok(other.clone())`, the WITH clause is detected but never replaced → infinite loop → crash.
+
+**Feb 2026 fix**: `LogicalPlan::Unwind` was missing from `replace_with_clause_with_cte_reference_v2` (line ~12489). The fix recurses into `unwind.input`, replaces the WITH clause, and reconstructs the Unwind node with the updated input.
+
+**Pattern to watch**: Any time a NEW `LogicalPlan` variant is added, verify that ALL THREE functions handle it:
+- `has_with_clause_in_tree()` (line ~3559)
+- `find_all_with_clauses_grouped()` (line ~11102)  
+- `replace_with_clause_with_cte_reference_v2()` (line ~11497)
+
+If even one function misses the new variant, infinite iteration or lost WITH clauses can result.
+
+### 7. Stack Overflow with Deep Plan Trees
+
+**Problem**: Bidirectional relationship patterns (`-[:REL]-` without direction) generate UNION plans that double the plan depth. Combined with multiple WITH clauses, UNWIND, and OPTIONAL MATCH, the recursive plan traversal can exceed the default 2MB tokio thread stack.
+
+**Symptoms**:
+- Server process silently crashes (no error message, no log output)
+- Thread killed by OS signal (SIGSEGV on stack guard page)
+- Only occurs with complex queries combining bidirectional + WITH chains + UNWIND
+
+**Mitigation**: `main.rs` configures tokio runtime with `thread_stack_size(128 * 1024 * 1024)` (128 MB default). Configurable via `CLICKGRAPH_THREAD_STACK_MB` environment variable. Debug builds need more stack than release builds due to larger call frames.
+
+**Root cause**: Deep recursive traversal in plan_builder_utils.rs functions (build_chained_with_match_cte_plan, replace_with_clause_with_cte_reference_v2, etc.). Long-term fix: convert recursive traversal to iterative using an explicit stack.
+
 ## Common Bug Patterns
 
 | Pattern | Symptom | Root Cause |
 |---------|---------|------------|
 | `a_start_id` in JOIN | ClickHouse: "cannot be resolved" | `find_id_column_for_alias` VLP shortcut before GraphNode |
 | **Forward reference in OPTIONAL MATCH** | **"Unknown identifier `tag.id`"** | **FROM/JOIN order not using `anchor_connection` when anchor is right_connection** |
+| **Infinite WITH iteration** | **"Exceeded maximum WITH clause iterations (10)"** | **`replace_with_clause_with_cte_reference_v2` doesn't traverse a plan node type (see Unwind fix below)** |
 | Wrong property mapping | Properties from wrong table | Denormalized vs standard property source confusion |
 | Missing CTE columns | Column not found in subquery | `cte_schemas` not populated for this CTE |
 | Duplicate CTEs | Same CTE name generated twice | CTE name collision, missing dedup check |

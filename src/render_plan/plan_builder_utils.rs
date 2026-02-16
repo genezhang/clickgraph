@@ -12486,6 +12486,23 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
             }))
         }
 
+        LogicalPlan::Unwind(unwind) => {
+            let new_input = Arc::new(replace_with_clause_with_cte_reference_v2(
+                &unwind.input,
+                with_alias,
+                cte_name,
+                pre_with_aliases,
+                cte_schemas,
+            )?);
+            Ok(LogicalPlan::Unwind(Unwind {
+                input: new_input,
+                expression: unwind.expression.clone(),
+                alias: unwind.alias.clone(),
+                label: unwind.label.clone(),
+                tuple_properties: unwind.tuple_properties.clone(),
+            }))
+        }
+
         other => Ok(other.clone()),
     }
 }

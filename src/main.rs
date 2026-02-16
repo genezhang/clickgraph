@@ -59,8 +59,25 @@ impl From<Cli> for config::CliConfig {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    // Build tokio runtime with larger worker thread stacks to handle
+    // deep recursive logical plan traversal (e.g., bidirectional + WITH chains).
+    // Debug builds need more stack due to larger frames; 128 MB handles all known cases.
+    let stack_mb: usize = std::env::var("CLICKGRAPH_THREAD_STACK_MB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(128);
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(stack_mb * 1024 * 1024)
+        .build()
+        .expect("Failed to create tokio runtime");
+
+    runtime.block_on(async_main());
+}
+
+async fn async_main() {
     // Initialize logger - defaults to INFO level, can be overridden with RUST_LOG env var
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
 
