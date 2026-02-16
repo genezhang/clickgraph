@@ -1,6 +1,6 @@
 # Known Issues
 
-**Last Updated**: February 14, 2026
+**Last Updated**: February 16, 2026
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).
 
@@ -21,10 +21,12 @@ For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).
 **Cause**: Recursive CTE-based shortest path explores all paths. Dense graphs cause exponential explosion.  
 **Workaround**: Use bounded path length: `shortestPath((a)-[:FOLLOWS*1..5]->(b))`
 
-### 3. CASE Expressions
-**Status**: Not implemented  
-**Example**: `RETURN CASE WHEN n.age > 18 THEN 'adult' ELSE 'minor' END`  
-**Impact**: Low — most analytical queries use WHERE filters instead.
+### 3. Pattern Comprehensions
+**Status**: Parsed but not executed  
+**Error**: `PatternComprehensionNotRewritten`  
+**Example**: `[(a)-[r]->(b) | b.name]`  
+**Impact**: Low-Medium — blocks 1-2 LDBC queries (bi-8)  
+**Cause**: AST and LogicalExpr exist, but the rewrite pass to convert to SQL is not implemented
 
 ---
 
@@ -42,6 +44,7 @@ ClickGraph is a **read-only** analytical query engine:
 
 | Issue | Fix | PR |
 |---|---|---|
+| UNWIND crash with collect(DISTINCT) | Fixed infinite WITH iteration + DISTINCT handling | #91 |
 | Cross-session ID leakage between tenants | IdMapper scoped by schema + tenant | #85 |
 | Query cache ignores tenant_id | Cache key includes tenant_id + view_parameters | main |
 | PackStream arrays/objects not encoded | Recursive PackStream encoding | #83 |
