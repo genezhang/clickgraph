@@ -2389,7 +2389,18 @@ pub fn extract_ctes_with_context(
                                 "🔧 BUG #7: Found start node schema with {} properties",
                                 start_node_schema.property_mappings.len()
                             );
+                            // Get the node's ID column to skip it from properties
+                            let start_id_column = start_node_schema.node_id.column();
                             for (prop_name, prop_value) in &start_node_schema.property_mappings {
+                                // Skip ID property - it's already added as start_id/end_id in CTE
+                                // Check DB column name (not Cypher property name) for schema-independence
+                                if prop_value.raw() == start_id_column {
+                                    log::debug!(
+                                        "Skipping ID property '{}' → '{}' (already added as start_id)",
+                                        prop_name, prop_value.raw()
+                                    );
+                                    continue;
+                                }
                                 props.push(NodeProperty {
                                     cypher_alias: start_alias.clone(),
                                     column_name: prop_value.raw().to_string(),
@@ -2408,7 +2419,18 @@ pub fn extract_ctes_with_context(
                                 "🔧 BUG #7: Found end node schema with {} properties",
                                 end_node_schema.property_mappings.len()
                             );
+                            // Get the node's ID column to skip it from properties
+                            let end_id_column = end_node_schema.node_id.column();
                             for (prop_name, prop_value) in &end_node_schema.property_mappings {
+                                // Skip ID property - it's already added as start_id/end_id in CTE
+                                // Check DB column name (not Cypher property name) for schema-independence
+                                if prop_value.raw() == end_id_column {
+                                    log::debug!(
+                                        "Skipping ID property '{}' → '{}' (already added as end_id)",
+                                        prop_name, prop_value.raw()
+                                    );
+                                    continue;
+                                }
                                 props.push(NodeProperty {
                                     cypher_alias: end_alias.clone(),
                                     column_name: prop_value.raw().to_string(),

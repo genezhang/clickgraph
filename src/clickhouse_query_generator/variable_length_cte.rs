@@ -1474,22 +1474,21 @@ impl<'a> VariableLengthCteGenerator<'a> {
             // Add properties for start and end nodes
             // CRITICAL: Use separate if statements (not else-if) for self-loops
             // When start_cypher_alias == end_cypher_alias, both conditions are true
+            // Safety check: Skip ID column based on DB column name (schema-independent)
             for prop in &self.properties {
-                // Skip the ID column when it's the actual "id" property (already added as start_id/end_id)
-                // But keep it if it's a different property that uses the ID column (e.g., "node_id")
-                let is_start_id =
-                    prop.column_name == self.start_node_id_column && prop.alias == "id";
-                let is_end_id = prop.column_name == self.end_node_id_column && prop.alias == "id";
-
-                if prop.cypher_alias == self.start_cypher_alias && !is_start_id {
-                    // Property belongs to start node
+                if prop.cypher_alias == self.start_cypher_alias
+                    && prop.column_name != self.start_node_id_column
+                {
+                    // Property belongs to start node (and is not the ID column)
                     select_items.push(format!(
                         "{}.{} as start_{}",
                         self.start_node_alias, prop.column_name, prop.alias
                     ));
                 }
-                if prop.cypher_alias == self.end_cypher_alias && !is_end_id {
-                    // Property belongs to end node
+                if prop.cypher_alias == self.end_cypher_alias
+                    && prop.column_name != self.end_node_id_column
+                {
+                    // Property belongs to end node (and is not the ID column)
                     select_items.push(format!(
                         "{}.{} as end_{}",
                         self.end_node_alias, prop.column_name, prop.alias
@@ -1629,16 +1628,17 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Add properties: start properties come from CTE, end properties from new joined node
         // CRITICAL: Use separate if statements (not else-if) for self-loops
         // When start_cypher_alias == end_cypher_alias, both conditions are true
+        // Safety check: Skip ID column based on DB column name (schema-independent)
         for prop in &self.properties {
-            // Skip the ID column when it's the actual "id" property (already added as start_id/end_id)
-            let is_start_id = prop.column_name == self.start_node_id_column && prop.alias == "id";
-            let is_end_id = prop.column_name == self.end_node_id_column && prop.alias == "id";
-
-            if prop.cypher_alias == self.start_cypher_alias && !is_start_id {
+            if prop.cypher_alias == self.start_cypher_alias
+                && prop.column_name != self.start_node_id_column
+            {
                 // Start node properties pass through from CTE
                 select_items.push(format!("vp.start_{} as start_{}", prop.alias, prop.alias));
             }
-            if prop.cypher_alias == self.end_cypher_alias && !is_end_id {
+            if prop.cypher_alias == self.end_cypher_alias
+                && prop.column_name != self.end_node_id_column
+            {
                 // End node properties come from the newly joined node
                 select_items.push(format!(
                     "{}.{} as end_{}",

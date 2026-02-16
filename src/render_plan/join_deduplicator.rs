@@ -202,7 +202,12 @@ fn rewrite_render_expr(expr: &RenderExpr, old_alias: &str, new_alias: &str) -> R
         RenderExpr::MapLiteral(entries) => {
             let rewritten_entries = entries
                 .iter()
-                .map(|(key, value)| (key.clone(), rewrite_render_expr(value, old_alias, new_alias)))
+                .map(|(key, value)| {
+                    (
+                        key.clone(),
+                        rewrite_render_expr(value, old_alias, new_alias),
+                    )
+                })
                 .collect();
             RenderExpr::MapLiteral(rewritten_entries)
         }
