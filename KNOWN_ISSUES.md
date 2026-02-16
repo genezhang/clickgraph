@@ -115,186 +115,15 @@ FROM system.one WHERE false    -- ✅ Provides table context
 
 **Related**: This will be fixed by the Empty Propagation optimization (see session files)
 
-### 6. Unlabeled Nodes with Labeled Relationship Create Invalid UNION Branches
-**Status**: ✅ FIXED (Feb 16, 2026) — Phase 0 Case 5 added  
-**Error**: `Identifier 'table.column' cannot be resolved`  
-**Impact**: **CRITICAL** — Common browser pattern fails  
-**Discovered**: Neo4j Browser click-to-expand on relationship types
+### 6. `labels(n)` on Untyped Nodes Generates Invalid Column Reference
+**Status**: Open  
+**Error**: `Unknown expression or function identifier 'n.end_type'`  
+**Example**: `MATCH (n) RETURN DISTINCT labels(n) as labels, count(*) AS count`  
+**Cause**: `labels()` function resolves to `n.end_type` which is a relationship-table column (used for edge type). Node tables don't have this column. For untyped nodes expanded via UNION, the label is already known from the branch and should be injected as a literal string.  
+**Impact**: Medium — Neo4j Browser uses this query to discover node labels  
+**Workaround**: Browser falls back gracefully; use `MATCH (n:User) RETURN labels(n)` with explicit label  
 
-**Example**:
-```cypher
-MATCH ()-[r:LIKED]->() RETURN r LIMIT 25
--- Browser generates this when clicking a relationship type
-```
-
-**Error**:
-```
-Code: 47. DB::Exception: Identifier 't43.post_id' cannot be resolved from table 
-with name t43. In scope SELECT ... FROM social.users AS t42 
-INNER JOIN social.post_likes AS r ON r.user_id = t42.user_id 
-INNER JOIN social.users AS t43 ON t43.post_id = r.post_id
-```
-
-**Root Cause**: 
-TypeInference Phase 2 creates invalid UNION branches for unlabeled nodes with labeled relationships:
-
-**Schema**: LIKED is User → Post (from_id: user_id, to_id: post_id)
-
-**Generated SQL** (3 branches, 2 invalid!):
-1. ❌ User → User: `FROM users t80 JOIN post_likes r JOIN users t81 ON t81.post_id = r.post_id` (users has no post_id!)
-2. ❌ Post → User: `FROM posts t80 JOIN post_likes r ON r.user_id = t80.user_id` (posts has no user_id!)
-3. ✅ User → Post: `FROM users t80 JOIN post_likes r JOIN posts t81 ON t81.post_id = r.post_id` (correct!)
-
-**Expected**: Only create branch #3 (the valid one based on schema)
-
-**What Works**:
-- ✅ `MATCH (u:User)-[r:LIKED]->(p:Post)` - Both labeled
-- ✅ `MATCH (u:User)-[r:LIKED]->()` - One labeled
-- ❌ `MATCH ()-[r:LIKED]->()` - Both unlabeled (FAILS!)
-
-**Code Location**: `src/query_planner/analyzer/type_inference.rs` Phase 2 (lines ~2315-2600)
-- Should use `check_relationship_exists_with_direction()` to validate BEFORE creating UNION branches
-- Currently creates all possible node type combinations, then fails at SQL execution
-
-**Impact**: Breaks Neo4j Browser relationship exploration (critical UX feature)
-
-**Workaround**: Always label at least one node: `MATCH (u:User)-[r:LIKED]->() RETURN r`
-
-**Priority**: **CRITICAL** - Regression from consolidation work, breaks browser
-
----
-
-### 7. Property Filtering on Unlabeled Nodes Creates Invalid UNION Branches
-**Status**: ✅ FIXED (Feb 16, 2026) — Phase 2 property-based candidate filtering added  
-**Error**: `Identifier 'n.email' cannot be resolved from table posts`  
-**Impact**: **CRITICAL** — Neo4j Browser property key discovery broken  
-**Discovered**: Browser "Get metadata" queries for property keys
-
-**Example**:
-```cypher
-MATCH (n) WHERE n.email IS NOT NULL RETURN DISTINCT n.email LIMIT 25
--- Browser uses this to discover available properties
-```
-
-**Error**:
-```
-Code: 47. DB::Exception: Identifier 'n.email' cannot be resolved from table 
-with name n. In scope SELECT DISTINCT ... FROM social.posts AS n 
-WHERE n.email IS NOT NULL
-```
-
-**Root Cause**: 
-TypeInference creates UNION branches for ALL node types, including those without the accessed property:
-
-**Schema**: Only User has `email` property, Post does not
-
-**Generated SQL** (2 branches, 1 invalid!):
-1. ✅ User: `FROM users WHERE users.email IS NOT NULL` (correct!)
-2. ❌ Post: `FROM posts WHERE posts.email IS NOT NULL` (posts has no email column!)
-
-**Expected**: Only create User branch (filter by property schema)
-
-**Code Location**: Same as Issue #6 — `type_inference.rs` Phase 2
-- Should filter candidates by properties accessed in WHERE/RETURN/WITH clauses
-- Currently assigns all node types without schema validation
-
-**Impact**: Breaks Neo4j Browser metadata discovery and property-based searches
-
-**Workaround**: Always specify node label: `MATCH (u:User) WHERE u.email IS NOT NULL`
-
-**Priority**: **CRITICAL** - Regression from consolidation work, breaks browser
-
----
-
-### 8. Relationship Property Access Fails with CTE Structure
-**Status**: ✅ FIXED (Feb 16, 2026) — pattern_union CTE now exposes direct columns  
-**Error**: `Identifier 'r.created_at' cannot be resolved from subquery r`  
-**Impact**: **CRITICAL** — Cannot access relationship properties in browser  
-**Discovered**: Browser relationship property queries
-
-**Example**:
-```cypher
-MATCH ()-[r]-() WHERE r.created_at IS NOT NULL 
-RETURN DISTINCT r.created_at LIMIT 25
-```
-
-**Error**:
-```
-Code: 47. DB::Exception: Identifier 'r.created_at' cannot be resolved 
-from subquery with name r. In scope ... 
-SELECT DISTINCT r.created_at FROM pattern_union_r AS r
-```
-
-**Root Cause**: 
-Relationship CTE packs properties into JSON array instead of individual columns:
-
-**Generated SQL**:
-```sql
-WITH pattern_union_r AS (
-    SELECT ... 
-        [formatRowNoNewline('JSONEachRow', r.created_at)] AS rel_properties
-    ...
-)
-SELECT r.created_at FROM pattern_union_r AS r  -- ❌ No r.created_at column!
-```
-
-**Expected**: 
-```sql
-WITH pattern_union_r AS (
-    SELECT ...
-        toString(r.created_at) AS "r.created_at"  -- ✅ Expand to column
-    ...
-)
-SELECT r.created_at FROM pattern_union_r AS r
-```
-
-**Code Location**: 
-- CTE generation in `clickhouse_query_generator/` (relationship pattern handling)
-- May need changes to how relationship properties are surfaced
-
-**Impact**: Cannot filter or return relationship properties when relationship is unlabeled
-
-**Workaround**: Label the relationship: `MATCH ()-[r:LIKED]-() WHERE r.created_at IS NOT NULL`
-
-**Priority**: **CRITICAL** - Regression from consolidation work, breaks browser
-
----
-
-### 9. Query-Level UNION Fails Plan Context Merge
-**Status**: ✅ FIXED (Feb 16, 2026) — is_empty_or_filtered_branch no longer prunes TypeInference placeholders  
-**Error**: `Failed to merge plan contexts for UNION`  
-**Impact**: **CRITICAL** — Browser combined property key queries broken  
-**Discovered**: Browser metadata queries that combine node + relationship properties
-
-**Example**:
-```cypher
-MATCH (n) WHERE n.email IS NOT NULL 
-RETURN DISTINCT "node" as entity, n.email AS email LIMIT 25 
-UNION ALL 
-MATCH ()-[r]-() WHERE r.email IS NOT NULL 
-RETURN DISTINCT "relationship" AS entity, r.email AS email LIMIT 25
-```
-
-**Error**:
-```
-Planning error: LogicalPlanError: Query planning error: 
-Failed to merge plan contexts for UNION
-```
-
-**Root Cause**: Unknown — needs investigation
-- Likely related to variable scopes conflicting across UNION branches
-- Each branch creates its own plan context with variable 'n' or 'r'
-- Merge logic may be failing due to context incompatibility
-
-**Code Location**: 
-- `src/query_planner/logical_plan/union.rs` (UNION planning)
-- `src/query_planner/plan_ctx/mod.rs` (context merging)
-
-**Impact**: Browser cannot fetch combined metadata (nodes + relationships in one query)
-
-**Workaround**: Run two separate queries instead of UNION
-
-**Priority**: **HIGH** - Regression from consolidation work, browser workaround available
+**Priority**: **MEDIUM** — Browser workaround exists, but affects auto-discovery
 
 ---
 
@@ -312,6 +141,14 @@ ClickGraph is a **read-only** analytical query engine:
 
 | Issue | Fix | PR |
 |---|---|---|
+| Unlabeled nodes + labeled rel invalid UNION branches (#6) | Phase 0 Case 5 in TypeInference | path-direction-fix |
+| Property filtering on unlabeled nodes invalid branches (#7) | Phase 2 property-based candidate filtering | path-direction-fix |
+| Relationship property access fails with CTE structure (#8) | pattern_union CTE exposes direct columns | path-direction-fix |
+| Query-level UNION fails plan context merge (#9) | Fixed branch pruning for TypeInference placeholders | path-direction-fix |
+| `count(n)` on untyped nodes returns wrong value | Aggregation placed above UNION, not inside branches | path-direction-fix |
+| FOLLOWS self-join returns empty | from_node/to_node aliases for same-table JOINs | path-direction-fix |
+| JSON column order alphabetical instead of query order | serde_json `preserve_order` feature | path-direction-fix |
+| UNION `__label__` injection not projection-guided | `returns_whole_entity()` checks Projection items | path-direction-fix |
 | UNWIND crash with collect(DISTINCT) | Fixed infinite WITH iteration + DISTINCT handling | #91 |
 | Cross-session ID leakage between tenants | IdMapper scoped by schema + tenant | #85 |
 | Query cache ignores tenant_id | Cache key includes tenant_id + view_parameters | main |
