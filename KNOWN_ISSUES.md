@@ -116,7 +116,7 @@ FROM system.one WHERE false    -- ✅ Provides table context
 **Related**: This will be fixed by the Empty Propagation optimization (see session files)
 
 ### 6. Unlabeled Nodes with Labeled Relationship Create Invalid UNION Branches
-**Status**: Active regression from consolidation (Feb 16, 2026)  
+**Status**: ✅ FIXED (Feb 16, 2026) — Phase 0 Case 5 added  
 **Error**: `Identifier 'table.column' cannot be resolved`  
 **Impact**: **CRITICAL** — Common browser pattern fails  
 **Discovered**: Neo4j Browser click-to-expand on relationship types
@@ -165,7 +165,7 @@ TypeInference Phase 2 creates invalid UNION branches for unlabeled nodes with la
 ---
 
 ### 7. Property Filtering on Unlabeled Nodes Creates Invalid UNION Branches
-**Status**: Active regression from consolidation (Feb 16, 2026)  
+**Status**: ✅ FIXED (Feb 16, 2026) — Phase 2 property-based candidate filtering added  
 **Error**: `Identifier 'n.email' cannot be resolved from table posts`  
 **Impact**: **CRITICAL** — Neo4j Browser property key discovery broken  
 **Discovered**: Browser "Get metadata" queries for property keys
@@ -207,7 +207,7 @@ TypeInference creates UNION branches for ALL node types, including those without
 ---
 
 ### 8. Relationship Property Access Fails with CTE Structure
-**Status**: Active regression from consolidation (Feb 16, 2026)  
+**Status**: ✅ FIXED (Feb 16, 2026) — pattern_union CTE now exposes direct columns  
 **Error**: `Identifier 'r.created_at' cannot be resolved from subquery r`  
 **Impact**: **CRITICAL** — Cannot access relationship properties in browser  
 **Discovered**: Browser relationship property queries
@@ -261,7 +261,7 @@ SELECT r.created_at FROM pattern_union_r AS r
 ---
 
 ### 9. Query-Level UNION Fails Plan Context Merge
-**Status**: Active regression from consolidation (Feb 16, 2026)  
+**Status**: ✅ FIXED (Feb 16, 2026) — is_empty_or_filtered_branch no longer prunes TypeInference placeholders  
 **Error**: `Failed to merge plan contexts for UNION`  
 **Impact**: **CRITICAL** — Browser combined property key queries broken  
 **Discovered**: Browser metadata queries that combine node + relationship properties
