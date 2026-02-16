@@ -60,130 +60,13 @@ pub fn generate_scan(
             }
         }
     } else {
-        log::debug!("No label provided - generating UNION of all node types");
-
-        // Get all node labels from schema
-        let schema = plan_ctx.schema();
-
-        // Check if WHERE clause has property requirements for this alias
-        let labels_to_use =
-            if let Some(required_props) = plan_ctx.get_where_property_requirements(&alias) {
-                log::debug!(
-                    "Found WHERE property requirements for alias '{}': {:?}",
-                    alias,
-                    required_props
-                );
-
-                // Use schema filter to get only types with required properties
-                use super::schema_filter::SchemaPropertyFilter;
-                let filter = SchemaPropertyFilter::new(schema);
-                let filtered_labels = filter.filter_node_schemas(required_props);
-
-                log::info!(
-                    "Property-based filtering: {} → {} node types (required properties: {:?})",
-                    schema.all_node_schemas().len(),
-                    filtered_labels.len(),
-                    required_props
-                );
-
-                if filtered_labels.is_empty() {
-                    log::warn!(
-                        "No node types have required properties {:?} - query will return 0 rows",
-                        required_props
-                    );
-                    // Return empty result (0 rows)
-                    return Ok(Arc::new(LogicalPlan::Empty));
-                }
-
-                filtered_labels
-            } else {
-                // No property requirements - use all node types
-                let all_node_schemas = schema.all_node_schemas();
-
-                if all_node_schemas.is_empty() {
-                    return Err(LogicalPlanError::QueryPlanningError(
-                        "No node types found in schema".to_string(),
-                    ));
-                }
-
-                // Collect unique base labels (deduplicate qualified names)
-                let mut base_labels = std::collections::HashSet::new();
-                for label_key in all_node_schemas.keys() {
-                    let base_label = if label_key.contains("::") {
-                        label_key.split("::").last().unwrap_or(label_key)
-                    } else {
-                        label_key
-                    };
-                    base_labels.insert(base_label.to_string());
-                }
-
-                base_labels.into_iter().collect()
-            };
-
-        if labels_to_use.len() == 1 {
-            // Edge case: exactly one node type (after filtering)
-            // Create a ViewScan for it directly (optimization: skip UNION wrapper)
-            log::info!(
-                "Single node type '{}' after filtering - creating ViewScan",
-                labels_to_use[0]
-            );
-            match super::try_generate_view_scan(&alias, &labels_to_use[0], plan_ctx)? {
-                Some(view_scan) => Ok(view_scan),
-                None => Err(LogicalPlanError::NodeNotFound(labels_to_use[0].clone())),
-            }
-        } else {
-            // Multiple node types - create UNION ALL of ViewScans
-            log::warn!(
-                "🔍 Creating UNION of {} node types for labelless query: {:?}",
-                labels_to_use.len(),
-                labels_to_use
-            );
-
-            let mut union_inputs = Vec::new();
-            for label in &labels_to_use {
-                match super::try_generate_view_scan(&alias, label, plan_ctx)? {
-                    Some(view_scan) => {
-                        // Check if this is already a Union (denormalized nodes with FROM/TO positions)
-                        // If so, flatten it into our union_inputs
-                        if let LogicalPlan::Union(inner_union) = view_scan.as_ref() {
-                            log::warn!(
-                                "🔍 Flattening nested Union for label '{}' with {} branches",
-                                label,
-                                inner_union.inputs.len()
-                            );
-                            for inner_input in &inner_union.inputs {
-                                union_inputs.push(inner_input.clone());
-                            }
-                        } else {
-                            log::warn!("🔍 Added ViewScan for label '{}': {:?}", label, view_scan);
-                            union_inputs.push(view_scan);
-                        }
-                    }
-                    None => {
-                        log::warn!("Skipping label '{}' - not found in schema", label);
-                    }
-                }
-            }
-
-            if union_inputs.is_empty() {
-                return Err(LogicalPlanError::QueryPlanningError(
-                    "Failed to create ViewScans for any node type".to_string(),
-                ));
-            }
-
-            if union_inputs.len() == 1 {
-                // Only one valid ViewScan created
-                Ok(union_inputs.into_iter().next().unwrap())
-            } else {
-                // Create Union plan
-                Ok(Arc::new(LogicalPlan::Union(
-                    crate::query_planner::logical_plan::Union {
-                        inputs: union_inputs,
-                        union_type: crate::query_planner::logical_plan::UnionType::All,
-                    },
-                )))
-            }
-        }
+        // NO LABEL PROVIDED - Let TypeInference Phase 2 handle it!
+        // Phase 2 will create UNION with proper direction validation
+        log::info!(
+            "🏷️ No label for alias '{}' - returning Empty for TypeInference Phase 2",
+            alias
+        );
+        return Ok(Arc::new(LogicalPlan::Empty));
     }
 }
 
