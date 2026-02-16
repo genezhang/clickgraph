@@ -9,6 +9,7 @@ mod from_builder;
 mod from_table;
 mod group_by_builder;
 mod join_builder;
+mod join_deduplicator;
 mod plan_builder_helpers;
 mod plan_builder_utils;
 mod properties_builder;
@@ -140,6 +141,17 @@ pub struct GroupByExpressions(pub Vec<RenderExpr>);
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct JoinItems(pub Vec<Join>);
+
+impl JoinItems {
+    /// Create JoinItems with automatic alias deduplication.
+    ///
+    /// This centralizes the deduplication logic to ensure all code paths
+    /// (including VLP CTE generation) benefit from collision detection.
+    pub fn new(joins: Vec<Join>) -> Self {
+        use crate::render_plan::join_deduplicator::deduplicate_join_aliases;
+        Self(deduplicate_join_aliases(joins))
+    }
+}
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Join {

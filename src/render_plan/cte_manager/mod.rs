@@ -504,13 +504,34 @@ impl CteStrategy {
         filters: &CategorizedFilters,
     ) -> Result<CteGenerationResult, CteError> {
         match self {
-            CteStrategy::Traditional(s) => s.generate_sql(context, properties, filters),
-            CteStrategy::Denormalized(s) => s.generate_sql(context, properties, filters),
-            CteStrategy::FkEdge(s) => s.generate_sql(context, properties, filters),
-            CteStrategy::MixedAccess(s) => s.generate_sql(context, properties, filters),
-            CteStrategy::EdgeToEdge(s) => s.generate_sql(context, properties, filters),
-            CteStrategy::Coupled(s) => s.generate_sql(context, properties, filters),
-            CteStrategy::VariableLength(s) => s.generate_sql(context, properties, filters),
+            CteStrategy::Traditional(s) => {
+                log::warn!("🔍 Using TraditionalCteStrategy");
+                s.generate_sql(context, properties, filters)
+            }
+            CteStrategy::Denormalized(s) => {
+                log::warn!("🔍 Using DenormalizedCteStrategy");
+                s.generate_sql(context, properties, filters)
+            }
+            CteStrategy::FkEdge(s) => {
+                log::warn!("🔍 Using FkEdgeCteStrategy");
+                s.generate_sql(context, properties, filters)
+            }
+            CteStrategy::MixedAccess(s) => {
+                log::warn!("🔍 Using MixedAccessCteStrategy");
+                s.generate_sql(context, properties, filters)
+            }
+            CteStrategy::EdgeToEdge(s) => {
+                log::warn!("🔍 Using EdgeToEdgeCteStrategy");
+                s.generate_sql(context, properties, filters)
+            }
+            CteStrategy::Coupled(s) => {
+                log::warn!("🔍 Using CoupledCteStrategy");
+                s.generate_sql(context, properties, filters)
+            }
+            CteStrategy::VariableLength(s) => {
+                log::warn!("🔍 Using VariableLengthCteStrategy");
+                s.generate_sql(context, properties, filters)
+            }
         }
     }
 
@@ -819,6 +840,16 @@ impl FkEdgeCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
+            log::warn!(
+                "🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'",
+                prop.alias,
+                prop.cypher_alias,
+                prop.column_name
+            );
+            // Skip ID column as it's already explicitly added as start_id/end_id
+            if prop.alias == "id" {
+                continue;
+            }
             if prop.cypher_alias == self.pattern_ctx.left_node_alias {
                 select_items.push(format!(
                     "{}.{} as start_{}",
@@ -1187,6 +1218,16 @@ impl TraditionalCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
+            log::warn!(
+                "🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'",
+                prop.alias,
+                prop.cypher_alias,
+                prop.column_name
+            );
+            // Skip ID column as it's already explicitly added as start_id/end_id
+            if prop.alias == "id" {
+                continue;
+            }
             if prop.cypher_alias == self.pattern_ctx.left_node_alias {
                 select_items.push(format!(
                     "{}.{} as start_{}",
@@ -1619,6 +1660,16 @@ impl DenormalizedCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
+            log::warn!(
+                "🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'",
+                prop.alias,
+                prop.cypher_alias,
+                prop.column_name
+            );
+            // Skip ID column as it's already explicitly added as start_id/end_id
+            if prop.alias == "id" {
+                continue;
+            }
             // Determine if this property belongs to start (from) or end (to) node
             let is_from_node = prop.cypher_alias == self.pattern_ctx.left_node_alias;
             let prefix = if is_from_node { "start_" } else { "end_" };
@@ -2074,6 +2125,16 @@ impl MixedAccessCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
+            log::warn!(
+                "🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'",
+                prop.alias,
+                prop.cypher_alias,
+                prop.column_name
+            );
+            // Skip ID column as it's already explicitly added as start_id/end_id
+            if prop.alias == "id" {
+                continue;
+            }
             if prop.cypher_alias == self.pattern_ctx.left_node_alias {
                 select_items.push(format!(
                     "{}.{} as start_{}",
@@ -2342,6 +2403,16 @@ impl EdgeToEdgeCteStrategy {
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
         for prop in properties {
+            log::warn!(
+                "🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'",
+                prop.alias,
+                prop.cypher_alias,
+                prop.column_name
+            );
+            // Skip ID column as it's already explicitly added as start_id/end_id
+            if prop.alias == "id" {
+                continue;
+            }
             // All properties come from the single table
             select_items.push(format!(
                 "{}.{} as {}",

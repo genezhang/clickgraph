@@ -823,9 +823,13 @@ impl RenderPlanBuilder for LogicalPlan {
                 let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
 
                 // Now extract joins WITH the context so multi-type relationships can look up their CTE names
-                let joins = JoinItems(<LogicalPlan as JoinBuilder>::extract_joins_with_context(
+                let raw_joins = <LogicalPlan as JoinBuilder>::extract_joins_with_context(
                     self, schema, &context,
-                )?);
+                )?;
+
+                // Deduplicate aliases
+                let joins = JoinItems::new(raw_joins);
+
                 let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
                 let filters = FilterItems(FilterBuilder::extract_filters(self)?);
                 let group_by =
@@ -1039,7 +1043,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         graph_rel: None,
                     };
 
-                    let joins = JoinItems(vec![vlp_join]);
+                    let joins = JoinItems::new(vec![vlp_join]);
 
                     // Extract select items WITHOUT CTE registry (properties come from base table)
                     let select_items = SelectItems {
@@ -1133,7 +1137,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         log::info!("🔧 VLP detected: Skipping JOIN extraction (using CTE as FROM)");
                         JoinItems(vec![])
                     } else {
-                        JoinItems(RenderPlanBuilder::extract_joins(self, schema)?)
+                        JoinItems::new(RenderPlanBuilder::extract_joins(self, schema)?)
                     };
 
                     let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
@@ -1783,7 +1787,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     use crate::render_plan::from_builder::FromBuilder;
                     let cte_from =
                         FromTableItem(with.input.extract_from()?.and_then(|ft| ft.table));
-                    let cte_joins = JoinItems(RenderPlanBuilder::extract_joins(
+                    let cte_joins = JoinItems::new(RenderPlanBuilder::extract_joins(
                         with.input.as_ref(),
                         schema,
                     )?);
@@ -2822,7 +2826,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 distinct: FilterBuilder::extract_distinct(self),
             };
             let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
-            let joins = JoinItems(RenderPlanBuilder::extract_joins(self, schema)?);
+            let joins = JoinItems::new(RenderPlanBuilder::extract_joins(self, schema)?);
             let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
             let filters = FilterItems(FilterBuilder::extract_filters(self)?);
             let group_by =
@@ -3180,7 +3184,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 distinct: FilterBuilder::extract_distinct(self),
             };
             let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
-            let joins = JoinItems(RenderPlanBuilder::extract_joins(self, schema)?);
+            let joins = JoinItems::new(RenderPlanBuilder::extract_joins(self, schema)?);
             let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
             let filters = FilterItems(FilterBuilder::extract_filters(self)?);
             let group_by =
