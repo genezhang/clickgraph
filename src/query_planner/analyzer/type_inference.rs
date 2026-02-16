@@ -1,6 +1,15 @@
-//! Type Inference Analyzer Pass
+//! Unified Type Inference Analyzer Pass
 //!
-//! **Purpose**: Infer missing node labels AND relationship types from graph schema.
+//! **Purpose**: Comprehensive type inference system that:
+//! 1. Infers missing node labels and relationship types from graph schema
+//! 2. Extracts label constraints from WHERE clause id() filters
+//! 3. Generates UNION branches for multiple valid type combinations
+//! 4. **Validates combinations against schema + direction** ← CRITICAL!
+//!
+//! This unified pass replaces and merges:
+//! - Old TypeInference (incremental, incomplete)
+//! - PatternResolver (systematic UNION generation)
+//! - Parts of union_pruning (WHERE constraint extraction)
 //!
 //! **CRITICAL INVARIANT** ⚠️ **Parser Normalization**:
 //! The Cypher parser ALREADY normalizes relationship direction in the logical plan:
@@ -19,71 +28,93 @@
 //! // b is FROM, a is TO ✓ (parser swapped them!)
 //! ```
 //!
-//! **TypeInference Strategy** (query schema like a database):
-//! Use KNOWN facts as filters to find candidates for UNKNOWN labels:
+//! **Unified TypeInference Algorithm**:
 //!
-//! **Known Facts**:
-//! - Relationship type (if specified): `[:KNOWS]`
-//! - Node labels (if specified): `(a:Person)`
-//! - Direction (normalized in plan structure, not the field!)
-//! - Graph schema (relationship definitions: FROM→TO)
+//! **Step 1: Collect ALL Constraints**
+//! For each variable in the pattern, gather:
+//! - Explicit labels from pattern: `(a:User)`
+//! - WHERE id() constraints: `WHERE id(a) IN [...]` → extract labels via ID decoding
+//! - Schema relationship constraints: connected edges constrain node types
+//! - Direction constraints: pattern direction MUST match schema direction
 //!
-//! **Inference Rules**:
-//! 1. If relationship type known → look up schema → infer node labels from from_node/to_node
-//! 2. If both node labels known → look up schema → infer relationship type
-//! 3. Always use: left_connection → from_node, right_connection → to_node
-//!    (DO NOT check direction field - parser already normalized!)
+//! **Step 2: Compute Possible Types**
+//! For each variable:
+//! - Start with all possible types (all node labels in schema)
+//! - Filter by explicit label (if any)
+//! - Filter by WHERE id() constraints (if any)
+//! - Filter by schema relationships (considering direction!)
 //!
-//! **Problem**: Cypher allows omitting types when they can be inferred:
-//! ```cypher
-//! MATCH (a:Person)-[r]->(b)        -- r has no type, b has no label
-//! MATCH ()-[r:KNOWS]->()           -- nodes have no labels
-//! MATCH ()-[r]->()                 -- nothing specified!
+//! **Step 3: Generate Valid Combinations**
+//! - Cartesian product of all possible types
+//! - **Filter by schema validity + direction** ← Prevents invalid branches
+//! - For directed patterns (->), validate: schema.has_relationship(from, type, to, direction)
+//! - For undirected patterns (--), defer to BidirectionalUnion pass
+//!
+//! **Step 4: Create UNION Structure**
+//! ```rust
+//! if valid_combinations.len() == 1 {
+//!     // Single valid combination, no Union needed
+//!     return single_branch_with_labels(valid_combinations[0])
+//! } else {
+//!     // Multiple valid combinations, create Union
+//!     return LogicalPlan::Union {
+//!         inputs: valid_combinations.map(|combo| create_branch_with_labels(combo)),
+//!         union_type: UnionType::All
+//!     }
+//! }
 //! ```
 //!
-//! **Solution**: Smart inference using graph schema:
+//! **Direction Validation** (CRITICAL):
 //!
-//! **Node Label Inference**:
-//! 1. From relationship: If KNOWS connects Person → Person, infer node labels
-//! 2. From schema: If only one node type exists, use it
-//! 3. From connected relationships: Propagate labels through patterns
+//! For directed patterns (`->`), only schema-valid directions allowed:
+//! ```cypher
+//! // Schema: AUTHORED from User to Post
+//! ✅ Valid:   (User)-[AUTHORED]->(Post)
+//! ❌ Invalid: (Post)-[AUTHORED]->(User)  ← MUST BE FILTERED OUT
+//! ```
 //!
-//! **Edge Type Inference**:
-//! 1. From nodes: If Person-?->City and only LIVES_IN connects them, infer LIVES_IN
-//! 2. From schema: If only one relationship type exists, use it
-//! 3. From pattern: Use relationship properties to disambiguate
-//!
-//! **When to run**: Early in analyzer pipeline (position 2, after SchemaInference)
-//! This ensures all downstream passes have complete type information.
+//! **Key Functions**:
+//! - `extract_labels_from_where()` - Extract labels from WHERE id() filters
+//! - `compute_possible_types()` - Compute valid types for each variable
+//! - `is_valid_combination_with_direction()` - Validate against schema + direction
+//! - `generate_union_branches()` - Create Union with valid branches
 //!
 //! **Examples**:
 //! ```cypher
 //! // Infer node labels from edge type
 //! MATCH (a)-[:KNOWS]->(b)           → a:Person, b:Person
 //!
+//! // WHERE constraint + direction validation
+//! MATCH (a)-[r]->(b) WHERE id(a) IN [Post.1, User.2] AND id(b) IN [...]
+//! → Generates UNION with ONLY valid branches:
+//!    (User)-[AUTHORED|LIKED]->(Post)  ✓
+//!    (User)-[FOLLOWS]->(User)          ✓
+//!    [NOT: (Post)-[*]->(User) ❌ Invalid direction!]
+//!
 //! // Infer edge type from node labels  
 //! MATCH (a:Person)-[r]->(b:City)    → r:LIVES_IN
 //!
-//! // Infer everything (if only one edge type exists)
-//! MATCH (a)-[r]->(b)                → a:Person, r:KNOWS, b:Person
-//!
-//! // Cross-WITH inference
-//! MATCH (a:Person)-[:KNOWS]->(b)
-//! WITH b
-//! MATCH (b)-[:LIVES_IN]->(c)        → b:Person, c:City
+//! // Multiple valid combinations → UNION
+//! MATCH (a)-[r]->(b) WHERE id(a) IN [User.1, User.2]
+//! → UNION of: (User)-[FOLLOWS]->(User), (User)-[AUTHORED]->(Post), (User)-[LIKED]->(Post)
 //! ```
+//!
+//! **When to run**: Early in analyzer pipeline (position 2, after SchemaInference)
+//! This ensures all downstream passes have complete type information.
 
 use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     graph_catalog::graph_schema::GraphSchema,
+    utils::id_encoding::IdEncoding,
     query_planner::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
             errors::AnalyzerError,
             pattern_resolver_config::get_max_combinations,
         },
-        logical_expr::LogicalExpr,
+        logical_expr::{LogicalExpr, Direction, Literal},
         logical_plan::{GraphNode, GraphRel, LogicalPlan, ViewScan},
         plan_ctx::PlanCtx,
         transformed::Transformed,
@@ -1523,12 +1554,239 @@ impl AnalyzerPass for TypeInference {
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
-        log::info!("🏷️ TypeInference: Starting type inference pass");
+        log::info!("🏷️ UnifiedTypeInference: Starting type inference pass");
         let result = self.infer_labels_recursive(logical_plan, plan_ctx, graph_schema)?;
         log::info!(
-            "🏷️ TypeInference: Completed - plan transformed: {}",
+            "🏷️ UnifiedTypeInference: Completed - plan transformed: {}",
             result.is_yes()
         );
         Ok(result)
     }
+}
+
+// ================================================================================================
+// WHERE Clause Label Extraction
+// ================================================================================================
+
+/// Extract node labels from WHERE clause containing `id(var) IN [...]` or `id(var) = X` patterns
+///
+/// This function decodes ClickGraph's bit-pattern encoded IDs to extract label information,
+/// enabling type inference from browser queries like:
+/// `MATCH (a)-[r]->(b) WHERE id(a) IN [281474976710657, ...]`
+///
+/// # Arguments
+/// * `where_expr` - The WHERE clause logical expression
+///
+/// # Returns
+/// * Map of variable names to their possible label sets
+///
+/// # Example
+/// ```ignore
+/// // WHERE id(a) IN [281474976710657, 281474976710658]  (both User IDs)
+/// // Returns: {"a": {"User"}}
+///
+/// // WHERE id(a) = 281474976710657 AND id(b) = 844424930131969
+/// // Returns: {"a": {"User"}, "b": {"Post"}}
+/// ```
+fn extract_labels_from_where(
+    where_expr: &Option<LogicalExpr>,
+) -> HashMap<String, HashSet<String>> {
+    let mut label_constraints = HashMap::new();
+    if let Some(expr) = where_expr {
+        extract_labels_from_logical_expr(expr, &mut label_constraints, false);
+    }
+    label_constraints
+}
+
+/// Recursively traverse logical WHERE expression to find `id(var) IN [...]` or `id(var) = X` patterns
+fn extract_labels_from_logical_expr(
+    expr: &LogicalExpr,
+    constraints: &mut HashMap<String, HashSet<String>>,
+    negated: bool,
+) {
+    match expr {
+        LogicalExpr::Operator(op_app) => {
+            use crate::query_planner::logical_expr::Operator;
+            match op_app.operator {
+                // NOT operator - flip negation flag and recurse
+                Operator::Not => {
+                    for operand in &op_app.operands {
+                        extract_labels_from_logical_expr(operand, constraints, !negated);
+                    }
+                }
+                Operator::In => {
+                    // Skip extraction if we're inside a NOT (e.g., NOT id(a) IN [...])
+                    if negated {
+                        return;
+                    }
+
+                    // Check if first operand is ScalarFnCall("id", [Variable])
+                    if let Some(LogicalExpr::ScalarFnCall(func)) = op_app.operands.first() {
+                        if func.name == "id" && func.args.len() == 1 {
+                            if let LogicalExpr::Column(col) = &func.args[0] {
+                                let var_name = &col.0;
+                                // Extract IDs from second operand (list)
+                                if let Some(LogicalExpr::List(id_list)) = op_app.operands.get(1) {
+                                    for item in id_list {
+                                        if let LogicalExpr::Literal(Literal::Integer(id_value)) = item {
+                                            if let Some((label, _)) = IdEncoding::decode_with_label(*id_value) {
+                                                constraints
+                                                    .entry(var_name.clone())
+                                                    .or_default()
+                                                    .insert(label);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Operator::Equal => {
+                    // Skip extraction if we're inside a NOT
+                    if negated {
+                        return;
+                    }
+
+                    // Handle: id(var) = X
+                    if let Some(LogicalExpr::ScalarFnCall(func)) = op_app.operands.first() {
+                        if func.name == "id" && func.args.len() == 1 {
+                            if let LogicalExpr::Column(col) = &func.args[0] {
+                                let var_name = &col.0;
+                                // Extract ID from second operand
+                                if let Some(LogicalExpr::Literal(Literal::Integer(id_value))) = op_app.operands.get(1) {
+                                    if let Some((label, _)) = IdEncoding::decode_with_label(*id_value) {
+                                        constraints
+                                            .entry(var_name.clone())
+                                            .or_default()
+                                            .insert(label);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // AND, OR - recurse into operands without flipping negation
+                Operator::And | Operator::Or => {
+                    for operand in &op_app.operands {
+                        extract_labels_from_logical_expr(operand, constraints, negated);
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+// ================================================================================================
+// Schema Validation with Direction
+// ================================================================================================
+
+/// Check if a specific relationship exists in schema with direction validation
+///
+/// # Arguments
+/// * `from_type` - Source node type
+/// * `to_type` - Target node type
+/// * `rel_type` - Relationship type
+/// * `direction` - Pattern direction (must match schema for directed patterns)
+/// * `graph_schema` - Graph schema
+///
+/// # Returns
+/// * `true` if relationship exists in schema with correct direction
+fn check_relationship_exists_with_direction(
+    from_type: &str,
+    to_type: &str,
+    rel_type: &str,
+    direction: Direction,
+    graph_schema: &GraphSchema,
+) -> bool {
+    match direction {
+        Direction::Either => {
+            // Undirected pattern - allow either direction
+            check_relationship_exists_bidirectional(from_type, to_type, rel_type, graph_schema)
+        }
+        Direction::Outgoing | Direction::Incoming => {
+            // Directed pattern - must match schema direction exactly
+            if let Some(rel_schema) = graph_schema.get_relationships_schema_opt(rel_type) {
+                node_type_matches(&rel_schema.from_node, from_type)
+                    && node_type_matches(&rel_schema.to_node, to_type)
+            } else {
+                false
+            }
+        }
+    }
+}
+
+/// Match node type considering `$any` as wildcard (polymorphic schemas)
+fn node_type_matches(schema_node: &str, query_node: &str) -> bool {
+    schema_node == "$any" || schema_node == query_node
+}
+
+/// Check if a specific relationship exists in either direction
+fn check_relationship_exists_bidirectional(
+    from_type: &str,
+    to_type: &str,
+    rel_type: &str,
+    graph_schema: &GraphSchema,
+) -> bool {
+    // Iterate all relationships to find matching type with either direction
+    graph_schema
+        .get_relationships_schemas()
+        .iter()
+        .any(|(key, rel_schema)| {
+            // Match by relationship type (handle composite keys TYPE::FROM::TO)
+            let type_matches = if key.contains("::") {
+                key.split("::").next() == Some(rel_type)
+            } else {
+                key == rel_type
+            };
+            type_matches
+                && ((node_type_matches(&rel_schema.from_node, from_type)
+                    && node_type_matches(&rel_schema.to_node, to_type))
+                    || (node_type_matches(&rel_schema.from_node, to_type)
+                        && node_type_matches(&rel_schema.to_node, from_type)))
+        })
+}
+
+/// Check if ANY relationship exists between two node types with direction validation
+fn check_any_relationship_exists_with_direction(
+    from_type: &str,
+    to_type: &str,
+    direction: Direction,
+    graph_schema: &GraphSchema,
+) -> bool {
+    match direction {
+        Direction::Either => {
+            // Undirected - allow either direction
+            check_any_relationship_exists_bidirectional(from_type, to_type, graph_schema)
+        }
+        Direction::Outgoing | Direction::Incoming => {
+            // Directed - must match schema direction
+            graph_schema
+                .get_relationships_schemas()
+                .values()
+                .any(|rel_schema| {
+                    node_type_matches(&rel_schema.from_node, from_type)
+                        && node_type_matches(&rel_schema.to_node, to_type)
+                })
+        }
+    }
+}
+
+/// Check if ANY relationship exists between two node types in either direction
+fn check_any_relationship_exists_bidirectional(
+    from_type: &str,
+    to_type: &str,
+    graph_schema: &GraphSchema,
+) -> bool {
+    graph_schema
+        .get_relationships_schemas()
+        .values()
+        .any(|rel_schema| {
+            (node_type_matches(&rel_schema.from_node, from_type)
+                && node_type_matches(&rel_schema.to_node, to_type))
+                || (node_type_matches(&rel_schema.from_node, to_type)
+                    && node_type_matches(&rel_schema.to_node, from_type))
+        })
 }
