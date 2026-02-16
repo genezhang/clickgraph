@@ -1452,15 +1452,57 @@ fn transform_to_path(
         )
     })?;
 
-    // Extract relationship - require either metadata lookup success or known types
+    // Determine correct node order for the relationship based on schema direction
+    // The relationship should ALWAYS follow schema direction (from -> to), regardless of query order
+    let (from_node, to_node, needs_swap) = {
+        // Check if there's a schema relationship from start_labels -> end_labels
+        let forward_match = rel_types.iter().any(|rel_type| {
+            if let Some(rel_schema) = schema.get_relationships_schema_opt(rel_type) {
+                (rel_schema.from_node == "$any" || start_labels.contains(&rel_schema.from_node)) &&
+                (rel_schema.to_node == "$any" || end_labels.contains(&rel_schema.to_node))
+            } else {
+                false
+            }
+        });
+
+        if forward_match {
+            // Query order matches schema direction
+            (start_node.clone(), end_node.clone(), false)
+        } else {
+            // Try reverse direction
+            let reverse_match = rel_types.iter().any(|rel_type| {
+                if let Some(rel_schema) = schema.get_relationships_schema_opt(rel_type) {
+                    (rel_schema.from_node == "$any" || end_labels.contains(&rel_schema.from_node)) &&
+                    (rel_schema.to_node == "$any" || start_labels.contains(&rel_schema.to_node))
+                } else {
+                    false
+                }
+            });
+
+            if reverse_match {
+                // Need to swap nodes to match schema direction
+                log::debug!(
+                    "Swapping nodes for path: schema expects {:?}->{:?}, but query gave {:?}->{:?}",
+                    end_labels, start_labels,
+                    start_labels, end_labels
+                );
+                (end_node.clone(), start_node.clone(), true)
+            } else {
+                // Can't determine - use query order (fallback)
+                (start_node.clone(), end_node.clone(), false)
+            }
+        }
+    };
+
+    // Extract relationship with schema-order nodes
     let relationship = find_relationship_in_row_with_type(
         row,
         rel_alias,
-        &start_node.element_id,
-        &end_node.element_id,
+        &from_node.element_id,
+        &to_node.element_id,
         rel_types,
-        start_labels,
-        end_labels,
+        &from_node.labels,
+        &to_node.labels,
         return_metadata,
         schema,
     )
@@ -1468,7 +1510,7 @@ fn transform_to_path(
         // If we have a known type, create relationship with that type
         rel_types.first().map(|rel_type| {
             log::debug!("Creating relationship with known type: {}", rel_type);
-            create_relationship_with_type(rel_type, &start_node.element_id, &end_node.element_id)
+            create_relationship_with_type(rel_type, &from_node.element_id, &to_node.element_id)
         })
     })
     .ok_or_else(|| {
@@ -1484,16 +1526,17 @@ fn transform_to_path(
     })?;
 
     log::info!(
-        "Path created: start_node.labels={:?}, end_node.labels={:?}, rel.type={}",
-        start_node.labels,
-        end_node.labels,
-        relationship.rel_type
+        "Path created: start_node.labels={:?}, end_node.labels={:?}, rel.type={}, node_swap={}",
+        from_node.labels,
+        to_node.labels,
+        relationship.rel_type,
+        needs_swap
     );
 
     // Create Path with single-hop structure
     // Indices for single hop: [1, 1] means "relationship index 1, then node index 1"
     // (Neo4j uses 1-based indexing in path indices)
-    Ok(Path::single_hop(start_node, relationship, end_node))
+    Ok(Path::single_hop(from_node, relationship, to_node))
 }
 
 /// Transform path from JSON format (UNION path queries)
@@ -1578,7 +1621,7 @@ fn transform_path_from_json(
         start_id,
         vec![start_label.clone()],
         start_props_clean,
-        start_element_id,
+        start_element_id.clone(),
     );
 
     // Create end node - element_id is source of truth, integer id derived from it
@@ -1591,34 +1634,72 @@ fn transform_path_from_json(
         end_id,
         vec![end_label.clone()],
         end_props_clean,
-        end_element_id,
+        end_element_id.clone(),
     );
 
-    // Create relationship - element_id is source of truth, integer id derived from it
-    let rel_element_id = generate_relationship_element_id(&rel_type, &start_id_str, &end_id_str);
+    // Determine correct node order based on schema direction
+    // The relationship should ALWAYS follow schema direction (from -> to), regardless of query order
+    let (from_node, to_node, from_id_str, to_id_str) = {
+        // Check if there's a schema relationship from start_label -> end_label
+        let forward_match = if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_type) {
+            (rel_schema.from_node == "$any" || rel_schema.from_node == start_label) &&
+            (rel_schema.to_node == "$any" || rel_schema.to_node == end_label)
+        } else {
+            false
+        };
+
+        if forward_match {
+            // Query order matches schema direction
+            (start_node.clone(), end_node.clone(), start_id_str.clone(), end_id_str.clone())
+        } else {
+            // Try reverse direction
+            let reverse_match = if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_type) {
+                (rel_schema.from_node == "$any" || rel_schema.from_node == end_label) &&
+                (rel_schema.to_node == "$any" || rel_schema.to_node == start_label)
+            } else {
+                false
+            };
+
+            if reverse_match {
+                // Need to swap nodes to match schema direction
+                log::debug!(
+                    "Swapping nodes for path: schema expects {:?}->{:?}, but query gave {:?}->{:?}",
+                    end_label, start_label,
+                    start_label, end_label
+                );
+                (end_node.clone(), start_node.clone(), end_id_str.clone(), start_id_str.clone())
+            } else {
+                // Can't determine - use query order (fallback)
+                (start_node.clone(), end_node.clone(), start_id_str.clone(), end_id_str.clone())
+            }
+        }
+    };
+
+    // Create relationship with schema-order nodes
+    let rel_element_id = generate_relationship_element_id(&rel_type, &from_id_str, &to_id_str);
     let rel_id = generate_id_from_element_id(&rel_element_id);
     let rel_props_clean = clean_property_keys(rel_props);
     let relationship = Relationship::new(
         rel_id,
-        start_id, // start_node_id - derived from start_element_id
-        end_id,   // end_node_id - derived from end_element_id
+        from_node.id, // from_node_id - derived from from_element_id
+        to_node.id,   // to_node_id - derived from to_element_id
         rel_type.clone(),
         rel_props_clean,
         rel_element_id,
-        start_node.element_id.clone(),
-        end_node.element_id.clone(),
+        from_node.element_id.clone(),
+        to_node.element_id.clone(),
     );
 
     log::info!(
-        "✅ Path from JSON: start={} ({}), end={} ({}), rel={}",
-        start_node.labels[0],
-        start_node.id,
-        end_node.labels[0],
-        end_node.id,
+        "✅ Path from JSON: from={} ({}), to={} ({}), rel={}",
+        from_node.labels[0],
+        from_node.id,
+        to_node.labels[0],
+        to_node.id,
         relationship.rel_type
     );
 
-    Ok(Path::single_hop(start_node, relationship, end_node))
+    Ok(Path::single_hop(from_node, relationship, to_node))
 }
 
 /// Transform a VLP multi-type path from its tuple representation.
@@ -1720,7 +1801,7 @@ fn transform_vlp_path(
         start_id,
         vec![start_type.clone()],
         clean_property_keys(start_props),
-        start_element_id,
+        start_element_id.clone(),
     );
 
     // Build end node
@@ -1730,29 +1811,67 @@ fn transform_vlp_path(
         end_id,
         vec![end_type.clone()],
         clean_property_keys(end_props),
-        end_element_id,
+        end_element_id.clone(),
     );
 
-    // Build relationship
-    let rel_element_id = generate_relationship_element_id(&rel_type, &start_id_str, &end_id_str);
+    // Determine correct node order based on schema direction
+    // The relationship should ALWAYS follow schema direction (from -> to), regardless of query order
+    let (from_node, to_node, from_id_str, to_id_str) = {
+        // Check if there's a schema relationship from start_type -> end_type
+        let forward_match = if let Some(rel_schema) = _schema.get_relationships_schema_opt(&rel_type) {
+            (rel_schema.from_node == "$any" || rel_schema.from_node == start_type) &&
+            (rel_schema.to_node == "$any" || rel_schema.to_node == end_type)
+        } else {
+            false
+        };
+
+        if forward_match {
+            // Query order matches schema direction
+            (start_node.clone(), end_node.clone(), start_id_str.clone(), end_id_str.clone())
+        } else {
+            // Try reverse direction
+            let reverse_match = if let Some(rel_schema) = _schema.get_relationships_schema_opt(&rel_type) {
+                (rel_schema.from_node == "$any" || rel_schema.from_node == end_type) &&
+                (rel_schema.to_node == "$any" || rel_schema.to_node == start_type)
+            } else {
+                false
+            };
+
+            if reverse_match {
+                // Need to swap nodes to match schema direction
+                log::debug!(
+                    "Swapping VLP path nodes: schema expects {:?}->{:?}, but query gave {:?}->{:?}",
+                    end_type, start_type,
+                    start_type, end_type
+                );
+                (end_node.clone(), start_node.clone(), end_id_str.clone(), start_id_str.clone())
+            } else {
+                // Can't determine - use query order (fallback)
+                (start_node.clone(), end_node.clone(), start_id_str.clone(), end_id_str.clone())
+            }
+        }
+    };
+
+    // Build relationship with schema-order nodes
+    let rel_element_id = generate_relationship_element_id(&rel_type, &from_id_str, &to_id_str);
     let rel_id = generate_id_from_element_id(&rel_element_id);
     let relationship = Relationship::new(
         rel_id,
-        start_id,
-        end_id,
+        from_node.id,
+        to_node.id,
         rel_type,
         clean_property_keys(rel_props),
         rel_element_id,
-        start_node.element_id.clone(),
-        end_node.element_id.clone(),
+        from_node.element_id.clone(),
+        to_node.element_id.clone(),
     );
 
     log::debug!(
-        "VLP Path: start={} (id={}), end={} (id={}), rel={}",
-        start_node.labels[0],
-        start_node.id,
-        end_node.labels[0],
-        end_node.id,
+        "VLP Path: from={} (id={}), to={} (id={}), rel={}",
+        from_node.labels[0],
+        from_node.id,
+        to_node.labels[0],
+        to_node.id,
         relationship.rel_type
     );
 
@@ -1767,7 +1886,7 @@ fn transform_vlp_path(
         );
     }
 
-    Ok(Path::single_hop(start_node, relationship, end_node))
+    Ok(Path::single_hop(from_node, relationship, to_node))
 }
 
 /// Clean property keys by removing:
