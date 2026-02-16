@@ -115,7 +115,7 @@ use crate::{
             pattern_resolver_config::get_max_combinations,
         },
         logical_expr::{LogicalExpr, Direction, Literal},
-        logical_plan::{GraphNode, GraphRel, LogicalPlan, ViewScan},
+        logical_plan::{GraphNode, GraphRel, LogicalPlan, ViewScan, Union, UnionType},
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
@@ -151,6 +151,52 @@ impl TypeInference {
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         match plan.as_ref() {
+            // CRITICAL: Check for Filter wrapping pattern - extract WHERE constraints for UNION generation
+            LogicalPlan::Filter(filter) => {
+                // Extract label constraints from WHERE clause
+                let where_constraints = extract_labels_from_where(&Some(filter.predicate.clone()));
+                
+                if !where_constraints.is_empty() {
+                    log::info!(
+                        "🔍 UnifiedTypeInference: Extracted WHERE constraints: {:?}",
+                        where_constraints
+                    );
+                    
+                    // Check if input is GraphRel - if so, try UNION generation
+                    if let LogicalPlan::GraphRel(_) = filter.input.as_ref() {
+                        // Try to generate UNION with WHERE constraints
+                        let result = self.try_generate_union_with_constraints(
+                            filter.input.clone(),
+                            &where_constraints,
+                            plan_ctx,
+                            graph_schema,
+                        )?;
+                        
+                        if result.is_yes() {
+                            // Union generated - wrap it in Filter
+                            let new_filter = crate::query_planner::logical_plan::Filter {
+                                input: result.get_plan().clone(),
+                                predicate: filter.predicate.clone(),
+                            };
+                            return Ok(Transformed::Yes(Arc::new(LogicalPlan::Filter(new_filter))));
+                        }
+                    }
+                }
+                
+                // Default: process input recursively
+                let input_transformed =
+                    self.infer_labels_recursive(filter.input.clone(), plan_ctx, graph_schema)?;
+                if input_transformed.is_yes() {
+                    let new_filter = crate::query_planner::logical_plan::Filter {
+                        input: input_transformed.get_plan().clone(),
+                        predicate: filter.predicate.clone(),
+                    };
+                    Ok(Transformed::Yes(Arc::new(LogicalPlan::Filter(new_filter))))
+                } else {
+                    Ok(Transformed::No(plan))
+                }
+            }
+            
             LogicalPlan::GraphRel(rel) => {
                 log::debug!(
                     "🔍 TypeInference: Processing GraphRel '{}' (edge_types: {:?})",
@@ -513,20 +559,6 @@ impl TypeInference {
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
                         new_proj,
                     ))))
-                } else {
-                    Ok(Transformed::No(plan))
-                }
-            }
-
-            LogicalPlan::Filter(filter) => {
-                let input_transformed =
-                    self.infer_labels_recursive(filter.input.clone(), plan_ctx, graph_schema)?;
-                if input_transformed.is_yes() {
-                    let new_filter = crate::query_planner::logical_plan::Filter {
-                        input: input_transformed.get_plan().clone(),
-                        predicate: filter.predicate.clone(),
-                    };
-                    Ok(Transformed::Yes(Arc::new(LogicalPlan::Filter(new_filter))))
                 } else {
                     Ok(Transformed::No(plan))
                 }
@@ -953,6 +985,285 @@ impl TypeInference {
                 }
             }
         }
+    }
+
+    /// Try to generate UNION branches when WHERE constraints indicate multiple possible types
+    ///
+    /// This is the core of unified type inference with direction validation.
+    ///
+    /// # Arguments
+    /// * `graph_rel_plan` - The GraphRel plan node
+    /// * `where_constraints` - Label constraints extracted from WHERE id() filters
+    /// * `plan_ctx` - Planning context
+    /// * `graph_schema` - Graph schema
+    ///
+    /// # Returns
+    /// * `Transformed::Yes(Union)` if multiple valid branches generated
+    /// * `Transformed::No(plan)` if single branch or generation not applicable
+    fn try_generate_union_with_constraints(
+        &self,
+        graph_rel_plan: Arc<LogicalPlan>,
+        where_constraints: &HashMap<String, HashSet<String>>,
+        plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
+        let rel = match graph_rel_plan.as_ref() {
+            LogicalPlan::GraphRel(r) => r,
+            _ => return Ok(Transformed::No(graph_rel_plan)),
+        };
+
+        // Skip UNION generation for:
+        // 1. Undirected patterns (handled by BidirectionalUnion pass later)
+        // 2. Variable-length paths (handled by GraphTraversalPlanning)
+        if matches!(rel.direction, Direction::Either) || rel.variable_length.is_some() {
+            log::debug!(
+                "🔍 UnifiedTypeInference: Skipping UNION generation for pattern '{}' (undirected or VLP)",
+                rel.alias
+            );
+            return self.infer_labels_recursive(graph_rel_plan, plan_ctx, graph_schema);
+        }
+
+        // Get possible types for left and right nodes
+        let left_types = self.get_possible_types_for_variable(
+            &rel.left_connection,
+            where_constraints,
+            plan_ctx,
+            graph_schema,
+        )?;
+
+        let right_types = self.get_possible_types_for_variable(
+            &rel.right_connection,
+            where_constraints,
+            plan_ctx,
+            graph_schema,
+        )?;
+
+        // Get possible relationship types
+        let rel_types = if let Some(labels) = &rel.labels {
+            labels.clone()
+        } else {
+            // No relationship type specified - collect all types from schema
+            graph_schema
+                .get_relationships_schemas()
+                .keys()
+                .map(|k| {
+                    // Handle composite keys TYPE::FROM::TO
+                    if k.contains("::") {
+                        k.split("::").next().unwrap_or(k).to_string()
+                    } else {
+                        k.clone()
+                    }
+                })
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect()
+        };
+
+        log::info!(
+            "🔍 UnifiedTypeInference: Checking combinations for pattern '{}': left_types={:?}, right_types={:?}, rel_types={:?}, direction={:?}",
+            rel.alias,
+            left_types,
+            right_types,
+            rel_types,
+            rel.direction
+        );
+
+        // Generate all combinations and validate with direction
+        let mut valid_combinations = Vec::new();
+
+        for left_type in &left_types {
+            for right_type in &right_types {
+                for rel_type in &rel_types {
+                    // CRITICAL: Validate direction matches schema
+                    if check_relationship_exists_with_direction(
+                        left_type,
+                        right_type,
+                        rel_type,
+                        rel.direction.clone(),
+                        graph_schema,
+                    ) {
+                        valid_combinations.push((
+                            left_type.clone(),
+                            rel_type.clone(),
+                            right_type.clone(),
+                        ));
+                    } else {
+                        log::debug!(
+                            "🚫 UnifiedTypeInference: Invalid combination filtered: ({left_type})-[{rel_type}:{:?}]->({right_type})",
+                            rel.direction
+                        );
+                    }
+                }
+            }
+        }
+
+        log::info!(
+            "🔍 UnifiedTypeInference: Found {} valid combinations after direction validation",
+            valid_combinations.len()
+        );
+
+        // Check max combinations limit
+        let max_combinations = get_max_combinations();
+        if valid_combinations.len() > max_combinations {
+            log::warn!(
+                "⚠️ UnifiedTypeInference: Too many combinations ({} > {}), limiting to first {}",
+                valid_combinations.len(),
+                max_combinations,
+                max_combinations
+            );
+            valid_combinations.truncate(max_combinations);
+        }
+
+        if valid_combinations.is_empty() {
+            log::warn!(
+                "⚠️ UnifiedTypeInference: No valid combinations found for pattern '{}' - query may return empty results",
+                rel.alias
+            );
+            // Return original plan - query will likely return empty but that's semantically correct
+            return self.infer_labels_recursive(graph_rel_plan, plan_ctx, graph_schema);
+        }
+
+        if valid_combinations.len() == 1 {
+            // Single valid combination - no UNION needed
+            log::info!(
+                "✅ UnifiedTypeInference: Single valid combination, no UNION needed: ({:?})-[{:?}]->({:?})",
+                valid_combinations[0].0,
+                valid_combinations[0].1,
+                valid_combinations[0].2
+            );
+            return self.infer_labels_recursive(graph_rel_plan, plan_ctx, graph_schema);
+        }
+
+        // Multiple valid combinations - generate UNION
+        log::info!(
+            "🔀 UnifiedTypeInference: Generating UNION with {} branches",
+            valid_combinations.len()
+        );
+
+        let mut union_branches = Vec::new();
+
+        for (left_type, rel_type, right_type) in valid_combinations {
+            // Create a branch with specific types
+            let branch = self.create_typed_branch(
+                rel,
+                &left_type,
+                &vec![rel_type],
+                &right_type,
+                plan_ctx,
+                graph_schema,
+            )?;
+            union_branches.push(branch);
+        }
+
+        // Create Union node
+        let union_plan = crate::query_planner::logical_plan::Union {
+            inputs: union_branches,
+            union_type: crate::query_planner::logical_plan::UnionType::All,
+        };
+
+        Ok(Transformed::Yes(Arc::new(LogicalPlan::Union(union_plan))))
+    }
+
+    /// Get possible types for a variable considering explicit labels and WHERE constraints
+    fn get_possible_types_for_variable(
+        &self,
+        var_name: &str,
+        where_constraints: &HashMap<String, HashSet<String>>,
+        plan_ctx: &PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<Vec<String>> {
+        // First check: explicit label in plan_ctx
+        if let Ok(table_ctx) = plan_ctx.get_table_ctx(var_name) {
+            if let Some(labels) = table_ctx.get_labels() {
+                if !labels.is_empty() {
+                    log::debug!(
+                        "🏷️ Variable '{}' has explicit label from plan_ctx: {:?}",
+                        var_name,
+                        labels
+                    );
+                    return Ok(labels.clone());
+                }
+            }
+        }
+
+        // Second check: WHERE constraints
+        if let Some(constraint_labels) = where_constraints.get(var_name) {
+            log::debug!(
+                "🏷️ Variable '{}' has WHERE constraint labels: {:?}",
+                var_name,
+                constraint_labels
+            );
+            return Ok(constraint_labels.iter().cloned().collect());
+        }
+
+        // No constraints - return all possible node types
+        let all_types: Vec<String> = graph_schema
+            .all_node_schemas()
+            .keys()
+            .cloned()
+            .collect();
+
+        log::debug!(
+            "🏷️ Variable '{}' has no constraints, using all node types: {:?}",
+            var_name,
+            all_types
+        );
+
+        Ok(all_types)
+    }
+
+    /// Create a typed branch for UNION with specific node and relationship types
+    fn create_typed_branch(
+        &self,
+        rel: &GraphRel,
+        left_type: &str,
+        rel_types: &[String],
+        right_type: &str,
+        plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<Arc<LogicalPlan>> {
+        // Update plan_ctx with inferred types for this branch
+        self.update_plan_ctx_with_label(&rel.left_connection, left_type, plan_ctx)?;
+        self.update_plan_ctx_with_label(&rel.right_connection, right_type, plan_ctx)?;
+
+        // Create GraphRel with specific types
+        let typed_rel = GraphRel {
+            left: rel.left.clone(),
+            center: rel.center.clone(),
+            right: rel.right.clone(),
+            alias: rel.alias.clone(),
+            direction: rel.direction.clone(),
+            left_connection: rel.left_connection.clone(),
+            right_connection: rel.right_connection.clone(),
+            is_rel_anchor: rel.is_rel_anchor,
+            variable_length: rel.variable_length.clone(),
+            shortest_path_mode: rel.shortest_path_mode.clone(),
+            path_variable: rel.path_variable.clone(),
+            where_predicate: rel.where_predicate.clone(),
+            labels: Some(rel_types.to_vec()),
+            is_optional: rel.is_optional,
+            anchor_connection: rel.anchor_connection.clone(),
+            cte_references: rel.cte_references.clone(),
+            pattern_combinations: None,
+            was_undirected: rel.was_undirected,
+        };
+
+        Ok(Arc::new(LogicalPlan::GraphRel(typed_rel)))
+    }
+
+    /// Update plan_ctx with inferred label for a variable
+    fn update_plan_ctx_with_label(
+        &self,
+        var_name: &str,
+        label: &str,
+        plan_ctx: &mut PlanCtx,
+    ) -> AnalyzerResult<()> {
+        if let Ok(mut table_ctx) = plan_ctx.get_table_ctx(var_name).cloned() {
+            // Update existing table_ctx with label
+            table_ctx.set_labels(Some(vec![label.to_string()]));
+            plan_ctx.insert_table_ctx(var_name.to_string(), table_ctx);
+        }
+        Ok(())
     }
 
     /// Infer edge type(s) from node labels or schema.
