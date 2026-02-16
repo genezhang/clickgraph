@@ -2316,14 +2316,512 @@ impl TypeInference {
     ///
     /// **NOTE**: Currently a placeholder. SchemaInference still handles ViewScan creation.
     /// This will be fully implemented after Phase B testing confirms Phase 0 works correctly.
+    /// Phase 3: ViewScan Resolution
+    /// 
+    /// Converts GraphNode(label=Some, input=Empty) → GraphNode(label=Some, input=ViewScan)
+    /// This is the final step that materializes the type inference into actual table scans.
+    /// 
+    /// Handles:
+    /// - Node ViewScans: GraphNode with inferred label
+    /// - Relationship ViewScans: GraphRel center with inferred type
+    /// - Denormalized patterns: Node properties in edge tables
     fn push_inferred_table_names_to_scan(
         logical_plan: Arc<LogicalPlan>,
-        _plan_ctx: &mut PlanCtx,
+        plan_ctx: &mut PlanCtx,
         _graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Arc<LogicalPlan>> {
-        // TODO Phase B: Implement full ViewScan resolution logic
-        // For now, just return the plan unchanged - SchemaInference still handles this
-        Ok(logical_plan)
+        use crate::query_planner::transformed::Transformed;
+        
+        let transformed_plan = match logical_plan.as_ref() {
+            LogicalPlan::Projection(projection) => {
+                let child_tf =
+                    Self::push_inferred_table_names_to_scan_transformed(projection.input.clone(), plan_ctx, _graph_schema)?;
+                projection.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::GraphNode(graph_node) => {
+                // Check if input is Empty - need to resolve to ViewScan
+                if matches!(graph_node.input.as_ref(), LogicalPlan::Empty) {
+                    // First check if GraphNode already has a label (set by TypeInference Phase 2)
+                    let label_to_use = if let Some(ref node_label) = graph_node.label {
+                        if node_label != "$any" {
+                            Some(node_label.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        // Fallback: Get inferred label from TableCtx
+                        match plan_ctx.get_table_ctx(&graph_node.alias) {
+                            Ok(table_ctx) => {
+                                log::debug!(
+                                    "TypeInference Phase 3: Found table_ctx for node '{}' with labels {:?}",
+                                    graph_node.alias,
+                                    table_ctx.get_labels()
+                                );
+                                table_ctx.get_labels().and_then(|labels| {
+                                    if !labels.is_empty() && labels[0] != "$any" {
+                                        Some(labels[0].clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            }
+                            Err(e) => {
+                                log::debug!(
+                                    "TypeInference Phase 3: No table_ctx found for node '{}': {:?}",
+                                    graph_node.alias,
+                                    e
+                                );
+                                None
+                            }
+                        }
+                    };
+
+                    if let Some(label) = label_to_use {
+                        log::info!(
+                            "TypeInference Phase 3: Resolving Empty → ViewScan for node '{}' with label '{}'",
+                            graph_node.alias, label
+                        );
+
+                        // Create ViewScan using the label
+                        match crate::query_planner::logical_plan::match_clause::try_generate_view_scan(
+                            &graph_node.alias,
+                            &label,
+                            plan_ctx,
+                        ) {
+                            Ok(Some(view_scan)) => {
+                                log::info!("TypeInference Phase 3: ✓ Successfully created ViewScan for node '{}' with label '{}'", graph_node.alias, label);
+                                // Rebuild GraphNode with ViewScan instead of Empty
+                                return Ok(Arc::new(LogicalPlan::GraphNode(
+                                    crate::query_planner::logical_plan::GraphNode {
+                                        input: view_scan,
+                                        alias: graph_node.alias.clone(),
+                                        label: Some(label.clone()),
+                                        is_denormalized: graph_node.is_denormalized,
+                                        projected_columns: graph_node.projected_columns.clone(),
+                                        node_types: None,
+                                    },
+                                )));
+                            }
+                            Ok(None) => {
+                                log::warn!(
+                                    "TypeInference Phase 3: Failed to create ViewScan for node '{}' with label '{}' (returned None)",
+                                    graph_node.alias, label
+                                );
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "TypeInference Phase 3: Error creating ViewScan for node '{}' with label '{}': {:?}",
+                                    graph_node.alias, label, e
+                                );
+                            }
+                        }
+                    } else {
+                        log::debug!("TypeInference Phase 3: Node '{}' has no valid label, skipping ViewScan creation", graph_node.alias);
+                    }
+                }
+
+                // Recurse into input (for ViewScan or other plan types)
+                let child_tf =
+                    Self::push_inferred_table_names_to_scan_transformed(graph_node.input.clone(), plan_ctx, _graph_schema)?;
+                graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::GraphRel(graph_rel) => {
+                // First recurse into left and right nodes
+                let left_tf =
+                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.left.clone(), plan_ctx, _graph_schema)?;
+                let right_tf =
+                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.right.clone(), plan_ctx, _graph_schema)?;
+
+                // Check if center (relationship) is Empty - need to resolve to ViewScan
+                let center_tf = if matches!(graph_rel.center.as_ref(), LogicalPlan::Empty) {
+                    // Get inferred relationship type from TableCtx
+                    if let Ok(rel_ctx) = plan_ctx.get_rel_table_ctx(&graph_rel.alias) {
+                        if let Some(labels) = rel_ctx.get_labels() {
+                            if labels.len() == 1 {
+                                let rel_type = &labels[0];
+                                log::info!(
+                                    "TypeInference Phase 3: Resolving Empty → ViewScan for relationship '{}' with inferred type '{}'",
+                                    graph_rel.alias, rel_type
+                                );
+
+                                // Get left and right node labels for context
+                                let left_label = if let LogicalPlan::GraphNode(left_node) =
+                                    graph_rel.left.as_ref()
+                                {
+                                    left_node.label.as_deref()
+                                } else {
+                                    None
+                                };
+
+                                let right_label = if let LogicalPlan::GraphNode(right_node) =
+                                    graph_rel.right.as_ref()
+                                {
+                                    right_node.label.as_deref()
+                                } else {
+                                    None
+                                };
+
+                                // Create ViewScan for the relationship
+                                if let Some(view_scan) = crate::query_planner::logical_plan::match_clause::try_generate_relationship_view_scan(
+                                    &graph_rel.alias,
+                                    rel_type,
+                                    left_label,
+                                    right_label,
+                                    plan_ctx,
+                                ) {
+                                    Transformed::Yes(view_scan)
+                                } else {
+                                    log::warn!(
+                                        "TypeInference Phase 3: Failed to create ViewScan for relationship '{}' with type '{}'",
+                                        graph_rel.alias, rel_type
+                                    );
+                                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, _graph_schema)?
+                                }
+                            } else {
+                                // Multiple relationship types - keep Empty, will be handled by UNION generation
+                                log::debug!(
+                                    "TypeInference Phase 3: Relationship '{}' has multiple types {:?}, keeping Empty for UNION generation",
+                                    graph_rel.alias, labels
+                                );
+                                Self::push_inferred_table_names_to_scan_transformed(
+                                    graph_rel.center.clone(),
+                                    plan_ctx,
+                                    _graph_schema,
+                                )?
+                            }
+                        } else {
+                            Self::push_inferred_table_names_to_scan_transformed(
+                                graph_rel.center.clone(),
+                                plan_ctx,
+                                _graph_schema,
+                            )?
+                        }
+                    } else {
+                        Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, _graph_schema)?
+                    }
+                } else {
+                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, _graph_schema)?
+                };
+
+                graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
+            }
+            LogicalPlan::Cte(cte) => {
+                let child_tf =
+                    Self::push_inferred_table_names_to_scan_transformed(cte.input.clone(), plan_ctx, _graph_schema)?;
+                cte.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
+            LogicalPlan::GraphJoins(graph_joins) => {
+                let child_tf =
+                    Self::push_inferred_table_names_to_scan_transformed(graph_joins.input.clone(), plan_ctx, _graph_schema)?;
+                graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Filter(filter) => {
+                let child_tf =
+                    Self::push_inferred_table_names_to_scan_transformed(filter.input.clone(), plan_ctx, _graph_schema)?;
+                filter.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::GroupBy(group_by) => {
+                let child_tf =
+                    Self::push_inferred_table_names_to_scan_transformed(group_by.input.clone(), plan_ctx, _graph_schema)?;
+                group_by.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::OrderBy(order_by) => {
+                let child_tf =
+                    Self::push_inferred_table_names_to_scan_transformed(order_by.input.clone(), plan_ctx, _graph_schema)?;
+                order_by.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Skip(skip) => {
+                let child_tf =
+                    Self::push_inferred_table_names_to_scan_transformed(skip.input.clone(), plan_ctx, _graph_schema)?;
+                skip.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Limit(limit) => {
+                let child_tf =
+                    Self::push_inferred_table_names_to_scan_transformed(limit.input.clone(), plan_ctx, _graph_schema)?;
+                limit.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Union(union) => {
+                let mut inputs_tf: Vec<Transformed<Arc<LogicalPlan>>> = vec![];
+                for input_plan in union.inputs.iter() {
+                    let child_tf =
+                        Self::push_inferred_table_names_to_scan_transformed(input_plan.clone(), plan_ctx, _graph_schema)?;
+                    inputs_tf.push(child_tf);
+                }
+                union.rebuild_or_clone(inputs_tf, logical_plan.clone())
+            }
+            LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
+            LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
+            LogicalPlan::Unwind(u) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(u.input.clone(), plan_ctx, _graph_schema)?;
+                match child_tf {
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
+                        crate::query_planner::logical_plan::Unwind {
+                            input: new_input,
+                            expression: u.expression.clone(),
+                            alias: u.alias.clone(),
+                            label: u.label.clone(),
+                            tuple_properties: u.tuple_properties.clone(),
+                        },
+                    ))),
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                }
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                let left_tf = Self::push_inferred_table_names_to_scan_transformed(cp.left.clone(), plan_ctx, _graph_schema)?;
+                let right_tf = Self::push_inferred_table_names_to_scan_transformed(cp.right.clone(), plan_ctx, _graph_schema)?;
+                match (&left_tf, &right_tf) {
+                    (Transformed::No(_), Transformed::No(_)) => {
+                        Transformed::No(logical_plan.clone())
+                    }
+                    _ => Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(
+                        crate::query_planner::logical_plan::CartesianProduct {
+                            left: left_tf.get_plan().clone(),
+                            right: right_tf.get_plan().clone(),
+                            is_optional: cp.is_optional,
+                            join_condition: cp.join_condition.clone(),
+                        },
+                    ))),
+                }
+            }
+            LogicalPlan::WithClause(with_clause) => {
+                let child_tf =
+                    Self::push_inferred_table_names_to_scan_transformed(with_clause.input.clone(), plan_ctx, _graph_schema)?;
+                match child_tf {
+                    Transformed::Yes(new_input) => {
+                        let new_with = crate::query_planner::logical_plan::WithClause {
+                            cte_name: None,
+                            input: new_input,
+                            items: with_clause.items.clone(),
+                            distinct: with_clause.distinct,
+                            order_by: with_clause.order_by.clone(),
+                            skip: with_clause.skip,
+                            limit: with_clause.limit,
+                            where_clause: with_clause.where_clause.clone(),
+                            exported_aliases: with_clause.exported_aliases.clone(),
+                            cte_references: with_clause.cte_references.clone(),
+                            pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
+                        };
+                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
+                    }
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                }
+            }
+        };
+        Ok(transformed_plan.get_plan().clone())
+    }
+    
+    // Helper that returns Transformed for recursive calls
+    fn push_inferred_table_names_to_scan_transformed(
+        logical_plan: Arc<LogicalPlan>,
+        plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
+        use crate::query_planner::transformed::Transformed;
+        
+        let transformed_plan = match logical_plan.as_ref() {
+            LogicalPlan::Projection(projection) => {
+                let child_tf =
+                    Self::push_inferred_table_names_to_scan_transformed(projection.input.clone(), plan_ctx, graph_schema)?;
+                projection.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::GraphNode(graph_node) => {
+                // Check if input is Empty - need to resolve to ViewScan
+                if matches!(graph_node.input.as_ref(), LogicalPlan::Empty) {
+                    // First check if GraphNode already has a label (set by TypeInference Phase 2)
+                    let label_to_use = if let Some(ref node_label) = graph_node.label {
+                        if node_label != "$any" {
+                            Some(node_label.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        // Fallback: Get inferred label from TableCtx
+                        match plan_ctx.get_table_ctx(&graph_node.alias) {
+                            Ok(table_ctx) => {
+                                table_ctx.get_labels().and_then(|labels| {
+                                    if !labels.is_empty() && labels[0] != "$any" {
+                                        Some(labels[0].clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            }
+                            Err(_) => None
+                        }
+                    };
+
+                    if let Some(label) = label_to_use {
+                        // Create ViewScan using the label
+                        match crate::query_planner::logical_plan::match_clause::try_generate_view_scan(
+                            &graph_node.alias,
+                            &label,
+                            plan_ctx,
+                        ) {
+                            Ok(Some(view_scan)) => {
+                                // Rebuild GraphNode with ViewScan instead of Empty
+                                return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(
+                                    crate::query_planner::logical_plan::GraphNode {
+                                        input: view_scan,
+                                        alias: graph_node.alias.clone(),
+                                        label: Some(label.clone()),
+                                        is_denormalized: graph_node.is_denormalized,
+                                        projected_columns: graph_node.projected_columns.clone(),
+                                        node_types: None,
+                                    },
+                                ))));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Recurse into input
+                let child_tf =
+                    Self::push_inferred_table_names_to_scan_transformed(graph_node.input.clone(), plan_ctx, graph_schema)?;
+                graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::GraphRel(graph_rel) => {
+                let left_tf =
+                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.left.clone(), plan_ctx, graph_schema)?;
+                let right_tf =
+                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.right.clone(), plan_ctx, graph_schema)?;
+
+                let center_tf = if matches!(graph_rel.center.as_ref(), LogicalPlan::Empty) {
+                    if let Ok(rel_ctx) = plan_ctx.get_rel_table_ctx(&graph_rel.alias) {
+                        if let Some(labels) = rel_ctx.get_labels() {
+                            if labels.len() == 1 {
+                                let rel_type = &labels[0];
+                                let left_label = if let LogicalPlan::GraphNode(left_node) = graph_rel.left.as_ref() {
+                                    left_node.label.as_deref()
+                                } else {
+                                    None
+                                };
+                                let right_label = if let LogicalPlan::GraphNode(right_node) = graph_rel.right.as_ref() {
+                                    right_node.label.as_deref()
+                                } else {
+                                    None
+                                };
+
+                                if let Some(view_scan) = crate::query_planner::logical_plan::match_clause::try_generate_relationship_view_scan(
+                                    &graph_rel.alias,
+                                    rel_type,
+                                    left_label,
+                                    right_label,
+                                    plan_ctx,
+                                ) {
+                                    Transformed::Yes(view_scan)
+                                } else {
+                                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, graph_schema)?
+                                }
+                            } else {
+                                Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, graph_schema)?
+                            }
+                        } else {
+                            Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, graph_schema)?
+                        }
+                    } else {
+                        Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, graph_schema)?
+                    }
+                } else {
+                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, graph_schema)?
+                };
+
+                graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
+            }
+            LogicalPlan::Cte(cte) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(cte.input.clone(), plan_ctx, graph_schema)?;
+                cte.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
+            LogicalPlan::GraphJoins(graph_joins) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(graph_joins.input.clone(), plan_ctx, graph_schema)?;
+                graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Filter(filter) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(filter.input.clone(), plan_ctx, graph_schema)?;
+                filter.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::GroupBy(group_by) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(group_by.input.clone(), plan_ctx, graph_schema)?;
+                group_by.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::OrderBy(order_by) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(order_by.input.clone(), plan_ctx, graph_schema)?;
+                order_by.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Skip(skip) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(skip.input.clone(), plan_ctx, graph_schema)?;
+                skip.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Limit(limit) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(limit.input.clone(), plan_ctx, graph_schema)?;
+                limit.rebuild_or_clone(child_tf, logical_plan.clone())
+            }
+            LogicalPlan::Union(union) => {
+                let mut inputs_tf: Vec<Transformed<Arc<LogicalPlan>>> = vec![];
+                for input_plan in union.inputs.iter() {
+                    let child_tf = Self::push_inferred_table_names_to_scan_transformed(input_plan.clone(), plan_ctx, graph_schema)?;
+                    inputs_tf.push(child_tf);
+                }
+                union.rebuild_or_clone(inputs_tf, logical_plan.clone())
+            }
+            LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
+            LogicalPlan::ViewScan(_) => Transformed::No(logical_plan.clone()),
+            LogicalPlan::Unwind(u) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(u.input.clone(), plan_ctx, graph_schema)?;
+                match child_tf {
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
+                        crate::query_planner::logical_plan::Unwind {
+                            input: new_input,
+                            expression: u.expression.clone(),
+                            alias: u.alias.clone(),
+                            label: u.label.clone(),
+                            tuple_properties: u.tuple_properties.clone(),
+                        },
+                    ))),
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                }
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                let left_tf = Self::push_inferred_table_names_to_scan_transformed(cp.left.clone(), plan_ctx, graph_schema)?;
+                let right_tf = Self::push_inferred_table_names_to_scan_transformed(cp.right.clone(), plan_ctx, graph_schema)?;
+                match (&left_tf, &right_tf) {
+                    (Transformed::No(_), Transformed::No(_)) => Transformed::No(logical_plan.clone()),
+                    _ => Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(
+                        crate::query_planner::logical_plan::CartesianProduct {
+                            left: left_tf.get_plan().clone(),
+                            right: right_tf.get_plan().clone(),
+                            is_optional: cp.is_optional,
+                            join_condition: cp.join_condition.clone(),
+                        },
+                    ))),
+                }
+            }
+            LogicalPlan::WithClause(with_clause) => {
+                let child_tf = Self::push_inferred_table_names_to_scan_transformed(with_clause.input.clone(), plan_ctx, graph_schema)?;
+                match child_tf {
+                    Transformed::Yes(new_input) => {
+                        let new_with = crate::query_planner::logical_plan::WithClause {
+                            cte_name: None,
+                            input: new_input,
+                            items: with_clause.items.clone(),
+                            distinct: with_clause.distinct,
+                            order_by: with_clause.order_by.clone(),
+                            skip: with_clause.skip,
+                            limit: with_clause.limit,
+                            where_clause: with_clause.where_clause.clone(),
+                            exported_aliases: with_clause.exported_aliases.clone(),
+                            cte_references: with_clause.cte_references.clone(),
+                            pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
+                        };
+                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
+                    }
+                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                }
+            }
+        };
+        Ok(transformed_plan)
     }
 }
 
