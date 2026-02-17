@@ -174,23 +174,56 @@ let anchor_on_right = graph_rel.anchor_connection.as_ref()
 
 **Bug History**: Code comment (lines 459-463) described this scenario since initial implementation, stating "This case needs special handling", but the handling was never implemented until Feb 2026. Fixed in three commits: FROM clause, JOIN order reversal, predicate extraction.
 
-### 6. replace_with_clause_with_cte_reference_v2 Must Handle All Plan Node Types ⚠️ CRITICAL
+### 6. WITH Clause Processing Must Traverse All Plan Node Types ⚠️ CRITICAL
 
 **Background**: `build_chained_with_match_cte_plan` iterates to extract WITH clauses. Each iteration:
 1. `has_with_clause_in_tree()` detects if a WITH clause exists in the plan
 2. `find_all_with_clauses_grouped()` finds and groups them
 3. `replace_with_clause_with_cte_reference_v2()` replaces the WITH with a CTE reference
 
-**The Trap**: These three functions must agree on plan traversal. If `has_with_clause_in_tree` and `find_all_with_clauses_grouped` traverse through a node type (e.g., `Unwind`) but `replace_with_clause_with_cte_reference_v2` falls through to the catch-all `other => Ok(other.clone())`, the WITH clause is detected but never replaced → infinite loop → crash.
+Inside step 3, there are two additional traversal helpers used within the `GraphRel` match arm:
+4. `plan_contains_with_clause()` — checks if a sub-tree contains any WithClause
+5. `needs_processing()` — checks if a sub-tree needs CTE replacement for a given alias
 
-**Feb 2026 fix**: `LogicalPlan::Unwind` was missing from `replace_with_clause_with_cte_reference_v2` (line ~12489). The fix recurses into `unwind.input`, replaces the WITH clause, and reconstructs the Unwind node with the updated input.
+**The Trap**: ALL FIVE functions must agree on plan traversal. If any function can't traverse
+through a plan node type (e.g., `Unwind`, `CartesianProduct`), WITH clauses nested inside
+that node become invisible, causing:
+- Detection succeeds (step 1) but replacement skips the sub-tree (step 3) → WITH clause persists
+- Next iteration finds same WITH, skips it (already in `processed_cte_aliases`) → no progress
+- Loop ends → "Failed to process all WITH clauses" error
 
-**Pattern to watch**: Any time a NEW `LogicalPlan` variant is added, verify that ALL THREE functions handle it:
-- `has_with_clause_in_tree()` (line ~3559)
-- `find_all_with_clauses_grouped()` (line ~11102)  
-- `replace_with_clause_with_cte_reference_v2()` (line ~11497)
+**Feb 2026 fix**: `plan_contains_with_clause()` and `needs_processing()` were missing `Unwind`
+and `CartesianProduct` variants. The replacement function itself (`replace_with_clause_with_cte_reference_v2`)
+already handled them, but the guard checks at the `GraphRel` match arm prevented entry.
+This blocked `WITH collect(x) as xs UNWIND xs as x MATCH (x)-[]->(y)` patterns.
+
+**Pattern to watch**: Any time a NEW `LogicalPlan` variant is added, verify ALL FIVE functions handle it:
+- `has_with_clause_in_tree()` (plan_builder_utils.rs ~line 3537)
+- `plan_contains_with_clause()` (plan_builder_utils.rs ~line 4186)
+- `find_all_with_clauses_grouped()` / `find_all_with_clauses_impl()` (plan_builder_utils.rs ~line 10989)
+- `needs_processing()` (inside `replace_with_clause_with_cte_reference_v2`, plan_builder_utils.rs ~line 12125)
+- `replace_with_clause_with_cte_reference_v2()` (plan_builder_utils.rs ~line 11548)
 
 If even one function misses the new variant, infinite iteration or lost WITH clauses can result.
+
+### 6b. recreate_pattern_schema_context: 3-Tier Label Resolution
+
+**Background**: `recreate_pattern_schema_context()` (cte_extraction.rs) reconstructs a
+`PatternSchemaContext` for VLP CTE generation. It needs left/right node labels to look up
+node schemas. After WITH→CTE replacement, CTE reference GraphNodes have `label: None`.
+
+**3-tier resolution** (added Feb 2026):
+1. **Explicit label** from plan tree (`GraphNode.label` — set by parser)
+2. **Inferred label** from `PlanCtx` (`TableCtx.labels` — set by type inference)
+3. **Relationship-based inference** from schema's `from_node`/`to_node` fields
+
+**Why tier 2 exists**: Type inference updates `TableCtx.labels` in `PlanCtx` but does NOT
+update `GraphNode.label` in the plan tree (plan tree is Arc-wrapped, conceptually immutable
+after parsing). The PlanCtx is the correct source for inferred type information.
+
+**Composite key handling**: `GraphRel.labels` can contain composite keys like
+`"REPLY_OF::Comment::Post"`. The `infer_node_labels_from_rel()` function extracts the
+simple type name (before `::`) for `rel_schemas_for_type()` lookup.
 
 ### 7. Stack Overflow with Deep Plan Trees
 
@@ -262,7 +295,7 @@ let from_join_expr = if needs_alias {
 |---------|---------|------------|
 | `a_start_id` in JOIN | ClickHouse: "cannot be resolved" | `find_id_column_for_alias` VLP shortcut before GraphNode |
 | **Forward reference in OPTIONAL MATCH** | **"Unknown identifier `tag.id`"** | **FROM/JOIN order not using `anchor_connection` when anchor is right_connection** |
-| **Infinite WITH iteration** | **"Exceeded maximum WITH clause iterations (10)"** | **`replace_with_clause_with_cte_reference_v2` doesn't traverse a plan node type (see Unwind fix below)** |
+| **Infinite WITH iteration** | **"Failed to process all WITH clauses after N iterations"** | **`plan_contains_with_clause` or `needs_processing` doesn't traverse a plan node type (see §6)** |
 | Wrong property mapping | Properties from wrong table | Denormalized vs standard property source confusion |
 | Missing CTE columns | Column not found in subquery | `cte_schemas` not populated for this CTE |
 | Duplicate CTEs | Same CTE name generated twice | CTE name collision, missing dedup check |

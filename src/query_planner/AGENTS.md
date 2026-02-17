@@ -349,6 +349,15 @@ Every pass returns `Transformed::Yes(plan)` if it modified the plan, `Transforme
 
 **For developers**: When creating test schemas, use `SchemaType::Integer` instead of `"Integer".to_string()`
 
+### Label Propagation Architecture (Key Design Decision)
+**Two separate data stores for labels**:
+1. **Plan tree** (`GraphNode.label`): Stores what the **parser** found (explicit labels only). The plan tree is Arc-wrapped and conceptually immutable after parsing.
+2. **PlanCtx** (`TableCtx.labels`): Stores **inferred** labels from type inference. Updated via `table_ctx.set_labels()` in `type_inference.rs`.
+
+**CTE entity types** (`PlanCtx.cte_entity_types`): Preserves labels across WITH boundaries. Populated by `CteSchemaResolver` analyzer pass via `register_cte_entity_types()`. Accessible via `plan_ctx.get_cte_entity_type(cte_name, alias)`.
+
+**Key implication**: Downstream code (e.g., `render_plan/cte_extraction.rs`) that needs node labels should consult `PlanCtx` (tier 2) when `GraphNode.label` (tier 1) is None, before falling back to relationship-based inference (tier 3). See `render_plan/AGENTS.md` §6b.
+
 ## Common Bug Patterns
 
 | Pattern | Symptom | Root Cause |
