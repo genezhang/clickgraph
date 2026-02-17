@@ -10,7 +10,7 @@ mod from_table;
 mod group_by_builder;
 mod join_builder;
 mod join_deduplicator;
-mod plan_builder_helpers;
+pub mod plan_builder_helpers; // Made public for JOIN dependency sorting in SQL generation
 mod plan_builder_utils;
 mod properties_builder;
 pub mod property_expansion;

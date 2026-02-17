@@ -3860,7 +3860,7 @@ pub(super) fn combine_optional_filters_with_and(
 ///
 /// # Returns
 /// Sorted vector of JOINs in dependency order
-pub(super) fn sort_joins_by_dependency(
+pub fn sort_joins_by_dependency(
     mut joins: Vec<super::Join>,
     from_table: Option<&super::FromTable>,
 ) -> Vec<super::Join> {

@@ -430,6 +430,67 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
             }
             plan.filters = FilterItems(Some(rewritten));
         }
+
+        // 🔧 CRITICAL FIX: Also rewrite JOIN conditions for VLP queries
+        // JOIN conditions may reference Cypher node aliases (e.g., p.id, b.user_id) that need
+        // to be rewritten to VLP CTE column references (e.g., t.end_id, t.end_user_id)
+        //
+        // Root cause: JOINs are built during logical plan → render plan conversion using
+        // original Cypher variable names. After VLP CTE is created, these references must
+        // be rewritten to use the CTE's start_/end_ columns.
+        //
+        // This was an oversight - we were rewriting SELECT/WHERE/GROUP BY/ORDER BY but not JOINs.
+        log::info!("🔧 VLP JOIN rewriting: {} items", plan.joins.0.len());
+        for (idx, join) in plan.joins.0.iter_mut().enumerate() {
+            log::info!("🔧 JOIN {}: table={}, alias={}", idx, join.table_name, join.table_alias);
+            
+            // Rewrite each condition in joining_on
+            for (cond_idx, condition) in join.joining_on.iter_mut().enumerate() {
+                let before = format!("{:?}", condition);
+                
+                // Rewrite left operand
+                condition.operands[0] = rewrite_expr_for_vlp(
+                    &condition.operands[0],
+                    &start_alias,
+                    &end_alias,
+                    &path_variable,
+                    is_optional_vlp,
+                );
+                
+                // Rewrite right operand
+                condition.operands[1] = rewrite_expr_for_vlp(
+                    &condition.operands[1],
+                    &start_alias,
+                    &end_alias,
+                    &path_variable,
+                    is_optional_vlp,
+                );
+                
+                let after = format!("{:?}", condition);
+                if before != after {
+                    log::info!("🔧   JOIN[{}] condition[{}] rewritten from: {} → {}", 
+                        idx, cond_idx, before, after);
+                }
+            }
+            
+            // Also rewrite pre_filter if present
+            if let Some(ref filter_expr) = join.pre_filter {
+                let before = format!("{:?}", filter_expr);
+                let rewritten = rewrite_expr_for_vlp(
+                    filter_expr,
+                    &start_alias,
+                    &end_alias,
+                    &path_variable,
+                    is_optional_vlp,
+                );
+                let after = format!("{:?}", rewritten);
+                if before != after {
+                    log::info!("🔧   JOIN[{}] pre_filter rewritten from: {} → {}", 
+                        idx, before, after);
+                }
+                join.pre_filter = Some(rewritten);
+            }
+        }
     }
 
     // Also rewrite UNION branches — each may have its own VLP CTE
@@ -1393,6 +1454,28 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
     // Rewrite VLP SELECT aliases before SQL generation
     // Maps Cypher aliases (a, b) to CTE column prefixes (start_, end_)
     plan = rewrite_vlp_select_aliases(plan);
+
+    // 🔧 CRITICAL FIX: Sort JOINs by dependency to ensure correct SQL ordering
+    // Topological sort ensures that if JOIN A references table B in its ON clause,
+    // then B appears before A in the FROM/JOIN sequence.
+    //
+    // This prevents errors like: "Unknown identifier t1" when t1 is used before defined.
+    // The sort function existed but was never called - this fixes it once for all queries!
+    //
+    // Root cause: JOINs were generated in arbitrary order during planning, but SQL
+    // requires strict dependency order. This fix applies topological sorting centrally.
+    plan.joins.0 = {
+        use crate::render_plan::plan_builder_helpers::sort_joins_by_dependency;
+        use crate::render_plan::FromTable;
+        
+        // Convert plan.from to the format expected by sort_joins_by_dependency
+        let from_table = plan.from.0.as_ref().map(|table_ref| FromTable {
+            table: Some(table_ref.clone()),
+            joins: vec![],
+        });
+        
+        sort_joins_by_dependency(plan.joins.0, from_table.as_ref())
+    };
 
     // Rewrite path function calls for fixed (non-VLP) path patterns
     // Converts length(p) → hop_count, etc.
