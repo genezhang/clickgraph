@@ -552,6 +552,32 @@ graph_schema:
       to_node: Place
 
     # -------------------------------------------------------------------------
+    # Company IS_LOCATED_IN Country
+    # Explicit variant for queries using Company label (e.g., complex-1, complex-11)
+    # Same table as Organisation IS_LOCATED_IN, filtered by node label
+    # -------------------------------------------------------------------------
+    - type: IS_LOCATED_IN
+      database: ldbc
+      table: Organisation_isLocatedIn_Place
+      from_id: OrganisationId
+      to_id: PlaceId
+      from_node: Company
+      to_node: Country
+
+    # -------------------------------------------------------------------------
+    # University IS_LOCATED_IN City
+    # Explicit variant for queries using University label (e.g., complex-1)
+    # Same table as Organisation IS_LOCATED_IN, filtered by node label
+    # -------------------------------------------------------------------------
+    - type: IS_LOCATED_IN
+      database: ldbc
+      table: Organisation_isLocatedIn_Place
+      from_id: OrganisationId
+      to_id: PlaceId
+      from_node: University
+      to_node: City
+
+    # -------------------------------------------------------------------------
     # Post IS_LOCATED_IN Country
     # Data from Post_isLocatedIn_Country directory loaded into Post_isLocatedIn_Place table
     # -------------------------------------------------------------------------
