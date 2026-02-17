@@ -1,6 +1,6 @@
 # Known Issues
 
-**Last Updated**: February 16, 2026
+**Last Updated**: February 17, 2026
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).
 
@@ -21,14 +21,7 @@ For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).
 **Cause**: Recursive CTE-based shortest path explores all paths. Dense graphs cause exponential explosion.  
 **Workaround**: Use bounded path length: `shortestPath((a)-[:FOLLOWS*1..5]->(b))`
 
-### 3. Pattern Comprehensions
-**Status**: Parsed but not executed  
-**Error**: `PatternComprehensionNotRewritten`  
-**Example**: `[(a)-[r]->(b) | b.name]`  
-**Impact**: Low-Medium — blocks 1-2 LDBC queries (bi-8)  
-**Cause**: AST and LogicalExpr exist, but the rewrite pass to convert to SQL is not implemented
-
-### 4. Aggregations on Empty Results Return Empty Array
+### 3. Aggregations on Empty Results Return Empty Array
 **Status**: Semantics mismatch with Neo4j (compatibility issue)  
 **Error**: None (behavior mismatch)  
 **Impact**: Medium — Breaks Neo4j compatibility, client code must check for empty arrays  
@@ -71,59 +64,31 @@ MATCH (p:Post)-[r]->(u:User) RETURN count(*), sum(...), avg(...), etc.
 
 **Workaround**: Client code must check `if (response.results.length === 0)` and supply default aggregate values (0 for count/sum, null for avg/min/max, [] for collect)
 
-### 5. Empty Plans with Column References Generate Invalid SQL
-**Status**: Active bug (generates SQL that fails execution)  
-**Error**: `Unknown expression identifier 'column_name'`  
-**Impact**: High — Queries with impossible patterns + property access fail  
-**Cause**: Generated SQL tries to SELECT columns without FROM clause
+---
 
-**Example**:
-```cypher
-MATCH (p:Post)-[r]->(u:User) WITH r.created_at as ts RETURN ts
--- No Post→User relationships exist, so Empty plan generated
-```
+## Recently Fixed (February 2026)
 
-**Generated SQL** (FAILS):
-```sql
-WITH with_ts_cte_1 AS (
-    SELECT r.created_at AS "ts"  -- ❌ ERROR: Unknown identifier 'r'
-    WHERE false                   -- ← No FROM clause!
-)
-SELECT ts.ts AS "ts" FROM with_ts_cte_1 AS ts
-```
+### Pattern Comprehensions ✅ (Feb 13)
+**Fix**: Commit f144108 - Full implementation with CTE+JOIN
+- Added target_label/target_property extraction from pattern AST
+- Fixed aggregation type detection (collect() → GroupArray)
+- Generated INNER JOIN to target node table
+- Fixed relationship name matching and JOIN conditions
+**Tests**: `tests/integration/test_pattern_comprehensions.py` passing
 
-**ClickHouse Error**: `Unknown expression identifier 'r.created_at' in scope`
+### Empty Plans with Column References ✅ (Feb 16)
+**Fix**: Commits e5ca181 + b3697e2
+- Empty plans now use `FROM system.one WHERE false` for valid SQL
+- RETURN-only queries (e.g., `RETURN 1`) properly handled
+- Column references in Empty plans replaced with typed defaults
+**Location**: `src/render_plan/plan_builder.rs` lines 2301-2400
 
-**Root Cause**: 
-- `src/render_plan/plan_builder.rs` lines 2301-2333 generates `SELECT 1 AS "_empty" WHERE false` for Empty plans
-- Works for aggregations (`SELECT count(*) WHERE false`) 
-- **Fails for column references** (`SELECT r.prop WHERE false`) - no table context for 'r'
-
-**Solution**: Use `FROM system.one WHERE false` + replace column references with typed defaults:
-```sql
--- Replace column references with NULL or typed defaults
-SELECT 
-    NULL AS "ts",              -- Unknown type → NULL
-    0 AS "user_id",            -- Known Int → 0
-    '' AS "name"               -- Known String → ''
-FROM system.one WHERE false    -- ✅ Provides table context
-```
-
-**Implementation**: Empty Propagation optimization (see session files) will fix this comprehensively
-
-**Workaround**: None - queries fail. Avoid property access on impossible patterns.
-
-**Related**: This will be fixed by the Empty Propagation optimization (see session files)
-
-### 6. `labels(n)` on Untyped Nodes Generates Invalid Column Reference
-**Status**: Open  
-**Error**: `Unknown expression or function identifier 'n.end_type'`  
-**Example**: `MATCH (n) RETURN DISTINCT labels(n) as labels, count(*) AS count`  
-**Cause**: `labels()` function resolves to `n.end_type` which is a relationship-table column (used for edge type). Node tables don't have this column. For untyped nodes expanded via UNION, the label is already known from the branch and should be injected as a literal string.  
-**Impact**: Medium — Neo4j Browser uses this query to discover node labels  
-**Workaround**: Browser falls back gracefully; use `MATCH (n:User) RETURN labels(n)` with explicit label  
-
-**Priority**: **MEDIUM** — Browser workaround exists, but affects auto-discovery
+### labels(n) on Untyped Nodes ✅ (Feb 17)
+**Fix**: PR #104 - Branch-specific label extraction
+- Extract single label from each UNION branch's GraphNode
+- Temporarily override plan_ctx during projection tagging
+- Tightened VLP detection with `is_cte_reference()` check
+**Tests**: `tests/integration/test_labels_untyped_nodes.py` with 7 test cases
 
 ---
 
@@ -137,7 +102,7 @@ ClickGraph is a **read-only** analytical query engine:
 
 ---
 
-## Recently Fixed (February 2026)
+## Historical Fixes (Pre-February 2026)
 
 | Issue | Fix | PR |
 |---|---|---|
