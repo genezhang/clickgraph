@@ -1,12 +1,13 @@
 # ClickGraph Status
 
-*Updated: February 16, 2026*
+*Updated: February 17, 2026*
 
-## Current Version: v0.6.1 (Schema Consolidation Complete)
+## Current Version: v0.6.1
 
 Read-only Cypher-to-ClickHouse SQL query engine with Neo4j Browser compatibility.
 
-**Tests**: 1,022 unit + 36 integration + 7 Bolt + 28 doc = **1,093 passing (100%)**  
+**Tests**: 1,029 unit + 91/103 integration (88%) + 7 Bolt = **1,127 passing**  
+**Latest Fix**: VLP WHERE filters (PR #106) - end node filters now working for fixed-length patterns  
 **Benchmark**: 18/18 queries (100%) at 5000 scale (954.9M rows)  
 **Architecture**: ✅ UnifiedTypeInference (SchemaInference merged, -668 lines net)
 
