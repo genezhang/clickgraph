@@ -3,3 +3,4 @@ mod multiple_relationship_tests;
 mod polymorphic_edge_tests;
 mod variable_length_tests;
 mod where_clause_filter_tests;
+mod with_clause_cte_tests;

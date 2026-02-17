@@ -6674,6 +6674,30 @@ pub(crate) fn build_chained_with_match_cte_plan(
         }
     }
 
+    // Count plan tree depth to diagnose excessive iterations.
+    // Deep nesting can come from any combination of plan nodes (Projection, Filter, WITH, etc.)
+    fn count_plan_depth(plan: &LogicalPlan) -> usize {
+        match plan {
+            LogicalPlan::WithClause(wc) => 1 + count_plan_depth(&wc.input),
+            LogicalPlan::Projection(p) => 1 + count_plan_depth(&p.input),
+            LogicalPlan::Filter(f) => 1 + count_plan_depth(&f.input),
+            LogicalPlan::GroupBy(gb) => 1 + count_plan_depth(&gb.input),
+            LogicalPlan::OrderBy(ob) => 1 + count_plan_depth(&ob.input),
+            LogicalPlan::Limit(lim) => 1 + count_plan_depth(&lim.input),
+            LogicalPlan::Skip(skip) => 1 + count_plan_depth(&skip.input),
+            LogicalPlan::GraphJoins(gj) => 1 + count_plan_depth(&gj.input),
+            LogicalPlan::Union(u) => {
+                1 + u
+                    .inputs
+                    .iter()
+                    .map(|i| count_plan_depth(i))
+                    .max()
+                    .unwrap_or(0)
+            }
+            _ => 1, // Leaf nodes
+        }
+    }
+
     // Process WITH clauses iteratively until none remain
     while has_with_clause_in_graph_rel(&current_plan) {
         log::warn!("🔧 build_chained_with_match_cte_plan: has_with_clause_in_graph_rel(&current_plan) = true, entering loop");
@@ -6682,30 +6706,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
             "🔧 build_chained_with_match_cte_plan: ========== ITERATION {} ==========",
             iteration
         );
-
-        // DEBUG: Count plan tree depth to diagnose excessive iterations
-        // Deep nesting can come from any combination of plan nodes (Projection, Filter, WITH, etc.)
-        fn count_plan_depth(plan: &LogicalPlan) -> usize {
-            match plan {
-                LogicalPlan::WithClause(wc) => 1 + count_plan_depth(&wc.input),
-                LogicalPlan::Projection(p) => 1 + count_plan_depth(&p.input),
-                LogicalPlan::Filter(f) => 1 + count_plan_depth(&f.input),
-                LogicalPlan::GroupBy(gb) => 1 + count_plan_depth(&gb.input),
-                LogicalPlan::OrderBy(ob) => 1 + count_plan_depth(&ob.input),
-                LogicalPlan::Limit(lim) => 1 + count_plan_depth(&lim.input),
-                LogicalPlan::Skip(skip) => 1 + count_plan_depth(&skip.input),
-                LogicalPlan::GraphJoins(gj) => 1 + count_plan_depth(&gj.input),
-                LogicalPlan::Union(u) => {
-                    1 + u
-                        .inputs
-                        .iter()
-                        .map(|i| count_plan_depth(i))
-                        .max()
-                        .unwrap_or(0)
-                }
-                _ => 1, // Leaf nodes
-            }
-        }
 
         let plan_depth = count_plan_depth(&current_plan);
         log::warn!(
