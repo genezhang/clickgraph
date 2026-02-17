@@ -26,7 +26,7 @@ def test_composite_id_relationships():
             # Test 1: Return relationship connecting composite ID nodes
             print("\n1. Testing relationship with composite IDs...")
             query = """
-            USE social_benchmark
+            USE social_integration
             MATCH (u:User)-[r:FOLLOWS]->(u2:User) 
             RETURN r 
             LIMIT 1
@@ -60,7 +60,7 @@ def test_composite_id_relationships():
             # Test 2: Mixed node and relationship return
             print("\n2. Testing mixed return with relationships...")
             query = """
-            USE social_benchmark
+            USE social_integration
             MATCH (u:User)-[r:FOLLOWS]->(u2:User)
             RETURN u, r, u2
             LIMIT 1

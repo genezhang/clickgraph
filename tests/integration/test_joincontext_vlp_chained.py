@@ -17,7 +17,7 @@ so subsequent JOINs use CTE references.
 
 Test dependencies:
 - ClickGraph server running on localhost:8080
-- social_benchmark schema loaded
+- social_integration schema loaded
 - brahmand.users_bench and brahmand.posts_bench tables populated
 """
 

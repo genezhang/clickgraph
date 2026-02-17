@@ -19,7 +19,7 @@ def test_union_all_simple():
     
     response = requests.post(
         f"{BASE_URL}/query",
-        json={"query": query, "schema_name": "social_benchmark"}
+        json={"query": query, "schema_name": "social_integration"}
     )
     
     assert response.status_code == 200, f"Failed: {response.text}"
@@ -43,7 +43,7 @@ def test_union_all_with_distinct_and_limit():
     
     response = requests.post(
         f"{BASE_URL}/query",
-        json={"query": query, "schema_name": "social_benchmark"}
+        json={"query": query, "schema_name": "social_integration"}
     )
     
     assert response.status_code == 200, f"Failed: {response.text}"
@@ -65,7 +65,7 @@ def test_union_all_nodes_and_relationships():
     
     response = requests.post(
         f"{BASE_URL}/query",
-        json={"query": query, "schema_name": "social_benchmark"}
+        json={"query": query, "schema_name": "social_integration"}
     )
     
     assert response.status_code == 200, f"Failed: {response.text}"

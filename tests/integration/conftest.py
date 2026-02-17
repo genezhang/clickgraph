@@ -10,7 +10,7 @@ This module provides:
 MULTI-SCHEMA APPROACH (v0.6.1+):
 - Default GRAPH_CONFIG_PATH points to schemas/test/unified_test_multi_schema.yaml
 - All tests use explicit "USE <schema_name>" clause to select schema
-- 6 schemas available: social_benchmark, test_fixtures, ldbc_snb, 
+- 6 schemas available: social_integration, test_fixtures, ldbc_snb, 
   denormalized_flights, pattern_comp, zeek_logs
 - Complete schema isolation - no label conflicts between schemas
 """
@@ -38,7 +38,7 @@ if "GRAPH_CONFIG_PATH" not in os.environ:
     if os.path.exists(multi_schema_path):
         os.environ["GRAPH_CONFIG_PATH"] = multi_schema_path
         print(f"✓ Using multi-schema config: {multi_schema_path}")
-        print(f"  Available schemas: social_benchmark, test_fixtures, ldbc_snb, denormalized_flights, pattern_comp, zeek_logs")
+        print(f"  Available schemas: social_integration, test_fixtures, ldbc_snb, denormalized_flights, pattern_comp, zeek_logs")
     else:
         print(f"⚠ Warning: Multi-schema config not found at {multi_schema_path}")
 
@@ -131,25 +131,25 @@ def clean_database(clickhouse_client, test_database):
         pass
 
 
-def execute_cypher(query: str, schema_name: str = "social_benchmark", raise_on_error: bool = True) -> Dict[str, Any]:
+def execute_cypher(query: str, schema_name: str = "social_integration", raise_on_error: bool = True) -> Dict[str, Any]:
     """
     Execute a Cypher query via ClickGraph HTTP API.
     
     MULTI-SCHEMA MODE (CLEAN SEPARATION):
     - Uses explicit "USE <schema_name>" clause in queries
     - Auto-prepends USE clause if not present
-    - Default schema: social_benchmark (User, Post, FOLLOWS from brahmand DB)
+    - Default schema: social_integration (User, Post, FOLLOWS from brahmand DB)
     - Each schema is a separate self-contained graph
     
     Available schemas:
-    - social_benchmark: Primary social network (User, Post, FOLLOWS)
+    - social_integration: Primary social network (User, Post, FOLLOWS)
     - test_fixtures: Test data (TestUser, TestProduct, TEST_FOLLOWS)
     - denormalized_flights: Denormalized Airport→FLIGHT graph
     - data_security, property_expressions, etc.: Specialized test schemas
     
     Args:
         query: Cypher query string (USE clause auto-prepended if missing)
-        schema_name: Schema name to use in USE clause (default: "social_benchmark")
+        schema_name: Schema name to use in USE clause (default: "social_integration")
         raise_on_error: If True, raise HTTPError on failure. If False, return error in response dict.
         
     Returns:
@@ -231,7 +231,7 @@ def load_all_test_schemas():
     Schemas are loaded dynamically via /schemas/load endpoint and stored in GLOBAL_SCHEMAS.
     
     Schema mappings (clean separation - each schema is a self-contained graph):
-    - social_benchmark: Primary social network (User, Post, FOLLOWS) from brahmand DB
+    - social_integration: Primary social network (User, Post, FOLLOWS) from brahmand DB
     - test_fixtures: Test data (TestUser, TestProduct) from test_integration DB
     - denormalized_flights: Denormalized Airport→FLIGHT graph from test_integration DB
     - data_security: Security graph (User, Group, File, Folder, polymorphic relationships)
@@ -246,7 +246,7 @@ def load_all_test_schemas():
         # Core test schemas (clean separation)
         # NOTE: Use benchmarks/social_network schema (has user_id for AUTHORED edge)
         # NOT schemas/test/ (which has outdated author_id)
-        ("social_benchmark", "benchmarks/social_network/schemas/social_benchmark.yaml"),
+        ("social_integration", "benchmarks/social_network/schemas/social_integration.yaml"),
         ("test_fixtures", "schemas/test/test_fixtures.yaml"),
         ("denormalized_flights_test", "schemas/test/denormalized_flights.yaml"),  # Comprehensive denormalized FROM/TO properties
         
@@ -268,7 +268,7 @@ def load_all_test_schemas():
         
         # NOTE: unified_test_multi_schema.yaml is loaded as default via GRAPH_CONFIG_PATH
         # It contains 6 schemas loaded automatically by the server at startup
-        # (test_fixtures, social_benchmark, ldbc_snb, denormalized_flights, zeek_logs, pattern_comp)
+        # (test_fixtures, social_integration, ldbc_snb, denormalized_flights, zeek_logs, pattern_comp)
     ]
     
     loaded_count = 0
@@ -411,7 +411,7 @@ def load_all_test_data(clickhouse_client, test_database, setup_test_database):
             print(f"  ⚠ test_integration (basic) data load failed: {e}")
     
     def load_brahmand_data():
-        """Load brahmand database data for social_benchmark schema."""
+        """Load brahmand database data for social_integration schema."""
         try:
             # Create brahmand database and social benchmark tables
             clickhouse_client.command("CREATE DATABASE IF NOT EXISTS brahmand")
@@ -487,9 +487,9 @@ def load_all_test_data(clickhouse_client, test_database, setup_test_database):
                     (1, 2, '2024-01-02 13:00:00')
             """)
             
-            print("  ✓ brahmand (social_benchmark) data loaded")
+            print("  ✓ brahmand (social_integration) data loaded")
         except Exception as e:
-            print(f"  ⚠ brahmand (social_benchmark) data load failed: {e}")
+            print(f"  ⚠ brahmand (social_integration) data load failed: {e}")
     
     def load_filesystem_data():
         """Load filesystem schema tables (in test_integration database)."""
@@ -634,7 +634,7 @@ def setup_benchmark_data(load_all_test_data):
     
     This is a simple pass-through that depends on load_all_test_data.
     Tests that need benchmark data can depend on this fixture to ensure
-    social_benchmark tables (users_bench, posts_bench, user_follows_bench, post_likes_bench)
+    social_integration tables (users_bench, posts_bench, user_follows_bench, post_likes_bench)
     are available in the brahmand database.
     """
     # Just return control after load_all_test_data has run

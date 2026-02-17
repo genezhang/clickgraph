@@ -27,7 +27,7 @@ import json
 
 # Get server configuration from environment
 CLICKGRAPH_SERVER = os.getenv('CLICKGRAPH_SERVER', 'http://localhost:8080')
-GRAPH_CONFIG_PATH = os.getenv('GRAPH_CONFIG_PATH', './benchmarks/social_network/schemas/social_benchmark.yaml')
+GRAPH_CONFIG_PATH = os.getenv('GRAPH_CONFIG_PATH', './benchmarks/social_network/schemas/social_integration.yaml')
 
 def query_clickgraph(cypher: str, schema_path: str = GRAPH_CONFIG_PATH) -> Dict[str, Any]:
     """Execute a Cypher query against ClickGraph server."""

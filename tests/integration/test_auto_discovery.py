@@ -25,7 +25,7 @@ import yaml
 
 BASE_URL = f"{CLICKGRAPH_URL}"
 
-# Expected benchmark schema columns (based on social_benchmark.yaml setup)
+# Expected benchmark schema columns (based on social_integration.yaml setup)
 EXPECTED_USER_COLUMNS = {
     "user_id",
     "full_name",
@@ -243,7 +243,7 @@ def test_engine_detection_and_final(load_auto_discovery_schema):
 def test_manual_schema_still_works():
     """Test that schemas without auto_discover_columns still work (backward compatibility)."""
     # Use the regular benchmark schema (no auto-discovery)
-    schema_path = "benchmarks/social_network/schemas/social_benchmark.yaml"
+    schema_path = "benchmarks/social_network/schemas/social_integration.yaml"
     if not os.path.exists(schema_path):
         pytest.skip("Benchmark schema not found")
 
@@ -252,7 +252,7 @@ def test_manual_schema_still_works():
         schema_config = yaml.safe_load(schema_content)
 
     # Load schema via API
-    schema_name = schema_config.get("name", "social_benchmark")
+    schema_name = schema_config.get("name", "social_integration")
     response = requests.post(
         f"{BASE_URL}/schemas/load",
         json={

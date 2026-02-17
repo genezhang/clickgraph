@@ -5,7 +5,7 @@ These tests validate that documented examples work correctly with the benchmark 
 Each test corresponds to a specific pattern documented in Cypher-Basic-Patterns.md.
 
 UNIFIED SCHEMA APPROACH:
-- All queries explicitly use "USE social_benchmark" clause
+- All queries explicitly use "USE social_integration" clause
 - No environment variable setup required
 - Self-documenting: Query shows which schema it expects
 
@@ -32,7 +32,7 @@ QUERY_ENDPOINT = f"{BASE_URL}/query"
 def execute_query(cypher: str) -> Dict[str, Any]:
     """Execute a Cypher query against ClickGraph.
     
-    Automatically prepends 'USE social_benchmark' to queries that don't
+    Automatically prepends 'USE social_integration' to queries that don't
     already have a USE clause, ensuring tests run against the correct schema.
     
     Returns normalized result with:
@@ -42,7 +42,7 @@ def execute_query(cypher: str) -> Dict[str, Any]:
     """
     # Auto-prepend USE clause if not present
     if not cypher.strip().upper().startswith("USE "):
-        cypher = f"USE social_benchmark {cypher}"
+        cypher = f"USE social_integration {cypher}"
     
     response = requests.post(QUERY_ENDPOINT, json={"query": cypher})
     response.raise_for_status()

@@ -9,7 +9,7 @@ CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 import json
 
 BASE_URL = f"{CLICKGRAPH_URL}"
-SCHEMA_NAME = "social_benchmark"  # Using benchmark schema with edge_id
+SCHEMA_NAME = "social_integration"  # Using benchmark schema with edge_id
 
 def execute_cypher(query: str, schema_name: str = SCHEMA_NAME) -> dict:
     """Execute a Cypher query and return results"""
@@ -100,7 +100,7 @@ if __name__ == "__main__":
     print("EDGE UNIQUENESS OPTIMIZATION TESTS")
     print("="*80)
     print("\nPurpose: Verify single-column edge_id avoids tuple() overhead")
-    print("Schema: social_benchmark (with follow_id added)")
+    print("Schema: social_integration (with follow_id added)")
     print("\nPrerequisites:")
     print("1. ClickGraph server running on port 8080")
     print("2. Benchmark data loaded with edge_id columns")

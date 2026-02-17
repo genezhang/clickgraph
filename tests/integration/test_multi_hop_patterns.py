@@ -121,7 +121,7 @@ class TestMultiHopSqlGeneration:
         assert union_count == 2, f"Expected 2 branches for mixed pattern, got {union_count}"
 
     # -------------------------------------------------------------------------
-    # Standard Schema Tests (social_benchmark.yaml)
+    # Standard Schema Tests (social_integration.yaml)
     # These tests are skipped if the standard schema is not loaded
     # -------------------------------------------------------------------------
 
@@ -133,7 +133,7 @@ class TestMultiHopSqlGeneration:
         
         # Skip if schema not loaded
         if "No relationship schema found" in sql or "PLANNING_ERROR" in sql:
-            pytest.skip("Standard schema (social_benchmark.yaml) not loaded")
+            pytest.skip("Standard schema (social_integration.yaml) not loaded")
         
         # Standard schema has separate node and edge tables
         # Expect: users -> follows -> users -> follows -> users
@@ -147,7 +147,7 @@ class TestMultiHopSqlGeneration:
         
         # Skip if schema not loaded
         if "No relationship schema found" in sql or "PLANNING_ERROR" in sql:
-            pytest.skip("Standard schema (social_benchmark.yaml) not loaded")
+            pytest.skip("Standard schema (social_integration.yaml) not loaded")
         
         if "UNION ALL" in sql:
             union_count = sql.count("UNION ALL") + 1
@@ -163,7 +163,7 @@ class TestMultiHopSqlGeneration:
         
         # Skip if schema not loaded
         if "No relationship schema found" in sql or "PLANNING_ERROR" in sql:
-            pytest.skip("Standard schema (social_benchmark.yaml) not loaded")
+            pytest.skip("Standard schema (social_integration.yaml) not loaded")
         
         # 3 hops should have 6 JOINs for standard schema (3 edges + 3 intermediate nodes)
         # Or no UNION for directed

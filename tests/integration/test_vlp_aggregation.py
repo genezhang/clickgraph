@@ -9,7 +9,7 @@ columns weren't included in the UNION SELECT list.
 Bug Fix: Collect aliases from aggregate expressions and include their
 ID columns in UNION SELECT to make them available for outer aggregation.
 
-Note: These tests use the social_benchmark schema (users_bench, posts_bench).
+Note: These tests use the social_integration schema (users_bench, posts_bench).
 """
 
 import pytest
@@ -19,7 +19,7 @@ import os
 CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 
 
-def execute_query(cypher_query, sql_only=False, schema_name="social_benchmark"):
+def execute_query(cypher_query, sql_only=False, schema_name="social_integration"):
     """Execute a Cypher query against ClickGraph."""
     response = requests.post(
         f"{CLICKGRAPH_URL}/query",

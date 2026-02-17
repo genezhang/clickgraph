@@ -173,10 +173,10 @@ class TestGenericVLPPattern:
         """
         Test that schemas with >4 edge types return helpful error.
         
-        social_benchmark has 6 edge types from User, should exceed limit.
+        social_integration has 6 edge types from User, should exceed limit.
         """
         query = """
-            USE social_benchmark
+            USE social_integration
             MATCH (u:User)-[*1]->(x)
             WHERE u.user_id = 1
             RETURN labels(x), x

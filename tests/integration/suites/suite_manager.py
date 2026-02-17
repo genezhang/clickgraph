@@ -14,10 +14,10 @@ Usage:
     python suite_manager.py setup-all
     
     # Set up specific suite
-    python suite_manager.py setup social_benchmark
+    python suite_manager.py setup social_integration
     
     # Tear down specific suite
-    python suite_manager.py teardown social_benchmark
+    python suite_manager.py teardown social_integration
     
     # Tear down all suites
     python suite_manager.py teardown-all

@@ -32,495 +32,495 @@ def execute_query(query: str, schema_name: str = None) -> dict:
 class TestStandardSchema:
     """Tests for standard schema type"""
 
-    SCHEMA_YAML = "benchmarks/social_network/schemas/social_benchmark.yaml"
+    SCHEMA_YAML = "benchmarks/social_network/schemas/social_integration.yaml"
 
     def test_node_scan_0(self):
         """
         Basic node scan with single property
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN n.is_active LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_node_scan_1(self):
         """
         Basic node scan with single property
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN n.city LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_node_scan_2(self):
         """
         Basic node scan with single property
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN n.name LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_return_node_0(self):
         """
         Return whole node (wildcard expansion)
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:Post) RETURN n LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_return_node_1(self):
         """
         Return whole node (wildcard expansion)
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:Post) RETURN n LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_return_node_2(self):
         """
         Return whole node (wildcard expansion)
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:Post) RETURN n LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_node_filter_0(self):
         """
         Node scan with IS NOT NULL filter
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:Post) WHERE n.post_id IS NOT NULL RETURN n.post_id LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_node_filter_1(self):
         """
         Node scan with IS NOT NULL filter
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:Post) WHERE n.post_id IS NOT NULL RETURN n.post_id LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_node_filter_2(self):
         """
         Node scan with IS NOT NULL filter
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) WHERE n.user_id IS NOT NULL RETURN n.user_id LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_single_hop_0(self):
         """
         Single hop relationship
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:LIKED]->(b:Post) RETURN a.name, b.post_id LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_single_hop_1(self):
         """
         Single hop relationship
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:AUTHORED]->(b:Post) RETURN a.user_id, b.created_at LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="Invalid relationship direction: LIKED is (User)->(Post), not (Post)->(User)")
     def test_single_hop_2(self):
         """
         Single hop relationship
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:Post)-[r:LIKED]->(b:User) RETURN a.content, b.is_active LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="Invalid relationship direction: FOLLOWS is (User)->(User), not (Post)->(User)")
     def test_return_rel_0(self):
         """
         Return whole relationship
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:Post)-[r:FOLLOWS]->(b:User) RETURN r LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="Invalid relationship direction: LIKED is (User)->(Post), not (Post)->(User)")
     def test_return_rel_1(self):
         """
         Return whole relationship
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:Post)-[r:LIKED]->(b:User) RETURN r LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="Invalid relationship direction: AUTHORED is (User)->(Post), not (Post)->(Post)")
     def test_return_rel_2(self):
         """
         Return whole relationship
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:Post)-[r:AUTHORED]->(b:Post) RETURN r LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="Invalid relationship direction: AUTHORED is (User)->(Post), not (Post)->(Post)")
     def test_multi_hop_0(self):
         """
         Multi-hop traversal
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:Post)-[r1:FOLLOWS]->(b:Post)-[r2:AUTHORED]->(c:Post) RETURN a.created_at, c.created_at LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="Invalid relationship direction: AUTHORED is (User)->(Post), not (Post)->(Post)")
     def test_multi_hop_1(self):
         """
         Multi-hop traversal
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:Post)-[r1:FOLLOWS]->(b:Post)-[r2:AUTHORED]->(c:Post) RETURN a.post_id, c.post_id LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="Invalid relationship direction: AUTHORED is (User)->(Post), not (User)->(User)")
     def test_multi_hop_2(self):
         """
         Multi-hop traversal
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r1:FOLLOWS]->(b:User)-[r2:AUTHORED]->(c:User) RETURN a.is_active, c.is_active LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="BUG: VLP chained join optimization generates undefined table alias (t4411) - needs investigation")
     def test_vlp_exact_0(self):
         """
         Variable-length path with exact hops
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[*2]->(b:User) RETURN a.user_id, b.user_id LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="BUG: VLP chained join optimization generates undefined table alias - needs investigation")
     def test_vlp_exact_1(self):
         """
         Variable-length path with exact hops
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[*2]->(b:User) RETURN a.city, b.city LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="BUG: VLP chained join optimization generates undefined table alias - needs investigation")
     def test_vlp_exact_2(self):
         """
         Variable-length path with exact hops
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:Post)-[*2]->(b:Post) RETURN a.content, b.content LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="BUG: VLP pattern with invalid Post->Post relationship - schema defines Post relationships as User->Post only")
     def test_vlp_range_0(self):
         """
         Variable-length path with range
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:Post)-[*1..3]->(b:Post) RETURN a.content, b.content LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="BUG: VLP uses recursive CTE for range patterns but likely affected by same alias bug")
     def test_vlp_range_1(self):
         """
         Variable-length path with range
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[*1..3]->(b:User) RETURN a.city, b.city LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="BUG: VLP uses recursive CTE for range patterns but likely affected by same alias bug")
     def test_vlp_range_2(self):
         """
         Variable-length path with range
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[*1..3]->(b:User) RETURN a.country, b.country LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="BUG: VLP path variable likely affected by same alias bug")
     def test_vlp_path_var_0(self):
         """
         Path variable with functions
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH p = (a:User)-[*1..3]->(b:User) RETURN length(p), nodes(p) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="BUG: VLP path variable likely affected by same alias bug")
     def test_vlp_path_var_1(self):
         """
         Path variable with functions
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH p = (a:Post)-[*1..3]->(b:Post) RETURN length(p), nodes(p) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="BUG: VLP path variable likely affected by same alias bug")
     def test_vlp_path_var_2(self):
         """
         Path variable with functions
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH p = (a:Post)-[*1..3]->(b:Post) RETURN length(p), nodes(p) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_simple_agg_0(self):
         """
         Simple count aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:Post) RETURN count(n)"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_simple_agg_1(self):
         """
         Simple count aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN count(n)"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_simple_agg_2(self):
         """
         Simple count aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN count(n)"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_group_by_0(self):
         """
         GROUP BY with count
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN n.name, count(n) AS cnt ORDER BY cnt DESC LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_group_by_1(self):
         """
         GROUP BY with count
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN n.user_id, count(n) AS cnt ORDER BY cnt DESC LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_group_by_2(self):
         """
         GROUP BY with count
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:Post) RETURN n.post_id, count(n) AS cnt ORDER BY cnt DESC LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.xfail(reason="Bug: WITH aggregation generates incorrect SQL")
     def test_with_agg_0(self):
         """
         WITH clause aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:LIKED]->(b:Post) WITH a.user_id AS prop, count(r) AS cnt RETURN prop, cnt ORDER BY cnt DESC LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.xfail(reason="Bug: WITH aggregation generates incorrect SQL")
     def test_with_agg_1(self):
         """
         WITH clause aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:Post)-[r:LIKED]->(b:User) WITH a.post_id AS prop, count(r) AS cnt RETURN prop, cnt ORDER BY cnt DESC LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.xfail(reason="Bug: WITH aggregation generates incorrect SQL")
     def test_with_agg_2(self):
         """
         WITH clause aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:Post)-[r:LIKED]->(b:Post) WITH a.content AS prop, count(r) AS cnt RETURN prop, cnt ORDER BY cnt DESC LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="Invalid relationship direction: FOLLOWS is (User)->(User), not (Post)->(User)")
     def test_optional_match_0(self):
         """
         OPTIONAL MATCH with aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:Post) OPTIONAL MATCH (a)-[r:FOLLOWS]->(b) RETURN a.content, count(r) AS rel_count"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_optional_match_1(self):
         """
         OPTIONAL MATCH with aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User) OPTIONAL MATCH (a)-[r:FOLLOWS]->(b) RETURN a.user_id, count(r) AS rel_count"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="Invalid relationship direction: LIKED is (User)->(Post), not (Post)->(User)")
     def test_optional_match_2(self):
         """
         OPTIONAL MATCH with aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:Post) OPTIONAL MATCH (a)-[r:LIKED]->(b) RETURN a.post_id, count(r) AS rel_count"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_graph_funcs_0(self):
         """
         Graph functions (type, id, labels)
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:AUTHORED]->(b:Post) RETURN type(r), id(a), labels(a) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="Invalid relationship direction: AUTHORED is (User)->(Post), not (Post)->(User)")
     def test_graph_funcs_1(self):
         """
         Graph functions (type, id, labels)
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:Post)-[r:AUTHORED]->(b:User) RETURN type(r), id(a), labels(a) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="Invalid relationship direction: FOLLOWS is (User)->(User), not (Post)->(Post)")
     def test_graph_funcs_2(self):
         """
         Graph functions (type, id, labels)
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:Post)-[r:FOLLOWS]->(b:Post) RETURN type(r), id(a), labels(a) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="BUG: Multi-type relationships reference CTE with wrong alias (brahmand.rel_a_b instead of vlp_multi_type_a_b)")
     def test_multi_type_0(self):
         """
         Multiple relationship types
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:Post)-[r:FOLLOWS|AUTHORED]->(b:Post) RETURN type(r), count(*) AS cnt"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="BUG: Multi-type relationships reference CTE with wrong alias (brahmand.rel_a_b instead of vlp_multi_type_a_b)")
     def test_multi_type_1(self):
         """
         Multiple relationship types
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:FOLLOWS|AUTHORED]->(b:User) RETURN type(r), count(*) AS cnt"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="BUG: Multi-type relationships reference CTE with wrong alias (brahmand.rel_a_b instead of vlp_multi_type_a_b)")
     def test_multi_type_2(self):
         """
         Multiple relationship types
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:FOLLOWS|AUTHORED]->(b:User) RETURN type(r), count(*) AS cnt"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_order_limit_0(self):
         """
         ORDER BY with LIMIT and SKIP
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) WHERE n.user_id IS NOT NULL RETURN n.user_id ORDER BY n.user_id DESC SKIP 5 LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_order_limit_1(self):
         """
         ORDER BY with LIMIT and SKIP
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:Post) WHERE n.post_id IS NOT NULL RETURN n.post_id ORDER BY n.post_id DESC SKIP 5 LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_order_limit_2(self):
         """
         ORDER BY with LIMIT and SKIP
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:Post) WHERE n.post_id IS NOT NULL RETURN n.post_id ORDER BY n.post_id DESC SKIP 5 LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="BUG: Shortest path with untyped VLP pattern - analyzer requires relationship type")
-    @pytest.mark.skip(reason="Invalid test: social_benchmark schema has no Post→Post relationships")
+    @pytest.mark.skip(reason="Invalid test: social_integration schema has no Post→Post relationships")
     def test_shortest_path_0(self):
         """
         Shortest path query
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH p = shortestPath((a:Post)-[*1..5]->(b:Post)) WHERE a.created_at <> b.created_at RETURN length(p) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.skip(reason="BUG: Shortest path with untyped VLP pattern - analyzer requires relationship type")
     def test_shortest_path_1(self):
         """
         Shortest path query
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH p = shortestPath((a:Post)-[*1..5]->(b:Post)) WHERE a.post_id <> b.post_id RETURN length(p) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.skip(reason="Invalid test: social_benchmark schema has no Post→Post relationships")
+    @pytest.mark.skip(reason="Invalid test: social_integration schema has no Post→Post relationships")
     def test_shortest_path_2(self):
         """
         Shortest path query
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH p = shortestPath((a:Post)-[*1..5]->(b:Post)) WHERE a.post_id <> b.post_id RETURN length(p) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
 

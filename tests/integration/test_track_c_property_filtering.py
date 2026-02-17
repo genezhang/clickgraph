@@ -4,7 +4,7 @@ Integration tests for Track C: Property-based UNION branch pruning
 Tests that untyped patterns with WHERE property conditions only query
 node/relationship types that have those properties.
 
-Uses social_benchmark schema which has users_bench and posts_bench nodes.
+Uses social_integration schema which has users_bench and posts_bench nodes.
 """
 
 import pytest
@@ -26,7 +26,7 @@ class TestPropertyFilteringNodes:
         So filtering by user_id should only query users_bench
         """
         query = """
-        USE social_benchmark
+        USE social_integration
         MATCH (n) WHERE n.user_id = 1
         RETURN n.user_id AS uid
         LIMIT 5
@@ -55,7 +55,7 @@ class TestPropertyFilteringNodes:
         Expected: Only Post-like types queried (have post_id property)
         """
         query = """
-        USE social_benchmark
+        USE social_integration
         MATCH (n) WHERE n.post_id = 1
         RETURN n.post_id AS pid
         """
@@ -79,7 +79,7 @@ class TestPropertyFilteringNodes:
         Expected: 0 results (no types have this property)
         """
         query = """
-        USE social_benchmark
+        USE social_integration
         MATCH (n) WHERE n.nonexistent_xyz_999 = 123
         RETURN n
         """
@@ -106,7 +106,7 @@ class TestPropertyFilteringNodes:
         but Post only has post_id, so only User type should be queried.
         """
         query = """
-        USE social_benchmark
+        USE social_integration
         MATCH (n) WHERE n.user_id = 1 AND n.email IS NOT NULL
         RETURN n.user_id AS uid, n.email AS email
         """
@@ -132,7 +132,7 @@ class TestPropertyFilteringRelationships:
         Expected: Only relationship types with that property queried
         """
         query = """
-        USE social_benchmark
+        USE social_integration
         MATCH ()-[r]->() WHERE r.follow_date IS NOT NULL
         RETURN r.follow_date AS date
         LIMIT 5
@@ -156,7 +156,7 @@ class TestUnionAllSupport:
         Expected: Each branch queries only matching types
         """
         query = """
-        USE social_benchmark
+        USE social_integration
         MATCH (n) WHERE n.user_id = 1
         RETURN "node" AS entity, n.user_id AS value
         UNION ALL
@@ -184,7 +184,7 @@ class TestUnionAllSupport:
         Test Neo4j Browser pattern: both branches use property filtering
         """
         query = """
-        USE social_benchmark
+        USE social_integration
         MATCH (n) WHERE n.user_id IS NOT NULL
         RETURN DISTINCT "node" AS entity, n.user_id AS value LIMIT 5
         UNION ALL

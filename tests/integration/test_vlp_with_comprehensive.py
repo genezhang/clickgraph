@@ -4,7 +4,7 @@ Tests for VLP + WITH clause path function rewriting (KNOWN_ISSUES.md #1 fix).
 This tests the fix for: "length(path) in WITH clauses generates invalid SQL"
 
 Core validated tests:
-- TestVLPWithStandardSchema: All path functions (length, nodes, relationships) on social_benchmark schema
+- TestVLPWithStandardSchema: All path functions (length, nodes, relationships) on social_integration schema
 
 Other test classes are exploratory and may test pre-existing issues.
 """
@@ -13,7 +13,7 @@ import pytest
 import requests
 
 
-def query_api(query: str, schema_name: str = "social_benchmark", port: int = 8080) -> dict:
+def query_api(query: str, schema_name: str = "social_integration", port: int = 8080) -> dict:
     """Execute a Cypher query against the API."""
     response = requests.post(
         f"http://localhost:{port}/query",
@@ -34,7 +34,7 @@ class TestVLPWithStandardSchema:
     def test_length_path_in_with(self):
         """Standard schema: length(path) in WITH clause."""
         query = """
-        USE social_benchmark
+        USE social_integration
         MATCH path = (u1:User)-[:FOLLOWS*1..2]->(u2:User)
         WHERE u1.user_id = 1
         WITH u1, u2, length(path) as path_len
@@ -49,7 +49,7 @@ class TestVLPWithStandardSchema:
     def test_nodes_path_in_with(self):
         """Standard schema: nodes(path) in WITH clause."""
         query = """
-        USE social_benchmark
+        USE social_integration
         MATCH path = (u1:User)-[:FOLLOWS*1..2]->(u2:User)
         WHERE u1.user_id = 1
         WITH u1, u2, nodes(path) as path_nodes, length(path) as hops
@@ -64,7 +64,7 @@ class TestVLPWithStandardSchema:
     def test_relationships_path_in_with(self):
         """Standard schema: relationships(path) in WITH clause."""
         query = """
-        USE social_benchmark
+        USE social_integration
         MATCH path = (u1:User)-[:FOLLOWS*1..2]->(u2:User)
         WHERE u1.user_id = 1
         WITH u1, u2, relationships(path) as path_rels, length(path) as hops
@@ -79,7 +79,7 @@ class TestVLPWithStandardSchema:
     def test_multiple_path_functions_in_with(self):
         """Standard schema: Multiple path functions in WITH clause."""
         query = """
-        USE social_benchmark
+        USE social_integration
         MATCH path = (u1:User)-[:FOLLOWS*1..2]->(u2:User)
         WHERE u1.user_id = 1
         WITH u1, u2, 
@@ -101,7 +101,7 @@ class TestVLPWithStandardSchema:
     def test_with_non_path_properties(self):
         """Standard schema: Non-path properties in WITH clause."""
         query = """
-        USE social_benchmark
+        USE social_integration
         MATCH path = (u1:User)-[:FOLLOWS*1..2]->(u2:User)
         WHERE u1.user_id = 1
         WITH u1.name as start_name, u2.name as end_name
@@ -119,7 +119,7 @@ class TestVLPWithStandardSchema:
     def test_with_aggregation_and_path_function(self):
         """Standard schema: Aggregation + path function in WITH clause."""
         query = """
-        USE social_benchmark
+        USE social_integration
         MATCH path = (u1:User)-[:FOLLOWS*1..2]->(u2:User)
         WHERE u1.user_id = 1
         WITH u1, length(path) as hops, COUNT(*) as path_count

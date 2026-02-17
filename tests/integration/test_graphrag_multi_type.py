@@ -17,7 +17,7 @@ from conftest import (
 
 
 class TestMultiTypeRecursivePatterns:
-    """Test multi-type VLP patterns with social_benchmark schema."""
+    """Test multi-type VLP patterns with social_integration schema."""
     
     def test_follows_or_authored_one_to_two_hops(self):
         """
@@ -40,7 +40,7 @@ class TestMultiTypeRecursivePatterns:
             RETURN DISTINCT labels(x)[1] as node_type, count(*) as cnt
             ORDER BY node_type
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -62,7 +62,7 @@ class TestMultiTypeRecursivePatterns:
             "http://localhost:8080/query",
             json={
                 "query": """
-                    USE social_benchmark
+                    USE social_integration
                     MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)
                     WHERE u.user_id = 1
                     RETURN x
@@ -98,7 +98,7 @@ class TestMultiTypeRecursivePatterns:
             RETURN labels(x)[1] as node_type, count(*) as cnt
             ORDER BY node_type
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -114,7 +114,7 @@ class TestMultiTypeRecursivePatterns:
             RETURN DISTINCT labels(x)[1] as node_type, count(*) as cnt
             ORDER BY node_type
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -140,7 +140,7 @@ class TestMultiTypeWithPathFunctions:
             RETURN length(p) as path_length, count(*) as cnt
             ORDER BY path_length
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -160,7 +160,7 @@ class TestMultiTypeWithPathFunctions:
             RETURN relationships(p) as rels, labels(x)[1] as node_type
             LIMIT 10
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -185,7 +185,7 @@ class TestMixedRecursiveNonRecursive:
             WHERE u.user_id = 1
             RETURN count(p) as cnt
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response_1hop)
@@ -201,7 +201,7 @@ class TestMixedRecursiveNonRecursive:
                 WHERE u.user_id = 1
                 RETURN count(*) as cnt
                 """,
-                schema_name="social_benchmark",
+                schema_name="social_integration",
                 raise_on_error=False  # Don't raise, we expect an error
             )
             
@@ -217,7 +217,7 @@ class TestMixedRecursiveNonRecursive:
             WHERE u.user_id = 1
             RETURN count(f) as cnt
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -240,7 +240,7 @@ class TestMultiTypePerformance:
             MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)
             RETURN count(*) as total_paths
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -258,7 +258,7 @@ class TestMultiTypePerformance:
             RETURN x
             LIMIT 10
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -285,7 +285,7 @@ class TestMultiTypePropertyExtraction:
             RETURN x.name, x.email
             LIMIT 3
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -312,7 +312,7 @@ class TestMultiTypePropertyExtraction:
             RETURN label(x), x.name, x.city
             LIMIT 3
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -336,7 +336,7 @@ class TestMultiTypePropertyExtraction:
             RETURN x.user_id, x.name, x.email, x.city, x.country
             LIMIT 5
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -361,7 +361,7 @@ class TestMultiTypePropertyExtraction:
             RETURN x.name, x.nonexistent_property
             LIMIT 2
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -383,7 +383,7 @@ class TestMultiTypePropertyExtraction:
             WHERE u.user_id = 1 AND x.city = 'NYC'
             RETURN x.name, x.city
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -404,7 +404,7 @@ class TestMultiTypePropertyExtraction:
             ORDER BY x.name
             LIMIT 5
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -427,7 +427,7 @@ class TestMultiTypePropertyExtraction:
             GROUP BY x.city
             ORDER BY user_count DESC
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -453,7 +453,7 @@ class TestMultiTypePropertyExtraction:
             RETURN label(x), x.name, x.content
             LIMIT 10
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -487,7 +487,7 @@ class TestMultiTypePropertyExtraction:
             "http://localhost:8080/query",
             json={
                 "query": """
-                    USE social_benchmark
+                    USE social_integration
                     MATCH (u:User)-[:FOLLOWS*1..2]->(x:User)
                     WHERE u.user_id = 1
                     RETURN x.name, x.email
@@ -511,7 +511,7 @@ class TestMultiTypePropertyExtraction:
             "http://localhost:8080/query",
             json={
                 "query": """
-                    USE social_benchmark
+                    USE social_integration
                     MATCH (u:User)-[:FOLLOWS|AUTHORED*1]->(x)
                     WHERE u.user_id = 1
                     RETURN x.name, x.content
@@ -538,7 +538,7 @@ class TestMultiTypePropertyExtraction:
             "http://localhost:8080/query",
             json={
                 "query": """
-                    USE social_benchmark
+                    USE social_integration
                     MATCH (u:User)-[:FOLLOWS*1..2]->(x:User)
                     WHERE u.user_id = 1
                     RETURN x.name, x.city

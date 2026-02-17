@@ -16,7 +16,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE_URL = f"{CLICKGRAPH_URL}"
-SCHEMA_NAME = "social_benchmark"  # Default schema for these tests (uses User/Post)
+SCHEMA_NAME = "social_integration"  # Default schema for these tests (uses User/Post)
 
 
 def test_query_without_role():

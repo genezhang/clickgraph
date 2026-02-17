@@ -61,7 +61,7 @@ class TestWithBasicNodeExpansion:
             RETURN a
             LIMIT 1
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -100,7 +100,7 @@ class TestWithMultipleVariableExport:
             RETURN a, b
             LIMIT 1
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -133,7 +133,7 @@ class TestWithMultipleVariableExport:
             RETURN a, b, c
             LIMIT 1
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -172,7 +172,7 @@ class TestWithChaining:
             RETURN a, b
             LIMIT 1
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -203,7 +203,7 @@ class TestWithChaining:
             RETURN a, b, c
             LIMIT 1
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -235,7 +235,7 @@ class TestWithScalarExport:
             WITH COUNT(a) AS user_count
             RETURN user_count
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -264,7 +264,7 @@ class TestWithScalarExport:
             RETURN a, follower_count
             LIMIT 1
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -302,7 +302,7 @@ class TestWithPropertyRename:
             RETURN person
             LIMIT 1
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -328,7 +328,7 @@ class TestWithPropertyRename:
             RETURN follower, followed
             LIMIT 1
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -367,7 +367,7 @@ class TestWithCrossTable:
             RETURN a, b, c
             LIMIT 1
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -389,7 +389,7 @@ class TestWithCrossTable:
             WHERE a.user_id > 1
             RETURN a
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -422,7 +422,7 @@ class TestWithOptionalMatch:
             RETURN a, b
             LIMIT 1
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -448,7 +448,7 @@ class TestWithPolymorphicLabels:
         """
         Test WITH when node might have multiple labels.
         
-        In social_benchmark, User and Post are distinct.
+        In social_integration, User and Post are distinct.
         Test WITH on either type.
         """
         # Test with User
@@ -459,7 +459,7 @@ class TestWithPolymorphicLabels:
             RETURN a
             LIMIT 1
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response_user)
@@ -475,7 +475,7 @@ class TestWithPolymorphicLabels:
             RETURN p
             LIMIT 1
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response_post)
@@ -500,7 +500,7 @@ class TestWithRegressionCases:
             RETURN a
             LIMIT 1
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -524,7 +524,7 @@ class TestWithRegressionCases:
             RETURN a.user_id, a.name
             LIMIT 1
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -546,7 +546,7 @@ class TestWithRegressionCases:
             MATCH (a:User)
             RETURN COUNT(a) as total
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)
@@ -567,7 +567,7 @@ class TestWithRegressionCases:
             RETURN a, b, c
             LIMIT 1
             """,
-            schema_name="social_benchmark"
+            schema_name="social_integration"
         )
         
         assert_query_success(response)

@@ -54,7 +54,7 @@ class SchemaConfig:
     # Flag for schemas with non-transitive relationships (e.g., User->Group only, no Group->Group)
     has_transitive_edges: bool = True
     # Flag for schemas with very dense graphs that cause memory explosion in recursive CTEs
-    # (e.g., social_benchmark has 4 users with 750 FOLLOWS edges = nearly complete graph)
+    # (e.g., social_integration has 4 users with 750 FOLLOWS edges = nearly complete graph)
     has_dense_graph: bool = False
 
 
@@ -63,10 +63,10 @@ class SchemaConfig:
 # =============================================================================
 
 SCHEMAS: Dict[str, SchemaConfig] = {
-    "social_benchmark": SchemaConfig(
-        name="social_benchmark",
+    "social_integration": SchemaConfig(
+        name="social_integration",
         schema_type=SchemaType.TRADITIONAL,
-        yaml_path="benchmarks/social_network/schemas/social_benchmark.yaml",
+        yaml_path="benchmarks/social_network/schemas/social_integration.yaml",
         database="brahmand",
         node_labels=["User", "Post"],
         edge_types=["FOLLOWS", "AUTHORED", "LIKED"],

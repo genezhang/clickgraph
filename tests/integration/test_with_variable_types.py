@@ -14,7 +14,7 @@ import json
 import sys
 
 SERVER_URL = "http://localhost:8080"
-SCHEMA_NAME = "social_benchmark"  # Uses benchmarks/social_network/schemas/social_benchmark.yaml
+SCHEMA_NAME = "social_integration"  # Uses benchmarks/social_network/schemas/social_integration.yaml
 
 # Test results tracking
 tests_passed = 0

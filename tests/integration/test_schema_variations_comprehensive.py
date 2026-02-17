@@ -15,7 +15,7 @@ Coverage Areas:
 Test Matrix: 6 schema types × 10 query patterns = 60+ tests
 
 Schema Types:
-- Standard: social_benchmark (User, Post, FOLLOWS, AUTHORED)
+- Standard: social_integration (User, Post, FOLLOWS, AUTHORED)
 - Denormalized: flights with node props in edge table
 - Multi-table: zeek with IP nodes in multiple edge tables
 - Multi-tenant: parameterized views
@@ -32,7 +32,7 @@ import json
 CLICKGRAPH_URL = "http://localhost:8080"
 
 
-def query_clickgraph(cypher_query, schema_name="social_benchmark", variables=None):
+def query_clickgraph(cypher_query, schema_name="social_integration", variables=None):
     """Execute Cypher query against ClickGraph server."""
     payload = {"query": cypher_query}
     if variables:
@@ -801,7 +801,7 @@ class TestSchemaInteractions:
     
     def test_multiple_schemas_in_session(self):
         """Query multiple schemas in same session with USE clause."""
-        query1 = "USE social_benchmark; MATCH (u:User) RETURN count(u)"
+        query1 = "USE social_integration; MATCH (u:User) RETURN count(u)"
         query2 = "USE zeek_logs; MATCH (ip) RETURN count(ip)"
         
         response1 = query_clickgraph(query1)

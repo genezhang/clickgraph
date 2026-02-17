@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 
 # Test configuration
-SCHEMA_PATH = "./benchmarks/social_network/schemas/social_benchmark.yaml"
+SCHEMA_PATH = "./benchmarks/social_network/schemas/social_integration.yaml"
 CLICKGRAPH_PORT = 8080
 BASE_URL = f"http://localhost:{CLICKGRAPH_PORT}"
 
@@ -23,7 +23,7 @@ def query_clickgraph(cypher_query: str) -> dict:
         "curl", "-s", "-X", "POST",
         f"{BASE_URL}/query",
         "-H", "Content-Type: application/json",
-        "-d", json.dumps({"query": cypher_query, "schema_name": "social_benchmark"})
+        "-d", json.dumps({"query": cypher_query, "schema_name": "social_integration"})
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     try:

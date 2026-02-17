@@ -548,7 +548,7 @@ if __name__ == "__main__":
         print(f"❌ Error: Cannot connect to server at {SERVER_URL}")
         print(f"   Please start the server first:")
         print(f"   export CLICKHOUSE_URL=http://localhost:8123")
-        print(f"   export GRAPH_CONFIG_PATH=./benchmarks/social_network/schemas/social_benchmark.yaml")
+        print(f"   export GRAPH_CONFIG_PATH=./benchmarks/social_network/schemas/social_integration.yaml")
         print(f"   cargo run --bin clickgraph")
         sys.exit(1)
     

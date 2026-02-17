@@ -22,7 +22,7 @@ def test_relationship_structure():
             
             # Test with a known relationship
             query = """
-            USE social_benchmark
+            USE social_integration
             MATCH (u1:User {user_id: 1})-[r:FOLLOWS]->(u2:User {user_id: 2})
             RETURN u1, r, u2
             """

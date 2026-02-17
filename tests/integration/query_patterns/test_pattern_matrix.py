@@ -32,471 +32,471 @@ def execute_query(query: str, schema_name: str = None) -> dict:
 class TestStandardSchema:
     """Tests for standard schema type"""
 
-    SCHEMA_YAML = "benchmarks/social_network/schemas/social_benchmark.yaml"
+    SCHEMA_YAML = "benchmarks/social_network/schemas/social_integration.yaml"
 
     def test_node_scan_0(self):
         """
         Basic node scan with single property
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN n.country LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_node_scan_1(self):
         """
         Basic node scan with single property
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN n.country LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_node_scan_2(self):
         """
         Basic node scan with single property
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN n.country LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_return_node_0(self):
         """
         Return whole node (wildcard expansion)
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN n LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_return_node_1(self):
         """
         Return whole node (wildcard expansion)
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN n LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_return_node_2(self):
         """
         Return whole node (wildcard expansion)
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN n LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_node_filter_0(self):
         """
         Node scan with IS NOT NULL filter
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) WHERE n.email IS NOT NULL RETURN n.email LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_node_filter_1(self):
         """
         Node scan with IS NOT NULL filter
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) WHERE n.is_active IS NOT NULL RETURN n.is_active LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_node_filter_2(self):
         """
         Node scan with IS NOT NULL filter
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) WHERE n.name IS NOT NULL RETURN n.name LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_single_hop_0(self):
         """
         Single hop relationship
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN a.is_active, b.is_active LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_single_hop_1(self):
         """
         Single hop relationship
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN a.city, b.city LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_single_hop_2(self):
         """
         Single hop relationship
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN a.city, b.city LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_return_rel_0(self):
         """
         Return whole relationship
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_return_rel_1(self):
         """
         Return whole relationship
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_return_rel_2(self):
         """
         Return whole relationship
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_multi_hop_0(self):
         """
         Multi-hop traversal
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r1:FOLLOWS]->(b:User)-[r2:FOLLOWS]->(c:User) RETURN a.is_active, c.is_active LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_multi_hop_1(self):
         """
         Multi-hop traversal
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r1:FOLLOWS]->(b:User)-[r2:FOLLOWS]->(c:User) RETURN a.email, c.email LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_multi_hop_2(self):
         """
         Multi-hop traversal
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r1:FOLLOWS]->(b:User)-[r2:FOLLOWS]->(c:User) RETURN a.is_active, c.is_active LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_vlp_exact_0(self):
         """
         Variable-length path with exact hops
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[:FOLLOWS*2]->(b:User) RETURN a.is_active, b.is_active LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_vlp_exact_1(self):
         """
         Variable-length path with exact hops
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[:FOLLOWS*2]->(b:User) RETURN a.user_id, b.user_id LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_vlp_exact_2(self):
         """
         Variable-length path with exact hops
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[:FOLLOWS*2]->(b:User) RETURN a.name, b.name LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_vlp_range_0(self):
         """
         Variable-length path with range
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) RETURN a.user_id, b.user_id LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_vlp_range_1(self):
         """
         Variable-length path with range
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) RETURN a.country, b.country LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_vlp_range_2(self):
         """
         Variable-length path with range
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) RETURN a.email, b.email LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_vlp_path_var_0(self):
         """
         Path variable with functions
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH p = (a:User)-[:FOLLOWS*1..3]->(b:User) RETURN length(p), nodes(p) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_vlp_path_var_1(self):
         """
         Path variable with functions
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH p = (a:User)-[:FOLLOWS*1..3]->(b:User) RETURN length(p), nodes(p) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_vlp_path_var_2(self):
         """
         Path variable with functions
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH p = (a:User)-[:FOLLOWS*1..3]->(b:User) RETURN length(p), nodes(p) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_simple_agg_0(self):
         """
         Simple count aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN count(n)"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_simple_agg_1(self):
         """
         Simple count aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN count(n)"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_simple_agg_2(self):
         """
         Simple count aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN count(n)"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_group_by_0(self):
         """
         GROUP BY with count
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN n.is_active, count(n) AS cnt ORDER BY cnt DESC LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_group_by_1(self):
         """
         GROUP BY with count
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN n.email, count(n) AS cnt ORDER BY cnt DESC LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_group_by_2(self):
         """
         GROUP BY with count
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) RETURN n.is_active, count(n) AS cnt ORDER BY cnt DESC LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_with_agg_0(self):
         """
         WITH clause aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:FOLLOWS]->(b:User) WITH a.user_id AS prop, count(r) AS cnt RETURN prop, cnt ORDER BY cnt DESC LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_with_agg_1(self):
         """
         WITH clause aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:FOLLOWS]->(b:User) WITH a.user_id AS prop, count(r) AS cnt RETURN prop, cnt ORDER BY cnt DESC LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_with_agg_2(self):
         """
         WITH clause aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:FOLLOWS]->(b:User) WITH a.email AS prop, count(r) AS cnt RETURN prop, cnt ORDER BY cnt DESC LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_optional_match_0(self):
         """
         OPTIONAL MATCH with aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User) OPTIONAL MATCH (a)-[r:FOLLOWS]->(b) RETURN a.city, count(r) AS rel_count"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_optional_match_1(self):
         """
         OPTIONAL MATCH with aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User) OPTIONAL MATCH (a)-[r:FOLLOWS]->(b) RETURN a.is_active, count(r) AS rel_count"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_optional_match_2(self):
         """
         OPTIONAL MATCH with aggregation
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User) OPTIONAL MATCH (a)-[r:FOLLOWS]->(b) RETURN a.is_active, count(r) AS rel_count"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_graph_funcs_0(self):
         """
         Graph functions (type, id, labels)
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN type(r), id(a), labels(a) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_graph_funcs_1(self):
         """
         Graph functions (type, id, labels)
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN type(r), id(a), labels(a) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_graph_funcs_2(self):
         """
         Graph functions (type, id, labels)
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN type(r), id(a), labels(a) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.xfail(reason="Standard schema has only one cyclic relationship type (FOLLOWS)")
     def test_multi_type_0(self):
         """
         Multiple relationship types
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:FOLLOWS|FOLLOWS]->(b:User) RETURN type(r), count(*) AS cnt"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.xfail(reason="Standard schema has only one cyclic relationship type (FOLLOWS)")
     def test_multi_type_1(self):
         """
         Multiple relationship types
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:FOLLOWS|FOLLOWS]->(b:User) RETURN type(r), count(*) AS cnt"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     @pytest.mark.xfail(reason="Standard schema has only one cyclic relationship type (FOLLOWS)")
     def test_multi_type_2(self):
         """
         Multiple relationship types
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (a:User)-[r:FOLLOWS|FOLLOWS]->(b:User) RETURN type(r), count(*) AS cnt"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_order_limit_0(self):
         """
         ORDER BY with LIMIT and SKIP
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) WHERE n.email IS NOT NULL RETURN n.email ORDER BY n.email DESC SKIP 5 LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_order_limit_1(self):
         """
         ORDER BY with LIMIT and SKIP
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) WHERE n.email IS NOT NULL RETURN n.email ORDER BY n.email DESC SKIP 5 LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_order_limit_2(self):
         """
         ORDER BY with LIMIT and SKIP
-        Schema: social_benchmark
+        Schema: social_integration
         """
         query = "MATCH (n:User) WHERE n.is_active IS NOT NULL RETURN n.is_active ORDER BY n.is_active DESC SKIP 5 LIMIT 10"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_shortest_path_0(self):
         """
         Shortest path query
-        Schema: social_benchmark
+        Schema: social_integration
         """
-        pytest.skip("social_benchmark has dense graph (4 users, 750 FOLLOWS edges) causing memory explosion in recursive CTEs")
+        pytest.skip("social_integration has dense graph (4 users, 750 FOLLOWS edges) causing memory explosion in recursive CTEs")
         query = "MATCH p = shortestPath((a:User)-[:FOLLOWS*1..5]->(b:User)) WHERE a.email <> b.email RETURN length(p) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_shortest_path_1(self):
         """
         Shortest path query
-        Schema: social_benchmark
+        Schema: social_integration
         """
-        pytest.skip("social_benchmark has dense graph (4 users, 750 FOLLOWS edges) causing memory explosion in recursive CTEs")
+        pytest.skip("social_integration has dense graph (4 users, 750 FOLLOWS edges) causing memory explosion in recursive CTEs")
         query = "MATCH p = shortestPath((a:User)-[:FOLLOWS*1..5]->(b:User)) WHERE a.country <> b.country RETURN length(p) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
     def test_shortest_path_2(self):
         """
         Shortest path query
-        Schema: social_benchmark
+        Schema: social_integration
         """
-        pytest.skip("social_benchmark has dense graph (4 users, 750 FOLLOWS edges) causing memory explosion in recursive CTEs")
+        pytest.skip("social_integration has dense graph (4 users, 750 FOLLOWS edges) causing memory explosion in recursive CTEs")
         query = "MATCH p = shortestPath((a:User)-[:FOLLOWS*1..5]->(b:User)) WHERE a.country <> b.country RETURN length(p) LIMIT 5"
-        result = execute_query(query, "social_benchmark")
+        result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
 

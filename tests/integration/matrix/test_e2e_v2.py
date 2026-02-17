@@ -668,7 +668,7 @@ class TestHighVolumeRandomVariations:
 
 class TestSchemaSpecificPatterns:
     """
-    Schema-specific patterns that exercise unique features of social_benchmark.
+    Schema-specific patterns that exercise unique features of social_integration.
     ~30 tests
     """
     
@@ -682,7 +682,7 @@ class TestSchemaSpecificPatterns:
         random.seed(variation + 6000)
         user_id = random.randint(1, 100)
         query = f"MATCH (u:User)-[:FOLLOWS]->(f:User) WHERE u.user_id = {user_id} RETURN f LIMIT 10"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("variation", range(10))
@@ -695,7 +695,7 @@ class TestSchemaSpecificPatterns:
         WHERE u.user_id = {user_id}
         RETURN f LIMIT 10
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("variation", range(10))
@@ -708,7 +708,7 @@ class TestSchemaSpecificPatterns:
         RETURN u.user_id, count(f) as follower_count
         ORDER BY follower_count DESC LIMIT {limit}
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
 
 
@@ -754,7 +754,7 @@ class TestAdditionalNodeVariations:
         operators = ['=', '>', '<', '>=', '<=']
         op = random.choice(operators)
         query = f"MATCH (n:User) WHERE n.user_id {op} {user_id} RETURN n LIMIT 10"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(50))
@@ -765,7 +765,7 @@ class TestAdditionalNodeVariations:
         selected = random.sample(props, random.randint(1, 4))
         prop_list = ", ".join([f"n.{p}" for p in selected])
         query = f"MATCH (n:User) RETURN {prop_list} LIMIT 10"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(30))
@@ -774,7 +774,7 @@ class TestAdditionalNodeVariations:
         random.seed(seed + 12000)
         post_id = random.randint(1, 1000)
         query = f"MATCH (p:Post) WHERE p.post_id > {post_id} RETURN p LIMIT 10"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(30))
@@ -784,7 +784,7 @@ class TestAdditionalNodeVariations:
         low = random.randint(1, 500)
         high = random.randint(500, 1000)
         query = f"MATCH (n:User) WHERE n.user_id > {low} AND n.user_id < {high} RETURN n LIMIT 10"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(20))
@@ -794,7 +794,7 @@ class TestAdditionalNodeVariations:
         id1 = random.randint(1, 100)
         id2 = random.randint(500, 600)
         query = f"MATCH (n:User) WHERE n.user_id = {id1} OR n.user_id = {id2} RETURN n LIMIT 10"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
 
 
@@ -810,7 +810,7 @@ class TestAdditionalRelationshipVariations:
         random.seed(seed + 20000)
         user_id = random.randint(1, 500)
         query = f"MATCH (u:User)-[:FOLLOWS]->(f:User) WHERE u.user_id = {user_id} RETURN f LIMIT 10"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(40))
@@ -824,7 +824,7 @@ class TestAdditionalRelationshipVariations:
         WHERE u.user_id >= {min_id} AND u.user_id <= {max_id}
         RETURN u.user_id, count(f) as cnt ORDER BY cnt DESC LIMIT 10
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(30))
@@ -833,7 +833,7 @@ class TestAdditionalRelationshipVariations:
         random.seed(seed + 22000)
         user_id = random.randint(1, 200)
         query = f"MATCH (u:User)-[:FOLLOWS]-(f:User) WHERE u.user_id = {user_id} RETURN DISTINCT f LIMIT 10"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(20))
@@ -846,7 +846,7 @@ class TestAdditionalRelationshipVariations:
         WHERE u.user_id = {user_id}
         RETURN f2 LIMIT 10
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
 
 
@@ -862,7 +862,7 @@ class TestAdditionalAggregationVariations:
         random.seed(seed + 30000)
         limit = random.randint(5, 20)
         query = f"MATCH (n:User) RETURN n.country, count(*) as cnt ORDER BY cnt DESC LIMIT {limit}"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(20))
@@ -870,7 +870,7 @@ class TestAdditionalAggregationVariations:
         """Sum aggregation."""
         random.seed(seed + 31000)
         query = "MATCH (n:User) RETURN sum(n.user_id) as total_id"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(20))
@@ -878,7 +878,7 @@ class TestAdditionalAggregationVariations:
         """Avg aggregation."""
         random.seed(seed + 32000)
         query = "MATCH (n:User) RETURN avg(n.user_id) as avg_id"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(20))
@@ -886,7 +886,7 @@ class TestAdditionalAggregationVariations:
         """Min/Max aggregation."""
         random.seed(seed + 33000)
         query = "MATCH (n:User) RETURN min(n.user_id) as min_id, max(n.user_id) as max_id"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
 
 
@@ -903,7 +903,7 @@ class TestAdditionalVLPVariations:
         random.seed(seed + 40000 + hops * 100)
         user_id = random.randint(1, 100)
         query = f"MATCH (u:User)-[:FOLLOWS*{hops}]->(f:User) WHERE u.user_id = {user_id} RETURN f LIMIT 5"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(20))
@@ -914,7 +914,7 @@ class TestAdditionalVLPVariations:
         max_hops = random.randint(3, 5)
         user_id = random.randint(1, 100)
         query = f"MATCH (u:User)-[:FOLLOWS*{min_hops}..{max_hops}]->(f:User) WHERE u.user_id = {user_id} RETURN f LIMIT 5"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
 
 
@@ -931,7 +931,7 @@ class TestAdditionalOrderLimitVariations:
         props = ["user_id", "name", "country"]
         prop = random.choice(props)
         query = f"MATCH (n:User) RETURN n ORDER BY n.{prop} ASC LIMIT 20"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(20))
@@ -941,7 +941,7 @@ class TestAdditionalOrderLimitVariations:
         props = ["user_id", "name", "country"]
         prop = random.choice(props)
         query = f"MATCH (n:User) RETURN n ORDER BY n.{prop} DESC LIMIT 20"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -951,7 +951,7 @@ class TestAdditionalOrderLimitVariations:
         skip = random.randint(0, 50)
         limit = random.randint(5, 20)
         query = f"MATCH (n:User) RETURN n SKIP {skip} LIMIT {limit}"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
 
 
@@ -967,7 +967,7 @@ class TestAdditionalExpressionVariations:
         random.seed(seed + 60000)
         val = random.randint(1, 1000)
         query = f"MATCH (n:User) RETURN n.user_id, n.user_id + {val} as added LIMIT 10"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -976,7 +976,7 @@ class TestAdditionalExpressionVariations:
         random.seed(seed + 61000)
         val = random.randint(1, 10)
         query = f"MATCH (n:User) RETURN n.user_id, n.user_id * {val} as multiplied LIMIT 10"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(10))
@@ -986,7 +986,7 @@ class TestAdditionalExpressionVariations:
         chars = 'abcdefghijklmnopqrstuvwxyz'
         substr = ''.join(random.choices(chars, k=2))
         query = f"MATCH (n:User) WHERE n.name CONTAINS '{substr}' RETURN n LIMIT 10"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(10))
@@ -996,7 +996,7 @@ class TestAdditionalExpressionVariations:
         chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
         char = random.choice(chars)
         query = f"MATCH (n:User) WHERE n.name STARTS WITH '{char}' RETURN n LIMIT 10"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
 
 
@@ -1016,7 +1016,7 @@ class TestComplexQueryPatterns:
         WHERE u.user_id = {user_id}
         RETURN DISTINCT fof LIMIT 10
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -1029,7 +1029,7 @@ class TestComplexQueryPatterns:
         WHERE u1.user_id = {user_id}
         RETURN u2 LIMIT 10
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -1042,7 +1042,7 @@ class TestComplexQueryPatterns:
         RETURN popular.user_id, popular.name, count(follower) as follower_count
         ORDER BY follower_count DESC LIMIT {limit}
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
 
 
@@ -1168,7 +1168,7 @@ class TestLikedRelationship:
         random.seed(seed + 90000)
         limit = random.randint(5, 20)
         query = f"MATCH (u:User)-[:LIKED]->(p:Post) RETURN u, p LIMIT {limit}"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(20))
@@ -1181,7 +1181,7 @@ class TestLikedRelationship:
         RETURN u.user_id, count(p) as likes_count
         ORDER BY likes_count DESC LIMIT {limit}
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(20))
@@ -1194,7 +1194,7 @@ class TestLikedRelationship:
         RETURN p.post_id, count(u) as likes_count
         ORDER BY likes_count DESC LIMIT {limit}
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -1207,7 +1207,7 @@ class TestLikedRelationship:
         WHERE p.post_id = {post_id}
         RETURN u
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -1220,7 +1220,7 @@ class TestLikedRelationship:
         WHERE u.user_id = {user_id}
         RETURN p
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(10))
@@ -1234,7 +1234,7 @@ class TestLikedRelationship:
         WHERE u.user_id >= {min_id} AND u.user_id <= {max_id}
         RETURN u, p LIMIT 20
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
 
 
@@ -1244,7 +1244,7 @@ class TestCrossSchemaPatterns:
     50+ tests comparing behavior.
     """
     
-    @pytest.mark.parametrize("schema_name", ["social_benchmark", "data_security"])
+    @pytest.mark.parametrize("schema_name", ["social_integration", "data_security"])
     @pytest.mark.parametrize("seed", range(10))
     def test_basic_count(self, schema_name, seed):
         """Basic count across schemas."""
@@ -1253,7 +1253,7 @@ class TestCrossSchemaPatterns:
         result = execute_query(query, schema_name=schema_name)
         assert result["success"], f"Query failed: {query}"
     
-    @pytest.mark.parametrize("schema_name", ["social_benchmark", "data_security"])
+    @pytest.mark.parametrize("schema_name", ["social_integration", "data_security"])
     @pytest.mark.parametrize("seed", range(10))
     def test_filter_by_id(self, schema_name, seed):
         """Filter by ID across schemas."""
@@ -1263,7 +1263,7 @@ class TestCrossSchemaPatterns:
         result = execute_query(query, schema_name=schema_name)
         assert result["success"], f"Query failed: {query}"
     
-    @pytest.mark.parametrize("schema_name", ["social_benchmark", "data_security"])
+    @pytest.mark.parametrize("schema_name", ["social_integration", "data_security"])
     @pytest.mark.parametrize("seed", range(10))
     def test_order_by(self, schema_name, seed):
         """Order by across schemas."""
@@ -1273,7 +1273,7 @@ class TestCrossSchemaPatterns:
         result = execute_query(query, schema_name=schema_name)
         assert result["success"], f"Query failed: {query}"
     
-    @pytest.mark.parametrize("schema_name", ["social_benchmark", "data_security"])
+    @pytest.mark.parametrize("schema_name", ["social_integration", "data_security"])
     @pytest.mark.parametrize("seed", range(5))
     def test_distinct_values(self, schema_name, seed):
         """Distinct values across schemas."""
@@ -1299,7 +1299,7 @@ class TestFollowsAndLikedCombined:
         WHERE u.user_id = {user_id}
         RETURN f.name, p.post_id LIMIT 10
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -1313,7 +1313,7 @@ class TestFollowsAndLikedCombined:
         RETURN u.name, count(DISTINCT f) as followers, count(DISTINCT p) as likes
         LIMIT {limit}
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -1327,7 +1327,7 @@ class TestFollowsAndLikedCombined:
         RETURN u.user_id, count(DISTINCT follower) as followers, count(DISTINCT p) as likes
         ORDER BY followers DESC LIMIT {limit}
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(20))
@@ -1341,7 +1341,7 @@ class TestFollowsAndLikedCombined:
         RETURN p.post_id, count(friend) as liked_by_friends
         ORDER BY liked_by_friends DESC LIMIT 10
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -1354,7 +1354,7 @@ class TestFollowsAndLikedCombined:
         MATCH (u:User)-[:LIKED]->(p:Post)
         RETURN p.post_id, count(u) as like_count ORDER BY like_count DESC LIMIT 10
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -1369,7 +1369,7 @@ class TestFollowsAndLikedCombined:
         RETURN u.user_id, count(followed) as follow_count
         LIMIT 10
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
 
 
@@ -1390,7 +1390,7 @@ class TestAdvancedVLPPatterns:
         WHERE u.user_id = {user_id}
         RETURN DISTINCT f.user_id LIMIT 20
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -1404,7 +1404,7 @@ class TestAdvancedVLPPatterns:
         WHERE u.user_id = {user_id}
         RETURN count(f) as reach_count
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -1417,7 +1417,7 @@ class TestAdvancedVLPPatterns:
         WHERE u.user_id = {user_id}
         RETURN f.country, count(*) as cnt ORDER BY cnt DESC LIMIT 5
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -1431,7 +1431,7 @@ class TestAdvancedVLPPatterns:
         WHERE u.user_id = {user_id} AND f.user_id = {end_user}
         RETURN f LIMIT 5
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(10))
@@ -1444,7 +1444,7 @@ class TestAdvancedVLPPatterns:
         WHERE u.user_id = {user_id}
         RETURN p LIMIT 10
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("min_hops,max_hops", [(1,2), (2,3), (1,4), (2,5), (3,4)])
@@ -1458,7 +1458,7 @@ class TestAdvancedVLPPatterns:
         WHERE u.user_id = {user_id}
         RETURN f LIMIT 5
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
 
 
@@ -1479,7 +1479,7 @@ class TestAdvancedFiltering:
         WHERE u.user_id >= {min_id} AND u.user_id <= {max_id} AND u.is_active = 1
         RETURN u LIMIT 20
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(20))
@@ -1493,7 +1493,7 @@ class TestAdvancedFiltering:
         WHERE u.user_id = {id1} OR u.user_id = {id2}
         RETURN u
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -1507,7 +1507,7 @@ class TestAdvancedFiltering:
         WHERE u.user_id IN [{ids_str}]
         RETURN u
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -1522,7 +1522,7 @@ class TestAdvancedFiltering:
         WHERE u.user_id > 100
         RETURN u LIMIT 20
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -1536,7 +1536,7 @@ class TestAdvancedFiltering:
         WHERE u.name STARTS WITH '{char}'
         RETURN u LIMIT 20
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
     @pytest.mark.parametrize("seed", range(15))
@@ -1548,7 +1548,7 @@ class TestAdvancedFiltering:
         WHERE u.country IS NOT NULL
         RETURN u LIMIT 20
         """
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
 
 

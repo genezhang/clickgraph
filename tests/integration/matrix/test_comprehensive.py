@@ -451,17 +451,17 @@ class TestPathVariables:
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
     @pytest.mark.xfail(
-        reason="TIMEOUT: VLP with length(p) + GROUP BY on social_benchmark times out due to large data",
-        condition=lambda kwargs: kwargs.get('schema_config', type('', (), {'name': ''})()).name == 'social_benchmark'
+        reason="TIMEOUT: VLP with length(p) + GROUP BY on social_integration times out due to large data",
+        condition=lambda kwargs: kwargs.get('schema_config', type('', (), {'name': ''})()).name == 'social_integration'
     )
     def test_path_length(self, server_running, schema_config, query_generator):
         """Test: length(p)
         
         Note: Works on filesystem schema.
-        social_benchmark times out due to large dataset with VLP recursion.
+        social_integration times out due to large dataset with VLP recursion.
         """
-        if schema_config.name == 'social_benchmark':
-            pytest.xfail("VLP query times out on social_benchmark due to large dataset")
+        if schema_config.name == 'social_integration':
+            pytest.xfail("VLP query times out on social_integration due to large dataset")
         query = query_generator.path_length()
         result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"

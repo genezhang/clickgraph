@@ -15,7 +15,7 @@ Query Sequence:
 Performance Goal: <500ms per query (interactive acceptable)
 Current Issue: Q2 on benchmark data takes 6+ seconds (undirected pattern on 250M-row tables)
 
-Tests use social_benchmark schema with realistic data volumes:
+Tests use social_integration schema with realistic data volumes:
 - users_bench: 5M rows
 - posts_bench: 100M rows
 - user_follows_bench: 10M rows
@@ -91,7 +91,7 @@ class BrowserExpandPerformanceMetrics:
 def sample_element_ids():
     """Fetch real sample node element_ids from database."""
     query = """
-    USE social_benchmark
+    USE social_integration
     MATCH (n:User) RETURN id(n) as element_id LIMIT 5
     """
     response = execute_cypher(query)
@@ -136,7 +136,7 @@ class TestBrowserExpandQuerySequence:
         """
         # Using benchmark schema with real element_id from database
         query = f"""
-        USE social_benchmark
+        USE social_integration
         MATCH (a) WHERE id(a) = {test_element_id} RETURN a
         """
         
@@ -168,7 +168,7 @@ class TestBrowserExpandQuerySequence:
         Target: <500ms
         """
         query = f"""
-        USE social_benchmark
+        USE social_integration
         MATCH (a)--(o) WHERE id(a) = {test_element_id} RETURN o LIMIT 100
         """
         
@@ -207,7 +207,7 @@ class TestBrowserExpandQuerySequence:
         exclude_clause = f"AND NOT id(o) IN [{exclude_str}]" if exclude_str else ""
         
         query = f"""
-        USE social_benchmark
+        USE social_integration
         MATCH (a)--(o) 
         WHERE id(a) = {test_element_id} {exclude_clause}
         RETURN o LIMIT 100
@@ -242,7 +242,7 @@ class TestBrowserExpandQuerySequence:
         Or filter by specific relationship types (if knowing user intent).
         """
         query = f"""
-        USE social_benchmark
+        USE social_integration
         MATCH (a) --> (o) WHERE id(a) = 2 RETURN o LIMIT 50
         UNION ALL
         MATCH (a) <-- (o) WHERE id(a) = 2 RETURN o LIMIT 50
@@ -266,7 +266,7 @@ class TestBrowserExpandWithVariousNodes:
     def test_expand_low_degree_user(self, test_element_id):
         """Test expand on a user with few followers/following."""
         query = f"""
-        USE social_benchmark
+        USE social_integration
         MATCH (u:User)--(adjacent) WHERE id(u) = {test_element_id} RETURN adjacent LIMIT 50
         """
         
@@ -282,7 +282,7 @@ class TestBrowserExpandWithVariousNodes:
         # Test the first sample node (may have higher degree)
         test_element_id = sample_element_ids[0]
         query = f"""
-        USE social_benchmark
+        USE social_integration
         MATCH (u:User)--(adjacent) WHERE id(u) = {test_element_id} RETURN adjacent LIMIT 200
         """
         
@@ -297,7 +297,7 @@ class TestBrowserExpandWithVariousNodes:
         """Test expand on a post node (should have fewer relationships)."""
         # Fetch a post node's element_id first
         query = """
-        USE social_benchmark
+        USE social_integration
         MATCH (p:Post) RETURN id(p) as element_id LIMIT 1
         """
         
@@ -315,7 +315,7 @@ class TestBrowserExpandWithVariousNodes:
         
         # Now expand that post
         expand_query = f"""
-        USE social_benchmark
+        USE social_integration
         MATCH (p:Post)--(adjacent) WHERE id(p) = {post_element_id} RETURN adjacent LIMIT 100
         """
         
@@ -345,7 +345,7 @@ class TestBrowserExpandBatchSequence:
             # Q1: Fetch node
             q1_start = time.time()
             response = execute_cypher(f"""
-                USE social_benchmark
+                USE social_integration
                 MATCH (a) WHERE id(a) = {element_id} RETURN a
             """)
             q1_elapsed = time.time() - q1_start
@@ -358,7 +358,7 @@ class TestBrowserExpandBatchSequence:
             
             exclude_clause = f"AND NOT id(o) IN [{exclude_str}]" if exclude_str else ""
             response = execute_cypher(f"""
-                USE social_benchmark
+                USE social_integration
                 MATCH (a)--(o) 
                 WHERE id(a) = {element_id} {exclude_clause}
                 RETURN o LIMIT 100
@@ -397,7 +397,7 @@ class TestQueryFragmentation:
     def test_typed_expand_user_only(self, test_element_id):
         """Expand to only User nodes (filters out Post relationships)."""
         query = f"""
-        USE social_benchmark
+        USE social_integration
         MATCH (a)-->(o:User) WHERE id(a) = {test_element_id} RETURN o LIMIT 100
         UNION ALL
         MATCH (a)<--(o:User) WHERE id(a) = {test_element_id} RETURN o LIMIT 100
@@ -418,7 +418,7 @@ class TestQueryFragmentation:
         For social graph: FOLLOWS, AUTHORED, LIKED
         """
         query = f"""
-        USE social_benchmark
+        USE social_integration
         MATCH (a)-[:FOLLOWS]->(o) WHERE id(a) = {test_element_id} RETURN o LIMIT 100
         UNION ALL
         MATCH (a)<-[:FOLLOWS]-(o) WHERE id(a) = {test_element_id} RETURN o LIMIT 100
@@ -449,7 +449,7 @@ if __name__ == "__main__":
     ║  Tests the exact query sequence Neo4j Browser generates        ║
     ║  when users click to expand nodes in the graph visualization  ║
     ║                                                                ║
-    ║  Data: social_benchmark schema (955M rows total)              ║
+    ║  Data: social_integration schema (955M rows total)              ║
     ║  Bottleneck: post_likes_bench (250M rows)                     ║
     ╚════════════════════════════════════════════════════════════════╝
     """)

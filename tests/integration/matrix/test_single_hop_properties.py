@@ -303,10 +303,10 @@ class TestDenormalizedSingleHop:
     Fix: Transfer denormalized aliases from PlanCtx to task-local storage
     """
     
-    def test_social_benchmark_follows(self, server_running):
+    def test_social_integration_follows(self, server_running):
         """Test User-[FOLLOWS]->User pattern (traditional schema)"""
         query = "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN a.name, b.name LIMIT 10"
-        result = execute_query(query, schema_name="social_benchmark")
+        result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}\nError: {result['body']}"
     
     def test_filesystem_parent(self, server_running):

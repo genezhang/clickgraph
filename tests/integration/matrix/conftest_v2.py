@@ -3,7 +3,7 @@ Comprehensive E2E Test Configuration - Version 2
 Uses real schemas and tables that exist in the test database.
 
 Schemas:
-1. social_benchmark - Traditional graph (users_bench, user_follows_bench, posts_bench)
+1. social_integration - Traditional graph (users_bench, user_follows_bench, posts_bench)
 2. group_membership - Polymorphic edges (groups, users, memberships)
 3. data_security - Full polymorphic (sec_users, sec_groups, sec_fs_objects, etc.)
 
@@ -24,8 +24,8 @@ from typing import Dict, List, Optional, Any
 
 SCHEMAS = {
     # Schema 1: Social Benchmark (Traditional graph) - PRIMARY schema for testing
-    "social_benchmark": {
-        "schema_file": "./benchmarks/social_network/schemas/social_benchmark.yaml",
+    "social_integration": {
+        "schema_file": "./benchmarks/social_network/schemas/social_integration.yaml",
         "nodes": {
             "User": {
                 "id_prop": "user_id",

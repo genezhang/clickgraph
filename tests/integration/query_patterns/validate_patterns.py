@@ -53,7 +53,7 @@ def get_schema_info() -> Optional[Dict]:
 def get_schema_from_test_query() -> Tuple[List[str], List[str], Dict, Dict]:
     """
     Discover schema by running test queries.
-    Returns hardcoded social_benchmark schema info (the standard test schema).
+    Returns hardcoded social_integration schema info (the standard test schema).
     """
     # Social benchmark schema (our standard test schema)
     node_labels = ["User", "Post"]
@@ -417,10 +417,10 @@ def main():
         print(f"Make sure server is running at {CLICKGRAPH_URL}")
         sys.exit(1)
     
-    # Use hardcoded schema info (social_benchmark)
+    # Use hardcoded schema info (social_integration)
     node_labels, rel_types, node_props, rel_props = get_schema_from_test_query()
     
-    print(f"\nUsing social_benchmark schema:")
+    print(f"\nUsing social_integration schema:")
     print(f"  Node labels: {node_labels}")
     print(f"  Relationship types: {rel_types}")
     

@@ -19,7 +19,7 @@ import requests
 import re
 
 CLICKGRAPH_URL = "http://localhost:8080"
-SCHEMA_NAME = "social_benchmark"
+SCHEMA_NAME = "social_integration"
 
 
 def execute_query(query: str, sql_only: bool = True, timeout: int = 30) -> dict:
