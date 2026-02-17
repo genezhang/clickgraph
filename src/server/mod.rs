@@ -104,7 +104,7 @@ pub async fn run_with_config(config: ServerConfig) {
     }
 
     // Create connection pool (uses same env vars as client)
-    let connection_pool = match connection_pool::RoleConnectionPool::new() {
+    let connection_pool = match connection_pool::RoleConnectionPool::new(config.max_cte_depth) {
         Ok(pool) => Arc::new(pool),
         Err(e) => {
             log::error!("✗ FATAL: Failed to create connection pool: {}", e);

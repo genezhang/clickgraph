@@ -22,12 +22,13 @@ struct ConnectionConfig {
     user: String,
     password: String,
     database: String,
+    max_cte_depth: u32,
 }
 
 impl RoleConnectionPool {
     /// Create a new role-based connection pool
-    pub fn new() -> Result<Self, String> {
-        let config = ConnectionConfig::from_env()?;
+    pub fn new(max_cte_depth: u32) -> Result<Self, String> {
+        let config = ConnectionConfig::from_env(max_cte_depth)?;
         let default_client = config.create_client(None);
 
         Ok(Self {
@@ -91,7 +92,7 @@ pub struct PoolStats {
 }
 
 impl ConnectionConfig {
-    fn from_env() -> Result<Self, String> {
+    fn from_env(max_cte_depth: u32) -> Result<Self, String> {
         Ok(Self {
             url: env::var("CLICKHOUSE_URL").map_err(|_| "CLICKHOUSE_URL not set".to_string())?,
             user: env::var("CLICKHOUSE_USER").map_err(|_| "CLICKHOUSE_USER not set".to_string())?,
@@ -99,6 +100,7 @@ impl ConnectionConfig {
             password: env::var("CLICKHOUSE_PASSWORD").unwrap_or_default(),
             // Database is optional - defaults to "default". All queries use fully-qualified table names anyway.
             database: env::var("CLICKHOUSE_DATABASE").unwrap_or_else(|_| "default".to_string()),
+            max_cte_depth,
         })
     }
 
@@ -111,7 +113,11 @@ impl ConnectionConfig {
             .with_option("join_use_nulls", "1")
             .with_option("allow_experimental_json_type", "1")
             .with_option("input_format_binary_read_json_as_string", "1")
-            .with_option("output_format_binary_write_json_as_string", "1");
+            .with_option("output_format_binary_write_json_as_string", "1")
+            .with_option(
+                "max_recursive_cte_evaluation_depth",
+                &self.max_cte_depth.to_string(),
+            );
 
         // Set role for this connection pool via ClickHouse option
         // This adds the role parameter to all HTTP requests from this client
@@ -139,7 +145,7 @@ mod tests {
             env::set_var("CLICKHOUSE_DATABASE", "test_db");
         }
 
-        let pool = RoleConnectionPool::new().unwrap();
+        let pool = RoleConnectionPool::new(100).unwrap();
 
         // Get clients for different roles
         let _default = pool.get_client(None).await;
