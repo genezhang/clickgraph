@@ -62,9 +62,7 @@ use crate::{
 /// or None if no GraphNode is found.
 fn extract_label_from_plan(plan: &LogicalPlan, alias: &str) -> Option<String> {
     match plan {
-        LogicalPlan::GraphNode(node) if node.alias == alias => {
-            node.label.clone()
-        }
+        LogicalPlan::GraphNode(node) if node.alias == alias => node.label.clone(),
         LogicalPlan::GraphNode(node) => {
             // Wrong alias, check input
             extract_label_from_plan(&node.input, alias)
@@ -74,10 +72,8 @@ fn extract_label_from_plan(plan: &LogicalPlan, alias: &str) -> Option<String> {
         LogicalPlan::GraphJoins(joins) => extract_label_from_plan(&joins.input, alias),
         LogicalPlan::OrderBy(order_by) => extract_label_from_plan(&order_by.input, alias),
         LogicalPlan::Limit(limit) => extract_label_from_plan(&limit.input, alias),
-        LogicalPlan::CartesianProduct(cp) => {
-            extract_label_from_plan(&cp.left, alias)
-                .or_else(|| extract_label_from_plan(&cp.right, alias))
-        }
+        LogicalPlan::CartesianProduct(cp) => extract_label_from_plan(&cp.left, alias)
+            .or_else(|| extract_label_from_plan(&cp.right, alias)),
         // Stop at Union boundaries - each branch is processed separately
         _ => None,
     }
