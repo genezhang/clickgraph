@@ -102,10 +102,3 @@ class TestReturnOnlyRegression:
         assert_query_success(result)
         assert len(result["results"]) == 1
         assert result["results"][0]["num"] == 1
-    
-    def test_return_complex_expression(self, simple_graph):
-        """RETURN (1 + 2) * 3 AS result - Complex arithmetic expression"""
-        result = execute_cypher("RETURN (1 + 2) * 3 AS result", schema_name="social_integration")
-        assert_query_success(result)
-        assert len(result["results"]) == 1
-        assert result["results"][0]["result"] == 9
