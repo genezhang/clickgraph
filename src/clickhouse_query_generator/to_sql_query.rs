@@ -1458,6 +1458,59 @@ fn render_union_branch_sql(branch: &RenderPlan) -> String {
     bsql
 }
 
+/// Ensure a table name has a database prefix for base table references.
+/// CTE references (names starting with `with_`, `vlp_`, `pattern_`, `rel_`, `__`)
+/// are returned as-is. Base table names that are missing the `db.` prefix get it
+/// by looking up the table in the current schema's node/relationship definitions.
+fn ensure_database_prefix(table_name: &str) -> String {
+    // Already has database prefix
+    if table_name.contains('.') {
+        return table_name.to_string();
+    }
+
+    // CTE references don't need database prefix
+    if table_name.starts_with("with_")
+        || table_name.starts_with("vlp_")
+        || table_name.starts_with("pattern_")
+        || table_name.starts_with("rel_")
+        || table_name.starts_with("__")
+        || table_name.starts_with("multi_type_vlp")
+    {
+        return table_name.to_string();
+    }
+
+    // Look up the table in the schema to find its database
+    if let Some(schema) = crate::server::query_context::get_current_schema_with_fallback() {
+        // Search node schemas for a matching table_name
+        for node_schema in schema.all_node_schemas().values() {
+            if node_schema.table_name == table_name && !node_schema.database.is_empty() {
+                log::debug!(
+                    "🔧 ensure_database_prefix: '{}' → '{}.{}' (from node schema)",
+                    table_name,
+                    node_schema.database,
+                    table_name
+                );
+                return format!("{}.{}", node_schema.database, table_name);
+            }
+        }
+        // Search relationship schemas for a matching table_name
+        for rel_schema in schema.get_relationships_schemas().values() {
+            if rel_schema.table_name == table_name && !rel_schema.database.is_empty() {
+                log::debug!(
+                    "🔧 ensure_database_prefix: '{}' → '{}.{}' (from relationship schema)",
+                    table_name,
+                    rel_schema.database,
+                    table_name
+                );
+                return format!("{}.{}", rel_schema.database, table_name);
+            }
+        }
+    }
+
+    // Fallback: return as-is
+    table_name.to_string()
+}
+
 pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
     // Extract fixed path information if not already set
     // This looks at the RenderPlan structure to infer path variable info
@@ -2420,6 +2473,11 @@ impl ToSql for Join {
             crate::debug_print!("  ⚠️  WARNING: joining_on is EMPTY!");
         }
 
+        // Ensure table_name has database prefix for base tables.
+        // CTE references (with_*_cte_*, vlp_*, pattern_*, rel_*) don't need prefix.
+        // Base tables that are missing the prefix get it from the task-local schema.
+        let qualified_table_name = ensure_database_prefix(&self.table_name);
+
         let join_type_str = match self.join_type {
             JoinType::Join => {
                 if self.joining_on.is_empty() {
@@ -2449,13 +2507,16 @@ impl ToSql for Join {
                     "  Using subquery form for LEFT JOIN with pre_filter: {}",
                     filter_sql
                 );
-                format!("(SELECT * FROM {} WHERE {})", self.table_name, filter_sql)
+                format!(
+                    "(SELECT * FROM {} WHERE {})",
+                    qualified_table_name, filter_sql
+                )
             } else {
                 // For non-LEFT joins, pre_filter will be added to ON clause below
-                self.table_name.clone()
+                qualified_table_name.clone()
             }
         } else {
-            self.table_name.clone()
+            qualified_table_name.clone()
         };
 
         let mut sql = format!("{} {} AS {}", join_type_str, table_expr, self.table_alias);
