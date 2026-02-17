@@ -35,7 +35,7 @@ We are at late stage of development with almost all the features implemented, an
   - Don't rush to "cleanup" without understanding actual usage
   - Large files may be intentional refactoring results (e.g., 16K → 10K + 4K split)
 
-- ** Always add fixed cases as regression tests if possible**: to prevent future regressions.
+- **Always add fixed cases as regression tests if possible**: to prevent future regressions.
 
 ## Development Environment
 
