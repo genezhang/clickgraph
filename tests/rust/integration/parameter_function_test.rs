@@ -5,7 +5,7 @@ use clickgraph::{
         schema_types::SchemaType,
     },
     open_cypher_parser::parse_query,
-    query_planner::logical_plan::plan_builder::build_logical_plan,
+    query_planner::{evaluate_read_query, logical_plan::plan_builder::build_logical_plan},
     render_plan::{logical_plan_to_render_plan, ToSql},
 };
 use std::collections::HashMap;
@@ -317,18 +317,19 @@ fn test_string_function_with_parameters_in_return() {
     assert!(sql.to_lowercase().contains("substring(") || sql.to_lowercase().contains("substr("));
 }
 
-#[test]
-fn test_aggregation_function_with_parameter_filter() {
+#[tokio::test]
+async fn test_aggregation_function_with_parameter_filter() {
     // Test: Aggregation with parameter in WHERE
     let query = "MATCH (n:Order) WHERE n.total > $minTotal RETURN count(n) AS order_count, sum(n.total) AS total_sum";
     let ast = parse_query(query).expect("Failed to parse query");
 
     let schema = create_test_schema();
 
+    // Use full pipeline so projection_tagging resolves count(n) → count(n.id)
     let (logical_plan, _plan_ctx) =
-        build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
-    let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
-        .expect("Failed to render SQL");
+        evaluate_read_query(ast, &schema, None, None).expect("Failed to plan query");
+    let render_plan =
+        logical_plan_to_render_plan(logical_plan, &schema).expect("Failed to render SQL");
     let sql = render_plan.to_sql();
 
     println!("Generated SQL:\n{}", sql);

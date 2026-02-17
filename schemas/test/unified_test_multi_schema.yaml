@@ -60,7 +60,7 @@ schemas:
           property_mappings:
             user_id: user_id
             name: name
-            email: email
+            age: age
         - label: TestProduct
           database: test_integration
           table: products

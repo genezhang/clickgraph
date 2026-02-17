@@ -1160,47 +1160,51 @@ impl TryFrom<LogicalAggregateFnCall> for AggregateFnCall {
     type Error = RenderBuildError;
 
     fn try_from(agg: LogicalAggregateFnCall) -> Result<Self, Self::Error> {
-        // Special case: count(node_variable) should become count(*)
-        // When counting a graph node (e.g., count(friend)), the argument is a TableAlias
-        // which doesn't exist as a column name inside subqueries. Convert to count(*).
+        // Note: count(node_variable) should already be resolved to count(node.id_column)
+        // by projection_tagging.rs. If a bare TableAlias still reaches here, it indicates
+        // a planner bug — fail fast rather than silently producing wrong results for
+        // LEFT JOIN (OPTIONAL MATCH) where count(*) != count(node.id).
         //
-        // Special case: collect(node_variable) should NOT be converted yet
+        // Special case: collect(node_variable) should NOT be converted yet.
         // This requires knowledge of the node's properties which isn't available here.
         // The conversion to groupArray(tuple(...)) happens during WITH projection expansion
         // in plan_builder.rs where we have access to the schema.
         // For now, pass through TableAlias args as-is for collect().
-        let converted_args: Vec<RenderExpr> =
-            if agg.name.to_lowercase() == "count" && agg.args.len() == 1 {
-                match &agg.args[0] {
-                    crate::query_planner::logical_expr::LogicalExpr::TableAlias(_) => {
-                        // count(node_var) -> count(*)
-                        vec![RenderExpr::Star]
-                    }
-                    _ => agg
-                        .args
-                        .into_iter()
-                        .map(RenderExpr::try_from)
-                        .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?,
+        let converted_args: Vec<RenderExpr> = if agg.name.to_lowercase() == "count"
+            && agg.args.len() == 1
+        {
+            match &agg.args[0] {
+                crate::query_planner::logical_expr::LogicalExpr::TableAlias(_) => {
+                    return Err(RenderBuildError::InvalidRenderPlan(
+                        "count(node_variable) reached render phase without resolution to count(node.id_column); \
+                         this is a planner bug in projection_tagging.rs".to_string(),
+                    ));
                 }
-            } else if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
-                match &agg.args[0] {
-                    crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
-                        // collect(node_var) - keep TableAlias for now
-                        // Will be expanded in plan_builder when we have schema context
-                        vec![RenderExpr::TableAlias(TableAlias(alias.0.clone()))]
-                    }
-                    _ => agg
-                        .args
-                        .into_iter()
-                        .map(RenderExpr::try_from)
-                        .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?,
-                }
-            } else {
-                agg.args
+                _ => agg
+                    .args
                     .into_iter()
                     .map(RenderExpr::try_from)
-                    .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?
-            };
+                    .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?,
+            }
+        } else if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
+            match &agg.args[0] {
+                crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
+                    // collect(node_var) - keep TableAlias for now
+                    // Will be expanded in plan_builder when we have schema context
+                    vec![RenderExpr::TableAlias(TableAlias(alias.0.clone()))]
+                }
+                _ => agg
+                    .args
+                    .into_iter()
+                    .map(RenderExpr::try_from)
+                    .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?,
+            }
+        } else {
+            agg.args
+                .into_iter()
+                .map(RenderExpr::try_from)
+                .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?
+        };
 
         let agg_fn = AggregateFnCall {
             name: agg.name,

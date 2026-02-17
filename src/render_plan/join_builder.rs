@@ -1145,18 +1145,23 @@ impl JoinBuilder for LogicalPlan {
                             return Ok(Vec::new());
                         }
                     }
-                }
 
-                // 🚀 MULTI-TYPE VLP: Check if this is a multi-type variable-length pattern
-                // Multi-type VLPs (e.g., [:FOLLOWS|AUTHORED*2]) also use CTE as FROM
-                if graph_rel.variable_length.is_some() {
-                    if let Some(ref labels) = graph_rel.labels {
-                        if labels.len() > 1 {
+                    // 🔧 FIX: OPTIONAL VLP with recursive CTE - GraphJoinInference already
+                    // created LEFT JOIN to VLP CTE. Don't create duplicate relationship table
+                    // join here. Only applies to CTE path (non-fixed-length), not chained
+                    // JOINs for fixed-length patterns like *2 which need expand_fixed_length_joins.
+                    if graph_rel.is_optional.unwrap_or(false) {
+                        let uses_cte = if let Some(ref spec) = graph_rel.variable_length {
+                            let is_fixed = spec.exact_hop_count().is_some()
+                                && graph_rel.shortest_path_mode.is_none();
+                            !is_fixed
+                        } else {
+                            false
+                        };
+                        if uses_cte {
                             log::info!(
-                                "✓ Multi-type VLP {:?} - using CTE vlp_multi_type_{}_{}, no joins needed (RETURNING EMPTY)",
-                                labels,
-                                graph_rel.left_connection,
-                                graph_rel.right_connection
+                                "OPTIONAL VLP (alias={}) - GraphJoinInference already created LEFT JOIN to CTE, returning empty joins",
+                                graph_rel.alias
                             );
                             return Ok(Vec::new());
                         }
