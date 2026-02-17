@@ -1910,6 +1910,10 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 // Render both sides
                 let left_render = cp.left.to_render_plan(schema)?;
+                log::debug!(
+                    "🔍 CartesianProduct: left rendered - filters: {:?}",
+                    left_render.filters
+                );
 
                 // CRITICAL FIX: Pass CTE registry from left side to right side
                 // When left is a WITH clause, it creates CTEs with column aliases
@@ -1917,6 +1921,10 @@ impl RenderPlanBuilder for LogicalPlan {
                 // REMOVED: CTE registry no longer used
 
                 let right_render = cp.right.to_render_plan(schema)?;
+                log::debug!(
+                    "🔍 CartesianProduct: right rendered - filters: {:?}",
+                    right_render.filters
+                );
 
                 // Clear the CTE registry after rendering the right side
                 // REMOVED: CTE registry no longer used
@@ -1999,9 +2007,16 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
 
                 // Merge filters
+                log::debug!(
+                    "🔍 CartesianProduct filter merge: base_filter={:?}, joined_filter={:?}",
+                    base_render.filters,
+                    joined_render.filters
+                );
+                
                 if let (FilterItems(Some(base_filter)), FilterItems(Some(joined_filter))) =
                     (&base_render.filters, &joined_render.filters)
                 {
+                    log::info!("🔧 Merging base and joined filters with AND");
                     base_render.filters = FilterItems(Some(RenderExpr::OperatorApplicationExp(
                         OperatorApplication {
                             operator: Operator::And,
@@ -2009,7 +2024,10 @@ impl RenderPlanBuilder for LogicalPlan {
                         },
                     )));
                 } else if matches!(base_render.filters, FilterItems(None)) {
+                    log::info!("🔧 Using joined_filter as base filter");
                     base_render.filters = joined_render.filters;
+                } else {
+                    log::info!("🔧 Keeping base_filter (joined has none)");
                 }
 
                 base_render.ctes = CteItems(all_ctes);
