@@ -33,7 +33,7 @@ use crate::render_plan::cte_extraction::extract_ctes_with_context;
 // The compiler will use the module functions when available
 #[allow(unused_imports)]
 use super::plan_builder_helpers::*;
-use super::plan_builder_utils::rewrite_vlp_union_branch_aliases;
+use super::plan_builder_utils::{rewrite_vlp_aggregate_aliases, rewrite_vlp_union_branch_aliases};
 use super::utils::alias_utils::*;
 use super::CteGenerationContext;
 
@@ -803,6 +803,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
         match self {
             LogicalPlan::GraphJoins(gj) => {
+                log::error!("🎯 to_render_plan: GraphJoins path - this should trigger rewrite_vlp_aggregate_aliases");
                 let mut select_items = SelectItems {
                     items: <LogicalPlan as SelectBuilder>::extract_select_items(self, None)?,
                     distinct: FilterBuilder::extract_distinct(self),
@@ -874,6 +875,12 @@ impl RenderPlanBuilder for LogicalPlan {
                 // If this render plan has UNIONs with VLP CTEs, we need to rewrite
                 // JOIN conditions that reference Cypher aliases to use VLP CTE columns
                 rewrite_vlp_union_branch_aliases(&mut render_plan)?;
+
+                // 🔧 FIX: Rewrite aggregate arguments for VLP end nodes
+                // Problem: COUNT(DISTINCT b) where b is VLP end node generates b.end_id
+                // But b doesn't exist in SQL - the VLP CTE is joined as "t"
+                // Solution: Rewrite b.end_id -> t.end_id using VLP CTE metadata
+                rewrite_vlp_aggregate_aliases(&mut render_plan)?;
 
                 // Handle RETURN-context pattern comprehensions nested inside GroupBy->Projection
                 let pattern_comps = find_pattern_comprehensions_in_plan(&gj.input);
@@ -3046,6 +3053,7 @@ impl RenderPlanBuilder for LogicalPlan {
             };
 
             rewrite_vlp_union_branch_aliases(&mut render_plan)?;
+            rewrite_vlp_aggregate_aliases(&mut render_plan)?;
 
             // Handle RETURN-context pattern comprehensions (same logic as GraphJoins match arm)
             let gj_input = match self {
