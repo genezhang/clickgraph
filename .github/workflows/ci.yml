@@ -65,8 +65,23 @@ jobs:
         export CLICKHOUSE_DATABASE="test_integration"
         export GRAPH_CONFIG_PATH="./schemas/test/unified_test_multi_schema.yaml"
         ./target/debug/clickgraph --http-port 8080 --bolt-port 7687 > server.log 2>&1 &
-        sleep 5
-        curl -s http://localhost:8080/health || (cat server.log && exit 1)
+        
+        # Wait for server to be fully ready (health + query execution)
+        for i in {1..30}; do
+          if curl -s http://localhost:8080/health > /dev/null; then
+            if curl -s -X POST http://localhost:8080/query \
+              -H "Content-Type: application/json" \
+              -d '{"query":"RETURN 1"}' > /dev/null; then
+              echo "ClickGraph server is fully ready"
+              exit 0
+            fi
+          fi
+          echo "Waiting for ClickGraph... ($i/30)"
+          sleep 2
+        done
+        echo "ClickGraph server failed to start"
+        cat server.log
+        exit 1
 
     - name: Install Python test dependencies
       run: |

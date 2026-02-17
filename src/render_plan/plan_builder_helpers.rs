@@ -3794,7 +3794,7 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
                 rewrite_expression_with_property_mapping(&f.predicate, &rewrite_ctx);
 
             if let Ok(render_expr) = RenderExpr::try_from(rewritten_predicate) {
-                log::info!(
+                log::debug!(
                     "collect_graphrel_predicates: Adding Filter predicate to WHERE clause: {:?}",
                     render_expr
                 );

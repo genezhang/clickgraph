@@ -2448,6 +2448,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 LogicalPlan::Limit(l) => is_return_only_query(&l.input),
                 LogicalPlan::Skip(s) => is_return_only_query(&s.input),
                 LogicalPlan::OrderBy(o) => is_return_only_query(&o.input),
+                LogicalPlan::Filter(f) => is_return_only_query(&f.input),
 
                 // GraphJoins with no joins is just a wrapper for RETURN
                 LogicalPlan::GraphJoins(gj) if gj.joins.is_empty() => {
