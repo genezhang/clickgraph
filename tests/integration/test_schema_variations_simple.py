@@ -62,7 +62,7 @@ class TestLabelInferenceBaseline:
         assert response.status_code == 200
         # a=User, b=Post
     
-    def test_un labeled_creates_union(self):
+    def test_unlabeled_creates_union(self):
         """Unlabeled node should create UNION."""
         query = "MATCH (n) RETURN count(n)"
         response = query_clickgraph(query)

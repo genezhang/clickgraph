@@ -26,6 +26,7 @@ This will:
 - ✅ Start ClickHouse database
 - ✅ Start Neo4j Browser UI
 - ✅ Start ClickGraph server
+- ✅ Load sample data (30 users, 50 posts, relationships)
 - ✅ Open browser automatically
 
 **Done!** Neo4j Browser opens at `http://localhost:7474`
@@ -35,6 +36,7 @@ This will:
 ```bash
 cd demos/neo4j-browser
 docker-compose up -d
+bash setup_demo_data.sh
 ```
 
 Then open: http://localhost:7474
@@ -47,17 +49,21 @@ Then open: http://localhost:7474
    - Username: `neo4j`
    - Password: `test_password`
 
-2. **Connect to ClickGraph**
-   - Click **Database** dropdown (top right)
-   - Click **Connect to another database**
-   - Enter URI: `bolt://localhost:7687`
-   - Leave username/password empty
+2. **Connect to ClickGraph via Bolt**
+   - Click the **gear icon** (⚙️) in bottom left corner
+   - Or go to Settings → Server bolt://localhost:7687
+   - Authentication: **No authentication** (leave unchecked)
    - Click **Connect**
+
+   > Note: Bolt protocol connection (bolt://) doesn't show database field - this is expected.
+   > The database is determined by the schema file (social_demo.yaml).
 
 3. **Try a query**
    ```cypher
    MATCH (u:User) RETURN u LIMIT 5
    ```
+
+   You should see user nodes with properties visualized as a graph!
 
 ---
 
@@ -129,14 +135,15 @@ LIMIT 50
 
 ## 📚 Sample Data
 
-The demo includes small tables for quick testing:
+The demo includes small tables loaded automatically:
 
-- **Users** - ~100 users with names and emails
-- **Posts** - ~500 posts created by users
-- **Follows** - ~200 follow relationships between users
-- **Likes** - ~300 likes on posts
+- **Users** - 30 users with names and emails
+- **Posts** - 50 posts created by users
+- **Follows** - 60 follow relationships between users
+- **Likes** - 80 likes on posts
+- **Authored** - 50 authorship relationships
 
-Total: ~1000 rows (loads in seconds)
+Total: ~270 rows (loads in seconds)
 
 ---
 

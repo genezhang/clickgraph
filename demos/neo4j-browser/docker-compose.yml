@@ -5,10 +5,12 @@
 # Then open: http://localhost:7474
 #
 # Connect Neo4j Browser to ClickGraph:
-#   1. Click "Database" dropdown (top right)
-#   2. Select "Connect to another database"
-#   3. URI: bolt://localhost:7687 (leave username/password empty)
-#   4. Try: MATCH (u:User {user_id: 1}) RETURN u
+#   1. Open Neo4j Browser: http://localhost:7474 
+#   2. Connect URL: bolt://localhost:7687
+#   3. Authentication type: Username / Password
+#   4. Username: neo4j
+#   5. Password: test_password
+#   4. Connect, then click the database icon (top left), or try: MATCH (u:User {user_id: 1}) RETURN u
 
 version: '3.8'
 
@@ -54,6 +56,7 @@ services:
       - neo4j_demo_logs:/logs
 
   clickgraph:
+    # For now, build locally. After release, use: image: genezhang/clickgraph:latest
     build:
       context: ../..
       dockerfile: Dockerfile

@@ -51,79 +51,31 @@ curl -s -X POST "$CLICKHOUSE_URL/?query=CREATE%20TABLE%20IF%20NOT%20EXISTS%20$CL
 echo "✓ Tables created"
 echo ""
 
-# Insert sample users
-echo "Inserting sample data..."
+# Load data from init-db.sql using docker exec
+echo "Loading sample data (30 users, 50 posts, ~270 total rows)..."
 
-curl -s -X POST "$CLICKHOUSE_URL/" \
-  -H "X-ClickHouse-User: $CLICKHOUSE_USER" \
-  -H "X-ClickHouse-Key: $CLICKHOUSE_PASSWORD" \
-  -d "INSERT INTO $CLICKHOUSE_DATABASE.users VALUES
-(1, 'Alice', 'alice@example.com', '2024-01-01 10:00:00'),
-(2, 'Bob', 'bob@example.com', '2024-01-02 11:00:00'),
-(3, 'Carol', 'carol@example.com', '2024-01-03 12:00:00'),
-(4, 'David', 'david@example.com', '2024-01-04 13:00:00'),
-(5, 'Eve', 'eve@example.com', '2024-01-05 14:00:00')" > /dev/null
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SQL_FILE="$SCRIPT_DIR/init-db.sql"
 
-# Insert sample posts
-curl -s -X POST "$CLICKHOUSE_URL/" \
-  -H "X-ClickHouse-User: $CLICKHOUSE_USER" \
-  -H "X-ClickHouse-Key: $CLICKHOUSE_PASSWORD" \
-  -d "INSERT INTO $CLICKHOUSE_DATABASE.posts VALUES
-(1, 1, 'Hello world!', '2024-01-01 10:30:00'),
-(2, 1, 'Graph queries are fun', '2024-01-01 14:00:00'),
-(3, 2, 'Just started with ClickGraph', '2024-01-02 12:00:00'),
-(4, 3, 'Neo4j Browser works great', '2024-01-03 15:00:00'),
-(5, 4, 'Cypher is cool', '2024-01-04 13:30:00')" > /dev/null
+if [ ! -f "$SQL_FILE" ]; then
+  echo "Error: init-db.sql not found at $SQL_FILE"
+  exit 1
+fi
 
-# Insert follow relationships
-curl -s -X POST "$CLICKHOUSE_URL/" \
-  -H "X-ClickHouse-User: $CLICKHOUSE_USER" \
-  -H "X-ClickHouse-Key: $CLICKHOUSE_PASSWORD" \
-  -d "INSERT INTO $CLICKHOUSE_DATABASE.user_follows VALUES
-(1, 2, '2024-01-01 11:00:00'),
-(1, 3, '2024-01-01 11:15:00'),
-(2, 3, '2024-01-02 13:00:00'),
-(2, 4, '2024-01-02 13:30:00'),
-(3, 4, '2024-01-03 16:00:00'),
-(3, 5, '2024-01-03 16:30:00'),
-(4, 5, '2024-01-04 14:00:00'),
-(5, 1, '2024-01-05 15:00:00')" > /dev/null
+# Copy SQL file into container and execute
+docker cp "$SQL_FILE" clickhouse-demo:/tmp/init-db.sql
+docker exec clickhouse-demo bash -c "clickhouse-client --multiquery < /tmp/init-db.sql" > /dev/null 2>&1
 
-# Insert authored relationships
-curl -s -X POST "$CLICKHOUSE_URL/" \
-  -H "X-ClickHouse-User: $CLICKHOUSE_USER" \
-  -H "X-ClickHouse-Key: $CLICKHOUSE_PASSWORD" \
-  -d "INSERT INTO $CLICKHOUSE_DATABASE.post_authored VALUES
-(1, 1),
-(1, 2),
-(2, 3),
-(3, 4),
-(4, 5)" > /dev/null
-
-# Insert likes
-curl -s -X POST "$CLICKHOUSE_URL/" \
-  -H "X-ClickHouse-User: $CLICKHOUSE_USER" \
-  -H "X-ClickHouse-Key: $CLICKHOUSE_PASSWORD" \
-  -d "INSERT INTO $CLICKHOUSE_DATABASE.post_likes VALUES
-(2, 1, '2024-01-01 12:00:00'),
-(3, 1, '2024-01-01 13:00:00'),
-(2, 2, '2024-01-01 16:00:00'),
-(4, 2, '2024-01-01 17:00:00'),
-(1, 3, '2024-01-02 14:00:00'),
-(4, 3, '2024-01-02 15:00:00'),
-(5, 4, '2024-01-03 18:00:00'),
-(1, 5, '2024-01-04 15:00:00')" > /dev/null
-
-echo "✓ Sample data inserted"
+echo "✓ Sample data loaded from init-db.sql"
 echo ""
 
 # Verify data
 echo "Verifying data..."
-USER_COUNT=$(curl -s -X POST "$CLICKHOUSE_URL/?query=SELECT%20COUNT%28%29%20FROM%20$CLICKHOUSE_DATABASE.users" \
-  -H "X-ClickHouse-User: $CLICKHOUSE_USER" \
-  -H "X-ClickHouse-Key: $CLICKHOUSE_PASSWORD" 2>/dev/null)
+USER_COUNT=$(docker exec clickhouse-demo clickhouse-client -q "SELECT COUNT(*) FROM $CLICKHOUSE_DATABASE.users" 2>/dev/null)
+POST_COUNT=$(docker exec clickhouse-demo clickhouse-client -q "SELECT COUNT(*) FROM $CLICKHOUSE_DATABASE.posts" 2>/dev/null)
 
-echo "✓ Users: $USER_COUNT"
+echo "✓ Loaded $USER_COUNT users, $POST_COUNT posts"
 echo ""
 echo "✅ Demo data setup complete!"
 echo ""

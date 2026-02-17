@@ -46,6 +46,16 @@ echo ""
 echo "✓ All services ready!"
 echo ""
 
+# Load demo data
+echo "📊 Loading demo data..."
+echo ""
+
+bash "$DEMO_DIR/setup_demo_data.sh"
+
+echo ""
+echo "✓ Demo data loaded!"
+echo ""
+
 # Health checks
 echo "📋 Service Status:"
 echo ""
@@ -104,14 +114,6 @@ echo ""
 
 echo "3. Try a simple query:"
 echo "   MATCH (u:User) RETURN u LIMIT 5"
-echo ""
-
-echo "4. Setup demo data (optional):"
-echo "   bash setup_demo_data.sh"
-echo ""
-
-echo "5. More examples:"
-echo "   See README.md in this directory"
 echo ""
 
 echo "=========================================="

@@ -2931,7 +2931,8 @@ impl RenderPlanBuilder for LogicalPlan {
             select_items.items =
                 apply_anylast_wrapping_for_group_by(select_items.items, &group_by.0, self)?;
 
-            let order_by = OrderByItems(self.extract_order_by()?);
+            // 🔧 FIX: Use utility function that properly handles OrderBy wrappers (like Limit/Skip)
+            let order_by = OrderByItems(super::plan_builder_utils::extract_order_by(self)?);
             // Use utility functions that properly handle Limit/Skip wrappers
             let skip = SkipItem(super::plan_builder_utils::extract_skip(self));
             let limit = LimitItem(super::plan_builder_utils::extract_limit(self));
