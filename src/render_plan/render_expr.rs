@@ -1160,9 +1160,11 @@ impl TryFrom<LogicalAggregateFnCall> for AggregateFnCall {
     type Error = RenderBuildError;
 
     fn try_from(agg: LogicalAggregateFnCall) -> Result<Self, Self::Error> {
-        // Special case: count(node_variable) should become count(*)
-        // When counting a graph node (e.g., count(friend)), the argument is a TableAlias
-        // which doesn't exist as a column name inside subqueries. Convert to count(*).
+        // Note: count(node_variable) should already be resolved to count(node.id_column)
+        // by projection_tagging.rs. If a bare TableAlias still reaches here, fall back to
+        // count(*) as we lack schema context. This fallback is correct for INNER JOIN but
+        // gives wrong results for LEFT JOIN (OPTIONAL MATCH) - the planning phase fix
+        // in projection_tagging.rs prevents this case.
         //
         // Special case: collect(node_variable) should NOT be converted yet
         // This requires knowledge of the node's properties which isn't available here.
@@ -1173,7 +1175,8 @@ impl TryFrom<LogicalAggregateFnCall> for AggregateFnCall {
             if agg.name.to_lowercase() == "count" && agg.args.len() == 1 {
                 match &agg.args[0] {
                     crate::query_planner::logical_expr::LogicalExpr::TableAlias(_) => {
-                        // count(node_var) -> count(*)
+                        // Fallback: count(node_var) -> count(*) when planning didn't resolve it
+                        log::warn!("count(node_variable) reached render phase without resolution - falling back to count(*)");
                         vec![RenderExpr::Star]
                     }
                     _ => agg

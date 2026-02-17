@@ -147,25 +147,24 @@ impl FilterBuilder for LogicalPlan {
                     };
 
                     if uses_cte {
-                        // CTE handles filters - don't extract to outer WHERE
-                        // Exception: OPTIONAL VLP needs start filters in outer query
+                        // CTE handles its own VLP path filters internally.
+                        // For OPTIONAL VLP, anchor node filters (from the base MATCH WHERE)
+                        // must still appear in the outer WHERE clause since the anchor node
+                        // is in the FROM clause, not in the CTE.
+                        // Fall through to collect_graphrel_predicates which correctly:
+                        // - Skips VLP GraphRel's own where_predicate (already in CTE)
+                        // - Recurses into children to find anchor node filters
                         if graph_rel.is_optional.unwrap_or(false) {
                             log::info!(
-                                "🔧 OPTIONAL VLP: Extracting start node filters for outer WHERE clause"
+                                "🔧 OPTIONAL VLP: Falling through to collect child filters for outer WHERE"
                             );
-                            if let Some(ref predicate) = graph_rel.where_predicate {
-                                if let Ok(expr) = RenderExpr::try_from(predicate.clone()) {
-                                    log::info!("🔧 OPTIONAL VLP: Found start filter: {:?}", expr);
-                                    return Ok(Some(expr));
-                                }
-                            }
+                            // Fall through to collect_graphrel_predicates below
+                        } else {
+                            log::info!(
+                                "🔧 Required VLP with CTE: Filters already in CTE, skipping outer WHERE extraction"
+                            );
                             return Ok(None);
                         }
-
-                        log::info!(
-                            "🔧 VLP with CTE: Filters already in CTE, skipping outer WHERE extraction"
-                        );
-                        return Ok(None);
                     } else {
                         // Fixed-length VLP uses chained JOINs - extract where_predicate
                         log::info!(
@@ -343,16 +342,6 @@ impl FilterBuilder for LogicalPlan {
                 graph_joins.input.extract_filters()?
             }
             LogicalPlan::Filter(filter) => {
-                log::warn!("🔍 extract_filters: Found Filter node");
-                log::warn!(
-                    "🔍 extract_filters: Filter predicate: {:?}",
-                    filter.predicate
-                );
-                log::warn!(
-                    "🔍 extract_filters: Filter input type: {:?}",
-                    std::mem::discriminant(&*filter.input)
-                );
-
                 // Normal filter extraction - always include WHERE clause predicates
                 // For VLP: Start node filters are pushed into CTE base case during CTE generation,
                 // but end node filters MUST be in outer WHERE clause (after CTE join)
@@ -374,10 +363,6 @@ impl FilterBuilder for LogicalPlan {
                 }
             }
             LogicalPlan::Projection(projection) => {
-                crate::debug_println!(
-                    "DEBUG: extract_filters - Projection, recursing to input type: {:?}",
-                    std::mem::discriminant(&*projection.input)
-                );
                 projection.input.extract_filters()?
             }
             LogicalPlan::GroupBy(group_by) => group_by.input.extract_filters()?,

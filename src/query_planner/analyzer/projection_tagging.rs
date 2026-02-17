@@ -1229,94 +1229,70 @@ impl ProjectionTagging {
                                 });
                             } else {
                                 // For nodes:
-                                // - count(n) without DISTINCT -> count(*)
-                                // - count(DISTINCT n) -> count(DISTINCT n.id_column)
-                                if !is_distinct {
-                                    // count(n) without DISTINCT is just counting rows
-                                    item.expression =
-                                        LogicalExpr::AggregateFnCall(AggregateFnCall {
-                                            name: aggregate_fn_call.name.clone(),
-                                            args: vec![LogicalExpr::Star],
-                                        });
-                                } else {
-                                    // DISTINCT requires resolving the node's ID column
-                                    let table_label = table_ctx.get_label_str().map_err(|e| {
-                                        AnalyzerError::PlanCtx {
+                                // count(n) -> count(n.node_id) and count(DISTINCT n) -> count(DISTINCT n.node_id)
+                                // Using node_id instead of * ensures correct NULL handling with LEFT JOIN
+                                // (OPTIONAL MATCH): count(*) always counts the row even when the node is NULL,
+                                // while count(n.node_id) correctly returns 0 for unmatched optional patterns.
+                                let table_label = table_ctx.get_label_str().map_err(|e| {
+                                    AnalyzerError::PlanCtx {
+                                        pass: Pass::ProjectionTagging,
+                                        source: e,
+                                    }
+                                })?;
+
+                                // Resolve the node's ID column from schema
+                                let id_column = if graph_schema.is_denormalized_node(&table_label) {
+                                    let node_schema = graph_schema
+                                        .node_schema(&table_label)
+                                        .map_err(|e| AnalyzerError::GraphSchema {
                                             pass: Pass::ProjectionTagging,
                                             source: e,
-                                        }
-                                    })?;
-
-                                    // Check if node is denormalized
-                                    if graph_schema.is_denormalized_node(&table_label) {
-                                        let node_schema = graph_schema
-                                            .node_schema(&table_label)
-                                            .map_err(|e| AnalyzerError::GraphSchema {
+                                        })?;
+                                    node_schema
+                                        .node_id
+                                        .columns()
+                                        .first()
+                                        .ok_or_else(|| AnalyzerError::SchemaNotFound(
+                                            format!("Node schema for label '{}' has no ID columns defined", table_label)
+                                        ))?
+                                        .to_string()
+                                } else {
+                                    let table_schema =
+                                        graph_schema.node_schema(&table_label).map_err(
+                                            |e| AnalyzerError::GraphSchema {
                                                 pass: Pass::ProjectionTagging,
                                                 source: e,
-                                            })?;
-                                        let id_property_name = node_schema
-                                            .node_id
-                                            .columns()
-                                            .first()
-                                            .ok_or_else(|| AnalyzerError::SchemaNotFound(
-                                                format!("Node schema for label '{}' has no ID columns defined", table_label)
-                                            ))?
-                                            .to_string();
+                                            },
+                                        )?;
+                                    table_schema
+                                        .node_id
+                                        .columns()
+                                        .first()
+                                        .ok_or_else(|| AnalyzerError::SchemaNotFound(
+                                            format!("Node schema for table '{}' has no ID columns defined", table_schema.table_name)
+                                        ))?
+                                        .to_string()
+                                };
 
-                                        log::debug!(
-                                            "ProjectionTagging: Denormalized node '{}' (label={}), using id property '{}'",
-                                            t_alias, table_label, id_property_name
-                                        );
+                                let property_expr = LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(t_alias.to_string()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_column),
+                                });
 
-                                        let property_expr = LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: TableAlias(t_alias.to_string()),
-                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_property_name),
-                                        });
+                                let arg = if is_distinct {
+                                    LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                                        operator: Operator::Distinct,
+                                        operands: vec![property_expr],
+                                    })
+                                } else {
+                                    property_expr
+                                };
 
-                                        item.expression =
-                                            LogicalExpr::AggregateFnCall(AggregateFnCall {
-                                                name: aggregate_fn_call.name.clone(),
-                                                args: vec![LogicalExpr::OperatorApplicationExp(
-                                                    OperatorApplication {
-                                                        operator: Operator::Distinct,
-                                                        operands: vec![property_expr],
-                                                    },
-                                                )],
-                                            });
-                                    } else {
-                                        // Standard node - use node schema's ID column
-                                        let table_schema =
-                                            graph_schema.node_schema(&table_label).map_err(
-                                                |e| AnalyzerError::GraphSchema {
-                                                    pass: Pass::ProjectionTagging,
-                                                    source: e,
-                                                },
-                                            )?;
-                                        let table_node_id = table_schema
-                                            .node_id
-                                            .columns()
-                                            .first()
-                                            .ok_or_else(|| AnalyzerError::SchemaNotFound(
-                                                format!("Node schema for table '{}' has no ID columns defined", table_schema.table_name)
-                                            ))?
-                                            .to_string();
-
-                                        item.expression =
-                                            LogicalExpr::AggregateFnCall(AggregateFnCall {
-                                                name: aggregate_fn_call.name.clone(),
-                                                args: vec![LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                                                    operator: Operator::Distinct,
-                                                    operands: vec![LogicalExpr::PropertyAccessExp(
-                                                        PropertyAccess {
-                                                            table_alias: TableAlias(t_alias.to_string()),
-                                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(table_node_id),
-                                                        },
-                                                    )],
-                                                })],
-                                            });
-                                    }
-                                }
+                                item.expression =
+                                    LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                        name: aggregate_fn_call.name.clone(),
+                                        args: vec![arg],
+                                    });
                             }
                         }
                     }

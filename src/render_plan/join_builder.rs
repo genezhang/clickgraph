@@ -1145,6 +1145,16 @@ impl JoinBuilder for LogicalPlan {
                             return Ok(Vec::new());
                         }
                     }
+                    
+                    // 🔧 FIX: OPTIONAL VLP - GraphJoinInference already created LEFT JOIN to VLP CTE
+                    // Don't create duplicate relationship table join here in rendering phase
+                    if graph_rel.is_optional.unwrap_or(false) {
+                        log::info!(
+                            "OPTIONAL VLP (alias={}) - GraphJoinInference already created LEFT JOIN to CTE, returning empty joins",
+                            graph_rel.alias
+                        );
+                        return Ok(Vec::new());
+                    }
                 }
 
                 // 🚀 MULTI-TYPE VLP: Check if this is a multi-type variable-length pattern
