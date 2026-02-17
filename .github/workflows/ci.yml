@@ -76,6 +76,7 @@ jobs:
     - name: Run critical regression tests
       run: |
         pytest tests/integration/test_return_only_regression.py -v
+        pytest tests/integration/test_optional_match_where_regression.py -v
 
     - name: Cleanup
       if: always()
