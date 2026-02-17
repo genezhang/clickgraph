@@ -8,20 +8,13 @@ For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).
 
 ## Active Issues
 
-### 1. Neo4j Desktop / NeoDash WebSocket Connection (GitHub #57)
-**Status**: Open  
-**Error**: `Invalid magic preamble: [71, 69, 84, 32], expected: [96, 96, 176, 23]`  
-**Cause**: Neo4j Desktop and NeoDash send HTTP/WebSocket upgrade requests (`GET ...`) instead of raw Bolt TCP. ClickGraph's Bolt listener expects the raw Bolt handshake preamble.  
-**Impact**: Cannot connect via Neo4j Desktop or hosted NeoDash. Neo4j Browser (standalone), Python driver, and Cypher Shell work fine.  
-**Workaround**: Use Neo4j Browser at `http://localhost:7474` (standalone) or connect via Python/Java drivers directly.
-
-### 2. Shortest Path on Dense Graphs
+### 1. Shortest Path on Dense Graphs
 **Status**: Performance limitation  
 **Error**: `MEMORY_LIMIT_EXCEEDED` or query timeout  
 **Cause**: Recursive CTE-based shortest path explores all paths. Dense graphs cause exponential explosion.  
 **Workaround**: Use bounded path length: `shortestPath((a)-[:FOLLOWS*1..5]->(b))`
 
-### 3. Aggregations on Empty Results Return Empty Array
+### 2. Aggregations on Empty Results Return Empty Array
 **Status**: Semantics mismatch with Neo4j (compatibility issue)  
 **Error**: None (behavior mismatch)  
 **Impact**: Medium — Breaks Neo4j compatibility, client code must check for empty arrays  
@@ -67,6 +60,13 @@ MATCH (p:Post)-[r]->(u:User) RETURN count(*), sum(...), avg(...), etc.
 ---
 
 ## Recently Fixed (February 2026)
+
+### Neo4j Desktop / NeoDash WebSocket Connection ✅ (Feb 2)
+**Fix**: PR #64 (commit 6755d22) - Full WebSocket Bolt transport
+- Added `websocket.rs` with WebSocketBoltAdapter implementing AsyncRead/AsyncWrite
+- Server detects HTTP GET/POST requests on Bolt port → WebSocket handshake
+- Neo4j Desktop and NeoDash now connect successfully via Bolt WebSocket
+**Location**: `src/server/bolt_protocol/websocket.rs` + integration in `src/server/mod.rs`
 
 ### Pattern Comprehensions ✅ (Feb 13)
 **Fix**: Commit f144108 - Full implementation with CTE+JOIN
