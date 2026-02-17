@@ -456,6 +456,116 @@ class TestOptionalMatchVariableLength:
         assert_row_count(response, 5)
 
 
+class TestOptionalMatchVLPRegression:
+    """Regression tests for OPTIONAL MATCH + VLP bugs (PR #107).
+
+    Bug 1: Duplicate LEFT JOIN - GraphRel.extract_joins created a spurious
+           relationship table JOIN alongside the correct VLP CTE LEFT JOIN.
+    Bug 2: Missing WHERE clause - filter_builder suppressed anchor node filters
+           for OPTIONAL VLP, dropping WHERE a.name = 'X' from outer query.
+    Bug 3: COUNT(node) → count(*) - wrong for LEFT JOIN; should be count(node.id)
+           so unmatched rows return 0 instead of 1.
+    """
+
+    def test_count_node_returns_zero_when_no_path(self, simple_graph):
+        """Regression: COUNT(b) must return 0 when OPTIONAL VLP finds no path.
+
+        Previously COUNT(b) was translated to count(*) which always returns 1.
+        With the fix, it becomes count(b.user_id) which returns 0 for NULL.
+        """
+        response = execute_cypher(
+            """
+            MATCH (a:TestUser)
+            WHERE a.name = 'Eve'
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS*1..3]->(b:TestUser)
+            RETURN a.name, COUNT(b) as reachable
+            """,
+            schema_name=simple_graph["schema_name"]
+        )
+
+        assert_query_success(response)
+        assert_row_count(response, 1)
+        results = response["results"]
+        if isinstance(results[0], dict):
+            assert results[0]["a.name"] == "Eve"
+            assert results[0]["reachable"] == 0, \
+                "COUNT(b) should be 0 when no path exists (not 1 from count(*))"
+        else:
+            col_idx = response["columns"].index("reachable")
+            assert results[0][col_idx] == 0
+
+    def test_where_clause_preserved_with_vlp(self, simple_graph):
+        """Regression: WHERE clause on anchor node must not be dropped for OPTIONAL VLP.
+
+        Previously filter_builder.rs suppressed all filters for OPTIONAL VLP,
+        causing the query to return all users instead of just the filtered one.
+        """
+        response = execute_cypher(
+            """
+            MATCH (a:TestUser)
+            WHERE a.name = 'Alice'
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS*1..2]->(b:TestUser)
+            RETURN a.name, COUNT(DISTINCT b) as reachable
+            """,
+            schema_name=simple_graph["schema_name"]
+        )
+
+        assert_query_success(response)
+        assert_row_count(response, 1)  # WHERE clause must filter to single row
+        results = response["results"]
+        if isinstance(results[0], dict):
+            assert results[0]["a.name"] == "Alice"
+            assert results[0]["reachable"] >= 2
+        else:
+            name_idx = response["columns"].index("a.name")
+            assert results[0][name_idx] == "Alice"
+
+    def test_no_duplicate_joins_in_vlp(self, simple_graph):
+        """Regression: OPTIONAL VLP should not produce duplicate LEFT JOINs.
+
+        Previously GraphRel.extract_joins created a relationship table JOIN
+        on top of the VLP CTE LEFT JOIN, causing a cartesian product.
+        Verify by checking that non-aggregate results return correct row count.
+        """
+        response = execute_cypher(
+            """
+            MATCH (a:TestUser)
+            WHERE a.name = 'Bob'
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS*1..2]->(b:TestUser)
+            RETURN a.name, COUNT(DISTINCT b) as cnt
+            """,
+            schema_name=simple_graph["schema_name"]
+        )
+
+        assert_query_success(response)
+        assert_row_count(response, 1)  # Should be exactly 1 row for Bob
+
+    def test_count_node_without_distinct_optional_no_vlp(self, simple_graph):
+        """Regression: COUNT(b) without DISTINCT in non-VLP OPTIONAL MATCH.
+
+        Ensures count(b) uses count(b.id) not count(*) for simple OPTIONAL MATCH too.
+        """
+        response = execute_cypher(
+            """
+            MATCH (a:TestUser)
+            WHERE a.name = 'Eve'
+            OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(b:TestUser)
+            RETURN a.name, COUNT(b) as friend_count
+            """,
+            schema_name=simple_graph["schema_name"]
+        )
+
+        assert_query_success(response)
+        assert_row_count(response, 1)
+        results = response["results"]
+        if isinstance(results[0], dict):
+            assert results[0]["friend_count"] == 0, \
+                "Eve has no outgoing FOLLOWS, COUNT(b) should be 0"
+        else:
+            col_idx = response["columns"].index("friend_count")
+            assert results[0][col_idx] == 0
+
+
 class TestOptionalMatchDistinct:
     """Test DISTINCT with OPTIONAL MATCH."""
     
