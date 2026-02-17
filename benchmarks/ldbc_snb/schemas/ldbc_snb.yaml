@@ -67,8 +67,13 @@ graph_schema:
       database: ldbc
       table: Message
       node_id: id
+<<<<<<< Updated upstream
       label_column: type  # Polymorphic: type='Post' or type='Comment'
       label_value: "Post|Comment"  # Values in type column that represent Message
+=======
+      # label_column: type  # Polymorphic: type='Post' or type='Comment'
+      # label_value: "Post|Comment"  # Values in type column that represent Message
+>>>>>>> Stashed changes
       property_mappings:
         id: id
         creationDate: creationDate
@@ -452,7 +457,25 @@ graph_schema:
       to_node: Person
       property_mappings:
         creationDate: creationDate
+<<<<<<< Updated upstream
         joinDate: joinDate
+=======
+
+    # -------------------------------------------------------------------------
+    # Message HAS_TAG Tag (unified view for polymorphic Message node)
+    # This is the proper relationship for (Message)-[:HAS_TAG]->(Tag) queries
+    # Uses Message_hasTag_Tag view which unions Post and Comment edges
+    # -------------------------------------------------------------------------
+    - type: HAS_TAG
+      database: ldbc
+      table: Message_hasTag_Tag
+      from_id: MessageId
+      to_id: TagId
+      from_node: Message
+      to_node: Tag
+      property_mappings:
+        creationDate: creationDate
+>>>>>>> Stashed changes
 
     # -------------------------------------------------------------------------
     # Message HAS_TAG Tag (unified view for polymorphic Message node)
@@ -553,7 +576,11 @@ graph_schema:
       to_node: Place
 
     # -------------------------------------------------------------------------
+<<<<<<< Updated upstream
     # Post IS_LOCATED_IN Place
+=======
+    # Post IS_LOCATED_IN Country
+>>>>>>> Stashed changes
     # Data from Post_isLocatedIn_Country directory loaded into Post_isLocatedIn_Place table
     # -------------------------------------------------------------------------
     - type: IS_LOCATED_IN
@@ -567,6 +594,7 @@ graph_schema:
         creationDate: creationDate
 
     # -------------------------------------------------------------------------
+<<<<<<< Updated upstream
     # Post IS_LOCATED_IN Country (for IC3 query)
     # -------------------------------------------------------------------------
     - type: IS_LOCATED_IN
@@ -583,6 +611,13 @@ graph_schema:
     # -------------------------------------------------------------------------
     - type: IS_LOCATED_IN
       database: ldbc
+=======
+    # Comment IS_LOCATED_IN Country
+    # Data from Comment_isLocatedIn_Country directory loaded into Comment_isLocatedIn_Place table
+    # -------------------------------------------------------------------------
+    - type: IS_LOCATED_IN
+      database: ldbc
+>>>>>>> Stashed changes
       table: Comment_isLocatedIn_Place
       from_id: CommentId
       to_id: CountryId
