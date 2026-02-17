@@ -6557,7 +6557,16 @@ pub(crate) fn build_chained_with_match_cte_plan(
         plan_ctx.is_some()
     );
 
-    const MAX_WITH_ITERATIONS: usize = 10; // Safety limit to prevent infinite loops
+    // Read max iterations from environment variable with default
+    let max_with_iterations: usize = std::env::var("CLICKGRAPH_MAX_WITH_ITERATIONS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30); // Default increased from 10 to 30 to handle complex LDBC queries
+
+    log::debug!(
+        "build_chained_with_match_cte_plan: MAX_WITH_ITERATIONS = {}",
+        max_with_iterations
+    );
 
     let mut current_plan = plan.clone();
     let mut all_ctes: Vec<Cte> = Vec::new();
@@ -6679,12 +6688,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
             "🔧 build_chained_with_match_cte_plan: ========== ITERATION {} ==========",
             iteration
         );
-        if iteration > MAX_WITH_ITERATIONS {
+        if iteration > max_with_iterations {
             log::warn!("🔧 build_chained_with_match_cte_plan: HIT ITERATION LIMIT! Current plan structure:");
             show_plan_structure(&current_plan, 0);
             return Err(RenderBuildError::InvalidRenderPlan(format!(
-                "Exceeded maximum WITH clause iterations ({})",
-                MAX_WITH_ITERATIONS
+                "Exceeded maximum WITH clause iterations ({}). Set CLICKGRAPH_MAX_WITH_ITERATIONS environment variable to increase.",
+                max_with_iterations
             )));
         }
 
