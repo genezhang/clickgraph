@@ -834,7 +834,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 let filters = FilterItems(FilterBuilder::extract_filters(self)?);
                 let group_by =
                     GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
-                let having_clause = self.extract_having()?;
+                // 🔧 FIX: Use utility function that properly handles GroupBy wrappers
+                let having_clause = super::plan_builder_utils::extract_having(self)?;
 
                 // 🔧 BUG #11 FIX: Wrap non-ID, non-aggregated columns with anyLast() when GROUP BY present
                 // This fixes queries like: RETURN a, count(b) where a expands to all properties
@@ -842,9 +843,10 @@ impl RenderPlanBuilder for LogicalPlan {
                 select_items.items =
                     apply_anylast_wrapping_for_group_by(select_items.items, &group_by.0, self)?;
 
-                let order_by = OrderByItems(self.extract_order_by()?);
-                let skip = SkipItem(self.extract_skip());
-                let limit = LimitItem(self.extract_limit());
+                // 🔧 FIX: Use utility functions that properly handle wrappers
+                let order_by = OrderByItems(super::plan_builder_utils::extract_order_by(self)?);
+                let skip = SkipItem(super::plan_builder_utils::extract_skip(self));
+                let limit = LimitItem(super::plan_builder_utils::extract_limit(self));
                 let union = UnionItems(self.extract_union(schema)?);
 
                 let mut render_plan = RenderPlan {
@@ -1056,11 +1058,13 @@ impl RenderPlanBuilder for LogicalPlan {
                     let group_by = GroupByExpressions(
                         <LogicalPlan as GroupByBuilder>::extract_group_by(self)?,
                     );
-                    let having_clause = self.extract_having()?;
+                    // 🔧 FIX: Use utility function that properly handles GroupBy wrappers
+                    let having_clause = super::plan_builder_utils::extract_having(self)?;
 
-                    let order_by = OrderByItems(self.extract_order_by()?);
-                    let skip = SkipItem(self.extract_skip());
-                    let limit = LimitItem(self.extract_limit());
+                    // 🔧 FIX: Use utility functions that properly handle wrappers
+                    let order_by = OrderByItems(super::plan_builder_utils::extract_order_by(self)?);
+                    let skip = SkipItem(super::plan_builder_utils::extract_skip(self));
+                    let limit = LimitItem(super::plan_builder_utils::extract_limit(self));
                     let union = UnionItems(self.extract_union(schema)?);
 
                     let render_plan = RenderPlan {
@@ -1145,16 +1149,18 @@ impl RenderPlanBuilder for LogicalPlan {
                     let group_by = GroupByExpressions(
                         <LogicalPlan as GroupByBuilder>::extract_group_by(self)?,
                     );
-                    let having_clause = self.extract_having()?;
+                    // 🔧 FIX: Use utility function that properly handles GroupBy wrappers
+                    let having_clause = super::plan_builder_utils::extract_having(self)?;
 
                     // 🔧 BUG #11 FIX: Wrap non-ID, non-aggregated columns with anyLast() when GROUP BY present
                     select_items.items =
                         apply_anylast_wrapping_for_group_by(select_items.items, &group_by.0, self)?;
 
-                    let order_by = OrderByItems(self.extract_order_by()?);
+                    // 🔧 FIX: Use utility functions that properly handle wrappers
+                    let order_by = OrderByItems(super::plan_builder_utils::extract_order_by(self)?);
 
-                    let skip = SkipItem(self.extract_skip());
-                    let limit = LimitItem(self.extract_limit());
+                    let skip = SkipItem(super::plan_builder_utils::extract_skip(self));
+                    let limit = LimitItem(super::plan_builder_utils::extract_limit(self));
                     let union = UnionItems(self.extract_union(schema)?);
 
                     let render_plan = RenderPlan {
@@ -2926,7 +2932,8 @@ impl RenderPlanBuilder for LogicalPlan {
             let filters = FilterItems(FilterBuilder::extract_filters(self)?);
             let group_by =
                 GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
-            let having_clause = self.extract_having()?;
+            // 🔧 FIX: Use utility function that properly handles GroupBy wrappers (like OrderBy/Limit/Skip)
+            let having_clause = super::plan_builder_utils::extract_having(self)?;
 
             select_items.items =
                 apply_anylast_wrapping_for_group_by(select_items.items, &group_by.0, self)?;
@@ -3285,14 +3292,17 @@ impl RenderPlanBuilder for LogicalPlan {
             let filters = FilterItems(FilterBuilder::extract_filters(self)?);
             let group_by =
                 GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
-            let having_clause = self.extract_having()?;
+            // 🔧 FIX: Use utility function that properly handles GroupBy wrappers (like OrderBy/Limit/Skip)
+            let having_clause = super::plan_builder_utils::extract_having(self)?;
 
             select_items.items =
                 apply_anylast_wrapping_for_group_by(select_items.items, &group_by.0, self)?;
 
-            let order_by = OrderByItems(self.extract_order_by()?);
-            let skip = SkipItem(self.extract_skip());
-            let limit = LimitItem(self.extract_limit());
+            // 🔧 FIX: Use utility function that properly handles OrderBy wrappers (like Limit/Skip)
+            let order_by = OrderByItems(super::plan_builder_utils::extract_order_by(self)?);
+            // Use utility functions that properly handle Limit/Skip wrappers
+            let skip = SkipItem(super::plan_builder_utils::extract_skip(self));
+            let limit = LimitItem(super::plan_builder_utils::extract_limit(self));
             let union = UnionItems(self.extract_union(schema)?);
 
             let mut context = super::cte_generation::CteGenerationContext::new();

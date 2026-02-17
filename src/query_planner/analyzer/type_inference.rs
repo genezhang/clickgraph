@@ -1179,7 +1179,7 @@ impl TypeInference {
             let mut branch = self.create_typed_branch(
                 rel,
                 &left_type,
-                &vec![rel_type],
+                &[rel_type],
                 &right_type,
                 plan_ctx,
                 graph_schema,
