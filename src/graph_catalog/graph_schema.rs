@@ -918,24 +918,20 @@ impl GraphSchema {
 
     /// Find all relationship types that match a generic pattern, filtering by node type compatibility.
     ///
-    /// This performs **semantic expansion** based on node types, not just pattern matching.
+    /// Looks up all composite keys for a relationship type via `rel_type_index` (O(1)),
+    /// then filters by exact label matching against `from_node`/`to_node` in the schema.
     ///
-    /// For example:
-    /// - Query: `(m:Message)-[:HAS_TAG]->(t:Tag)`
-    /// - Message is polymorphic: [Post, Comment]
-    /// - Result: Only [POST_HAS_TAG, COMMENT_HAS_TAG], NOT FORUM_HAS_TAG
-    ///
-    /// Strategy:
-    /// 1. Try exact match first (if relationship exists, return it)
-    /// 2. Pattern match to find candidates (e.g., *_HAS_TAG)
-    /// 3. Filter candidates by from_node/to_node compatibility with provided node labels
+    /// No implicit subtype/inheritance: labels must match exactly, consistent with
+    /// Neo4j where labels are flat tags. If a query uses `:Company` and the schema
+    /// defines the relationship for `:Organisation`, an explicit relationship variant
+    /// for `Company` must exist in the schema.
     ///
     /// Parameters:
-    /// - generic_name: The relationship type name (e.g., "HAS_TAG")
-    /// - from_label: Optional source node label (e.g., "Message", "University")
-    /// - to_label: Optional target node label (e.g., "Tag", "City")
+    /// - generic_name: The relationship type name (e.g., "HAS_TAG", "IS_LOCATED_IN")
+    /// - from_label: Optional source node label to filter by
+    /// - to_label: Optional target node label to filter by
     ///
-    /// Returns empty vec if no matches found.
+    /// Returns all matching composite keys, or empty vec if none found.
     pub fn expand_generic_relationship_type(
         &self,
         generic_name: &str,
@@ -2585,5 +2581,116 @@ mod tests {
 
         // Not coupled (no shared node - bad schema design)
         assert!(!schema.are_edges_coupled("REL1", "REL2"));
+    }
+
+    /// Regression test: when two node labels map to the same table (e.g., City and Place
+    /// both use the Place table), relationship disambiguation must use label matching,
+    /// not table-name matching.
+    #[test]
+    fn test_expand_generic_filters_by_label_not_table() {
+        let mut nodes = HashMap::new();
+        let mut city = NodeSchema::new_traditional(
+            "db".to_string(),
+            "Place".to_string(),
+            vec![],
+            "id".to_string(),
+            NodeIdSchema {
+                id: Identifier::from("id"),
+                dtype: SchemaType::Integer,
+            },
+            HashMap::new(),
+            None,
+            None,
+            None,
+        );
+        city.filter = Some(SchemaFilter::new("type = 'City'").unwrap());
+        nodes.insert("City".to_string(), city);
+
+        nodes.insert(
+            "Place".to_string(),
+            NodeSchema::new_traditional(
+                "db".to_string(),
+                "Place".to_string(),
+                vec![],
+                "id".to_string(),
+                NodeIdSchema {
+                    id: Identifier::from("id"),
+                    dtype: SchemaType::Integer,
+                },
+                HashMap::new(),
+                None,
+                None,
+                None,
+            ),
+        );
+
+        let mut relationships = HashMap::new();
+        let base_rel = || RelationshipSchema {
+            database: "db".to_string(),
+            table_name: String::new(),
+            column_names: vec![],
+            from_node: String::new(),
+            to_node: String::new(),
+            from_node_table: String::new(),
+            to_node_table: String::new(),
+            from_id: Identifier::from("from_id"),
+            to_id: Identifier::from("to_id"),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_node_properties: None,
+            to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
+            is_fk_edge: false,
+            constraints: None,
+            edge_id_types: None,
+        };
+
+        // Person IS_LOCATED_IN City (uses Place table)
+        let mut rel1 = base_rel();
+        rel1.table_name = "Person_isLocatedIn_Place".to_string();
+        rel1.from_node = "Person".to_string();
+        rel1.to_node = "City".to_string();
+        rel1.from_node_table = "Person".to_string();
+        rel1.to_node_table = "Place".to_string();
+        relationships.insert("IS_LOCATED_IN::Person::City".to_string(), rel1);
+
+        // Organisation IS_LOCATED_IN Place (uses Place table)
+        let mut rel2 = base_rel();
+        rel2.table_name = "Org_isLocatedIn_Place".to_string();
+        rel2.from_node = "Organisation".to_string();
+        rel2.to_node = "Place".to_string();
+        rel2.from_node_table = "Organisation".to_string();
+        rel2.to_node_table = "Place".to_string();
+        relationships.insert("IS_LOCATED_IN::Organisation::Place".to_string(), rel2);
+
+        let schema = GraphSchema::build(1, "db".to_string(), nodes, relationships);
+
+        // Query: (x)-[:IS_LOCATED_IN]->(city:City)
+        // Must pick Person::City, NOT Organisation::Place (even though City and Place share a table)
+        let result = schema.expand_generic_relationship_type("IS_LOCATED_IN", None, Some("City"));
+        assert_eq!(result, vec!["IS_LOCATED_IN::Person::City"]);
+
+        // Query: (org:Organisation)-[:IS_LOCATED_IN]->(p:Place)
+        let result = schema.expand_generic_relationship_type(
+            "IS_LOCATED_IN",
+            Some("Organisation"),
+            Some("Place"),
+        );
+        assert_eq!(result, vec!["IS_LOCATED_IN::Organisation::Place"]);
+
+        // Query: (x)-[:IS_LOCATED_IN]->(y) — no labels, returns all
+        let mut result = schema.expand_generic_relationship_type("IS_LOCATED_IN", None, None);
+        result.sort();
+        assert_eq!(result.len(), 2);
     }
 }
