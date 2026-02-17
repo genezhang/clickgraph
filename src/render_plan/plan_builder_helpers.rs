@@ -3783,7 +3783,7 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
             // This handles queries like: MATCH (a) WHERE a.prop = X OPTIONAL MATCH (a)-[]->(b)
             // The Filter wraps the GraphNode for 'a' and needs to be included in the final WHERE
             log::debug!("collect_graphrel_predicates: Found Filter, extracting predicate");
-            
+
             // Apply property mapping before converting to RenderExpr
             // This ensures properties are mapped to correct DB columns
             use crate::query_planner::logical_expr::expression_rewriter::{
@@ -3792,9 +3792,12 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
             let rewrite_ctx = ExpressionRewriteContext::new(&f.input);
             let rewritten_predicate =
                 rewrite_expression_with_property_mapping(&f.predicate, &rewrite_ctx);
-            
+
             if let Ok(render_expr) = RenderExpr::try_from(rewritten_predicate) {
-                log::info!("collect_graphrel_predicates: Adding Filter predicate to WHERE clause: {:?}", render_expr);
+                log::info!(
+                    "collect_graphrel_predicates: Adding Filter predicate to WHERE clause: {:?}",
+                    render_expr
+                );
                 predicates.push(render_expr);
             }
             // Recurse into input to collect any other predicates

@@ -2012,7 +2012,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     base_render.filters,
                     joined_render.filters
                 );
-                
+
                 if let (FilterItems(Some(base_filter)), FilterItems(Some(joined_filter))) =
                     (&base_render.filters, &joined_render.filters)
                 {
@@ -2448,15 +2448,15 @@ impl RenderPlanBuilder for LogicalPlan {
                 LogicalPlan::Limit(l) => is_return_only_query(&l.input),
                 LogicalPlan::Skip(s) => is_return_only_query(&s.input),
                 LogicalPlan::OrderBy(o) => is_return_only_query(&o.input),
-                
+
                 // GraphJoins with no joins is just a wrapper for RETURN
                 LogicalPlan::GraphJoins(gj) if gj.joins.is_empty() => {
                     is_return_only_query(&gj.input)
                 }
-                
+
                 // Found Projection → check if input is Empty
                 LogicalPlan::Projection(p) => matches!(p.input.as_ref(), LogicalPlan::Empty),
-                
+
                 // Any other plan type → not RETURN-only
                 _ => false,
             }
@@ -2482,7 +2482,9 @@ impl RenderPlanBuilder for LogicalPlan {
                     ctes: CteItems(vec![]),
                     select: SelectItems {
                         items: vec![SelectItem {
-                            expression: RenderExpr::Literal(super::render_expr::Literal::Integer(1)),
+                            expression: RenderExpr::Literal(super::render_expr::Literal::Integer(
+                                1,
+                            )),
                             col_alias: Some(ColumnAlias("_empty".to_string())),
                         }],
                         distinct: false,
@@ -2499,9 +2501,9 @@ impl RenderPlanBuilder for LogicalPlan {
                     skip: SkipItem(None),
                     limit: LimitItem(None),
                     union: UnionItems(None),
-                fixed_path_info: None,
-                is_multi_label_scan: false,
-            });
+                    fixed_path_info: None,
+                    is_multi_label_scan: false,
+                });
             }
         }
 
