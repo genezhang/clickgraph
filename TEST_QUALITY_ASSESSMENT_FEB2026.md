@@ -119,6 +119,29 @@ Duration: 0.20 seconds
 
 ---
 
+## 🔧 Recent Bug Fixes & Impact
+
+### ORDER BY, HAVING, LIMIT, SKIP Extraction Bug (Feb 17, 2026)
+
+**Issue Discovered**: ~50 ORDER BY integration tests failing (585/960 = 61%)  
+**Root Cause**: Four code paths calling trait methods instead of utility functions  
+**Fix**: Two commits (4a9ff13, 0acfd74) - changed to `plan_builder_utils::extract_*()` functions
+
+**Code Paths Fixed**:
+1. ✅ GraphJoins path (lines 2929-2938)
+2. ✅ ViewScan path (lines 837, 845-847)  
+3. ✅ Union branch path (lines 1059, 1061, 1063-1065)
+4. ✅ Pattern comprehension path (lines 1148, 1154, 1160-1161)
+
+**Expected Impact**:
+- **Before**: 585/960 integration tests passing (61%)
+- **After**: ~635/960 estimated (66%) - awaiting full pytest run with data
+- **Root Tests**: All 1,022 unit tests still passing (100%)
+
+**Key Finding**: Cypher HAVING uses `WITH...WHERE` syntax (not direct keyword), already working correctly
+
+---
+
 ## 📚 Test Data Setup Guide
 
 **For Full Integration Test Run**:

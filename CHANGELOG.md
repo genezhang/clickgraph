@@ -1,5 +1,23 @@
 ## [Unreleased]
 
+### 🐛 Bug Fixes
+
+- **ORDER BY, HAVING, LIMIT, SKIP clause extraction** (Feb 17, 2026): Fixed critical bug where clauses were omitted in multiple code paths
+  - **Problem**: Four code paths calling trait methods instead of utility functions → clauses dropped
+  - **Root Cause**: `self.extract_order_by()` returns empty (trait default), should use `plan_builder_utils::extract_order_by(self)` (handles wrapper nodes)
+  - **Impact**: ~50 ORDER BY integration tests failing, queries returning wrong order
+  - **Fixed Paths**:
+    1. GraphJoins path (commit 4a9ff13) - lines 2929-2938
+    2. ViewScan path (commit 0acfd74) - lines 837, 845-847
+    3. Union branch path (commit 0acfd74) - lines 1059, 1061, 1063-1065
+    4. Pattern comprehension path (commit 0acfd74) - lines 1148, 1154, 1160-1161
+  - **Key Discovery**: Cypher HAVING uses `WITH...WHERE` syntax (not direct HAVING keyword), already working correctly
+  - **Files Modified**: 
+    - `src/render_plan/plan_builder.rs`: 4 code paths fixed to use utility functions
+    - `src/query_planner/analyzer/type_inference.rs`: Fixed clippy warning
+  - **Testing**: All 1,022 unit tests passing, ORDER BY verified in all query patterns
+  - **Expected Impact**: ~50 failing integration tests → passing (585/960 → ~635/960, 61% → 66%)
+
 ### 🚀 Features
 
 - **Schema/Type Inference Consolidation** (Feb 16, 2026): 🎉 **ARCHITECTURE CLEANUP - 668 LINES REMOVED**
