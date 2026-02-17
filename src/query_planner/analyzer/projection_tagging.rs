@@ -1012,13 +1012,12 @@ impl ProjectionTagging {
                                 }
 
                                 if !table_ctx.is_relation() {
-                                    // Check if this binding has MULTIPLE labels (multi-type VLP pattern)
-                                    // Multi-type VLP end nodes get multiple labels from TypeInference (Part 2A)
-                                    // Example: (u)-[:FOLLOWS|AUTHORED*1..2]->(x) → x.labels = ["User", "Post"]
-                                    // For multi-type VLP, the actual label is stored in the CTE's end_type column
+                                    // Check if this is a multi-type VLP pattern (same logic as labels())
+                                    // Multi-type VLP: Multiple labels AND CTE reference
+                                    // For regular UNION queries, analyze() has set branch-specific label
                                     if let Some(labels) = table_ctx.get_labels() {
-                                        if labels.len() > 1 {
-                                            log::info!("🎯 label({}) has multiple labels ({:?}) - mapping to end_type for multi-type VLP", alias, labels);
+                                        if labels.len() > 1 && table_ctx.is_cte_reference() {
+                                            log::info!("🎯 label({}) has multiple labels ({:?}) AND is CTE reference - mapping to end_type for multi-type VLP", alias, labels);
                                             // Multi-type VLP: map to end_type column
                                             item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
                                                 table_alias: TableAlias(alias.clone()),
@@ -1028,13 +1027,13 @@ impl ProjectionTagging {
                                         }
                                     }
 
-                                    // Regular node: use first label from table_ctx
+                                    // Regular node: use first label from table_ctx (usually the only one)
+                                    // For UNION queries, analyze() has already set table_ctx to the branch-specific label
                                     if let Some(labels) = table_ctx.get_labels() {
                                         if let Some(first_label) = labels.first() {
-                                            log::info!(
-                                                "🔍 label({}) - using static label: {}",
-                                                alias,
-                                                first_label
+                                            log::debug!(
+                                                "📊 label({}) using first label from table_ctx: {} (is_cte={}, len={})",
+                                                alias, first_label, table_ctx.is_cte_reference(), labels.len()
                                             );
                                             // Return the first label as a scalar string literal
                                             item.expression = LogicalExpr::Literal(
