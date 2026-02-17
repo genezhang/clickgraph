@@ -3904,7 +3904,10 @@ pub fn sort_joins_by_dependency(
 
         log::debug!(
             "  DEBUG JOIN[{}] {} AS {} depends on: {:?}",
-            idx, join.table_name, join.table_alias, refs
+            idx,
+            join.table_name,
+            join.table_alias,
+            refs
         );
 
         dependencies.insert(idx, refs);
@@ -3938,7 +3941,10 @@ pub fn sort_joins_by_dependency(
             available.insert(joins[idx].table_alias.clone());
             log::debug!(
                 "  DEBUG Added JOIN[{}] {} AS {} to sorted list (available now: {:?})",
-                idx, joins[idx].table_name, joins[idx].table_alias, available
+                idx,
+                joins[idx].table_name,
+                joins[idx].table_alias,
+                available
             );
 
             sorted.push(idx);
@@ -3961,7 +3967,10 @@ pub fn sort_joins_by_dependency(
                 if let Some(deps) = dependencies.get(&idx) {
                     log::debug!(
                         "    JOIN[{}] {} AS {} needs: {:?}",
-                        idx, joins[idx].table_name, joins[idx].table_alias, deps
+                        idx,
+                        joins[idx].table_name,
+                        joins[idx].table_alias,
+                        deps
                     );
                 }
             }
