@@ -1,3 +1,15 @@
+# Social Integration Test Schema
+#
+# Purpose: Integration testing for social network queries
+# Database: test_integration (separate from benchmark's 'social' database)
+# Tables: users_test, posts_test, user_follows_test, post_likes_test
+#
+# IMPORTANT: This is NOT the benchmark schema!
+# - Benchmark: benchmarks/social_network/schemas/social_benchmark.yaml → 'social' database
+# - Integration tests: This file → 'test_integration' database
+#
+# Used by: Integration tests, matrix tests, E2E validation
+
 name: social_integration
 
 graph_schema:
@@ -10,6 +22,7 @@ graph_schema:
         user_id: user_id
         name: full_name
         email: email_address
+        age: age
         registration_date: registration_date
         is_active: is_active
         country: country
@@ -21,21 +34,10 @@ graph_schema:
       node_id: post_id
       property_mappings:
         post_id: post_id
-        content: content
-        date: created_at
-
-    # Zeek log node for testing UNWIND on array columns
-    - label: ZeekLog
-      database: test_integration
-      table: zeek_logs
-      node_id: log_id
-      property_mappings:
-        log_id: log_id
-        timestamp: timestamp
-        source_ip: source_ip
-        dest_ips: dest_ips
-        protocols: protocols
-        bytes_sent: bytes_sent
+        title: post_title
+        content: post_content
+        created_at: post_date
+        author_id: author_id
 
   edges:
     - type: FOLLOWS
@@ -48,36 +50,24 @@ graph_schema:
       to_node: User
       property_mappings:
         follow_date: follow_date
-    
-    - type: AUTHORED
-      database: test_integration
-      table: posts_test
-      from_id: author_id
-      to_id: post_id
-      edge_id: post_id
-      from_node: User
-      to_node: Post
-      property_mappings:
-        post_date: post_date
-    
+
     - type: LIKED
       database: test_integration
       table: post_likes_test
       from_id: user_id
       to_id: post_id
+      edge_id: like_id
       from_node: User
       to_node: Post
       property_mappings:
         like_date: like_date
 
-    - type: FRIENDS_WITH
+    - type: AUTHORED
       database: test_integration
-      table: friendships
-      from_id: user1_id
-      to_id: user2_id
-      edge_id: friendship_id
+      table: posts_test
+      from_id: author_id
+      to_id: post_id
       from_node: User
-      to_node: User
-      property_mappings:
-        since_date: since_date
-
+      to_node: Post
+      is_denormalized: true
+      property_mappings: {}

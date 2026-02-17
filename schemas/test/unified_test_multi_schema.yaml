@@ -1,11 +1,11 @@
-default_schema: social_benchmark
+default_schema: social_integration
 schemas:
-  - name: social_benchmark
+  - name: social_integration
     graph_schema:
       nodes:
         - label: User
-          database: brahmand
-          table: users_bench
+          database: test_integration
+          table: users_test
           node_id: user_id
           property_mappings:
             user_id: user_id
@@ -16,8 +16,8 @@ schemas:
             country: country
             city: city
         - label: Post
-          database: brahmand
-          table: posts_bench
+          database: test_integration
+          table: posts_test
           node_id: post_id
           property_mappings:
             post_id: post_id
@@ -25,15 +25,15 @@ schemas:
             date: created_at
       edges:
         - type: AUTHORED
-          database: brahmand
-          table: posts_bench
+          database: test_integration
+          table: posts_test
           from_id: author_id
           to_id: post_id
           from_node: User
           to_node: Post
         - type: FOLLOWS
-          database: brahmand
-          table: user_follows_bench
+          database: test_integration
+          table: user_follows_test
           from_id: follower_id
           to_id: followed_id
           from_node: User
@@ -41,8 +41,8 @@ schemas:
           property_mappings:
             follow_date: follow_date
         - type: LIKED
-          database: brahmand
-          table: post_likes_bench
+          database: test_integration
+          table: post_likes_test
           from_id: user_id
           to_id: post_id
           from_node: User
@@ -267,7 +267,7 @@ schemas:
     graph_schema:
       nodes:
         - label: PatternCompUser
-          database: brahmand
+          database: test_integration
           table: pattern_comp_users
           node_id: user_id
           property_mappings:
@@ -275,7 +275,7 @@ schemas:
             name: name
       edges:
         - type: PATTERN_COMP_FOLLOWS
-          database: brahmand
+          database: test_integration
           table: pattern_comp_follows
           from_id: follower_id
           to_id: followed_id
