@@ -67,13 +67,8 @@ graph_schema:
       database: ldbc
       table: Message
       node_id: id
-<<<<<<< Updated upstream
-      label_column: type  # Polymorphic: type='Post' or type='Comment'
-      label_value: "Post|Comment"  # Values in type column that represent Message
-=======
       # label_column: type  # Polymorphic: type='Post' or type='Comment'
       # label_value: "Post|Comment"  # Values in type column that represent Message
->>>>>>> Stashed changes
       property_mappings:
         id: id
         creationDate: creationDate
@@ -576,11 +571,7 @@ graph_schema:
       to_node: Place
 
     # -------------------------------------------------------------------------
-<<<<<<< Updated upstream
-    # Post IS_LOCATED_IN Place
-=======
     # Post IS_LOCATED_IN Country
->>>>>>> Stashed changes
     # Data from Post_isLocatedIn_Country directory loaded into Post_isLocatedIn_Place table
     # -------------------------------------------------------------------------
     - type: IS_LOCATED_IN
@@ -594,30 +585,11 @@ graph_schema:
         creationDate: creationDate
 
     # -------------------------------------------------------------------------
-<<<<<<< Updated upstream
-    # Post IS_LOCATED_IN Country (for IC3 query)
-    # -------------------------------------------------------------------------
-    - type: IS_LOCATED_IN
-      database: ldbc
-      table: Post_isLocatedIn_Place
-      from_id: PostId
-      to_id: CountryId
-      from_node: Post
-      to_node: Country
-
-    # -------------------------------------------------------------------------
-    # Comment IS_LOCATED_IN Place
-    # Data from Comment_isLocatedIn_Country directory loaded into Comment_isLocatedIn_Place table
-    # -------------------------------------------------------------------------
-    - type: IS_LOCATED_IN
-      database: ldbc
-=======
     # Comment IS_LOCATED_IN Country
     # Data from Comment_isLocatedIn_Country directory loaded into Comment_isLocatedIn_Place table
     # -------------------------------------------------------------------------
     - type: IS_LOCATED_IN
       database: ldbc
->>>>>>> Stashed changes
       table: Comment_isLocatedIn_Place
       from_id: CommentId
       to_id: CountryId
