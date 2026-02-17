@@ -75,7 +75,18 @@ impl FromBuilder for LogicalPlan {
         );
 
         let from_ref = match &self {
-            LogicalPlan::Empty => None,
+            LogicalPlan::Empty => {
+                // RETURN-only queries (no MATCH clause) need a FROM clause
+                // Use ClickHouse's system.one table (single row, no columns)
+                // This enables queries like: RETURN 1, RETURN toUpper($param), etc.
+                log::info!("🔧 Empty plan detected - using system.one for RETURN-only query");
+                Some(ViewTableRef {
+                    source: Arc::new(LogicalPlan::Empty),
+                    name: "system.one".to_string(),
+                    alias: None, // No alias needed for system table
+                    use_final: false,
+                })
+            }
 
             LogicalPlan::ViewScan(scan) => {
                 // Check if this is a relationship ViewScan (has from_id/to_id)
