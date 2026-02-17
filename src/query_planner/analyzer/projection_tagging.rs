@@ -348,21 +348,25 @@ impl AnalyzerPass for ProjectionTagging {
                     }
                 }
 
-                let new_input = child_tf.get_plan();
-                let new_with = crate::query_planner::logical_plan::WithClause {
-                    cte_name: None,
-                    input: new_input,
-                    items: tagged_items,
-                    distinct: with_clause.distinct,
-                    order_by: with_clause.order_by.clone(),
-                    skip: with_clause.skip,
-                    limit: with_clause.limit,
-                    where_clause: with_clause.where_clause.clone(),
-                    exported_aliases: with_clause.exported_aliases.clone(),
-                    cte_references: with_clause.cte_references.clone(),
-                    pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
-                };
-                Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
+                if matches!(&child_tf, Transformed::No(_)) && tagged_items == with_clause.items {
+                    Transformed::No(logical_plan.clone())
+                } else {
+                    let new_input = child_tf.get_plan();
+                    let new_with = crate::query_planner::logical_plan::WithClause {
+                        cte_name: None,
+                        input: new_input,
+                        items: tagged_items,
+                        distinct: with_clause.distinct,
+                        order_by: with_clause.order_by.clone(),
+                        skip: with_clause.skip,
+                        limit: with_clause.limit,
+                        where_clause: with_clause.where_clause.clone(),
+                        exported_aliases: with_clause.exported_aliases.clone(),
+                        cte_references: with_clause.cte_references.clone(),
+                        pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
+                    };
+                    Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
+                }
             }
         };
         Ok(transformed_plan)
