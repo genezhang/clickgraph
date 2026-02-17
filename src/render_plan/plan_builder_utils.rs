@@ -89,6 +89,177 @@ use super::utils::alias_utils::*;
 
 type RenderPlanBuilderResult<T> = Result<T, RenderBuildError>;
 
+/// Rewrite aggregate function arguments to use VLP CTE aliases for end nodes.
+///
+/// **Problem**: When `COUNT(DISTINCT b)` is used where `b` is a VLP end node:
+/// - The aggregate normalizer converts `TableAlias("b")` to `PropertyAccessExp{table_alias: "b", column: "end_id"}`
+/// - But in SQL, `b` doesn't exist as a table - the VLP CTE is joined as `vlp_a_b AS t`
+/// - Result: `SELECT COUNT(DISTINCT b.end_id)` fails with "Identifier cannot be resolved"
+///
+/// **Solution**: Check if any PropertyAccessExp references a VLP end node Cypher alias,
+/// and if so, replace it with the VLP CTE JOIN alias.
+///
+/// # Example
+/// ```sql
+/// -- Before rewrite:
+/// SELECT COUNT(DISTINCT b.end_id)  -- ❌ b doesn't exist
+/// FROM users AS a
+/// LEFT JOIN vlp_a_b AS t ON a.user_id = t.start_id
+///
+/// -- After rewrite:
+/// SELECT COUNT(DISTINCT t.end_id)  -- ✅ t is the VLP CTE alias
+/// FROM users AS a
+/// LEFT JOIN vlp_a_b AS t ON a.user_id = t.start_id
+/// ```
+pub fn rewrite_vlp_aggregate_aliases(plan: &mut RenderPlan) -> RenderPlanBuilderResult<()> {
+    // Build mapping: VLP end node Cypher alias -> VLP CTE JOIN alias
+    // Example: {"b": "t"} for `vlp_a_b AS t`
+    let mut vlp_end_to_cte_alias: HashMap<String, String> = HashMap::new();
+
+    // Extract VLP metadata from CTEs
+    for cte in &plan.ctes.0 {
+        if let Some(ref cypher_end_alias) = cte.vlp_cypher_end_alias {
+            // Find the corresponding JOIN to get the CTE alias
+            for join in &plan.joins.0 {
+                if join.table_name == cte.cte_name {
+                    log::info!(
+                        "🔧 VLP aggregate rewrite: Mapping Cypher alias '{}' -> CTE alias '{}' (from CTE '{}')",
+                        cypher_end_alias,
+                        join.table_alias,
+                        cte.cte_name
+                    );
+                    vlp_end_to_cte_alias.insert(cypher_end_alias.clone(), join.table_alias.clone());
+                    break;
+                }
+            }
+        }
+    }
+
+    // If no VLP end nodes found, nothing to rewrite
+    if vlp_end_to_cte_alias.is_empty() {
+        return Ok(());
+    }
+
+    log::debug!(
+        "VLP aggregate rewrite: Found {} VLP end node(s) to rewrite",
+        vlp_end_to_cte_alias.len()
+    );
+
+    // Rewrite SELECT items
+    for item in &mut plan.select.items {
+        rewrite_expr_for_vlp_end_nodes(&mut item.expression, &vlp_end_to_cte_alias);
+    }
+
+    // Rewrite GROUP BY expressions
+    for expr in &mut plan.group_by.0 {
+        rewrite_expr_for_vlp_end_nodes(expr, &vlp_end_to_cte_alias);
+    }
+
+    // Rewrite HAVING clause
+    if let Some(ref mut having) = plan.having_clause {
+        rewrite_expr_for_vlp_end_nodes(having, &vlp_end_to_cte_alias);
+    }
+
+    // Rewrite ORDER BY expressions
+    for item in &mut plan.order_by.0 {
+        rewrite_expr_for_vlp_end_nodes(&mut item.expression, &vlp_end_to_cte_alias);
+    }
+
+    Ok(())
+}
+
+/// Recursively rewrite a RenderExpr to replace VLP end node aliases with CTE aliases.
+///
+/// This function handles the conversion:
+/// - `b.end_id` (where b is VLP end node) → `t.end_id` (where t is VLP CTE alias)
+fn rewrite_expr_for_vlp_end_nodes(
+    expr: &mut RenderExpr,
+    vlp_end_to_cte_alias: &HashMap<String, String>,
+) {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            // Check if this property references a VLP end node
+            if let Some(cte_alias) = vlp_end_to_cte_alias.get(&prop.table_alias.0) {
+                log::info!(
+                    "🔧 VLP aggregate rewrite: Replacing {}.{} with {}.{}",
+                    prop.table_alias.0,
+                    prop.column.raw(),
+                    cte_alias,
+                    prop.column.raw()
+                );
+                prop.table_alias = TableAlias(cte_alias.clone());
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            // Recursively rewrite aggregate function arguments
+            for arg in &mut agg.args {
+                rewrite_expr_for_vlp_end_nodes(arg, vlp_end_to_cte_alias);
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            // Recursively rewrite operator operands (handles DISTINCT)
+            for operand in &mut op.operands {
+                rewrite_expr_for_vlp_end_nodes(operand, vlp_end_to_cte_alias);
+            }
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            // Recursively rewrite function arguments
+            for arg in &mut func.args {
+                rewrite_expr_for_vlp_end_nodes(arg, vlp_end_to_cte_alias);
+            }
+        }
+        RenderExpr::Case(case) => {
+            // Rewrite CASE expression
+            if let Some(ref mut e) = case.expr {
+                rewrite_expr_for_vlp_end_nodes(e, vlp_end_to_cte_alias);
+            }
+            for (when, then) in &mut case.when_then {
+                rewrite_expr_for_vlp_end_nodes(when, vlp_end_to_cte_alias);
+                rewrite_expr_for_vlp_end_nodes(then, vlp_end_to_cte_alias);
+            }
+            if let Some(ref mut else_expr) = case.else_expr {
+                rewrite_expr_for_vlp_end_nodes(else_expr, vlp_end_to_cte_alias);
+            }
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            rewrite_expr_for_vlp_end_nodes(array, vlp_end_to_cte_alias);
+            rewrite_expr_for_vlp_end_nodes(index, vlp_end_to_cte_alias);
+        }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            rewrite_expr_for_vlp_end_nodes(array, vlp_end_to_cte_alias);
+            if let Some(ref mut f) = from {
+                rewrite_expr_for_vlp_end_nodes(f, vlp_end_to_cte_alias);
+            }
+            if let Some(ref mut t) = to {
+                rewrite_expr_for_vlp_end_nodes(t, vlp_end_to_cte_alias);
+            }
+        }
+        RenderExpr::InSubquery(subq) => {
+            rewrite_expr_for_vlp_end_nodes(&mut subq.expr, vlp_end_to_cte_alias);
+        }
+        RenderExpr::List(items) => {
+            // Recursively rewrite each element of the list
+            for item in items {
+                rewrite_expr_for_vlp_end_nodes(item, vlp_end_to_cte_alias);
+            }
+        }
+        RenderExpr::MapLiteral(entries) => {
+            // Recursively rewrite each value expression in the map literal
+            for (_key, value) in entries {
+                rewrite_expr_for_vlp_end_nodes(value, vlp_end_to_cte_alias);
+            }
+        }
+        RenderExpr::ReduceExpr(reduce) => {
+            // Recursively rewrite all subexpressions of the reduce expression
+            rewrite_expr_for_vlp_end_nodes(&mut reduce.initial_value, vlp_end_to_cte_alias);
+            rewrite_expr_for_vlp_end_nodes(&mut reduce.list, vlp_end_to_cte_alias);
+            rewrite_expr_for_vlp_end_nodes(&mut reduce.expression, vlp_end_to_cte_alias);
+        }
+        // Remaining expression types are leaves and don't contain nested aliases
+        _ => {}
+    }
+}
+
 /// Build property mapping from select items for CTE column resolution.
 /// Maps (alias, property) -> column_name for property access resolution.
 ///
@@ -4659,18 +4830,39 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         //   - x.name → property (SQL generator extracts from end_properties JSON)
         // No table alias rewriting needed - the FROM clause is already correct!
     } else {
-        // Extract the FROM alias for VLP CTE
-        // The FROM clause is: FROM vlp_a_b AS t
-        // We need to use 't' in all SELECT/WHERE/GROUP BY references
-        let vlp_from_alias = plan
-            .from
-            .0
-            .as_ref()
-            .and_then(|from_ref| from_ref.alias.as_ref())
-            .cloned()
-            .unwrap_or_else(|| "t".to_string()); // Default to 't' if no alias found
+        // Extract the VLP table alias to use in SELECT/WHERE/GROUP BY references
+        //
+        // For NON-OPTIONAL VLP:
+        //   - FROM clause: FROM vlp_a_b AS t
+        //   - Use FROM alias: 't'
+        //
+        // For OPTIONAL VLP:
+        //   - FROM clause: FROM users AS a (anchor table)
+        //   - JOIN clause: LEFT JOIN vlp_a_b AS t ON ...
+        //   - Use JOIN alias: 't' (NOT FROM alias 'a')
+        let vlp_from_alias = if is_optional_vlp {
+            // For OPTIONAL VLP, find the VLP CTE JOIN alias
+            plan.joins
+                .0
+                .iter()
+                .find(|j| j.table_name.starts_with("vlp_"))
+                .map(|j| j.table_alias.clone())
+                .unwrap_or_else(|| "t".to_string())
+        } else {
+            // For non-OPTIONAL VLP, use FROM alias
+            plan.from
+                .0
+                .as_ref()
+                .and_then(|from_ref| from_ref.alias.as_ref())
+                .cloned()
+                .unwrap_or_else(|| "t".to_string())
+        };
 
-        log::warn!("🔧 VLP: FROM alias extracted: '{}'", vlp_from_alias);
+        log::warn!(
+            "🔧 VLP: VLP table alias to use: '{}' (is_optional_vlp={})",
+            vlp_from_alias,
+            is_optional_vlp
+        );
 
         // Rewrite SELECT items using filtered VLP mappings (for non-multi-type VLP)
         log::warn!("🔍 VLP: Rewriting {} SELECT items", plan.select.items.len());
@@ -10374,6 +10566,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
     // This fixes "Unknown expression identifier `t.hop_count`" errors where
     // length(path) was converted to t.hop_count but t needs to be rewritten to the actual VLP alias
     rewrite_vlp_union_branch_aliases(&mut render_plan)?;
+
+    // 🔧 FIX: Rewrite aggregate arguments for VLP end nodes
+    // Problem: COUNT(DISTINCT b) where b is VLP end node generates b.end_id
+    // But b doesn't exist in SQL - the VLP CTE is joined as "t"
+    // Solution: Rewrite b.end_id -> t.end_id using VLP CTE metadata
+    rewrite_vlp_aggregate_aliases(&mut render_plan)?;
 
     log::info!(
         "🔧 build_chained_with_match_cte_plan: Success - final plan has {} CTEs",
