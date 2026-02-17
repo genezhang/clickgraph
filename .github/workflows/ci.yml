@@ -33,5 +33,68 @@ jobs:
     - name: Build
       run: cargo build --verbose
 
-    - name: Run tests
+    - name: Run unit tests
       run: cargo test --verbose
+
+    - name: Start ClickHouse test infrastructure
+      run: docker compose -f docker-compose.test.yaml up -d
+
+    - name: Wait for ClickHouse to be ready
+      run: |
+        for i in {1..30}; do
+          if curl -s http://localhost:8123/ping > /dev/null; then
+            echo "ClickHouse is ready"
+            exit 0
+          fi
+          echo "Waiting for ClickHouse... ($i/30)"
+          sleep 2
+        done
+        echo "ClickHouse failed to start"
+        exit 1
+
+    - name: Setup test data
+      run: |
+        chmod +x scripts/test/setup_social_integration_data.sh
+        scripts/test/setup_social_integration_data.sh
+
+    - name: Start ClickGraph server
+      run: |
+        export CLICKHOUSE_URL="http://localhost:8123"
+        export CLICKHOUSE_USER="test_user"
+        export CLICKHOUSE_PASSWORD="test_pass"
+        export CLICKHOUSE_DATABASE="test_integration"
+        export GRAPH_CONFIG_PATH="./schemas/test/unified_test_multi_schema.yaml"
+        ./target/debug/clickgraph --http-port 8080 --bolt-port 7687 > server.log 2>&1 &
+        
+        # Wait for server to be fully ready (health + query execution)
+        for i in {1..30}; do
+          if curl -s http://localhost:8080/health > /dev/null; then
+            if curl -s -X POST http://localhost:8080/query \
+              -H "Content-Type: application/json" \
+              -d '{"query":"RETURN 1"}' > /dev/null; then
+              echo "ClickGraph server is fully ready"
+              exit 0
+            fi
+          fi
+          echo "Waiting for ClickGraph... ($i/30)"
+          sleep 2
+        done
+        echo "ClickGraph server failed to start"
+        cat server.log
+        exit 1
+
+    - name: Install Python test dependencies
+      run: |
+        python3 -m pip install --upgrade pip
+        pip3 install pytest requests clickhouse-connect
+
+    - name: Run critical regression tests
+      run: |
+        pytest tests/integration/test_return_only_regression.py -v
+        pytest tests/integration/test_optional_match_where_regression.py -v
+
+    - name: Cleanup
+      if: always()
+      run: |
+        pkill -f clickgraph || true
+        docker compose -f docker-compose.test.yaml down
