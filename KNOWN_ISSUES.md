@@ -14,52 +14,16 @@ For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).
 **Cause**: Recursive CTE-based shortest path explores all paths. Dense graphs cause exponential explosion.  
 **Workaround**: Use bounded path length: `shortestPath((a)-[:FOLLOWS*1..5]->(b))`
 
-### 2. Aggregations on Empty Results Return Empty Array
-**Status**: Semantics mismatch with Neo4j (compatibility issue)  
-**Error**: None (behavior mismatch)  
-**Impact**: Medium — Breaks Neo4j compatibility, client code must check for empty arrays  
-**Cause**: Result handling layer doesn't distinguish between "no rows" vs "aggregation on no rows"
-
-**Expected Neo4j Behavior** (aggregations always return one row):
-```cypher
-MATCH (p:Post)-[r]->(u:User) RETURN count(*) as result
-→ {"results":[{"result": 0}]}
-
-MATCH (p:Post)-[r]->(u:User) RETURN sum(p.post_id), avg(p.post_id), min(p.post_id), max(p.post_id), collect(p.content)
-→ {"results":[{"sum": 0, "avg": NULL, "min": NULL, "max": NULL, "collect": []}]}
-```
-
-**Actual ClickGraph Behavior** (returns empty array for all aggregations):
-```cypher
-MATCH (p:Post)-[r]->(u:User) RETURN count(*), sum(...), avg(...), etc.
-→ {"results":[]}
-```
-
-**Aggregate Function Comparison**:
-
-| Function | Neo4j (Empty) | ClickHouse (Empty) | ClickGraph (Empty) | ✅ Match Neo4j? |
-|----------|---------------|--------------------|--------------------|----------------|
-| `count(*)` | `0` | `0` | `[]` | ❌ |
-| `sum(expr)` | `0` | `0` | `[]` | ❌ |
-| `avg(expr)` | `NULL` | `nan` | `[]` | ❌ |
-| `min(expr)` | `NULL` | `0` | `[]` | ❌ |
-| `max(expr)` | `NULL` | `0` | `[]` | ❌ |
-| `collect(expr)` | `[]` | `[]` | `[]` | ❌ (structure wrong) |
-
-**ClickGraph Issue**: Returns `{"results": []}` instead of `{"results": [{"count(*)": 0, ...}]}`
-
-**Root Cause**: In `src/server/handlers.rs` lines 1032-1035, the result handler directly wraps ClickHouse rows without checking if the query contains aggregations. ClickHouse returns 0 rows for empty matches, but SQL aggregations should always return 1 row.
-
-**Fix Location**: Need to detect aggregate queries and ensure at least one result row is returned. Options:
-1. Modify SQL generation to use `SELECT ... UNION ALL SELECT 0 WHERE NOT EXISTS(...)`
-2. Post-process results in handlers.rs to inject default aggregate row when empty
-3. Modify ClickHouse query to use `WITH TOTALS` or similar mechanism
-
-**Workaround**: Client code must check `if (response.results.length === 0)` and supply default aggregate values (0 for count/sum, null for avg/min/max, [] for collect)
-
 ---
 
 ## Recently Fixed (February 2026)
+
+### Aggregations on Empty Results ✅ (Dec 21, 2025)
+**Fix**: Commit 734d65f - Unified aggregation logic
+- ClickHouse aggregations now properly return 1 row with default values (count=0, etc.)
+- Made `extract_select_items()` aggregation-aware
+- Unified WITH and RETURN aggregation code paths
+**Tests**: `test_aggregation_empty_result`, `test_count_empty_result` expecting 1 row with count=0
 
 ### Neo4j Desktop / NeoDash WebSocket Connection ✅ (Feb 2)
 **Fix**: PR #64 (commit 6755d22) - Full WebSocket Bolt transport
