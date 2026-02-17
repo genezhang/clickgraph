@@ -123,46 +123,63 @@ impl FilterBuilder for LogicalPlan {
                     "GraphRel node detected, collecting filters from ALL nested where_predicates"
                 );
 
-                // 🔧 BUG #10 FIX: For VLP/shortest path queries, filters from where_predicate
-                // are already pushed into the CTE during extraction. Don't duplicate them
-                // in the outer SELECT WHERE clause.
+                // 🔧 VLP FILTER FIX (Feb 17, 2026): Different handling based on whether CTE is used
                 //
-                // ⚠️ CRITICAL FIX (Jan 23, 2026): Don't skip ALL filters!
-                // Filters that reference nodes OUTSIDE the VLP pattern should still be applied
-                // in the final query. Only skip filters that are entirely on VLP nodes.
+                // VLP queries have two execution paths:
+                // 1. Fixed-length (*N where N is exact): Uses chained JOINs, NO CTE
+                //    → where_predicate must be extracted as outer WHERE clause
+                // 2. Variable-length (*1..N, *, etc.) or shortest path: Uses CTE
+                //    → where_predicate is handled inside CTE, don't duplicate
                 //
-                // Example: MATCH (a:User)-[*]->(b:User) WHERE a.name = 'Alice' AND c.status = 'active'
-                //   - "a.name = 'Alice'" is inside VLP → stays in CTE
-                //   - "c.status = 'active'" is outside VLP → should be in outer SELECT
-                //
-                // 🔧 FIX (Jan 31, 2026): For OPTIONAL VLP, start node filters are removed from CTE
-                // and should be applied to the outer query WHERE clause.
+                // Example: MATCH (a)-[*2]->(b) WHERE b.name = 'Diana'
+                //   - Uses chained JOINs: a → r1 → r2 → b
+                //   - WHERE b.name = 'Diana' must be in outer query
                 if graph_rel.variable_length.is_some() || graph_rel.shortest_path_mode.is_some() {
-                    // Check if this is OPTIONAL VLP - start filters need to be in outer query
-                    if graph_rel.is_optional.unwrap_or(false) {
+                    // Check if this uses chained JOINs (fixed-length, no CTE)
+                    let uses_cte = if let Some(ref spec) = graph_rel.variable_length {
+                        // Fixed-length without shortest path uses chained JOINs
+                        let is_fixed_length = spec.exact_hop_count().is_some() 
+                            && graph_rel.shortest_path_mode.is_none();
+                        !is_fixed_length // CTE used if NOT fixed-length
+                    } else {
+                        // Shortest path always uses CTE
+                        true
+                    };
+
+                    if uses_cte {
+                        // CTE handles filters - don't extract to outer WHERE
+                        // Exception: OPTIONAL VLP needs start filters in outer query
+                        if graph_rel.is_optional.unwrap_or(false) {
+                            log::info!(
+                                "🔧 OPTIONAL VLP: Extracting start node filters for outer WHERE clause"
+                            );
+                            if let Some(ref predicate) = graph_rel.where_predicate {
+                                if let Ok(expr) = RenderExpr::try_from(predicate.clone()) {
+                                    log::info!("🔧 OPTIONAL VLP: Found start filter: {:?}", expr);
+                                    return Ok(Some(expr));
+                                }
+                            }
+                            return Ok(None);
+                        }
+
                         log::info!(
-                            "🔧 OPTIONAL VLP: Extracting start node filters for outer WHERE clause"
+                            "🔧 VLP with CTE: Filters already in CTE, skipping outer WHERE extraction"
                         );
-                        // For OPTIONAL VLP, extract the where_predicate (start node filter)
-                        // The CTE extraction intentionally removes these from the CTE
+                        return Ok(None);
+                    } else {
+                        // Fixed-length VLP uses chained JOINs - extract where_predicate
+                        log::info!(
+                            "🔧 Fixed-length VLP: Using chained JOINs, extracting where_predicate for outer WHERE"
+                        );
                         if let Some(ref predicate) = graph_rel.where_predicate {
                             if let Ok(expr) = RenderExpr::try_from(predicate.clone()) {
-                                log::info!("🔧 OPTIONAL VLP: Found start filter: {:?}", expr);
+                                log::info!("🔧 Fixed-length VLP: Extracted filter: {:?}", expr);
                                 return Ok(Some(expr));
                             }
                         }
-                        return Ok(None);
+                        // No where_predicate - check for other filters in children
+                        // Fall through to normal GraphRel processing
                     }
-
-                    log::info!(
-                        "🔧 BUG #10: Skipping GraphRel filter extraction for VLP/shortest path - already in CTE"
-                    );
-                    log::warn!(
-                        "⚠️ NOTE: Filters on nodes OUTSIDE VLP pattern are also skipped (limitation)"
-                    );
-                    // Don't extract filters - they're already in the CTE
-                    // TODO: Implement proper filter splitting to handle external filters
-                    return Ok(None);
                 }
 
                 // PatternResolver 2.0: pattern_combinations generates a UNION CTE
@@ -336,48 +353,24 @@ impl FilterBuilder for LogicalPlan {
                     std::mem::discriminant(&*filter.input)
                 );
 
-                // 🔧 BUG #10 FIX: For VLP/shortest path queries, filters on start/end nodes
-                // are already pushed into the CTE during extraction. Don't duplicate them
-                // in the outer SELECT WHERE clause.
-                let has_vlp_or_shortest_path = has_variable_length_or_shortest_path(&filter.input);
+                // Normal filter extraction - always include WHERE clause predicates
+                // For VLP: Start node filters are pushed into CTE base case during CTE generation,
+                // but end node filters MUST be in outer WHERE clause (after CTE join)
+                let mut expr: RenderExpr = filter.predicate.clone().try_into()?;
+                // Apply property mapping to the filter expression
+                apply_property_mapping_to_expr(&mut expr, &filter.input);
 
-                log::warn!(
-                    "🔍 extract_filters: has_vlp_or_shortest_path = {}",
-                    has_vlp_or_shortest_path
-                );
-
-                println!(
-                    "DEBUG: has_vlp_or_shortest_path = {}",
-                    has_vlp_or_shortest_path
-                );
-
-                if has_vlp_or_shortest_path {
-                    log::info!(
-                        "🔧 BUG #10: Skipping Filter extraction for VLP/shortest path - already in CTE"
-                    );
-                    println!("DEBUG: 🔧 BUG #10: Skipping Filter extraction for VLP/shortest path - already in CTE");
-                    // Don't extract this filter - it's already in the CTE
-                    // Just extract filters from the input (schema filters, etc.)
-                    filter.input.extract_filters()?
+                // Also check for schema filters from the input (e.g., GraphNode → ViewScan)
+                if let Some(input_filter) = filter.input.extract_filters()? {
+                    crate::debug_println!("DEBUG: extract_filters - Combining Filter predicate with input schema filter");
+                    // Combine the Filter predicate with input's schema filter using AND
+                    Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::And,
+                        operands: vec![input_filter, expr],
+                    }))
                 } else {
-                    println!("DEBUG: Normal filter extraction");
-                    // Normal filter extraction
-                    let mut expr: RenderExpr = filter.predicate.clone().try_into()?;
-                    // Apply property mapping to the filter expression
-                    apply_property_mapping_to_expr(&mut expr, &filter.input);
-
-                    // Also check for schema filters from the input (e.g., GraphNode → ViewScan)
-                    if let Some(input_filter) = filter.input.extract_filters()? {
-                        crate::debug_println!("DEBUG: extract_filters - Combining Filter predicate with input schema filter");
-                        // Combine the Filter predicate with input's schema filter using AND
-                        Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                            operator: Operator::And,
-                            operands: vec![input_filter, expr],
-                        }))
-                    } else {
-                        crate::debug_println!("DEBUG: extract_filters - Returning Filter predicate only (no input filter)");
-                        Some(expr)
-                    }
+                    crate::debug_println!("DEBUG: extract_filters - Returning Filter predicate only (no input filter)");
+                    Some(expr)
                 }
             }
             LogicalPlan::Projection(projection) => {
