@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 
 # Test configuration
-SCHEMA_PATH = "./benchmarks/social_network/schemas/social_integration.yaml"
+SCHEMA_PATH = "./schemas/test/social_integration.yaml"
 CLICKGRAPH_PORT = 8080
 BASE_URL = f"http://localhost:{CLICKGRAPH_PORT}"
 
