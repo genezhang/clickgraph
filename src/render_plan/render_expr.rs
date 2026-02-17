@@ -1171,39 +1171,40 @@ impl TryFrom<LogicalAggregateFnCall> for AggregateFnCall {
         // The conversion to groupArray(tuple(...)) happens during WITH projection expansion
         // in plan_builder.rs where we have access to the schema.
         // For now, pass through TableAlias args as-is for collect().
-        let converted_args: Vec<RenderExpr> =
-            if agg.name.to_lowercase() == "count" && agg.args.len() == 1 {
-                match &agg.args[0] {
-                    crate::query_planner::logical_expr::LogicalExpr::TableAlias(_) => {
-                        // Fallback: count(node_var) -> count(*) when planning didn't resolve it
-                        log::warn!("count(node_variable) reached render phase without resolution - falling back to count(*)");
-                        vec![RenderExpr::Star]
-                    }
-                    _ => agg
-                        .args
-                        .into_iter()
-                        .map(RenderExpr::try_from)
-                        .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?,
+        let converted_args: Vec<RenderExpr> = if agg.name.to_lowercase() == "count"
+            && agg.args.len() == 1
+        {
+            match &agg.args[0] {
+                crate::query_planner::logical_expr::LogicalExpr::TableAlias(_) => {
+                    // Fallback: count(node_var) -> count(*) when planning didn't resolve it
+                    log::warn!("count(node_variable) reached render phase without resolution - falling back to count(*)");
+                    vec![RenderExpr::Star]
                 }
-            } else if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
-                match &agg.args[0] {
-                    crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
-                        // collect(node_var) - keep TableAlias for now
-                        // Will be expanded in plan_builder when we have schema context
-                        vec![RenderExpr::TableAlias(TableAlias(alias.0.clone()))]
-                    }
-                    _ => agg
-                        .args
-                        .into_iter()
-                        .map(RenderExpr::try_from)
-                        .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?,
-                }
-            } else {
-                agg.args
+                _ => agg
+                    .args
                     .into_iter()
                     .map(RenderExpr::try_from)
-                    .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?
-            };
+                    .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?,
+            }
+        } else if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
+            match &agg.args[0] {
+                crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
+                    // collect(node_var) - keep TableAlias for now
+                    // Will be expanded in plan_builder when we have schema context
+                    vec![RenderExpr::TableAlias(TableAlias(alias.0.clone()))]
+                }
+                _ => agg
+                    .args
+                    .into_iter()
+                    .map(RenderExpr::try_from)
+                    .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?,
+            }
+        } else {
+            agg.args
+                .into_iter()
+                .map(RenderExpr::try_from)
+                .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?
+        };
 
         let agg_fn = AggregateFnCall {
             name: agg.name,

@@ -138,7 +138,7 @@ impl FilterBuilder for LogicalPlan {
                     // Check if this uses chained JOINs (fixed-length, no CTE)
                     let uses_cte = if let Some(ref spec) = graph_rel.variable_length {
                         // Fixed-length without shortest path uses chained JOINs
-                        let is_fixed_length = spec.exact_hop_count().is_some() 
+                        let is_fixed_length = spec.exact_hop_count().is_some()
                             && graph_rel.shortest_path_mode.is_none();
                         !is_fixed_length // CTE used if NOT fixed-length
                     } else {
@@ -362,9 +362,7 @@ impl FilterBuilder for LogicalPlan {
                     Some(expr)
                 }
             }
-            LogicalPlan::Projection(projection) => {
-                projection.input.extract_filters()?
-            }
+            LogicalPlan::Projection(projection) => projection.input.extract_filters()?,
             LogicalPlan::GroupBy(group_by) => group_by.input.extract_filters()?,
             LogicalPlan::OrderBy(order_by) => order_by.input.extract_filters()?,
             LogicalPlan::Skip(skip) => skip.input.extract_filters()?,

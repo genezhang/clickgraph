@@ -1145,7 +1145,7 @@ impl JoinBuilder for LogicalPlan {
                             return Ok(Vec::new());
                         }
                     }
-                    
+
                     // 🔧 FIX: OPTIONAL VLP - GraphJoinInference already created LEFT JOIN to VLP CTE
                     // Don't create duplicate relationship table join here in rendering phase
                     if graph_rel.is_optional.unwrap_or(false) {

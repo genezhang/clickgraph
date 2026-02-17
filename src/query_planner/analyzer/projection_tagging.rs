@@ -1257,13 +1257,12 @@ impl ProjectionTagging {
                                         ))?
                                         .to_string()
                                 } else {
-                                    let table_schema =
-                                        graph_schema.node_schema(&table_label).map_err(
-                                            |e| AnalyzerError::GraphSchema {
-                                                pass: Pass::ProjectionTagging,
-                                                source: e,
-                                            },
-                                        )?;
+                                    let table_schema = graph_schema
+                                        .node_schema(&table_label)
+                                        .map_err(|e| AnalyzerError::GraphSchema {
+                                            pass: Pass::ProjectionTagging,
+                                            source: e,
+                                        })?;
                                     table_schema
                                         .node_id
                                         .columns()
@@ -1288,11 +1287,10 @@ impl ProjectionTagging {
                                     property_expr
                                 };
 
-                                item.expression =
-                                    LogicalExpr::AggregateFnCall(AggregateFnCall {
-                                        name: aggregate_fn_call.name.clone(),
-                                        args: vec![arg],
-                                    });
+                                item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                    name: aggregate_fn_call.name.clone(),
+                                    args: vec![arg],
+                                });
                             }
                         }
                     }
