@@ -25,7 +25,7 @@ from typing import Dict, List, Optional, Any
 SCHEMAS = {
     # Schema 1: Social Benchmark (Traditional graph) - PRIMARY schema for testing
     "social_integration": {
-        "schema_file": "./benchmarks/social_network/schemas/social_integration.yaml",
+        "schema_file": "./schemas/test/social_integration.yaml",
         "nodes": {
             "User": {
                 "id_prop": "user_id",
