@@ -86,7 +86,7 @@ jobs:
     - name: Install Python test dependencies
       run: |
         python3 -m pip install --upgrade pip
-        pip3 install pytest requests
+        pip3 install pytest requests clickhouse-connect
 
     - name: Run critical regression tests
       run: |
