@@ -2421,36 +2421,70 @@ impl RenderPlanBuilder for LogicalPlan {
             result
         }
 
+        // Helper to check if this is a RETURN-only query (no MATCH clause)
+        // Pattern: GraphJoins*/Limit/Skip/OrderBy* → Projection → Empty
+        // vs filtered query: GraphNode/GraphJoins with actual joins → Empty (no valid types)
+        fn is_return_only_query(plan: &LogicalPlan) -> bool {
+            match plan {
+                // Unwrap query modifiers
+                LogicalPlan::Limit(l) => is_return_only_query(&l.input),
+                LogicalPlan::Skip(s) => is_return_only_query(&s.input),
+                LogicalPlan::OrderBy(o) => is_return_only_query(&o.input),
+                
+                // GraphJoins with no joins is just a wrapper for RETURN
+                LogicalPlan::GraphJoins(gj) if gj.joins.is_empty() => {
+                    is_return_only_query(&gj.input)
+                }
+                
+                // Found Projection → check if input is Empty
+                LogicalPlan::Projection(p) => matches!(p.input.as_ref(), LogicalPlan::Empty),
+                
+                // Any other plan type → not RETURN-only
+                _ => false,
+            }
+        }
+
         // EARLY EXIT: If the plan's core is Empty (Track C filtered all types),
         // return empty result immediately to avoid generating SQL without FROM clause
+        //
+        // HOWEVER: For RETURN-only queries (e.g., RETURN 1, RETURN toUpper($x)),
+        // Empty is legitimate and should use system.one as FROM clause
         if core_is_empty(self) {
-            log::debug!(
-                "to_render_plan_with_ctx: Plan core is Empty (all types filtered) - generating empty result"
-            );
-            return Ok(RenderPlan {
-                ctes: CteItems(vec![]),
-                select: SelectItems {
-                    items: vec![SelectItem {
-                        expression: RenderExpr::Literal(super::render_expr::Literal::Integer(1)),
-                        col_alias: Some(ColumnAlias("_empty".to_string())),
-                    }],
-                    distinct: false,
-                },
-                from: FromTableItem(None),
-                joins: JoinItems(vec![]),
-                array_join: ArrayJoinItem(vec![]),
-                filters: FilterItems(Some(RenderExpr::Literal(
-                    super::render_expr::Literal::Boolean(false),
-                ))), // WHERE false
-                group_by: GroupByExpressions(vec![]),
-                having_clause: None,
-                order_by: OrderByItems(vec![]),
-                skip: SkipItem(None),
-                limit: LimitItem(None),
-                union: UnionItems(None),
+            // Check if this is a RETURN-only query (Limit/OrderBy/Skip* → Projection → Empty)
+            // vs a filtered-out query (GraphNode/GraphJoins → Empty with no valid types)
+            if is_return_only_query(self) {
+                log::debug!("RETURN-only query detected - using system.one as FROM");
+                // Don't early exit - let normal rendering proceed
+                // The from_builder will handle Empty → system.one
+            } else {
+                log::debug!(
+                    "to_render_plan_with_ctx: Plan core is Empty (all types filtered) - generating empty result"
+                );
+                return Ok(RenderPlan {
+                    ctes: CteItems(vec![]),
+                    select: SelectItems {
+                        items: vec![SelectItem {
+                            expression: RenderExpr::Literal(super::render_expr::Literal::Integer(1)),
+                            col_alias: Some(ColumnAlias("_empty".to_string())),
+                        }],
+                        distinct: false,
+                    },
+                    from: FromTableItem(None),
+                    joins: JoinItems(vec![]),
+                    array_join: ArrayJoinItem(vec![]),
+                    filters: FilterItems(Some(RenderExpr::Literal(
+                        super::render_expr::Literal::Boolean(false),
+                    ))), // WHERE false
+                    group_by: GroupByExpressions(vec![]),
+                    having_clause: None,
+                    order_by: OrderByItems(vec![]),
+                    skip: SkipItem(None),
+                    limit: LimitItem(None),
+                    union: UnionItems(None),
                 fixed_path_info: None,
                 is_multi_label_scan: false,
             });
+            }
         }
 
         // Helper to check if plan contains Union (handles Limit, Skip, OrderBy wrappers)

@@ -33,5 +33,52 @@ jobs:
     - name: Build
       run: cargo build --verbose
 
-    - name: Run tests
+    - name: Run unit tests
       run: cargo test --verbose
+
+    - name: Start ClickHouse test infrastructure
+      run: docker-compose -f docker-compose.test.yaml up -d
+
+    - name: Wait for ClickHouse to be ready
+      run: |
+        for i in {1..30}; do
+          if curl -s http://localhost:8123/ping > /dev/null; then
+            echo "ClickHouse is ready"
+            exit 0
+          fi
+          echo "Waiting for ClickHouse... ($i/30)"
+          sleep 2
+        done
+        echo "ClickHouse failed to start"
+        exit 1
+
+    - name: Setup test data
+      run: |
+        chmod +x scripts/test/setup_social_integration_data.sh
+        scripts/test/setup_social_integration_data.sh
+
+    - name: Start ClickGraph server
+      run: |
+        export CLICKHOUSE_URL="http://localhost:8123"
+        export CLICKHOUSE_USER="test_user"
+        export CLICKHOUSE_PASSWORD="test_pass"
+        export CLICKHOUSE_DATABASE="test_integration"
+        export GRAPH_CONFIG_PATH="./schemas/test/unified_test_multi_schema.yaml"
+        ./target/debug/clickgraph --http-port 8080 --bolt-port 7687 > server.log 2>&1 &
+        sleep 5
+        curl -s http://localhost:8080/health || (cat server.log && exit 1)
+
+    - name: Install Python test dependencies
+      run: |
+        python3 -m pip install --upgrade pip
+        pip3 install pytest requests
+
+    - name: Run critical regression tests
+      run: |
+        pytest tests/integration/test_return_only_regression.py -v
+
+    - name: Cleanup
+      if: always()
+      run: |
+        pkill -f clickgraph || true
+        docker-compose -f docker-compose.test.yaml down
