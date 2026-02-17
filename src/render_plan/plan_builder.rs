@@ -803,7 +803,6 @@ impl RenderPlanBuilder for LogicalPlan {
 
         match self {
             LogicalPlan::GraphJoins(gj) => {
-                log::error!("🎯 to_render_plan: GraphJoins path - this should trigger rewrite_vlp_aggregate_aliases");
                 let mut select_items = SelectItems {
                     items: <LogicalPlan as SelectBuilder>::extract_select_items(self, None)?,
                     distinct: FilterBuilder::extract_distinct(self),

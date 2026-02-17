@@ -237,7 +237,25 @@ fn rewrite_expr_for_vlp_end_nodes(
         RenderExpr::InSubquery(subq) => {
             rewrite_expr_for_vlp_end_nodes(&mut subq.expr, vlp_end_to_cte_alias);
         }
-        // Other expression types don't contain aliases to rewrite
+        RenderExpr::List(items) => {
+            // Recursively rewrite each element of the list
+            for item in items {
+                rewrite_expr_for_vlp_end_nodes(item, vlp_end_to_cte_alias);
+            }
+        }
+        RenderExpr::MapLiteral(entries) => {
+            // Recursively rewrite each value expression in the map literal
+            for (_key, value) in entries {
+                rewrite_expr_for_vlp_end_nodes(value, vlp_end_to_cte_alias);
+            }
+        }
+        RenderExpr::ReduceExpr(reduce) => {
+            // Recursively rewrite all subexpressions of the reduce expression
+            rewrite_expr_for_vlp_end_nodes(&mut reduce.initial_value, vlp_end_to_cte_alias);
+            rewrite_expr_for_vlp_end_nodes(&mut reduce.list, vlp_end_to_cte_alias);
+            rewrite_expr_for_vlp_end_nodes(&mut reduce.expression, vlp_end_to_cte_alias);
+        }
+        // Remaining expression types are leaves and don't contain nested aliases
         _ => {}
     }
 }
