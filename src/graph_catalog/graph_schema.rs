@@ -852,6 +852,31 @@ impl GraphSchema {
         // Use rel_type_index for O(1) lookup (replaces slower prefix search)
         // This finds composite keys matching the relationship type (e.g., "FOLLOWS::User::User")
         if let Some(composite_keys) = self.rel_type_index.get(rel_type) {
+            // When partial node info is available, filter candidates by matching from/to
+            if from_node.is_some() || to_node.is_some() {
+                let mut matched_key = None;
+                for key in composite_keys {
+                    if let Some(schema) = self.relationships.get(key) {
+                        let from_ok =
+                            from_node.is_none() || from_node == Some(schema.from_node.as_str());
+                        let to_ok = to_node.is_none() || to_node == Some(schema.to_node.as_str());
+                        if from_ok && to_ok {
+                            matched_key = Some(key);
+                            break;
+                        }
+                    }
+                }
+                if let Some(key) = matched_key {
+                    if let Some(schema) = self.relationships.get(key) {
+                        log::debug!(
+                            "get_rel_schema_with_nodes: Found schema for composite key '{}' filtered by from={:?} to={:?}",
+                            key, from_node, to_node
+                        );
+                        return Ok(schema);
+                    }
+                }
+            }
+            // No partial info or no match found — fall back to first
             if let Some(key) = composite_keys.first() {
                 if let Some(schema) = self.relationships.get(key) {
                     log::debug!(
@@ -939,43 +964,14 @@ impl GraphSchema {
             return composite_keys;
         }
 
-        // Resolve labels to table names
-        // Some labels like "University" map to table "Organisation"
-        // We need to match against the actual table name, not the label
-        let from_table_name = from_label.and_then(|label| {
-            self.nodes
-                .get(label)
-                .map(|schema| schema.table_name.as_str())
-        });
-        let to_table_name = to_label.and_then(|label| {
-            self.nodes
-                .get(label)
-                .map(|schema| schema.table_name.as_str())
-        });
-
-        log::debug!(
-            "Resolving labels: from_label={:?} -> from_table={:?}, to_label={:?} -> to_table={:?}",
-            from_label,
-            from_table_name,
-            to_label,
-            to_table_name
-        );
-
-        // Filter by node compatibility using EXACT matching
-        // When node labels are specified, we want exact from_node/to_node matches
-        // not "smart" polymorphic compatibility
+        // Filter by node label compatibility — pure graph-space matching.
+        // No implicit subtype/inheritance: labels must match exactly,
+        // consistent with Neo4j where labels are flat tags.
         let mut compatible: Vec<String> = Vec::new();
         for composite_key in &composite_keys {
             if let Some(schema) = self.relationships.get(composite_key) {
-                // Match against table names, not labels
-                // If table name not found (label doesn't exist), fall back to direct label match
-                let from_ok = from_label.is_none_or(|f| {
-                    from_table_name.map_or(schema.from_node == f, |table| schema.from_node == table)
-                });
-                let to_ok = to_label.is_none_or(|t| {
-                    to_table_name.map_or(schema.to_node == t, |table| schema.to_node == table)
-                });
-
+                let from_ok = from_label.is_none_or(|f| schema.from_node == f);
+                let to_ok = to_label.is_none_or(|t| schema.to_node == t);
                 if from_ok && to_ok {
                     compatible.push(composite_key.clone());
                 }
