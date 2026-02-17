@@ -6807,6 +6807,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
             std::collections::HashMap::new();
 
         for (alias, plans) in grouped_withs {
+            // CRITICAL: Skip aliases that were already processed in previous iterations
+            if processed_cte_aliases.contains(&alias) {
+                log::warn!("🔧 build_chained_with_match_cte_plan: Skipping alias '{}' - already processed in previous iteration", alias);
+                continue;
+            }
+            
             // Record original count before filtering
             let original_count = plans.len();
 

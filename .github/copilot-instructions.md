@@ -35,9 +35,11 @@ We are at late stage of development with almost all the features implemented, an
   - Don't rush to "cleanup" without understanding actual usage
   - Large files may be intentional refactoring results (e.g., 16K → 10K + 4K split)
 
+- ** Always add fixed cases as regression tests if possible**: to prevent future regressions.
+
 ## Development Environment
 
-**Current Platform**: WSL Ubuntu 24.04 (migrated from Windows, November 2025)
+**Current Platform**: WSL Ubuntu 24.04 (migrated from Windows, November 2025) and Ubuntu 22.04 (native Linux)
 
 ### Shell and Script Guidelines
 - **Default Shell**: Bash (use bash scripts, not PowerShell)
