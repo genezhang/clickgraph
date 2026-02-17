@@ -2982,6 +2982,28 @@ impl RenderExpr {
                     }
                 }
 
+                // Node identity comparison: Cypher `a <> b` or `a = b` where both sides
+                // are bare node variables (TableAlias) should compare by node ID column.
+                // ClickHouse doesn't understand bare table aliases as values.
+                if matches!(op.operator, Operator::Equal | Operator::NotEqual)
+                    && op.operands.len() == 2
+                {
+                    let both_table_aliases = op
+                        .operands
+                        .iter()
+                        .all(|o| matches!(o, RenderExpr::TableAlias(_)));
+                    if both_table_aliases {
+                        let op_str = if op.operator == Operator::Equal {
+                            "="
+                        } else {
+                            "<>"
+                        };
+                        let lhs = op.operands[0].to_sql();
+                        let rhs = op.operands[1].to_sql();
+                        return format!("{}.id {} {}.id", lhs, op_str, rhs);
+                    }
+                }
+
                 let rendered: Vec<String> = op.operands.iter().map(|e| e.to_sql()).collect();
 
                 // Special handling for RegexMatch - ClickHouse uses match() function

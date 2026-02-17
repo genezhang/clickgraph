@@ -114,7 +114,10 @@ impl ConnectionConfig {
             .with_option("allow_experimental_json_type", "1")
             .with_option("input_format_binary_read_json_as_string", "1")
             .with_option("output_format_binary_write_json_as_string", "1")
-            .with_option("max_recursive_cte_evaluation_depth", &self.max_cte_depth.to_string());
+            .with_option(
+                "max_recursive_cte_evaluation_depth",
+                &self.max_cte_depth.to_string(),
+            );
 
         // Set role for this connection pool via ClickHouse option
         // This adds the role parameter to all HTTP requests from this client
