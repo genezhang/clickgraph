@@ -1,0 +1,82 @@
+# Graph-Notebook Demo: ClickGraph + Jupyter
+# Interactive notebook environment for graph analytics
+#
+# Usage: docker-compose up
+# Then open: http://localhost:8888 (token displayed in logs)
+#
+# Note: This uses local build. After release, use: image: genezhang/clickgraph:latest
+
+version: '3.8'
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8.12
+    container_name: clickhouse-notebook-demo
+    environment:
+      CLICKHOUSE_DB: "social"
+      CLICKHOUSE_USER: "demo_user"
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      CLICKHOUSE_PASSWORD: "demo_pass"
+    ports:
+      - "8123:8123"
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    volumes:
+      - clickhouse_notebook_data:/var/lib/clickhouse
+      - ../neo4j-browser/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+      - ../neo4j-browser/001-init.sh:/docker-entrypoint-initdb.d/001-init.sh:ro
+
+  clickgraph:
+    # For now, build locally. After release, use: image: genezhang/clickgraph:latest
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: clickgraph-notebook-demo
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      CLICKHOUSE_URL: "http://clickhouse:8123"
+      CLICKHOUSE_USER: "demo_user"
+      CLICKHOUSE_PASSWORD: "demo_pass"
+      CLICKHOUSE_DATABASE: "social"
+      # Enable Neo4j compatibility mode for graph-notebook
+      CLICKGRAPH_NEO4J_COMPAT_MODE: "true"
+      # Use demo schema
+      GRAPH_CONFIG_PATH: "/app/demos/neo4j-browser/social_demo.yaml"
+      CLICKGRAPH_MAX_CTE_DEPTH: "500"
+    ports:
+      - "7687:7687"
+      - "8080:8080"
+    volumes:
+      - ../neo4j-browser/social_demo.yaml:/app/demos/neo4j-browser/social_demo.yaml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  jupyter:
+    image: jupyter/base-notebook:latest
+    container_name: jupyter-notebook-demo
+    depends_on:
+      clickgraph:
+        condition: service_healthy
+    environment:
+      # Allow connections to ClickGraph (same Docker network)
+      JUPYTER_ENABLE_LAB: "yes"
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./:/home/jovyan/work
+      # Install graph-notebook on startup
+      - ./install_extensions.sh:/usr/local/bin/before-notebook.d/install_extensions.sh:ro
+    command: "start-notebook.sh --NotebookApp.token='' --NotebookApp.password=''"
+
+volumes:
+  clickhouse_notebook_data:

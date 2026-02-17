@@ -5,10 +5,12 @@
 # Then open: http://localhost:7474
 #
 # Connect Neo4j Browser to ClickGraph:
-#   1. Login to Neo4j Browser with neo4j/test_password
-#   2. Click gear icon (bottom left) → Server bolt://localhost:7687
-#   3. Authentication: No authentication
-#   4. Connect, then try: MATCH (u:User {user_id: 1}) RETURN u
+#   1. Open Neo4j Browser: http://localhost:7474 
+#   2. Connect URL: bolt://localhost:7687
+#   3. Authentication type: Username / Password
+#   4. Username: neo4j
+#   5. Password: test_password
+#   4. Connect, then click the database icon (top left), or try: MATCH (u:User {user_id: 1}) RETURN u
 
 version: '3.8'
 
