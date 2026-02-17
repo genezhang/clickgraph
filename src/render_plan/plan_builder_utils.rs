@@ -4203,6 +4203,10 @@ pub fn plan_contains_with_clause(plan: &LogicalPlan) -> bool {
             .iter()
             .any(|input| plan_contains_with_clause(input)),
         LogicalPlan::GraphNode(node) => plan_contains_with_clause(&node.input),
+        LogicalPlan::Unwind(unwind) => plan_contains_with_clause(&unwind.input),
+        LogicalPlan::CartesianProduct(cp) => {
+            plan_contains_with_clause(&cp.left) || plan_contains_with_clause(&cp.right)
+        }
         _ => false,
     }
 }
@@ -12129,6 +12133,11 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                     LogicalPlan::Projection(proj) => needs_processing(&proj.input, with_alias),
                     LogicalPlan::GraphJoins(gj) => needs_processing(&gj.input, with_alias),
                     LogicalPlan::Filter(f) => needs_processing(&f.input, with_alias),
+                    LogicalPlan::Unwind(u) => needs_processing(&u.input, with_alias),
+                    LogicalPlan::CartesianProduct(cp) => {
+                        needs_processing(&cp.left, with_alias)
+                            || needs_processing(&cp.right, with_alias)
+                    }
                     _ => plan_contains_with_clause(plan),
                 };
                 log::warn!(

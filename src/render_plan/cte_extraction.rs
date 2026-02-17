@@ -81,16 +81,14 @@ fn recreate_pattern_schema_context(
 
     // Tier 3: Infer from relationship schema when still missing
     // GraphRel convention: left = source (from_node), right = target (to_node).
-    let (left_label, right_label) = infer_node_labels_from_rel(
-        resolved_left,
-        resolved_right,
-        &rel_types,
-        schema,
-    )?;
+    let (left_label, right_label) =
+        infer_node_labels_from_rel(resolved_left, resolved_right, &rel_types, schema)?;
 
     log::debug!(
         "recreate_pattern_schema_context: left='{}', right='{}', rel={:?}",
-        left_label, right_label, rel_types
+        left_label,
+        right_label,
+        rel_types
     );
 
     // Get node schemas
@@ -152,7 +150,9 @@ fn infer_node_labels_from_rel(
     let right_explicit = explicit_right.is_some();
 
     let rel_type = rel_types.first().ok_or_else(|| {
-        RenderBuildError::MissingTableInfo("No relationship type available for label inference".to_string())
+        RenderBuildError::MissingTableInfo(
+            "No relationship type available for label inference".to_string(),
+        )
     })?;
 
     // rel_type may be a simple name ("REPLY_OF") or composite key ("REPLY_OF::Comment::Post").
@@ -166,7 +166,8 @@ fn infer_node_labels_from_rel(
     let rel_schemas = schema.rel_schemas_for_type(simple_type);
     if rel_schemas.is_empty() {
         return Err(RenderBuildError::MissingTableInfo(format!(
-            "No relationship schemas found for type '{}' during label inference", simple_type
+            "No relationship schemas found for type '{}' during label inference",
+            simple_type
         )));
     }
 
@@ -176,7 +177,8 @@ fn infer_node_labels_from_rel(
     } else {
         // Infer left (from_node) — filter by right label if known
         let candidates: Vec<&str> = if let Some(ref right) = explicit_right {
-            rel_schemas.iter()
+            rel_schemas
+                .iter()
                 .filter(|rs| rs.to_node == *right)
                 .map(|rs| rs.from_node.as_str())
                 .collect()
@@ -184,35 +186,46 @@ fn infer_node_labels_from_rel(
             rel_schemas.iter().map(|rs| rs.from_node.as_str()).collect()
         };
 
-        candidates.first().copied().ok_or_else(|| {
-            RenderBuildError::MissingTableInfo(format!(
-                "Could not infer left node label from relationship '{}' (right='{:?}')",
-                simple_type, explicit_right
-            ))
-        })?.to_string()
+        candidates
+            .first()
+            .copied()
+            .ok_or_else(|| {
+                RenderBuildError::MissingTableInfo(format!(
+                    "Could not infer left node label from relationship '{}' (right='{:?}')",
+                    simple_type, explicit_right
+                ))
+            })?
+            .to_string()
     };
 
     let right_label = if let Some(right) = explicit_right {
         right
     } else {
         // Infer right (to_node) — filter by left label
-        let candidates: Vec<&str> = rel_schemas.iter()
+        let candidates: Vec<&str> = rel_schemas
+            .iter()
             .filter(|rs| rs.from_node == left_label)
             .map(|rs| rs.to_node.as_str())
             .collect();
 
-        candidates.first().copied().ok_or_else(|| {
+        if let Some(label) = candidates.first().copied() {
+            label.to_string()
+        } else {
             // Fallback: try without filtering by left label
-            rel_schemas.first()
+            rel_schemas
+                .first()
                 .map(|rs| rs.to_node.as_str())
-                .ok_or_else(|| RenderBuildError::MissingTableInfo(format!(
-                    "Could not infer right node label from relationship '{}' (left='{}')",
-                    simple_type, left_label
-                )))
-        }).or_else(|e| e)?.to_string()
+                .ok_or_else(|| {
+                    RenderBuildError::MissingTableInfo(format!(
+                        "Could not infer right node label from relationship '{}' (left='{}')",
+                        simple_type, left_label
+                    ))
+                })?
+                .to_string()
+        }
     };
 
-    log::info!(
+    log::debug!(
         "infer_node_labels_from_rel: inferred labels - left='{}' (explicit={}), right='{}' (explicit={})",
         left_label, left_explicit, right_label, right_explicit
     );
@@ -2891,7 +2904,9 @@ pub fn extract_ctes_with_context(
 
                     // ✨ PHASE 2 REFACTORING: Use PatternSchemaContext instead of scattered is_denormalized checks
                     // Recreate the pattern schema context to determine JOIN strategy and node access patterns
-                    let pattern_ctx = match recreate_pattern_schema_context(graph_rel, schema, plan_ctx) {
+                    let pattern_ctx = match recreate_pattern_schema_context(
+                        graph_rel, schema, plan_ctx,
+                    ) {
                         Ok(ctx) => ctx,
                         Err(e) => {
                             log::warn!("⚠️ Failed to recreate PatternSchemaContext, falling back to denormalized flag checks: {}", e);
