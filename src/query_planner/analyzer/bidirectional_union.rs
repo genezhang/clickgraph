@@ -721,6 +721,14 @@ fn generate_direction_combinations(
 fn is_valid_direction_branch(plan: &Arc<LogicalPlan>, graph_schema: &GraphSchema) -> bool {
     match plan.as_ref() {
         LogicalPlan::GraphRel(graph_rel) => {
+            // Only validate edges that were swapped by bidirectional union.
+            // Directed edges (Outgoing/Incoming without was_undirected) are valid as-is.
+            if graph_rel.was_undirected != Some(true) {
+                // Not a swapped undirected edge — skip validation, just recurse
+                return is_valid_direction_branch(&graph_rel.left, graph_schema)
+                    && is_valid_direction_branch(&graph_rel.right, graph_schema);
+            }
+
             if let Some(labels) = &graph_rel.labels {
                 // For multi-type patterns ([:TYPE1|TYPE2]), a branch is valid if ANY
                 // label is valid for this direction (each type generates its own UNION branch).
