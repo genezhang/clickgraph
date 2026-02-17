@@ -1161,12 +1161,11 @@ impl TryFrom<LogicalAggregateFnCall> for AggregateFnCall {
 
     fn try_from(agg: LogicalAggregateFnCall) -> Result<Self, Self::Error> {
         // Note: count(node_variable) should already be resolved to count(node.id_column)
-        // by projection_tagging.rs. If a bare TableAlias still reaches here, fall back to
-        // count(*) as we lack schema context. This fallback is correct for INNER JOIN but
-        // gives wrong results for LEFT JOIN (OPTIONAL MATCH) - the planning phase fix
-        // in projection_tagging.rs prevents this case.
+        // by projection_tagging.rs. If a bare TableAlias still reaches here, it indicates
+        // a planner bug — fail fast rather than silently producing wrong results for
+        // LEFT JOIN (OPTIONAL MATCH) where count(*) != count(node.id).
         //
-        // Special case: collect(node_variable) should NOT be converted yet
+        // Special case: collect(node_variable) should NOT be converted yet.
         // This requires knowledge of the node's properties which isn't available here.
         // The conversion to groupArray(tuple(...)) happens during WITH projection expansion
         // in plan_builder.rs where we have access to the schema.
@@ -1176,9 +1175,10 @@ impl TryFrom<LogicalAggregateFnCall> for AggregateFnCall {
         {
             match &agg.args[0] {
                 crate::query_planner::logical_expr::LogicalExpr::TableAlias(_) => {
-                    // Fallback: count(node_var) -> count(*) when planning didn't resolve it
-                    log::warn!("count(node_variable) reached render phase without resolution - falling back to count(*)");
-                    vec![RenderExpr::Star]
+                    return Err(RenderBuildError::InvalidRenderPlan(
+                        "count(node_variable) reached render phase without resolution to count(node.id_column); \
+                         this is a planner bug in projection_tagging.rs".to_string(),
+                    ));
                 }
                 _ => agg
                     .args

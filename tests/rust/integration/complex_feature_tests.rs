@@ -222,7 +222,8 @@ async fn test_optional_match_with_vlp_and_aggregation() {
 
     let ast = parse_query(cypher).expect("Failed to parse complex OPTIONAL MATCH + VLP query");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    // Use evaluate_read_query for full pipeline including projection tagging
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build logical plan for complex query: {:?}",
@@ -230,7 +231,7 @@ async fn test_optional_match_with_vlp_and_aggregation() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for complex query: {:?}",
@@ -246,9 +247,10 @@ async fn test_optional_match_with_vlp_and_aggregation() {
         sql.to_lowercase().contains("left join"),
         "Should contain LEFT JOIN for OPTIONAL MATCH"
     );
+    // count(f) should be resolved to count(f.user_id) for correct LEFT JOIN NULL handling
     assert!(
-        sql.to_lowercase().contains("count(*)"),
-        "Should contain COUNT(*) aggregate in LEFT JOIN subquery"
+        sql.to_lowercase().contains("count(") && !sql.to_lowercase().contains("count(*)"),
+        "Should contain count(node.id_column) not count(*) for LEFT JOIN correctness"
     );
 }
 
@@ -267,7 +269,7 @@ async fn test_shortest_path_with_with_clause() {
 
     let ast = parse_query(cypher).expect("Failed to parse shortestPath + WITH + WHERE");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build plan for shortestPath + WITH: {:?}",
@@ -275,7 +277,7 @@ async fn test_shortest_path_with_with_clause() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for shortestPath + WITH: {:?}",
@@ -309,7 +311,7 @@ async fn test_multiple_relationship_types_with_vlp() {
 
     let ast = parse_query(cypher).expect("Failed to parse multiple rel types + VLP");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build plan for multiple rel types + VLP: {:?}",
@@ -317,7 +319,7 @@ async fn test_multiple_relationship_types_with_vlp() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for multiple rel types + VLP: {:?}",
@@ -392,7 +394,7 @@ async fn test_complex_aggregation_with_multiple_features() {
 
     let ast = parse_query(cypher).expect("Failed to parse complex aggregation query");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build plan for complex aggregation: {:?}",
@@ -400,7 +402,7 @@ async fn test_complex_aggregation_with_multiple_features() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for complex aggregation: {:?}",
@@ -413,8 +415,8 @@ async fn test_complex_aggregation_with_multiple_features() {
 
     // Verify the query contains expected elements
     assert!(
-        sql.to_lowercase().contains("count("),
-        "Should contain COUNT aggregation"
+        sql.to_lowercase().contains("grouparray(") || sql.to_lowercase().contains("count("),
+        "Should contain aggregation functions (groupArray or COUNT)"
     );
     assert!(
         sql.to_lowercase().contains("limit"),
@@ -437,7 +439,7 @@ async fn test_shortest_path_with_property_filters() {
 
     let ast = parse_query(cypher).expect("Failed to parse shortestPath with property filters");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build plan for shortestPath with filters: {:?}",
@@ -445,7 +447,7 @@ async fn test_shortest_path_with_property_filters() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for shortestPath with filters: {:?}",
@@ -475,7 +477,7 @@ async fn test_vlp_with_relationship_property_filters() {
 
     let ast = parse_query(cypher).expect("Failed to parse VLP with relationship filters");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build plan for VLP with relationship filters: {:?}",
@@ -483,7 +485,7 @@ async fn test_vlp_with_relationship_property_filters() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for VLP with relationship filters: {:?}",
@@ -541,7 +543,7 @@ fn test_many_relationship_types_union() {
 
     let ast = parse_query(cypher).expect("Failed to parse many relationship types");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build plan for many relationship types: {:?}",
@@ -549,7 +551,7 @@ fn test_many_relationship_types_union() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for many relationship types: {:?}",
@@ -575,7 +577,7 @@ async fn test_pattern_comprehension_complex() {
 
     let ast = parse_query(cypher).expect("Failed to parse complex pattern comprehensions");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build plan for pattern comprehensions: {:?}",
@@ -583,7 +585,7 @@ async fn test_pattern_comprehension_complex() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for pattern comprehensions: {:?}",
@@ -615,7 +617,7 @@ async fn test_multiple_optional_match_clauses() {
 
     let ast = parse_query(cypher).expect("Failed to parse multiple OPTIONAL MATCH query");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build logical plan for multiple optional matches: {:?}",
@@ -623,7 +625,7 @@ async fn test_multiple_optional_match_clauses() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for multiple optional matches: {:?}",
@@ -655,7 +657,7 @@ async fn test_optional_match_with_where_conditions() {
 
     let ast = parse_query(cypher).expect("Failed to parse OPTIONAL MATCH with WHERE");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build logical plan for optional match with WHERE: {:?}",
@@ -663,7 +665,7 @@ async fn test_optional_match_with_where_conditions() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for optional match with WHERE: {:?}",
@@ -702,7 +704,7 @@ async fn test_complex_aggregations_with_group_by() {
 
     let ast = parse_query(cypher).expect("Failed to parse complex aggregations query");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build logical plan for complex aggregations: {:?}",
@@ -710,7 +712,7 @@ async fn test_complex_aggregations_with_group_by() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for complex aggregations: {:?}",
@@ -757,7 +759,7 @@ async fn test_complex_where_clauses_multiple_conditions() {
 
     let ast = parse_query(cypher).expect("Failed to parse complex WHERE conditions");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build logical plan for complex WHERE: {:?}",
@@ -765,7 +767,7 @@ async fn test_complex_where_clauses_multiple_conditions() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for complex WHERE: {:?}",
@@ -800,7 +802,7 @@ async fn test_order_by_with_complex_expressions() {
 
     let ast = parse_query(cypher).expect("Failed to parse ORDER BY with aggregations");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build logical plan for ORDER BY: {:?}",
@@ -808,7 +810,7 @@ async fn test_order_by_with_complex_expressions() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for ORDER BY: {:?}",
@@ -849,7 +851,7 @@ async fn test_limit_offset_with_complex_queries() {
 
     let ast = parse_query(cypher).expect("Failed to parse LIMIT/OFFSET query");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build logical plan for LIMIT/OFFSET: {:?}",
@@ -857,7 +859,7 @@ async fn test_limit_offset_with_complex_queries() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for LIMIT/OFFSET: {:?}",
@@ -898,7 +900,7 @@ async fn test_case_expressions_in_return() {
 
     let ast = parse_query(cypher).expect("Failed to parse CASE expression query");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build logical plan for CASE expressions: {:?}",
@@ -906,7 +908,7 @@ async fn test_case_expressions_in_return() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for CASE expressions: {:?}",
@@ -955,7 +957,7 @@ async fn test_complex_property_access_patterns() {
 
     let ast = parse_query(cypher).expect("Failed to parse complex property access");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build logical plan for complex property access: {:?}",
@@ -963,7 +965,7 @@ async fn test_complex_property_access_patterns() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for complex property access: {:?}",
@@ -999,7 +1001,7 @@ async fn test_union_with_complex_features() {
 
     let ast = parse_query(cypher).expect("Failed to parse UNION query");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build logical plan for UNION: {:?}",
@@ -1007,7 +1009,7 @@ async fn test_union_with_complex_features() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for UNION: {:?}",
@@ -1044,7 +1046,7 @@ async fn test_deeply_nested_expressions() {
 
     let ast = parse_query(cypher).expect("Failed to parse deeply nested expressions");
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let result = evaluate_read_query(ast, &schema, None, None);
     assert!(
         result.is_ok(),
         "Failed to build logical plan for nested expressions: {:?}",
@@ -1052,7 +1054,7 @@ async fn test_deeply_nested_expressions() {
     );
 
     let (logical_plan, _plan_ctx) = result.unwrap();
-    let render_result = logical_plan_to_render_plan((*logical_plan).clone(), &schema);
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
     assert!(
         render_result.is_ok(),
         "Failed to render SQL for nested expressions: {:?}",
@@ -1161,6 +1163,8 @@ async fn test_reversed_anchor_optional_match_with_where_predicate() {
     let ast = parse_query(cypher)
         .expect("Failed to parse reversed-anchor OPTIONAL MATCH with WHERE predicate");
 
+    // Use build_logical_plan here because this test validates reversed-anchor
+    // WHERE clause handling, not aggregation resolution (no COUNT in query).
     let result = build_logical_plan(&ast, &schema, None, None, None);
     assert!(
         result.is_ok(),
