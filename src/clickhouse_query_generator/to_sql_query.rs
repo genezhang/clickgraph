@@ -1818,15 +1818,11 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
         sql.push_str(&limit_str)
     }
 
-    // Add ClickHouse SETTINGS for recursive CTEs (variable-length paths)
-    // Check if any CTE is recursive
-    let has_recursive_cte = plan.ctes.0.iter().any(|cte| cte.is_recursive);
-    if has_recursive_cte {
-        sql.push_str(&format!(
-            "\nSETTINGS max_recursive_cte_evaluation_depth = {}\n",
-            max_cte_depth
-        ));
-    }
+    // Note: max_recursive_cte_evaluation_depth is set as a client-level option
+    // in connection_pool.rs, not as a SQL SETTINGS clause.
+    // The clickhouse crate sends queries with readonly=1, which prevents
+    // SETTINGS in SQL. Client-level options are sent as HTTP query parameters
+    // and work in readonly mode.
 
     // CLEANUP: Clear ALL task-local render contexts before returning
     clear_all_render_contexts();
