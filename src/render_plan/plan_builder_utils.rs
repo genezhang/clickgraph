@@ -6557,7 +6557,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
         plan_ctx.is_some()
     );
 
-    const MAX_WITH_ITERATIONS: usize = 10; // Safety limit to prevent infinite loops
+    // Safety limit to prevent infinite loops due to excessive plan tree depth
+    // Complex queries with many nested structures (projections, filters, WITH clauses, etc.)
+    // can create deep plan trees that require many iterations to process
+    const MAX_PLAN_DEPTH: usize = 500;
 
     let mut current_plan = plan.clone();
     let mut all_ctes: Vec<Cte> = Vec::new();
@@ -6679,12 +6682,37 @@ pub(crate) fn build_chained_with_match_cte_plan(
             "🔧 build_chained_with_match_cte_plan: ========== ITERATION {} ==========",
             iteration
         );
-        if iteration > MAX_WITH_ITERATIONS {
-            log::warn!("🔧 build_chained_with_match_cte_plan: HIT ITERATION LIMIT! Current plan structure:");
+        
+        // DEBUG: Count plan tree depth to diagnose excessive iterations
+        // Deep nesting can come from any combination of plan nodes (Projection, Filter, WITH, etc.)
+        fn count_plan_depth(plan: &LogicalPlan) -> usize {
+            match plan {
+                LogicalPlan::WithClause(wc) => 1 + count_plan_depth(&wc.input),
+                LogicalPlan::Projection(p) => 1 + count_plan_depth(&p.input),
+                LogicalPlan::Filter(f) => 1 + count_plan_depth(&f.input),
+                LogicalPlan::GroupBy(gb) => 1 + count_plan_depth(&gb.input),
+                LogicalPlan::OrderBy(ob) => 1 + count_plan_depth(&ob.input),
+                LogicalPlan::Limit(lim) => 1 + count_plan_depth(&lim.input),
+                LogicalPlan::Skip(skip) => 1 + count_plan_depth(&skip.input),
+                LogicalPlan::GraphJoins(gj) => 1 + count_plan_depth(&gj.input),
+                LogicalPlan::Union(u) => 1 + u.inputs.iter().map(|i| count_plan_depth(i)).max().unwrap_or(0),
+                _ => 1, // Leaf nodes
+            }
+        }
+        
+        let plan_depth = count_plan_depth(&current_plan);
+        log::warn!(
+            "🔧 build_chained_with_match_cte_plan: Plan tree depth = {} (iteration {})",
+            plan_depth,
+            iteration
+        );
+        
+        if iteration > MAX_PLAN_DEPTH {
+            log::warn!("🔧 build_chained_with_match_cte_plan: HIT PLAN DEPTH LIMIT! Current plan structure:");
             show_plan_structure(&current_plan, 0);
             return Err(RenderBuildError::InvalidRenderPlan(format!(
-                "Exceeded maximum WITH clause iterations ({})",
-                MAX_WITH_ITERATIONS
+                "Query plan too deeply nested (depth > {}). This usually indicates a bug in query planning.",
+                MAX_PLAN_DEPTH
             )));
         }
 
@@ -8788,6 +8816,16 @@ pub(crate) fn build_chained_with_match_cte_plan(
             log::warn!("🔧 build_chained_with_match_cte_plan: Breaking after processing '{}' to re-discover plan structure", with_alias);
             break 'alias_loop;
         }
+        
+        // DEBUG: Summary at end of iteration
+        let plan_depth_after = count_plan_depth(&current_plan);
+        log::warn!(
+            "🔧 build_chained_with_match_cte_plan: END ITERATION {} - Plan depth: {} → {} (processed: {})",
+            iteration,
+            plan_depth,
+            plan_depth_after,
+            any_processed_this_iteration
+        );
 
         // If no aliases were processed this iteration, break to avoid infinite loop
         // This can happen when all remaining WITH clauses are passthrough wrappers
