@@ -37,7 +37,7 @@ jobs:
       run: cargo test --verbose
 
     - name: Start ClickHouse test infrastructure
-      run: docker-compose -f docker-compose.test.yaml up -d
+      run: docker compose -f docker-compose.test.yaml up -d
 
     - name: Wait for ClickHouse to be ready
       run: |
@@ -82,4 +82,4 @@ jobs:
       if: always()
       run: |
         pkill -f clickgraph || true
-        docker-compose -f docker-compose.test.yaml down
+        docker compose -f docker-compose.test.yaml down
