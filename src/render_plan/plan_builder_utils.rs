@@ -5291,12 +5291,8 @@ pub(crate) fn expand_table_alias_to_select_items(
             let cte_alias = if cte_name == "__union_vlp" {
                 "__union".to_string()
             } else {
-                // Normal CTE: strip prefixes/suffixes (e.g., "with_a_b_cte" -> "a_b")
-                cte_name
-                    .strip_prefix("with_")
-                    .and_then(|s| s.strip_suffix("_cte"))
-                    .unwrap_or(cte_name)
-                    .to_string()
+                // Normal CTE: extract FROM alias (e.g., "with_a_b_cte_1" -> "a_b")
+                extract_from_alias_from_cte_name(cte_name).to_string()
             };
 
             let is_union_reference = cte_name == "__union_vlp";
@@ -5311,14 +5307,18 @@ pub(crate) fn expand_table_alias_to_select_items(
             let filtered_items: Vec<SelectItem> = select_items.iter()
                 .filter(|item| {
                     if let Some(col_alias) = &item.col_alias {
-                        // Match columns that:
-                        // 1. Start with alias_ (e.g., "friend_firstName" for alias "friend")
-                        // 2. Start with alias. (e.g., "friend.birthday" from UNION subqueries)
-                        // 3. OR exactly match the alias (e.g., "cnt" for alias "cnt" in WITH count() as cnt)
+                        // Match columns that belong to this alias:
+                        // 1. Parse p{N}_ format (e.g., "p6_person_id" for alias "person")
+                        // 2. Start with alias_ (legacy format, e.g., "friend_firstName")
+                        // 3. Start with alias. (e.g., "friend.birthday" from UNION subqueries)
+                        // 4. Exactly match the alias (e.g., "cnt" for alias "cnt")
+                        let matches_parsed = parse_cte_column(&col_alias.0)
+                            .map(|(parsed_alias, _)| parsed_alias == alias)
+                            .unwrap_or(false);
                         let matches_underscore = col_alias.0.starts_with(&alias_prefix_underscore);
                         let matches_dot = col_alias.0.starts_with(&alias_prefix_dot);
                         let matches_exact = col_alias.0 == alias;
-                        matches_underscore || matches_dot || matches_exact
+                        matches_parsed || matches_underscore || matches_dot || matches_exact
                     } else {
                         false
                     }
@@ -5943,7 +5943,7 @@ pub(crate) fn rewrite_expression_with_cte_alias(
 
             let key = (table_alias.clone(), column_name.clone());
             if let Some(cte_column) = reverse_mapping.get(&key) {
-                // Found a column mapping - now also look up the CTE name for this alias
+                // Found a column mapping - rewrite both table alias and column name
                 let new_table_alias = alias_to_cte
                     .get(table_alias)
                     .cloned()
@@ -5958,6 +5958,20 @@ pub(crate) fn rewrite_expression_with_cte_alias(
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(new_table_alias),
                     column: PropertyValue::Column(cte_column.clone()),
+                })
+            } else if let Some(new_table_alias) = alias_to_cte.get(table_alias) {
+                // No column mapping but alias is known — rewrite table alias only,
+                // keeping the column name as-is (e.g., GROUP BY already has CTE column names)
+                log::info!(
+                    "🔧 CTE alias-only rewrite: {}.{} → {}.{}",
+                    table_alias,
+                    column_name,
+                    new_table_alias,
+                    column_name
+                );
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(new_table_alias.clone()),
+                    column: PropertyValue::Column(column_name),
                 })
             } else {
                 expr.clone()
@@ -6032,6 +6046,29 @@ pub(crate) fn rewrite_expression_with_cte_alias(
                 name: agg.name.clone(),
                 args: new_args,
             })
+        }
+        RenderExpr::TableAlias(ta) => {
+            // Bare column name (e.g., "likeCount") — may be a scalar CTE column that needs
+            // qualifying with the FROM alias when inside a CTE reading from another CTE.
+            // Only rewrite if alias_to_cte has mappings (we're in CTE context) and
+            // the name is NOT a known Cypher alias (those get expanded elsewhere).
+            let col_name = &ta.0;
+            if !alias_to_cte.is_empty() && !alias_to_cte.contains_key(col_name) {
+                // Use the most common FROM alias (all aliases in this CTE usually map to the same FROM)
+                if let Some(from_alias) = alias_to_cte.values().next() {
+                    log::info!(
+                        "🔧 CTE bare column rewrite: {} → {}.{}",
+                        col_name,
+                        from_alias,
+                        col_name
+                    );
+                    return RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(from_alias.clone()),
+                        column: PropertyValue::Column(col_name.clone()),
+                    });
+                }
+            }
+            expr.clone()
         }
         other => other.clone(),
     }
@@ -8595,67 +8632,81 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     if let Some(col_alias) = &item.col_alias {
                         let cte_col_name = &col_alias.0;
                         log::warn!("🔧 Examining column '{}'", cte_col_name);
-                        // Extract alias and property from CTE column name (e.g., "a_user_id" → "a", "user_id")
-                        for ref_cte in cte_references.keys() {
-                            let prefix = format!("{}_", ref_cte);
-                            if let Some(property) = cte_col_name.strip_prefix(&prefix) {
-                                // Main mapping: (alias, property) → cte_column
+
+                        // Use parse_cte_column for deterministic p{N}_{alias}_{property} parsing
+                        let parsed = parse_cte_column(cte_col_name);
+                        let (ref_alias, property) = if let Some((alias, prop)) = &parsed {
+                            (alias.as_str(), prop.as_str())
+                        } else {
+                            // Fallback: try legacy strip_prefix for non-p{N} columns
+                            let mut found = None;
+                            for ref_cte in cte_references.keys() {
+                                let prefix = format!("{}_", ref_cte);
+                                if let Some(prop) = cte_col_name.strip_prefix(&prefix) {
+                                    found = Some((ref_cte.as_str(), prop));
+                                    break;
+                                }
+                            }
+                            if let Some((a, p)) = found {
+                                (a, p)
+                            } else {
+                                // Also check if it's an unaliased scalar (e.g., "tagId")
+                                // These don't have a prefix — map the CTE name itself
+                                continue;
+                            }
+                        };
+
+                        // Main mapping: (alias, property) → cte_column
+                        intermediate_reverse_mapping.insert(
+                            (ref_alias.to_string(), property.to_string()),
+                            cte_col_name.clone(),
+                        );
+                        log::info!(
+                            "🔧 Intermediate mapping: ({}, '{}') → {}",
+                            ref_alias,
+                            property,
+                            cte_col_name
+                        );
+
+                        // ID mapping: If property is like "user_id", also map "id" → cte_column
+                        if property.ends_with("_id") || property == "id" {
+                            intermediate_reverse_mapping.insert(
+                                (ref_alias.to_string(), "id".to_string()),
+                                cte_col_name.clone(),
+                            );
+                            log::info!(
+                                "🔧 CTE intermediate ID mapping: ({}, 'id') → {}",
+                                ref_alias,
+                                cte_col_name
+                            );
+                        }
+
+                        // CRITICAL: Also map the PREFIXED version of the generic ID
+                        if property.ends_with("_id") {
+                            let prefixed_id = format!("{}_id", ref_alias);
+                            intermediate_reverse_mapping.insert(
+                                (ref_alias.to_string(), prefixed_id.clone()),
+                                cte_col_name.clone(),
+                            );
+                            log::info!(
+                                "🔧 CTE prefixed ID mapping: ({}, '{}') → {}",
+                                ref_alias,
+                                prefixed_id,
+                                cte_col_name
+                            );
+
+                            // ALSO: If this CTE has a composite alias (e.g., "a_b"), add mappings for it too
+                            if let Some(comp_alias) = composite_alias {
                                 intermediate_reverse_mapping.insert(
-                                    (ref_cte.clone(), property.to_string()),
+                                    (comp_alias.clone(), prefixed_id.clone()),
                                     cte_col_name.clone(),
                                 );
                                 log::info!(
-                                    "🔧 Intermediate mapping: ({}, '{}') → {}",
-                                    ref_cte,
-                                    property,
+                                    "🔧 CTE composite prefixed ID mapping: ({}, '{}') → {}",
+                                    comp_alias,
+                                    prefixed_id,
                                     cte_col_name
                                 );
-
-                                // ID mapping: If property is like "user_id", also map "id" → "a_user_id"
-                                if property.ends_with("_id") || property == "id" {
-                                    intermediate_reverse_mapping.insert(
-                                        (ref_cte.clone(), "id".to_string()),
-                                        cte_col_name.clone(),
-                                    );
-                                    log::info!(
-                                        "🔧 CTE intermediate ID mapping: ({}, 'id') → {}",
-                                        ref_cte,
-                                        cte_col_name
-                                    );
-                                }
-
-                                // CRITICAL: Also map the PREFIXED version of the generic ID
-                                // JOIN conditions might have "a.a_id" instead of "a.id" because the column got prefixed
-                                // We need to map (a, "a_id") → "a_user_id" as well as (a, "id") → "a_user_id"
-                                if property.ends_with("_id") {
-                                    let prefixed_id = format!("{}_id", ref_cte);
-                                    intermediate_reverse_mapping.insert(
-                                        (ref_cte.clone(), prefixed_id.clone()),
-                                        cte_col_name.clone(),
-                                    );
-                                    log::info!(
-                                        "🔧 CTE prefixed ID mapping: ({}, '{}') → {}",
-                                        ref_cte,
-                                        prefixed_id,
-                                        cte_col_name
-                                    );
-
-                                    // ALSO: If this CTE has a composite alias (e.g., "a_b"), add mappings for it too
-                                    // This handles cases like: FROM with_a_b_cte_1 AS a_b ... JOIN ... ON ... = a_b.b_id
-                                    if let Some(comp_alias) = composite_alias {
-                                        intermediate_reverse_mapping.insert(
-                                            (comp_alias.clone(), prefixed_id.clone()),
-                                            cte_col_name.clone(),
-                                        );
-                                        log::info!(
-                                            "🔧 CTE composite prefixed ID mapping: ({}, '{}') → {}",
-                                            comp_alias,
-                                            prefixed_id,
-                                            cte_col_name
-                                        );
-                                    }
-                                }
-                                break;
                             }
                         }
                     }
@@ -8663,22 +8714,65 @@ pub(crate) fn build_chained_with_match_cte_plan(
             }
 
             // Rewrite expressions in the current CTE
-            // Build alias_to_cte mapping: for each alias in intermediate_reverse_mapping, find its CTE
-            // This tells us which CTE each Cypher alias should reference
+            // Build alias_to_cte mapping: for each alias in intermediate_reverse_mapping,
+            // find the FROM alias of the CTE containing that alias's columns.
+            // The FROM alias is used as the table qualifier in SQL (e.g., `likeCount_message_person.p6_person_id`).
             let mut alias_to_cte: HashMap<String, String> = HashMap::new();
+
+            // Build CTE name → FROM alias map from cte_references (composite aliases are FROM aliases)
+            let mut cte_name_to_from_alias: HashMap<String, String> = HashMap::new();
+            for (ref_alias, ref_cte_name) in &cte_references {
+                // Composite aliases (containing '_') are the FROM aliases for their CTEs
+                if ref_alias.contains('_')
+                    || !cte_references.values().any(|v| {
+                        v == ref_cte_name
+                            && cte_references
+                                .iter()
+                                .any(|(k, v2)| v2 == ref_cte_name && k.contains('_'))
+                    })
+                {
+                    // Only set if this is the composite alias (contains '_' and maps to same CTE)
+                    if ref_alias.contains('_') {
+                        cte_name_to_from_alias
+                            .entry(ref_cte_name.clone())
+                            .or_insert_with(|| ref_alias.clone());
+                    }
+                }
+            }
+
             for (alias, _) in intermediate_reverse_mapping.keys() {
+                if alias_to_cte.contains_key(alias) {
+                    continue;
+                }
                 // Find which CTE this alias belongs to by checking cte_schemas
                 for (cte_name_check, (items, _, _, _)) in &cte_schemas {
-                    // Check if any column in this CTE has this alias prefix
-                    let prefix = format!("{}_", alias);
+                    // Check if any column in this CTE has this alias
+                    // Use parse_cte_column() for p{N}_ format, with legacy fallback
                     if items.iter().any(|item| {
                         item.col_alias
                             .as_ref()
-                            .map(|a| a.0.starts_with(&prefix))
+                            .map(|a| {
+                                if let Some((parsed_alias, _)) = parse_cte_column(&a.0) {
+                                    parsed_alias == *alias
+                                } else {
+                                    let prefix = format!("{}_", alias);
+                                    a.0.starts_with(&prefix)
+                                }
+                            })
                             .unwrap_or(false)
                     }) {
-                        alias_to_cte.insert(alias.clone(), cte_name_check.clone());
-                        log::warn!("🔧 Alias to CTE: {} → {}", alias, cte_name_check);
+                        // Use the FROM alias (composite alias) instead of the CTE name
+                        let from_alias = cte_name_to_from_alias
+                            .get(cte_name_check)
+                            .cloned()
+                            .unwrap_or_else(|| cte_name_check.clone());
+                        alias_to_cte.insert(alias.clone(), from_alias.clone());
+                        log::warn!(
+                            "🔧 Alias to FROM alias: {} → {} (CTE: {})",
+                            alias,
+                            from_alias,
+                            cte_name_check
+                        );
                         break;
                     }
                 }
