@@ -145,9 +145,8 @@ impl AnalyzerPass for ProjectionTagging {
                 // TypeInference sets ALL possible labels in plan_ctx (e.g., ["User", "Post"])
                 // but each UNION branch's GraphNode has a SPECIFIC label.
                 // Extract branch-specific labels and temporarily update plan_ctx before tag_projection.
-                let original_labels: std::collections::HashMap<String, Option<Vec<String>>> =
+                let mut original_labels: std::collections::HashMap<String, Option<Vec<String>>> =
                     std::collections::HashMap::new();
-                let mut original_labels = original_labels;
                 for alias in self.get_explicit_aliases(plan_ctx) {
                     if let Some(branch_label) =
                         extract_label_from_plan(projection.input.as_ref(), &alias)
@@ -173,6 +172,12 @@ impl AnalyzerPass for ProjectionTagging {
                 for (alias, original) in original_labels {
                     if let Ok(mut table_ctx) = plan_ctx.get_mut_table_ctx(&alias) {
                         table_ctx.set_labels(original);
+                    } else {
+                        // Alias should exist since we successfully modified it earlier
+                        log::warn!(
+                            "⚠️ ProjectionTagging: Failed to restore original labels for '{}' - alias not found in plan_ctx",
+                            alias
+                        );
                     }
                 }
 
