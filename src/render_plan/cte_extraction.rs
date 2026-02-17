@@ -45,29 +45,51 @@ pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>
 fn recreate_pattern_schema_context(
     graph_rel: &crate::query_planner::logical_plan::GraphRel,
     schema: &GraphSchema,
+    plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
 ) -> Result<PatternSchemaContext, RenderBuildError> {
-    // Extract node labels from left and right plans
-    let left_label = extract_node_labels(&graph_rel.left)
-        .and_then(|labels| labels.first().cloned())
-        .ok_or_else(|| {
-            RenderBuildError::MissingTableInfo(
-                "Could not extract left node label for relationship pattern".to_string(),
-            )
-        })?;
-
-    let right_label = extract_node_labels(&graph_rel.right)
-        .and_then(|labels| labels.first().cloned())
-        .ok_or_else(|| {
-            RenderBuildError::MissingTableInfo(
-                "Could not extract right node label for relationship pattern".to_string(),
-            )
-        })?;
-
-    // Get relationship types
+    // Get relationship types first — needed for label inference when nodes are unlabeled
     let rel_types = graph_rel
         .labels
         .clone()
         .unwrap_or_else(|| vec!["UNKNOWN".to_string()]);
+
+    // Resolve node labels using a 3-tier strategy:
+    // 1. Explicit label from plan tree (GraphNode.label — set by parser)
+    // 2. Inferred label from PlanCtx (TableCtx.labels — set by type inference)
+    // 3. Inferred from relationship schema's from_node/to_node fields
+    let explicit_left = extract_node_labels(&graph_rel.left).and_then(|l| l.first().cloned());
+    let explicit_right = extract_node_labels(&graph_rel.right).and_then(|l| l.first().cloned());
+
+    // Tier 2: Check PlanCtx for inferred labels (type inference results)
+    let left_from_ctx = if explicit_left.is_none() {
+        plan_ctx
+            .and_then(|ctx| ctx.get_table_ctx(&graph_rel.left_connection).ok())
+            .and_then(|tc| tc.get_labels().and_then(|l| l.first().cloned()))
+    } else {
+        None
+    };
+    let right_from_ctx = if explicit_right.is_none() {
+        plan_ctx
+            .and_then(|ctx| ctx.get_table_ctx(&graph_rel.right_connection).ok())
+            .and_then(|tc| tc.get_labels().and_then(|l| l.first().cloned()))
+    } else {
+        None
+    };
+
+    let resolved_left = explicit_left.or(left_from_ctx);
+    let resolved_right = explicit_right.or(right_from_ctx);
+
+    // Tier 3: Infer from relationship schema when still missing
+    // GraphRel convention: left = source (from_node), right = target (to_node).
+    let (left_label, right_label) =
+        infer_node_labels_from_rel(resolved_left, resolved_right, &rel_types, schema)?;
+
+    log::debug!(
+        "recreate_pattern_schema_context: left='{}', right='{}', rel={:?}",
+        left_label,
+        right_label,
+        rel_types
+    );
 
     // Get node schemas
     let left_node_schema = schema.node_schema(&left_label).map_err(|e| {
@@ -78,9 +100,13 @@ fn recreate_pattern_schema_context(
         RenderBuildError::MissingTableInfo(format!("Could not get right node schema: {}", e))
     })?;
 
-    // Get relationship schema (use first rel type)
+    // Get relationship schema with node context for precise matching
     let rel_schema = schema
-        .get_rel_schema(rel_types.first().unwrap())
+        .get_rel_schema_with_nodes(
+            rel_types.first().unwrap(),
+            Some(&left_label),
+            Some(&right_label),
+        )
         .map_err(|e| {
             RenderBuildError::MissingTableInfo(format!("Could not get relationship schema: {}", e))
         })?;
@@ -100,6 +126,111 @@ fn recreate_pattern_schema_context(
     .map_err(|e| {
         RenderBuildError::MissingTableInfo(format!("PatternSchemaContext analysis failed: {}", e))
     })
+}
+
+/// Infer missing node labels from the relationship schema's from_node/to_node fields.
+///
+/// When a node has no explicit label (common after WITH→CTE replacement where the
+/// original typed node becomes an untyped CTE reference), we can infer the label
+/// from the relationship schema since it declares what node types it connects.
+///
+/// GraphRel convention: left = source (from_node), right = target (to_node).
+fn infer_node_labels_from_rel(
+    explicit_left: Option<String>,
+    explicit_right: Option<String>,
+    rel_types: &[String],
+    schema: &GraphSchema,
+) -> Result<(String, String), RenderBuildError> {
+    // If both labels are already known, no inference needed
+    if let (Some(left), Some(right)) = (&explicit_left, &explicit_right) {
+        return Ok((left.clone(), right.clone()));
+    }
+
+    let left_explicit = explicit_left.is_some();
+    let right_explicit = explicit_right.is_some();
+
+    let rel_type = rel_types.first().ok_or_else(|| {
+        RenderBuildError::MissingTableInfo(
+            "No relationship type available for label inference".to_string(),
+        )
+    })?;
+
+    // rel_type may be a simple name ("REPLY_OF") or composite key ("REPLY_OF::Comment::Post").
+    // Extract simple type name for rel_type_index lookup.
+    let simple_type = if let Some(idx) = rel_type.find("::") {
+        &rel_type[..idx]
+    } else {
+        rel_type.as_str()
+    };
+
+    let rel_schemas = schema.rel_schemas_for_type(simple_type);
+    if rel_schemas.is_empty() {
+        return Err(RenderBuildError::MissingTableInfo(format!(
+            "No relationship schemas found for type '{}' during label inference",
+            simple_type
+        )));
+    }
+
+    // Filter rel schemas by the known label to narrow candidates
+    let left_label = if let Some(left) = explicit_left {
+        left
+    } else {
+        // Infer left (from_node) — filter by right label if known
+        let candidates: Vec<&str> = if let Some(ref right) = explicit_right {
+            rel_schemas
+                .iter()
+                .filter(|rs| rs.to_node == *right)
+                .map(|rs| rs.from_node.as_str())
+                .collect()
+        } else {
+            rel_schemas.iter().map(|rs| rs.from_node.as_str()).collect()
+        };
+
+        candidates
+            .first()
+            .copied()
+            .ok_or_else(|| {
+                RenderBuildError::MissingTableInfo(format!(
+                    "Could not infer left node label from relationship '{}' (right='{:?}')",
+                    simple_type, explicit_right
+                ))
+            })?
+            .to_string()
+    };
+
+    let right_label = if let Some(right) = explicit_right {
+        right
+    } else {
+        // Infer right (to_node) — filter by left label
+        let candidates: Vec<&str> = rel_schemas
+            .iter()
+            .filter(|rs| rs.from_node == left_label)
+            .map(|rs| rs.to_node.as_str())
+            .collect();
+
+        if let Some(label) = candidates.first().copied() {
+            label.to_string()
+        } else {
+            // Fallback: try without filtering by left label
+            rel_schemas
+                .first()
+                .map(|rs| rs.to_node.as_str())
+                .ok_or_else(|| {
+                    RenderBuildError::MissingTableInfo(format!(
+                        "Could not infer right node label from relationship '{}' (left='{}')",
+                        simple_type, left_label
+                    ))
+                })?
+                .to_string()
+        }
+    };
+
+    log::debug!(
+        "infer_node_labels_from_rel: inferred labels - left='{}' (explicit={}), right='{}' (explicit={})",
+        left_label, left_explicit, right_label, right_explicit
+    );
+
+    Ok((left_label, right_label))
 }
 
 // ============================================================================
@@ -1725,11 +1856,11 @@ pub fn extract_ctes_with_context(
                     _ => "Other".to_string(),
                 };
                 log::info!("🔍 VLP: Left plan = {}", left_plan_desc);
-                // 🔧 PARAMETERIZED VIEW FIX: Use extract_parameterized_table_name for parameterized view support
-                let _start_table =
-                    extract_parameterized_table_name(&graph_rel.left).ok_or_else(|| {
-                        RenderBuildError::MissingTableInfo("start node in VLP".to_string())
-                    })?;
+                // Extract start table name if available (used for validation only)
+                let _start_table = extract_parameterized_table_name(&graph_rel.left);
+                if _start_table.is_none() {
+                    log::info!("🔍 VLP: No explicit table for start node (may be CTE reference), will infer from schema");
+                }
 
                 // 🎯 CHECK: Is this multi-type VLP? (end node has unknown type)
                 // If so, end_table will be determined by schema expansion, not from the plan
@@ -1744,13 +1875,12 @@ pub fn extract_ctes_with_context(
                     );
                     None
                 } else {
-                    // Regular VLP: end_table must be in the plan
-                    // 🔧 PARAMETERIZED VIEW FIX: Use extract_parameterized_table_name for parameterized view support
-                    Some(
-                        extract_parameterized_table_name(&graph_rel.right).ok_or_else(|| {
-                            RenderBuildError::MissingTableInfo("end node in VLP".to_string())
-                        })?,
-                    )
+                    // Regular VLP: try to extract from plan, but don't fail if absent
+                    let table = extract_parameterized_table_name(&graph_rel.right);
+                    if table.is_none() {
+                        log::info!("🔍 VLP: No explicit table for end node (may be CTE reference), will infer from schema");
+                    }
+                    table
                 };
 
                 // Also extract labels for filter categorization and property extraction
@@ -2131,7 +2261,7 @@ pub fn extract_ctes_with_context(
                         // For denormalized (SingleTableScan): both nodes map to relationship alias
                         // For traditional: nodes map to start_node/end_node
                         let pattern_ctx_for_mapping =
-                            recreate_pattern_schema_context(graph_rel, schema).ok();
+                            recreate_pattern_schema_context(graph_rel, schema, plan_ctx).ok();
                         let (start_target_alias, end_target_alias) = if let Some(ref ctx) =
                             pattern_ctx_for_mapping
                         {
@@ -2269,7 +2399,7 @@ pub fn extract_ctes_with_context(
                 // For denormalized (SingleTableScan), use relationship alias
                 // For traditional, use "start_node"/"end_node"
                 let pattern_ctx_for_filters =
-                    recreate_pattern_schema_context(graph_rel, schema).ok();
+                    recreate_pattern_schema_context(graph_rel, schema, plan_ctx).ok();
                 let (start_cte_alias, end_cte_alias) =
                     if let Some(ref ctx) = pattern_ctx_for_filters {
                         match &ctx.join_strategy {
@@ -2774,7 +2904,9 @@ pub fn extract_ctes_with_context(
 
                     // ✨ PHASE 2 REFACTORING: Use PatternSchemaContext instead of scattered is_denormalized checks
                     // Recreate the pattern schema context to determine JOIN strategy and node access patterns
-                    let pattern_ctx = match recreate_pattern_schema_context(graph_rel, schema) {
+                    let pattern_ctx = match recreate_pattern_schema_context(
+                        graph_rel, schema, plan_ctx,
+                    ) {
                         Ok(ctx) => ctx,
                         Err(e) => {
                             log::warn!("⚠️ Failed to recreate PatternSchemaContext, falling back to denormalized flag checks: {}", e);

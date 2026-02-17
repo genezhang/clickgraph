@@ -109,7 +109,7 @@ SCHEMAS = {
     SchemaType.STANDARD: SchemaConfig(
         name="social_integration",
         schema_type=SchemaType.STANDARD,
-        yaml_path="benchmarks/social_network/schemas/social_integration.yaml",
+        yaml_path="schemas/test/social_integration.yaml",
         node_labels=["User", "Post"],
         rel_types=["FOLLOWS", "AUTHORED", "LIKED"],
         node_props={

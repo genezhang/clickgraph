@@ -243,7 +243,7 @@ def test_engine_detection_and_final(load_auto_discovery_schema):
 def test_manual_schema_still_works():
     """Test that schemas without auto_discover_columns still work (backward compatibility)."""
     # Use the regular benchmark schema (no auto-discovery)
-    schema_path = "benchmarks/social_network/schemas/social_integration.yaml"
+    schema_path = "schemas/test/social_integration.yaml"
     if not os.path.exists(schema_path):
         pytest.skip("Benchmark schema not found")
 
