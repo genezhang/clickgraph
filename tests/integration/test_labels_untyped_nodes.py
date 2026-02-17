@@ -12,7 +12,7 @@ Test Coverage:
 """
 
 import pytest
-from tests.integration.conftest import execute_cypher
+from conftest import execute_cypher
 
 
 def test_labels_untyped_nodes_basic(connection_with_data):
