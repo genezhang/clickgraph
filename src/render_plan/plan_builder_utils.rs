@@ -6557,7 +6557,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
         plan_ctx.is_some()
     );
 
-    const MAX_WITH_ITERATIONS: usize = 10; // Safety limit to prevent infinite loops
+    // Safety limit to prevent infinite loops due to excessive plan tree depth
+    // Complex queries with many nested structures (projections, filters, WITH clauses, etc.)
+    // can create deep plan trees that require many iterations to process
+    const MAX_PLAN_DEPTH: usize = 500;
 
     let mut current_plan = plan.clone();
     let mut all_ctes: Vec<Cte> = Vec::new();
@@ -6671,6 +6674,30 @@ pub(crate) fn build_chained_with_match_cte_plan(
         }
     }
 
+    // Count plan tree depth to diagnose excessive iterations.
+    // Deep nesting can come from any combination of plan nodes (Projection, Filter, WITH, etc.)
+    fn count_plan_depth(plan: &LogicalPlan) -> usize {
+        match plan {
+            LogicalPlan::WithClause(wc) => 1 + count_plan_depth(&wc.input),
+            LogicalPlan::Projection(p) => 1 + count_plan_depth(&p.input),
+            LogicalPlan::Filter(f) => 1 + count_plan_depth(&f.input),
+            LogicalPlan::GroupBy(gb) => 1 + count_plan_depth(&gb.input),
+            LogicalPlan::OrderBy(ob) => 1 + count_plan_depth(&ob.input),
+            LogicalPlan::Limit(lim) => 1 + count_plan_depth(&lim.input),
+            LogicalPlan::Skip(skip) => 1 + count_plan_depth(&skip.input),
+            LogicalPlan::GraphJoins(gj) => 1 + count_plan_depth(&gj.input),
+            LogicalPlan::Union(u) => {
+                1 + u
+                    .inputs
+                    .iter()
+                    .map(|i| count_plan_depth(i))
+                    .max()
+                    .unwrap_or(0)
+            }
+            _ => 1, // Leaf nodes
+        }
+    }
+
     // Process WITH clauses iteratively until none remain
     while has_with_clause_in_graph_rel(&current_plan) {
         log::warn!("🔧 build_chained_with_match_cte_plan: has_with_clause_in_graph_rel(&current_plan) = true, entering loop");
@@ -6679,12 +6706,20 @@ pub(crate) fn build_chained_with_match_cte_plan(
             "🔧 build_chained_with_match_cte_plan: ========== ITERATION {} ==========",
             iteration
         );
-        if iteration > MAX_WITH_ITERATIONS {
-            log::warn!("🔧 build_chained_with_match_cte_plan: HIT ITERATION LIMIT! Current plan structure:");
+
+        let plan_depth = count_plan_depth(&current_plan);
+        log::warn!(
+            "🔧 build_chained_with_match_cte_plan: Plan tree depth = {} (iteration {})",
+            plan_depth,
+            iteration
+        );
+
+        if iteration > MAX_PLAN_DEPTH {
+            log::warn!("🔧 build_chained_with_match_cte_plan: HIT PLAN DEPTH LIMIT! Current plan structure:");
             show_plan_structure(&current_plan, 0);
             return Err(RenderBuildError::InvalidRenderPlan(format!(
-                "Exceeded maximum WITH clause iterations ({})",
-                MAX_WITH_ITERATIONS
+                "Query plan too deeply nested (depth > {}). This usually indicates a bug in query planning.",
+                MAX_PLAN_DEPTH
             )));
         }
 
@@ -6779,6 +6814,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
             std::collections::HashMap::new();
 
         for (alias, plans) in grouped_withs {
+            // CRITICAL: Skip aliases that were already processed in previous iterations
+            if processed_cte_aliases.contains(&alias) {
+                log::warn!("🔧 build_chained_with_match_cte_plan: Skipping alias '{}' - already processed in previous iteration", alias);
+                continue;
+            }
+
             // Record original count before filtering
             let original_count = plans.len();
 
@@ -8788,6 +8829,16 @@ pub(crate) fn build_chained_with_match_cte_plan(
             log::warn!("🔧 build_chained_with_match_cte_plan: Breaking after processing '{}' to re-discover plan structure", with_alias);
             break 'alias_loop;
         }
+
+        // DEBUG: Summary at end of iteration
+        let plan_depth_after = count_plan_depth(&current_plan);
+        log::warn!(
+            "🔧 build_chained_with_match_cte_plan: END ITERATION {} - Plan depth: {} → {} (processed: {})",
+            iteration,
+            plan_depth,
+            plan_depth_after,
+            any_processed_this_iteration
+        );
 
         // If no aliases were processed this iteration, break to avoid infinite loop
         // This can happen when all remaining WITH clauses are passthrough wrappers
@@ -11771,18 +11822,22 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
         {
             let mut mapping = HashMap::new();
             let mut db_to_cypher = HashMap::new(); // Reverse: DB column → Cypher property
-            let alias_prefix = with_alias;
+
+            // Parse the composite with_alias into individual aliases
+            // e.g., "fids_p" → ["fids", "p"] (from exported_aliases tracked earlier)
+            // We need individual aliases to match CTE column names like "p1_p_id"
 
             // Build mappings from SelectItems
             for item in select_items {
                 if let Some(cte_col_alias) = &item.col_alias {
                     let cte_col_name = &cte_col_alias.0;
 
-                    // Extract Cypher property name from CTE column (format: "alias_property")
-                    if let Some(cypher_prop) =
-                        cte_col_name.strip_prefix(&format!("{}_", alias_prefix))
+                    // Use the proper p{N} CTE column naming parser for unambiguous decoding
+                    if let Some((col_alias, cypher_prop)) =
+                        crate::utils::cte_column_naming::parse_cte_column(cte_col_name)
                     {
                         // Primary: Cypher property → CTE column
+                        // Key format: "alias.property" so downstream property access works
                         mapping.insert(
                             cypher_prop.to_string(),
                             PropertyValue::Column(cte_col_name.clone()),
@@ -11794,11 +11849,11 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
 
                             // Detect conflicts: multiple Cypher properties using same DB column
                             if let Some(existing_cypher) = db_to_cypher.get(db_col) {
-                                if existing_cypher != cypher_prop {
+                                if existing_cypher != &cypher_prop {
                                     log::warn!(
                                         "🔧 create_cte_reference: CONFLICT - DB column '{}' used by both Cypher '{}' and '{}'. \
-                                         Using '{}' (last wins). Queries using 'a.{}' may get wrong column!",
-                                        db_col, existing_cypher, cypher_prop, cypher_prop, existing_cypher
+                                         Using '{}' (last wins). Queries using '{}.{}' may get wrong column!",
+                                        db_col, existing_cypher, cypher_prop, cypher_prop, col_alias, existing_cypher
                                     );
                                 }
                             }
@@ -11808,12 +11863,20 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                             if db_col != cypher_prop {
                                 log::debug!(
                                     "🔧 create_cte_reference: Reverse mapping for '{}': DB '{}' ← Cypher '{}' → CTE '{}'",
-                                    with_alias, db_col, cypher_prop, cte_col_name
+                                    col_alias, db_col, cypher_prop, cte_col_name
                                 );
                             }
                         }
+                    } else if let Some(cypher_prop) =
+                        cte_col_name.strip_prefix(&format!("{}_", with_alias))
+                    {
+                        // Legacy fallback: try stripping composite alias prefix
+                        mapping.insert(
+                            cypher_prop.to_string(),
+                            PropertyValue::Column(cte_col_name.clone()),
+                        );
                     } else {
-                        // Fallback: identity mapping
+                        // Fallback: identity mapping (for non-property columns like "fids")
                         mapping.insert(
                             cte_col_name.clone(),
                             PropertyValue::Column(cte_col_name.clone()),
@@ -12152,53 +12215,101 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
             };
 
             let remapped_items = if should_remap {
-                // Extract property_mapping from the CTE reference and rebuild db_to_cypher from cte_schemas
+                // Extract property_mapping from the CTE reference and rebuild per-alias mappings
                 if let LogicalPlan::GraphNode(gn) = &new_input {
                     if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
-                        // Rebuild db_to_cypher mapping from cte_schemas
-                        let db_to_cypher = if let Some((select_items, _, _, _property_mapping)) =
-                            cte_schemas.get(&vs.source_table)
-                        {
-                            let mut mapping = HashMap::new();
-                            let alias_prefix = with_alias;
+                        // Build per-alias property mappings from CTE columns
+                        // For composite alias "fids_p", individual aliases are "fids" and "p"
+                        // CTE column "p1_p_id" maps to alias="p", property="id"
+                        let mut per_alias_mappings: HashMap<
+                            String,
+                            HashMap<String, crate::graph_catalog::expression_parser::PropertyValue>,
+                        > = HashMap::new();
+                        let mut per_alias_db_to_cypher: HashMap<String, HashMap<String, String>> =
+                            HashMap::new();
+
+                        if let Some((select_items, _, _, _)) = cte_schemas.get(&vs.source_table) {
                             for item in select_items {
                                 if let Some(cte_col_alias) = &item.col_alias {
                                     let cte_col_name = &cte_col_alias.0;
-                                    if let Some(cypher_prop) =
-                                        cte_col_name.strip_prefix(&format!("{}_", alias_prefix))
+                                    if let Some((col_alias, cypher_prop)) =
+                                        crate::utils::cte_column_naming::parse_cte_column(
+                                            cte_col_name,
+                                        )
                                     {
+                                        // Add to per-alias property mapping
+                                        per_alias_mappings
+                                            .entry(col_alias.to_string())
+                                            .or_default()
+                                            .insert(
+                                                cypher_prop.to_string(),
+                                                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                    cte_col_name.clone(),
+                                                ),
+                                            );
+
+                                        // Build reverse DB→Cypher mapping per alias
                                         if let RenderExpr::PropertyAccessExp(prop_access) =
                                             &item.expression
                                         {
                                             let db_col = prop_access.column.raw();
-                                            mapping.insert(
-                                                db_col.to_string(),
-                                                cypher_prop.to_string(),
-                                            );
+                                            per_alias_db_to_cypher
+                                                .entry(col_alias.to_string())
+                                                .or_default()
+                                                .insert(
+                                                    db_col.to_string(),
+                                                    cypher_prop.to_string(),
+                                                );
                                         }
                                     }
                                 }
                             }
-                            mapping
-                        } else {
-                            HashMap::new()
-                        };
+                        }
 
                         log::info!(
-                            "🔧 replace_v2: Remapping Projection items for CTE reference '{}' (alias='{}') with {} DB→Cypher mappings",
-                            vs.source_table, with_alias, db_to_cypher.len()
+                            "🔧 replace_v2: Remapping Projection items for CTE '{}' (alias='{}') with {} per-alias mappings: {:?}",
+                            vs.source_table,
+                            with_alias,
+                            per_alias_mappings.len(),
+                            per_alias_mappings.keys().collect::<Vec<_>>()
                         );
-                        proj.items
-                            .iter()
+
+                        // Remap each projection item against each individual alias
+                        let mut items: Vec<crate::query_planner::logical_plan::ProjectionItem> =
+                            proj.items.clone();
+                        for (alias, alias_mapping) in &per_alias_mappings {
+                            let alias_db_to_cypher = per_alias_db_to_cypher
+                                .get(alias)
+                                .cloned()
+                                .unwrap_or_default();
+                            items = items
+                                .into_iter()
+                                .map(|item| {
+                                    remap_projection_item(
+                                        item,
+                                        alias,
+                                        alias_mapping,
+                                        &alias_db_to_cypher,
+                                    )
+                                })
+                                .collect();
+                        }
+
+                        // Also remap against composite alias for non-property columns (e.g., "fids")
+                        let composite_db_to_cypher = HashMap::new();
+                        items = items
+                            .into_iter()
                             .map(|item| {
                                 remap_projection_item(
-                                    item.clone(),
+                                    item,
                                     with_alias,
                                     &vs.property_mapping,
-                                    &db_to_cypher,
+                                    &composite_db_to_cypher,
                                 )
                             })
-                            .collect()
+                            .collect();
+
+                        items
                     } else {
                         proj.items.clone()
                     }
