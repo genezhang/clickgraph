@@ -616,11 +616,155 @@ def load_all_test_data(clickhouse_client, test_database, setup_test_database):
         except Exception as e:
             print(f"  ⚠ test_integration (group_membership schema) data load failed: {e}")
     
+    def load_social_integration_data():
+        """Load social_integration schema tables (test_integration.*_test).
+        
+        These tables are separate from the test_fixtures tables (users, follows, etc.)
+        and use 'test_integration' database with '*_test' suffix to avoid confusion
+        with the brahmand database format.
+        
+        DDL based on scripts/test/setup_social_integration_data.sh
+        """
+        try:
+            # Users table
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS test_integration.users_test (
+                    user_id UInt32,
+                    full_name String,
+                    email_address String,
+                    age UInt8,
+                    registration_date Date,
+                    is_active UInt8,
+                    country String,
+                    city String
+                ) ENGINE = Memory
+            """)
+
+            # Posts table
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS test_integration.posts_test (
+                    post_id UInt32,
+                    post_title String,
+                    post_content String,
+                    post_date Date,
+                    author_id UInt32
+                ) ENGINE = Memory
+            """)
+
+            # User follows table
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS test_integration.user_follows_test (
+                    follow_id UInt32,
+                    follower_id UInt32,
+                    followed_id UInt32,
+                    follow_date Date
+                ) ENGINE = Memory
+            """)
+
+            # Post likes table
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS test_integration.post_likes_test (
+                    like_id UInt32,
+                    user_id UInt32,
+                    post_id UInt32,
+                    like_date Date
+                ) ENGINE = Memory
+            """)
+
+            # Insert users (30 rows)
+            clickhouse_client.command("""
+                INSERT INTO test_integration.users_test VALUES
+                    (1, 'Alice Johnson', 'alice@example.com', 28, '2020-01-15', 1, 'USA', 'New York'),
+                    (2, 'Bob Smith', 'bob@example.com', 32, '2019-05-20', 1, 'UK', 'London'),
+                    (3, 'Carol White', 'carol@example.com', 25, '2021-03-10', 1, 'Canada', 'Toronto'),
+                    (4, 'David Brown', 'david@example.com', 35, '2018-11-25', 1, 'Australia', 'Sydney'),
+                    (5, 'Eve Davis', 'eve@example.com', 29, '2020-07-08', 1, 'USA', 'San Francisco'),
+                    (6, 'Frank Miller', 'frank@example.com', 31, '2019-09-14', 1, 'Germany', 'Berlin'),
+                    (7, 'Grace Lee', 'grace@example.com', 27, '2020-12-01', 1, 'South Korea', 'Seoul'),
+                    (8, 'Henry Wilson', 'henry@example.com', 33, '2019-02-18', 1, 'USA', 'Chicago'),
+                    (9, 'Iris Martinez', 'iris@example.com', 26, '2021-06-22', 1, 'Spain', 'Madrid'),
+                    (10, 'Jack Taylor', 'jack@example.com', 30, '2020-04-11', 1, 'USA', 'Boston'),
+                    (11, 'Kate Anderson', 'kate@example.com', 28, '2020-08-19', 1, 'UK', 'Manchester'),
+                    (12, 'Liam Thomas', 'liam@example.com', 34, '2018-10-05', 1, 'Ireland', 'Dublin'),
+                    (13, 'Mia Jackson', 'mia@example.com', 24, '2021-01-30', 1, 'USA', 'Austin'),
+                    (14, 'Noah Harris', 'noah@example.com', 36, '2017-12-12', 1, 'Canada', 'Vancouver'),
+                    (15, 'Olivia Clark', 'olivia@example.com', 29, '2020-05-25', 1, 'Australia', 'Melbourne'),
+                    (16, 'Paul Lewis', 'paul@example.com', 31, '2019-07-14', 1, 'USA', 'Seattle'),
+                    (17, 'Quinn Walker', 'quinn@example.com', 27, '2020-11-08', 1, 'UK', 'Edinburgh'),
+                    (18, 'Rachel Hall', 'rachel@example.com', 25, '2021-02-16', 1, 'USA', 'Portland'),
+                    (19, 'Sam Allen', 'sam@example.com', 32, '2019-04-22', 1, 'Canada', 'Montreal'),
+                    (20, 'Tina Young', 'tina@example.com', 28, '2020-09-03', 1, 'USA', 'Denver'),
+                    (21, 'Uma King', 'uma@example.com', 26, '2021-05-17', 1, 'India', 'Mumbai'),
+                    (22, 'Victor Wright', 'victor@example.com', 35, '2018-08-29', 1, 'USA', 'Miami'),
+                    (23, 'Wendy Lopez', 'wendy@example.com', 30, '2020-03-12', 1, 'Mexico', 'Mexico City'),
+                    (24, 'Xavier Hill', 'xavier@example.com', 33, '2019-06-05', 1, 'USA', 'Dallas'),
+                    (25, 'Yara Scott', 'yara@example.com', 27, '2020-10-20', 1, 'UAE', 'Dubai'),
+                    (26, 'Zack Green', 'zack@example.com', 29, '2020-02-14', 1, 'USA', 'Phoenix'),
+                    (27, 'Amy Adams', 'amy@example.com', 31, '2019-11-30', 1, 'UK', 'Bristol'),
+                    (28, 'Ben Baker', 'ben@example.com', 28, '2020-07-25', 1, 'USA', 'Atlanta'),
+                    (29, 'Chloe Carter', 'chloe@example.com', 26, '2021-04-08', 1, 'Canada', 'Calgary'),
+                    (30, 'Dan Foster', 'dan@example.com', 34, '2018-09-16', 0, 'USA', 'Detroit')
+            """)
+
+            # Insert posts (20 rows - representative subset)
+            clickhouse_client.command("""
+                INSERT INTO test_integration.posts_test VALUES
+                    (1, 'Introduction', 'Hello everyone!', '2023-01-01', 1),
+                    (2, 'First Post', 'My first post here', '2023-01-02', 2),
+                    (3, 'Tech News', 'Latest in technology', '2023-01-03', 3),
+                    (4, 'Travel Blog', 'My trip to Europe', '2023-01-04', 4),
+                    (5, 'Cooking Tips', 'Best pasta recipe', '2023-01-05', 5),
+                    (6, 'Music Review', 'New album review', '2023-01-06', 6),
+                    (7, 'Book Club', 'This months book', '2023-01-07', 7),
+                    (8, 'Fitness Journey', 'Week 1 progress', '2023-01-08', 8),
+                    (9, 'Photography', 'Sunset shots', '2023-01-09', 9),
+                    (10, 'Gaming News', 'New game release', '2023-01-10', 10),
+                    (11, 'Movie Review', 'Latest blockbuster', '2023-01-11', 1),
+                    (12, 'DIY Projects', 'Home improvement', '2023-01-12', 2),
+                    (13, 'Pet Stories', 'My dogs adventure', '2023-01-13', 3),
+                    (14, 'Fashion Trends', 'Spring collection', '2023-01-14', 4),
+                    (15, 'Career Advice', 'Job hunting tips', '2023-01-15', 5),
+                    (16, 'Investment Tips', 'Stock market basics', '2023-01-16', 6),
+                    (17, 'Gardening', 'Growing tomatoes', '2023-01-17', 7),
+                    (18, 'Art Exhibition', 'Local art show', '2023-01-18', 8),
+                    (19, 'Science Facts', 'Space discoveries', '2023-01-19', 9),
+                    (20, 'History Lesson', 'Ancient Rome', '2023-01-20', 10)
+            """)
+
+            # Insert follows (20 rows - representative subset)
+            clickhouse_client.command("""
+                INSERT INTO test_integration.user_follows_test VALUES
+                    (1, 1, 2, '2023-01-01'), (2, 1, 3, '2023-01-02'), (3, 1, 5, '2023-01-03'),
+                    (4, 2, 1, '2023-01-04'), (5, 2, 4, '2023-01-05'), (6, 2, 6, '2023-01-06'),
+                    (7, 3, 1, '2023-01-07'), (8, 3, 7, '2023-01-08'), (9, 3, 8, '2023-01-09'),
+                    (10, 4, 2, '2023-01-10'), (11, 4, 9, '2023-01-11'), (12, 4, 10, '2023-01-12'),
+                    (13, 5, 1, '2023-01-13'), (14, 5, 11, '2023-01-14'), (15, 5, 12, '2023-01-15'),
+                    (16, 6, 2, '2023-01-16'), (17, 6, 13, '2023-01-17'), (18, 6, 14, '2023-01-18'),
+                    (19, 7, 3, '2023-01-19'), (20, 7, 15, '2023-01-20')
+            """)
+
+            # Insert likes (20 rows - representative subset)
+            clickhouse_client.command("""
+                INSERT INTO test_integration.post_likes_test VALUES
+                    (1, 1, 2, '2023-01-02'), (2, 1, 3, '2023-01-03'), (3, 1, 5, '2023-01-05'),
+                    (4, 2, 1, '2023-01-01'), (5, 2, 3, '2023-01-03'), (6, 2, 6, '2023-01-06'),
+                    (7, 3, 1, '2023-01-01'), (8, 3, 7, '2023-01-07'), (9, 3, 8, '2023-01-08'),
+                    (10, 4, 2, '2023-01-02'), (11, 4, 9, '2023-01-09'), (12, 4, 10, '2023-01-10'),
+                    (13, 5, 1, '2023-01-01'), (14, 5, 11, '2023-01-11'), (15, 5, 12, '2023-01-12'),
+                    (16, 6, 2, '2023-01-02'), (17, 6, 13, '2023-01-13'), (18, 6, 14, '2023-01-14'),
+                    (19, 7, 3, '2023-01-03'), (20, 7, 15, '2023-01-15')
+            """)
+
+            print("  ✓ test_integration (social_integration schema) data loaded")
+        except Exception as e:
+            print(f"  ⚠ test_integration (social_integration schema) data load failed: {e}")
+
     # Load each schema's data independently
     load_test_integration_data()
     load_brahmand_data()
     load_filesystem_data()
     load_group_membership_data()
+    load_social_integration_data()
     
     print("✅ All test data loaded successfully\n")
 
@@ -762,7 +906,7 @@ def simple_graph(clickhouse_client, test_database, clean_database):
     # mapped to brahmand database (from multi-schema config)
     return {
         "schema_name": "test_fixtures",  # Use test_fixtures schema from multi-schema config
-        "database": "brahmand",        # Physical ClickHouse database where tables exist (NOTE: changed from test_integration)
+        "database": "test_integration",  # Physical ClickHouse database where tables exist
         "nodes": {
             "TestUser": {  # Changed from "User" to match unified schema
                 "table": "users",

@@ -18,7 +18,7 @@ so subsequent JOINs use CTE references.
 Test dependencies:
 - ClickGraph server running on localhost:8080
 - social_integration schema loaded
-- brahmand.users_bench and brahmand.posts_bench tables populated
+- test_integration.users_test and test_integration.posts_test tables populated
 """
 
 import pytest
@@ -103,7 +103,7 @@ class TestJoinContextVLPChained:
         assert "WITH RECURSIVE" in sql
         assert "vlp_u1_u2" in sql
         # Post table should JOIN on CTE endpoint
-        assert "posts_bench" in sql
+        assert "posts_test" in sql
 
     def test_vlp_chained_with_intermediate_properties(self):
         """

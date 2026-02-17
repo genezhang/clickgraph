@@ -11,6 +11,7 @@ schemas:
             user_id: user_id
             name: full_name
             email: email_address
+            age: age
             registration_date: registration_date
             is_active: is_active
             country: country
@@ -21,8 +22,10 @@ schemas:
           node_id: post_id
           property_mappings:
             post_id: post_id
-            content: content
-            date: created_at
+            title: post_title
+            content: post_content
+            created_at: post_date
+            author_id: author_id
       edges:
         - type: AUTHORED
           database: test_integration
@@ -31,11 +34,13 @@ schemas:
           to_id: post_id
           from_node: User
           to_node: Post
+          is_denormalized: true
         - type: FOLLOWS
           database: test_integration
           table: user_follows_test
           from_id: follower_id
           to_id: followed_id
+          edge_id: follow_id
           from_node: User
           to_node: User
           property_mappings:
@@ -45,10 +50,11 @@ schemas:
           table: post_likes_test
           from_id: user_id
           to_id: post_id
+          edge_id: like_id
           from_node: User
           to_node: Post
           property_mappings:
-            liked_at: liked_at
+            like_date: like_date
 
   - name: test_fixtures
     graph_schema:
