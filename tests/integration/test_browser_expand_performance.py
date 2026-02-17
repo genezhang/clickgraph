@@ -28,7 +28,6 @@ import time
 from typing import Dict, Any, List, Tuple
 from conftest import (
     execute_cypher,
-    execute_http_query,
     assert_query_success
 )
 
