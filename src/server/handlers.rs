@@ -729,6 +729,7 @@ async fn query_handler_inner(
 
             // Schema context is already set via with_query_context() at handler entry
             // Use to_render_plan_with_ctx to pass analysis-phase metadata (VLP endpoints, etc.)
+
             let render_plan =
                 match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx)) {
                     Ok(plan) => plan,
