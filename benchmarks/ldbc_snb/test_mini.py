@@ -44,7 +44,7 @@ MINI_PARAMS = {
     "bi-9": {"tagClass1": "Technology", "tagClass2": "Entertainment", "threshold": 1, "startDate": 1275000000000, "endDate": 1277000000000},
     "bi-11": {"country": "Germany", "blocklist": ["Chrome"]},
     "bi-12": {"startDate": 1275000000000, "lengthThreshold": 10, "languages": ["en"]},
-    "bi-13": {"country": "Germany"},
+    "bi-13": {"country": "Germany", "endDate": 1277000000000},
     "bi-14": {"begin": 1275000000000, "end": 1277000000000},
     "bi-16": {"personId": 1, "country": "Germany", "tagClass": "Technology", "minPathDistance": 1, "maxPathDistance": 3},
     "bi-17": {"tag": "Databases", "delta": 86400000},
