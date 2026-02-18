@@ -2414,19 +2414,22 @@ impl ToSql for Cte {
                         has_custom_select || has_order_by_skip_limit || has_group_by;
 
                     if needs_subquery {
-                        // Wrap UNION in a subquery to apply SELECT projection, ORDER BY/LIMIT/SKIP, or GROUP BY
-                        if has_custom_select {
-                            // Use custom SELECT items (e.g., WITH friend.firstName AS name)
-                            cte_body.push_str(&plan.select.to_sql());
-                        } else {
-                            cte_body.push_str("SELECT * ");
-                        }
-                        cte_body.push_str("FROM (\n");
+                        // When the plan has its own FROM (bidirectional UNION), push the
+                        // SELECT projection into each UNION branch instead of using
+                        // SELECT * — avoids unresolvable table-qualified column refs.
+                        let has_modifiers = has_group_by || has_order_by_skip_limit
+                            || plan.having_clause.is_some();
 
-                        // If the base plan has its own FROM (e.g., forward VLP direction),
-                        // render it as the first UNION branch before the union.input branches.
-                        if plan.from.0.is_some() {
-                            cte_body.push_str("SELECT *\n");
+                        if has_custom_select && plan.from.0.is_some() {
+                            let select_sql = plan.select.to_sql();
+
+                            if has_modifiers {
+                                // Need wrapper for GROUP BY/HAVING/ORDER BY/LIMIT
+                                cte_body.push_str("SELECT * FROM (\n");
+                            }
+
+                            // First branch: plan's own FROM with projected SELECT
+                            cte_body.push_str(&select_sql);
                             cte_body.push_str(&plan.from.to_sql());
                             cte_body.push_str(&plan.joins.to_sql());
                             cte_body.push_str(&plan.filters.to_sql());
@@ -2438,26 +2441,53 @@ impl ToSql for Cte {
                                 };
                                 for branch in &union.input {
                                     cte_body.push_str(union_type_str);
-                                    // Use SELECT * for union branches too — column names
-                                    // from VLP CTEs use start_/end_ prefixes that the outer
-                                    // WITH projection already knows how to reference.
-                                    cte_body.push_str("SELECT *\n");
+                                    // Each branch gets the same SELECT projection
+                                    cte_body.push_str(&select_sql);
                                     cte_body.push_str(&branch.from.to_sql());
                                     cte_body.push_str(&branch.joins.to_sql());
                                     cte_body.push_str(&branch.filters.to_sql());
                                 }
                             }
+
+                            if has_modifiers {
+                                cte_body.push_str(") AS __union\n");
+                            }
                         } else {
-                            cte_body.push_str(&plan.union.to_sql());
-                        }
+                            // No custom select or no plan.from: use existing wrapper pattern
+                            if has_custom_select {
+                                cte_body.push_str(&plan.select.to_sql());
+                            } else {
+                                cte_body.push_str("SELECT * ");
+                            }
+                            cte_body.push_str("FROM (\n");
 
-                        cte_body.push_str(") AS __union\n");
+                            if plan.from.0.is_some() {
+                                // First branch without custom select — use branch's own select
+                                cte_body.push_str(&plan.select.to_sql());
+                                cte_body.push_str(&plan.from.to_sql());
+                                cte_body.push_str(&plan.joins.to_sql());
+                                cte_body.push_str(&plan.filters.to_sql());
 
-                        // Render outer JOINs only when NOT already inside UNION branches.
-                        // When plan.from.is_some() (undirected VLP), JOINs were already
-                        // rendered inside each UNION branch at lines above.
-                        if plan.from.0.is_none() {
-                            cte_body.push_str(&plan.joins.to_sql());
+                                if let Some(union) = &plan.union.0 {
+                                    let union_type_str = match union.union_type {
+                                        UnionType::Distinct => "UNION DISTINCT \n",
+                                        UnionType::All => "UNION ALL \n",
+                                    };
+                                    for branch in &union.input {
+                                        cte_body.push_str(union_type_str);
+                                        cte_body.push_str(&render_union_branch_sql(branch));
+                                    }
+                                }
+                            } else {
+                                cte_body.push_str(&plan.union.to_sql());
+                            }
+
+                            cte_body.push_str(") AS __union\n");
+
+                            // Outer JOINs only when NOT already inside UNION branches
+                            if plan.from.0.is_none() {
+                                cte_body.push_str(&plan.joins.to_sql());
+                            }
                         }
 
                         // Add GROUP BY if present (for aggregations)
@@ -2479,9 +2509,7 @@ impl ToSql for Cte {
                             } else {
                                 "".to_string()
                             };
-                            // ClickHouse requires LIMIT if OFFSET is present
-                            // Use a very large number if only SKIP is specified
-                            let limit_val = plan.limit.0.unwrap_or(9223372036854775807i64); // i64::MAX
+                            let limit_val = plan.limit.0.unwrap_or(9223372036854775807i64);
                             cte_body.push_str(&format!("LIMIT {skip_str}{limit_val}\n"));
                         }
                     } else {

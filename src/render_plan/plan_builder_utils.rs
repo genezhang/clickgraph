@@ -3111,6 +3111,81 @@ fn collect_with_cte_table_aliases(
     result
 }
 
+/// Rewrite join conditions in a rendered plan that reference CTE aliases.
+/// When a join condition uses `cte_alias.base_column` (e.g., `friend.id`),
+/// replace it with the CTE's prefixed column (e.g., `friend.p6_friend_id`).
+fn rewrite_join_conditions_for_cte_aliases(
+    plan: &mut crate::render_plan::RenderPlan,
+    cte_references: &std::collections::HashMap<String, String>,
+    cte_schemas: &super::CteSchemas,
+) {
+    use crate::render_plan::render_expr::RenderExpr;
+
+    fn rewrite_expr_for_cte(
+        expr: RenderExpr,
+        cte_references: &std::collections::HashMap<String, String>,
+        cte_schemas: &super::CteSchemas,
+    ) -> RenderExpr {
+        match expr {
+            RenderExpr::PropertyAccessExp(mut pa) => {
+                let alias = &pa.table_alias.0;
+                if let Some(cte_name) = cte_references.get(alias) {
+                    if let Some((_items, _names, _alias_to_id, prop_map)) = cte_schemas.get(cte_name) {
+                        let col_name = match &pa.column {
+                            crate::graph_catalog::expression_parser::PropertyValue::Column(c) => c.clone(),
+                            crate::graph_catalog::expression_parser::PropertyValue::Expression(e) => e.clone(),
+                        };
+                        // Look up (alias, column) → CTE column name
+                        if let Some(cte_col) = prop_map.get(&(alias.clone(), col_name.clone())) {
+                            log::info!(
+                                "🔧 rewrite_join_cte: {}.{} → {}.{}",
+                                alias, col_name, alias, cte_col
+                            );
+                            pa.column = crate::graph_catalog::expression_parser::PropertyValue::Column(cte_col.clone());
+                        }
+                    }
+                }
+                RenderExpr::PropertyAccessExp(pa)
+            }
+            RenderExpr::OperatorApplicationExp(mut op) => {
+                op.operands = op.operands.into_iter()
+                    .map(|o| rewrite_expr_for_cte(o, cte_references, cte_schemas))
+                    .collect();
+                RenderExpr::OperatorApplicationExp(op)
+            }
+            other => other,
+        }
+    }
+
+    for join in &mut plan.joins.0 {
+        for op in &mut join.joining_on {
+            let rewritten = rewrite_expr_for_cte(
+                RenderExpr::OperatorApplicationExp(op.clone()),
+                cte_references,
+                cte_schemas,
+            );
+            if let RenderExpr::OperatorApplicationExp(new_op) = rewritten {
+                *op = new_op;
+            }
+        }
+    }
+
+    // Also rewrite FROM table if it references a CTE
+    if let crate::render_plan::FromTableItem(Some(ref mut from_ref)) = plan.from {
+        if let Some(alias) = &from_ref.alias {
+            if let Some(cte_name) = cte_references.get(alias) {
+                if from_ref.name != *cte_name {
+                    log::info!(
+                        "🔧 rewrite_join_cte: Updating FROM table '{}' → '{}' for alias '{}'",
+                        from_ref.name, cte_name, alias
+                    );
+                    from_ref.name = cte_name.clone();
+                }
+            }
+        }
+    }
+}
+
 /// Rewrite all occurrences of `old_alias` → `new_alias` in PropertyAccessExp table_alias
 /// across SELECT, JOINs, WHERE, ORDER BY, and UNION branches.
 /// Used when preserving the original node alias (e.g., "a") instead of
@@ -7601,10 +7676,16 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     }
                 }
 
-                // REMOVED: JOIN condition rewriting (Phase 3D)
-                // Previously, this code rewrote JOIN conditions to use CTE column names.
-                // Now obsolete: the analyzer (GraphJoinInference) resolves column names
-                // during join creation, so JOIN conditions already have correct names.
+                // Rewrite join conditions that reference CTE aliases to use CTE column names.
+                // The analyzer generates joins with base-table columns (e.g., friend.id),
+                // but after a WITH barrier, "friend" is a CTE with prefixed columns (e.g., p6_friend_id).
+                if !cte_references.is_empty() {
+                    rewrite_join_conditions_for_cte_aliases(
+                        &mut rendered,
+                        &cte_references,
+                        &cte_schemas,
+                    );
+                }
 
                 rendered_plans.push(rendered);
             }
