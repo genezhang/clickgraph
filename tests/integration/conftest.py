@@ -368,6 +368,14 @@ def load_all_test_data(clickhouse_client, test_database, setup_test_database):
                 ) ENGINE = Memory
             """)
             
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS test_integration.friendships (
+                    user_id_1 UInt32,
+                    user_id_2 UInt32,
+                    since String
+                ) ENGINE = Memory
+            """)
+            
             # Insert test_integration data
             clickhouse_client.command("""
                 INSERT INTO test_integration.users VALUES
@@ -402,6 +410,13 @@ def load_all_test_data(clickhouse_client, test_database, setup_test_database):
                     (3, 101, '2024-02-01', 1),
                     (4, 103, '2024-02-10', 1),
                     (1, 102, '2024-02-15', 3)
+            """)
+            
+            clickhouse_client.command("""
+                INSERT INTO test_integration.friendships VALUES
+                    (1, 2, '2022-05-10'),
+                    (3, 4, '2022-08-15'),
+                    (2, 5, '2023-01-20')
             """)
             
             print("  ✓ test_integration (basic) data loaded")

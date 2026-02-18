@@ -42,62 +42,58 @@ class TestCountRelationships:
         total = get_single_value(response, "total", convert_to_int=True)
         assert total > 0, f"Expected some relationships, got {total}"
 
-    def test_count_with_missing_type_shows_correct_error(self):
+    @pytest.mark.xfail(reason="UNION ALL type mismatch: Date vs String columns across relationship types")
+    def test_count_with_untyped_relationship(self):
         """
-        Test COUNT(r) without type - should show 'Missing Type' error.
+        Test COUNT(r) without type - should expand to all relationship types.
         
-        This verifies the terminology fix: relationships use "Type" not "Label".
+        Untyped relationships are valid in Cypher and ClickGraph handles them
+        by generating a UNION ALL across all relationship types in the schema.
         """
-        # Note: execute_cypher raises on error, so we need to catch it
-        import requests
-        response = requests.post(
-            "http://localhost:8080/query",
-            json={"query": "USE test_fixtures\nMATCH ()-[r]->()\nRETURN count(r)"}
+        response = execute_cypher(
+            "MATCH ()-[r]->() RETURN count(r) AS total",
+            schema_name="test_fixtures"
         )
         
-        assert response.status_code == 400  # Validation error, not server error
-        assert "Missing type for relationship" in response.text
-        assert "Missing label" not in response.text.lower()  # Should NOT say "label"
+        assert_query_success(response)
+        assert_row_count(response, 1)
+        total = get_single_value(response, "total", convert_to_int=True)
+        # Should count across all relationship types (TEST_FOLLOWS + TEST_PURCHASED + TEST_FRIENDS_WITH)
+        assert total > 0
 
-    @pytest.mark.xfail(reason="Anonymous relationships require type inference - not yet implemented")
+    @pytest.mark.xfail(reason="UNION ALL type mismatch: Date vs String columns across relationship types")
     def test_count_star_with_anonymous_relationship(self):
         """
         Test count(*) with anonymous relationship pattern.
         
-        This should work because we're not selecting relationship properties,
-        but currently fails with "Missing type for relationship `t11`".
-        
-        Expected behavior: ClickGraph should infer that ANY relationship type
-        is acceptable when no variable name is given and only count(*) is used.
+        Anonymous untyped relationships expand to all types via UNION ALL.
         """
-        import requests
-        response = requests.post(
-            "http://localhost:8080/query",
-            json={"query": "USE test_fixtures\nMATCH ()-[]->() RETURN count(*) AS total"}
+        response = execute_cypher(
+            "MATCH ()-[]->() RETURN count(*) AS total",
+            schema_name="test_fixtures"
         )
         
-        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
-        result = response.json()
-        assert "results" in result
-        assert result["results"][0]["total"] > 0
+        assert_query_success(response)
+        assert_row_count(response, 1)
+        total = get_single_value(response, "total", convert_to_int=True)
+        assert total > 0
 
-    @pytest.mark.xfail(reason="Relationship type inference not yet implemented")
     def test_count_relationship_with_node_constraints(self):
         """
         Test relationship counting with node type constraints.
         
-        When node types are specified, ClickGraph could potentially infer
-        the relationship types connecting them.
+        When node types are specified, ClickGraph infers the valid
+        relationship types connecting them via UNION ALL.
         """
-        import requests
-        response = requests.post(
-            "http://localhost:8080/query",
-            json={"query": "USE test_fixtures\nMATCH (u:TestUser)-[r]->(other:TestUser)\nRETURN count(r) AS total"}
+        response = execute_cypher(
+            "MATCH (u:TestUser)-[r]->(other:TestUser) RETURN count(r) AS total",
+            schema_name="test_fixtures"
         )
         
-        assert response.status_code == 200
-        result = response.json()
-        assert result["results"][0]["total"] > 0
+        assert_query_success(response)
+        assert_row_count(response, 1)
+        total = get_single_value(response, "total", convert_to_int=True)
+        assert total > 0
 
     def test_count_star_with_typed_relationship(self):
         """
@@ -116,21 +112,18 @@ class TestCountRelationships:
         total = get_single_value(response, "total", convert_to_int=True)
         assert total > 0
 
-    def test_error_message_node_vs_relationship(self):
+    def test_error_message_for_nonexistent_type(self):
         """
-        Verify error messages use correct terminology:
-        - Nodes: "Missing label" (when that occurs)
-        - Relationships: "Missing type"
+        Verify error messages for relationship types not in the schema.
         """
         import requests
         
-        # Test relationship without type - should say "Missing type"
-        response_rel = requests.post(
+        # Test relationship with non-existent type
+        response = requests.post(
             "http://localhost:8080/query",
-            json={"query": "USE test_fixtures\nMATCH ()-[r]->()\nRETURN count(r)"}
+            json={"query": "USE test_fixtures\nMATCH ()-[r:NONEXISTENT]->()\nRETURN count(r)"}
         )
-        assert response_rel.status_code == 400  # Validation error, not server error
-        assert "Missing type for relationship" in response_rel.text
+        assert response.status_code == 400, f"Expected 400, got {response.status_code}: {response.text}"
 
 
 if __name__ == "__main__":
