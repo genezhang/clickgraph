@@ -2315,21 +2315,11 @@ fn get_property_from_viewscan(alias: &str, property: &str, plan: &LogicalPlan) -
             get_property_from_viewscan(alias, property, &group_by.input)
         }
         LogicalPlan::Cte(cte) => get_property_from_viewscan(alias, property, &cte.input),
-        LogicalPlan::ViewScan(scan) => {
-            // Direct ViewScan (not wrapped in GraphNode) - check property_mapping
-            if let Some(prop_value) = scan.property_mapping.get(property) {
-                return Some(prop_value.raw().to_string());
-            }
-            if let Some(from_props) = &scan.from_node_properties {
-                if let Some(prop_value) = from_props.get(property) {
-                    return Some(prop_value.raw().to_string());
-                }
-            }
-            if let Some(to_props) = &scan.to_node_properties {
-                if let Some(prop_value) = to_props.get(property) {
-                    return Some(prop_value.raw().to_string());
-                }
-            }
+        LogicalPlan::ViewScan(_scan) => {
+            // Bare ViewScan without wrapping GraphNode: skip.
+            // Alias-based lookups should only match through GraphNode (line 2268)
+            // which verifies the alias. Matching bare ViewScans causes cross-alias
+            // contamination (e.g., f2.firstName picking up f's CTE property_mapping).
             None
         }
         _ => None,

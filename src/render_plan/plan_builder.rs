@@ -3191,6 +3191,12 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
             }
 
+            // Apply scope-based property resolution to the render plan.
+            // This replaces the post-loop reverse_mapping hack for CTE-scoped variables.
+            if let Some(s) = scope {
+                super::variable_scope::rewrite_render_plan_with_scope(&mut render_plan, s);
+            }
+
             return Ok(render_plan);
         }
 

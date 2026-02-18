@@ -86,11 +86,12 @@ impl<'a> VariableScope<'a> {
     /// Resolve alias.property → actual column reference.
     ///
     /// Resolution order:
-    /// 1. CTE variable? → forward CTE lookup (CTE column name)
-    /// 2. Table variable? → schema lookup (DB column name)
-    /// 3. Neither → Unresolved (caller falls back to existing logic)
+    /// 1. CTE variable (by Cypher alias)? → forward CTE lookup (CTE column name)
+    /// 2. CTE variable (by CTE name)? → handles JOIN conditions using CTE table names
+    /// 3. Table variable? → schema lookup (DB column name)
+    /// 4. Neither → Unresolved (caller falls back to existing logic)
     pub fn resolve(&self, alias: &str, cypher_property: &str) -> ResolvedProperty {
-        // 1. Check CTE variables first (post-WITH scope)
+        // 1. Check CTE variables by Cypher alias (e.g., "friend" → with_friend_cte_0)
         if let Some(cte_info) = self.cte_variables.get(alias) {
             if let Some(cte_col) = cte_info.property_mapping.get(cypher_property) {
                 log::debug!(
@@ -113,7 +114,25 @@ impl<'a> VariableScope<'a> {
             return ResolvedProperty::Unresolved;
         }
 
-        // 2. Check table variables via schema
+        // 2. Check if alias is a CTE name (e.g., "with_friend_cte_0.id" in JOIN conditions)
+        if let Some(cte_info) = self.find_by_cte_name(alias) {
+            if let Some(cte_col) = cte_info.property_mapping.get(cypher_property) {
+                log::debug!(
+                    "VariableScope: {}.{} → CTE column (by cte_name) {}.{}",
+                    alias,
+                    cypher_property,
+                    cte_info.cte_name,
+                    cte_col
+                );
+                return ResolvedProperty::CteColumn {
+                    cte_name: cte_info.cte_name.clone(),
+                    column: cte_col.clone(),
+                };
+            }
+            return ResolvedProperty::Unresolved;
+        }
+
+        // 3. Check table variables via schema
         if let Some(label) = find_label_for_alias_in_plan(self.plan, alias) {
             if let Ok(db_col) = map_property_to_db_column(cypher_property, &label) {
                 log::debug!(
@@ -128,6 +147,14 @@ impl<'a> VariableScope<'a> {
         }
 
         ResolvedProperty::Unresolved
+    }
+
+    /// Find CTE info by CTE name (reverse lookup).
+    /// Used when JOIN conditions reference CTE table names directly.
+    fn find_by_cte_name(&self, cte_name: &str) -> Option<&CteVariableInfo> {
+        self.cte_variables
+            .values()
+            .find(|info| info.cte_name == cte_name)
     }
 
     /// Check if an alias is a CTE-scoped variable.
@@ -200,6 +227,193 @@ impl<'a> VariableScope<'a> {
     /// Used for rebuilding scope after plan tree mutation.
     pub fn cte_variables(&self) -> &HashMap<String, CteVariableInfo> {
         &self.cte_variables
+    }
+}
+
+// --- Scope-aware RenderPlan rewriting ---
+
+use super::render_expr::{
+    OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+};
+use super::{FilterItems, GroupByExpressions, OrderByItems, RenderPlan, SelectItem};
+use crate::graph_catalog::expression_parser::PropertyValue;
+
+/// Rewrite all expressions in a RenderPlan using scope-based resolution.
+/// CTE-scoped variables get their table_alias rewritten to the CTE name
+/// and their column rewritten to the CTE column name.
+pub fn rewrite_render_plan_with_scope(plan: &mut RenderPlan, scope: &VariableScope) {
+    // Rewrite SELECT items
+    for item in &mut plan.select.items {
+        item.expression = rewrite_render_expr(&item.expression, scope);
+    }
+
+    // Rewrite WHERE filters
+    if let FilterItems(Some(ref filter)) = plan.filters {
+        let rewritten = rewrite_render_expr(filter, scope);
+        plan.filters = FilterItems(Some(rewritten));
+    }
+
+    // Rewrite ORDER BY
+    for item in &mut plan.order_by.0 {
+        item.expression = rewrite_render_expr(&item.expression, scope);
+    }
+
+    // Rewrite GROUP BY
+    let rewritten_gb: Vec<RenderExpr> = plan
+        .group_by
+        .0
+        .iter()
+        .map(|expr| rewrite_render_expr(expr, scope))
+        .collect();
+    plan.group_by = GroupByExpressions(rewritten_gb);
+
+    // Rewrite HAVING
+    if let Some(ref having) = plan.having_clause {
+        plan.having_clause = Some(rewrite_render_expr(having, scope));
+    }
+
+    // Rewrite JOIN conditions
+    for join in &mut plan.joins.0 {
+        for cond in &mut join.joining_on {
+            cond.operands = cond
+                .operands
+                .iter()
+                .map(|op| rewrite_render_expr(op, scope))
+                .collect();
+        }
+        if let Some(ref pre_filter) = join.pre_filter {
+            join.pre_filter = Some(rewrite_render_expr(pre_filter, scope));
+        }
+    }
+}
+
+/// Recursively rewrite a RenderExpr using scope resolution.
+/// PropertyAccessExp(alias, property) is resolved via scope:
+/// - CteColumn → PropertyAccessExp(cte_name, cte_column)
+/// - DbColumn → PropertyAccessExp(alias, db_column)
+/// - Unresolved → unchanged
+pub fn rewrite_render_expr(expr: &RenderExpr, scope: &VariableScope) -> RenderExpr {
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            let alias = &pa.table_alias.0;
+            let property_name = match &pa.column {
+                PropertyValue::Column(col) => col.as_str(),
+                PropertyValue::Expression(_) => return expr.clone(),
+            };
+            match scope.resolve(alias, property_name) {
+                ResolvedProperty::CteColumn { cte_name, column } => {
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(cte_name),
+                        column: PropertyValue::Column(column),
+                    })
+                }
+                ResolvedProperty::DbColumn(db_col) => {
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: pa.table_alias.clone(),
+                        column: PropertyValue::Column(db_col),
+                    })
+                }
+                ResolvedProperty::Unresolved => expr.clone(),
+            }
+        }
+        RenderExpr::OperatorApplicationExp(oa) => {
+            let rewritten_operands: Vec<RenderExpr> = oa
+                .operands
+                .iter()
+                .map(|op| rewrite_render_expr(op, scope))
+                .collect();
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: oa.operator.clone(),
+                operands: rewritten_operands,
+            })
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            let rewritten_args: Vec<RenderExpr> = agg
+                .args
+                .iter()
+                .map(|arg| rewrite_render_expr(arg, scope))
+                .collect();
+            RenderExpr::AggregateFnCall(super::render_expr::AggregateFnCall {
+                name: agg.name.clone(),
+                args: rewritten_args,
+            })
+        }
+        RenderExpr::ScalarFnCall(sf) => {
+            let rewritten_args: Vec<RenderExpr> = sf
+                .args
+                .iter()
+                .map(|arg| rewrite_render_expr(arg, scope))
+                .collect();
+            RenderExpr::ScalarFnCall(super::render_expr::ScalarFnCall {
+                name: sf.name.clone(),
+                args: rewritten_args,
+            })
+        }
+        RenderExpr::Case(case) => {
+            let rewritten_expr = case
+                .expr
+                .as_ref()
+                .map(|e| Box::new(rewrite_render_expr(e, scope)));
+            let rewritten_when_then: Vec<(RenderExpr, RenderExpr)> = case
+                .when_then
+                .iter()
+                .map(|(cond, val)| {
+                    (
+                        rewrite_render_expr(cond, scope),
+                        rewrite_render_expr(val, scope),
+                    )
+                })
+                .collect();
+            let rewritten_else = case
+                .else_expr
+                .as_ref()
+                .map(|e| Box::new(rewrite_render_expr(e, scope)));
+            RenderExpr::Case(super::render_expr::RenderCase {
+                expr: rewritten_expr,
+                when_then: rewritten_when_then,
+                else_expr: rewritten_else,
+            })
+        }
+        RenderExpr::List(items) => {
+            let rewritten: Vec<RenderExpr> = items
+                .iter()
+                .map(|item| rewrite_render_expr(item, scope))
+                .collect();
+            RenderExpr::List(rewritten)
+        }
+        RenderExpr::ArraySubscript { array, index } => RenderExpr::ArraySubscript {
+            array: Box::new(rewrite_render_expr(array, scope)),
+            index: Box::new(rewrite_render_expr(index, scope)),
+        },
+        RenderExpr::ArraySlicing { array, from, to } => RenderExpr::ArraySlicing {
+            array: Box::new(rewrite_render_expr(array, scope)),
+            from: from
+                .as_ref()
+                .map(|f| Box::new(rewrite_render_expr(f, scope))),
+            to: to
+                .as_ref()
+                .map(|t| Box::new(rewrite_render_expr(t, scope))),
+        },
+        RenderExpr::MapLiteral(entries) => {
+            let rewritten: Vec<(String, RenderExpr)> = entries
+                .iter()
+                .map(|(k, v)| (k.clone(), rewrite_render_expr(v, scope)))
+                .collect();
+            RenderExpr::MapLiteral(rewritten)
+        }
+        // Leaf nodes — no rewriting needed
+        RenderExpr::Literal(_)
+        | RenderExpr::Raw(_)
+        | RenderExpr::Star
+        | RenderExpr::TableAlias(_)
+        | RenderExpr::ColumnAlias(_)
+        | RenderExpr::Column(_)
+        | RenderExpr::Parameter(_)
+        | RenderExpr::InSubquery(_)
+        | RenderExpr::ExistsSubquery(_)
+        | RenderExpr::ReduceExpr(_)
+        | RenderExpr::PatternCount(_)
+        | RenderExpr::CteEntityRef(_) => expr.clone(),
     }
 }
 
