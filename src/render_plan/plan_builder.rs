@@ -2364,10 +2364,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     is_multi_label_scan: false,
                 })
             }
-            _ => todo!(
-                "Render plan conversion not implemented for LogicalPlan variant: {:?}",
-                std::mem::discriminant(self)
-            ),
+            _ => Err(RenderBuildError::UnsupportedFeature(
+                format!(
+                    "Render plan conversion not implemented for LogicalPlan variant: {:?}",
+                    std::mem::discriminant(self)
+                ),
+            )),
         }
     }
 
