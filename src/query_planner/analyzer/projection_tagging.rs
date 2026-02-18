@@ -334,24 +334,38 @@ impl AnalyzerPass for ProjectionTagging {
                     plan_ctx,
                     graph_schema,
                 )?;
-                match child_tf {
-                    Transformed::Yes(new_input) => {
-                        let new_with = crate::query_planner::logical_plan::WithClause {
-                            cte_name: None,
-                            input: new_input,
-                            items: with_clause.items.clone(),
-                            distinct: with_clause.distinct,
-                            order_by: with_clause.order_by.clone(),
-                            skip: with_clause.skip,
-                            limit: with_clause.limit,
-                            where_clause: with_clause.where_clause.clone(),
-                            exported_aliases: with_clause.exported_aliases.clone(),
-                            cte_references: with_clause.cte_references.clone(),
-                            pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
-                        };
-                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
+
+                // Tag WITH items containing aggregates so that count(node) → count(node.id), etc.
+                // Skip bare TableAlias items — they are pass-through variables that get expanded
+                // later in build_chained_with_match_cte_plan via expand_table_alias_to_select_items.
+                let mut tagged_items = with_clause.items.clone();
+                for item in &mut tagged_items {
+                    if !matches!(
+                        &item.expression,
+                        crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
+                    ) {
+                        Self::tag_projection(item, plan_ctx, graph_schema)?;
                     }
-                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
+                }
+
+                if matches!(&child_tf, Transformed::No(_)) && tagged_items == with_clause.items {
+                    Transformed::No(logical_plan.clone())
+                } else {
+                    let new_input = child_tf.get_plan();
+                    let new_with = crate::query_planner::logical_plan::WithClause {
+                        cte_name: None,
+                        input: new_input,
+                        items: tagged_items,
+                        distinct: with_clause.distinct,
+                        order_by: with_clause.order_by.clone(),
+                        skip: with_clause.skip,
+                        limit: with_clause.limit,
+                        where_clause: with_clause.where_clause.clone(),
+                        exported_aliases: with_clause.exported_aliases.clone(),
+                        cte_references: with_clause.cte_references.clone(),
+                        pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
+                    };
+                    Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
                 }
             }
         };
