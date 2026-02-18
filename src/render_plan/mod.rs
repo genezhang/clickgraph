@@ -31,14 +31,18 @@ pub use filter_pipeline::CategorizedFilters;
 pub use from_table::FromTable;
 pub use view_table_ref::ViewTableRef;
 
-/// Type alias for CTE schema metadata to reduce type complexity.
-/// Tuple contains: (SelectItems, column names, column mappings, property mappings)
-pub type CteSchemaMetadata = (
-    Vec<SelectItem>,
-    Vec<String>,
-    HashMap<String, String>,
-    HashMap<(String, String), String>,
-);
+/// CTE schema metadata: captures the schema of a CTE for downstream resolution.
+#[derive(Debug, Clone)]
+pub struct CteSchemaMetadata {
+    /// The SELECT items in the CTE
+    pub select_items: Vec<SelectItem>,
+    /// Column names in the CTE
+    pub column_names: Vec<String>,
+    /// Maps alias → ID column name (for JOIN generation)
+    pub alias_to_id: HashMap<String, String>,
+    /// Maps (alias, property) → CTE column name (for property resolution)
+    pub property_mapping: HashMap<(String, String), String>,
+}
 pub type CteSchemas = HashMap<String, CteSchemaMetadata>;
 
 use std::collections::HashMap;

@@ -1081,17 +1081,12 @@ fn rewrite_render_expr_for_cte(
     expr: &RenderExpr,
     cte_alias: &str,
     cte_references: &HashMap<String, String>,
-    cte_schemas: &crate::render_plan::CteSchemas,
+    _cte_schemas: &crate::render_plan::CteSchemas,
 ) -> RenderExpr {
-    // Convert cte_schemas to simple HashMap<String, String> format expected by CTERewriteContext
-    let schemas_map: std::collections::HashMap<String, String> =
-        cte_schemas.keys().map(|k| (k.clone(), k.clone())).collect();
-
-    let ctx = crate::render_plan::expression_utils::CTERewriteContext::for_complex_cte(
+    let ctx = crate::render_plan::expression_utils::CTERewriteContext::new(
         cte_alias.to_string(),
         cte_alias.to_string(),
         cte_references.clone(),
-        schemas_map,
     );
     rewrite_render_expr_for_cte_with_context(expr, &ctx)
 }
@@ -3130,13 +3125,13 @@ fn rewrite_join_conditions_for_cte_aliases(
             RenderExpr::PropertyAccessExp(mut pa) => {
                 let alias = &pa.table_alias.0;
                 if let Some(cte_name) = cte_references.get(alias) {
-                    if let Some((_items, _names, _alias_to_id, prop_map)) = cte_schemas.get(cte_name) {
+                    if let Some(meta) = cte_schemas.get(cte_name) {
                         let col_name = match &pa.column {
                             crate::graph_catalog::expression_parser::PropertyValue::Column(c) => c.clone(),
                             crate::graph_catalog::expression_parser::PropertyValue::Expression(e) => e.clone(),
                         };
                         // Look up (alias, column) → CTE column name
-                        if let Some(cte_col) = prop_map.get(&(alias.clone(), col_name.clone())) {
+                        if let Some(cte_col) = meta.property_mapping.get(&(alias.clone(), col_name.clone())) {
                             log::info!(
                                 "🔧 rewrite_join_cte: {}.{} → {}.{}",
                                 alias, col_name, alias, cte_col
@@ -4810,11 +4805,11 @@ pub(crate) fn expand_table_alias_to_select_items(
         );
 
         // STEP 2: Get columns from that CTE with this alias prefix
-        if let Some((select_items, _, _, _)) = cte_schemas.get(cte_name) {
+        if let Some(meta) = cte_schemas.get(cte_name) {
             log::info!(
                 "✅ expand_table_alias_to_select_items: Found CTE schema '{}' with {} items",
                 cte_name,
-                select_items.len()
+                meta.select_items.len()
             );
             // Calculate the CTE alias used in FROM clause
             // Special case: __union_vlp is a pseudo-CTE representing UNION results
@@ -4833,9 +4828,9 @@ pub(crate) fn expand_table_alias_to_select_items(
             log::debug!(
                 "expand_table_alias_to_select_items: CTE '{}' has {} items",
                 cte_name,
-                select_items.len()
+                meta.select_items.len()
             );
-            let filtered_items: Vec<SelectItem> = select_items.iter()
+            let filtered_items: Vec<SelectItem> = meta.select_items.iter()
                 .filter(|item| {
                     if let Some(col_alias) = &item.col_alias {
                         // Match columns that belong to this alias:
@@ -4954,8 +4949,8 @@ pub(crate) fn expand_table_alias_to_select_items(
                 log::error!(
                     "❌ CTE '{}' has {} total columns: {:?}",
                     cte_name,
-                    select_items.len(),
-                    select_items
+                    meta.select_items.len(),
+                    meta.select_items
                         .iter()
                         .filter_map(|item| item.col_alias.as_ref().map(|a| &a.0))
                         .collect::<Vec<_>>()
@@ -5245,8 +5240,8 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
             alias,
             cte_name
         );
-        if let Some((_items, _names, alias_to_id, _prop_map)) = cte_schemas.get(cte_name) {
-            if let Some(id_col) = alias_to_id.get(alias) {
+        if let Some(meta) = cte_schemas.get(cte_name) {
+            if let Some(id_col) = meta.alias_to_id.get(alias) {
                 // Special case: __union_vlp is a pseudo-CTE representing UNION results
                 // For UNION subqueries, GROUP BY needs to reference: __union."friend.id"
                 // (table alias is __union, column name is "alias.id" with dots)
@@ -6234,15 +6229,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
     // 2. Vec<String>: Property names
     // 3. HashMap<String, String>: alias → ID column name
     // 4. HashMap<(String, String), String>: (alias, property) → CTE column name (EXPLICIT MAPPING)
-    let mut cte_schemas: std::collections::HashMap<
-        String,
-        (
-            Vec<SelectItem>,                   // SELECT items
-            Vec<String>,                       // Property names
-            HashMap<String, String>,           // alias → ID column
-            HashMap<(String, String), String>, // (alias, property) → column_name
-        ),
-    > = std::collections::HashMap::new();
+    let mut cte_schemas: crate::render_plan::CteSchemas = std::collections::HashMap::new();
 
     // Track VLP CTEs with column metadata for deterministic lookups
     // Maps CTE name → (Cypher alias → column metadata)
@@ -6930,12 +6917,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                         cte_schemas.insert(
                             cte.cte_name.clone(),
-                            (
+                            crate::render_plan::CteSchemaMetadata {
                                 select_items,
-                                property_names,
-                                alias_to_id_column,
+                                column_names: property_names,
+                                alias_to_id: alias_to_id_column,
                                 property_mapping,
-                            ),
+                            },
                         );
                     }
 
@@ -7048,12 +7035,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 );
                         cte_schemas.insert(
                             union_cte_name.to_string(),
-                            (
-                                union_select_items.clone(),
-                                union_property_names,
-                                union_alias_to_id.clone(),
-                                union_property_mapping,
-                            ),
+                            crate::render_plan::CteSchemaMetadata {
+                                select_items: union_select_items.clone(),
+                                column_names: union_property_names,
+                                alias_to_id: union_alias_to_id.clone(),
+                                property_mapping: union_property_mapping,
+                            },
                         );
 
                         // Also register for each alias that appears in the UNION
@@ -7197,12 +7184,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 // Insert into cte_schemas so expand_table_alias_to_select_items can find it
                                 cte_schemas.insert(
                                     from_name.clone(),
-                                    (
+                                    crate::render_plan::CteSchemaMetadata {
                                         select_items,
-                                        property_names,
-                                        alias_to_id_column,
+                                        column_names: property_names,
+                                        alias_to_id: alias_to_id_column,
                                         property_mapping,
-                                    ),
+                                    },
                                 );
                                 log::debug!(
                                     "STEP 6: SUCCESS - Schema populated for '{}'",
@@ -8210,8 +8197,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     alias_to_id_column.insert(alias.clone(), id_col_name.clone());
                 } else if let Some(prev_cte_name) = cte_references.get(alias) {
                     // Alias comes from a previous CTE — inherit its ID column
-                    if let Some((_items, _names, prev_alias_to_id, _prop_map)) = cte_schemas.get(prev_cte_name) {
-                        if let Some(prev_id) = prev_alias_to_id.get(alias) {
+                    if let Some(meta) = cte_schemas.get(prev_cte_name) {
+                        if let Some(prev_id) = meta.alias_to_id.get(alias) {
                             log::info!(
                                 "📊 WITH CTE '{}': ID for alias '{}' -> '{}' (inherited from CTE '{}')",
                                 cte_name, alias, prev_id, prev_cte_name
@@ -8260,12 +8247,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // Store CTE schema with full property mapping
             cte_schemas.insert(
                 cte_name.clone(),
-                (
-                    select_items_for_schema.clone(),
-                    property_names_for_schema.clone(),
-                    alias_to_id_column,
-                    property_mapping.clone(),
-                ),
+                crate::render_plan::CteSchemaMetadata {
+                    select_items: select_items_for_schema.clone(),
+                    column_names: property_names_for_schema.clone(),
+                    alias_to_id: alias_to_id_column,
+                    property_mapping: property_mapping.clone(),
+                },
             );
 
             log::info!(
@@ -8893,17 +8880,17 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                         };
                                         // Try cte_schemas first: look for {vlp_alias}_{something_id} in SELECT items
                                         let id_col_name =
-                                            if let Some((items, _props, alias_to_id, _mappings)) =
+                                            if let Some(meta) =
                                                 cte_schemas.get(&cte_name)
                                             {
                                                 // First try direct alias_to_id lookup
-                                                alias_to_id
+                                                meta.alias_to_id
                                                     .get(vlp_alias)
                                                     .cloned()
                                                     .or_else(|| {
                                                         // Search SELECT items for {vlp_alias}_*_id pattern
                                                         let prefix = format!("{}_", vlp_alias);
-                                                        items.iter().find_map(|item| {
+                                                        meta.select_items.iter().find_map(|item| {
                                                             if let Some(col_alias) = &item.col_alias
                                                             {
                                                                 let name = &col_alias.0;
@@ -9111,20 +9098,15 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                     .as_deref()
                                                     .unwrap_or(&cte_alias)
                                             };
-                                            let id_col_name = if let Some((
-                                                items,
-                                                _props,
-                                                alias_to_id,
-                                                _mappings,
-                                            )) = cte_schemas.get(&cte_name)
+                                            let id_col_name = if let Some(meta) = cte_schemas.get(&cte_name)
                                             {
-                                                alias_to_id
+                                                meta.alias_to_id
                                                     .get(vlp_alias_for_id)
                                                     .cloned()
                                                     .or_else(|| {
                                                         let prefix =
                                                             format!("{}_", vlp_alias_for_id);
-                                                        items.iter().find_map(|item| {
+                                                        meta.select_items.iter().find_map(|item| {
                                                             if let Some(col_alias) = &item.col_alias
                                                             {
                                                                 let name = &col_alias.0;
@@ -10683,12 +10665,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
 
         // Build property_mapping using CYPHER PROPERTY NAMES ONLY
         // Store the ViewScan's DB mapping separately so we can reverse-resolve DB columns
-        let (property_mapping, _db_to_cypher_mapping) = if let Some((
-            select_items,
-            _property_names,
-            _,
-            stored_property_mapping, // <-- USE THIS to get correct DB column mappings
-        )) = cte_schemas.get(cte_name)
+        let (property_mapping, _db_to_cypher_mapping) = if let Some(meta) = cte_schemas.get(cte_name)
         {
             let mut mapping = HashMap::new();
             let mut db_to_cypher = HashMap::new(); // Reverse: DB column → Cypher property
@@ -10698,7 +10675,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
             // We need individual aliases to match CTE column names like "p1_p_id"
 
             // Build mappings from SelectItems
-            for item in select_items {
+            for item in &meta.select_items {
                 if let Some(cte_col_alias) = &item.col_alias {
                     let cte_col_name = &cte_col_alias.0;
 
@@ -10760,7 +10737,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
             // which tells us: DB column "full_name" should map to CTE column "u_name"
             // We need to add these to the ViewScan property_mapping as:
             // ("full_name", Column("u_name"))
-            for ((alias, db_prop), cte_column) in stored_property_mapping.iter() {
+            for ((alias, db_prop), cte_column) in meta.property_mapping.iter() {
                 if alias == with_alias {
                     // This is a mapping for our alias (e.g., "u")
                     // Add it to the mapping if not already present
@@ -10796,14 +10773,14 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
         // should be unprefixed (e.g., "code") because resolve_cte_reference adds the prefix.
         let cte_id_column = cte_schemas
             .get(cte_name)
-            .and_then(|(_, _, alias_to_id, _)| {
+            .and_then(|meta| {
                 // Try direct lookup first
-                alias_to_id
+                meta.alias_to_id
                     .get(with_alias)
                     .or_else(|| {
                         // Combined alias (e.g., "a_allNeighboursCount") won't match
                         // individual aliases (e.g., "a"). Try first matching key.
-                        alias_to_id.keys().next().and_then(|k| alias_to_id.get(k))
+                        meta.alias_to_id.keys().next().and_then(|k| meta.alias_to_id.get(k))
                     })
                     .map(|prefixed| {
                         // Strip any alias prefix: "a_code" → "code"
@@ -10811,7 +10788,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                         let stripped = prefixed
                             .strip_prefix(&format!("{}_", with_alias))
                             .or_else(|| {
-                                alias_to_id
+                                meta.alias_to_id
                                     .keys()
                                     .find_map(|k| prefixed.strip_prefix(&format!("{}_", k)))
                             })
@@ -11103,8 +11080,8 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                         let mut per_alias_db_to_cypher: HashMap<String, HashMap<String, String>> =
                             HashMap::new();
 
-                        if let Some((select_items, _, _, _)) = cte_schemas.get(&vs.source_table) {
-                            for item in select_items {
+                        if let Some(meta) = cte_schemas.get(&vs.source_table) {
+                            for item in &meta.select_items {
                                 if let Some(cte_col_alias) = &item.col_alias {
                                     let cte_col_name = &cte_col_alias.0;
                                     if let Some((col_alias, cypher_prop)) =

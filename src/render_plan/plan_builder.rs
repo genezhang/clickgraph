@@ -459,11 +459,11 @@ impl RenderPlanBuilder for LogicalPlan {
     ) -> RenderPlanBuilderResult<String> {
         // First, check if this alias comes from a CTE
         if let Some(cte_name) = cte_references.get(alias) {
-            if let Some((_select_items, _property_names, alias_to_id_column, _prop_map)) =
+            if let Some(meta) =
                 cte_schemas.get(cte_name)
             {
                 // Look up the ID column for this specific alias
-                if let Some(id_col) = alias_to_id_column.get(alias) {
+                if let Some(id_col) = meta.alias_to_id.get(alias) {
                     log::info!(
                         "✅ Found ID column '{}' for alias '{}' in CTE '{}'",
                         id_col,
@@ -477,7 +477,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         cte_name,
                         alias
                     );
-                    log::warn!("⚠️ Available alias mappings: {:?}", alias_to_id_column);
+                    log::warn!("⚠️ Available alias mappings: {:?}", meta.alias_to_id);
                 }
             }
         }
