@@ -4825,13 +4825,14 @@ pub(crate) fn expand_table_alias_to_select_items(
     // VLP endpoints like u2 in (u1)-[*1..2]->(u2) need to use columns like t.end_city
     // instead of u2.city from the base table
     //
-    // Try two approaches:
-    // 1. If plan_ctx available, use registered VLP endpoints (from analyzer)
-    // 2. Otherwise, detect VLP patterns directly from the plan structure
-    let vlp_info_from_ctx = plan_ctx.and_then(|ctx| ctx.get_vlp_endpoint(alias));
-    let vlp_info_from_plan = if vlp_info_from_ctx.is_none() {
-        // Fallback: Detect VLP pattern directly from plan
-        detect_vlp_endpoint_from_plan(plan, alias)
+    // CRITICAL: Only use VLP info if the CURRENT plan tree actually contains a VLP pattern
+    // for this alias. PlanCtx registers VLP endpoints globally, but when building a WITH CTE
+    // body, the VLP may be in a LATER scope (after the WITH). Using VLP columns from a later
+    // scope contaminates the current CTE with wrong column names.
+    let vlp_info_from_plan = detect_vlp_endpoint_from_plan(plan, alias);
+    let vlp_info_from_ctx = if vlp_info_from_plan.is_some() {
+        // Plan tree confirms VLP — prefer ctx info (more detailed) if available
+        plan_ctx.and_then(|ctx| ctx.get_vlp_endpoint(alias))
     } else {
         None
     };
