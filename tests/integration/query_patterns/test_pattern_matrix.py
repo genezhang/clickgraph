@@ -412,7 +412,6 @@ class TestStandardSchema:
         result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Standard schema has only one cyclic relationship type (FOLLOWS)")
     def test_multi_type_0(self):
         """
         Multiple relationship types
@@ -422,7 +421,6 @@ class TestStandardSchema:
         result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Standard schema has only one cyclic relationship type (FOLLOWS)")
     def test_multi_type_1(self):
         """
         Multiple relationship types
@@ -432,7 +430,6 @@ class TestStandardSchema:
         result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Standard schema has only one cyclic relationship type (FOLLOWS)")
     def test_multi_type_2(self):
         """
         Multiple relationship types

@@ -7,7 +7,7 @@ version: "1.0"
 graph_schema:
   nodes:
     - label: User
-      database: brahmand
+      database: test_integration
       table: users_expressions_test
       node_id: user_id
       property_mappings:
@@ -42,7 +42,7 @@ graph_schema:
 
   edges:
     - type: FOLLOWS
-      database: brahmand
+      database: test_integration
       table: follows_expressions_test
       from_id: follower_id
       to_id: followed_id

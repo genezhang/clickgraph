@@ -284,7 +284,6 @@ class TestVariableLengthPerformance:
 class TestShortestPathPerformance:
     """Test performance of shortest path algorithms."""
     
-    @pytest.mark.xfail(reason="Path functions with VLP/shortest path have SQL generation issues (t.hop_count reference) - KNOWN_ISSUES")
     def test_shortest_path_performance(self, simple_graph):
         """Test shortestPath() performance."""
         start = time.time()
@@ -399,7 +398,6 @@ class TestPerformanceComparison:
 class TestPerformanceBaselines:
     """Establish baseline metrics for future regression detection."""
     
-    @pytest.mark.xfail(reason="Performance baseline test needs data setup")
     def test_baseline_simple_queries(self, simple_graph):
         """Establish baseline for simple query suite."""
         queries = [
