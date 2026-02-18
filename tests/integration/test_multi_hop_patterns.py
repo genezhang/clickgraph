@@ -127,9 +127,8 @@ class TestMultiHopSqlGeneration:
 
     def test_2hop_directed_standard_sql(self):
         """Test 2-hop directed with standard separate tables."""
-        # This requires the benchmark schema to be loaded
         query = "MATCH (a:User)-[r1:FOLLOWS]->(b:User)-[r2:FOLLOWS]->(c:User) RETURN a.name, b.name, c.name LIMIT 5"
-        sql = self.get_sql(query)
+        sql = self.get_sql(query, schema_name="social_integration")
         
         # Skip if schema not loaded
         if "No relationship schema found" in sql or "PLANNING_ERROR" in sql:
@@ -143,7 +142,7 @@ class TestMultiHopSqlGeneration:
     def test_2hop_undirected_standard_has_4_branches(self):
         """Test 2-hop undirected with standard tables generates 4 branches."""
         query = "MATCH (a:User)-[r1:FOLLOWS]-(b:User)-[r2:FOLLOWS]-(c:User) RETURN a.name, b.name, c.name LIMIT 5"
-        sql = self.get_sql(query)
+        sql = self.get_sql(query, schema_name="social_integration")
         
         # Skip if schema not loaded
         if "No relationship schema found" in sql or "PLANNING_ERROR" in sql:
@@ -159,7 +158,7 @@ class TestMultiHopSqlGeneration:
         MATCH (a:User)-[r1:FOLLOWS]->(b:User)-[r2:FOLLOWS]->(c:User)-[r3:FOLLOWS]->(d:User)
         RETURN a.name, b.name, c.name, d.name LIMIT 5
         """
-        sql = self.get_sql(query)
+        sql = self.get_sql(query, schema_name="social_integration")
         
         # Skip if schema not loaded
         if "No relationship schema found" in sql or "PLANNING_ERROR" in sql:
@@ -357,7 +356,7 @@ class TestMultiHopEdgeCases:
 
     def test_all_incoming_direction(self):
         """Test all incoming arrows."""
-        query = "MATCH (a:Airport)<-[r1:FLIGHT]-(b:Airport)<-[r2:FLIGHT]-(c:Airport) RETURN a.code, c.code LIMIT 5"
+        query = "USE ontime_flights MATCH (a:Airport)<-[r1:FLIGHT]-(b:Airport)<-[r2:FLIGHT]-(c:Airport) RETURN a.code, c.code LIMIT 5"
         sql = self.get_sql(query)
         
         # All directed = no UNION
@@ -365,7 +364,7 @@ class TestMultiHopEdgeCases:
 
     def test_mixed_incoming_outgoing(self):
         """Test mixed incoming and outgoing arrows."""
-        query = "MATCH (a:Airport)-[r1:FLIGHT]->(b:Airport)<-[r2:FLIGHT]-(c:Airport) RETURN a.code, b.code, c.code LIMIT 5"
+        query = "USE ontime_flights MATCH (a:Airport)-[r1:FLIGHT]->(b:Airport)<-[r2:FLIGHT]-(c:Airport) RETURN a.code, b.code, c.code LIMIT 5"
         sql = self.get_sql(query)
         
         # Both directed = no UNION
