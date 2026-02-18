@@ -3941,15 +3941,26 @@ pub fn sort_joins_by_dependency(
     while !remaining.is_empty() && max_iterations > 0 {
         max_iterations -= 1;
 
-        // Find next JOIN that can be added (all dependencies available)
-        let ready_idx = remaining.iter().position(|&idx| {
-            dependencies
-                .get(&idx)
-                .map(|deps| deps.iter().all(|dep| available.contains(dep)))
-                .unwrap_or(true)
+        // Find ALL JOINs that can be added (all dependencies available)
+        // Then pick deterministically by smallest alias name for stable ordering
+        let ready_positions: Vec<usize> = remaining
+            .iter()
+            .enumerate()
+            .filter(|(_, &idx)| {
+                dependencies
+                    .get(&idx)
+                    .map(|deps| deps.iter().all(|dep| available.contains(dep)))
+                    .unwrap_or(true)
+            })
+            .map(|(pos, _)| pos)
+            .collect();
+
+        // Among ready joins, pick the one with the smallest table_alias for determinism
+        let best_pos = ready_positions.iter().copied().min_by_key(|&pos| {
+            joins[remaining[pos]].table_alias.clone()
         });
 
-        if let Some(pos) = ready_idx {
+        if let Some(pos) = best_pos {
             let idx = remaining.remove(pos);
 
             // Add this JOIN's alias to available set
@@ -3964,38 +3975,48 @@ pub fn sort_joins_by_dependency(
 
             sorted.push(idx);
         } else {
-            // No progress possible - break to avoid infinite loop
-            // This can happen with circular dependencies (shouldn't occur in practice)
+            // Circular dependency detected — pick the join with fewest unsatisfied
+            // dependencies to break the cycle, then continue sorting
             log::warn!(
-                "WARNING: Could not fully sort JOINs by dependency - {} remaining with circular dependencies",
+                "WARNING: Circular dependency detected - {} remaining JOINs",
                 remaining.len()
-            );
-            log::debug!(
-                "  DEBUG Remaining JOINs: {:?}",
-                remaining
-                    .iter()
-                    .map(|&idx| format!("{} AS {}", joins[idx].table_name, joins[idx].table_alias))
-                    .collect::<Vec<_>>()
             );
             log::debug!("  DEBUG Available aliases: {:?}", available);
             for &idx in &remaining {
                 if let Some(deps) = dependencies.get(&idx) {
+                    let missing: Vec<_> = deps.iter().filter(|d| !available.contains(*d)).collect();
                     log::debug!(
-                        "    JOIN[{}] {} AS {} needs: {:?}",
-                        idx,
-                        joins[idx].table_name,
-                        joins[idx].table_alias,
-                        deps
+                        "    JOIN[{}] {} AS {} missing: {:?}",
+                        idx, joins[idx].table_name, joins[idx].table_alias, missing
                     );
                 }
             }
-            break;
-        }
-    }
 
-    // Add any remaining JOINs that couldn't be sorted
-    for idx in remaining {
-        sorted.push(idx);
+            // Pick join with fewest missing deps; break ties by alias name
+            let best = remaining.iter().enumerate().min_by(|(_, &a_idx), (_, &b_idx)| {
+                let a_missing = dependencies.get(&a_idx)
+                    .map(|d| d.iter().filter(|x| !available.contains(*x)).count())
+                    .unwrap_or(0);
+                let b_missing = dependencies.get(&b_idx)
+                    .map(|d| d.iter().filter(|x| !available.contains(*x)).count())
+                    .unwrap_or(0);
+                a_missing.cmp(&b_missing)
+                    .then_with(|| joins[a_idx].table_alias.cmp(&joins[b_idx].table_alias))
+            }).map(|(pos, _)| pos);
+
+            if let Some(pos) = best {
+                let idx = remaining.remove(pos);
+                available.insert(joins[idx].table_alias.clone());
+                log::warn!(
+                    "  Breaking cycle: forced JOIN[{}] {} AS {}",
+                    idx, joins[idx].table_name, joins[idx].table_alias
+                );
+                sorted.push(idx);
+                // Continue loop — may resolve remaining deps now
+            } else {
+                break;
+            }
+        }
     }
 
     log::debug!(
