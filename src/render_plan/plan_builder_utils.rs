@@ -5113,10 +5113,11 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
                     })];
                 }
 
-                // Normal CTE: use alias as table and id column directly
-                log::warn!("🔧 expand_table_alias_to_group_by_id_only: Using ID column '{}' from CTE schema for alias '{}'", id_col, alias);
+                // Normal CTE: use FROM alias and id column
+                let from_alias = extract_from_alias_from_cte_name(cte_name);
+                log::warn!("🔧 expand_table_alias_to_group_by_id_only: Using ID column '{}' from CTE schema for alias '{}', FROM alias '{}'", id_col, alias, from_alias);
                 return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: TableAlias(alias.to_string()),
+                    table_alias: TableAlias(from_alias.to_string()),
                     column: PropertyValue::Column(id_col.clone()),
                 })];
             } else {
@@ -8052,6 +8053,17 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         id_col_name
                     );
                     alias_to_id_column.insert(alias.clone(), id_col_name.clone());
+                } else if let Some(prev_cte_name) = cte_references.get(alias) {
+                    // Alias comes from a previous CTE — inherit its ID column
+                    if let Some((_items, _names, prev_alias_to_id, _prop_map)) = cte_schemas.get(prev_cte_name) {
+                        if let Some(prev_id) = prev_alias_to_id.get(alias) {
+                            log::info!(
+                                "📊 WITH CTE '{}': ID for alias '{}' -> '{}' (inherited from CTE '{}')",
+                                cte_name, alias, prev_id, prev_cte_name
+                            );
+                            alias_to_id_column.insert(alias.clone(), prev_id.clone());
+                        }
+                    }
                 }
             }
 
