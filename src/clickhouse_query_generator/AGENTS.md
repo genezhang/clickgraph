@@ -4,6 +4,52 @@
 > Final stage of the Cypher→SQL pipeline. Contains VLP CTE generation, function translation,
 > and the most schema-sensitive SQL generation code.
 
+## ⚠️ Fundamental SQL CTE Rules (MUST NOT VIOLATE)
+
+These are basic SQL structural rules. Every generated query must obey them:
+
+1. **CTEs are ALWAYS flat and top-level.** All CTEs form a single linear chain at the
+   beginning of the query, separated by commas. CTEs are never nested inside other CTEs
+   or inside subqueries. A CTE body can *reference* a previously defined CTE (like a table),
+   but cannot *define* one.
+
+2. **One `WITH RECURSIVE` at the beginning.** If any CTE is recursive, the query starts
+   with `WITH RECURSIVE` followed by ALL CTEs (both recursive and non-recursive),
+   comma-separated. There is never a second `WITH RECURSIVE` anywhere in the query.
+
+3. **Dependency order.** CTEs are listed in dependency order: if CTE B references CTE A,
+   then A appears before B. In practice: recursive VLP CTEs first, then non-recursive
+   WITH/aggregation CTEs that reference them.
+
+**Correct structure:**
+```sql
+WITH RECURSIVE
+  vlp_a_b AS (...),        -- recursive CTE 1
+  vlp_b_a AS (...),        -- recursive CTE 2
+  with_x_cte AS (          -- non-recursive, references vlp CTEs
+    SELECT ... FROM vlp_a_b AS t
+    UNION ALL
+    SELECT ... FROM vlp_b_a AS t
+  )
+SELECT ... FROM with_x_cte
+```
+
+**NEVER do this:**
+```sql
+-- ❌ Nested WITH RECURSIVE inside a CTE body
+with_x_cte AS (
+  SELECT ... FROM (
+    WITH RECURSIVE vlp_b_a AS (...) -- WRONG: nested CTE definition
+    SELECT ... FROM vlp_b_a
+  ) AS __union
+)
+```
+
+**Implementation**: `flatten_all_ctes()` in `to_sql_query.rs` enforces this by recursively
+extracting all CTEs from the entire RenderPlan tree (including union branches and nested
+CTE content) to the top level before rendering. `CteItems::to_sql()` then renders them
+as a flat comma-separated list.
+
 ## Module Architecture
 
 ```
@@ -101,10 +147,10 @@ the final SQL string is constructed clause by clause.
 - `RenderExpr::to_sql_without_table_alias()` — For LEFT JOIN subquery filters.
 
 **Critical sections**:
+- **CTE flattening** (`flatten_all_ctes()`, `collect_nested_ctes()`): Called at the top of
+  `render_plan_to_sql()` to enforce the flat CTE rule (see below).
 - **UNION handling** (lines ~1300-1560): Wraps UNION in subquery when ORDER BY/LIMIT/GROUP BY present.
   ClickHouse quirk: bare `UNION ALL` + `LIMIT` only limits last branch.
-- **CTE deduplication and grouping** (lines ~1850-2050): Handles ClickHouse's "only one WITH RECURSIVE"
-  limitation by nesting additional recursive CTEs in subqueries.
 - **Column heuristic inference** (lines ~2400-2480): **⚠️ TECHNICAL DEBT** — Guesses table alias from
   column name patterns (user_*, post_*, etc.). Covers ~95% of cases but fragile.
 

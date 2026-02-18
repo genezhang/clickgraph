@@ -3,6 +3,24 @@
 > **Purpose**: Application entry point, crate root, and configuration.
 > These three files wire everything together.
 
+## ⚠️ Cross-Cutting SQL Rules (All Agents MUST Know)
+
+### CTEs Are Flat — One `WITH RECURSIVE`, All CTEs Top-Level
+
+Every generated SQL query must follow this structure:
+
+```sql
+WITH RECURSIVE          -- once, at the very top (only if any CTE is recursive)
+  cte_1 AS (...),       -- all CTEs are siblings, comma-separated
+  cte_2 AS (...),       -- dependency order: if B references A, A comes first
+  cte_3 AS (...)        -- CTE bodies reference sibling CTEs like tables
+SELECT ... FROM cte_3   -- final query references the CTEs
+```
+
+**Never** nest a CTE definition inside another CTE body or subquery.
+**Never** emit a second `WITH RECURSIVE` anywhere in the query.
+This is enforced by `flatten_all_ctes()` in `clickhouse_query_generator/to_sql_query.rs`.
+
 ## File Overview
 
 ```
