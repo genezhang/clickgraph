@@ -1559,6 +1559,37 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
         }
     }
 
+    // Also sort JOINs inside CTE plans (WITH clause CTEs have their own JOINs)
+    for cte in plan.ctes.0.iter_mut() {
+        if let CteContent::Structured(ref mut cte_plan) = cte.content {
+            use crate::render_plan::plan_builder_helpers::sort_joins_by_dependency;
+            use crate::render_plan::FromTable;
+
+            let from_table = cte_plan.from.0.as_ref().map(|table_ref| FromTable {
+                table: Some(table_ref.clone()),
+                joins: vec![],
+            });
+            cte_plan.joins.0 = sort_joins_by_dependency(
+                std::mem::take(&mut cte_plan.joins.0),
+                from_table.as_ref(),
+            );
+
+            // Sort UNION branch JOINs inside CTEs too
+            if let Some(ref mut union) = cte_plan.union.0 {
+                for branch in union.input.iter_mut() {
+                    let branch_from = branch.from.0.as_ref().map(|table_ref| FromTable {
+                        table: Some(table_ref.clone()),
+                        joins: vec![],
+                    });
+                    branch.joins.0 = sort_joins_by_dependency(
+                        std::mem::take(&mut branch.joins.0),
+                        branch_from.as_ref(),
+                    );
+                }
+            }
+        }
+    }
+
     // Rewrite path function calls for fixed (non-VLP) path patterns
     // Converts length(p) → hop_count, etc.
     plan = rewrite_fixed_path_functions(plan);

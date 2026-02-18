@@ -1727,7 +1727,12 @@ impl TypeInference {
                 if let Some(ref types) = known_edge_types {
                     // Extract base type name for comparison
                     let base_type = type_key.split("::").next().unwrap_or(type_key);
-                    if !types.iter().any(|t| t == base_type || t == type_key) {
+                    // Compare base types: known edge types may have composite keys
+                    // e.g., "KNOWS::Person::Person" should match schema key "KNOWS"
+                    if !types.iter().any(|t| {
+                        let t_base = t.split("::").next().unwrap_or(t);
+                        t_base == base_type || t == base_type || t == type_key
+                    }) {
                         return None;
                     }
                 }

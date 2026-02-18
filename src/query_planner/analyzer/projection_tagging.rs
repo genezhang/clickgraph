@@ -1155,10 +1155,27 @@ impl ProjectionTagging {
                                 if is_distinct {
                                     // Get the relationship type from the table context
                                     if let Some(rel_type) = table_ctx.get_label_opt() {
-                                        // Look up the relationship schema
-                                        if let Some(rel_schema) =
-                                            graph_schema.get_relationships_schema_opt(&rel_type)
-                                        {
+                                        // Look up the specific relationship schema variant
+                                        // using from/to node labels when available (handles
+                                        // multi-table relationships like LIKES::Person::Post
+                                        // vs LIKES::Person::Comment).
+                                        let rel_schema_opt = {
+                                            let from_label = table_ctx.get_from_node_label();
+                                            let to_label = table_ctx.get_to_node_label();
+                                            if let (Some(from), Some(to)) = (from_label, to_label) {
+                                                let composite_key =
+                                                    format!("{}::{}::{}", rel_type, from, to);
+                                                graph_schema
+                                                    .get_relationships_schema_opt(&composite_key)
+                                                    .or_else(|| {
+                                                        graph_schema
+                                                            .get_relationships_schema_opt(&rel_type)
+                                                    })
+                                            } else {
+                                                graph_schema.get_relationships_schema_opt(&rel_type)
+                                            }
+                                        };
+                                        if let Some(rel_schema) = rel_schema_opt {
                                             // Get edge_id columns or default to (from_id, to_id)
                                             let edge_columns: Vec<String> =
                                                 match &rel_schema.edge_id {
