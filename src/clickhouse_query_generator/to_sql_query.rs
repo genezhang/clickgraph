@@ -2292,7 +2292,35 @@ impl ToSql for Cte {
                             cte_body.push_str("SELECT * ");
                         }
                         cte_body.push_str("FROM (\n");
-                        cte_body.push_str(&plan.union.to_sql());
+
+                        // If the base plan has its own FROM (e.g., forward VLP direction),
+                        // render it as the first UNION branch before the union.input branches.
+                        if plan.from.0.is_some() {
+                            cte_body.push_str("SELECT *\n");
+                            cte_body.push_str(&plan.from.to_sql());
+                            cte_body.push_str(&plan.joins.to_sql());
+                            cte_body.push_str(&plan.filters.to_sql());
+
+                            if let Some(union) = &plan.union.0 {
+                                let union_type_str = match union.union_type {
+                                    UnionType::Distinct => "UNION DISTINCT \n",
+                                    UnionType::All => "UNION ALL \n",
+                                };
+                                for branch in &union.input {
+                                    cte_body.push_str(union_type_str);
+                                    // Use SELECT * for union branches too — column names
+                                    // from VLP CTEs use start_/end_ prefixes that the outer
+                                    // WITH projection already knows how to reference.
+                                    cte_body.push_str("SELECT *\n");
+                                    cte_body.push_str(&branch.from.to_sql());
+                                    cte_body.push_str(&branch.joins.to_sql());
+                                    cte_body.push_str(&branch.filters.to_sql());
+                                }
+                            }
+                        } else {
+                            cte_body.push_str(&plan.union.to_sql());
+                        }
+
                         cte_body.push_str(") AS __union\n");
 
                         // Render JOINs (e.g., pattern comprehension LEFT JOINs)
