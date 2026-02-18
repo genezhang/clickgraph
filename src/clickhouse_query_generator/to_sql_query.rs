@@ -1511,7 +1511,63 @@ fn ensure_database_prefix(table_name: &str) -> String {
     table_name.to_string()
 }
 
+/// Recursively collect all CTE definitions from a RenderPlan tree,
+/// removing them from their nested locations (union branches, CTE content, etc.).
+fn collect_nested_ctes(plan: &mut RenderPlan, collected: &mut Vec<Cte>) {
+    // Take CTEs from this plan level
+    let ctes = std::mem::take(&mut plan.ctes.0);
+    for mut cte in ctes {
+        // Recursively flatten CTEs inside Structured CTE content
+        if let CteContent::Structured(ref mut inner_plan) = cte.content {
+            collect_nested_ctes(inner_plan, collected);
+        }
+        collected.push(cte);
+    }
+
+    // Recurse into union branches
+    if let Some(ref mut union) = plan.union.0 {
+        for branch in &mut union.input {
+            collect_nested_ctes(branch, collected);
+        }
+    }
+}
+
+/// Flatten all CTEs from the entire RenderPlan tree to the top level.
+/// After this call, `plan.ctes` contains ALL CTEs in dependency order
+/// (recursive first, then non-recursive) and no nested CTEs remain anywhere.
+fn flatten_all_ctes(plan: &mut RenderPlan) {
+    let mut collected = Vec::new();
+    collect_nested_ctes(plan, &mut collected);
+
+    if collected.is_empty() {
+        return;
+    }
+
+    // Deduplicate by name (keep first occurrence)
+    let mut seen = std::collections::HashSet::new();
+    collected.retain(|cte| seen.insert(cte.cte_name.clone()));
+
+    // Dependency order: recursive CTEs first, then non-recursive.
+    // Recursive CTEs (VLP) are leaf dependencies; non-recursive CTEs (WITH) reference them.
+    let mut recursive = Vec::new();
+    let mut non_recursive = Vec::new();
+    for cte in collected {
+        if cte.is_recursive {
+            recursive.push(cte);
+        } else {
+            non_recursive.push(cte);
+        }
+    }
+    recursive.append(&mut non_recursive);
+
+    plan.ctes.0 = recursive;
+}
+
 pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
+    // STEP 0: Flatten ALL CTEs to top level in dependency order.
+    // CTEs are always a flat, linear chain — never nested inside other CTEs or union branches.
+    flatten_all_ctes(&mut plan);
+
     // Extract fixed path information if not already set
     // This looks at the RenderPlan structure to infer path variable info
     if plan.fixed_path_info.is_none() {
@@ -2167,12 +2223,11 @@ impl ToSql for OrderByItems {
 
 impl ToSql for CteItems {
     fn to_sql(&self) -> String {
-        let mut sql: String = String::new();
         if self.0.is_empty() {
-            return sql;
+            return String::new();
         }
 
-        // Deduplicate CTEs by name (same pattern may appear from multiple plan branches)
+        // Deduplicate CTEs by name (keep first occurrence)
         let mut seen_names = std::collections::HashSet::new();
         let deduped: Vec<&Cte> = self
             .0
@@ -2180,176 +2235,27 @@ impl ToSql for CteItems {
             .filter(|cte| seen_names.insert(cte.cte_name.clone()))
             .collect();
 
-        if deduped.len() < self.0.len() {
-            log::warn!(
-                "🔄 CTE dedup: {} → {} CTEs (removed {} duplicates). Names: {:?}",
-                self.0.len(),
-                deduped.len(),
-                self.0.len() - deduped.len(),
-                self.0
-                    .iter()
-                    .map(|c| c.cte_name.as_str())
-                    .collect::<Vec<_>>()
-            );
-        }
-
         if deduped.is_empty() {
-            return sql;
+            return String::new();
         }
 
-        // ClickHouse limitation: WITH RECURSIVE can only contain ONE recursive CTE
-        // Solution: Keep first recursive CTE group in WITH RECURSIVE block,
-        // wrap each additional recursive CTE group in a nested WITH RECURSIVE subquery
+        // Simple rule: ONE `WITH RECURSIVE` at the top if any CTE is recursive,
+        // then ALL CTEs flat and comma-separated. No nesting, no wrapping.
+        let has_recursive = deduped.iter().any(|c| c.is_recursive);
 
-        // Group CTEs: each recursive CTE with all following non-recursive CTEs (until next recursive or end)
-        let mut cte_groups: Vec<Vec<&Cte>> = Vec::new();
-        let mut current_group: Vec<&Cte> = Vec::new();
-
-        for cte in &deduped {
-            if cte.is_recursive {
-                // Start new group with this recursive CTE
-                if !current_group.is_empty() {
-                    cte_groups.push(current_group);
-                }
-                current_group = vec![cte];
-            } else {
-                // Add non-recursive CTE to current group
-                current_group.push(cte);
-            }
-        }
-
-        // Add final group
-        if !current_group.is_empty() {
-            cte_groups.push(current_group);
-        }
-
-        // CRITICAL FIX: For groups 2+ that would be wrapped, extract trailing non-recursive CTEs
-        // and move them to Group 1 (top level). This prevents:
-        // 1. Duplicate CTE names (wrapper name = inner CTE name)
-        // 2. Scope issues (WITH clause CTEs need to be accessible from final SELECT)
-        if cte_groups.len() > 1 {
-            let mut trailing_non_recursive: Vec<&Cte> = Vec::new();
-
-            // Process groups in reverse (from last to second)
-            for group_idx in (1..cte_groups.len()).rev() {
-                let group = &mut cte_groups[group_idx];
-
-                // Skip if first CTE isn't recursive (shouldn't happen based on grouping logic)
-                if group.is_empty() || !group[0].is_recursive {
-                    continue;
-                }
-
-                // Extract all trailing non-recursive CTEs from this group
-                let mut non_recursive_start = 1; // Start after the recursive CTE
-                for (i, cte) in group.iter().enumerate().skip(1) {
-                    if cte.is_recursive {
-                        non_recursive_start = i + 1;
-                    }
-                }
-
-                if non_recursive_start < group.len() {
-                    // Extract trailing non-recursive CTEs
-                    let extracted: Vec<&Cte> = group.drain(non_recursive_start..).collect();
-                    trailing_non_recursive.splice(0..0, extracted); // Prepend to maintain order
-                }
-            }
-
-            // Add extracted CTEs to Group 1 (top level)
-            if !trailing_non_recursive.is_empty() {
-                cte_groups[0].extend(trailing_non_recursive);
-            }
-        }
-
-        // If no recursive CTEs at all
-        if cte_groups.is_empty() || !cte_groups.iter().any(|g| g[0].is_recursive) {
+        let mut sql = String::new();
+        if has_recursive {
+            sql.push_str("WITH RECURSIVE ");
+        } else {
             sql.push_str("WITH ");
-            for (i, cte) in deduped.iter().enumerate() {
-                sql.push_str(&cte.to_sql());
-                if i + 1 < deduped.len() {
-                    sql.push_str(", ");
-                }
-                sql.push('\n');
-            }
-            return sql;
         }
 
-        // Emit first group (WITH RECURSIVE block with first recursive CTE and its helpers)
-        sql.push_str("WITH RECURSIVE ");
-        let first_group = &cte_groups[0];
-        for (i, cte) in first_group.iter().enumerate() {
+        for (i, cte) in deduped.iter().enumerate() {
             sql.push_str(&cte.to_sql());
-            if i + 1 < first_group.len() || cte_groups.len() > 1 {
-                sql.push_str(", ");
-            }
-            sql.push('\n');
-        }
-
-        // For additional groups (2nd recursive CTE onwards), wrap in subquery
-        for group_idx in 1..cte_groups.len() {
-            let group = &cte_groups[group_idx];
-            let first_cte_in_group = group[0];
-
-            // Only wrap if this group has a recursive CTE
-            if first_cte_in_group.is_recursive {
-                // Get the last CTE name in this group - that's what we'll expose
-                let last_cte_name = &group[group.len() - 1].cte_name;
-
-                // Check if the first CTE already contains nested CTE definitions (VLP multi-tier pattern)
-                // This is indicated by the presence of multiple " AS (" in RawSql content
-                let first_cte_content = match &first_cte_in_group.content {
-                    CteContent::RawSql(s) => Some(s.as_str()),
-                    _ => None,
-                };
-
-                let has_nested_ctes = first_cte_content
-                    .map(|s| s.matches(" AS (").count() > 1)
-                    .unwrap_or(false);
-
-                if has_nested_ctes && group.len() == 1 {
-                    // VLP CTE with multi-tier structure (e.g., "vlp_inner AS..., vlp AS...")
-                    // Wrap the entire nested structure as-is
-                    sql.push_str(&format!("{} AS (\n", last_cte_name));
-                    sql.push_str("  SELECT * FROM (\n");
-                    sql.push_str("    WITH RECURSIVE ");
-                    sql.push_str(first_cte_content.unwrap());
-                    sql.push_str("\n    SELECT * FROM ");
-                    sql.push_str(last_cte_name);
-                    sql.push_str("\n  )\n)");
-                } else {
-                    // Standard case: wrap each CTE normally
-                    sql.push_str(&format!("{} AS (\n", last_cte_name));
-                    sql.push_str("  SELECT * FROM (\n");
-                    sql.push_str("    WITH RECURSIVE ");
-
-                    // Emit all CTEs in this group
-                    for (i, cte) in group.iter().enumerate() {
-                        sql.push_str(&cte.to_sql());
-                        if i + 1 < group.len() {
-                            sql.push_str(", ");
-                        }
-                        sql.push('\n');
-                    }
-
-                    // Close the nested WITH and select the final CTE
-                    sql.push_str("    SELECT * FROM ");
-                    sql.push_str(last_cte_name);
-                    sql.push_str("\n  )\n)");
-                }
-
-                if group_idx + 1 < cte_groups.len() {
-                    sql.push_str(",\n");
-                } else {
-                    sql.push('\n');
-                }
+            if i + 1 < deduped.len() {
+                sql.push_str(", \n");
             } else {
-                // Non-recursive group: emit normally
-                for (i, cte) in group.iter().enumerate() {
-                    sql.push_str(&cte.to_sql());
-                    if i + 1 < group.len() || group_idx + 1 < cte_groups.len() {
-                        sql.push_str(", ");
-                    }
-                    sql.push('\n');
-                }
+                sql.push('\n');
             }
         }
 
