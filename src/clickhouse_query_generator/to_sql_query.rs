@@ -1975,13 +1975,17 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
                     .0
                     .iter()
                     .enumerate()
-                    .map(|(idx, item)| {
+                    .filter_map(|(idx, item)| {
+                        if idx >= order_by_columns.len() {
+                            log::warn!("ORDER BY column index {} exceeds available columns ({}), skipping", idx, order_by_columns.len());
+                            return None;
+                        }
                         let col_alias = &order_by_columns[idx].1;
                         let order_str = match item.order {
                             OrderByOrder::Asc => "ASC",
                             OrderByOrder::Desc => "DESC",
                         };
-                        format!("__union.`{}` {}", col_alias, order_str)
+                        Some(format!("__union.`{}` {}", col_alias, order_str))
                     })
                     .collect();
                 sql.push_str(&order_clauses.join(", "));
