@@ -16,6 +16,8 @@ import requests
 import json
 from pathlib import Path
 
+pytestmark = pytest.mark.skip(reason="Requires zeek database with conn_log tables")
+
 # Server endpoint
 CLICKGRAPH_URL = "http://localhost:8080"
 SCHEMA_PATH = Path(__file__).parent / "fixtures" / "schemas" / "zeek_conn_test.yaml"

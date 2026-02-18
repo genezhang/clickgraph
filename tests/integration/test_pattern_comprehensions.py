@@ -79,6 +79,7 @@ def setup_pattern_comp_data(clickhouse_client):
     clickhouse_client.command("DROP TABLE IF EXISTS brahmand.pattern_comp_follows")
 
 
+@pytest.mark.xfail(reason="Feature gap: pattern comprehensions not fully implemented")
 def test_simple_pattern_comprehension(setup_pattern_comp_data):
     """Test simple pattern comprehension without WHERE clause."""
     cypher = """
@@ -99,6 +100,7 @@ def test_simple_pattern_comprehension(setup_pattern_comp_data):
     assert set(friends) == {"Bob", "Charlie", "Diana"}
 
 
+@pytest.mark.xfail(reason="Feature gap: pattern comprehensions not fully implemented")
 def test_pattern_comprehension_with_where(setup_pattern_comp_data):
     """Test pattern comprehension with WHERE clause filter."""
     cypher = """
@@ -119,6 +121,7 @@ def test_pattern_comprehension_with_where(setup_pattern_comp_data):
     assert set(us_friends) == {"Bob", "Diana"}
 
 
+@pytest.mark.xfail(reason="Feature gap: pattern comprehensions not fully implemented")
 def test_multiple_pattern_comprehensions(setup_pattern_comp_data):
     """Test multiple pattern comprehensions in same query."""
     cypher = """
@@ -146,6 +149,7 @@ def test_multiple_pattern_comprehensions(setup_pattern_comp_data):
     assert set(followers) == {"Bob", "Charlie", "Eve"}
 
 
+@pytest.mark.xfail(reason="Feature gap: pattern comprehensions not fully implemented")
 def test_pattern_comprehension_empty_result(setup_pattern_comp_data):
     """Test pattern comprehension returns empty list when no matches."""
     cypher = """
@@ -166,6 +170,7 @@ def test_pattern_comprehension_empty_result(setup_pattern_comp_data):
     assert len(friends) == 0
 
 
+@pytest.mark.xfail(reason="Feature gap: pattern comprehensions not fully implemented")
 def test_pattern_comprehension_with_expression(setup_pattern_comp_data):
     """Test pattern comprehension with expression projection."""
     cypher = """

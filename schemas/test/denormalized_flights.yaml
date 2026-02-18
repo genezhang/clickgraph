@@ -1,37 +1,37 @@
 # Test Schema for Denormalized Edge Table Integration Tests
 # Demonstrates denormalized node properties in edge table (OnTime-style)
 
-name: denormalized_flights_test
+name: denormalized_flights
 version: "1.0"
 
 graph_schema:
   nodes:
-    # Airport is a virtual node - all data comes from the flights_denorm table
+    # Airport is a virtual node - all data comes from the flights table
     - label: Airport
-      database: brahmand
-      table: flights_denorm
+      database: test_integration
+      table: flights
       node_id: code  # Logical property name for the ID
       property_mappings: {}  # Empty - all properties are denormalized
       
       # Denormalized origin (from_node) properties
       from_node_properties:
-        code: origin_code  # Airport.code (the ID) → flights_denorm.origin_code
-        city: origin_city
-        state: origin_state
+        code: Origin  # Airport.code (the ID) → flights.Origin
+        city: OriginCityName
+        state: OriginState
       
       # Denormalized destination (to_node) properties
       to_node_properties:
-        code: dest_code  # Airport.code (the ID) → flights_denorm.dest_code
-        city: dest_city
-        state: dest_state
+        code: Dest  # Airport.code (the ID) → flights.Dest
+        city: DestCityName
+        state: DestState
 
   edges:
     # FLIGHT relationship - node properties declared above
     - type: FLIGHT
-      database: brahmand
-      table: flights_denorm
-      from_id: origin_code
-      to_id: dest_code
+      database: test_integration
+      table: flights
+      from_id: Origin
+      to_id: Dest
       from_node: Airport
       to_node: Airport
       
@@ -40,9 +40,8 @@ graph_schema:
       
       # Edge properties
       property_mappings:
-        flight_id: flight_id
-        flight_number: flight_number
-        carrier: carrier
-        departure_time: departure_time
-        arrival_time: arrival_time
-        distance: distance
+        flight_num: flight_number
+        carrier: airline
+        departure_time: dep_time
+        arrival_time: arr_time
+        distance: distance_miles

@@ -347,7 +347,6 @@ class TestStandardSchema:
         result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Bug: WITH aggregation generates incorrect SQL")
     def test_with_agg_0(self):
         """
         WITH clause aggregation
