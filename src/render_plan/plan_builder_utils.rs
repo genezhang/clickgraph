@@ -7784,14 +7784,16 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 log::warn!("🔧 build_chained_with_match_cte_plan: Combining {} WITH renders with UNION ALL for alias '{}'",
                            rendered_plans.len(), with_alias);
 
-                // Clear ORDER BY/SKIP/LIMIT from individual plans - they'll be applied to the UNION wrapper
+                // Clear ORDER BY/SKIP/LIMIT/HAVING from individual plans - they'll be applied to the UNION wrapper
+                let first_having = rendered_plans.first().and_then(|p| p.having_clause.clone());
                 for plan in &mut rendered_plans {
                     plan.order_by = OrderByItems(vec![]);
                     plan.skip = SkipItem(None);
                     plan.limit = LimitItem(None);
+                    plan.having_clause = None;
                 }
 
-                // Create a wrapper RenderPlan with UnionItems, preserving ORDER BY/SKIP/LIMIT
+                // Create a wrapper RenderPlan with UnionItems, preserving ORDER BY/SKIP/LIMIT/HAVING
                 RenderPlan {
                     ctes: CteItems(vec![]),
                     select: SelectItems {
@@ -7803,7 +7805,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     array_join: ArrayJoinItem(Vec::new()),
                     filters: FilterItems(None),
                     group_by: GroupByExpressions(vec![]),
-                    having_clause: None,
+                    having_clause: first_having,
                     order_by: first_order_by.unwrap_or_else(|| OrderByItems(vec![])),
                     skip: SkipItem(first_skip),
                     limit: LimitItem(first_limit),

@@ -2463,6 +2463,13 @@ impl ToSql for Cte {
                         // Add GROUP BY if present (for aggregations)
                         cte_body.push_str(&plan.group_by.to_sql());
 
+                        // Add HAVING clause if present (after GROUP BY)
+                        if let Some(having_expr) = &plan.having_clause {
+                            cte_body.push_str("HAVING ");
+                            cte_body.push_str(&having_expr.to_sql());
+                            cte_body.push('\n');
+                        }
+
                         cte_body.push_str(&plan.order_by.to_sql());
 
                         // Handle SKIP/LIMIT - either or both may be present
