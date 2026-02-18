@@ -17,6 +17,7 @@ pub mod property_expansion;
 mod select_builder;
 pub mod types;
 pub mod utils;
+pub mod variable_scope;
 mod view_table_ref;
 
 use errors::RenderBuildError;

@@ -253,6 +253,25 @@ pub fn collect_aliases_from_plan(plan: &LogicalPlan) -> std::collections::HashSe
                     collect_recursive(input, aliases);
                 }
             }
+            LogicalPlan::GraphJoins(gj) => {
+                // Collect join table aliases (e.g., "t224" for Person_knows_Person)
+                for join in &gj.joins {
+                    if !join.table_alias.is_empty() {
+                        aliases.insert(join.table_alias.clone());
+                    }
+                }
+                collect_recursive(&gj.input, aliases);
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                collect_recursive(&cp.left, aliases);
+                collect_recursive(&cp.right, aliases);
+            }
+            LogicalPlan::WithClause(wc) => {
+                collect_recursive(&wc.input, aliases);
+            }
+            LogicalPlan::ViewScan(vs) => {
+                // ViewScan is a leaf — no aliases to collect from it directly
+            }
             _ => {}
         }
     }

@@ -13,15 +13,20 @@ use super::{
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::logical_plan::LogicalPlan;
+use crate::render_plan::variable_scope::VariableScope;
 
 /// Context for expression rewriting.
 ///
 /// Contains the information needed to resolve property mappings:
 /// - The input plan (for alias → label resolution)
-/// - Access to schema for property → column mapping
+/// - Optional scope for CTE-aware resolution
 pub struct ExpressionRewriteContext<'a> {
     /// The input plan from which aliases can be resolved to labels
     pub input_plan: &'a LogicalPlan,
+    /// Optional scope for CTE-aware variable resolution.
+    /// When Some, CTE variables resolve to CTE columns (forward resolution).
+    /// When None, falls back to schema-only resolution (backward compatible).
+    pub scope: Option<&'a VariableScope<'a>>,
 }
 
 impl<'a> ExpressionRewriteContext<'a> {
@@ -30,7 +35,21 @@ impl<'a> ExpressionRewriteContext<'a> {
             "🔍 ExpressionRewriteContext: Created with plan type: {:?}",
             std::mem::discriminant(input_plan)
         );
-        Self { input_plan }
+        Self {
+            input_plan,
+            scope: None,
+        }
+    }
+
+    pub fn with_scope(input_plan: &'a LogicalPlan, scope: &'a VariableScope<'a>) -> Self {
+        log::debug!(
+            "🔍 ExpressionRewriteContext: Created with scope, plan type: {:?}",
+            std::mem::discriminant(input_plan)
+        );
+        Self {
+            input_plan,
+            scope: Some(scope),
+        }
     }
 
     /// Find the label for a given alias by searching the input plan
@@ -46,7 +65,7 @@ impl<'a> ExpressionRewriteContext<'a> {
 }
 
 /// Find the label for an alias by recursively searching the plan tree
-fn find_label_for_alias_in_plan(plan: &LogicalPlan, target_alias: &str) -> Option<String> {
+pub(crate) fn find_label_for_alias_in_plan(plan: &LogicalPlan, target_alias: &str) -> Option<String> {
     match plan {
         LogicalPlan::GraphNode(node) => {
             if node.alias == target_alias {
@@ -90,7 +109,7 @@ fn find_label_for_alias_in_plan(plan: &LogicalPlan, target_alias: &str) -> Optio
 /// Map a Cypher property to its corresponding database column using the schema.
 ///
 /// This is the core property mapping function that consults GLOBAL_SCHEMAS.
-fn map_property_to_db_column(
+pub(crate) fn map_property_to_db_column(
     cypher_property: &str,
     node_label: &str,
 ) -> Result<String, PropertyMappingError> {
@@ -150,7 +169,7 @@ pub fn rewrite_expression_with_property_mapping(
     ctx: &ExpressionRewriteContext,
 ) -> LogicalExpr {
     match expr {
-        // PropertyAccessExp: Map Cypher property to DB column
+        // PropertyAccessExp: Map Cypher property to DB column (or CTE column if scope-aware)
         LogicalExpr::PropertyAccessExp(prop) => {
             let alias = &prop.table_alias.0;
             let cypher_property = prop.column.raw();
@@ -161,7 +180,43 @@ pub fn rewrite_expression_with_property_mapping(
                 cypher_property
             );
 
-            // Find the label for this alias
+            // Scope-aware resolution: check scope FIRST if available
+            if let Some(scope) = ctx.scope {
+                use crate::render_plan::variable_scope::ResolvedProperty;
+                match scope.resolve(alias, cypher_property) {
+                    ResolvedProperty::CteColumn { column, .. } => {
+                        log::debug!(
+                            "✓ Scope resolution (CTE): {}.{} → {}.{}",
+                            alias, cypher_property, alias, column
+                        );
+                        return LogicalExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: prop.table_alias.clone(),
+                            column: PropertyValue::Column(column),
+                        });
+                    }
+                    ResolvedProperty::DbColumn(db_col) => {
+                        log::debug!(
+                            "✓ Scope resolution (DB): {}.{} → {}.{}",
+                            alias, cypher_property, alias, db_col
+                        );
+                        if db_col == cypher_property {
+                            return expr.clone();
+                        }
+                        return LogicalExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: prop.table_alias.clone(),
+                            column: PropertyValue::Column(db_col),
+                        });
+                    }
+                    ResolvedProperty::Unresolved => {
+                        log::debug!(
+                            "🔍 Scope could not resolve {}.{}, falling through to schema",
+                            alias, cypher_property
+                        );
+                    }
+                }
+            }
+
+            // Fallback: schema-only resolution (original behavior)
             match ctx.find_label_for_alias(alias) {
                 Some(label) => {
                     log::debug!("🔍 TRACING: Expression rewriter found label '{}' for alias '{}', property '{}'", label, alias, cypher_property);

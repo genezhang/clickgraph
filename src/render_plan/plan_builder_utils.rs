@@ -6782,6 +6782,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
     plan_ctx: Option<&PlanCtx>,
+    scope: Option<&super::variable_scope::VariableScope>,
 ) -> RenderPlanBuilderResult<RenderPlan> {
     use super::CteContent;
 
@@ -7416,11 +7417,11 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 let mut rendered = if has_with_clause_in_graph_rel(plan_to_render) {
                     // The plan has nested WITH clauses - process them using our own logic
                     log::warn!("🔧 build_chained_with_match_cte_plan: Plan has nested WITH clauses, processing recursively with our own logic");
-                    build_chained_with_match_cte_plan(plan_to_render, schema, plan_ctx)?
+                    build_chained_with_match_cte_plan(plan_to_render, schema, plan_ctx, scope)?
                 } else {
                     // No nested WITH clauses - render directly
                     log::warn!("🔧 build_chained_with_match_cte_plan: Plan has no nested WITH clauses, rendering directly with plan_ctx");
-                    plan_to_render.to_render_plan_with_ctx(schema, plan_ctx)?
+                    plan_to_render.to_render_plan_with_ctx(schema, plan_ctx, scope)?
                 };
                 // CRITICAL: Extract CTE schemas from nested rendering
                 // When rendering nested WITHs, the recursive call builds CTEs that we need
@@ -9256,7 +9257,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
     // All WITH clauses have been processed, now render the final plan
     // Use render_plan_with_ctx to pass plan_ctx for VLP property selection
-    let mut render_plan = current_plan.to_render_plan_with_ctx(schema, plan_ctx)?;
+    let mut render_plan = current_plan.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
 
     log::info!(
         "🔧 build_chained_with_match_cte_plan: Final render complete. FROM: {:?}, SELECT items: {}",

@@ -228,10 +228,12 @@ pub(crate) trait RenderPlanBuilder {
     /// Convert to render plan with access to analysis-phase context (PlanCtx).
     /// This method should be preferred over `to_render_plan` when `plan_ctx` is available,
     /// as it provides access to VLP endpoint information and other analysis metadata.
+    /// The optional `scope` parameter enables CTE-aware variable resolution.
     fn to_render_plan_with_ctx(
         &self,
         schema: &GraphSchema,
         plan_ctx: Option<&PlanCtx>,
+        scope: Option<&super::variable_scope::VariableScope>,
     ) -> RenderPlanBuilderResult<RenderPlan>;
 }
 
@@ -747,7 +749,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         // Found Union nested deep, convert it to render plan WITH plan_ctx
                         log::warn!("🔀 extract_union_with_ctx: found nested Union, calling to_render_plan_with_ctx");
                         let union_render_plan =
-                            current.to_render_plan_with_ctx(schema, plan_ctx)?;
+                            current.to_render_plan_with_ctx(schema, plan_ctx, None)?;
                         log::warn!(
                             "🔀 extract_union_with_ctx: Union rendered, has_union={:?}",
                             union_render_plan.union.0.is_some()
@@ -798,7 +800,7 @@ impl RenderPlanBuilder for LogicalPlan {
         log::debug!("to_render_plan called with: {}", plan_name);
 
         if has_with_clause_in_graph_rel(self) {
-            return build_chained_with_match_cte_plan(self, schema, None);
+            return build_chained_with_match_cte_plan(self, schema, None, None);
         }
 
         match self {
@@ -2373,6 +2375,7 @@ impl RenderPlanBuilder for LogicalPlan {
         &self,
         schema: &GraphSchema,
         plan_ctx: Option<&PlanCtx>,
+        scope: Option<&super::variable_scope::VariableScope>,
     ) -> RenderPlanBuilderResult<RenderPlan> {
         log::warn!(
             "🔀🔀🔀 to_render_plan_with_ctx ENTRY - plan type: {:?}",
@@ -2396,7 +2399,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
         if has_with_clause {
             log::debug!("to_render_plan_with_ctx: Calling build_chained_with_match_cte_plan with plan_ctx={}", plan_ctx.is_some());
-            return build_chained_with_match_cte_plan(self, schema, plan_ctx);
+            return build_chained_with_match_cte_plan(self, schema, plan_ctx, scope);
         }
 
         // For non-WITH clause queries, we need to pass plan_ctx through to extract_select_items
@@ -2567,7 +2570,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             idx,
                             std::mem::discriminant(branch.as_ref())
                         );
-                        let branch_render = branch.to_render_plan_with_ctx(schema, plan_ctx)?;
+                        let branch_render = branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
                         branch_renders.push(branch_render);
                     }
 
@@ -3209,7 +3212,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     idx,
                     std::mem::discriminant(branch.as_ref())
                 );
-                let branch_render = branch.to_render_plan_with_ctx(schema, plan_ctx)?;
+                let branch_render = branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
                 branch_renders.push(branch_render);
             }
 
@@ -3223,7 +3226,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     .enumerate()
                     .map(|(idx, branch)| {
                         log::debug!("Converting Union branch {} to RenderPlan", idx + 1);
-                        branch.to_render_plan_with_ctx(schema, plan_ctx)
+                        branch.to_render_plan_with_ctx(schema, plan_ctx, scope)
                     })
                     .collect::<RenderPlanBuilderResult<Vec<_>>>()?;
 
@@ -3245,7 +3248,7 @@ impl RenderPlanBuilder for LogicalPlan {
             );
 
             // Render input with plan_ctx
-            let mut render_plan = p.input.to_render_plan_with_ctx(schema, plan_ctx)?;
+            let mut render_plan = p.input.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
 
             // Multi-label scan: Skip SELECT overwriting to preserve special columns
             if render_plan.is_multi_label_scan {
@@ -3413,25 +3416,124 @@ impl RenderPlanBuilder for LogicalPlan {
             return self.to_render_plan(schema);
         }
 
+        // Unwrap Filter with scope-aware expression rewriting
+        if let LogicalPlan::Filter(f) = self {
+            let mut render_plan = f.input.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+
+            use super::plan_builder_helpers::has_variable_length_or_shortest_path;
+            let has_vlp_or_shortest_path = has_variable_length_or_shortest_path(&f.input);
+
+            if !has_vlp_or_shortest_path {
+                use crate::query_planner::logical_expr::expression_rewriter::{
+                    rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+                };
+                let rewrite_ctx = if let Some(s) = scope {
+                    ExpressionRewriteContext::with_scope(&f.input, s)
+                } else {
+                    ExpressionRewriteContext::new(&f.input)
+                };
+                let rewritten_predicate =
+                    rewrite_expression_with_property_mapping(&f.predicate, &rewrite_ctx);
+
+                let filter_expr: super::render_expr::RenderExpr = rewritten_predicate.try_into()?;
+
+                render_plan.filters = match render_plan.filters.0 {
+                    Some(existing) => super::FilterItems(Some(
+                        super::render_expr::RenderExpr::OperatorApplicationExp(
+                            super::render_expr::OperatorApplication {
+                                operator: super::render_expr::Operator::And,
+                                operands: vec![existing, filter_expr],
+                            },
+                        ),
+                    )),
+                    None => super::FilterItems(Some(filter_expr)),
+                };
+            }
+            return Ok(render_plan);
+        }
+
         // Unwrap Limit/OrderBy/Skip wrappers and recurse with plan_ctx preserved
         if let LogicalPlan::Limit(l) = self {
-            let mut render_plan = l.input.to_render_plan_with_ctx(schema, plan_ctx)?;
+            let mut render_plan = l.input.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
             render_plan.limit = LimitItem(Some(l.count));
             return Ok(render_plan);
         }
         if let LogicalPlan::OrderBy(ob) = self {
-            let mut render_plan = ob.input.to_render_plan_with_ctx(schema, plan_ctx)?;
-            let order_by_items: Result<Vec<OrderByItem>, _> = ob
-                .items
-                .iter()
-                .map(|item| item.clone().try_into())
+            let mut render_plan = ob.input.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+
+            // When scope is available, rewrite ORDER BY expressions for CTE-aware resolution
+            let rewritten_items: Vec<crate::query_planner::logical_plan::OrderByItem> =
+                if let Some(s) = scope {
+                    use crate::query_planner::logical_expr::expression_rewriter::{
+                        rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+                    };
+                    let rewrite_ctx = ExpressionRewriteContext::with_scope(&ob.input, s);
+                    ob.items
+                        .iter()
+                        .map(|item| {
+                            let rewritten_expr =
+                                rewrite_expression_with_property_mapping(&item.expression, &rewrite_ctx);
+                            crate::query_planner::logical_plan::OrderByItem {
+                                expression: rewritten_expr,
+                                order: item.order.clone(),
+                            }
+                        })
+                        .collect()
+                } else {
+                    ob.items.clone()
+                };
+
+            let order_by_items: Result<Vec<OrderByItem>, _> = rewritten_items
+                .into_iter()
+                .map(|item| item.try_into())
                 .collect();
             render_plan.order_by = OrderByItems(order_by_items?);
             return Ok(render_plan);
         }
         if let LogicalPlan::Skip(s) = self {
-            let mut render_plan = s.input.to_render_plan_with_ctx(schema, plan_ctx)?;
+            let mut render_plan = s.input.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
             render_plan.skip = SkipItem(Some(s.count));
+            return Ok(render_plan);
+        }
+
+        // GroupBy with scope-aware expression rewriting
+        if let LogicalPlan::GroupBy(gb) = self {
+            let mut render_plan = gb.input.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+
+            let group_by_exprs: Result<Vec<RenderExpr>, _> = if let Some(s) = scope {
+                use crate::query_planner::logical_expr::expression_rewriter::{
+                    rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+                };
+                let rewrite_ctx = ExpressionRewriteContext::with_scope(&gb.input, s);
+                gb.expressions
+                    .iter()
+                    .map(|expr| {
+                        let rewritten = rewrite_expression_with_property_mapping(expr, &rewrite_ctx);
+                        rewritten.try_into()
+                    })
+                    .collect()
+            } else {
+                gb.expressions
+                    .iter()
+                    .map(|expr| expr.clone().try_into())
+                    .collect()
+            };
+            render_plan.group_by = GroupByExpressions(group_by_exprs?);
+
+            if let Some(ref having) = gb.having_clause {
+                let mut having_expr: RenderExpr = if let Some(s) = scope {
+                    use crate::query_planner::logical_expr::expression_rewriter::{
+                        rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+                    };
+                    let rewrite_ctx = ExpressionRewriteContext::with_scope(&gb.input, s);
+                    let rewritten = rewrite_expression_with_property_mapping(having, &rewrite_ctx);
+                    rewritten.try_into()?
+                } else {
+                    having.clone().try_into()?
+                };
+                apply_property_mapping_to_expr(&mut having_expr, &gb.input);
+                render_plan.having_clause = Some(having_expr);
+            }
             return Ok(render_plan);
         }
 
