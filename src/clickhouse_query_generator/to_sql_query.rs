@@ -1511,7 +1511,189 @@ fn ensure_database_prefix(table_name: &str) -> String {
     table_name.to_string()
 }
 
+/// Rewrite VLP variable references inside CTE bodies.
+///
+/// When a WITH CTE body references a VLP CTE (e.g., FROM vlp_person_friend),
+/// its WHERE and JOIN expressions may still use original Cypher variable names
+/// (e.g., friend.id, person.id). This rewrites them to VLP column names
+/// (e.g., t.end_id, t.start_id).
+///
+/// For undirected VLP (base FROM + union branches), also clones filters and
+/// JOINs to each union branch, rewriting with the correct VLP alias mapping
+/// for that direction.
+fn rewrite_vlp_in_cte_bodies(plan: &mut RenderPlan) {
+    use std::collections::HashMap;
+
+    // Collect VLP CTE alias info: cte_name → (start_alias, end_alias, path_variable)
+    let vlp_info: HashMap<String, (Option<String>, Option<String>, Option<String>)> = plan
+        .ctes
+        .0
+        .iter()
+        .filter(|cte| cte.vlp_cypher_start_alias.is_some())
+        .map(|cte| {
+            (
+                cte.cte_name.clone(),
+                (
+                    cte.vlp_cypher_start_alias.clone(),
+                    cte.vlp_cypher_end_alias.clone(),
+                    cte.vlp_path_variable.clone(),
+                ),
+            )
+        })
+        .collect();
+
+    if vlp_info.is_empty() {
+        return;
+    }
+
+    // Process each Structured CTE body
+    for cte in &mut plan.ctes.0 {
+        if let CteContent::Structured(ref mut inner) = cte.content {
+            rewrite_cte_body_vlp_refs(inner, &vlp_info);
+        }
+    }
+}
+
+/// Rewrite VLP references in a single CTE body's RenderPlan.
+/// If the body's FROM is a VLP CTE, rewrites filters and JOIN conditions.
+/// For undirected VLP (with union branches), clones filters/JOINs to each branch.
+fn rewrite_cte_body_vlp_refs(
+    plan: &mut RenderPlan,
+    vlp_info: &std::collections::HashMap<String, (Option<String>, Option<String>, Option<String>)>,
+) {
+    let from_name = match plan.from.0.as_ref() {
+        Some(f) => f.name.clone(),
+        None => return,
+    };
+
+    let forward_aliases = match vlp_info.get(&from_name) {
+        Some(aliases) => aliases.clone(),
+        None => return,
+    };
+
+    // Save original filters and joins before rewriting (needed for cloning to reverse branches)
+    let original_filters = plan.filters.0.clone();
+    let original_joins = plan.joins.0.clone();
+
+    // Rewrite forward branch's filters
+    if let Some(ref filter) = original_filters {
+        plan.filters = FilterItems(Some(rewrite_expr_for_vlp(
+            filter,
+            &forward_aliases.0,
+            &forward_aliases.1,
+            &forward_aliases.2,
+            false,
+        )));
+    }
+
+    // Rewrite forward branch's JOIN conditions
+    rewrite_joins_for_vlp(&mut plan.joins.0, &forward_aliases);
+
+    // For undirected VLP: clone filters and JOINs to each reverse union branch
+    if let Some(ref mut union) = plan.union.0 {
+        for branch in &mut union.input {
+            let branch_from_name = match branch.from.0.as_ref() {
+                Some(f) => f.name.clone(),
+                None => continue,
+            };
+            let reverse_aliases = match vlp_info.get(&branch_from_name) {
+                Some(aliases) => aliases.clone(),
+                None => continue,
+            };
+
+            // Clone and rewrite filters for reverse branch
+            if let Some(ref filter) = original_filters {
+                branch.filters = FilterItems(Some(rewrite_expr_for_vlp(
+                    filter,
+                    &reverse_aliases.0,
+                    &reverse_aliases.1,
+                    &reverse_aliases.2,
+                    false,
+                )));
+            }
+
+            // Clone and rewrite JOINs for reverse branch
+            if !original_joins.is_empty() {
+                branch.joins = JoinItems(original_joins.clone());
+                rewrite_joins_for_vlp(&mut branch.joins.0, &reverse_aliases);
+            }
+        }
+    }
+}
+
+/// Rewrite JOIN conditions using VLP alias mappings.
+fn rewrite_joins_for_vlp(
+    joins: &mut [Join],
+    aliases: &(Option<String>, Option<String>, Option<String>),
+) {
+    for join in joins.iter_mut() {
+        for cond in &mut join.joining_on {
+            for operand in &mut cond.operands {
+                *operand = rewrite_expr_for_vlp(operand, &aliases.0, &aliases.1, &aliases.2, false);
+            }
+        }
+        if let Some(ref filter) = join.pre_filter {
+            join.pre_filter = Some(rewrite_expr_for_vlp(
+                filter, &aliases.0, &aliases.1, &aliases.2, false,
+            ));
+        }
+    }
+}
+
+/// Recursively collect all CTE definitions from a RenderPlan tree,
+/// removing them from their nested locations (union branches, CTE content, etc.).
+fn collect_nested_ctes(plan: &mut RenderPlan, collected: &mut Vec<Cte>) {
+    // Take CTEs from this plan level
+    let ctes = std::mem::take(&mut plan.ctes.0);
+    for mut cte in ctes {
+        // Recursively flatten CTEs inside Structured CTE content
+        if let CteContent::Structured(ref mut inner_plan) = cte.content {
+            collect_nested_ctes(inner_plan, collected);
+        }
+        collected.push(cte);
+    }
+
+    // Recurse into union branches
+    if let Some(ref mut union) = plan.union.0 {
+        for branch in &mut union.input {
+            collect_nested_ctes(branch, collected);
+        }
+    }
+}
+
+/// Flatten all CTEs from the entire RenderPlan tree to the top level.
+/// After this call, `plan.ctes` contains ALL CTEs in sequential dependency order
+/// and no nested CTEs remain anywhere.
+///
+/// `collect_nested_ctes` walks depth-first: inner CTEs (dependencies) are collected
+/// before the outer CTEs that reference them. This naturally produces the correct
+/// dependency order — no additional sorting needed.
+fn flatten_all_ctes(plan: &mut RenderPlan) {
+    let mut collected = Vec::new();
+    collect_nested_ctes(plan, &mut collected);
+
+    if collected.is_empty() {
+        return;
+    }
+
+    // Deduplicate by name (keep first occurrence — the dependency-order one)
+    let mut seen = std::collections::HashSet::new();
+    collected.retain(|cte| seen.insert(cte.cte_name.clone()));
+
+    plan.ctes.0 = collected;
+}
+
 pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
+    // STEP 0: Flatten ALL CTEs to top level in dependency order.
+    // CTEs are always a flat, linear chain — never nested inside other CTEs or union branches.
+    flatten_all_ctes(&mut plan);
+
+    // STEP 0.5: Rewrite VLP variable references inside CTE bodies.
+    // When a WITH CTE body reads FROM a VLP CTE, its WHERE/JOIN expressions may still
+    // use original Cypher variable names (e.g., friend.id). Rewrite them to VLP column
+    // names (e.g., t.end_id). For undirected VLP, also clone filters/JOINs to reverse branches.
+    rewrite_vlp_in_cte_bodies(&mut plan);
+
     // Extract fixed path information if not already set
     // This looks at the RenderPlan structure to infer path variable info
     if plan.fixed_path_info.is_none() {
@@ -2167,12 +2349,11 @@ impl ToSql for OrderByItems {
 
 impl ToSql for CteItems {
     fn to_sql(&self) -> String {
-        let mut sql: String = String::new();
         if self.0.is_empty() {
-            return sql;
+            return String::new();
         }
 
-        // Deduplicate CTEs by name (same pattern may appear from multiple plan branches)
+        // Deduplicate CTEs by name (keep first occurrence)
         let mut seen_names = std::collections::HashSet::new();
         let deduped: Vec<&Cte> = self
             .0
@@ -2180,176 +2361,27 @@ impl ToSql for CteItems {
             .filter(|cte| seen_names.insert(cte.cte_name.clone()))
             .collect();
 
-        if deduped.len() < self.0.len() {
-            log::warn!(
-                "🔄 CTE dedup: {} → {} CTEs (removed {} duplicates). Names: {:?}",
-                self.0.len(),
-                deduped.len(),
-                self.0.len() - deduped.len(),
-                self.0
-                    .iter()
-                    .map(|c| c.cte_name.as_str())
-                    .collect::<Vec<_>>()
-            );
-        }
-
         if deduped.is_empty() {
-            return sql;
+            return String::new();
         }
 
-        // ClickHouse limitation: WITH RECURSIVE can only contain ONE recursive CTE
-        // Solution: Keep first recursive CTE group in WITH RECURSIVE block,
-        // wrap each additional recursive CTE group in a nested WITH RECURSIVE subquery
+        // Simple rule: ONE `WITH RECURSIVE` at the top if any CTE is recursive,
+        // then ALL CTEs flat and comma-separated. No nesting, no wrapping.
+        let has_recursive = deduped.iter().any(|c| c.is_recursive);
 
-        // Group CTEs: each recursive CTE with all following non-recursive CTEs (until next recursive or end)
-        let mut cte_groups: Vec<Vec<&Cte>> = Vec::new();
-        let mut current_group: Vec<&Cte> = Vec::new();
-
-        for cte in &deduped {
-            if cte.is_recursive {
-                // Start new group with this recursive CTE
-                if !current_group.is_empty() {
-                    cte_groups.push(current_group);
-                }
-                current_group = vec![cte];
-            } else {
-                // Add non-recursive CTE to current group
-                current_group.push(cte);
-            }
-        }
-
-        // Add final group
-        if !current_group.is_empty() {
-            cte_groups.push(current_group);
-        }
-
-        // CRITICAL FIX: For groups 2+ that would be wrapped, extract trailing non-recursive CTEs
-        // and move them to Group 1 (top level). This prevents:
-        // 1. Duplicate CTE names (wrapper name = inner CTE name)
-        // 2. Scope issues (WITH clause CTEs need to be accessible from final SELECT)
-        if cte_groups.len() > 1 {
-            let mut trailing_non_recursive: Vec<&Cte> = Vec::new();
-
-            // Process groups in reverse (from last to second)
-            for group_idx in (1..cte_groups.len()).rev() {
-                let group = &mut cte_groups[group_idx];
-
-                // Skip if first CTE isn't recursive (shouldn't happen based on grouping logic)
-                if group.is_empty() || !group[0].is_recursive {
-                    continue;
-                }
-
-                // Extract all trailing non-recursive CTEs from this group
-                let mut non_recursive_start = 1; // Start after the recursive CTE
-                for (i, cte) in group.iter().enumerate().skip(1) {
-                    if cte.is_recursive {
-                        non_recursive_start = i + 1;
-                    }
-                }
-
-                if non_recursive_start < group.len() {
-                    // Extract trailing non-recursive CTEs
-                    let extracted: Vec<&Cte> = group.drain(non_recursive_start..).collect();
-                    trailing_non_recursive.splice(0..0, extracted); // Prepend to maintain order
-                }
-            }
-
-            // Add extracted CTEs to Group 1 (top level)
-            if !trailing_non_recursive.is_empty() {
-                cte_groups[0].extend(trailing_non_recursive);
-            }
-        }
-
-        // If no recursive CTEs at all
-        if cte_groups.is_empty() || !cte_groups.iter().any(|g| g[0].is_recursive) {
+        let mut sql = String::new();
+        if has_recursive {
+            sql.push_str("WITH RECURSIVE ");
+        } else {
             sql.push_str("WITH ");
-            for (i, cte) in deduped.iter().enumerate() {
-                sql.push_str(&cte.to_sql());
-                if i + 1 < deduped.len() {
-                    sql.push_str(", ");
-                }
-                sql.push('\n');
-            }
-            return sql;
         }
 
-        // Emit first group (WITH RECURSIVE block with first recursive CTE and its helpers)
-        sql.push_str("WITH RECURSIVE ");
-        let first_group = &cte_groups[0];
-        for (i, cte) in first_group.iter().enumerate() {
+        for (i, cte) in deduped.iter().enumerate() {
             sql.push_str(&cte.to_sql());
-            if i + 1 < first_group.len() || cte_groups.len() > 1 {
-                sql.push_str(", ");
-            }
-            sql.push('\n');
-        }
-
-        // For additional groups (2nd recursive CTE onwards), wrap in subquery
-        for group_idx in 1..cte_groups.len() {
-            let group = &cte_groups[group_idx];
-            let first_cte_in_group = group[0];
-
-            // Only wrap if this group has a recursive CTE
-            if first_cte_in_group.is_recursive {
-                // Get the last CTE name in this group - that's what we'll expose
-                let last_cte_name = &group[group.len() - 1].cte_name;
-
-                // Check if the first CTE already contains nested CTE definitions (VLP multi-tier pattern)
-                // This is indicated by the presence of multiple " AS (" in RawSql content
-                let first_cte_content = match &first_cte_in_group.content {
-                    CteContent::RawSql(s) => Some(s.as_str()),
-                    _ => None,
-                };
-
-                let has_nested_ctes = first_cte_content
-                    .map(|s| s.matches(" AS (").count() > 1)
-                    .unwrap_or(false);
-
-                if has_nested_ctes && group.len() == 1 {
-                    // VLP CTE with multi-tier structure (e.g., "vlp_inner AS..., vlp AS...")
-                    // Wrap the entire nested structure as-is
-                    sql.push_str(&format!("{} AS (\n", last_cte_name));
-                    sql.push_str("  SELECT * FROM (\n");
-                    sql.push_str("    WITH RECURSIVE ");
-                    sql.push_str(first_cte_content.unwrap());
-                    sql.push_str("\n    SELECT * FROM ");
-                    sql.push_str(last_cte_name);
-                    sql.push_str("\n  )\n)");
-                } else {
-                    // Standard case: wrap each CTE normally
-                    sql.push_str(&format!("{} AS (\n", last_cte_name));
-                    sql.push_str("  SELECT * FROM (\n");
-                    sql.push_str("    WITH RECURSIVE ");
-
-                    // Emit all CTEs in this group
-                    for (i, cte) in group.iter().enumerate() {
-                        sql.push_str(&cte.to_sql());
-                        if i + 1 < group.len() {
-                            sql.push_str(", ");
-                        }
-                        sql.push('\n');
-                    }
-
-                    // Close the nested WITH and select the final CTE
-                    sql.push_str("    SELECT * FROM ");
-                    sql.push_str(last_cte_name);
-                    sql.push_str("\n  )\n)");
-                }
-
-                if group_idx + 1 < cte_groups.len() {
-                    sql.push_str(",\n");
-                } else {
-                    sql.push('\n');
-                }
+            if i + 1 < deduped.len() {
+                sql.push_str(", \n");
             } else {
-                // Non-recursive group: emit normally
-                for (i, cte) in group.iter().enumerate() {
-                    sql.push_str(&cte.to_sql());
-                    if i + 1 < group.len() || group_idx + 1 < cte_groups.len() {
-                        sql.push_str(", ");
-                    }
-                    sql.push('\n');
-                }
+                sql.push('\n');
             }
         }
 
@@ -2386,11 +2418,43 @@ impl ToSql for Cte {
                             cte_body.push_str("SELECT * ");
                         }
                         cte_body.push_str("FROM (\n");
-                        cte_body.push_str(&plan.union.to_sql());
+
+                        // If the base plan has its own FROM (e.g., forward VLP direction),
+                        // render it as the first UNION branch before the union.input branches.
+                        if plan.from.0.is_some() {
+                            cte_body.push_str("SELECT *\n");
+                            cte_body.push_str(&plan.from.to_sql());
+                            cte_body.push_str(&plan.joins.to_sql());
+                            cte_body.push_str(&plan.filters.to_sql());
+
+                            if let Some(union) = &plan.union.0 {
+                                let union_type_str = match union.union_type {
+                                    UnionType::Distinct => "UNION DISTINCT \n",
+                                    UnionType::All => "UNION ALL \n",
+                                };
+                                for branch in &union.input {
+                                    cte_body.push_str(union_type_str);
+                                    // Use SELECT * for union branches too — column names
+                                    // from VLP CTEs use start_/end_ prefixes that the outer
+                                    // WITH projection already knows how to reference.
+                                    cte_body.push_str("SELECT *\n");
+                                    cte_body.push_str(&branch.from.to_sql());
+                                    cte_body.push_str(&branch.joins.to_sql());
+                                    cte_body.push_str(&branch.filters.to_sql());
+                                }
+                            }
+                        } else {
+                            cte_body.push_str(&plan.union.to_sql());
+                        }
+
                         cte_body.push_str(") AS __union\n");
 
-                        // Render JOINs (e.g., pattern comprehension LEFT JOINs)
-                        cte_body.push_str(&plan.joins.to_sql());
+                        // Render outer JOINs only when NOT already inside UNION branches.
+                        // When plan.from.is_some() (undirected VLP), JOINs were already
+                        // rendered inside each UNION branch at lines above.
+                        if plan.from.0.is_none() {
+                            cte_body.push_str(&plan.joins.to_sql());
+                        }
 
                         // Add GROUP BY if present (for aggregations)
                         cte_body.push_str(&plan.group_by.to_sql());

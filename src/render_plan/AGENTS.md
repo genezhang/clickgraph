@@ -34,6 +34,23 @@ plan_builder.rs          ← trait RenderPlanBuilder: LogicalPlan → RenderPlan
 
 ## Critical Invariants
 
+### 0. CTEs Are Flat — No Nesting, Ever
+
+**This is the most important structural rule in the entire codebase.**
+
+CTEs are always a flat, linear chain at the top level of the query. No CTE definition
+may appear inside another CTE body, inside a union branch, or inside a subquery.
+There is exactly one `WITH RECURSIVE` keyword at the beginning of the SQL (if any CTE
+is recursive), followed by all CTEs comma-separated in dependency order.
+
+During plan building, CTEs may temporarily live inside union branches or nested
+RenderPlans. That's fine — `flatten_all_ctes()` in `to_sql_query.rs` extracts them all
+to the top level before rendering. But plan-building code should still aim to place CTEs
+at the highest possible level (via `hoist_nested_ctes()`) to keep the IR clean.
+
+**If you're adding code that creates CTEs**: just attach them to the nearest `RenderPlan.ctes`.
+The flattening pass will handle placement. Never try to render CTEs inline.
+
 ### 1. CTE Column Naming Convention
 
 WITH CTE columns use the **unambiguous `p{N}` format** (defined in `src/utils/cte_column_naming.rs`):
