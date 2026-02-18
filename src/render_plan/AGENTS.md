@@ -306,6 +306,125 @@ let from_join_expr = if needs_alias {
 
 **Impact**: Without aliases, ClickHouse silently returns empty results for same-table relationships (e.g., User→FOLLOWS→User, Person→KNOWS→Person).
 
+### 10. Variable Resolution & WITH Scope Barriers ⚠️ ARCHITECTURAL
+
+#### The Correct Mental Model
+
+In Cypher, every `WITH` clause creates a **scope barrier**:
+- Only explicitly listed variables survive past `WITH`
+- Downstream clauses can ONLY reference those surviving variables
+- Variables with the same name in different scopes are DIFFERENT entities
+
+In SQL, the CTE IS the scope barrier. A CTE is just a table. After a WITH→CTE
+translation, downstream SQL reads from the CTE table using CTE column names.
+There is no going "behind" the CTE to reach original tables.
+
+```
+Cypher scope stack:           SQL equivalent:
+┌─────────────────────┐
+│ MATCH (a)-[]->(b)   │  →   FROM A JOIN rel JOIN B
+│ WITH a, count(b)    │  →   CTE1 = (SELECT a.id AS p1_a_id, count(b.id) AS cnt FROM ...)
+├─────────────────────┤       ← SCOPE BARRIER: a and b from above are GONE
+│ MATCH (a)-[]->(c)   │  →   FROM CTE1 AS a JOIN C   (a here = CTE1, NOT the original table)
+│ RETURN a.name, c.x  │  →   SELECT a.p4_a_name, c.x FROM CTE1 AS a JOIN ...
+└─────────────────────┘
+```
+
+#### The Architectural Flaw: Premature Resolution + Reverse Mapping
+
+**Current (broken) flow:**
+1. Parser creates: `person.name` → `LogicalExpr::PropertyAccess("person", "name")`
+2. Schema lookup resolves to DB column: `"name"` → `"full_name"`
+3. RenderExpr becomes: `PropertyAccessExp { table_alias: "person", column: "full_name" }`
+4. WITH creates CTE: column `p6_person_full_name` (from `person.full_name`)
+5. ❌ NOW we need to undo step 3: map `("person", "full_name")` → `"p6_person_full_name"`
+6. ❌ This requires `reverse_mapping: HashMap<(alias, db_column), cte_column>`
+7. ❌ Walk ALL expressions post-hoc, rewriting matching PropertyAccessExp entries
+8. ❌ `Raw(String)`, `ExistsSubquery { sql }`, `PatternCount { sql }` are opaque — SKIPPED
+
+**Why reverse_mapping is a hack:**
+- It's a post-hoc fixup: first resolve to DB columns, then try to undo it
+- It can't reach inside opaque string expressions (`Raw`, `ExistsSubquery`, etc.)
+- It requires fragile heuristics to match aliases across scopes
+- It conflates "resolve property to source" with "resolve property to SQL column"
+
+#### The Correct Architecture: Forward Resolution Through CTE Scope
+
+**Principle**: Variable references should resolve to the **nearest enclosing scope's
+column names**, not to the original DB columns. The CTE IS the scope.
+
+**Correct flow:**
+1. When a CTE is created, record its **forward mapping** (already exists as `property_mapping`):
+   `(cypher_alias, cypher_property)` → `cte_column_name`
+   e.g., `("person", "name")` → `"p6_person_name"`, `("person", "id")` → `"p6_person_id"`
+
+2. When building downstream expressions that reference a variable from a CTE scope,
+   use the forward mapping directly:
+   `person.name` → `PropertyAccessExp { table_alias: cte_from_alias, column: "p6_person_name" }`
+
+3. **Never** resolve to DB columns first and then reverse-map. Go straight from
+   Cypher property → CTE column.
+
+4. The `property_mapping` in `cte_schemas` already provides this. The problem is that
+   expressions are resolved to DB columns BEFORE the CTE scope is applied.
+
+**What changes:**
+- `rewrite_expression_simple()` and `rewrite_expression_with_cte_alias()` should use
+  the forward mapping `(cypher_alias, cypher_property) → cte_column`, resolving
+  property names in Cypher space (not DB column space)
+- `build_property_mapping_from_columns()` should map Cypher property names, not DB column names
+- NOT EXISTS, EXISTS, size() patterns must remain as structured `RenderExpr` types
+  carrying variable references (not pre-rendered SQL strings) so CTE rewriting can reach them
+
+**Impact of eliminating reverse_mapping:**
+- All 88+ usages of `reverse_mapping` in `plan_builder_utils.rs` become forward lookups
+- No more "also add DB column mapping" hacks in `build_property_mapping_from_columns()`
+- `Raw(String)` expressions that embed variable names become fixable
+  (because we rewrite at the right level — Cypher variables, not DB columns)
+
+#### NOT EXISTS / EXISTS / size() — The Opaque String Problem
+
+Three expression types bake variable names into SQL strings too early:
+
+| Type | Where created | Problem |
+|------|--------------|---------|
+| `RenderExpr::Raw(sql)` | `render_expr.rs:914-918` — NOT (PathPattern) | `person.id` baked into string |
+| `ExistsSubquery { sql }` | `render_expr.rs:940-944` — ExistsSubquery | Same |
+| `PatternCount { sql }` | `render_expr.rs:975-978` — size(pattern) | Same |
+
+All three call SQL-generation functions (`generate_not_exists_from_path_pattern()`,
+`generate_exists_sql()`, `generate_pattern_count_sql()`) during `TryFrom<LogicalExpr>
+for RenderExpr` conversion — BEFORE any WITH scope processing.
+
+**Why rewriting can't fix them**: Every expression rewriting function
+(`rewrite_expression_simple`, `rewrite_expression_with_cte_alias`,
+`remap_cte_names_in_expr`) contains `other => other.clone()` for unhandled variants.
+`Raw`, `ExistsSubquery`, `PatternCount` all hit this fallback — their internal SQL
+strings are never touched.
+
+**The fix**: These should remain as structured `RenderExpr` types carrying
+`RenderExpr` sub-expressions (not pre-rendered SQL). Resolution to SQL should
+happen in `to_sql_query.rs` where the current scope's variable sources are known.
+For example, `ExistsSubquery` should carry the pattern and filter expressions as
+`RenderExpr` trees, not a pre-baked SQL string.
+
+#### Migration Strategy
+
+The fix is incremental — no big-bang rewrite:
+
+1. **Phase 1**: Change CTE-downstream expression building to use forward mapping
+   (`property_mapping` from `cte_schemas`) instead of reverse_mapping.
+   This means: when we know an expression references a variable that comes from a CTE,
+   resolve `(alias, cypher_property)` → `cte_column` directly.
+
+2. **Phase 2**: Refactor `ExistsSubquery`, `PatternCount`, and NOT EXISTS `Raw`
+   to carry structured sub-expressions. Update their `to_sql()` to render at the end.
+
+3. **Phase 3**: Remove `reverse_mapping` and all the "also add DB column mapping"
+   fallback code in `build_property_mapping_from_columns()`.
+
+Each phase is independently testable and improves correctness.
+
 ## Common Bug Patterns
 
 | Pattern | Symptom | Root Cause |
@@ -320,6 +439,8 @@ let from_join_expr = if needs_alias {
 | CTE name remapping missed | Old CTE name referenced | `cte_name_remaps` not applied to all expressions |
 | **`__label__` always injected** | **Extra column in property queries** | **`returns_whole_entity()` not checking Projection items** |
 | **Same-table relationship empty** | **User→FOLLOWS→User returns nothing** | **Missing `AS from_node` / `AS to_node` aliases for self-joins** |
+| **Identifier cannot be resolved after WITH** | **"DB::Exception: Identifier 'person.id' cannot be resolved"** | **Premature resolution: variable baked into Raw/ExistsSubquery SQL before CTE scope rewriting (see §10)** |
+| **reverse_mapping misses expression type** | **Variable reference not rewritten to CTE column** | **`rewrite_expression_simple` skips Raw, ExistsSubquery, PatternCount, ReduceExpr, etc. (see §10)** |
 
 ## Files You Should NOT Touch Casually
 

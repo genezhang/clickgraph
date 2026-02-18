@@ -331,6 +331,30 @@ is automatically converted to `concat()` with flattened operands.
 ### 7. Cypher 0-Based vs ClickHouse 1-Based Indexing
 `substring()` adds +1 to the start index. Array subscripts are 1-based in both systems (no conversion needed).
 
+### 8. Opaque String Expressions Cannot Be Rewritten ⚠️ ARCHITECTURAL DEBT
+
+Three `RenderExpr` variants carry pre-rendered SQL strings instead of structured
+sub-expressions. This means CTE scope rewriting **cannot reach inside them**:
+
+| Variant | Carries | Created in | Example content |
+|---------|---------|-----------|-----------------|
+| `Raw(String)` | Opaque SQL | `render_expr.rs:914-918` | `"NOT EXISTS (SELECT 1 FROM ... WHERE ... = person.id)"` |
+| `ExistsSubquery { sql: String }` | Opaque SQL | `render_expr.rs:940-944` | `"EXISTS (SELECT 1 FROM ... WHERE ...)"` |
+| `PatternCount { sql: String }` | Opaque SQL | `render_expr.rs:975-978` | `"(SELECT count(*) FROM ... WHERE ... = a.id)"` |
+
+**Impact**: When these expressions appear after a WITH scope barrier, the embedded
+variable names (`person.id`, `a.id`) refer to the original table, not the CTE.
+All expression rewriting functions (`rewrite_expression_simple`,
+`rewrite_expression_with_cte_alias`, `remap_cte_names_in_expr`) skip these
+variants via `other => other.clone()`.
+
+**In `to_sql_query.rs`**: `RenderExpr::Raw(raw) => raw.clone()` (line ~2694)
+simply passes the string through unchanged. No opportunity to rewrite.
+
+**Correct fix**: These should carry structured `RenderExpr` sub-expressions,
+with SQL rendering deferred to `to_sql()`. See `render_plan/AGENTS.md` §10
+for the full architecture description and migration plan.
+
 ## Common Bug Patterns
 
 | Pattern | Symptom | Where to Fix |
