@@ -69,6 +69,20 @@ impl<'a> VariableScope<'a> {
         }
     }
 
+    /// Create a scope with pre-accumulated CTE variables.
+    /// Used when rebuilding scope after plan tree mutation.
+    pub fn with_cte_variables(
+        schema: &'a GraphSchema,
+        plan: &'a LogicalPlan,
+        cte_variables: HashMap<String, CteVariableInfo>,
+    ) -> Self {
+        Self {
+            schema,
+            cte_variables,
+            plan,
+        }
+    }
+
     /// Resolve alias.property → actual column reference.
     ///
     /// Resolution order:
@@ -162,6 +176,11 @@ impl<'a> VariableScope<'a> {
         self.plan = new_plan;
     }
 
+    /// Update the plan reference (for when the plan tree changes between iterations).
+    pub fn update_plan(&mut self, new_plan: &'a LogicalPlan) {
+        self.plan = new_plan;
+    }
+
     /// Get the current plan reference.
     pub fn plan(&self) -> &'a LogicalPlan {
         self.plan
@@ -175,6 +194,12 @@ impl<'a> VariableScope<'a> {
     /// Get CTE variable info for an alias (if it's CTE-scoped).
     pub fn get_cte_info(&self, alias: &str) -> Option<&CteVariableInfo> {
         self.cte_variables.get(alias)
+    }
+
+    /// Get a clone of all accumulated CTE variables.
+    /// Used for rebuilding scope after plan tree mutation.
+    pub fn cte_variables(&self) -> &HashMap<String, CteVariableInfo> {
+        &self.cte_variables
     }
 }
 

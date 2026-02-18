@@ -9,7 +9,7 @@
 
 use super::{
     AggregateFnCall, LogicalCase, LogicalExpr, OperatorApplication, PropertyAccess, ReduceExpr,
-    ScalarFnCall,
+    ScalarFnCall, TableAlias,
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::logical_plan::LogicalPlan;
@@ -184,13 +184,13 @@ pub fn rewrite_expression_with_property_mapping(
             if let Some(scope) = ctx.scope {
                 use crate::render_plan::variable_scope::ResolvedProperty;
                 match scope.resolve(alias, cypher_property) {
-                    ResolvedProperty::CteColumn { column, .. } => {
+                    ResolvedProperty::CteColumn { cte_name, column } => {
                         log::debug!(
                             "✓ Scope resolution (CTE): {}.{} → {}.{}",
-                            alias, cypher_property, alias, column
+                            alias, cypher_property, cte_name, column
                         );
                         return LogicalExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: prop.table_alias.clone(),
+                            table_alias: TableAlias(cte_name),
                             column: PropertyValue::Column(column),
                         });
                     }

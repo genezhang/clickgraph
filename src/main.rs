@@ -66,7 +66,7 @@ fn main() {
     let stack_mb: usize = std::env::var("CLICKGRAPH_THREAD_STACK_MB")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(128);
+        .unwrap_or(512);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

@@ -6503,6 +6503,103 @@ pub(crate) fn update_graph_joins_cte_refs(
     }
 }
 
+/// Remove pre-computed joins from GraphJoins that are stale after WITH→CTE replacement.
+/// A join is stale if its table_alias corresponds to a CTE-scoped variable (it's been
+/// replaced by a CTE reference), OR if its join conditions reference CTE-scoped aliases
+/// (meaning it's an intermediate edge table connecting pre-WITH nodes).
+fn clear_stale_joins_for_cte_aliases(
+    plan: &LogicalPlan,
+    cte_aliases: &std::collections::HashSet<&str>,
+) -> LogicalPlan {
+    use crate::query_planner::logical_plan::*;
+    use std::sync::Arc;
+
+    match plan {
+        LogicalPlan::GraphJoins(gj) => {
+            let new_input = clear_stale_joins_for_cte_aliases(&gj.input, cte_aliases);
+
+            // Remove joins that reference CTE-scoped aliases:
+            // 1. Join's table_alias is a CTE alias (node join for exported variable)
+            // 2. Join's conditions reference a CTE alias (edge/intermediate table join)
+            let cleaned_joins: Vec<Join> = gj
+                .joins
+                .iter()
+                .filter(|j| {
+                    // Check if this join's alias is CTE-scoped
+                    let alias_is_stale = cte_aliases.contains(j.table_alias.as_str());
+                    // Check if any join condition references a CTE-scoped alias
+                    let condition_refs_cte = j.joining_on.iter().any(|op| {
+                        op.operands.iter().any(|operand| {
+                            if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) = operand {
+                                cte_aliases.contains(pa.table_alias.0.as_str())
+                            } else {
+                                false
+                            }
+                        })
+                    });
+                    if alias_is_stale || condition_refs_cte {
+                        log::debug!(
+                            "🔧 clear_stale_joins: Removing stale join for '{}' (alias_stale={}, cond_refs_cte={})",
+                            j.table_alias, alias_is_stale, condition_refs_cte
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .cloned()
+                .collect();
+
+            LogicalPlan::GraphJoins(GraphJoins {
+                input: Arc::new(new_input),
+                joins: cleaned_joins,
+                optional_aliases: gj.optional_aliases.clone(),
+                anchor_table: gj.anchor_table.clone(),
+                cte_references: gj.cte_references.clone(),
+                correlation_predicates: gj.correlation_predicates.clone(),
+            })
+        }
+        LogicalPlan::Projection(p) => LogicalPlan::Projection(Projection {
+            input: Arc::new(clear_stale_joins_for_cte_aliases(&p.input, cte_aliases)),
+            items: p.items.clone(),
+            distinct: p.distinct,
+            pattern_comprehensions: p.pattern_comprehensions.clone(),
+        }),
+        LogicalPlan::Filter(f) => LogicalPlan::Filter(Filter {
+            input: Arc::new(clear_stale_joins_for_cte_aliases(&f.input, cte_aliases)),
+            predicate: f.predicate.clone(),
+        }),
+        LogicalPlan::OrderBy(o) => LogicalPlan::OrderBy(OrderBy {
+            input: Arc::new(clear_stale_joins_for_cte_aliases(&o.input, cte_aliases)),
+            items: o.items.clone(),
+        }),
+        LogicalPlan::Limit(l) => LogicalPlan::Limit(Limit {
+            input: Arc::new(clear_stale_joins_for_cte_aliases(&l.input, cte_aliases)),
+            count: l.count,
+        }),
+        LogicalPlan::GroupBy(g) => LogicalPlan::GroupBy(GroupBy {
+            input: Arc::new(clear_stale_joins_for_cte_aliases(&g.input, cte_aliases)),
+            expressions: g.expressions.clone(),
+            having_clause: g.having_clause.clone(),
+            is_materialization_boundary: g.is_materialization_boundary,
+            exposed_alias: g.exposed_alias.clone(),
+        }),
+        LogicalPlan::Skip(s) => LogicalPlan::Skip(Skip {
+            input: Arc::new(clear_stale_joins_for_cte_aliases(&s.input, cte_aliases)),
+            count: s.count,
+        }),
+        LogicalPlan::Unwind(u) => LogicalPlan::Unwind(Unwind {
+            input: Arc::new(clear_stale_joins_for_cte_aliases(&u.input, cte_aliases)),
+            expression: u.expression.clone(),
+            alias: u.alias.clone(),
+            label: u.label.clone(),
+            tuple_properties: u.tuple_properties.clone(),
+        }),
+        // Leaf/other nodes: no joins to clear
+        other => other.clone(),
+    }
+}
+
 /// Expand TableAlias expressions in a LogicalPlan's Projection/Selection
 /// This is needed when the final SELECT has `RETURN a` where `a` is from a CTE
 /// The to_render_plan() method doesn't know about CTEs, so we expand here first.
@@ -6868,6 +6965,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
     }
 
     log::warn!("🔧 build_chained_with_match_cte_plan: Starting iterative WITH processing");
+
+    // Accumulate CTE variable info for scope-aware resolution.
+    // As each WITH is processed, we record the alias → CTE property mapping.
+    // This is used to build a VariableScope for rendering subsequent CTE bodies and the final plan.
+    let mut scope_cte_variables: HashMap<String, super::variable_scope::CteVariableInfo> =
+        HashMap::new();
 
     fn show_plan_structure(plan: &LogicalPlan, indent: usize) {
         let prefix = "  ".repeat(indent);
@@ -7414,14 +7517,25 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 // Render the plan (even if it contains nested WITHs)
                 // Instead of calling to_render_plan recursively (which causes infinite loops),
                 // process the plan directly using the same logic as the main function
+                //
+                // Build a scope from accumulated CTE variables for this rendering pass.
+                // This ensures CTE body rendering resolves variables from prior WITHs correctly.
+                let body_scope = super::variable_scope::VariableScope::with_cte_variables(
+                    schema, plan_to_render, scope_cte_variables.clone(),
+                );
+                let body_scope_ref = if scope_cte_variables.is_empty() && scope.is_none() {
+                    None // No scope needed for first WITH (or when called without outer scope)
+                } else {
+                    Some(&body_scope)
+                };
                 let mut rendered = if has_with_clause_in_graph_rel(plan_to_render) {
                     // The plan has nested WITH clauses - process them using our own logic
                     log::warn!("🔧 build_chained_with_match_cte_plan: Plan has nested WITH clauses, processing recursively with our own logic");
-                    build_chained_with_match_cte_plan(plan_to_render, schema, plan_ctx, scope)?
+                    build_chained_with_match_cte_plan(plan_to_render, schema, plan_ctx, body_scope_ref)?
                 } else {
                     // No nested WITH clauses - render directly
                     log::warn!("🔧 build_chained_with_match_cte_plan: Plan has no nested WITH clauses, rendering directly with plan_ctx");
-                    plan_to_render.to_render_plan_with_ctx(schema, plan_ctx, scope)?
+                    plan_to_render.to_render_plan_with_ctx(schema, plan_ctx, body_scope_ref)?
                 };
                 // CRITICAL: Extract CTE schemas from nested rendering
                 // When rendering nested WITHs, the recursive call builds CTEs that we need
@@ -9094,6 +9208,38 @@ pub(crate) fn build_chained_with_match_cte_plan(
             cte_references_for_rendering = cte_references.clone();
             log::warn!("🔧 build_chained_with_match_cte_plan: Updated cte_references_for_rendering with {} entries", cte_references_for_rendering.len());
 
+            // Update scope CTE variables: record each exported alias's property mapping
+            // so downstream rendering resolves CTE variables correctly.
+            for alias in &original_exported_aliases {
+                if alias.is_empty() {
+                    continue;
+                }
+                // Extract per-alias property mapping: cypher_prop → cte_column
+                let per_alias_mapping: HashMap<String, String> = property_mapping
+                    .iter()
+                    .filter(|((a, _), _)| a == alias)
+                    .map(|((_, prop), col)| (prop.clone(), col.clone()))
+                    .collect();
+
+                // Get labels from current plan tree (before it's replaced)
+                let labels = crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan(
+                    &current_plan, alias,
+                ).map(|l| vec![l]).unwrap_or_default();
+
+                scope_cte_variables.insert(
+                    alias.clone(),
+                    super::variable_scope::CteVariableInfo {
+                        cte_name: cte_name.clone(),
+                        property_mapping: per_alias_mapping,
+                        labels,
+                    },
+                );
+                log::info!(
+                    "🔧 build_chained: scope_cte_variables updated for alias '{}' → CTE '{}'",
+                    alias, cte_name
+                );
+            }
+
             log::info!(
                 "🔧 build_chained_with_match_cte_plan: Added '{}' to processed_cte_aliases",
                 with_alias
@@ -9255,9 +9401,30 @@ pub(crate) fn build_chained_with_match_cte_plan(
         }
     }
 
+    // Scope-aware join cleanup: remove ALL pre-computed joins whose aliases are now CTE-scoped.
+    // These joins are stale — they reference table-level tables from before the WITH barrier.
+    // The CTE references in the plan tree will produce the correct FROM/JOIN via extract_joins().
+    if !scope_cte_variables.is_empty() {
+        let cte_aliases: std::collections::HashSet<&str> = scope_cte_variables.keys().map(|s| s.as_str()).collect();
+        current_plan = clear_stale_joins_for_cte_aliases(&current_plan, &cte_aliases);
+        log::info!(
+            "🔧 build_chained: Cleared stale joins for CTE aliases: {:?}",
+            cte_aliases
+        );
+    }
+
     // All WITH clauses have been processed, now render the final plan
+    // Build scope from all accumulated CTE variables for the final rendering pass.
+    let final_scope = super::variable_scope::VariableScope::with_cte_variables(
+        schema, &current_plan, scope_cte_variables.clone(),
+    );
+    let final_scope_ref = if scope_cte_variables.is_empty() && scope.is_none() {
+        None
+    } else {
+        Some(&final_scope)
+    };
     // Use render_plan_with_ctx to pass plan_ctx for VLP property selection
-    let mut render_plan = current_plan.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+    let mut render_plan = current_plan.to_render_plan_with_ctx(schema, plan_ctx, final_scope_ref)?;
 
     log::info!(
         "🔧 build_chained_with_match_cte_plan: Final render complete. FROM: {:?}, SELECT items: {}",
