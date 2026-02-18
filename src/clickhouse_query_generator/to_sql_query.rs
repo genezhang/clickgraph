@@ -1663,8 +1663,12 @@ fn collect_nested_ctes(plan: &mut RenderPlan, collected: &mut Vec<Cte>) {
 }
 
 /// Flatten all CTEs from the entire RenderPlan tree to the top level.
-/// After this call, `plan.ctes` contains ALL CTEs in dependency order
-/// (recursive first, then non-recursive) and no nested CTEs remain anywhere.
+/// After this call, `plan.ctes` contains ALL CTEs in sequential dependency order
+/// and no nested CTEs remain anywhere.
+///
+/// `collect_nested_ctes` walks depth-first: inner CTEs (dependencies) are collected
+/// before the outer CTEs that reference them. This naturally produces the correct
+/// dependency order — no additional sorting needed.
 fn flatten_all_ctes(plan: &mut RenderPlan) {
     let mut collected = Vec::new();
     collect_nested_ctes(plan, &mut collected);
@@ -1673,24 +1677,11 @@ fn flatten_all_ctes(plan: &mut RenderPlan) {
         return;
     }
 
-    // Deduplicate by name (keep first occurrence)
+    // Deduplicate by name (keep first occurrence — the dependency-order one)
     let mut seen = std::collections::HashSet::new();
     collected.retain(|cte| seen.insert(cte.cte_name.clone()));
 
-    // Dependency order: recursive CTEs first, then non-recursive.
-    // Recursive CTEs (VLP) are leaf dependencies; non-recursive CTEs (WITH) reference them.
-    let mut recursive = Vec::new();
-    let mut non_recursive = Vec::new();
-    for cte in collected {
-        if cte.is_recursive {
-            recursive.push(cte);
-        } else {
-            non_recursive.push(cte);
-        }
-    }
-    recursive.append(&mut non_recursive);
-
-    plan.ctes.0 = recursive;
+    plan.ctes.0 = collected;
 }
 
 pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
