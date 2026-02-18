@@ -3039,6 +3039,78 @@ pub fn remap_cte_names_in_render_plan(
     }
 }
 
+/// Collect all `with_*_cte_*` table aliases referenced in a RenderPlan's expressions.
+fn collect_with_cte_table_aliases(
+    plan: &crate::render_plan::RenderPlan,
+) -> std::collections::HashSet<String> {
+    use crate::render_plan::render_expr::RenderExpr;
+
+    fn collect_from_expr(
+        expr: &RenderExpr,
+        result: &mut std::collections::HashSet<String>,
+    ) {
+        match expr {
+            RenderExpr::PropertyAccessExp(pa) => {
+                let alias = &pa.table_alias.0;
+                if alias.starts_with("with_") && alias.contains("_cte_") {
+                    result.insert(alias.clone());
+                }
+            }
+            RenderExpr::OperatorApplicationExp(op) => {
+                for operand in &op.operands {
+                    collect_from_expr(operand, result);
+                }
+            }
+            RenderExpr::AggregateFnCall(fc) => {
+                for arg in &fc.args {
+                    collect_from_expr(arg, result);
+                }
+            }
+            RenderExpr::ScalarFnCall(fc) => {
+                for arg in &fc.args {
+                    collect_from_expr(arg, result);
+                }
+            }
+            RenderExpr::Case(ce) => {
+                if let Some(ref expr) = ce.expr {
+                    collect_from_expr(expr, result);
+                }
+                for (cond, val) in &ce.when_then {
+                    collect_from_expr(cond, result);
+                    collect_from_expr(val, result);
+                }
+                if let Some(ref else_expr) = ce.else_expr {
+                    collect_from_expr(else_expr, result);
+                }
+            }
+            RenderExpr::ExistsSubquery(_) => {
+                // ExistsSubquery contains pre-rendered SQL, no expressions to scan
+            }
+            _ => {}
+        }
+    }
+
+    let mut result = std::collections::HashSet::new();
+    for item in &plan.select.items {
+        collect_from_expr(&item.expression, &mut result);
+    }
+    for join in &plan.joins.0 {
+        for op in &join.joining_on {
+            collect_from_expr(&RenderExpr::OperatorApplicationExp(op.clone()), &mut result);
+        }
+    }
+    if let Some(ref filter) = plan.filters.0 {
+        collect_from_expr(filter, &mut result);
+    }
+    for expr in &plan.group_by.0 {
+        collect_from_expr(expr, &mut result);
+    }
+    for item in &plan.order_by.0 {
+        collect_from_expr(&item.expression, &mut result);
+    }
+    result
+}
+
 /// Rewrite all occurrences of `old_alias` → `new_alias` in PropertyAccessExp table_alias
 /// across SELECT, JOINs, WHERE, ORDER BY, and UNION branches.
 /// Used when preserving the original node alias (e.g., "a") instead of
@@ -8460,6 +8532,47 @@ pub(crate) fn build_chained_with_match_cte_plan(
             cte_name_remapping.len()
         );
         remap_cte_names_in_render_plan(&mut render_plan, &cte_name_remapping);
+    }
+
+    // Comprehensive CTE name fixup: the analyzer assigns CTE names with its own counter
+    // (e.g., _cte_5) but the renderer creates CTEs with sequential numbering (_cte_1).
+    // Scan render plan for any with_*_cte_N references that don't match actual CTEs.
+    {
+        let actual_cte_names: std::collections::HashSet<String> =
+            all_ctes.iter().map(|c| c.cte_name.clone()).collect();
+        // Build base→actual mapping: strip _cte_N suffix to get base, map to actual name
+        let mut base_to_actual: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for name in &actual_cte_names {
+            if let Some(base) = name.rfind("_cte_").map(|pos| &name[..pos]) {
+                base_to_actual.insert(base.to_string(), name.clone());
+            }
+        }
+        // Collect all table aliases from render plan that look like CTE references
+        let referenced = collect_with_cte_table_aliases(&render_plan);
+        let mut auto_remap: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for ref_name in &referenced {
+            if actual_cte_names.contains(ref_name) {
+                continue; // Already correct
+            }
+            if let Some(pos) = ref_name.rfind("_cte_") {
+                let base = &ref_name[..pos];
+                if let Some(actual) = base_to_actual.get(base) {
+                    auto_remap.insert(ref_name.clone(), actual.clone());
+                }
+            }
+        }
+        if !auto_remap.is_empty() {
+            log::warn!(
+                "🔧 build_chained: Auto-remapping {} stale CTE references",
+                auto_remap.len()
+            );
+            for (from, to) in &auto_remap {
+                log::warn!("🔧   {} → {}", from, to);
+            }
+            remap_cte_names_in_render_plan(&mut render_plan, &auto_remap);
+        }
     }
 
     // CRITICAL FIX: If FROM references an alias that's now in a CTE, replace it with the CTE
