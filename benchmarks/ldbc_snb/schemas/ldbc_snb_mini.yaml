@@ -246,7 +246,7 @@ graph_schema:
       database: ldbc_mini
       table: Person_studyAt_Organisation
       from_id: PersonId
-      to_id: UniversityId
+      to_id: OrganisationId
       from_node: Person
       to_node: University
       property_mappings:
@@ -260,7 +260,7 @@ graph_schema:
       database: ldbc_mini
       table: Person_workAt_Organisation
       from_id: PersonId
-      to_id: CompanyId
+      to_id: OrganisationId
       from_node: Person
       to_node: Company
       property_mappings:
@@ -341,19 +341,6 @@ graph_schema:
       from_id: CommentId
       to_id: PersonId
       from_node: Comment
-      to_node: Person
-      property_mappings:
-        creationDate: creationDate
-
-    # -------------------------------------------------------------------------
-    # Message HAS_CREATOR Person (unified view)
-    # -------------------------------------------------------------------------
-    - type: HAS_CREATOR
-      database: ldbc_mini
-      table: Message_hasCreator_Person
-      from_id: MessageId
-      to_id: PersonId
-      from_node: Message
       to_node: Person
       property_mappings:
         creationDate: creationDate

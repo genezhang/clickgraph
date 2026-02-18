@@ -1628,10 +1628,9 @@ fn rewrite_joins_for_vlp(
 ) {
     for join in joins.iter_mut() {
         for cond in &mut join.joining_on {
-            cond.operands[0] =
-                rewrite_expr_for_vlp(&cond.operands[0], &aliases.0, &aliases.1, &aliases.2, false);
-            cond.operands[1] =
-                rewrite_expr_for_vlp(&cond.operands[1], &aliases.0, &aliases.1, &aliases.2, false);
+            for operand in &mut cond.operands {
+                *operand = rewrite_expr_for_vlp(operand, &aliases.0, &aliases.1, &aliases.2, false);
+            }
         }
         if let Some(ref filter) = join.pre_filter {
             join.pre_filter = Some(rewrite_expr_for_vlp(

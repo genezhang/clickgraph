@@ -2,7 +2,7 @@
 """LDBC Mini - rapid functional test runner.
 Tests SQL generation AND execution against the mini dataset.
 Designed for <10s total runtime."""
-import json, os, sys, requests, glob
+import json, os, requests, glob
 
 SERVER = os.environ.get("CLICKGRAPH_URL", "http://localhost:8082")
 QUERY_DIR = "benchmarks/ldbc_snb/queries/official"
