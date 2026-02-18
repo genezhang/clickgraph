@@ -94,15 +94,18 @@ impl<'a> VariableScope<'a> {
         // 1. Check CTE variables by Cypher alias (e.g., "friend" → with_friend_cte_0)
         if let Some(cte_info) = self.cte_variables.get(alias) {
             if let Some(cte_col) = cte_info.property_mapping.get(cypher_property) {
+                // Use FROM alias (e.g., "post_tag") not CTE name (e.g., "with_post_tag_cte_1")
+                // because SQL requires referencing the FROM alias when one is defined
+                let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
                 log::debug!(
                     "VariableScope: {}.{} → CTE column {}.{}",
                     alias,
                     cypher_property,
-                    cte_info.cte_name,
+                    from_alias,
                     cte_col
                 );
                 return ResolvedProperty::CteColumn {
-                    cte_name: cte_info.cte_name.clone(),
+                    cte_name: from_alias,
                     column: cte_col.clone(),
                 };
             }
@@ -117,15 +120,16 @@ impl<'a> VariableScope<'a> {
         // 2. Check if alias is a CTE name (e.g., "with_friend_cte_0.id" in JOIN conditions)
         if let Some(cte_info) = self.find_by_cte_name(alias) {
             if let Some(cte_col) = cte_info.property_mapping.get(cypher_property) {
+                let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
                 log::debug!(
                     "VariableScope: {}.{} → CTE column (by cte_name) {}.{}",
                     alias,
                     cypher_property,
-                    cte_info.cte_name,
+                    from_alias,
                     cte_col
                 );
                 return ResolvedProperty::CteColumn {
-                    cte_name: cte_info.cte_name.clone(),
+                    cte_name: from_alias,
                     column: cte_col.clone(),
                 };
             }
@@ -285,6 +289,27 @@ pub fn rewrite_render_plan_with_scope(plan: &mut RenderPlan, scope: &VariableSco
             join.pre_filter = Some(rewrite_render_expr(pre_filter, scope));
         }
     }
+}
+
+/// Extract the FROM alias from a CTE name.
+/// E.g., "with_post_tag_cte_1" → "post_tag", "with_a_cte" → "a"
+fn extract_from_alias_from_cte_name(cte_name: &str) -> String {
+    let base = cte_name.strip_prefix("with_").unwrap_or(cte_name);
+
+    // Handle unnumbered suffix "_cte"
+    if let Some(stripped) = base.strip_suffix("_cte") {
+        return stripped.to_string();
+    }
+
+    // Handle numbered suffixes like "_cte_1", "_cte_2", ..., "_cte_<digits>"
+    if let Some(pos) = base.rfind("_cte_") {
+        let suffix = &base[pos + "_cte_".len()..];
+        if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
+            return base[..pos].to_string();
+        }
+    }
+
+    base.to_string()
 }
 
 /// Recursively rewrite a RenderExpr using scope resolution.
@@ -449,5 +474,13 @@ mod tests {
         assert_eq!(cloned.cte_name, "cte_0");
         assert_eq!(cloned.property_mapping.len(), 2);
         assert_eq!(cloned.labels, vec!["Person"]);
+    }
+
+    #[test]
+    fn test_extract_from_alias_from_cte_name() {
+        assert_eq!(extract_from_alias_from_cte_name("with_post_tag_cte_1"), "post_tag");
+        assert_eq!(extract_from_alias_from_cte_name("with_a_cte_1"), "a");
+        assert_eq!(extract_from_alias_from_cte_name("with_a_b_cte"), "a_b");
+        assert_eq!(extract_from_alias_from_cte_name("plain_name"), "plain_name");
     }
 }

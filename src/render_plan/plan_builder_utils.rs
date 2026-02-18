@@ -7205,10 +7205,16 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                 // 🔧 CRITICAL FIX: Apply property mapping for WITH expressions
                                                 // Maps Cypher property names (e.g., u.name) to DB columns (e.g., full_name)
                                                 // This is the same rewriting that RETURN clause does
+                                                // SCOPE: Use body_scope_ref to resolve CTE-scoped variables
+                                                // (e.g., post.creationDate → CTE column after a prior WITH)
                                                 use crate::query_planner::logical_expr::expression_rewriter::{
                                                     ExpressionRewriteContext, rewrite_expression_with_property_mapping,
                                                 };
-                                                let rewrite_ctx = ExpressionRewriteContext::new(plan_to_render);
+                                                let rewrite_ctx = if let Some(s) = body_scope_ref {
+                                                    ExpressionRewriteContext::with_scope(plan_to_render, s)
+                                                } else {
+                                                    ExpressionRewriteContext::new(plan_to_render)
+                                                };
                                                 let rewritten_expr = rewrite_expression_with_property_mapping(&logical_expr, &rewrite_ctx);
                                                 log::info!(
                                                     "🔧 build_chained_with_match_cte_plan: Rewrote WITH expression with property mapping"
