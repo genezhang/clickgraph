@@ -1511,6 +1511,136 @@ fn ensure_database_prefix(table_name: &str) -> String {
     table_name.to_string()
 }
 
+/// Rewrite VLP variable references inside CTE bodies.
+///
+/// When a WITH CTE body references a VLP CTE (e.g., FROM vlp_person_friend),
+/// its WHERE and JOIN expressions may still use original Cypher variable names
+/// (e.g., friend.id, person.id). This rewrites them to VLP column names
+/// (e.g., t.end_id, t.start_id).
+///
+/// For undirected VLP (base FROM + union branches), also clones filters and
+/// JOINs to each union branch, rewriting with the correct VLP alias mapping
+/// for that direction.
+fn rewrite_vlp_in_cte_bodies(plan: &mut RenderPlan) {
+    use std::collections::HashMap;
+
+    // Collect VLP CTE alias info: cte_name → (start_alias, end_alias, path_variable)
+    let vlp_info: HashMap<String, (Option<String>, Option<String>, Option<String>)> = plan
+        .ctes
+        .0
+        .iter()
+        .filter(|cte| cte.vlp_cypher_start_alias.is_some())
+        .map(|cte| {
+            (
+                cte.cte_name.clone(),
+                (
+                    cte.vlp_cypher_start_alias.clone(),
+                    cte.vlp_cypher_end_alias.clone(),
+                    cte.vlp_path_variable.clone(),
+                ),
+            )
+        })
+        .collect();
+
+    if vlp_info.is_empty() {
+        return;
+    }
+
+    // Process each Structured CTE body
+    for cte in &mut plan.ctes.0 {
+        if let CteContent::Structured(ref mut inner) = cte.content {
+            rewrite_cte_body_vlp_refs(inner, &vlp_info);
+        }
+    }
+}
+
+/// Rewrite VLP references in a single CTE body's RenderPlan.
+/// If the body's FROM is a VLP CTE, rewrites filters and JOIN conditions.
+/// For undirected VLP (with union branches), clones filters/JOINs to each branch.
+fn rewrite_cte_body_vlp_refs(
+    plan: &mut RenderPlan,
+    vlp_info: &std::collections::HashMap<String, (Option<String>, Option<String>, Option<String>)>,
+) {
+    let from_name = match plan.from.0.as_ref() {
+        Some(f) => f.name.clone(),
+        None => return,
+    };
+
+    let forward_aliases = match vlp_info.get(&from_name) {
+        Some(aliases) => aliases.clone(),
+        None => return,
+    };
+
+    // Save original filters and joins before rewriting (needed for cloning to reverse branches)
+    let original_filters = plan.filters.0.clone();
+    let original_joins = plan.joins.0.clone();
+
+    // Rewrite forward branch's filters
+    if let Some(ref filter) = original_filters {
+        plan.filters = FilterItems(Some(rewrite_expr_for_vlp(
+            filter,
+            &forward_aliases.0,
+            &forward_aliases.1,
+            &forward_aliases.2,
+            false,
+        )));
+    }
+
+    // Rewrite forward branch's JOIN conditions
+    rewrite_joins_for_vlp(&mut plan.joins.0, &forward_aliases);
+
+    // For undirected VLP: clone filters and JOINs to each reverse union branch
+    if let Some(ref mut union) = plan.union.0 {
+        for branch in &mut union.input {
+            let branch_from_name = match branch.from.0.as_ref() {
+                Some(f) => f.name.clone(),
+                None => continue,
+            };
+            let reverse_aliases = match vlp_info.get(&branch_from_name) {
+                Some(aliases) => aliases.clone(),
+                None => continue,
+            };
+
+            // Clone and rewrite filters for reverse branch
+            if let Some(ref filter) = original_filters {
+                branch.filters = FilterItems(Some(rewrite_expr_for_vlp(
+                    filter,
+                    &reverse_aliases.0,
+                    &reverse_aliases.1,
+                    &reverse_aliases.2,
+                    false,
+                )));
+            }
+
+            // Clone and rewrite JOINs for reverse branch
+            if !original_joins.is_empty() {
+                branch.joins = JoinItems(original_joins.clone());
+                rewrite_joins_for_vlp(&mut branch.joins.0, &reverse_aliases);
+            }
+        }
+    }
+}
+
+/// Rewrite JOIN conditions using VLP alias mappings.
+fn rewrite_joins_for_vlp(
+    joins: &mut [Join],
+    aliases: &(Option<String>, Option<String>, Option<String>),
+) {
+    for join in joins.iter_mut() {
+        for cond in &mut join.joining_on {
+            cond.operands[0] =
+                rewrite_expr_for_vlp(&cond.operands[0], &aliases.0, &aliases.1, &aliases.2, false);
+            cond.operands[1] =
+                rewrite_expr_for_vlp(&cond.operands[1], &aliases.0, &aliases.1, &aliases.2, false);
+        }
+        if let Some(ref filter) = join.pre_filter {
+            join.pre_filter = Some(rewrite_expr_for_vlp(
+                filter, &aliases.0, &aliases.1, &aliases.2, false,
+            ));
+        }
+    }
+}
+
 /// Recursively collect all CTE definitions from a RenderPlan tree,
 /// removing them from their nested locations (union branches, CTE content, etc.).
 fn collect_nested_ctes(plan: &mut RenderPlan, collected: &mut Vec<Cte>) {
@@ -1567,6 +1697,12 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
     // STEP 0: Flatten ALL CTEs to top level in dependency order.
     // CTEs are always a flat, linear chain — never nested inside other CTEs or union branches.
     flatten_all_ctes(&mut plan);
+
+    // STEP 0.5: Rewrite VLP variable references inside CTE bodies.
+    // When a WITH CTE body reads FROM a VLP CTE, its WHERE/JOIN expressions may still
+    // use original Cypher variable names (e.g., friend.id). Rewrite them to VLP column
+    // names (e.g., t.end_id). For undirected VLP, also clone filters/JOINs to reverse branches.
+    rewrite_vlp_in_cte_bodies(&mut plan);
 
     // Extract fixed path information if not already set
     // This looks at the RenderPlan structure to infer path variable info
@@ -2323,8 +2459,12 @@ impl ToSql for Cte {
 
                         cte_body.push_str(") AS __union\n");
 
-                        // Render JOINs (e.g., pattern comprehension LEFT JOINs)
-                        cte_body.push_str(&plan.joins.to_sql());
+                        // Render outer JOINs only when NOT already inside UNION branches.
+                        // When plan.from.is_some() (undirected VLP), JOINs were already
+                        // rendered inside each UNION branch at lines above.
+                        if plan.from.0.is_none() {
+                            cte_body.push_str(&plan.joins.to_sql());
+                        }
 
                         // Add GROUP BY if present (for aggregations)
                         cte_body.push_str(&plan.group_by.to_sql());
