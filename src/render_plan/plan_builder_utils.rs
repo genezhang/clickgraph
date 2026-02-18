@@ -6503,10 +6503,59 @@ pub(crate) fn update_graph_joins_cte_refs(
     }
 }
 
+/// Collect all "live" table aliases from the plan tree — aliases that appear in
+/// GraphNode or GraphRel nodes that are NOT inside a ViewScan/CTE reference.
+/// These are the aliases that actually need physical table joins.
+fn collect_live_table_aliases(plan: &LogicalPlan) -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+    fn collect(plan: &LogicalPlan, aliases: &mut HashSet<String>) {
+        match plan {
+            LogicalPlan::GraphNode(n) => {
+                aliases.insert(n.alias.clone());
+                collect(&n.input, aliases);
+            }
+            LogicalPlan::GraphRel(r) => {
+                if !r.alias.is_empty() {
+                    aliases.insert(r.alias.clone());
+                }
+                collect(&r.left, aliases);
+                collect(&r.center, aliases);
+                collect(&r.right, aliases);
+            }
+            LogicalPlan::GraphJoins(gj) => collect(&gj.input, aliases),
+            LogicalPlan::Projection(p) => collect(&p.input, aliases),
+            LogicalPlan::Filter(f) => collect(&f.input, aliases),
+            LogicalPlan::OrderBy(o) => collect(&o.input, aliases),
+            LogicalPlan::Limit(l) => collect(&l.input, aliases),
+            LogicalPlan::GroupBy(g) => collect(&g.input, aliases),
+            LogicalPlan::Skip(s) => collect(&s.input, aliases),
+            LogicalPlan::Unwind(u) => collect(&u.input, aliases),
+            LogicalPlan::CartesianProduct(cp) => {
+                collect(&cp.left, aliases);
+                collect(&cp.right, aliases);
+            }
+            LogicalPlan::WithClause(wc) => collect(&wc.input, aliases),
+            LogicalPlan::Union(u) => {
+                for input in &u.inputs {
+                    collect(input, aliases);
+                }
+            }
+            // ViewScan = CTE reference, NOT a physical table — don't collect
+            LogicalPlan::ViewScan(_) => {}
+            _ => {}
+        }
+    }
+    let mut aliases = HashSet::new();
+    collect(plan, &mut aliases);
+    aliases
+}
+
 /// Remove pre-computed joins from GraphJoins that are stale after WITH→CTE replacement.
-/// A join is stale if its table_alias corresponds to a CTE-scoped variable (it's been
-/// replaced by a CTE reference), OR if its join conditions reference CTE-scoped aliases
-/// (meaning it's an intermediate edge table connecting pre-WITH nodes).
+/// A join is stale if:
+/// 1. Its table_alias is a CTE-scoped variable
+/// 2. Its join conditions reference a CTE-scoped alias
+/// 3. Its join conditions reference an alias not in the "live" set
+///    (i.e., the alias no longer exists as a physical node in the plan tree)
 fn clear_stale_joins_for_cte_aliases(
     plan: &LogicalPlan,
     cte_aliases: &std::collections::HashSet<&str>,
@@ -6514,90 +6563,110 @@ fn clear_stale_joins_for_cte_aliases(
     use crate::query_planner::logical_plan::*;
     use std::sync::Arc;
 
-    match plan {
-        LogicalPlan::GraphJoins(gj) => {
-            let new_input = clear_stale_joins_for_cte_aliases(&gj.input, cte_aliases);
+    // Collect all live table aliases from the plan tree
+    let live_aliases = collect_live_table_aliases(plan);
 
-            // Remove joins that reference CTE-scoped aliases:
-            // 1. Join's table_alias is a CTE alias (node join for exported variable)
-            // 2. Join's conditions reference a CTE alias (edge/intermediate table join)
-            let cleaned_joins: Vec<Join> = gj
-                .joins
-                .iter()
-                .filter(|j| {
-                    // Check if this join's alias is CTE-scoped
-                    let alias_is_stale = cte_aliases.contains(j.table_alias.as_str());
-                    // Check if any join condition references a CTE-scoped alias
-                    let condition_refs_cte = j.joining_on.iter().any(|op| {
-                        op.operands.iter().any(|operand| {
-                            if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) = operand {
-                                cte_aliases.contains(pa.table_alias.0.as_str())
-                            } else {
-                                false
-                            }
-                        })
-                    });
-                    if alias_is_stale || condition_refs_cte {
-                        log::debug!(
-                            "🔧 clear_stale_joins: Removing stale join for '{}' (alias_stale={}, cond_refs_cte={})",
-                            j.table_alias, alias_is_stale, condition_refs_cte
-                        );
-                        false
-                    } else {
-                        true
-                    }
+    fn clear_recursive(
+        plan: &LogicalPlan,
+        cte_aliases: &std::collections::HashSet<&str>,
+        live_aliases: &std::collections::HashSet<String>,
+    ) -> LogicalPlan {
+        match plan {
+            LogicalPlan::GraphJoins(gj) => {
+                let new_input = clear_recursive(&gj.input, cte_aliases, live_aliases);
+
+                let cleaned_joins: Vec<Join> = gj
+                    .joins
+                    .iter()
+                    .filter(|j| {
+                        // Check if this join's alias is CTE-scoped
+                        let alias_is_stale = cte_aliases.contains(j.table_alias.as_str());
+                        // Check if any join condition references a CTE-scoped alias
+                        let condition_refs_cte = j.joining_on.iter().any(|op| {
+                            op.operands.iter().any(|operand| {
+                                if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) = operand {
+                                    cte_aliases.contains(pa.table_alias.0.as_str())
+                                } else {
+                                    false
+                                }
+                            })
+                        });
+                        // Check if any join condition references an alias no longer in the plan tree
+                        let condition_refs_dead = j.joining_on.iter().any(|op| {
+                            op.operands.iter().any(|operand| {
+                                if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) = operand {
+                                    let alias = &pa.table_alias.0;
+                                    // Skip CTE table names (they're valid references)
+                                    !alias.starts_with("with_") && !live_aliases.contains(alias.as_str())
+                                } else {
+                                    false
+                                }
+                            })
+                        });
+                        if alias_is_stale || condition_refs_cte || condition_refs_dead {
+                            log::debug!(
+                                "🔧 clear_stale_joins: Removing stale join for '{}' (alias_stale={}, cond_refs_cte={}, cond_refs_dead={})",
+                                j.table_alias, alias_is_stale, condition_refs_cte, condition_refs_dead
+                            );
+                            false
+                        } else {
+                            true
+                        }
+                    })
+                    .cloned()
+                    .collect();
+
+                LogicalPlan::GraphJoins(GraphJoins {
+                    input: Arc::new(new_input),
+                    joins: cleaned_joins,
+                    optional_aliases: gj.optional_aliases.clone(),
+                    anchor_table: gj.anchor_table.clone(),
+                    cte_references: gj.cte_references.clone(),
+                    correlation_predicates: gj.correlation_predicates.clone(),
                 })
-                .cloned()
-                .collect();
-
-            LogicalPlan::GraphJoins(GraphJoins {
-                input: Arc::new(new_input),
-                joins: cleaned_joins,
-                optional_aliases: gj.optional_aliases.clone(),
-                anchor_table: gj.anchor_table.clone(),
-                cte_references: gj.cte_references.clone(),
-                correlation_predicates: gj.correlation_predicates.clone(),
-            })
+            }
+            LogicalPlan::Projection(p) => LogicalPlan::Projection(Projection {
+                input: Arc::new(clear_recursive(&p.input, cte_aliases, live_aliases)),
+                items: p.items.clone(),
+                distinct: p.distinct,
+                pattern_comprehensions: p.pattern_comprehensions.clone(),
+            }),
+            LogicalPlan::Filter(f) => LogicalPlan::Filter(Filter {
+                input: Arc::new(clear_recursive(&f.input, cte_aliases, live_aliases)),
+                predicate: f.predicate.clone(),
+            }),
+            LogicalPlan::OrderBy(o) => LogicalPlan::OrderBy(OrderBy {
+                input: Arc::new(clear_recursive(&o.input, cte_aliases, live_aliases)),
+                items: o.items.clone(),
+            }),
+            LogicalPlan::Limit(l) => LogicalPlan::Limit(Limit {
+                input: Arc::new(clear_recursive(&l.input, cte_aliases, live_aliases)),
+                count: l.count,
+            }),
+            LogicalPlan::GroupBy(g) => LogicalPlan::GroupBy(GroupBy {
+                input: Arc::new(clear_recursive(&g.input, cte_aliases, live_aliases)),
+                expressions: g.expressions.clone(),
+                having_clause: g.having_clause.clone(),
+                is_materialization_boundary: g.is_materialization_boundary,
+                exposed_alias: g.exposed_alias.clone(),
+            }),
+            LogicalPlan::Skip(s) => LogicalPlan::Skip(Skip {
+                input: Arc::new(clear_recursive(&s.input, cte_aliases, live_aliases)),
+                count: s.count,
+            }),
+            LogicalPlan::Unwind(u) => LogicalPlan::Unwind(Unwind {
+                input: Arc::new(clear_recursive(&u.input, cte_aliases, live_aliases)),
+                expression: u.expression.clone(),
+                alias: u.alias.clone(),
+                label: u.label.clone(),
+                tuple_properties: u.tuple_properties.clone(),
+            }),
+            // Leaf/other nodes: no joins to clear
+            other => other.clone(),
         }
-        LogicalPlan::Projection(p) => LogicalPlan::Projection(Projection {
-            input: Arc::new(clear_stale_joins_for_cte_aliases(&p.input, cte_aliases)),
-            items: p.items.clone(),
-            distinct: p.distinct,
-            pattern_comprehensions: p.pattern_comprehensions.clone(),
-        }),
-        LogicalPlan::Filter(f) => LogicalPlan::Filter(Filter {
-            input: Arc::new(clear_stale_joins_for_cte_aliases(&f.input, cte_aliases)),
-            predicate: f.predicate.clone(),
-        }),
-        LogicalPlan::OrderBy(o) => LogicalPlan::OrderBy(OrderBy {
-            input: Arc::new(clear_stale_joins_for_cte_aliases(&o.input, cte_aliases)),
-            items: o.items.clone(),
-        }),
-        LogicalPlan::Limit(l) => LogicalPlan::Limit(Limit {
-            input: Arc::new(clear_stale_joins_for_cte_aliases(&l.input, cte_aliases)),
-            count: l.count,
-        }),
-        LogicalPlan::GroupBy(g) => LogicalPlan::GroupBy(GroupBy {
-            input: Arc::new(clear_stale_joins_for_cte_aliases(&g.input, cte_aliases)),
-            expressions: g.expressions.clone(),
-            having_clause: g.having_clause.clone(),
-            is_materialization_boundary: g.is_materialization_boundary,
-            exposed_alias: g.exposed_alias.clone(),
-        }),
-        LogicalPlan::Skip(s) => LogicalPlan::Skip(Skip {
-            input: Arc::new(clear_stale_joins_for_cte_aliases(&s.input, cte_aliases)),
-            count: s.count,
-        }),
-        LogicalPlan::Unwind(u) => LogicalPlan::Unwind(Unwind {
-            input: Arc::new(clear_stale_joins_for_cte_aliases(&u.input, cte_aliases)),
-            expression: u.expression.clone(),
-            alias: u.alias.clone(),
-            label: u.label.clone(),
-            tuple_properties: u.tuple_properties.clone(),
-        }),
-        // Leaf/other nodes: no joins to clear
-        other => other.clone(),
     }
+
+    clear_recursive(plan, cte_aliases, &live_aliases)
 }
 
 /// Expand TableAlias expressions in a LogicalPlan's Projection/Selection
