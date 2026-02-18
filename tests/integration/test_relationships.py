@@ -146,7 +146,6 @@ class TestMultiHopTraversal:
 class TestBidirectionalPatterns:
     """Test bidirectional relationship patterns."""
     
-    @pytest.mark.xfail(reason="Cyclic alias resolution not yet implemented - see ROADMAP.md")
     def test_mutual_follows(self, simple_graph):
         """Test finding mutual follows: (a)-[]->(b)-[]->(a)."""
         response = execute_cypher(
@@ -161,7 +160,6 @@ class TestBidirectionalPatterns:
         # No mutual follows in our test data
         assert_row_count(response, 0)
     
-    @pytest.mark.xfail(reason="Cyclic alias resolution not yet implemented - see ROADMAP.md")
     def test_triangle_pattern(self, simple_graph):
         """Test triangle: (a)-[]->(b)-[]->(c)-[]->(a)."""
         response = execute_cypher(

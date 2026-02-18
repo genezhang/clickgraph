@@ -101,34 +101,27 @@ def setup_test_database(clickhouse_client, test_database):
 
 @pytest.fixture
 def clean_database(clickhouse_client, test_database):
-    """Clean all tables in test database before each test."""
-    # Get all tables in test database - use command() instead of query() to avoid zstandard issue
-    try:
-        result = clickhouse_client.command(
-            f"SELECT name FROM system.tables WHERE database = '{test_database}' FORMAT TabSeparated"
-        )
-        if result:
-            tables = [line.strip() for line in result.split('\n') if line.strip()]
-            # Drop all tables
-            for table_name in tables:
-                clickhouse_client.command(f"DROP TABLE IF EXISTS {test_database}.{table_name}")
-    except Exception as e:
-        # Database might not exist yet, that's ok
-        pass
+    """Clean simple_graph tables in test database before each test.
+    
+    Only drops tables created by the simple_graph fixture to avoid
+    destroying session-scoped test data used by other test files.
+    """
+    simple_graph_tables = ['users', 'products', 'purchases', 'follows', 'friendships']
+    
+    for table_name in simple_graph_tables:
+        try:
+            clickhouse_client.command(f"DROP TABLE IF EXISTS {test_database}.{table_name}")
+        except Exception:
+            pass
     
     yield
     
-    # Optional: Clean after test as well
-    try:
-        result = clickhouse_client.command(
-            f"SELECT name FROM system.tables WHERE database = '{test_database}' FORMAT TabSeparated"
-        )
-        if result:
-            tables = [line.strip() for line in result.split('\n') if line.strip()]
-            for table_name in tables:
-                clickhouse_client.command(f"DROP TABLE IF EXISTS {test_database}.{table_name}")
-    except Exception:
-        pass
+    # Clean after test as well
+    for table_name in simple_graph_tables:
+        try:
+            clickhouse_client.command(f"DROP TABLE IF EXISTS {test_database}.{table_name}")
+        except Exception:
+            pass
 
 
 def execute_cypher(query: str, schema_name: str = "social_integration", raise_on_error: bool = True) -> Dict[str, Any]:
@@ -774,12 +767,53 @@ def load_all_test_data(clickhouse_client, test_database, setup_test_database):
         except Exception as e:
             print(f"  ⚠ test_integration (social_integration schema) data load failed: {e}")
 
+    def load_data_security_data():
+        """Load data_security schema tables from setup SQL script."""
+        try:
+            import re
+            with open('examples/data_security/setup_schema.sql', 'r') as f:
+                sql = f.read()
+            # Remove comments and split by semicolon
+            sql = re.sub(r'--.*$', '', sql, flags=re.MULTILINE)
+            stmts = [s.strip() for s in sql.split(';') if s.strip()]
+            clickhouse_client.command("CREATE DATABASE IF NOT EXISTS data_security")
+            for stmt in stmts:
+                if stmt.upper().startswith(('CREATE', 'DROP', 'INSERT')):
+                    clickhouse_client.command(stmt)
+            print("  ✓ data_security schema data loaded")
+        except Exception as e:
+            print(f"  ⚠ data_security schema data load failed: {e}")
+
+    def load_property_expressions_data():
+        """Load property_expressions schema tables from setup SQL script."""
+        try:
+            import re
+            with open('tests/fixtures/data/setup_property_expressions.sql', 'r') as f:
+                sql = f.read()
+            # Remove comments and USE statements, replace brahmand with test_integration
+            sql = re.sub(r'--.*$', '', sql, flags=re.MULTILINE)
+            sql = re.sub(r'USE \w+;?\s*', '', sql)
+            sql = sql.replace('brahmand.', 'test_integration.')
+            stmts = [s.strip() for s in sql.split(';') if s.strip()]
+            for stmt in stmts:
+                if stmt.upper().startswith(('CREATE', 'DROP', 'INSERT')):
+                    # Prefix bare table names with test_integration
+                    if 'test_integration.' not in stmt:
+                        stmt = stmt.replace('users_expressions_test', 'test_integration.users_expressions_test')
+                        stmt = stmt.replace('follows_expressions_test', 'test_integration.follows_expressions_test')
+                    clickhouse_client.command(stmt)
+            print("  ✓ test_integration (property_expressions) data loaded")
+        except Exception as e:
+            print(f"  ⚠ test_integration (property_expressions) data load failed: {e}")
+
     # Load each schema's data independently
     load_test_integration_data()
     load_brahmand_data()
     load_filesystem_data()
     load_group_membership_data()
     load_social_integration_data()
+    load_data_security_data()
+    load_property_expressions_data()
     
     print("✅ All test data loaded successfully\n")
 
