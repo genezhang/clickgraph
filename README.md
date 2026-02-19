@@ -15,36 +15,26 @@
 - View-based graph analytics offer the benefits of zero-ETL without the hassle of data migration and duplicate cost, yet better performance and scalability than most of the native graph analytics options.
 - Neo4j Bolt protocol support gives instant access to the tools available, including graph visualization and the MCP server.
 ---
-## 🚀 What's New in v0.6.1 (January 12, 2026)
+## 🚀 What's New in v0.6.2-dev
 
-### Development Release: WITH Clause Fixes & GraphRAG Enhancements
+### Development Release: Variable Scope Resolution Redesign + Architecture Cleanup
 
-**v0.6.1 brings critical WITH clause fixes, GraphRAG multi-type VLP support, and LDBC SNB benchmark progress (15/41 queries passing).**
+**v0.6.2-dev delivers a foundational fix to WITH clause variable resolution, eliminating the reverse_mapping hack and replacing it with a proper scope-aware architecture.**
 
 ### Highlights ✨
 
-- **WITH Clause Fixes** - Fixed CartesianProduct recursion and chained WITH CTE remapping (+6 LDBC queries)
-- **GraphRAG Multi-Type VLP** - Variable-length paths across heterogeneous graphs (18/20 tests passing)
-- **Per-MATCH WHERE** - OpenCypher-compliant consecutive MATCH clauses with individual WHERE clauses
-- **LDBC SNB Progress** - 15/41 queries passing (37%): IS queries 7/7 (100%), IC 4/14, BI 4/20
-- **Test Coverage** - 3000+ tests across unit, integration, and benchmark suites
+- **Variable Scope Resolution** - `VariableScope` correctly resolves variables across WITH barriers: CTE-scoped vars use CTE columns, table vars use schema columns
+- **Architecture Cleanup** - Removed ~1,362 lines of post-hoc `reverse_mapping` rewrites; 6 dead helper functions deleted
+- **LDBC SNB Progress** - 14/37 queries passing (38%), up from 10/37 (27%) after scope fix
+- **Test Coverage** - 1,032 unit tests passing; integration tests at parity with prior release
 
-### Key Features
+### Key Fixes
 
-- **WITH + MATCH Patterns** - Disconnected MATCH patterns separated by WITH now work correctly
-  - Example: `MATCH (p:Person)-[:KNOWS*1..2]-(f) WITH DISTINCT f MATCH (f)<-[:HAS_CREATOR]-(post) RETURN f, post`
-- **Chained WITH Clauses** - 3+ level chained WITHs generate correct SQL (enables IC-1, IC-2)
-- **Configurable Type Inference** - `max_inferred_types` parameter for complex GraphRAG schemas (default: 5)
-- **OpenCypher Per-MATCH WHERE** - Each MATCH clause can have its own WHERE (9/9 tests passing)
-- **Multiple UNWIND Clauses** - Cartesian product support for multiple consecutive UNWIND clauses (e.g., `UNWIND [1,2] AS x UNWIND [10,20] AS y` → 4 rows)
-- **Pattern Comprehensions** - Extract values from graph patterns into lists with `[(pattern) | expression]` syntax
-
-### Bug Fixes 🐛
-
-- **Type inference** - Bottom-up processing for multi-hop pattern label resolution
-- **Denormalization metadata** - Copy `is_denormalized`, `from_node_properties`, `to_node_properties` from schema
-- **VLP ID columns** - Use relationship schema columns (`from_id`/`to_id`)
-- **Cycle prevention** - Skip for single-hop patterns (can't have cycles)
+- **CTE variable expansion** - `RETURN a` after `WITH` now correctly expands to individual columns instead of invalid `a.*`
+- **Alias renaming** - `WITH u AS person` correctly resolves `person.name` to the original `u`-prefixed CTE column
+- **UNION CTE projection** - Each branch gets explicit SELECT instead of `SELECT *`
+- **Deterministic join ordering** - Eliminates query variation across runs
+- **VLP+WITH type fix** - Removed spurious `toString()` on UInt64 IDs
 
 ---
 
@@ -177,7 +167,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete release history.
   - **Session/request parameter**: Bolt session database or HTTP `schema_name` parameter
   - **Default schema**: Fallback to "default" schema
   - **Schema isolation**: Different schemas map same labels to different ClickHouse tables
-- **Dual Server Architecture**: HTTP and Bolt servers running simultaneously (both production-ready)
+- **Dual Server Architecture**: HTTP and Bolt servers running simultaneously
 - **Authentication Support**: Multiple authentication schemes including basic auth
 
 ### View-Based Graph Model
@@ -213,7 +203,7 @@ flowchart LR
 
 **Three-tier architecture:** Graph clients → ClickGraph translator → ClickHouse database
 
-Both protocols share the same underlying query engine and ClickHouse backend. Both are production-ready.
+Both protocols share the same underlying query engine and ClickHouse backend.
 
 ## 🚀 Quick Start
 
@@ -556,14 +546,15 @@ See `docs/configuration.md` for complete configuration documentation.
 
 ## 🧪 Development Status
 
-**Current Version**: v0.6.1 (January 12, 2026)
+**Current Version**: v0.6.2-dev
 
 ### Test Coverage
-- ✅ **Rust Unit Tests**: 534/534 passing (100%)
+- ✅ **Rust Unit Tests**: 1,032/1,032 passing (100%)
 - ✅ **Schema Variation Tests**: 73 tests across 4 schema types
 - ✅ **Benchmarks**: 14/14 passing (100%)
 - ✅ **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
-- ✅ **Pytest**: 3000+ (95+% passing)
+- ✅ **Pytest**: 3,026 passing (13 pre-existing failures, at parity with prior release)
+- ✅ **LDBC SNB**: 14/37 queries passing (38%) on mini dataset
 
 ### Key Features
 - ✅ **Polymorphic & Coupled Edge Tables**: Advanced schema patterns
@@ -585,7 +576,7 @@ See [STATUS.md](STATUS.md) and [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details.
 **Phase 2 (v0.5.0)** ✅ - Multi-tenancy, RBAC, auto-schema discovery
 **Phase 2.5 (v0.5.2)** ✅ - Schema variations (polymorphic, coupled edges)
 **Phase 2.6 (v0.5.3)** ✅ - Cypher functions (label, EXISTS, regex, collect)
-**Phase 3 (v0.6.1)** 🔄 - WITH clause fixes, GraphRAG support, LDBC SNB benchmark
+**Phase 3 (v0.6.x)** 🔄 - WITH clause scope redesign, GraphRAG support, LDBC SNB benchmark
 
 See [ROADMAP.md](ROADMAP.md) for detailed feature tracking.
 
