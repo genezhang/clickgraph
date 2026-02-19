@@ -21,6 +21,35 @@ SELECT ... FROM cte_3   -- final query references the CTEs
 **Never** emit a second `WITH RECURSIVE` anywhere in the query.
 This is enforced by `flatten_all_ctes()` in `clickhouse_query_generator/to_sql_query.rs`.
 
+### Variable Resolution: Forward Through Scope, Never Reverse
+
+**Rule**: Variable references always resolve FORWARD to the nearest enclosing scope's
+column names. After a WITH→CTE barrier, downstream expressions reference CTE columns
+directly. There is no "reverse mapping" from DB columns back to CTE columns.
+
+**Why**: Each WITH creates a CTE. A CTE is just a table. Downstream SQL reads from
+the CTE using CTE column names. The original DB table columns are invisible after
+the scope barrier — just like you can't see inside a table's implementation.
+
+```
+Cypher: MATCH (p:Person) WITH p RETURN p.name
+
+Scope 1 (MATCH):  p → Person table, p.name → Person.full_name  (DB column)
+   ↓ WITH barrier → CTE1 (SELECT Person.full_name AS p6_person_name ...)
+Scope 2 (RETURN): p → CTE1, p.name → CTE1.p6_person_name       (CTE column)
+```
+
+**Downstream expressions should be built with CTE column names from the start.**
+The `property_mapping` in `cte_schemas` provides the forward mapping:
+`(cypher_alias, cypher_property)` → `cte_column_name`.
+
+**Do NOT**:
+- Resolve to DB columns first, then reverse-map to CTE columns
+- Bake variable names into opaque SQL strings before scope processing
+- Use `reverse_mapping: HashMap<(alias, db_col), cte_col>` (architectural debt)
+
+See `render_plan/AGENTS.md` §10 for the full architecture description.
+
 ## File Overview
 
 ```
