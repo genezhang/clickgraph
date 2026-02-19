@@ -97,19 +97,19 @@ pub fn resolve_identifier(
 pub fn deduplicate_joins(joins: Vec<Join>) -> Vec<Join> {
     use std::collections::HashMap;
     // Use (alias, join_condition) as key to allow multiple joins to same table with different conditions
-    let mut seen_joins: HashMap<(String, String), Join> = HashMap::new();
+    // Track insertion order via Vec to ensure deterministic output
+    let mut seen_joins: HashMap<(String, String), usize> = HashMap::new();
+    let mut result: Vec<Join> = Vec::new();
 
     for join in joins {
         let alias = join.table_alias.clone();
-
-        // Create a stable key from the join condition
         let join_condition_key = format!("{:?}", join.joining_on);
         let key = (alias.clone(), join_condition_key);
 
-        if let Some(existing) = seen_joins.get(&key) {
+        if let Some(&idx) = seen_joins.get(&key) {
             // Compare joins - prefer one with TableAlias in joining_on (cross-table join)
             let new_has_table_alias = join_references_table_alias(&join);
-            let existing_has_table_alias = join_references_table_alias(existing);
+            let existing_has_table_alias = join_references_table_alias(&result[idx]);
 
             log::debug!(
                 "🔄 deduplicate_joins: key='{:?}' has duplicate. new_has_table_alias={}, existing_has_table_alias={}",
@@ -117,17 +117,17 @@ pub fn deduplicate_joins(joins: Vec<Join>) -> Vec<Join> {
             );
 
             if new_has_table_alias && !existing_has_table_alias {
-                // Prefer the new join (it references WITH aliases)
                 log::debug!("🔄 deduplicate_joins: replacing with new join (has TableAlias)");
-                seen_joins.insert(key, join);
+                result[idx] = join;
             }
-            // Otherwise keep existing
         } else {
-            seen_joins.insert(key, join);
+            let idx = result.len();
+            seen_joins.insert(key, idx);
+            result.push(join);
         }
     }
 
-    seen_joins.into_values().collect()
+    result
 }
 
 /// Check if a join's joining_on condition references a TableAlias (WITH clause alias)

@@ -263,7 +263,7 @@ impl LogicalPlan {
         let left_is_denormalized = is_node_denormalized(&graph_rel.left);
         let right_is_denormalized = is_node_denormalized(&graph_rel.right);
 
-        log::warn!(
+        log::debug!(
             "🔍 FROM extract_from_graph_rel: alias='{}', variable_length={:?}, pattern_combinations={:?}, labels={:?}",
             graph_rel.alias,
             graph_rel.variable_length,
@@ -340,7 +340,7 @@ impl LogicalPlan {
             let end_alias = &graph_rel.right_connection;
 
             // 🔍 DEBUG: Check pattern_combinations field
-            log::warn!(
+            log::debug!(
                 "🔍 FROM BUILDER VLP: alias='{}', left='{}', right='{}', pattern_combinations={:?}, labels={:?}",
                 graph_rel.alias,
                 start_alias,
@@ -358,7 +358,7 @@ impl LogicalPlan {
                 format!("vlp_{}_{}", start_alias, end_alias)
             };
 
-            log::warn!(
+            log::debug!(
                 "🔍 FROM BUILDER: Computed CTE name='{}' (multi_type={})",
                 cte_name,
                 graph_rel.pattern_combinations.is_some()
@@ -639,7 +639,7 @@ impl LogicalPlan {
         graph_rel: &crate::query_planner::logical_plan::GraphRel,
         _context: &crate::render_plan::cte_generation::CteGenerationContext,
     ) -> RenderPlanBuilderResult<Option<ViewTableRef>> {
-        log::warn!(
+        log::debug!(
             "🔍 FROM extract_from_graph_rel_with_context: alias='{}', variable_length={:?}",
             graph_rel.alias,
             graph_rel.variable_length
@@ -1284,7 +1284,7 @@ impl LogicalPlan {
             // We want the LAST CTE (highest sequence number) as it represents the final scope
 
             if !graph_joins.cte_references.is_empty() {
-                log::warn!(
+                log::debug!(
                     "🔍 anchor_table is None, but have {} CTE references - finding latest CTE as FROM",
                     graph_joins.cte_references.len()
                 );
@@ -1338,7 +1338,7 @@ impl LogicalPlan {
             }
 
             // SECONDARY FALLBACK: Pick first join as FROM table
-            log::warn!("🔍 anchor_table is None and no CTE references, using first join as FROM");
+            log::debug!("🔍 anchor_table is None and no CTE references, using first join as FROM");
             if let Some(first_join) = graph_joins.joins.first() {
                 // Check if this join has a CTE reference
                 if let Some(cte_name) = graph_joins.cte_references.get(&first_join.table_alias) {

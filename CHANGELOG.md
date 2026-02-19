@@ -1,5 +1,37 @@
 ## [Unreleased]
 
+### 🚀 Features
+
+- **Foundational Variable Scope Resolution Redesign** (Feb 2026): 🎉 **MAJOR ARCHITECTURE FIX**
+  - **Problem**: The rendering pipeline resolved variables without scope context. Cypher's `WITH` creates scope barriers — only exported variables survive — but the SQL generator was unaware of this, causing leaked JOINs, wrong column references, and broken ORDER BY/GROUP BY/HAVING for post-WITH variables.
+  - **Root Cause**: 13 separate resolution paths scattered across the codebase, a `reverse_mapping` hack (~88 usages) patching wrong results post-hoc.
+  - **Solution**: `VariableScope` struct as a single, forward-only resolution source, built iteratively with each WITH iteration and threaded into every resolution site.
+  - **Architecture**:
+    ```
+    VariableScope (new):
+    ├─ Resolve alias.property → CteColumn | DbColumn | Unresolved
+    ├─ Built per WITH iteration: scope.advance_with(alias, cte_name, mapping, labels)
+    ├─ Covers: SELECT, WHERE, ORDER BY, GROUP BY, HAVING, JOIN conditions
+    └─ Eliminates need for post-render reverse_mapping rewrites
+    ```
+  - **Key Changes** (22 commits):
+    - `src/render_plan/variable_scope.rs`: New `VariableScope`, `CteVariableInfo`, `rewrite_render_plan_with_scope()` — expands bare CTE node vars into individual columns
+    - `src/render_plan/plan_builder_utils.rs`: Scope built in `build_chained_with_match_cte_plan()` loop; alias rename mapping (`WITH u AS person` → maps `person→u` for property lookup)
+    - `src/render_plan/plan_builder.rs`: Scope threaded into rendering pipeline
+    - **Removed** ~1,362 net lines: `intermediate_reverse_mapping`, final `reverse_mapping` block, 6 helper functions for reverse-mapping rewrites
+    - **Fixed** UNION CTE `SELECT *` → project needed columns per branch
+    - **Fixed** aggregate UNION rendering (inner branches project raw columns, outer aggregates)
+    - **Fixed** deterministic join ordering (HashMap+Vec preserves insertion order)
+    - **Fixed** VLP+WITH JOIN type mismatch (`toString()` wrapping on UInt64 removed)
+    - **Fixed** CTE node variable expansion in SELECT (bare `a` after WITH → individual columns)
+    - **Fixed** alias renaming through WITH (`WITH u AS person` → resolves `person.name`)
+  - **Results**:
+    - ✅ 1,032/1,032 unit tests passing
+    - ✅ Integration tests at parity with main branch (13/13 same pre-existing failures)
+    - ✅ LDBC mini benchmark: 14/37 (38%), up from 10/37 (27%) baseline (+4 queries)
+    - ✅ Zero new regressions
+    - 🎯 **Net: -1,362 lines** (architecture cleaned, reverse_mapping eliminated)
+
 ### 🐛 Bug Fixes
 
 - **ORDER BY, HAVING, LIMIT, SKIP clause extraction** (Feb 17, 2026): Fixed critical bug where clauses were omitted in multiple code paths

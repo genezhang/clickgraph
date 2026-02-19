@@ -101,7 +101,7 @@ impl SelectBuilder for LogicalPlan {
                 // SIMPLE FIX: If GraphRel has path_variable, add the path tuple directly
                 // This handles UNION branches without needing plan_ctx or Projection wrapping
                 if let Some(ref path_var) = graph_rel.path_variable {
-                    log::warn!(
+                    log::debug!(
                         "🔍 GraphRel has path_variable '{}', adding path tuple to SELECT",
                         path_var
                     );
@@ -125,7 +125,7 @@ impl SelectBuilder for LogicalPlan {
                     // CRITICAL FIX: For path queries, also include node and relationship properties
                     // Neo4j Browser (and Bolt protocol) expects full properties in path objects
                     // This enables convert_path_branches_to_json() to build _start_properties, _end_properties
-                    log::warn!(
+                    log::debug!(
                         "🔍 Path query: expanding properties for left='{}', right='{}', rel='{}'",
                         graph_rel.left_connection,
                         graph_rel.right_connection,
@@ -154,7 +154,7 @@ impl SelectBuilder for LogicalPlan {
                     )?;
                 }
 
-                log::warn!(
+                log::debug!(
                     "🔍 GraphRel.extract_select_items: returning {} items",
                     items.len()
                 );
@@ -191,7 +191,7 @@ impl SelectBuilder for LogicalPlan {
 
                         // Case 1: TableAlias (e.g., RETURN n)
                         LogicalExpr::TableAlias(table_alias) => {
-                            log::warn!(
+                            log::debug!(
                                 "🔍 Processing TableAlias('{}'), has_plan_ctx={}",
                                 table_alias.0,
                                 plan_ctx.is_some()
@@ -334,7 +334,7 @@ impl SelectBuilder for LogicalPlan {
                                     Some(typed_var) if typed_var.is_path() => {
                                         // Path variable - expand to tuple of path components
                                         // Handles both VLP (variable-length) and fixed single-hop paths
-                                        log::warn!(
+                                        log::debug!(
                                             "🔍 Found PATH variable '{}', calling expand_path_variable",
                                             table_alias.0
                                         );
@@ -881,7 +881,7 @@ impl SelectBuilder for LogicalPlan {
                             let cypher_alias = &prop_access.table_alias.0;
                             let col_name = prop_access.column.raw(); // This is the resolved column name (e.g., "OriginCityName")
 
-                            log::warn!(
+                            log::debug!(
                                 "🔍🔍🔍 Case 4 PropertyAccessExp: cypher_alias='{}', col_name='{}'",
                                 cypher_alias,
                                 col_name
@@ -933,7 +933,7 @@ impl SelectBuilder for LogicalPlan {
                                 log::error!("🔍🔍🔍 TRACING: No plan_ctx available for TypedVariable lookup");
                             }
 
-                            log::warn!("   → trying get_properties_with_table_alias...");
+                            log::debug!("   → trying get_properties_with_table_alias...");
 
                             // For denormalized nodes in edges, we need to get the actual table alias
                             // AND map the property name to the actual column name
@@ -949,7 +949,7 @@ impl SelectBuilder for LogicalPlan {
                                 if let Some(actual_column) = mapped_column {
                                     let table_alias_to_use = table_alias_override
                                         .unwrap_or_else(|| cypher_alias.to_string());
-                                    log::warn!(
+                                    log::debug!(
                                         "🔍 Mapped property '{}.{}' to column '{}.{}'",
                                         cypher_alias,
                                         col_name,
@@ -971,7 +971,7 @@ impl SelectBuilder for LogicalPlan {
                                     // Has actual_table_alias but property not found in mapping
                                     // Use original column name with the overridden alias
                                     let actual_table_alias = table_alias_override.unwrap();
-                                    log::warn!(
+                                    log::debug!(
                                         "🔍 Using actual table alias '{}' for {}.{} (property not in mapping)",
                                         actual_table_alias,
                                         cypher_alias,
@@ -1083,7 +1083,7 @@ impl SelectBuilder for LogicalPlan {
                                 }
 
                                 // Fallback: couldn't resolve ID column, pass through as-is
-                                log::warn!("🔍 SelectBuilder: id({}) - couldn't resolve ID column, passing through", alias.0);
+                                log::debug!("🔍 SelectBuilder: id({}) - couldn't resolve ID column, passing through", alias.0);
                             }
 
                             // Fallback for non-alias argument or failed resolution
@@ -1099,7 +1099,7 @@ impl SelectBuilder for LogicalPlan {
 
                         // Case 6: Other regular expressions (function call, literals, etc.)
                         _ => {
-                            log::warn!(
+                            log::debug!(
                                 "🔍 SelectBuilder Case 6 (Other): Expression type = {:?}",
                                 item.expression
                             );
@@ -1118,7 +1118,7 @@ impl SelectBuilder for LogicalPlan {
                 select_items
             }
             LogicalPlan::GraphJoins(graph_joins) => {
-                log::warn!(
+                log::debug!(
                     "🔍 GraphJoins.extract_select_items: input type={:?}",
                     std::mem::discriminant(graph_joins.input.as_ref())
                 );
@@ -1139,18 +1139,18 @@ impl SelectBuilder for LogicalPlan {
                 // Combine select items from both sides
                 log::trace!("🔍 CartesianProduct.extract_select_items START");
                 let left_items = cp.left.extract_select_items(plan_ctx)?;
-                log::warn!(
+                log::debug!(
                     "🔍 CartesianProduct.extract_select_items: left side returned {} items",
                     left_items.len()
                 );
                 let right_items = cp.right.extract_select_items(plan_ctx)?;
-                log::warn!(
+                log::debug!(
                     "🔍 CartesianProduct.extract_select_items: right side returned {} items, combining...",
                     right_items.len()
                 );
                 let mut items = left_items;
                 items.extend(right_items);
-                log::warn!(
+                log::debug!(
                     "🔍 CartesianProduct.extract_select_items DONE: total {} items",
                     items.len()
                 );
@@ -1162,12 +1162,12 @@ impl SelectBuilder for LogicalPlan {
             LogicalPlan::WithClause(wc) => {
                 log::trace!("🔍 WithClause.extract_select_items: calling extract on input");
                 let items = wc.input.extract_select_items(plan_ctx)?;
-                log::warn!(
+                log::debug!(
                     "🔍 WithClause.extract_select_items DONE: extracted {} items from input plan",
                     items.len()
                 );
                 for (idx, item) in items.iter().enumerate() {
-                    log::warn!(
+                    log::debug!(
                         "🔍   Item[{}]: alias={:?}",
                         idx,
                         item.col_alias.as_ref().map(|a| a.0.clone())
@@ -1771,7 +1771,7 @@ impl LogicalPlan {
         select_items: &mut Vec<SelectItem>,
         plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
     ) {
-        log::warn!(
+        log::debug!(
             "🔍 expand_path_variable ENTRY: path='{}', has_plan_ctx={}",
             path_alias,
             plan_ctx.is_some()
@@ -1781,7 +1781,7 @@ impl LogicalPlan {
         let path_var = match typed_var.as_path() {
             Some(pv) => pv,
             None => {
-                log::warn!("expand_path_variable called with non-path variable");
+                log::debug!("expand_path_variable called with non-path variable");
                 return;
             }
         };
@@ -2047,7 +2047,7 @@ impl LogicalPlan {
                     false
                 }
             } else {
-                log::warn!(
+                log::debug!(
                     "🔍 No GraphRel found for relationship '{}', assuming not denormalized",
                     rel_alias
                 );
@@ -2064,7 +2064,7 @@ impl LogicalPlan {
 
             // Expand properties for each component if we have plan_ctx
             if let Some(ctx) = plan_ctx {
-                log::warn!(
+                log::debug!(
                     "  🔍 Have plan_ctx, looking up path components: start={}, end={}, rel={}",
                     start_alias,
                     end_alias,
@@ -2220,7 +2220,7 @@ impl LogicalPlan {
                     }
                 }
             } else {
-                log::warn!(
+                log::debug!(
                     "  ✗ NO plan_ctx available for path variable '{}' property expansion!",
                     path_alias
                 );

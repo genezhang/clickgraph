@@ -9,7 +9,7 @@ use crate::{
         {
             ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem,
             GroupByExpressions, Join, JoinItems, JoinType, OrderByItems, OrderByOrder, RenderPlan,
-            SelectItems, ToSql, UnionItems, UnionType,
+            SelectItem, SelectItems, ToSql, UnionItems, UnionType,
         },
     },
     server::query_context::{
@@ -1097,7 +1097,7 @@ fn rewrite_expr_for_fixed_path(
                                 return RenderExpr::Literal(Literal::Integer(hop_count as i64));
                             }
                             "nodes" => {
-                                log::warn!(
+                                log::debug!(
                                     "🔧 Fixed path function: nodes({}) not yet implemented for fixed paths",
                                     path_variable
                                 );
@@ -1105,7 +1105,7 @@ fn rewrite_expr_for_fixed_path(
                                 return expr.clone();
                             }
                             "relationships" => {
-                                log::warn!(
+                                log::debug!(
                                     "🔧 Fixed path function: relationships({}) not yet implemented for fixed paths",
                                     path_variable
                                 );
@@ -1396,6 +1396,177 @@ fn lookup_denorm_node_id_property() -> Option<String> {
         }
     }
     None
+}
+
+/// Build a SELECT clause for UNION inner branches in the aggregation case.
+/// Returns (inner_select_sql, agg_arg_columns) where agg_arg_columns lists
+/// the SQL text of property-access expressions extracted from aggregate arguments.
+/// The outer SELECT should backtick-escape these references in its aggregates.
+fn build_union_inner_select(select: &SelectItems) -> (String, Vec<String>) {
+    let non_agg_items: Vec<&SelectItem> = select
+        .items
+        .iter()
+        .filter(|item| {
+            if matches!(&item.expression, RenderExpr::AggregateFnCall(_)) {
+                return false;
+            }
+            // Skip ALL __order_col items: ORDER BY is handled by outer query
+            if let Some(alias) = &item.col_alias {
+                if alias.0.starts_with("__order_col") {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    // Extract property-access expressions from aggregate arguments
+    let mut agg_arg_cols: Vec<String> = Vec::new();
+    for item in &select.items {
+        if let RenderExpr::AggregateFnCall(agg) = &item.expression {
+            for arg in &agg.args {
+                collect_property_access_sql(arg, &mut agg_arg_cols);
+            }
+        }
+    }
+    agg_arg_cols.sort();
+    agg_arg_cols.dedup();
+
+    // Remove any that are already covered by non_agg_items (via their expression SQL)
+    let existing_exprs: std::collections::HashSet<String> = non_agg_items
+        .iter()
+        .map(|item| item.expression.to_sql())
+        .collect();
+    agg_arg_cols.retain(|col| !existing_exprs.contains(col));
+
+    if non_agg_items.is_empty() && agg_arg_cols.is_empty() {
+        return ("SELECT 1 AS __dummy\n".to_string(), vec![]);
+    }
+
+    let mut sql = if select.distinct {
+        "SELECT DISTINCT \n".to_string()
+    } else {
+        "SELECT \n".to_string()
+    };
+
+    let total_items = non_agg_items.len() + agg_arg_cols.len();
+    let mut idx = 0;
+
+    for item in &non_agg_items {
+        sql.push_str("      ");
+        sql.push_str(&item.expression.to_sql());
+        if let Some(alias) = &item.col_alias {
+            sql.push_str(&format!(" AS \"{}\"", alias.0));
+        }
+        idx += 1;
+        if idx < total_items {
+            sql.push(',');
+        }
+        sql.push('\n');
+    }
+
+    // Add aggregate argument columns with their SQL as alias
+    for col_sql in &agg_arg_cols {
+        sql.push_str(&format!("      {} AS \"{}\"", col_sql, col_sql));
+        idx += 1;
+        if idx < total_items {
+            sql.push(',');
+        }
+        sql.push('\n');
+    }
+
+    (sql, agg_arg_cols)
+}
+
+/// Recursively collect property-access expression SQL from a RenderExpr tree.
+fn collect_property_access_sql(expr: &RenderExpr, out: &mut Vec<String>) {
+    match expr {
+        RenderExpr::PropertyAccessExp(_) => {
+            out.push(expr.to_sql());
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &op.operands {
+                collect_property_access_sql(operand, out);
+            }
+        }
+        RenderExpr::ScalarFnCall(f) => {
+            for arg in &f.args {
+                collect_property_access_sql(arg, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Build the outer SELECT for UNION with aggregation.
+///
+/// Non-aggregate items reference their inner-branch alias via backticks.
+/// Aggregate items rewrite property-access arguments to backtick-escaped
+/// column aliases so they reference the inner projection.
+fn build_outer_aggregate_select(select: &SelectItems, agg_arg_cols: &[String]) -> String {
+    let items: Vec<String> = select
+        .items
+        .iter()
+        .filter(|item| {
+            if let Some(alias) = &item.col_alias {
+                if alias.0.starts_with("__order_col") {
+                    return false;
+                }
+            }
+            true
+        })
+        .map(|item| {
+            let alias_str = item
+                .col_alias
+                .as_ref()
+                .map(|a| a.0.clone())
+                .unwrap_or_else(|| "result".to_string());
+            if matches!(&item.expression, RenderExpr::AggregateFnCall(_)) {
+                let mut agg_sql = item.expression.to_sql();
+                for col_ref in agg_arg_cols {
+                    agg_sql = agg_sql.replace(col_ref, &format!("`{}`", col_ref));
+                }
+                format!("{} AS \"{}\"", agg_sql, alias_str)
+            } else {
+                format!("`{}` AS \"{}\"", alias_str, alias_str)
+            }
+        })
+        .collect();
+    items.join(", ")
+}
+
+/// Build GROUP BY clause with aliased column references for UNION subqueries.
+///
+/// Maps each GROUP BY expression to its SELECT column alias (backtick-escaped)
+/// when available, falling back to the raw expression otherwise.
+fn build_aliased_group_by(group_by: &GroupByExpressions, select: &SelectItems) -> String {
+    if group_by.0.is_empty() {
+        return String::new();
+    }
+    let expr_to_alias: std::collections::HashMap<String, String> = select
+        .items
+        .iter()
+        .filter_map(|item| {
+            item.col_alias
+                .as_ref()
+                .map(|a| (item.expression.to_sql(), a.0.clone()))
+        })
+        .collect();
+
+    let mut sql = "GROUP BY ".to_string();
+    for (i, expr) in group_by.0.iter().enumerate() {
+        let expr_sql = RenderExpr::to_sql(expr);
+        if let Some(alias) = expr_to_alias.get(&expr_sql) {
+            sql.push_str(&format!("`{}`", alias));
+        } else {
+            sql.push_str(&expr_sql);
+        }
+        if i + 1 < group_by.0.len() {
+            sql.push_str(", ");
+        }
+    }
+    sql.push('\n');
+    sql
 }
 
 /// Render a single UNION branch to SQL. Simple branches produce
@@ -1830,10 +2001,19 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
             .iter()
             .any(|item| matches!(&item.expression, RenderExpr::AggregateFnCall(_)));
 
+        // Pre-compute inner SELECT and aggregate arg columns for aggregation+UNION case
+        let (inner_select_sql, agg_arg_cols) = if has_aggregation {
+            let (sql, cols) = build_union_inner_select(&plan.select);
+            (Some(sql), cols)
+        } else {
+            (None, vec![])
+        };
+
         log::debug!(
-            "UNION rendering: has_aggregation={}, select_items={}",
+            "UNION rendering: has_aggregation={}, select_items={}, agg_arg_cols={:?}",
             has_aggregation,
-            plan.select.items.len()
+            plan.select.items.len(),
+            agg_arg_cols
         );
         for (idx, item) in plan.select.items.iter().enumerate() {
             log::debug!("  select[{}]: expr={:?}", idx, item.expression);
@@ -1856,30 +2036,17 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
             sql.push_str("SELECT ");
 
             if let Some(_union) = &plan.union.0 {
-                // For UNION queries with aggregations, we need to select all columns from the subquery
-                // and apply the aggregation in the outer SELECT.
-                // For UNION queries without aggregations, select column aliases.
                 if has_aggregation {
-                    // With aggregation: apply the aggregation functions to the UNION result
-                    // The aggregation expressions will reference columns from the UNION
-                    let agg_select = plan
+                    // Collect aggregate aliases to detect dependent order columns
+                    let agg_aliases: std::collections::HashSet<String> = plan
                         .select
                         .items
                         .iter()
-                        .map(|item| {
-                            // Keep the aggregation expression as-is; it will reference UNION columns
-                            format!(
-                                "{} AS \"{}\"",
-                                item.expression.to_sql(),
-                                item.col_alias
-                                    .as_ref()
-                                    .map(|a| a.0.clone())
-                                    .unwrap_or_else(|| "result".to_string())
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    sql.push_str(&agg_select);
+                        .filter(|item| matches!(&item.expression, RenderExpr::AggregateFnCall(_)))
+                        .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+                        .collect();
+
+                    sql.push_str(&build_outer_aggregate_select(&plan.select, &agg_arg_cols));
                 } else {
                     // Without aggregation: select column aliases from the subquery
                     let alias_select = plan
@@ -1888,7 +2055,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
                         .iter()
                         .map(|item| {
                             if let Some(col_alias) = &item.col_alias {
-                                format!("__union.`{}` AS `{}`", col_alias.0, col_alias.0)
+                                format!("`{}` AS `{}`", col_alias.0, col_alias.0)
                             } else {
                                 // Fallback to the expression
                                 item.expression.to_sql()
@@ -1939,8 +2106,23 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
                         sql.push_str(union_type_str);
                         sql.push_str(&render_union_branch_sql(union_branch));
                     }
+                } else if has_aggregation {
+                    // For aggregation: use pre-computed inner SELECT that includes
+                    // non-aggregate columns plus aggregate argument columns.
+                    let inner_sql = inner_select_sql.as_ref().unwrap();
+                    for (i, union_branch) in union.input.iter().enumerate() {
+                        if i > 0 {
+                            sql.push_str(union_type_str);
+                        }
+                        let mut branch_sql = String::new();
+                        branch_sql.push_str(inner_sql);
+                        branch_sql.push_str(&union_branch.from.to_sql());
+                        branch_sql.push_str(&union_branch.joins.to_sql());
+                        branch_sql.push_str(&union_branch.filters.to_sql());
+                        sql.push_str(&branch_sql);
+                    }
                 } else {
-                    // All branches in union.input
+                    // Non-aggregation, all branches in union.input
                     for (i, union_branch) in union.input.iter().enumerate() {
                         if i > 0 {
                             sql.push_str(union_type_str);
@@ -1963,25 +2145,37 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
 
             sql.push_str(") AS __union\n");
 
-            // Add GROUP BY if present
-            sql.push_str(&plan.group_by.to_sql());
+            // Add GROUP BY — for UNION subquery context, reference column aliases
+            // from the inner SELECT rather than original table-qualified names
+            sql.push_str(&build_aliased_group_by(&plan.group_by, &plan.select));
 
             // Add ORDER BY after GROUP BY if present
-            // If we have UNION + ORDER BY, reference the __union columns we added
-            if !plan.order_by.0.is_empty() && !order_by_columns.is_empty() {
+            // For aggregation: use original ORDER BY expressions since the outer SELECT
+            // provides the aliased columns. For non-aggregation UNION: reference __union columns.
+            if has_aggregation && !plan.order_by.0.is_empty() {
+                sql.push_str(&plan.order_by.to_sql());
+            } else if !plan.order_by.0.is_empty() && !order_by_columns.is_empty() {
                 sql.push_str("ORDER BY ");
                 let order_clauses: Vec<String> = plan
                     .order_by
                     .0
                     .iter()
                     .enumerate()
-                    .map(|(idx, item)| {
+                    .filter_map(|(idx, item)| {
+                        if idx >= order_by_columns.len() {
+                            log::debug!(
+                                "ORDER BY column index {} exceeds available columns ({}), skipping",
+                                idx,
+                                order_by_columns.len()
+                            );
+                            return None;
+                        }
                         let col_alias = &order_by_columns[idx].1;
                         let order_str = match item.order {
                             OrderByOrder::Asc => "ASC",
                             OrderByOrder::Desc => "DESC",
                         };
-                        format!("__union.`{}` {}", col_alias, order_str)
+                        Some(format!("__union.`{}` {}", col_alias, order_str))
                     })
                     .collect();
                 sql.push_str(&order_clauses.join(", "));
@@ -2410,19 +2604,28 @@ impl ToSql for Cte {
                         has_custom_select || has_order_by_skip_limit || has_group_by;
 
                     if needs_subquery {
-                        // Wrap UNION in a subquery to apply SELECT projection, ORDER BY/LIMIT/SKIP, or GROUP BY
-                        if has_custom_select {
-                            // Use custom SELECT items (e.g., WITH friend.firstName AS name)
-                            cte_body.push_str(&plan.select.to_sql());
-                        } else {
-                            cte_body.push_str("SELECT * ");
-                        }
-                        cte_body.push_str("FROM (\n");
+                        // When the plan has its own FROM (bidirectional UNION), push the
+                        // SELECT projection into each UNION branch instead of using
+                        // SELECT * — avoids unresolvable table-qualified column refs.
+                        let has_modifiers =
+                            has_group_by || has_order_by_skip_limit || plan.having_clause.is_some();
+                        let has_aggregation =
+                            plan.select.items.iter().any(|item| {
+                                matches!(&item.expression, RenderExpr::AggregateFnCall(_))
+                            });
 
-                        // If the base plan has its own FROM (e.g., forward VLP direction),
-                        // render it as the first UNION branch before the union.input branches.
-                        if plan.from.0.is_some() {
-                            cte_body.push_str("SELECT *\n");
+                        if has_aggregation && has_custom_select && plan.from.0.is_some() {
+                            // Aggregate + UNION: inner branches project raw columns,
+                            // outer SELECT applies aggregation over the __union subquery
+                            let (inner_select_sql, agg_arg_cols) =
+                                build_union_inner_select(&plan.select);
+                            let outer_select =
+                                build_outer_aggregate_select(&plan.select, &agg_arg_cols);
+
+                            cte_body.push_str(&format!("SELECT {} FROM (\n", outer_select));
+
+                            // First branch with non-aggregate inner SELECT
+                            cte_body.push_str(&inner_select_sql);
                             cte_body.push_str(&plan.from.to_sql());
                             cte_body.push_str(&plan.joins.to_sql());
                             cte_body.push_str(&plan.filters.to_sql());
@@ -2434,30 +2637,94 @@ impl ToSql for Cte {
                                 };
                                 for branch in &union.input {
                                     cte_body.push_str(union_type_str);
-                                    // Use SELECT * for union branches too — column names
-                                    // from VLP CTEs use start_/end_ prefixes that the outer
-                                    // WITH projection already knows how to reference.
-                                    cte_body.push_str("SELECT *\n");
+                                    cte_body.push_str(&inner_select_sql);
                                     cte_body.push_str(&branch.from.to_sql());
                                     cte_body.push_str(&branch.joins.to_sql());
                                     cte_body.push_str(&branch.filters.to_sql());
                                 }
                             }
-                        } else {
-                            cte_body.push_str(&plan.union.to_sql());
-                        }
 
-                        cte_body.push_str(") AS __union\n");
+                            cte_body.push_str(") AS __union\n");
+                        } else if has_custom_select && plan.from.0.is_some() {
+                            let select_sql = plan.select.to_sql();
 
-                        // Render outer JOINs only when NOT already inside UNION branches.
-                        // When plan.from.is_some() (undirected VLP), JOINs were already
-                        // rendered inside each UNION branch at lines above.
-                        if plan.from.0.is_none() {
+                            if has_modifiers {
+                                // Need wrapper for GROUP BY/HAVING/ORDER BY/LIMIT
+                                cte_body.push_str("SELECT * FROM (\n");
+                            }
+
+                            // First branch: plan's own FROM with projected SELECT
+                            cte_body.push_str(&select_sql);
+                            cte_body.push_str(&plan.from.to_sql());
                             cte_body.push_str(&plan.joins.to_sql());
+                            cte_body.push_str(&plan.filters.to_sql());
+
+                            if let Some(union) = &plan.union.0 {
+                                let union_type_str = match union.union_type {
+                                    UnionType::Distinct => "UNION DISTINCT \n",
+                                    UnionType::All => "UNION ALL \n",
+                                };
+                                for branch in &union.input {
+                                    cte_body.push_str(union_type_str);
+                                    // Each branch gets the same SELECT projection
+                                    cte_body.push_str(&select_sql);
+                                    cte_body.push_str(&branch.from.to_sql());
+                                    cte_body.push_str(&branch.joins.to_sql());
+                                    cte_body.push_str(&branch.filters.to_sql());
+                                }
+                            }
+
+                            if has_modifiers {
+                                cte_body.push_str(") AS __union\n");
+                            }
+                        } else {
+                            // No custom select or no plan.from: use existing wrapper pattern
+                            if has_custom_select {
+                                cte_body.push_str(&plan.select.to_sql());
+                            } else {
+                                cte_body.push_str("SELECT * ");
+                            }
+                            cte_body.push_str("FROM (\n");
+
+                            if plan.from.0.is_some() {
+                                // First branch without custom select — use branch's own select
+                                cte_body.push_str(&plan.select.to_sql());
+                                cte_body.push_str(&plan.from.to_sql());
+                                cte_body.push_str(&plan.joins.to_sql());
+                                cte_body.push_str(&plan.filters.to_sql());
+
+                                if let Some(union) = &plan.union.0 {
+                                    let union_type_str = match union.union_type {
+                                        UnionType::Distinct => "UNION DISTINCT \n",
+                                        UnionType::All => "UNION ALL \n",
+                                    };
+                                    for branch in &union.input {
+                                        cte_body.push_str(union_type_str);
+                                        cte_body.push_str(&render_union_branch_sql(branch));
+                                    }
+                                }
+                            } else {
+                                cte_body.push_str(&plan.union.to_sql());
+                            }
+
+                            cte_body.push_str(") AS __union\n");
+
+                            // Outer JOINs only when NOT already inside UNION branches
+                            if plan.from.0.is_none() {
+                                cte_body.push_str(&plan.joins.to_sql());
+                            }
                         }
 
-                        // Add GROUP BY if present (for aggregations)
-                        cte_body.push_str(&plan.group_by.to_sql());
+                        // Add GROUP BY — use aliased column references since
+                        // we're outside the __union subquery wrapper
+                        cte_body.push_str(&build_aliased_group_by(&plan.group_by, &plan.select));
+
+                        // Add HAVING clause if present (after GROUP BY)
+                        if let Some(having_expr) = &plan.having_clause {
+                            cte_body.push_str("HAVING ");
+                            cte_body.push_str(&having_expr.to_sql());
+                            cte_body.push('\n');
+                        }
 
                         cte_body.push_str(&plan.order_by.to_sql());
 
@@ -2468,9 +2735,7 @@ impl ToSql for Cte {
                             } else {
                                 "".to_string()
                             };
-                            // ClickHouse requires LIMIT if OFFSET is present
-                            // Use a very large number if only SKIP is specified
-                            let limit_val = plan.limit.0.unwrap_or(9223372036854775807i64); // i64::MAX
+                            let limit_val = plan.limit.0.unwrap_or(9223372036854775807i64);
                             cte_body.push_str(&format!("LIMIT {skip_str}{limit_val}\n"));
                         }
                     } else {
@@ -2856,7 +3121,7 @@ impl RenderExpr {
                                             )
                                         }
                                         _ => {
-                                            log::warn!(
+                                            log::debug!(
                                                 "Unknown duration unit '{}', using as-is",
                                                 key
                                             );
@@ -3403,7 +3668,7 @@ impl RenderExpr {
                 // CteEntityRef should be expanded to all its columns in the SELECT list
                 // When we reach to_sql(), it means it wasn't expanded properly by select_builder
                 // For now, generate SQL that selects all prefixed columns from the CTE
-                log::warn!(
+                log::debug!(
                     "CteEntityRef '{}' from CTE '{}' reached to_sql() - should have been expanded",
                     cte_ref.alias,
                     cte_ref.cte_name

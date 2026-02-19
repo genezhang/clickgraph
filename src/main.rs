@@ -62,7 +62,7 @@ impl From<Cli> for config::CliConfig {
 fn main() {
     // Build tokio runtime with larger worker thread stacks to handle
     // deep recursive logical plan traversal (e.g., bidirectional + WITH chains).
-    // Debug builds need more stack due to larger frames; 128 MB handles all known cases.
+    // Default 128 MB covers all known query patterns; override via CLICKGRAPH_THREAD_STACK_MB.
     let stack_mb: usize = std::env::var("CLICKGRAPH_THREAD_STACK_MB")
         .ok()
         .and_then(|v| v.parse().ok())

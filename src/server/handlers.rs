@@ -731,7 +731,7 @@ async fn query_handler_inner(
             // Use to_render_plan_with_ctx to pass analysis-phase metadata (VLP endpoints, etc.)
 
             let render_plan =
-                match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx)) {
+                match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx), None) {
                     Ok(plan) => plan,
                     Err(e) => {
                         metrics.render_time = render_start.elapsed().as_secs_f64();

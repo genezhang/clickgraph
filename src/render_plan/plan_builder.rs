@@ -228,10 +228,12 @@ pub(crate) trait RenderPlanBuilder {
     /// Convert to render plan with access to analysis-phase context (PlanCtx).
     /// This method should be preferred over `to_render_plan` when `plan_ctx` is available,
     /// as it provides access to VLP endpoint information and other analysis metadata.
+    /// The optional `scope` parameter enables CTE-aware variable resolution.
     fn to_render_plan_with_ctx(
         &self,
         schema: &GraphSchema,
         plan_ctx: Option<&PlanCtx>,
+        scope: Option<&super::variable_scope::VariableScope>,
     ) -> RenderPlanBuilderResult<RenderPlan>;
 }
 
@@ -457,11 +459,9 @@ impl RenderPlanBuilder for LogicalPlan {
     ) -> RenderPlanBuilderResult<String> {
         // First, check if this alias comes from a CTE
         if let Some(cte_name) = cte_references.get(alias) {
-            if let Some((_select_items, _property_names, alias_to_id_column, _prop_map)) =
-                cte_schemas.get(cte_name)
-            {
+            if let Some(meta) = cte_schemas.get(cte_name) {
                 // Look up the ID column for this specific alias
-                if let Some(id_col) = alias_to_id_column.get(alias) {
+                if let Some(id_col) = meta.alias_to_id.get(alias) {
                     log::info!(
                         "✅ Found ID column '{}' for alias '{}' in CTE '{}'",
                         id_col,
@@ -475,7 +475,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         cte_name,
                         alias
                     );
-                    log::warn!("⚠️ Available alias mappings: {:?}", alias_to_id_column);
+                    log::warn!("⚠️ Available alias mappings: {:?}", meta.alias_to_id);
                 }
             }
         }
@@ -717,14 +717,14 @@ impl RenderPlanBuilder for LogicalPlan {
             LogicalPlan::Skip(s) => s.input.as_ref(),
             LogicalPlan::OrderBy(o) => o.input.as_ref(),
             _ => {
-                log::warn!("🔀 extract_union_with_ctx: Not GraphJoins or wrapper, returning None");
+                log::debug!("🔀 extract_union_with_ctx: Not GraphJoins or wrapper, returning None");
                 return Ok(None);
             }
         };
 
         // For GraphJoins, check if Union is nested inside (possibly wrapped in GraphNode, Projection, GroupBy, etc.)
         if let LogicalPlan::GraphJoins(gj) = graph_joins_node {
-            log::warn!(
+            log::debug!(
                 "🔀 extract_union_with_ctx: GraphJoins.input type: {:?}",
                 std::mem::discriminant(gj.input.as_ref())
             );
@@ -732,23 +732,23 @@ impl RenderPlanBuilder for LogicalPlan {
             loop {
                 match current {
                     LogicalPlan::GraphNode(gn) => {
-                        log::warn!("🔀 extract_union_with_ctx: Found GraphNode, recursing...");
+                        log::debug!("🔀 extract_union_with_ctx: Found GraphNode, recursing...");
                         current = gn.input.as_ref();
                     }
                     LogicalPlan::Projection(proj) => {
-                        log::warn!("🔀 extract_union_with_ctx: Found Projection, recursing...");
+                        log::debug!("🔀 extract_union_with_ctx: Found Projection, recursing...");
                         current = proj.input.as_ref();
                     }
                     LogicalPlan::GroupBy(gb) => {
-                        log::warn!("🔀 extract_union_with_ctx: Found GroupBy, recursing...");
+                        log::debug!("🔀 extract_union_with_ctx: Found GroupBy, recursing...");
                         current = gb.input.as_ref();
                     }
                     LogicalPlan::Union(_union) => {
                         // Found Union nested deep, convert it to render plan WITH plan_ctx
-                        log::warn!("🔀 extract_union_with_ctx: found nested Union, calling to_render_plan_with_ctx");
+                        log::debug!("🔀 extract_union_with_ctx: found nested Union, calling to_render_plan_with_ctx");
                         let union_render_plan =
-                            current.to_render_plan_with_ctx(schema, plan_ctx)?;
-                        log::warn!(
+                            current.to_render_plan_with_ctx(schema, plan_ctx, None)?;
+                        log::debug!(
                             "🔀 extract_union_with_ctx: Union rendered, has_union={:?}",
                             union_render_plan.union.0.is_some()
                         );
@@ -757,7 +757,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         return Ok(move_first_branch_into_union(union_render_plan));
                     }
                     other => {
-                        log::warn!(
+                        log::debug!(
                             "🔀 extract_union_with_ctx: Found {:?}, breaking loop",
                             std::mem::discriminant(other)
                         );
@@ -769,7 +769,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
         // Note: UNION is handled by LogicalPlan::Union nodes in to_render_plan().
         // This method returns None for other node types.
-        log::warn!("🔀 extract_union_with_ctx: No Union found, returning None");
+        log::debug!("🔀 extract_union_with_ctx: No Union found, returning None");
         Ok(None)
     }
 
@@ -798,7 +798,7 @@ impl RenderPlanBuilder for LogicalPlan {
         log::debug!("to_render_plan called with: {}", plan_name);
 
         if has_with_clause_in_graph_rel(self) {
-            return build_chained_with_match_cte_plan(self, schema, None);
+            return build_chained_with_match_cte_plan(self, schema, None, None);
         }
 
         match self {
@@ -1596,8 +1596,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 })
             }
             LogicalPlan::WithClause(with) => {
-                log::warn!("🔍 Rendering WithClause");
-                log::warn!(
+                log::debug!("🔍 Rendering WithClause");
+                log::debug!(
                     "🔍 WithClause input type: {:?}",
                     std::mem::discriminant(with.input.as_ref())
                 );
@@ -1689,9 +1689,9 @@ impl RenderPlanBuilder for LogicalPlan {
                 } else {
                     // Standard path: use flat extractors for non-Union inputs
 
-                    log::warn!("🔍 Calling extract_filters on WithClause input...");
+                    log::debug!("🔍 Calling extract_filters on WithClause input...");
                     let mut cte_filters = FilterBuilder::extract_filters(with.input.as_ref())?;
-                    log::warn!("🔍 extract_filters returned: {:?}", cte_filters);
+                    log::debug!("🔍 extract_filters returned: {:?}", cte_filters);
 
                     let mut cte_having = with.input.extract_having()?;
 
@@ -1720,13 +1720,13 @@ impl RenderPlanBuilder for LogicalPlan {
                         }
                     }
 
-                    log::warn!("🔍🔍🔍 BEFORE extract_select_items for WITH.input");
+                    log::debug!("🔍🔍🔍 BEFORE extract_select_items for WITH.input");
                     let mut cte_select_items =
                         <LogicalPlan as SelectBuilder>::extract_select_items(
                             with.input.as_ref(),
                             None,
                         )?;
-                    log::warn!(
+                    log::debug!(
                         "🔍🔍🔍 AFTER extract_select_items: got {} items",
                         cte_select_items.len()
                     );
@@ -2227,7 +2227,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     fn find_path_variable(plan: &LogicalPlan) -> bool {
                         match plan {
                             LogicalPlan::GraphRel(graph_rel) => {
-                                log::warn!(
+                                log::debug!(
                                     "  Found GraphRel: alias={}, path_variable={:?}",
                                     graph_rel.alias,
                                     graph_rel.path_variable
@@ -2256,12 +2256,12 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 let is_path_union = has_graph_patterns && has_path_variable;
 
-                log::warn!("🔍 Path UNION detection: has_graph_patterns={}, has_path_variable={}, is_path_union={}",
+                log::debug!("🔍 Path UNION detection: has_graph_patterns={}, has_path_variable={}, is_path_union={}",
                           has_graph_patterns, has_path_variable, is_path_union);
 
                 // Convert first branch to get the base plan
                 let first_input = &union.inputs[0];
-                log::warn!(
+                log::debug!(
                     "🔀 Union branch 0 plan type: {:?}",
                     std::mem::discriminant(first_input.as_ref())
                 );
@@ -2275,7 +2275,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Convert remaining branches
                 let mut union_branches = Vec::new();
                 for (idx, input) in union.inputs.iter().enumerate().skip(1) {
-                    log::warn!(
+                    log::debug!(
                         "🔀 Union branch {} plan type: {:?}",
                         idx,
                         std::mem::discriminant(input.as_ref())
@@ -2318,11 +2318,11 @@ impl RenderPlanBuilder for LogicalPlan {
                 // 🔧 CRITICAL: After combining UNION branches, rewrite VLP endpoint aliases
                 // This is the RIGHT place to do it - now the plan has the full UNION structure
                 // with both base_plan.joins and union_branches defined
-                log::warn!(
+                log::debug!(
                     "❌❌❌ Union handler: About to call rewrite_vlp_union_branch_aliases ❌❌❌"
                 );
                 rewrite_vlp_union_branch_aliases(&mut base_plan)?;
-                log::warn!(
+                log::debug!(
                     "❌❌❌ Union handler: Finished rewrite_vlp_union_branch_aliases ❌❌❌"
                 );
 
@@ -2362,10 +2362,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     is_multi_label_scan: false,
                 })
             }
-            _ => todo!(
+            _ => Err(RenderBuildError::UnsupportedFeature(format!(
                 "Render plan conversion not implemented for LogicalPlan variant: {:?}",
                 std::mem::discriminant(self)
-            ),
+            ))),
         }
     }
 
@@ -2373,8 +2373,9 @@ impl RenderPlanBuilder for LogicalPlan {
         &self,
         schema: &GraphSchema,
         plan_ctx: Option<&PlanCtx>,
+        scope: Option<&super::variable_scope::VariableScope>,
     ) -> RenderPlanBuilderResult<RenderPlan> {
-        log::warn!(
+        log::debug!(
             "🔀🔀🔀 to_render_plan_with_ctx ENTRY - plan type: {:?}",
             std::mem::discriminant(self)
         );
@@ -2396,7 +2397,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
         if has_with_clause {
             log::debug!("to_render_plan_with_ctx: Calling build_chained_with_match_cte_plan with plan_ctx={}", plan_ctx.is_some());
-            return build_chained_with_match_cte_plan(self, schema, plan_ctx);
+            return build_chained_with_match_cte_plan(self, schema, plan_ctx, scope);
         }
 
         // For non-WITH clause queries, we need to pass plan_ctx through to extract_select_items
@@ -2530,12 +2531,12 @@ impl RenderPlanBuilder for LogicalPlan {
         // If this plan contains a Union, handle it with plan_ctx for path variables
         // Check BEFORE GraphJoins because Union branches may contain GraphJoins
         if contains_union(self) {
-            log::warn!("🔀 to_render_plan_with_ctx: Plan contains Union, checking if also contains GraphJoins...");
+            log::debug!("🔀 to_render_plan_with_ctx: Plan contains Union, checking if also contains GraphJoins...");
 
             // If we have Union but NO top-level GraphJoins, handle Union directly
             // This happens when structure is: Limit → Union → [GraphJoins → GraphRel, ...]
             let has_graph_joins = contains_graph_joins(self);
-            log::warn!(
+            log::debug!(
                 "🔀 to_render_plan_with_ctx: contains_graph_joins={}",
                 has_graph_joins
             );
@@ -2551,7 +2552,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 };
 
                 if let LogicalPlan::Union(union) = union_node {
-                    log::warn!("🔀 to_render_plan_with_ctx: Direct Union (no top-level GraphJoins), rendering branches with plan_ctx");
+                    log::debug!("🔀 to_render_plan_with_ctx: Direct Union (no top-level GraphJoins), rendering branches with plan_ctx");
 
                     if union.inputs.is_empty() {
                         return Err(RenderBuildError::InvalidRenderPlan(
@@ -2567,7 +2568,8 @@ impl RenderPlanBuilder for LogicalPlan {
                             idx,
                             std::mem::discriminant(branch.as_ref())
                         );
-                        let branch_render = branch.to_render_plan_with_ctx(schema, plan_ctx)?;
+                        let branch_render =
+                            branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
                         branch_renders.push(branch_render);
                     }
 
@@ -2580,7 +2582,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         fn find_path_variable(plan: &LogicalPlan) -> bool {
                             match plan {
                                 LogicalPlan::GraphRel(graph_rel) => {
-                                    log::warn!(
+                                    log::debug!(
                                         "  Found GraphRel: alias={}, path_variable={:?}",
                                         graph_rel.alias,
                                         graph_rel.path_variable
@@ -2609,11 +2611,11 @@ impl RenderPlanBuilder for LogicalPlan {
 
                     let is_path_union = has_graph_patterns && has_path_variable;
 
-                    log::warn!("🔍 Path UNION detection (ctx): has_graph_patterns={}, has_path_variable={}, is_path_union={}",
+                    log::debug!("🔍 Path UNION detection (ctx): has_graph_patterns={}, has_path_variable={}, is_path_union={}",
                               has_graph_patterns, has_path_variable, is_path_union);
 
                     if is_path_union && union.inputs.len() > 1 {
-                        log::warn!(
+                        log::debug!(
                             "🎯 Path UNION query detected: {} branches - converting to JSON format for uniform schema",
                             union.inputs.len()
                         );
@@ -2626,7 +2628,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     } else {
                         // Always normalize UNION branches for consistent column schema.
                         // NULL padding + toString wrapping ensures ClickHouse UNION ALL works.
-                        log::warn!("🔀 Normalizing {} UNION branches for consistent column schema (is_path_union={}, inputs.len={})",
+                        log::debug!("🔀 Normalizing {} UNION branches for consistent column schema (is_path_union={}, inputs.len={})",
                                   branch_renders.len(), is_path_union, union.inputs.len());
                         branch_renders =
                             super::plan_builder_helpers::normalize_union_branches(branch_renders);
@@ -2999,8 +3001,25 @@ impl RenderPlanBuilder for LogicalPlan {
             select_items.items =
                 apply_anylast_wrapping_for_group_by(select_items.items, &group_by.0, self)?;
 
-            // 🔧 FIX: Use utility function that properly handles OrderBy wrappers (like Limit/Skip)
-            let order_by = OrderByItems(super::plan_builder_utils::extract_order_by(self)?);
+            // Extract ORDER BY, then apply scope-aware rewriting if scope is available
+            let order_by = {
+                let mut items = super::plan_builder_utils::extract_order_by(self)?;
+                if let Some(s) = scope {
+                    log::debug!(
+                        "🔧 ORDER BY scope rewriting (GraphJoins block 1): {} items",
+                        items.len()
+                    );
+                    for item in &mut items {
+                        log::debug!("🔧 ORDER BY before: {:?}", item.expression);
+                        item.expression =
+                            super::variable_scope::rewrite_render_expr(&item.expression, s);
+                        log::debug!("🔧 ORDER BY after: {:?}", item.expression);
+                    }
+                } else {
+                    log::debug!("🔧 ORDER BY scope rewriting: scope is None, skipping");
+                }
+                OrderByItems(items)
+            };
             // Use utility functions that properly handle Limit/Skip wrappers
             let skip = SkipItem(super::plan_builder_utils::extract_skip(self));
             let limit = LimitItem(super::plan_builder_utils::extract_limit(self));
@@ -3188,12 +3207,18 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
             }
 
+            // Apply scope-based property resolution to the render plan.
+            // This replaces the post-loop reverse_mapping hack for CTE-scoped variables.
+            if let Some(s) = scope {
+                super::variable_scope::rewrite_render_plan_with_scope(&mut render_plan, s);
+            }
+
             return Ok(render_plan);
         }
 
         // If this is a Union without GraphJoins, handle it specially to pass plan_ctx to branches
         if let LogicalPlan::Union(union) = self {
-            log::warn!("🔀 to_render_plan_with_ctx: Union without GraphJoins, rendering branches with plan_ctx");
+            log::debug!("🔀 to_render_plan_with_ctx: Union without GraphJoins, rendering branches with plan_ctx");
 
             if union.inputs.is_empty() {
                 return Err(RenderBuildError::InvalidRenderPlan(
@@ -3204,12 +3229,12 @@ impl RenderPlanBuilder for LogicalPlan {
             // Render each branch with plan_ctx
             let mut branch_renders = Vec::new();
             for (idx, branch) in union.inputs.iter().enumerate() {
-                log::warn!(
+                log::debug!(
                     "🔀 Rendering Union branch {} type: {:?}, with plan_ctx",
                     idx,
                     std::mem::discriminant(branch.as_ref())
                 );
-                let branch_render = branch.to_render_plan_with_ctx(schema, plan_ctx)?;
+                let branch_render = branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
                 branch_renders.push(branch_render);
             }
 
@@ -3223,7 +3248,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     .enumerate()
                     .map(|(idx, branch)| {
                         log::debug!("Converting Union branch {} to RenderPlan", idx + 1);
-                        branch.to_render_plan_with_ctx(schema, plan_ctx)
+                        branch.to_render_plan_with_ctx(schema, plan_ctx, scope)
                     })
                     .collect::<RenderPlanBuilderResult<Vec<_>>>()?;
 
@@ -3240,12 +3265,12 @@ impl RenderPlanBuilder for LogicalPlan {
 
         // Handle Projection with plan_ctx to enable path variable property expansion
         if let LogicalPlan::Projection(p) = self {
-            log::warn!(
+            log::debug!(
                 "🔀 to_render_plan_with_ctx: Projection detected, rendering input with plan_ctx"
             );
 
             // Render input with plan_ctx
-            let mut render_plan = p.input.to_render_plan_with_ctx(schema, plan_ctx)?;
+            let mut render_plan = p.input.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
 
             // Multi-label scan: Skip SELECT overwriting to preserve special columns
             if render_plan.is_multi_label_scan {
@@ -3257,7 +3282,7 @@ impl RenderPlanBuilder for LogicalPlan {
             }
 
             // Extract select items WITH plan_ctx for path variable expansion
-            log::warn!(
+            log::debug!(
                 "🔀 Projection: extracting select items with plan_ctx for property expansion"
             );
             let select_items =
@@ -3360,8 +3385,17 @@ impl RenderPlanBuilder for LogicalPlan {
             select_items.items =
                 apply_anylast_wrapping_for_group_by(select_items.items, &group_by.0, self)?;
 
-            // 🔧 FIX: Use utility function that properly handles OrderBy wrappers (like Limit/Skip)
-            let order_by = OrderByItems(super::plan_builder_utils::extract_order_by(self)?);
+            // Extract ORDER BY, then apply scope-aware rewriting if scope is available
+            let order_by = {
+                let mut items = super::plan_builder_utils::extract_order_by(self)?;
+                if let Some(s) = scope {
+                    for item in &mut items {
+                        item.expression =
+                            super::variable_scope::rewrite_render_expr(&item.expression, s);
+                    }
+                }
+                OrderByItems(items)
+            };
             // Use utility functions that properly handle Limit/Skip wrappers
             let skip = SkipItem(super::plan_builder_utils::extract_skip(self));
             let limit = LimitItem(super::plan_builder_utils::extract_limit(self));
@@ -3413,25 +3447,127 @@ impl RenderPlanBuilder for LogicalPlan {
             return self.to_render_plan(schema);
         }
 
+        // Unwrap Filter with scope-aware expression rewriting
+        if let LogicalPlan::Filter(f) = self {
+            let mut render_plan = f.input.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+
+            use super::plan_builder_helpers::has_variable_length_or_shortest_path;
+            let has_vlp_or_shortest_path = has_variable_length_or_shortest_path(&f.input);
+
+            if !has_vlp_or_shortest_path {
+                use crate::query_planner::logical_expr::expression_rewriter::{
+                    rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+                };
+                let rewrite_ctx = if let Some(s) = scope {
+                    ExpressionRewriteContext::with_scope(&f.input, s)
+                } else {
+                    ExpressionRewriteContext::new(&f.input)
+                };
+                let rewritten_predicate =
+                    rewrite_expression_with_property_mapping(&f.predicate, &rewrite_ctx);
+
+                let filter_expr: super::render_expr::RenderExpr = rewritten_predicate.try_into()?;
+
+                render_plan.filters = match render_plan.filters.0 {
+                    Some(existing) => super::FilterItems(Some(
+                        super::render_expr::RenderExpr::OperatorApplicationExp(
+                            super::render_expr::OperatorApplication {
+                                operator: super::render_expr::Operator::And,
+                                operands: vec![existing, filter_expr],
+                            },
+                        ),
+                    )),
+                    None => super::FilterItems(Some(filter_expr)),
+                };
+            }
+            return Ok(render_plan);
+        }
+
         // Unwrap Limit/OrderBy/Skip wrappers and recurse with plan_ctx preserved
         if let LogicalPlan::Limit(l) = self {
-            let mut render_plan = l.input.to_render_plan_with_ctx(schema, plan_ctx)?;
+            let mut render_plan = l.input.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
             render_plan.limit = LimitItem(Some(l.count));
             return Ok(render_plan);
         }
         if let LogicalPlan::OrderBy(ob) = self {
-            let mut render_plan = ob.input.to_render_plan_with_ctx(schema, plan_ctx)?;
-            let order_by_items: Result<Vec<OrderByItem>, _> = ob
-                .items
-                .iter()
-                .map(|item| item.clone().try_into())
+            let mut render_plan = ob.input.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+
+            // When scope is available, rewrite ORDER BY expressions for CTE-aware resolution
+            let rewritten_items: Vec<crate::query_planner::logical_plan::OrderByItem> =
+                if let Some(s) = scope {
+                    use crate::query_planner::logical_expr::expression_rewriter::{
+                        rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+                    };
+                    let rewrite_ctx = ExpressionRewriteContext::with_scope(&ob.input, s);
+                    ob.items
+                        .iter()
+                        .map(|item| {
+                            let rewritten_expr = rewrite_expression_with_property_mapping(
+                                &item.expression,
+                                &rewrite_ctx,
+                            );
+                            crate::query_planner::logical_plan::OrderByItem {
+                                expression: rewritten_expr,
+                                order: item.order.clone(),
+                            }
+                        })
+                        .collect()
+                } else {
+                    ob.items.clone()
+                };
+
+            let order_by_items: Result<Vec<OrderByItem>, _> = rewritten_items
+                .into_iter()
+                .map(|item| item.try_into())
                 .collect();
             render_plan.order_by = OrderByItems(order_by_items?);
             return Ok(render_plan);
         }
         if let LogicalPlan::Skip(s) = self {
-            let mut render_plan = s.input.to_render_plan_with_ctx(schema, plan_ctx)?;
+            let mut render_plan = s.input.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
             render_plan.skip = SkipItem(Some(s.count));
+            return Ok(render_plan);
+        }
+
+        // GroupBy with scope-aware expression rewriting
+        if let LogicalPlan::GroupBy(gb) = self {
+            let mut render_plan = gb.input.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+
+            let group_by_exprs: Result<Vec<RenderExpr>, _> = if let Some(s) = scope {
+                use crate::query_planner::logical_expr::expression_rewriter::{
+                    rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+                };
+                let rewrite_ctx = ExpressionRewriteContext::with_scope(&gb.input, s);
+                gb.expressions
+                    .iter()
+                    .map(|expr| {
+                        let rewritten =
+                            rewrite_expression_with_property_mapping(expr, &rewrite_ctx);
+                        rewritten.try_into()
+                    })
+                    .collect()
+            } else {
+                gb.expressions
+                    .iter()
+                    .map(|expr| expr.clone().try_into())
+                    .collect()
+            };
+            render_plan.group_by = GroupByExpressions(group_by_exprs?);
+
+            if let Some(ref having) = gb.having_clause {
+                let mut having_expr: RenderExpr = if let Some(s) = scope {
+                    use crate::query_planner::logical_expr::expression_rewriter::{
+                        rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+                    };
+                    let rewrite_ctx = ExpressionRewriteContext::with_scope(&gb.input, s);
+                    let rewritten = rewrite_expression_with_property_mapping(having, &rewrite_ctx);
+                    rewritten.try_into()?
+                } else {
+                    having.clone().try_into()?
+                };
+                apply_property_mapping_to_expr(&mut having_expr, &gb.input);
+                render_plan.having_clause = Some(having_expr);
+            }
             return Ok(render_plan);
         }
 

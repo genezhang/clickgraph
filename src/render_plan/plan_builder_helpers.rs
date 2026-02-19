@@ -468,7 +468,7 @@ pub(super) fn extract_parameterized_table_ref(plan: &LogicalPlan) -> Option<Stri
                         .collect();
 
                     if param_pairs.is_empty() {
-                        log::warn!(
+                        log::debug!(
                             "extract_parameterized_table_ref: ViewScan '{}' expects parameters {:?} but none matched in values",
                             view_scan.source_table, param_names
                         );
@@ -1030,11 +1030,11 @@ pub(super) fn find_anchor_node(
 
     // CRITICAL: If required_nodes is EMPTY (all nodes are denormalized or optional),
     // return None to signal that the relationship table should be used as anchor!
-    log::warn!(
+    log::debug!(
         "🔍 find_anchor_node: All nodes filtered out (denormalized/optional), returning None"
     );
     if all_nodes.iter().all(|n| denormalized_aliases.contains(n)) {
-        log::warn!(
+        log::debug!(
             "🔍 find_anchor_node: All nodes are denormalized - use relationship table as FROM!"
         );
         return None;
@@ -2315,21 +2315,11 @@ fn get_property_from_viewscan(alias: &str, property: &str, plan: &LogicalPlan) -
             get_property_from_viewscan(alias, property, &group_by.input)
         }
         LogicalPlan::Cte(cte) => get_property_from_viewscan(alias, property, &cte.input),
-        LogicalPlan::ViewScan(scan) => {
-            // Direct ViewScan (not wrapped in GraphNode) - check property_mapping
-            if let Some(prop_value) = scan.property_mapping.get(property) {
-                return Some(prop_value.raw().to_string());
-            }
-            if let Some(from_props) = &scan.from_node_properties {
-                if let Some(prop_value) = from_props.get(property) {
-                    return Some(prop_value.raw().to_string());
-                }
-            }
-            if let Some(to_props) = &scan.to_node_properties {
-                if let Some(prop_value) = to_props.get(property) {
-                    return Some(prop_value.raw().to_string());
-                }
-            }
+        LogicalPlan::ViewScan(_scan) => {
+            // Bare ViewScan without wrapping GraphNode: skip.
+            // Alias-based lookups should only match through GraphNode (line 2268)
+            // which verifies the alias. Matching bare ViewScans causes cross-alias
+            // contamination (e.g., f2.firstName picking up f's CTE property_mapping).
             None
         }
         _ => None,
@@ -2372,7 +2362,7 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
             if let Some(column) =
                 get_property_from_viewscan(&prop.table_alias.0, prop.column.raw(), plan)
             {
-                log::warn!(
+                log::debug!(
                     "🔍 PROPERTY MAPPING (ViewScan): '{}.{}' -> '{}'",
                     prop.table_alias.0,
                     prop.column.raw(),
@@ -2380,7 +2370,7 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                 );
                 prop.column = PropertyValue::Column(column);
             } else if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
-                log::warn!(
+                log::debug!(
                     "🔍 PROPERTY MAPPING: Alias '{}' -> Label '{}', Property '{}' (before mapping)",
                     prop.table_alias.0,
                     node_label,
@@ -2396,7 +2386,7 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                     None, // schema_name will be resolved from task-local
                 ).unwrap_or_else(|_| prop.column.raw().to_string());
 
-                log::warn!(
+                log::debug!(
                     "🔍 PROPERTY MAPPING: '{}' -> '{}'",
                     prop.column.raw(),
                     mapped_column
@@ -2407,8 +2397,8 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                 get_relationship_type_for_alias(&prop.table_alias.0, plan)
             {
                 // Alias is a relationship - map relationship property to column
-                log::warn!(
-                    "🔍 RELATIONSHIP PROPERTY MAPPING: Alias '{}' -> Type '{}', Property '{}' (before mapping)",
+                log::debug!(
+"🔍 RELATIONSHIP PROPERTY MAPPING: Alias '{}' -> Type '{}', Property '{}' (before mapping)",
                     prop.table_alias.0,
                     rel_type,
                     prop.column.raw()
@@ -2423,7 +2413,7 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                     )
                     .unwrap_or_else(|_| prop.column.raw().to_string());
 
-                log::warn!(
+                log::debug!(
                     "🔍 RELATIONSHIP PROPERTY MAPPING: '{}' -> '{}'",
                     prop.column.raw(),
                     mapped_column
@@ -3951,15 +3941,27 @@ pub fn sort_joins_by_dependency(
     while !remaining.is_empty() && max_iterations > 0 {
         max_iterations -= 1;
 
-        // Find next JOIN that can be added (all dependencies available)
-        let ready_idx = remaining.iter().position(|&idx| {
-            dependencies
-                .get(&idx)
-                .map(|deps| deps.iter().all(|dep| available.contains(dep)))
-                .unwrap_or(true)
-        });
+        // Find ALL JOINs that can be added (all dependencies available)
+        // Then pick deterministically by smallest alias name for stable ordering
+        let ready_positions: Vec<usize> = remaining
+            .iter()
+            .enumerate()
+            .filter(|(_, &idx)| {
+                dependencies
+                    .get(&idx)
+                    .map(|deps| deps.iter().all(|dep| available.contains(dep)))
+                    .unwrap_or(true)
+            })
+            .map(|(pos, _)| pos)
+            .collect();
 
-        if let Some(pos) = ready_idx {
+        // Among ready joins, pick the one with the smallest table_alias for determinism
+        let best_pos = ready_positions
+            .iter()
+            .copied()
+            .min_by_key(|&pos| joins[remaining[pos]].table_alias.clone());
+
+        if let Some(pos) = best_pos {
             let idx = remaining.remove(pos);
 
             // Add this JOIN's alias to available set
@@ -3974,38 +3976,60 @@ pub fn sort_joins_by_dependency(
 
             sorted.push(idx);
         } else {
-            // No progress possible - break to avoid infinite loop
-            // This can happen with circular dependencies (shouldn't occur in practice)
+            // Circular dependency detected — pick the join with fewest unsatisfied
+            // dependencies to break the cycle, then continue sorting
             log::warn!(
-                "WARNING: Could not fully sort JOINs by dependency - {} remaining with circular dependencies",
+                "WARNING: Circular dependency detected - {} remaining JOINs",
                 remaining.len()
-            );
-            log::debug!(
-                "  DEBUG Remaining JOINs: {:?}",
-                remaining
-                    .iter()
-                    .map(|&idx| format!("{} AS {}", joins[idx].table_name, joins[idx].table_alias))
-                    .collect::<Vec<_>>()
             );
             log::debug!("  DEBUG Available aliases: {:?}", available);
             for &idx in &remaining {
                 if let Some(deps) = dependencies.get(&idx) {
+                    let missing: Vec<_> = deps.iter().filter(|d| !available.contains(*d)).collect();
                     log::debug!(
-                        "    JOIN[{}] {} AS {} needs: {:?}",
+                        "    JOIN[{}] {} AS {} missing: {:?}",
                         idx,
                         joins[idx].table_name,
                         joins[idx].table_alias,
-                        deps
+                        missing
                     );
                 }
             }
-            break;
-        }
-    }
 
-    // Add any remaining JOINs that couldn't be sorted
-    for idx in remaining {
-        sorted.push(idx);
+            // Pick join with fewest missing deps; break ties by alias name
+            let best = remaining
+                .iter()
+                .enumerate()
+                .min_by(|(_, &a_idx), (_, &b_idx)| {
+                    let a_missing = dependencies
+                        .get(&a_idx)
+                        .map(|d| d.iter().filter(|x| !available.contains(*x)).count())
+                        .unwrap_or(0);
+                    let b_missing = dependencies
+                        .get(&b_idx)
+                        .map(|d| d.iter().filter(|x| !available.contains(*x)).count())
+                        .unwrap_or(0);
+                    a_missing
+                        .cmp(&b_missing)
+                        .then_with(|| joins[a_idx].table_alias.cmp(&joins[b_idx].table_alias))
+                })
+                .map(|(pos, _)| pos);
+
+            if let Some(pos) = best {
+                let idx = remaining.remove(pos);
+                available.insert(joins[idx].table_alias.clone());
+                log::debug!(
+                    "  Breaking cycle: forced JOIN[{}] {} AS {}",
+                    idx,
+                    joins[idx].table_name,
+                    joins[idx].table_alias
+                );
+                sorted.push(idx);
+                // Continue loop — may resolve remaining deps now
+            } else {
+                break;
+            }
+        }
     }
 
     log::debug!(
@@ -4459,7 +4483,7 @@ pub(super) fn convert_path_branches_to_json(
     use super::render_expr::{Literal, RenderExpr};
     use super::{ColumnAlias, RenderPlan, SelectItem, SelectItems};
 
-    log::warn!(
+    log::debug!(
         "🔧 convert_path_branches_to_json: Processing {} branches",
         union_plans.len()
     );
@@ -4501,10 +4525,10 @@ pub(super) fn convert_path_branches_to_json(
             }
 
             if let Some(ref rt) = rel_type {
-                log::warn!("  Branch {}: extracted relationship type = '{}'", branch_idx, rt);
+                log::debug!("  Branch {}: extracted relationship type = '{}'", branch_idx, rt);
             }
             if let Some((ref sl, ref el)) = node_labels {
-                log::warn!(
+                log::debug!(
                     "  Branch {}: extracted node labels = start='{}', end='{}'",
                     branch_idx, sl, el
                 );
@@ -4536,7 +4560,7 @@ pub(super) fn convert_path_branches_to_json(
                 }
             }
 
-            log::warn!("  Branch {}: start='{}', end='{}', rel='{}'",
+            log::debug!("  Branch {}: start='{}', end='{}', rel='{}'",
                       branch_idx, start_alias, end_alias, rel_alias);
 
             let mut start_items = Vec::new();
@@ -4574,7 +4598,7 @@ pub(super) fn convert_path_branches_to_json(
                 }
             }
 
-            log::warn!("  Branch {}: found {} start, {} end, {} rel, {} other items",
+            log::debug!("  Branch {}: found {} start, {} end, {} rel, {} other items",
                       branch_idx, start_items.len(), end_items.len(), rel_items.len(), other_items.len());
 
             // Check if this is a denormalized schema (only one table in FROM clause)
@@ -4595,7 +4619,7 @@ pub(super) fn convert_path_branches_to_json(
             };
 
             if denorm_table_alias.is_some() {
-                log::warn!("  Branch {}: denormalized schema detected, using table alias '{:?}'",
+                log::debug!("  Branch {}: denormalized schema detected, using table alias '{:?}'",
                           branch_idx, denorm_table_alias);
             }
 
