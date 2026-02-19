@@ -29,7 +29,7 @@ use std::sync::Arc;
 use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
 use crate::render_plan::cte_extraction::{
     build_vlp_context, expand_fixed_length_joins_with_context, extract_node_label_from_viewscan,
-    extract_relationship_columns, get_variable_length_spec, table_to_id_column,
+    extract_relationship_columns, table_to_id_column,
 };
 use crate::render_plan::plan_builder_helpers::{
     combine_optional_filters_with_and, extract_end_node_id_column, extract_end_node_table_name,
@@ -531,11 +531,8 @@ impl JoinBuilder for LogicalPlan {
                     }
                 }
 
-                // � MULTI-TYPE FIX: Check for multi-type relationship patterns FIRST
-                // Multi-type patterns like [:FOLLOWS|AUTHORED] don't use the deprecated joins field
-                // They generate a CTE (vlp_multi_type_a_b) that must be used as FROM, not JOINs
-                // Delegate to input.extract_joins() which will return empty (see GraphRel handler)
-                // IMPORTANT: Only for non-VLP patterns (VLP multi-type is handled below)
+                // Multi-type relationship patterns ([:FOLLOWS|AUTHORED]) use a CTE as FROM.
+                // No JOINs needed — the CTE is self-contained. Return empty directly.
                 if let Some(graph_rel) = find_multi_type_in_plan(&graph_joins.input) {
                     let is_implicit_one_hop = graph_rel
                         .variable_length
@@ -547,19 +544,15 @@ impl JoinBuilder for LogicalPlan {
 
                     if is_no_vlp_or_implicit {
                         log::info!(
-                            "✓ MULTI-TYPE (non-VLP or implicit *1) detected in GraphJoins input: {:?} - delegating to input.extract_joins()",
+                            "✓ MULTI-TYPE (non-VLP or implicit *1): {:?} - CTE is self-contained, no joins needed",
                             graph_rel.labels
                         );
-                        return <LogicalPlan as JoinBuilder>::extract_joins(
-                            &graph_joins.input,
-                            schema,
-                        );
+                        return Ok(vec![]);
                     }
                 }
 
-                // 🔧 FIX: For GraphJoins with CTE references, check if we have pre-computed joins.
-                // The analyzer populates graph_joins.joins with CTE-aware join conditions.
-                // Only delegate to input.extract_joins() if graph_joins.joins is empty.
+                // CTE references: planning phase MUST populate joins for CTE patterns.
+                // If joins are present, use them. If absent, that's a planning bug.
                 if !graph_joins.cte_references.is_empty() && !graph_joins.joins.is_empty() {
                     log::debug!(
                         "🔧 GraphJoins has {} CTE references AND {} pre-computed joins - using pre-computed joins",
@@ -571,39 +564,41 @@ impl JoinBuilder for LogicalPlan {
                     }
                     // Fall through to use the pre-computed joins
                 } else if !graph_joins.cte_references.is_empty() {
-                    log::debug!(
-                        "🔧 GraphJoins has {} CTE references but NO pre-computed joins - delegating to input",
-                        graph_joins.cte_references.len()
+                    log::warn!(
+                        "⚠️ BUG: GraphJoins has {} CTE references but NO pre-computed joins. \
+                         Planning phase should have populated joins for CTE patterns. \
+                         CTE refs: {:?}",
+                        graph_joins.cte_references.len(),
+                        graph_joins.cte_references
                     );
-                    // Delegate to input to get the joins with CTE references
-                    return <LogicalPlan as JoinBuilder>::extract_joins(&graph_joins.input, schema);
+                    // Return empty — CTE-only patterns may have no joins (FROM is the CTE)
+                    return Ok(vec![]);
                 }
 
-                // Check if input has a fixed-length variable-length pattern with >1 hops
-                // For those, we need to use the expanded JOINs from extract_joins on the input
-                // (which will call GraphRel.extract_joins -> expand_fixed_length_joins)
-                if let Some(spec) = get_variable_length_spec(&graph_joins.input) {
-                    if let Some(exact_hops) = spec.exact_hop_count() {
-                        if exact_hops > 1 {
-                            println!(
-                                "DEBUG: GraphJoins has fixed-length *{} input - delegating to input.extract_joins()",
-                                exact_hops
-                            );
-                            // Delegate to input to get the expanded multi-hop JOINs
-                            return <LogicalPlan as JoinBuilder>::extract_joins(
-                                &graph_joins.input,
-                                schema,
-                            );
+                // Fixed-length VLP (*2, *3, etc.): expand into chained joins directly.
+                // Call expand_fixed_length_joins_with_context instead of generic GraphRel fallback.
+                if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
+                    if let Some(vlp_ctx) = build_vlp_context(graph_rel, schema) {
+                        if vlp_ctx.is_fixed_length {
+                            let exact_hops = vlp_ctx.exact_hops.unwrap_or(1);
+                            if exact_hops > 1 {
+                                log::info!(
+                                    "✓ Fixed-length VLP *{} - expanding joins directly",
+                                    exact_hops
+                                );
+                                let (_from_table, _from_alias, joins) =
+                                    expand_fixed_length_joins_with_context(&vlp_ctx);
+                                return Ok(joins);
+                            }
                         }
                     }
                 }
 
-                // CartesianProduct patterns (e.g., MATCH (a:User) MATCH (b:User)) have no
-                // relationships, so inference produces 0 joins. Delegate to extract_joins()
-                // which handles the CROSS JOIN generation.
+                // Empty joins: either CartesianProduct (disconnected patterns) or
+                // CTE-as-FROM pattern. FROM builder handles these — no JOINs needed.
                 if graph_joins.joins.is_empty() {
-                    log::debug!("GraphJoins has 0 joins — CartesianProduct pattern, delegating to extract_joins()");
-                    return <LogicalPlan as JoinBuilder>::extract_joins(&graph_joins.input, schema);
+                    log::debug!("GraphJoins has 0 joins — no JOIN generation needed (FROM builder handles tables)");
+                    return Ok(vec![]);
                 }
 
                 // FIX: Use ViewScan source_table instead of deprecated joins field table_name
