@@ -3008,9 +3008,17 @@ impl RenderPlanBuilder for LogicalPlan {
             let order_by = {
                 let mut items = super::plan_builder_utils::extract_order_by(self)?;
                 if let Some(s) = scope {
+                    log::debug!(
+                        "🔧 ORDER BY scope rewriting (GraphJoins block 1): {} items",
+                        items.len()
+                    );
                     for item in &mut items {
+                        log::debug!("🔧 ORDER BY before: {:?}", item.expression);
                         item.expression = super::variable_scope::rewrite_render_expr(&item.expression, s);
+                        log::debug!("🔧 ORDER BY after: {:?}", item.expression);
                     }
+                } else {
+                    log::debug!("🔧 ORDER BY scope rewriting: scope is None, skipping");
                 }
                 OrderByItems(items)
             };

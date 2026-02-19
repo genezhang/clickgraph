@@ -118,7 +118,15 @@ impl<'a> VariableScope<'a> {
         }
 
         // 2. Check if alias is a CTE name (e.g., "with_friend_cte_0.id" in JOIN conditions)
-        if let Some(cte_info) = self.find_by_cte_name(alias) {
+        // Multiple Cypher aliases may map to the same CTE name (e.g., person, messageCount, likeCount
+        // all come from with_person_messageCount_likeCount_cte_1). Each has its own per-alias property
+        // mapping, so we must search ALL entries with matching CTE name.
+        let mut found_cte = false;
+        for cte_info in self.cte_variables.values() {
+            if cte_info.cte_name != alias {
+                continue;
+            }
+            found_cte = true;
             if let Some(cte_col) = cte_info.property_mapping.get(cypher_property) {
                 let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
                 log::debug!(
@@ -133,6 +141,13 @@ impl<'a> VariableScope<'a> {
                     column: cte_col.clone(),
                 };
             }
+        }
+        if found_cte {
+            log::debug!(
+                "VariableScope: {}.{} found CTE by name but property not in any alias mapping",
+                alias,
+                cypher_property
+            );
             return ResolvedProperty::Unresolved;
         }
 
@@ -151,14 +166,6 @@ impl<'a> VariableScope<'a> {
         }
 
         ResolvedProperty::Unresolved
-    }
-
-    /// Find CTE info by CTE name (reverse lookup).
-    /// Used when JOIN conditions reference CTE table names directly.
-    fn find_by_cte_name(&self, cte_name: &str) -> Option<&CteVariableInfo> {
-        self.cte_variables
-            .values()
-            .find(|info| info.cte_name == cte_name)
     }
 
     /// Check if an alias is a CTE-scoped variable.
