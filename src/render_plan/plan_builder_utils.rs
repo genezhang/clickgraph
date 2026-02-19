@@ -8159,6 +8159,37 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 })
                 .unwrap_or_else(|| with_alias.split('_').map(|s| s.to_string()).collect());
 
+            // Build rename mapping: renamed_alias → original_alias
+            // For "WITH u AS person", maps "person" → "u" so we can find
+            // CTE columns prefixed with the original alias in property_mapping.
+            let alias_rename_map: HashMap<String, String> = with_plans
+                .iter()
+                .find_map(|plan| {
+                    if let LogicalPlan::WithClause(wc) = plan {
+                        let mut renames = HashMap::new();
+                        for item in &wc.items {
+                            if let Some(ref col_alias) = item.col_alias {
+                                let renamed = &col_alias.0;
+                                // Extract original alias from expression
+                                let original = match &item.expression {
+                                    crate::query_planner::logical_expr::LogicalExpr::TableAlias(ta) => Some(ta.0.clone()),
+                                    crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) => Some(pa.table_alias.0.clone()),
+                                    _ => None,
+                                };
+                                if let Some(orig) = original {
+                                    if &orig != renamed {
+                                        renames.insert(renamed.clone(), orig);
+                                    }
+                                }
+                            }
+                        }
+                        Some(renames)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
+
             // Create the CTE with column metadata
             let mut with_cte = Cte::new(
                 cte_name.clone(),
@@ -8375,17 +8406,27 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 if alias.is_empty() {
                     continue;
                 }
+                // For renamed aliases (e.g., "person" from "WITH u AS person"),
+                // look up properties under the original alias name ("u") since
+                // CTE columns are prefixed with the original alias (p1_u_*).
+                let lookup_alias = alias_rename_map.get(alias).unwrap_or(alias);
+
                 // Extract per-alias property mapping: cypher_prop → cte_column
                 let per_alias_mapping: HashMap<String, String> = property_mapping
                     .iter()
-                    .filter(|((a, _), _)| a == alias)
+                    .filter(|((a, _), _)| a == lookup_alias)
                     .map(|((_, prop), col)| (prop.clone(), col.clone()))
                     .collect();
 
-                // Get labels from current plan tree (before it's replaced)
+                // Get labels from current plan tree — try renamed alias first,
+                // then fall back to original alias (for renamed variables)
                 let labels = crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan(
                     &current_plan, alias,
-                ).map(|l| vec![l]).unwrap_or_default();
+                ).or_else(|| {
+                    crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan(
+                        &current_plan, lookup_alias,
+                    )
+                }).map(|l| vec![l]).unwrap_or_default();
 
                 scope_cte_variables.insert(
                     alias.clone(),

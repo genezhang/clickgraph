@@ -244,7 +244,7 @@ impl<'a> VariableScope<'a> {
 // --- Scope-aware RenderPlan rewriting ---
 
 use super::render_expr::{
-    OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+    ColumnAlias, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
 };
 use super::{FilterItems, GroupByExpressions, OrderByItems, RenderPlan, SelectItem};
 use crate::graph_catalog::expression_parser::PropertyValue;
@@ -253,10 +253,47 @@ use crate::graph_catalog::expression_parser::PropertyValue;
 /// CTE-scoped variables get their table_alias rewritten to the CTE name
 /// and their column rewritten to the CTE column name.
 pub fn rewrite_render_plan_with_scope(plan: &mut RenderPlan, scope: &VariableScope) {
-    // Rewrite SELECT items
-    for item in &mut plan.select.items {
-        item.expression = rewrite_render_expr(&item.expression, scope);
+    // Rewrite SELECT items — expand bare node CTE variables into individual columns
+    let mut expanded_items = Vec::new();
+    for item in &plan.select.items {
+        if let RenderExpr::TableAlias(TableAlias(alias_name)) = &item.expression {
+            if let Some(cte_info) = scope.get_cte_info(alias_name) {
+                let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
+                if !cte_info.property_mapping.is_empty() {
+                    // Expand node CTE variable into individual property columns
+                    let mut props: Vec<_> = cte_info.property_mapping.iter().collect();
+                    props.sort_by_key(|(k, _)| k.clone());
+                    for (cypher_prop, cte_col) in props {
+                        expanded_items.push(SelectItem {
+                            expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(from_alias.clone()),
+                                column: PropertyValue::Column(cte_col.clone()),
+                            }),
+                            col_alias: Some(ColumnAlias(format!(
+                                "{}.{}",
+                                alias_name, cypher_prop
+                            ))),
+                        });
+                    }
+                    continue;
+                } else {
+                    // Scalar CTE variable: rewrite to direct CTE column reference
+                    expanded_items.push(SelectItem {
+                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(from_alias),
+                            column: PropertyValue::Column(alias_name.clone()),
+                        }),
+                        col_alias: Some(ColumnAlias(alias_name.clone())),
+                    });
+                    continue;
+                }
+            }
+        }
+        let mut new_item = item.clone();
+        new_item.expression = rewrite_render_expr(&item.expression, scope);
+        expanded_items.push(new_item);
     }
+    plan.select.items = expanded_items;
 
     // Rewrite WHERE filters
     if let FilterItems(Some(ref filter)) = plan.filters {
