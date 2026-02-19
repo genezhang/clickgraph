@@ -3317,36 +3317,32 @@ impl RenderExpr {
                     }
                 }
 
-                // Check if table_alias refers to a CTE and needs property mapping
-                if let Some(cte_col) = get_cte_property_from_context(&table_alias.0, col_name) {
+                // Check if table_alias refers to a CTE and needs property mapping.
+                // When table_alias is a full CTE name (with_*_cte_*), use the SQL
+                // alias (FROM alias) for the qualifier since JOINs use the stripped name.
+                let (lookup_alias, output_alias) = if table_alias.0.starts_with("with_") {
+                    let from_alias = cte_name_to_from_alias(&table_alias.0);
+                    // Try FROM alias first (the actual SQL alias), then full CTE name
+                    if from_alias != table_alias.0 {
+                        (from_alias.to_string(), from_alias.to_string())
+                    } else {
+                        (table_alias.0.clone(), table_alias.0.clone())
+                    }
+                } else {
+                    (table_alias.0.clone(), table_alias.0.clone())
+                };
+
+                if let Some(cte_col) = get_cte_property_from_context(&lookup_alias, col_name)
+                    .or_else(|| get_cte_property_from_context(&table_alias.0, col_name))
+                {
                     log::debug!(
                         "🔧 CTE property mapping: {}.{} → {}.{}",
                         table_alias.0,
                         col_name,
-                        table_alias.0,
+                        output_alias,
                         cte_col
                     );
-                    return format!("{}.{}", table_alias.0, cte_col);
-                }
-
-                // If table_alias is a full CTE name (with_*_cte_*), try the FROM alias
-                // The SQL alias in JOINs is the stripped version, not the full CTE name.
-                if table_alias.0.starts_with("with_") {
-                    let from_alias = cte_name_to_from_alias(&table_alias.0);
-                    if from_alias != table_alias.0 {
-                        if let Some(cte_col) =
-                            get_cte_property_from_context(from_alias, col_name)
-                        {
-                            log::debug!(
-                                "🔧 CTE property mapping (via FROM alias): {}.{} → {}.{}",
-                                table_alias.0,
-                                col_name,
-                                from_alias,
-                                cte_col
-                            );
-                            return format!("{}.{}", from_alias, cte_col);
-                        }
-                    }
+                    return format!("{}.{}", output_alias, cte_col);
                 }
 
                 // Resolve "id" pseudo-property (from id() function transform) to actual
