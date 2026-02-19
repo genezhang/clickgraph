@@ -737,7 +737,7 @@ fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
                 LogicalPlan::GraphJoins(_) => "GraphJoins",
                 _ => "Unknown",
             };
-            log::warn!("extract_table_name: Unhandled plan type: {}", plan_type);
+            log::debug!("extract_table_name: Unhandled plan type: {}", plan_type);
             None
         }
     };
@@ -1164,7 +1164,7 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
         RenderExpr::CteEntityRef(cte_ref) => {
             // CTE entity reference - expand to prefixed column references
             // For now, return the alias as placeholder - full expansion happens in select_builder
-            log::warn!(
+            log::debug!(
                 "render_expr_to_sql_string: CteEntityRef '{}' from CTE '{}' - should be expanded by select_builder",
                 cte_ref.alias, cte_ref.cte_name
             );
@@ -1665,7 +1665,7 @@ pub(crate) fn get_relationship_type_for_alias(alias: &str, plan: &LogicalPlan) -
                     if !label.contains("::") {
                         // Log a warning to help diagnose schema inconsistencies where
                         // a composite relationship label was expected but a simple one was found.
-                        log::warn!(
+                        log::debug!(
                             "Expected composite relationship label 'TYPE::FromNode::ToNode' \
                              for alias '{}', but got '{}'; using full label as relationship type",
                             alias,
@@ -1840,7 +1840,7 @@ pub fn extract_ctes_with_context(
         LogicalPlan::GraphRel(graph_rel) => {
             // Handle variable-length paths with context
             if let Some(spec) = &graph_rel.variable_length {
-                log::warn!(
+                log::debug!(
                     "🔧 VLP ENTRY: Entering variable-length path handling for spec={:?}",
                     spec
                 );
@@ -1915,7 +1915,7 @@ pub fn extract_ctes_with_context(
                             result
                         );
                         result.unwrap_or_else(|| {
-                            log::warn!("Failed to extract parameterized rel table from ViewScan");
+                            log::debug!("Failed to extract parameterized rel table from ViewScan");
                             "unknown_rel_table".to_string()
                         })
                     }
@@ -2382,15 +2382,15 @@ pub fn extract_ctes_with_context(
                 // Examples:
                 //   - MATCH path = (p1:Person {id: 1})-[:KNOWS*]-(p2:Person {id: 2})
                 //   - MATCH (origin:Airport {code: 'LAX'})-[:FLIGHT*1..2]->(dest:Airport {code: 'ATL'})
-                log::warn!("🔍 VLP BOUND NODE FIX: Extracting inline property predicates from bound nodes...");
-                log::warn!("  Start alias: {}, End alias: {}", start_alias, end_alias);
-                log::warn!("  Current start_filters_sql: {:?}", start_filters_sql);
-                log::warn!("  Current end_filters_sql: {:?}", end_filters_sql);
-                log::warn!(
+                log::debug!("🔍 VLP BOUND NODE FIX: Extracting inline property predicates from bound nodes...");
+                log::debug!("  Start alias: {}, End alias: {}", start_alias, end_alias);
+                log::debug!("  Current start_filters_sql: {:?}", start_filters_sql);
+                log::debug!("  Current end_filters_sql: {:?}", end_filters_sql);
+                log::debug!(
                     "  graph_rel.left type: {:?}",
                     std::mem::discriminant(graph_rel.left.as_ref())
                 );
-                log::warn!(
+                log::debug!(
                     "  graph_rel.right type: {:?}",
                     std::mem::discriminant(graph_rel.right.as_ref())
                 );
@@ -2505,7 +2505,7 @@ pub fn extract_ctes_with_context(
                     // ✨ BUG #7 FIX: For regular VLP queries, include ALL node properties
                     // This handles queries like MATCH (a)-[*]->(b) RETURN a, b
                     // where both nodes need all their properties in the CTE for the final SELECT
-                    log::warn!(
+                    log::debug!(
                         "🔧 BUG #7: Extracting all properties for VLP query ({}-{})",
                         start_label,
                         end_label
@@ -2515,7 +2515,7 @@ pub fn extract_ctes_with_context(
                     // Get all properties for start node using the schema parameter (which is already in scope)
                     if !start_label.is_empty() {
                         if let Ok(start_node_schema) = schema.node_schema(&start_label) {
-                            log::warn!(
+                            log::debug!(
                                 "🔧 BUG #7: Found start node schema with {} properties",
                                 start_node_schema.property_mappings.len()
                             );
@@ -2538,14 +2538,14 @@ pub fn extract_ctes_with_context(
                                 });
                             }
                         } else {
-                            log::warn!("🔧 BUG #7: No schema found for start node {}", start_label);
+                            log::debug!("🔧 BUG #7: No schema found for start node {}", start_label);
                         }
                     }
 
                     // Get all properties for end node
                     if !end_label.is_empty() {
                         if let Ok(end_node_schema) = schema.node_schema(&end_label) {
-                            log::warn!(
+                            log::debug!(
                                 "🔧 BUG #7: Found end node schema with {} properties",
                                 end_node_schema.property_mappings.len()
                             );
@@ -2568,11 +2568,11 @@ pub fn extract_ctes_with_context(
                                 });
                             }
                         } else {
-                            log::warn!("🔧 BUG #7: No schema found for end node {}", end_label);
+                            log::debug!("🔧 BUG #7: No schema found for end node {}", end_label);
                         }
                     }
 
-                    log::warn!("🔧 BUG #7: Total properties extracted: {}", props.len());
+                    log::debug!("🔧 BUG #7: Total properties extracted: {}", props.len());
                     props
                 };
 
@@ -2618,7 +2618,7 @@ pub fn extract_ctes_with_context(
                             vlp_ctx.start_alias, vlp_ctx.end_alias
                         );
                     } else {
-                        log::warn!(
+                        log::debug!(
                             "Failed to build VlpContext for fixed-length pattern - falling back to CTE"
                         );
                         // Fall through to CTE generation below
@@ -2871,7 +2871,7 @@ pub fn extract_ctes_with_context(
                                     "🔥🔥🔥 REGISTRATION: alias='{}' → cte_name='{}'",
                                     graph_rel.alias, cte_name
                                 );
-                                log::warn!(
+                                log::debug!(
                                     "📝 Registered multi-type VLP CTE: alias='{}' → cte_name='{}'",
                                     graph_rel.alias,
                                     cte_name
@@ -3073,7 +3073,7 @@ pub fn extract_ctes_with_context(
                                 }
                             }
                         } else {
-                            log::warn!("❌ CTE: No node schema found for table {}", rel_table);
+                            log::debug!("❌ CTE: No node schema found for table {}", rel_table);
                         }
 
                         log::debug!(
@@ -3786,7 +3786,7 @@ pub fn extract_ctes_with_context(
                     // Fallback: Generate unique CTE name with sequence number 1
                     // Format: with_<sorted_aliases>_cte_<seq>
                     let name = generate_cte_name(&wc.exported_aliases, 1);
-                    log::warn!("🔧 CTE Extraction: Fallback - Generated CTE name '{}' (no analyzer reference)", name);
+                    log::debug!("🔧 CTE Extraction: Fallback - Generated CTE name '{}' (no analyzer reference)", name);
                     name
                 });
 
@@ -4023,10 +4023,10 @@ pub fn extract_ctes_with_context(
             // The regular to_render_plan() can't access CTE context, so it may compute wrong CTE names.
             // We re-extract FROM here with the context to get the correct registered CTE names.
             use crate::render_plan::from_builder::FromBuilder;
-            log::warn!("🔍 CTE Extraction: About to extract FROM for WITH clause");
+            log::debug!("🔍 CTE Extraction: About to extract FROM for WITH clause");
             match plan_to_render.extract_from() {
                 Ok(Some(correct_from)) => {
-                    log::warn!(
+                    log::debug!(
                         "✅ CTE Extraction: Extracted FROM, new FROM={:?}",
                         correct_from.table
                     );

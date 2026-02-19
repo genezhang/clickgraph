@@ -1097,7 +1097,7 @@ fn rewrite_expr_for_fixed_path(
                                 return RenderExpr::Literal(Literal::Integer(hop_count as i64));
                             }
                             "nodes" => {
-                                log::warn!(
+                                log::debug!(
                                     "🔧 Fixed path function: nodes({}) not yet implemented for fixed paths",
                                     path_variable
                                 );
@@ -1105,7 +1105,7 @@ fn rewrite_expr_for_fixed_path(
                                 return expr.clone();
                             }
                             "relationships" => {
-                                log::warn!(
+                                log::debug!(
                                     "🔧 Fixed path function: relationships({}) not yet implemented for fixed paths",
                                     path_variable
                                 );
@@ -2166,7 +2166,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
                     .enumerate()
                     .filter_map(|(idx, item)| {
                         if idx >= order_by_columns.len() {
-                            log::warn!("ORDER BY column index {} exceeds available columns ({}), skipping", idx, order_by_columns.len());
+                            log::debug!("ORDER BY column index {} exceeds available columns ({}), skipping", idx, order_by_columns.len());
                             return None;
                         }
                         let col_alias = &order_by_columns[idx].1;
@@ -3121,7 +3121,7 @@ impl RenderExpr {
                                             )
                                         }
                                         _ => {
-                                            log::warn!(
+                                            log::debug!(
                                                 "Unknown duration unit '{}', using as-is",
                                                 key
                                             );
@@ -3668,7 +3668,7 @@ impl RenderExpr {
                 // CteEntityRef should be expanded to all its columns in the SELECT list
                 // When we reach to_sql(), it means it wasn't expanded properly by select_builder
                 // For now, generate SQL that selects all prefixed columns from the CTE
-                log::warn!(
+                log::debug!(
                     "CteEntityRef '{}' from CTE '{}' reached to_sql() - should have been expanded",
                     cte_ref.alias,
                     cte_ref.cte_name

@@ -114,7 +114,7 @@ fn build_identifier_join_conditions(
     let left_cols = left_id.columns();
     let right_cols = right_id.columns();
     if left_cols.len() != right_cols.len() {
-        log::warn!(
+        log::debug!(
             "Identifier column count mismatch in JOIN: left={} ({:?}) vs right={} ({:?}). Using zip pairing.",
             left_cols.len(),
             left_id,
@@ -561,17 +561,17 @@ impl JoinBuilder for LogicalPlan {
                 // The analyzer populates graph_joins.joins with CTE-aware join conditions.
                 // Only delegate to input.extract_joins() if graph_joins.joins is empty.
                 if !graph_joins.cte_references.is_empty() && !graph_joins.joins.is_empty() {
-                    log::warn!(
+                    log::debug!(
                         "🔧 GraphJoins has {} CTE references AND {} pre-computed joins - using pre-computed joins",
                         graph_joins.cte_references.len(),
                         graph_joins.joins.len()
                     );
                     for (alias, cte_name) in &graph_joins.cte_references {
-                        log::warn!("  CTE ref: {} → {}", alias, cte_name);
+                        log::debug!("  CTE ref: {} → {}", alias, cte_name);
                     }
                     // Fall through to use the pre-computed joins
                 } else if !graph_joins.cte_references.is_empty() {
-                    log::warn!(
+                    log::debug!(
                         "🔧 GraphJoins has {} CTE references but NO pre-computed joins - delegating to input",
                         graph_joins.cte_references.len()
                     );
@@ -835,7 +835,7 @@ impl JoinBuilder for LogicalPlan {
                                                     edge_constraints.push((to_alias, constraint_expr));
                                                 }
                                                 Err(e) => {
-                                                    log::warn!("Failed to compile edge constraint for {}: {}", render_join.table_alias, e);
+                                                    log::debug!("Failed to compile edge constraint for {}: {}", render_join.table_alias, e);
                                                 }
                                             }
                                         } else {

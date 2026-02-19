@@ -207,7 +207,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
 
         // Step 1: Check if we have plan_ctx
         let Some(plan_ctx) = &self.plan_ctx else {
-            log::warn!(
+            log::debug!(
                 "VLP: No plan_ctx available for alias '{}', defaulting to WholeNode mode",
                 alias
             );
@@ -216,7 +216,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
 
         // Step 2: Get property requirements from analyzer
         let Some(reqs) = plan_ctx.get_property_requirements() else {
-            log::warn!(
+            log::debug!(
                 "VLP: No property requirements tracked for alias '{}', defaulting to WholeNode mode",
                 alias
             );
@@ -257,7 +257,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
 
         // Step 5: Map Cypher properties to DB columns
         let Some(node_schema) = self.schema.all_node_schemas().get(node_type) else {
-            log::warn!(
+            log::debug!(
                 "VLP: Node schema not found for type '{}', defaulting to WholeNode mode",
                 node_type
             );
@@ -274,7 +274,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                     db_column: db_col.clone(),
                 });
             } else {
-                log::warn!(
+                log::debug!(
                     "VLP: Property '{}' not found in schema for type '{}', falling back to WholeNode mode",
                     cypher_prop,
                     node_type
@@ -321,7 +321,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         };
 
         if paths.is_empty() {
-            log::warn!(
+            log::debug!(
                 "No valid paths found for {:?}-[{:?}*{}..{}]->{:?}, generating empty CTE",
                 self.start_labels,
                 self.rel_types,
@@ -347,7 +347,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             match self.generate_path_branch_sql(path, idx) {
                 Ok(sql) => branch_sqls.push(sql),
                 Err(e) => {
-                    log::warn!("Failed to generate SQL for path {:?}: {}", path, e);
+                    log::debug!("Failed to generate SQL for path {:?}: {}", path, e);
                     continue;
                 }
             }

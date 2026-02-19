@@ -468,7 +468,7 @@ pub(super) fn extract_parameterized_table_ref(plan: &LogicalPlan) -> Option<Stri
                         .collect();
 
                     if param_pairs.is_empty() {
-                        log::warn!(
+                        log::debug!(
                             "extract_parameterized_table_ref: ViewScan '{}' expects parameters {:?} but none matched in values",
                             view_scan.source_table, param_names
                         );
@@ -1030,12 +1030,12 @@ pub(super) fn find_anchor_node(
 
     // CRITICAL: If required_nodes is EMPTY (all nodes are denormalized or optional),
     // return None to signal that the relationship table should be used as anchor!
-    log::warn!(
-        "🔍 find_anchor_node: All nodes filtered out (denormalized/optional), returning None"
+    log::debug!(
+"🔍 find_anchor_node: All nodes filtered out (denormalized/optional), returning None"
     );
     if all_nodes.iter().all(|n| denormalized_aliases.contains(n)) {
-        log::warn!(
-            "🔍 find_anchor_node: All nodes are denormalized - use relationship table as FROM!"
+        log::debug!(
+"🔍 find_anchor_node: All nodes are denormalized - use relationship table as FROM!"
         );
         return None;
     }
@@ -2362,16 +2362,16 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
             if let Some(column) =
                 get_property_from_viewscan(&prop.table_alias.0, prop.column.raw(), plan)
             {
-                log::warn!(
-                    "🔍 PROPERTY MAPPING (ViewScan): '{}.{}' -> '{}'",
+                log::debug!(
+"🔍 PROPERTY MAPPING (ViewScan): '{}.{}' -> '{}'",
                     prop.table_alias.0,
                     prop.column.raw(),
                     column
                 );
                 prop.column = PropertyValue::Column(column);
             } else if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
-                log::warn!(
-                    "🔍 PROPERTY MAPPING: Alias '{}' -> Label '{}', Property '{}' (before mapping)",
+                log::debug!(
+"🔍 PROPERTY MAPPING: Alias '{}' -> Label '{}', Property '{}' (before mapping)",
                     prop.table_alias.0,
                     node_label,
                     prop.column.raw()
@@ -2386,8 +2386,8 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                     None, // schema_name will be resolved from task-local
                 ).unwrap_or_else(|_| prop.column.raw().to_string());
 
-                log::warn!(
-                    "🔍 PROPERTY MAPPING: '{}' -> '{}'",
+                log::debug!(
+"🔍 PROPERTY MAPPING: '{}' -> '{}'",
                     prop.column.raw(),
                     mapped_column
                 );
@@ -2397,8 +2397,8 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                 get_relationship_type_for_alias(&prop.table_alias.0, plan)
             {
                 // Alias is a relationship - map relationship property to column
-                log::warn!(
-                    "🔍 RELATIONSHIP PROPERTY MAPPING: Alias '{}' -> Type '{}', Property '{}' (before mapping)",
+                log::debug!(
+"🔍 RELATIONSHIP PROPERTY MAPPING: Alias '{}' -> Type '{}', Property '{}' (before mapping)",
                     prop.table_alias.0,
                     rel_type,
                     prop.column.raw()
@@ -2413,8 +2413,8 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                     )
                     .unwrap_or_else(|_| prop.column.raw().to_string());
 
-                log::warn!(
-                    "🔍 RELATIONSHIP PROPERTY MAPPING: '{}' -> '{}'",
+                log::debug!(
+"🔍 RELATIONSHIP PROPERTY MAPPING: '{}' -> '{}'",
                     prop.column.raw(),
                     mapped_column
                 );
@@ -4007,7 +4007,7 @@ pub fn sort_joins_by_dependency(
             if let Some(pos) = best {
                 let idx = remaining.remove(pos);
                 available.insert(joins[idx].table_alias.clone());
-                log::warn!(
+                log::debug!(
                     "  Breaking cycle: forced JOIN[{}] {} AS {}",
                     idx, joins[idx].table_name, joins[idx].table_alias
                 );
@@ -4470,7 +4470,7 @@ pub(super) fn convert_path_branches_to_json(
     use super::render_expr::{Literal, RenderExpr};
     use super::{ColumnAlias, RenderPlan, SelectItem, SelectItems};
 
-    log::warn!(
+    log::debug!(
         "🔧 convert_path_branches_to_json: Processing {} branches",
         union_plans.len()
     );
@@ -4512,10 +4512,10 @@ pub(super) fn convert_path_branches_to_json(
             }
 
             if let Some(ref rt) = rel_type {
-                log::warn!("  Branch {}: extracted relationship type = '{}'", branch_idx, rt);
+                log::debug!("  Branch {}: extracted relationship type = '{}'", branch_idx, rt);
             }
             if let Some((ref sl, ref el)) = node_labels {
-                log::warn!(
+                log::debug!(
                     "  Branch {}: extracted node labels = start='{}', end='{}'",
                     branch_idx, sl, el
                 );
@@ -4547,7 +4547,7 @@ pub(super) fn convert_path_branches_to_json(
                 }
             }
 
-            log::warn!("  Branch {}: start='{}', end='{}', rel='{}'",
+            log::debug!("  Branch {}: start='{}', end='{}', rel='{}'",
                       branch_idx, start_alias, end_alias, rel_alias);
 
             let mut start_items = Vec::new();
@@ -4585,7 +4585,7 @@ pub(super) fn convert_path_branches_to_json(
                 }
             }
 
-            log::warn!("  Branch {}: found {} start, {} end, {} rel, {} other items",
+            log::debug!("  Branch {}: found {} start, {} end, {} rel, {} other items",
                       branch_idx, start_items.len(), end_items.len(), rel_items.len(), other_items.len());
 
             // Check if this is a denormalized schema (only one table in FROM clause)
@@ -4606,7 +4606,7 @@ pub(super) fn convert_path_branches_to_json(
             };
 
             if denorm_table_alias.is_some() {
-                log::warn!("  Branch {}: denormalized schema detected, using table alias '{:?}'",
+                log::debug!("  Branch {}: denormalized schema detected, using table alias '{:?}'",
                           branch_idx, denorm_table_alias);
             }
 
