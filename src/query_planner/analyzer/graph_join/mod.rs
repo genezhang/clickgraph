@@ -33,6 +33,7 @@
 // Submodules extracted from legacy
 pub mod cross_branch;
 pub mod helpers;
+pub mod join_generation;
 pub mod metadata;
 
 // Core implementation (renamed from legacy)
