@@ -598,11 +598,11 @@ impl JoinBuilder for LogicalPlan {
                     }
                 }
 
-                // 🔧 FIX: If graph_joins.joins is empty but input has CartesianProduct,
-                // delegate to input.extract_joins() to get the CROSS JOIN
-                // This handles patterns like: MATCH (a:User) MATCH (b:User)
+                // CartesianProduct patterns (e.g., MATCH (a:User) MATCH (b:User)) have no
+                // relationships, so inference produces 0 joins. Delegate to extract_joins()
+                // which handles the CROSS JOIN generation.
                 if graph_joins.joins.is_empty() {
-                    log::info!("🔧 GraphJoins has 0 joins - delegating to input.extract_joins()");
+                    log::debug!("GraphJoins has 0 joins — CartesianProduct pattern, delegating to extract_joins()");
                     return <LogicalPlan as JoinBuilder>::extract_joins(&graph_joins.input, schema);
                 }
 
