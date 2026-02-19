@@ -3004,8 +3004,16 @@ impl RenderPlanBuilder for LogicalPlan {
             select_items.items =
                 apply_anylast_wrapping_for_group_by(select_items.items, &group_by.0, self)?;
 
-            // 🔧 FIX: Use utility function that properly handles OrderBy wrappers (like Limit/Skip)
-            let order_by = OrderByItems(super::plan_builder_utils::extract_order_by(self)?);
+            // Extract ORDER BY, then apply scope-aware rewriting if scope is available
+            let order_by = {
+                let mut items = super::plan_builder_utils::extract_order_by(self)?;
+                if let Some(s) = scope {
+                    for item in &mut items {
+                        item.expression = super::variable_scope::rewrite_render_expr(&item.expression, s);
+                    }
+                }
+                OrderByItems(items)
+            };
             // Use utility functions that properly handle Limit/Skip wrappers
             let skip = SkipItem(super::plan_builder_utils::extract_skip(self));
             let limit = LimitItem(super::plan_builder_utils::extract_limit(self));
@@ -3371,8 +3379,16 @@ impl RenderPlanBuilder for LogicalPlan {
             select_items.items =
                 apply_anylast_wrapping_for_group_by(select_items.items, &group_by.0, self)?;
 
-            // 🔧 FIX: Use utility function that properly handles OrderBy wrappers (like Limit/Skip)
-            let order_by = OrderByItems(super::plan_builder_utils::extract_order_by(self)?);
+            // Extract ORDER BY, then apply scope-aware rewriting if scope is available
+            let order_by = {
+                let mut items = super::plan_builder_utils::extract_order_by(self)?;
+                if let Some(s) = scope {
+                    for item in &mut items {
+                        item.expression = super::variable_scope::rewrite_render_expr(&item.expression, s);
+                    }
+                }
+                OrderByItems(items)
+            };
             // Use utility functions that properly handle Limit/Skip wrappers
             let skip = SkipItem(super::plan_builder_utils::extract_skip(self));
             let limit = LimitItem(super::plan_builder_utils::extract_limit(self));
