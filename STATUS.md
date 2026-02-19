@@ -1,15 +1,15 @@
 # ClickGraph Status
 
-*Updated: February 17, 2026*
+*Updated: February 19, 2026*
 
 ## Current Version: v0.6.1
 
 Read-only Cypher-to-ClickHouse SQL query engine with Neo4j Browser compatibility.
 
-**Tests**: 1,029 unit + 91/103 integration (88%) + 7 Bolt = **1,127 passing**  
-**Latest Fix**: VLP WHERE filters (PR #106) - end node filters now working for fixed-length patterns  
+**Tests**: 1,032 unit + integration at main parity  
+**Latest Work**: Variable scope resolution redesign (branch `fix/variable-scope-resolution`) — zero regressions, LDBC +4 queries  
 **Benchmark**: 18/18 queries (100%) at 5000 scale (954.9M rows)  
-**Architecture**: ✅ UnifiedTypeInference (SchemaInference merged, -668 lines net)
+**Architecture**: ✅ VariableScope replaces reverse_mapping hack (-1,362 net lines)
 
 ## What Works
 
@@ -19,6 +19,7 @@ Read-only Cypher-to-ClickHouse SQL query engine with Neo4j Browser compatibility
 - **Aggregations**: count, sum, avg, min, max, collect — with GROUP BY
 - **Functions**: String, numeric, date, type coercion, list operations
 - **Multi-relationship**: `[:TYPE1|TYPE2]` with UNION SQL generation
+- **Variable Scope Resolution**: `VariableScope` correctly resolves variables across WITH barriers — CTE-scoped vars use CTE columns, table vars use schema columns; covers SELECT, WHERE, ORDER BY, GROUP BY, HAVING, JOINs
 - **Unified Type Inference**: Single 4-phase pass (SchemaInference merged Feb 2026) with direction-aware UNION generation
   - **Phase 0**: Relationship-based label inference
   - **Phase 1**: Filter→GraphRel UNION with WHERE constraint extraction
