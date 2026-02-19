@@ -65,7 +65,10 @@ impl<'a> ExpressionRewriteContext<'a> {
 }
 
 /// Find the label for an alias by recursively searching the plan tree
-pub(crate) fn find_label_for_alias_in_plan(plan: &LogicalPlan, target_alias: &str) -> Option<String> {
+pub(crate) fn find_label_for_alias_in_plan(
+    plan: &LogicalPlan,
+    target_alias: &str,
+) -> Option<String> {
     match plan {
         LogicalPlan::GraphNode(node) => {
             if node.alias == target_alias {
@@ -187,7 +190,10 @@ pub fn rewrite_expression_with_property_mapping(
                     ResolvedProperty::CteColumn { cte_name, column } => {
                         log::debug!(
                             "✓ Scope resolution (CTE): {}.{} → {}.{}",
-                            alias, cypher_property, cte_name, column
+                            alias,
+                            cypher_property,
+                            cte_name,
+                            column
                         );
                         return LogicalExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(cte_name),
@@ -197,7 +203,10 @@ pub fn rewrite_expression_with_property_mapping(
                     ResolvedProperty::DbColumn(db_col) => {
                         log::debug!(
                             "✓ Scope resolution (DB): {}.{} → {}.{}",
-                            alias, cypher_property, alias, db_col
+                            alias,
+                            cypher_property,
+                            alias,
+                            db_col
                         );
                         if db_col == cypher_property {
                             return expr.clone();
@@ -210,7 +219,8 @@ pub fn rewrite_expression_with_property_mapping(
                     ResolvedProperty::Unresolved => {
                         log::debug!(
                             "🔍 Scope could not resolve {}.{}, falling through to schema",
-                            alias, cypher_property
+                            alias,
+                            cypher_property
                         );
                     }
                 }

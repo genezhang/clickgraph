@@ -2538,7 +2538,10 @@ pub fn extract_ctes_with_context(
                                 });
                             }
                         } else {
-                            log::debug!("🔧 BUG #7: No schema found for start node {}", start_label);
+                            log::debug!(
+                                "🔧 BUG #7: No schema found for start node {}",
+                                start_label
+                            );
                         }
                     }
 

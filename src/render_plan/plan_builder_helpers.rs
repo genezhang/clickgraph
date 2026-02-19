@@ -1031,11 +1031,11 @@ pub(super) fn find_anchor_node(
     // CRITICAL: If required_nodes is EMPTY (all nodes are denormalized or optional),
     // return None to signal that the relationship table should be used as anchor!
     log::debug!(
-"🔍 find_anchor_node: All nodes filtered out (denormalized/optional), returning None"
+        "🔍 find_anchor_node: All nodes filtered out (denormalized/optional), returning None"
     );
     if all_nodes.iter().all(|n| denormalized_aliases.contains(n)) {
         log::debug!(
-"🔍 find_anchor_node: All nodes are denormalized - use relationship table as FROM!"
+            "🔍 find_anchor_node: All nodes are denormalized - use relationship table as FROM!"
         );
         return None;
     }
@@ -2363,7 +2363,7 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                 get_property_from_viewscan(&prop.table_alias.0, prop.column.raw(), plan)
             {
                 log::debug!(
-"🔍 PROPERTY MAPPING (ViewScan): '{}.{}' -> '{}'",
+                    "🔍 PROPERTY MAPPING (ViewScan): '{}.{}' -> '{}'",
                     prop.table_alias.0,
                     prop.column.raw(),
                     column
@@ -2371,7 +2371,7 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                 prop.column = PropertyValue::Column(column);
             } else if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
                 log::debug!(
-"🔍 PROPERTY MAPPING: Alias '{}' -> Label '{}', Property '{}' (before mapping)",
+                    "🔍 PROPERTY MAPPING: Alias '{}' -> Label '{}', Property '{}' (before mapping)",
                     prop.table_alias.0,
                     node_label,
                     prop.column.raw()
@@ -2387,7 +2387,7 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                 ).unwrap_or_else(|_| prop.column.raw().to_string());
 
                 log::debug!(
-"🔍 PROPERTY MAPPING: '{}' -> '{}'",
+                    "🔍 PROPERTY MAPPING: '{}' -> '{}'",
                     prop.column.raw(),
                     mapped_column
                 );
@@ -2414,7 +2414,7 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                     .unwrap_or_else(|_| prop.column.raw().to_string());
 
                 log::debug!(
-"🔍 RELATIONSHIP PROPERTY MAPPING: '{}' -> '{}'",
+                    "🔍 RELATIONSHIP PROPERTY MAPPING: '{}' -> '{}'",
                     prop.column.raw(),
                     mapped_column
                 );
@@ -3956,9 +3956,10 @@ pub fn sort_joins_by_dependency(
             .collect();
 
         // Among ready joins, pick the one with the smallest table_alias for determinism
-        let best_pos = ready_positions.iter().copied().min_by_key(|&pos| {
-            joins[remaining[pos]].table_alias.clone()
-        });
+        let best_pos = ready_positions
+            .iter()
+            .copied()
+            .min_by_key(|&pos| joins[remaining[pos]].table_alias.clone());
 
         if let Some(pos) = best_pos {
             let idx = remaining.remove(pos);
@@ -3987,29 +3988,41 @@ pub fn sort_joins_by_dependency(
                     let missing: Vec<_> = deps.iter().filter(|d| !available.contains(*d)).collect();
                     log::debug!(
                         "    JOIN[{}] {} AS {} missing: {:?}",
-                        idx, joins[idx].table_name, joins[idx].table_alias, missing
+                        idx,
+                        joins[idx].table_name,
+                        joins[idx].table_alias,
+                        missing
                     );
                 }
             }
 
             // Pick join with fewest missing deps; break ties by alias name
-            let best = remaining.iter().enumerate().min_by(|(_, &a_idx), (_, &b_idx)| {
-                let a_missing = dependencies.get(&a_idx)
-                    .map(|d| d.iter().filter(|x| !available.contains(*x)).count())
-                    .unwrap_or(0);
-                let b_missing = dependencies.get(&b_idx)
-                    .map(|d| d.iter().filter(|x| !available.contains(*x)).count())
-                    .unwrap_or(0);
-                a_missing.cmp(&b_missing)
-                    .then_with(|| joins[a_idx].table_alias.cmp(&joins[b_idx].table_alias))
-            }).map(|(pos, _)| pos);
+            let best = remaining
+                .iter()
+                .enumerate()
+                .min_by(|(_, &a_idx), (_, &b_idx)| {
+                    let a_missing = dependencies
+                        .get(&a_idx)
+                        .map(|d| d.iter().filter(|x| !available.contains(*x)).count())
+                        .unwrap_or(0);
+                    let b_missing = dependencies
+                        .get(&b_idx)
+                        .map(|d| d.iter().filter(|x| !available.contains(*x)).count())
+                        .unwrap_or(0);
+                    a_missing
+                        .cmp(&b_missing)
+                        .then_with(|| joins[a_idx].table_alias.cmp(&joins[b_idx].table_alias))
+                })
+                .map(|(pos, _)| pos);
 
             if let Some(pos) = best {
                 let idx = remaining.remove(pos);
                 available.insert(joins[idx].table_alias.clone());
                 log::debug!(
                     "  Breaking cycle: forced JOIN[{}] {} AS {}",
-                    idx, joins[idx].table_name, joins[idx].table_alias
+                    idx,
+                    joins[idx].table_name,
+                    joins[idx].table_alias
                 );
                 sorted.push(idx);
                 // Continue loop — may resolve remaining deps now

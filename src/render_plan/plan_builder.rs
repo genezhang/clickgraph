@@ -459,9 +459,7 @@ impl RenderPlanBuilder for LogicalPlan {
     ) -> RenderPlanBuilderResult<String> {
         // First, check if this alias comes from a CTE
         if let Some(cte_name) = cte_references.get(alias) {
-            if let Some(meta) =
-                cte_schemas.get(cte_name)
-            {
+            if let Some(meta) = cte_schemas.get(cte_name) {
                 // Look up the ID column for this specific alias
                 if let Some(id_col) = meta.alias_to_id.get(alias) {
                     log::info!(
@@ -2364,12 +2362,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     is_multi_label_scan: false,
                 })
             }
-            _ => Err(RenderBuildError::UnsupportedFeature(
-                format!(
-                    "Render plan conversion not implemented for LogicalPlan variant: {:?}",
-                    std::mem::discriminant(self)
-                ),
-            )),
+            _ => Err(RenderBuildError::UnsupportedFeature(format!(
+                "Render plan conversion not implemented for LogicalPlan variant: {:?}",
+                std::mem::discriminant(self)
+            ))),
         }
     }
 
@@ -2572,7 +2568,8 @@ impl RenderPlanBuilder for LogicalPlan {
                             idx,
                             std::mem::discriminant(branch.as_ref())
                         );
-                        let branch_render = branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+                        let branch_render =
+                            branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
                         branch_renders.push(branch_render);
                     }
 
@@ -3014,7 +3011,8 @@ impl RenderPlanBuilder for LogicalPlan {
                     );
                     for item in &mut items {
                         log::debug!("🔧 ORDER BY before: {:?}", item.expression);
-                        item.expression = super::variable_scope::rewrite_render_expr(&item.expression, s);
+                        item.expression =
+                            super::variable_scope::rewrite_render_expr(&item.expression, s);
                         log::debug!("🔧 ORDER BY after: {:?}", item.expression);
                     }
                 } else {
@@ -3392,7 +3390,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 let mut items = super::plan_builder_utils::extract_order_by(self)?;
                 if let Some(s) = scope {
                     for item in &mut items {
-                        item.expression = super::variable_scope::rewrite_render_expr(&item.expression, s);
+                        item.expression =
+                            super::variable_scope::rewrite_render_expr(&item.expression, s);
                     }
                 }
                 OrderByItems(items)
@@ -3503,8 +3502,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     ob.items
                         .iter()
                         .map(|item| {
-                            let rewritten_expr =
-                                rewrite_expression_with_property_mapping(&item.expression, &rewrite_ctx);
+                            let rewritten_expr = rewrite_expression_with_property_mapping(
+                                &item.expression,
+                                &rewrite_ctx,
+                            );
                             crate::query_planner::logical_plan::OrderByItem {
                                 expression: rewritten_expr,
                                 order: item.order.clone(),
@@ -3540,7 +3541,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 gb.expressions
                     .iter()
                     .map(|expr| {
-                        let rewritten = rewrite_expression_with_property_mapping(expr, &rewrite_ctx);
+                        let rewritten =
+                            rewrite_expression_with_property_mapping(expr, &rewrite_ctx);
                         rewritten.try_into()
                     })
                     .collect()

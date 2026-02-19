@@ -1801,16 +1801,16 @@ impl BoltHandler {
         });
 
         // Generate render plan - use _with_ctx to pass VLP endpoint information
-        let render_plan = match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx), None)
-        {
-            Ok(plan) => plan,
-            Err(e) => {
-                return Err(BoltError::query_error(format!(
-                    "Render plan generation failed: {}",
-                    e
-                )));
-            }
-        };
+        let render_plan =
+            match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx), None) {
+                Ok(plan) => plan,
+                Err(e) => {
+                    return Err(BoltError::query_error(format!(
+                        "Render plan generation failed: {}",
+                        e
+                    )));
+                }
+            };
 
         // Generate ClickHouse SQL
         let max_cte_depth = 1000; // Use default from config

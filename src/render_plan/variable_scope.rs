@@ -269,10 +269,7 @@ pub fn rewrite_render_plan_with_scope(plan: &mut RenderPlan, scope: &VariableSco
                                 table_alias: TableAlias(from_alias.clone()),
                                 column: PropertyValue::Column(cte_col.clone()),
                             }),
-                            col_alias: Some(ColumnAlias(format!(
-                                "{}.{}",
-                                alias_name, cypher_prop
-                            ))),
+                            col_alias: Some(ColumnAlias(format!("{}.{}", alias_name, cypher_prop))),
                         });
                     }
                     continue;
@@ -459,9 +456,7 @@ pub fn rewrite_render_expr(expr: &RenderExpr, scope: &VariableScope) -> RenderEx
             from: from
                 .as_ref()
                 .map(|f| Box::new(rewrite_render_expr(f, scope))),
-            to: to
-                .as_ref()
-                .map(|t| Box::new(rewrite_render_expr(t, scope))),
+            to: to.as_ref().map(|t| Box::new(rewrite_render_expr(t, scope))),
         },
         RenderExpr::MapLiteral(entries) => {
             let rewritten: Vec<(String, RenderExpr)> = entries
@@ -522,7 +517,10 @@ mod tests {
 
     #[test]
     fn test_extract_from_alias_from_cte_name() {
-        assert_eq!(extract_from_alias_from_cte_name("with_post_tag_cte_1"), "post_tag");
+        assert_eq!(
+            extract_from_alias_from_cte_name("with_post_tag_cte_1"),
+            "post_tag"
+        );
         assert_eq!(extract_from_alias_from_cte_name("with_a_cte_1"), "a");
         assert_eq!(extract_from_alias_from_cte_name("with_a_b_cte"), "a_b");
         assert_eq!(extract_from_alias_from_cte_name("plain_name"), "plain_name");

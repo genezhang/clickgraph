@@ -2046,10 +2046,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
                         .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
                         .collect();
 
-                    sql.push_str(&build_outer_aggregate_select(
-                        &plan.select,
-                        &agg_arg_cols,
-                    ));
+                    sql.push_str(&build_outer_aggregate_select(&plan.select, &agg_arg_cols));
                 } else {
                     // Without aggregation: select column aliases from the subquery
                     let alias_select = plan
@@ -2166,7 +2163,11 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
                     .enumerate()
                     .filter_map(|(idx, item)| {
                         if idx >= order_by_columns.len() {
-                            log::debug!("ORDER BY column index {} exceeds available columns ({}), skipping", idx, order_by_columns.len());
+                            log::debug!(
+                                "ORDER BY column index {} exceeds available columns ({}), skipping",
+                                idx,
+                                order_by_columns.len()
+                            );
                             return None;
                         }
                         let col_alias = &order_by_columns[idx].1;
@@ -2606,10 +2607,12 @@ impl ToSql for Cte {
                         // When the plan has its own FROM (bidirectional UNION), push the
                         // SELECT projection into each UNION branch instead of using
                         // SELECT * — avoids unresolvable table-qualified column refs.
-                        let has_modifiers = has_group_by || has_order_by_skip_limit
-                            || plan.having_clause.is_some();
-                        let has_aggregation = plan.select.items.iter()
-                            .any(|item| matches!(&item.expression, RenderExpr::AggregateFnCall(_)));
+                        let has_modifiers =
+                            has_group_by || has_order_by_skip_limit || plan.having_clause.is_some();
+                        let has_aggregation =
+                            plan.select.items.iter().any(|item| {
+                                matches!(&item.expression, RenderExpr::AggregateFnCall(_))
+                            });
 
                         if has_aggregation && has_custom_select && plan.from.0.is_some() {
                             // Aggregate + UNION: inner branches project raw columns,
@@ -2714,10 +2717,7 @@ impl ToSql for Cte {
 
                         // Add GROUP BY — use aliased column references since
                         // we're outside the __union subquery wrapper
-                        cte_body.push_str(&build_aliased_group_by(
-                            &plan.group_by,
-                            &plan.select,
-                        ));
+                        cte_body.push_str(&build_aliased_group_by(&plan.group_by, &plan.select));
 
                         // Add HAVING clause if present (after GROUP BY)
                         if let Some(having_expr) = &plan.having_clause {
