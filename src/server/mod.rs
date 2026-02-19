@@ -280,41 +280,58 @@ pub async fn run_with_config(config: ServerConfig) {
                             let mut peek_buf = [0u8; 4];
                             match stream.peek(&mut peek_buf).await {
                                 Ok(n) if n >= 4 => {
-                                    // Check if this is an HTTP request (WebSocket upgrade)
-                                    if peek_buf.starts_with(b"GET ")
+                                    // Check if this is an HTTP request (WebSocket upgrade or probe)
+                                    let is_http = peek_buf.starts_with(b"GET ")
                                         || peek_buf.starts_with(b"POST")
-                                    {
-                                        log::info!(
-                                            "Detected WebSocket connection from {}",
-                                            addr_str
-                                        );
-
-                                        // Handle WebSocket connection
-                                        match bolt_protocol::websocket::WebSocketBoltAdapter::new(
-                                            stream,
-                                        )
-                                        .await
+                                        || peek_buf.starts_with(b"OPTI") // OPTIONS preflight
+                                        || peek_buf.starts_with(b"HEAD")
+                                        || peek_buf.starts_with(b"PUT ")
+                                        || peek_buf.starts_with(b"DELE"); // DELETE
+                                    if is_http {
+                                        // Only GET may carry a WebSocket upgrade; other HTTP
+                                        // methods are browser probes — drop them silently.
+                                        if peek_buf.starts_with(b"GET ")
+                                            || peek_buf.starts_with(b"POST")
                                         {
-                                            Ok(ws_adapter) => {
-                                                match server
-                                                    .handle_connection(ws_adapter, addr_str.clone())
-                                                    .await
-                                                {
-                                                    Ok(_) => {
-                                                        log::debug!("WebSocket Bolt connection closed successfully");
-                                                    }
-                                                    Err(e) => {
-                                                        log::error!("WebSocket Bolt connection error from {}: {:?}", addr_str, e);
+                                            log::debug!(
+                                                "Detected HTTP/WebSocket probe from {}",
+                                                addr_str
+                                            );
+
+                                            // Attempt WebSocket upgrade
+                                            match bolt_protocol::websocket::WebSocketBoltAdapter::new(
+                                                stream,
+                                            )
+                                            .await
+                                            {
+                                                Ok(ws_adapter) => {
+                                                    match server
+                                                        .handle_connection(ws_adapter, addr_str.clone())
+                                                        .await
+                                                    {
+                                                        Ok(_) => {
+                                                            log::debug!("WebSocket Bolt connection closed successfully");
+                                                        }
+                                                        Err(e) => {
+                                                            log::debug!("WebSocket Bolt connection closed from {}: {:?}", addr_str, e);
+                                                        }
                                                     }
                                                 }
+                                                Err(_) => {
+                                                    // Browser probe without WS upgrade — expected, ignore
+                                                    log::debug!(
+                                                        "HTTP probe (no WS upgrade) from {} — ignored",
+                                                        addr_str
+                                                    );
+                                                }
                                             }
-                                            Err(e) => {
-                                                log::error!(
-                                                    "WebSocket handshake failed from {}: {}",
-                                                    addr_str,
-                                                    e
-                                                );
-                                            }
+                                        } else {
+                                            // OPTIONS/HEAD/etc: browser CORS preflight — drop silently
+                                            log::debug!(
+                                                "HTTP {} probe on Bolt port from {} — ignored",
+                                                std::str::from_utf8(&peek_buf).unwrap_or("?"),
+                                                addr_str
+                                            );
                                         }
                                     } else {
                                         log::info!(

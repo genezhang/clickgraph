@@ -46,16 +46,6 @@ echo ""
 echo "✓ All services ready!"
 echo ""
 
-# Load demo data
-echo "📊 Loading demo data..."
-echo ""
-
-bash "$DEMO_DIR/setup_demo_data.sh"
-
-echo ""
-echo "✓ Demo data loaded!"
-echo ""
-
 # Health checks
 echo "📋 Service Status:"
 echo ""

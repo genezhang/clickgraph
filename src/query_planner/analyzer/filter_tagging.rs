@@ -141,16 +141,26 @@ impl AnalyzerPass for FilterTagging {
                         Some(child_plan_ref),
                     ) {
                         Ok(mapped) => {
-                            // Table context exists (test scenario) — extract normally
-                            let final_filter = self.extract_filters(mapped, plan_ctx)?;
-                            return Ok(if final_filter.is_some() {
-                                Transformed::Yes(Arc::new(LogicalPlan::Filter(Filter {
-                                    input: child_tf.get_plan().clone(),
-                                    predicate: final_filter.unwrap(),
-                                })))
-                            } else {
-                                Transformed::Yes(child_tf.get_plan().clone())
-                            });
+                            // Table context may exist — try to extract filters.
+                            // If extract_filters fails (e.g. OrphanAlias when the Empty
+                            // plan has no table context for the referenced alias), fall
+                            // through to propagate Empty just like the Err branch below.
+                            match self.extract_filters(mapped, plan_ctx) {
+                                Ok(final_filter) => {
+                                    return Ok(if final_filter.is_some() {
+                                        Transformed::Yes(Arc::new(LogicalPlan::Filter(Filter {
+                                            input: child_tf.get_plan().clone(),
+                                            predicate: final_filter.unwrap(),
+                                        })))
+                                    } else {
+                                        Transformed::Yes(child_tf.get_plan().clone())
+                                    });
+                                }
+                                Err(_) => {
+                                    log::info!("FilterTagging: Child is Empty, extract_filters failed (no table context) - propagating Empty");
+                                    return Ok(Transformed::Yes(Arc::new(LogicalPlan::Empty)));
+                                }
+                            }
                         }
                         Err(_) => {
                             log::info!("FilterTagging: Child is Empty, no table context - propagating Empty");

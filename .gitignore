@@ -144,3 +144,4 @@ tests/private/*.bak
 PR_*.md
 /WITH_CLAUSE_BUG_FIX.md
 notes/
+demos/*/docker-compose.override.yml

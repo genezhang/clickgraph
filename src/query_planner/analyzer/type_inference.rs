@@ -495,10 +495,24 @@ impl TypeInference {
                     || inferred_multi_labels.is_some();
 
                 if needs_rebuild {
+                    // When multi-type VLP inference found new labels for the right node,
+                    // re-run inference on it so it gets proper ViewScan and node_types.
+                    // right_transformed was computed BEFORE the multi-type labels were set
+                    // in plan_ctx, so the GraphNode still has label=None/node_types=None.
+                    let right_plan = right_transformed.get_plan();
+                    let right_plan = if inferred_multi_labels.is_some() {
+                        let orig = Arc::clone(&right_plan);
+                        self.infer_labels_recursive(right_plan, plan_ctx, graph_schema)
+                            .map(|t| t.get_plan())
+                            .unwrap_or(orig)
+                    } else {
+                        right_plan
+                    };
+
                     let new_rel = GraphRel {
                         left: left_transformed.get_plan().clone(),
                         center: center_transformed.get_plan().clone(),
-                        right: right_transformed.get_plan().clone(),
+                        right: right_plan,
                         alias: rel.alias.clone(),
                         direction: rel.direction.clone(),
                         left_connection: rel.left_connection.clone(),
