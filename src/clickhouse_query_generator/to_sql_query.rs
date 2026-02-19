@@ -110,6 +110,8 @@ fn build_relationship_columns_from_plan(plan: &RenderPlan) -> HashMap<String, (S
 /// Build CTE property mappings from RenderPlan CTEs (for collecting data)
 /// Returns mapping of CTE alias → (property → column name)
 fn build_cte_property_mappings(plan: &RenderPlan) -> HashMap<String, HashMap<String, String>> {
+    use crate::utils::cte_column_naming::parse_cte_column;
+
     let mut map = HashMap::new();
 
     // Process each CTE in the plan
@@ -117,22 +119,19 @@ fn build_cte_property_mappings(plan: &RenderPlan) -> HashMap<String, HashMap<Str
         if let CteContent::Structured(ref cte_plan) = cte.content {
             let mut property_map: HashMap<String, String> = HashMap::new();
 
-            // Build property mapping from SELECT items
-            // Format: "property_name" → "cte_column_name"
-            //
-            // IMPORTANT: We use the FULL column name as the property name (e.g., "user_id" → "user_id")
-            // because the column names in CTEs already come from ViewScan.property_mapping.
-            //
-            // Previous behavior: Used underscore/dot parsing to extract suffix (e.g., "user_id" → "id")
-            // This broke auto-discovery schemas where property names include underscores.
-            // Example bug: node_id=user_id with auto_discover_columns should expose property "user_id",
-            // not "id" (which doesn't exist in the database).
             for select_item in &cte_plan.select.items {
                 if let Some(ref col_alias) = select_item.col_alias {
                     let cte_col = col_alias.0.as_str();
 
-                    // Identity mapping: property name = column name
+                    // Identity mapping: CTE column name → itself
                     property_map.insert(cte_col.to_string(), cte_col.to_string());
+
+                    // Also add original-property → CTE-column mapping
+                    // e.g., "p7_message_imageFile" → parse → property "imageFile"
+                    // So: "imageFile" → "p7_message_imageFile"
+                    if let Some((_alias, property)) = parse_cte_column(cte_col) {
+                        property_map.insert(property, cte_col.to_string());
+                    }
                 }
             }
 
@@ -142,7 +141,15 @@ fn build_cte_property_mappings(plan: &RenderPlan) -> HashMap<String, HashMap<Str
                     cte.cte_name,
                     property_map
                 );
+                // Store under full CTE name
                 map.insert(cte.cte_name.clone(), property_map.clone());
+
+                // Also store under the FROM alias (strip "with_" prefix and "_cte[_N]" suffix)
+                // so lookups using the SQL alias work too
+                let from_alias = cte_name_to_from_alias(&cte.cte_name);
+                if from_alias != cte.cte_name {
+                    map.insert(from_alias.to_string(), property_map);
+                }
             }
         }
     }
@@ -167,7 +174,35 @@ fn build_cte_property_mappings(plan: &RenderPlan) -> HashMap<String, HashMap<Str
         }
     }
 
+    // Also scan JOINs for CTE aliases (Step 1 now generates CTE Joins)
+    for join in &plan.joins.0 {
+        if join.table_name.starts_with("with_") {
+            let alias = &join.table_alias;
+            if let Some(cte_mapping) = map.get(&join.table_name).cloned() {
+                if alias != &join.table_name {
+                    map.insert(alias.clone(), cte_mapping);
+                }
+            }
+        }
+    }
+
     map
+}
+
+/// Extract FROM alias from CTE name by stripping "with_" prefix and "_cte[_N]" suffix.
+/// e.g., "with_message_messageCreationDate_messageId_cte_1" → "message_messageCreationDate_messageId"
+fn cte_name_to_from_alias(cte_name: &str) -> &str {
+    let base = cte_name.strip_prefix("with_").unwrap_or(cte_name);
+    if let Some(stripped) = base.strip_suffix("_cte") {
+        return stripped;
+    }
+    if let Some(pos) = base.rfind("_cte_") {
+        let suffix = &base[pos + "_cte_".len()..];
+        if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
+            return &base[..pos];
+        }
+    }
+    base
 }
 
 /// Build multi-type VLP aliases tracking from RenderPlan
@@ -3283,15 +3318,35 @@ impl RenderExpr {
                 }
 
                 // Check if table_alias refers to a CTE and needs property mapping
-                // (fallback to task-local context for backward compatibility)
                 if let Some(cte_col) = get_cte_property_from_context(&table_alias.0, col_name) {
                     log::debug!(
-                        "🔧 CTE property mapping (legacy): {}.{} → {}",
+                        "🔧 CTE property mapping: {}.{} → {}.{}",
                         table_alias.0,
                         col_name,
+                        table_alias.0,
                         cte_col
                     );
                     return format!("{}.{}", table_alias.0, cte_col);
+                }
+
+                // If table_alias is a full CTE name (with_*_cte_*), try the FROM alias
+                // The SQL alias in JOINs is the stripped version, not the full CTE name.
+                if table_alias.0.starts_with("with_") {
+                    let from_alias = cte_name_to_from_alias(&table_alias.0);
+                    if from_alias != table_alias.0 {
+                        if let Some(cte_col) =
+                            get_cte_property_from_context(from_alias, col_name)
+                        {
+                            log::debug!(
+                                "🔧 CTE property mapping (via FROM alias): {}.{} → {}.{}",
+                                table_alias.0,
+                                col_name,
+                                from_alias,
+                                cte_col
+                            );
+                            return format!("{}.{}", from_alias, cte_col);
+                        }
+                    }
                 }
 
                 // Resolve "id" pseudo-property (from id() function transform) to actual
