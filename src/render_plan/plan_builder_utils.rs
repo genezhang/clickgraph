@@ -8986,17 +8986,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                     args: parts,
                                                 })
                                             } else {
-                                                // Single ID: toString(cte.a_col)
-                                                RenderExpr::ScalarFnCall(ScalarFnCall {
-                                                    name: "toString".to_string(),
-                                                    args: vec![
-                                                        RenderExpr::Column(Column(
-                                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                                format!("{}.{}", cte_alias, id_col_name)
-                                                            )
-                                                        )),
-                                                    ],
-                                                })
+                                                // Single ID: use column directly (no toString — preserves type)
+                                                RenderExpr::Column(Column(
+                                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                        format!("{}.{}", cte_alias, id_col_name)
+                                                    )
+                                                ))
                                             }
                                         };
 
@@ -9141,20 +9136,15 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                             format!("{}.{}", from_alias, vlp_id_col)
                                                         )
                                                     )),
-                                                    RenderExpr::ScalarFnCall(ScalarFnCall {
-                                                        name: "toString".to_string(),
-                                                        args: vec![
-                                                            RenderExpr::Column(Column(
-                                                                crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                                    format!("{}.{}", cte_alias, id_col_name)
-                                                                )
-                                                            )),
-                                                        ],
-                                                    }),
+                                                    RenderExpr::Column(Column(
+                                                        crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                            format!("{}.{}", cte_alias, id_col_name)
+                                                        )
+                                                    )),
                                                 ],
                                             };
                                             log::debug!(
-                                                "🔧 VLP+WITH (branch): Generated JOIN for '{}': {}.{} = toString({}.{})",
+                                                "🔧 VLP+WITH (branch): Generated JOIN for '{}': {}.{} = {}.{}",
                                                 branch_from.name, from_alias, vlp_id_col, cte_alias, id_col_name
                                             );
                                             branch_join_cond.push(cond);
