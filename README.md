@@ -17,24 +17,14 @@
 ---
 ## 🚀 What's New in v0.6.2-dev
 
-### Development Release: Variable Scope Resolution Redesign + Architecture Cleanup
-
-**v0.6.2-dev delivers a foundational fix to WITH clause variable resolution, eliminating the reverse_mapping hack and replacing it with a proper scope-aware architecture.**
-
 ### Highlights ✨
 
-- **Variable Scope Resolution** - `VariableScope` correctly resolves variables across WITH barriers: CTE-scoped vars use CTE columns, table vars use schema columns
-- **Architecture Cleanup** - Removed ~1,362 lines of post-hoc `reverse_mapping` rewrites; 6 dead helper functions deleted
-- **LDBC SNB Progress** - 14/37 queries passing (38%), up from 10/37 (27%) after scope fix
-- **Test Coverage** - 1,032 unit tests passing; integration tests at parity with prior release
-
-### Key Fixes
-
-- **CTE variable expansion** - `RETURN a` after `WITH` now correctly expands to individual columns instead of invalid `a.*`
-- **Alias renaming** - `WITH u AS person` correctly resolves `person.name` to the original `u`-prefixed CTE column
-- **UNION CTE projection** - Each branch gets explicit SELECT instead of `SELECT *`
-- **Deterministic join ordering** - Eliminates query variation across runs
-- **VLP+WITH type fix** - Removed spurious `toString()` on UInt64 IDs
+- **Neo4j Browser Support** - Connect Neo4j Browser directly to ClickGraph via Bolt protocol for live graph visualization. See [`demos/neo4j-browser/`](demos/neo4j-browser/README.md) for a ready-to-run demo.
+- **Graph-Notebook Support** - Run Jupyter graph notebooks against your ClickHouse data using the `graph-notebook` library. See [`demos/graph-notebook/`](demos/graph-notebook/README.md) for setup instructions.
+- **Improved WITH Clause Correctness** - Chained `WITH` queries (multi-step aggregation, filtering, and renaming) now produce correct results across a wider range of patterns.
+- **More Reliable Query Results** - Fixed result ordering, column projection in UNION queries, and variable resolution after `WITH` — queries return what Cypher semantics require.
+- **LDBC SNB Progress** - 14/37 benchmark queries passing (38%), up from 10/37 (27%).
+- **Test Coverage** - 1,032 unit tests passing; 3,026 integration tests at parity with prior release.
 
 ---
 
