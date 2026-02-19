@@ -2263,9 +2263,11 @@ impl GraphJoinInference {
             right_cte_name,
         };
 
-        // Step 1: Generate pure joins based on strategy
+        // Step 1: Generate anchor-aware joins based on strategy
+        // Pass join_ctx aliases so the generator knows which nodes are already available.
+        let already_available = join_ctx.to_hashset();
         let mut new_joins = join_generation::generate_pattern_joins(
-            ctx, &tables, rel_schema, plan_ctx, pre_filter,
+            ctx, &tables, rel_schema, plan_ctx, pre_filter, &already_available,
         )?;
 
         // Step 2: VLP endpoint rewriting (before collection, affects dependencies)
