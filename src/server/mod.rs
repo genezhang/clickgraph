@@ -290,7 +290,9 @@ pub async fn run_with_config(config: ServerConfig) {
                                     if is_http {
                                         // Only GET may carry a WebSocket upgrade; other HTTP
                                         // methods are browser probes — drop them silently.
-                                        if peek_buf.starts_with(b"GET ") || peek_buf.starts_with(b"POST") {
+                                        if peek_buf.starts_with(b"GET ")
+                                            || peek_buf.starts_with(b"POST")
+                                        {
                                             log::debug!(
                                                 "Detected HTTP/WebSocket probe from {}",
                                                 addr_str

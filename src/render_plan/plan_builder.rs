@@ -2464,9 +2464,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     if let LogicalPlan::Projection(p) = gj.input.as_ref() {
                         // Pure RETURN-only if input is Empty AND no item is a graph alias
                         matches!(p.input.as_ref(), LogicalPlan::Empty)
-                            && !p.items.iter().any(|item| {
-                                matches!(item.expression, LogicalExpr::TableAlias(_))
-                            })
+                            && !p
+                                .items
+                                .iter()
+                                .any(|item| matches!(item.expression, LogicalExpr::TableAlias(_)))
                     } else {
                         false
                     }
@@ -2475,9 +2476,10 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Found Projection → check if input is Empty (pure RETURN query, no MATCH)
                 LogicalPlan::Projection(p) => {
                     matches!(p.input.as_ref(), LogicalPlan::Empty)
-                        && !p.items.iter().any(|item| {
-                            matches!(item.expression, LogicalExpr::TableAlias(_))
-                        })
+                        && !p
+                            .items
+                            .iter()
+                            .any(|item| matches!(item.expression, LogicalExpr::TableAlias(_)))
                 }
 
                 // Any other plan type → not RETURN-only
