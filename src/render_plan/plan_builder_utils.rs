@@ -9051,12 +9051,16 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                     args: parts,
                                                 })
                                             } else {
-                                                // Single ID: use column directly (no toString — preserves type)
-                                                RenderExpr::Column(Column(
-                                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                        format!("{}.{}", cte_alias, id_col_name)
-                                                    )
-                                                ))
+                                                // Single ID: toString() to match the String type of
+                                                // start_id / end_id stored in the VLP CTE
+                                                RenderExpr::ScalarFnCall(ScalarFnCall {
+                                                    name: "toString".to_string(),
+                                                    args: vec![RenderExpr::Column(Column(
+                                                        crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                            format!("{}.{}", cte_alias, id_col_name)
+                                                        )
+                                                    ))],
+                                                })
                                             }
                                         };
 
@@ -9202,11 +9206,15 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                             format!("{}.{}", from_alias, vlp_id_col)
                                                         )
                                                     )),
-                                                    RenderExpr::Column(Column(
-                                                        crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                            format!("{}.{}", cte_alias, id_col_name)
-                                                        )
-                                                    )),
+                                                    // toString() to match the String type of start_id/end_id in VLP CTE
+                                                    RenderExpr::ScalarFnCall(ScalarFnCall {
+                                                        name: "toString".to_string(),
+                                                        args: vec![RenderExpr::Column(Column(
+                                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                                format!("{}.{}", cte_alias, id_col_name)
+                                                            )
+                                                        ))],
+                                                    }),
                                                 ],
                                             };
                                             log::debug!(

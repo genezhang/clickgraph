@@ -2457,12 +2457,9 @@ impl RenderPlanBuilder for LogicalPlan {
                 LogicalPlan::OrderBy(o) => is_return_only_query(&o.input),
                 LogicalPlan::Filter(f) => is_return_only_query(&f.input),
 
-                // GraphJoins with no joins is just a wrapper for RETURN
-                LogicalPlan::GraphJoins(gj) if gj.joins.is_empty() => {
-                    is_return_only_query(&gj.input)
-                }
-
-                // Found Projection → check if input is Empty
+                // Found Projection → check if input is Empty (pure RETURN query, no MATCH)
+                // Note: GraphJoins is NOT recursed here — it indicates a MATCH clause was present,
+                // even if TypeInference pruned all paths to Empty.
                 LogicalPlan::Projection(p) => matches!(p.input.as_ref(), LogicalPlan::Empty),
 
                 // Any other plan type → not RETURN-only

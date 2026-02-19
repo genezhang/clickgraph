@@ -573,7 +573,14 @@ fn extract_bound_node_filter(
 pub(crate) fn extract_node_labels(plan: &LogicalPlan) -> Option<Vec<String>> {
     match plan {
         LogicalPlan::GraphNode(node) => {
-            // Check if node has a label
+            // When TypeInference inferred multiple possible types (polymorphic endpoint),
+            // node_types holds the full set. Return all of them so path enumeration
+            // considers all valid combinations (e.g. Post← via LIKED ← User).
+            if let Some(ref types) = node.node_types {
+                if types.len() > 1 {
+                    return Some(types.clone());
+                }
+            }
             if let Some(ref label) = node.label {
                 Some(vec![label.clone()])
             } else {
