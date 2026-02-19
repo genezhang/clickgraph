@@ -526,7 +526,6 @@ impl GraphJoinInference {
 
     // Note: expr_references_alias wrapper removed - use metadata_expr_references_alias directly
 
-
     /// Extract table aliases referenced in an expression
     fn extract_table_refs_from_expr(
         expr: &LogicalExpr,
@@ -851,12 +850,9 @@ impl GraphJoinInference {
                 let deduped_joins = helpers::deduplicate_joins(collected_graph_joins.clone());
 
                 // Reorder JOINs using clean topological sort
-                let anchor_table =
-                    super::join_generation::select_anchor(&deduped_joins);
-                let reordered_joins = super::join_generation::topo_sort_joins(
-                    deduped_joins,
-                    &HashSet::new(),
-                )?;
+                let anchor_table = super::join_generation::select_anchor(&deduped_joins);
+                let reordered_joins =
+                    super::join_generation::topo_sort_joins(deduped_joins, &HashSet::new())?;
 
                 // Extract predicates for optional aliases and attach them to LEFT JOINs
                 let joins_with_pre_filter = Self::attach_pre_filters_to_joins(
@@ -2241,14 +2237,15 @@ impl GraphJoinInference {
         use super::join_generation::{self, ResolvedTables};
 
         // Resolve table names (CTE vs base table)
-        let left_table = Self::get_table_name_with_prefix(
-            left_cte_name, left_alias, left_node_schema, plan_ctx,
-        );
-        let rel_table = Self::get_rel_table_name_with_prefix(
-            rel_cte_name, rel_alias, rel_schema, plan_ctx,
-        );
+        let left_table =
+            Self::get_table_name_with_prefix(left_cte_name, left_alias, left_node_schema, plan_ctx);
+        let rel_table =
+            Self::get_rel_table_name_with_prefix(rel_cte_name, rel_alias, rel_schema, plan_ctx);
         let right_table = Self::get_table_name_with_prefix(
-            right_cte_name, right_alias, right_node_schema, plan_ctx,
+            right_cte_name,
+            right_alias,
+            right_node_schema,
+            plan_ctx,
         );
 
         let tables = ResolvedTables {
@@ -2267,7 +2264,12 @@ impl GraphJoinInference {
         // Pass join_ctx aliases so the generator knows which nodes are already available.
         let already_available = join_ctx.to_hashset();
         let mut new_joins = join_generation::generate_pattern_joins(
-            ctx, &tables, rel_schema, plan_ctx, pre_filter, &already_available,
+            ctx,
+            &tables,
+            rel_schema,
+            plan_ctx,
+            pre_filter,
+            &already_available,
         )?;
 
         // Step 2: VLP endpoint rewriting (before collection, affects dependencies)
@@ -2290,7 +2292,11 @@ impl GraphJoinInference {
 
         // Step 5: Side effects — register denormalized aliases
         join_generation::register_denormalized_aliases(
-            ctx, left_alias, rel_alias, right_alias, plan_ctx,
+            ctx,
+            left_alias,
+            rel_alias,
+            right_alias,
+            plan_ctx,
         );
 
         // Step 6: Update join context (track what's been joined)

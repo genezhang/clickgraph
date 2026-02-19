@@ -18,8 +18,10 @@
 use std::collections::HashSet;
 
 use crate::graph_catalog::config::Identifier;
-use crate::graph_catalog::pattern_schema::{JoinStrategy, NodeAccessStrategy, NodePosition, PatternSchemaContext};
 use crate::graph_catalog::graph_schema::RelationshipSchema;
+use crate::graph_catalog::pattern_schema::{
+    JoinStrategy, NodeAccessStrategy, NodePosition, PatternSchemaContext,
+};
 use crate::query_planner::analyzer::errors::AnalyzerError;
 use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::{Join, JoinType};
@@ -81,7 +83,8 @@ pub fn generate_pattern_joins(
             let r_left_id = helpers::resolve_identifier(&left_id, t.left_cte_name, plan_ctx);
             let r_left_join = helpers::resolve_identifier(left_join_col, t.rel_cte_name, plan_ctx);
             let r_right_id = helpers::resolve_identifier(&right_id, t.right_cte_name, plan_ctx);
-            let r_right_join = helpers::resolve_identifier(right_join_col, t.rel_cte_name, plan_ctx);
+            let r_right_join =
+                helpers::resolve_identifier(right_join_col, t.rel_cte_name, plan_ctx);
 
             let left_avail = already_available.contains(t.left_alias);
             let right_avail = already_available.contains(t.right_alias);
@@ -95,7 +98,12 @@ pub fn generate_pattern_joins(
                 b = b.add_identifier_condition(t.rel_alias, &r_left_join, t.left_alias, &r_left_id);
                 if extra_cond {
                     // Also add right condition: edge.to_col = right.id
-                    b = b.add_identifier_condition(t.rel_alias, &r_right_join, t.right_alias, &r_right_id);
+                    b = b.add_identifier_condition(
+                        t.rel_alias,
+                        &r_right_join,
+                        t.right_alias,
+                        &r_right_id,
+                    );
                 }
                 b.build()
             };
@@ -106,32 +114,50 @@ pub fn generate_pattern_joins(
                     JoinBuilder::from_marker(t.left_table, t.left_alias).build(),
                     edge_join(false),
                     JoinBuilder::new(t.right_table, t.right_alias)
-                        .add_identifier_condition(t.right_alias, &r_right_id, t.rel_alias, &r_right_join)
+                        .add_identifier_condition(
+                            t.right_alias,
+                            &r_right_id,
+                            t.rel_alias,
+                            &r_right_join,
+                        )
                         .build(),
                 ],
                 // Left available: edge anchors on left, right via edge
                 (true, false) => vec![
                     edge_join(false),
                     JoinBuilder::new(t.right_table, t.right_alias)
-                        .add_identifier_condition(t.right_alias, &r_right_id, t.rel_alias, &r_right_join)
+                        .add_identifier_condition(
+                            t.right_alias,
+                            &r_right_id,
+                            t.rel_alias,
+                            &r_right_join,
+                        )
                         .build(),
                 ],
                 // Right available: edge anchors on right, left via edge
                 (false, true) => vec![
                     JoinBuilder::new(t.rel_table, t.rel_alias)
-                        .add_identifier_condition(t.rel_alias, &r_right_join, t.right_alias, &r_right_id)
+                        .add_identifier_condition(
+                            t.rel_alias,
+                            &r_right_join,
+                            t.right_alias,
+                            &r_right_id,
+                        )
                         .pre_filter(pre_filter.clone())
                         .from_id(first_col(&rel_schema.from_id))
                         .to_id(first_col(&rel_schema.to_id))
                         .build(),
                     JoinBuilder::new(t.left_table, t.left_alias)
-                        .add_identifier_condition(t.left_alias, &r_left_id, t.rel_alias, &r_left_join)
+                        .add_identifier_condition(
+                            t.left_alias,
+                            &r_left_id,
+                            t.rel_alias,
+                            &r_left_join,
+                        )
                         .build(),
                 ],
                 // Both available: only the edge table, joining both sides
-                (true, true) => vec![
-                    edge_join(true),
-                ],
+                (true, true) => vec![edge_join(true)],
             }
         }
 
@@ -140,13 +166,11 @@ pub fn generate_pattern_joins(
             if already_available.contains(t.rel_alias) {
                 vec![] // Edge already available, nothing to add
             } else {
-                vec![
-                    JoinBuilder::from_marker(t.rel_table, t.rel_alias)
-                        .pre_filter(pre_filter)
-                        .from_id(first_col(&rel_schema.from_id))
-                        .to_id(first_col(&rel_schema.to_id))
-                        .build(),
-                ]
+                vec![JoinBuilder::from_marker(t.rel_table, t.rel_alias)
+                    .pre_filter(pre_filter)
+                    .from_id(first_col(&rel_schema.from_id))
+                    .to_id(first_col(&rel_schema.to_id))
+                    .build()]
             }
         }
 
@@ -157,13 +181,17 @@ pub fn generate_pattern_joins(
         } => {
             let (node_alias, node_table, node_cte, node_strategy) = match joined_node {
                 NodePosition::Left => (t.left_alias, t.left_table, t.left_cte_name, &ctx.left_node),
-                NodePosition::Right => (t.right_alias, t.right_table, t.right_cte_name, &ctx.right_node),
+                NodePosition::Right => (
+                    t.right_alias,
+                    t.right_table,
+                    t.right_cte_name,
+                    &ctx.right_node,
+                ),
             };
             let node_id = own_table_id(node_strategy, "MixedAccess joined node")?;
             let r_node_id = helpers::resolve_identifier(&node_id, node_cte, plan_ctx);
-            let r_join_col = Identifier::Single(
-                helpers::resolve_column(join_col, t.rel_cte_name, plan_ctx),
-            );
+            let r_join_col =
+                Identifier::Single(helpers::resolve_column(join_col, t.rel_cte_name, plan_ctx));
 
             let edge_avail = already_available.contains(t.rel_alias);
             let node_avail = already_available.contains(node_alias);
@@ -204,14 +232,12 @@ pub fn generate_pattern_joins(
             prev_edge_col,
             curr_edge_col,
         } => {
-            vec![
-                JoinBuilder::new(t.rel_table, t.rel_alias)
-                    .add_condition(t.rel_alias, curr_edge_col, prev_edge_alias, prev_edge_col)
-                    .pre_filter(pre_filter)
-                    .from_id(first_col(&rel_schema.from_id))
-                    .to_id(first_col(&rel_schema.to_id))
-                    .build(),
-            ]
+            vec![JoinBuilder::new(t.rel_table, t.rel_alias)
+                .add_condition(t.rel_alias, curr_edge_col, prev_edge_alias, prev_edge_col)
+                .pre_filter(pre_filter)
+                .from_id(first_col(&rel_schema.from_id))
+                .to_id(first_col(&rel_schema.to_id))
+                .build()]
         }
 
         // Optimization: same physical row, 0 JOINs
@@ -232,10 +258,13 @@ pub fn generate_pattern_joins(
                 NodePosition::Left => {
                     // Right node IS the edge table (anchor). Left needs JOIN.
                     let left_id = own_table_id(&ctx.left_node, "FkEdgeJoin left")?;
-                    let r_left_id = helpers::resolve_identifier(&left_id, t.left_cte_name, plan_ctx);
-                    let r_from_id = Identifier::Single(
-                        helpers::resolve_column(from_id, t.right_cte_name, plan_ctx),
-                    );
+                    let r_left_id =
+                        helpers::resolve_identifier(&left_id, t.left_cte_name, plan_ctx);
+                    let r_from_id = Identifier::Single(helpers::resolve_column(
+                        from_id,
+                        t.right_cte_name,
+                        plan_ctx,
+                    ));
                     let right_avail = already_available.contains(t.right_alias);
                     let left_avail = already_available.contains(t.left_alias);
 
@@ -246,31 +275,45 @@ pub fn generate_pattern_joins(
                                 .to_id(to_id.clone())
                                 .build(),
                             JoinBuilder::new(t.left_table, t.left_alias)
-                                .add_identifier_condition(t.left_alias, &r_left_id, t.right_alias, &r_from_id)
+                                .add_identifier_condition(
+                                    t.left_alias,
+                                    &r_left_id,
+                                    t.right_alias,
+                                    &r_from_id,
+                                )
                                 .build(),
                         ],
-                        (true, false) => vec![
-                            JoinBuilder::new(t.left_table, t.left_alias)
-                                .add_identifier_condition(t.left_alias, &r_left_id, t.right_alias, &r_from_id)
-                                .build(),
-                        ],
-                        (false, true) => vec![
-                            JoinBuilder::new(t.right_table, t.right_alias)
-                                .add_identifier_condition(t.right_alias, &r_from_id, t.left_alias, &r_left_id)
-                                .from_id(from_id.clone())
-                                .to_id(to_id.clone())
-                                .build(),
-                        ],
+                        (true, false) => vec![JoinBuilder::new(t.left_table, t.left_alias)
+                            .add_identifier_condition(
+                                t.left_alias,
+                                &r_left_id,
+                                t.right_alias,
+                                &r_from_id,
+                            )
+                            .build()],
+                        (false, true) => vec![JoinBuilder::new(t.right_table, t.right_alias)
+                            .add_identifier_condition(
+                                t.right_alias,
+                                &r_from_id,
+                                t.left_alias,
+                                &r_left_id,
+                            )
+                            .from_id(from_id.clone())
+                            .to_id(to_id.clone())
+                            .build()],
                         (true, true) => vec![],
                     }
                 }
                 NodePosition::Right => {
                     // Left node IS the edge table (anchor). Right needs JOIN.
                     let right_id = own_table_id(&ctx.right_node, "FkEdgeJoin right")?;
-                    let r_right_id = helpers::resolve_identifier(&right_id, t.right_cte_name, plan_ctx);
-                    let r_to_id = Identifier::Single(
-                        helpers::resolve_column(to_id, t.left_cte_name, plan_ctx),
-                    );
+                    let r_right_id =
+                        helpers::resolve_identifier(&right_id, t.right_cte_name, plan_ctx);
+                    let r_to_id = Identifier::Single(helpers::resolve_column(
+                        to_id,
+                        t.left_cte_name,
+                        plan_ctx,
+                    ));
                     let left_avail = already_available.contains(t.left_alias);
                     let right_avail = already_available.contains(t.right_alias);
 
@@ -281,21 +324,32 @@ pub fn generate_pattern_joins(
                                 .to_id(to_id.clone())
                                 .build(),
                             JoinBuilder::new(t.right_table, t.right_alias)
-                                .add_identifier_condition(t.right_alias, &r_right_id, t.left_alias, &r_to_id)
+                                .add_identifier_condition(
+                                    t.right_alias,
+                                    &r_right_id,
+                                    t.left_alias,
+                                    &r_to_id,
+                                )
                                 .build(),
                         ],
-                        (true, false) => vec![
-                            JoinBuilder::new(t.right_table, t.right_alias)
-                                .add_identifier_condition(t.right_alias, &r_right_id, t.left_alias, &r_to_id)
-                                .build(),
-                        ],
-                        (false, true) => vec![
-                            JoinBuilder::new(t.left_table, t.left_alias)
-                                .add_identifier_condition(t.left_alias, &r_to_id, t.right_alias, &r_right_id)
-                                .from_id(from_id.clone())
-                                .to_id(to_id.clone())
-                                .build(),
-                        ],
+                        (true, false) => vec![JoinBuilder::new(t.right_table, t.right_alias)
+                            .add_identifier_condition(
+                                t.right_alias,
+                                &r_right_id,
+                                t.left_alias,
+                                &r_to_id,
+                            )
+                            .build()],
+                        (false, true) => vec![JoinBuilder::new(t.left_table, t.left_alias)
+                            .add_identifier_condition(
+                                t.left_alias,
+                                &r_to_id,
+                                t.right_alias,
+                                &r_right_id,
+                            )
+                            .from_id(from_id.clone())
+                            .to_id(to_id.clone())
+                            .build()],
                         (true, true) => vec![],
                     }
                 }
@@ -314,7 +368,8 @@ pub fn generate_pattern_joins(
 /// Handles deduplication: when an alias is already present, its conditions
 /// are redistributed to the join that references it (correlation).
 pub fn collect_with_dedup(all_joins: &mut Vec<Join>, new_joins: Vec<Join>) {
-    let existing_aliases: HashSet<String> = all_joins.iter().map(|j| j.table_alias.clone()).collect();
+    let existing_aliases: HashSet<String> =
+        all_joins.iter().map(|j| j.table_alias.clone()).collect();
 
     for join in new_joins {
         if existing_aliases.contains(&join.table_alias) {
@@ -478,7 +533,10 @@ pub fn apply_vlp_rewrites(joins: &mut [Join], plan_ctx: &PlanCtx) {
                     if new_alias != alias || new_col != col {
                         log::debug!(
                             "🔄 VLP rewrite: {}.{} → {}.{}",
-                            alias, col, new_alias, new_col
+                            alias,
+                            col,
+                            new_alias,
+                            new_col
                         );
                         *operand = LogicalExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(new_alias),
@@ -518,7 +576,13 @@ pub fn register_denormalized_aliases(
                 NodePosition::Right => (&ctx.left_node, left_alias),
                 NodePosition::Left => (&ctx.right_node, right_alias),
             };
-            register_if_embedded(embedded_strategy, embedded_alias, rel_alias, &rel_type, plan_ctx);
+            register_if_embedded(
+                embedded_strategy,
+                embedded_alias,
+                rel_alias,
+                &rel_type,
+                plan_ctx,
+            );
         }
         JoinStrategy::EdgeToEdge { .. } => {
             // Both nodes embedded in edge
@@ -527,14 +591,26 @@ pub fn register_denormalized_aliases(
         }
         JoinStrategy::CoupledSameRow { unified_alias } => {
             // Both nodes embedded, but on the UNIFIED alias (not rel_alias)
-            register_if_embedded(&ctx.left_node, left_alias, unified_alias, &rel_type, plan_ctx);
-            register_if_embedded(&ctx.right_node, right_alias, unified_alias, &rel_type, plan_ctx);
+            register_if_embedded(
+                &ctx.left_node,
+                left_alias,
+                unified_alias,
+                &rel_type,
+                plan_ctx,
+            );
+            register_if_embedded(
+                &ctx.right_node,
+                right_alias,
+                unified_alias,
+                &rel_type,
+                plan_ctx,
+            );
         }
         JoinStrategy::FkEdgeJoin { join_side, .. } => {
             // Relationship is embedded on the anchor node table
             let anchor_alias = match join_side {
-                NodePosition::Left => right_alias,   // Right is anchor
-                NodePosition::Right => left_alias,   // Left is anchor
+                NodePosition::Left => right_alias, // Right is anchor
+                NodePosition::Right => left_alias, // Left is anchor
             };
             plan_ctx.register_denormalized_alias(
                 rel_alias.to_string(),
@@ -728,7 +804,7 @@ mod tests {
         ];
 
         let new = vec![
-            JoinBuilder::from_marker("users", "b").build(),   // duplicate
+            JoinBuilder::from_marker("users", "b").build(), // duplicate
             JoinBuilder::new("follows", "r2")
                 .add_condition("r2", "from_id", "b", "id")
                 .build(),
@@ -762,11 +838,11 @@ mod tests {
         ];
 
         let new = vec![
-            JoinBuilder::from_marker("users", "a").build(),   // duplicate
+            JoinBuilder::from_marker("users", "a").build(), // duplicate
             JoinBuilder::new("follows", "r2")
                 .add_condition("r2", "from_id", "a", "id")
                 .build(),
-            JoinBuilder::new("users", "b")                    // duplicate with conditions
+            JoinBuilder::new("users", "b") // duplicate with conditions
                 .add_condition("b", "id", "r2", "to_id")
                 .build(),
         ];
@@ -783,8 +859,12 @@ mod tests {
     #[test]
     fn test_select_anchor_prefers_inner() {
         let joins = vec![
-            JoinBuilder::from_marker("t1", "a").join_type(JoinType::Left).build(),
-            JoinBuilder::from_marker("t2", "b").join_type(JoinType::Inner).build(),
+            JoinBuilder::from_marker("t1", "a")
+                .join_type(JoinType::Left)
+                .build(),
+            JoinBuilder::from_marker("t2", "b")
+                .join_type(JoinType::Inner)
+                .build(),
         ];
         assert_eq!(select_anchor(&joins), Some("b".to_string()));
     }
