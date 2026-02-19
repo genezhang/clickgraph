@@ -2457,10 +2457,28 @@ impl RenderPlanBuilder for LogicalPlan {
                 LogicalPlan::OrderBy(o) => is_return_only_query(&o.input),
                 LogicalPlan::Filter(f) => is_return_only_query(&f.input),
 
+                // GraphJoins wraps both RETURN-only and pruned-MATCH queries.
+                // Distinguish by Projection items: a pruned MATCH returns graph
+                // aliases (TableAlias), while a pure RETURN uses literals/scalars.
+                LogicalPlan::GraphJoins(gj) if gj.joins.is_empty() => {
+                    if let LogicalPlan::Projection(p) = gj.input.as_ref() {
+                        // Pure RETURN-only if input is Empty AND no item is a graph alias
+                        matches!(p.input.as_ref(), LogicalPlan::Empty)
+                            && !p.items.iter().any(|item| {
+                                matches!(item.expression, LogicalExpr::TableAlias(_))
+                            })
+                    } else {
+                        false
+                    }
+                }
+
                 // Found Projection → check if input is Empty (pure RETURN query, no MATCH)
-                // Note: GraphJoins is NOT recursed here — it indicates a MATCH clause was present,
-                // even if TypeInference pruned all paths to Empty.
-                LogicalPlan::Projection(p) => matches!(p.input.as_ref(), LogicalPlan::Empty),
+                LogicalPlan::Projection(p) => {
+                    matches!(p.input.as_ref(), LogicalPlan::Empty)
+                        && !p.items.iter().any(|item| {
+                            matches!(item.expression, LogicalExpr::TableAlias(_))
+                        })
+                }
 
                 // Any other plan type → not RETURN-only
                 _ => false,

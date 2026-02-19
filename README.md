@@ -13,7 +13,7 @@
 - There are huge volumes of data in ClickHouse databases, viewing them as graph data with graph analytics capability brings another level of abstraction and boosts productivity with graph tools, in ways beyond relational analytics alone.
 - Research shows relational analytics with columnar stores and vectorized execution engines like ClickHouse provide superior analytical performance and scalability to graph-native technologies, which usually leverage explicit adjacency representations and are more suitable for local-area graph traversals.
 - View-based graph analytics offer the benefits of zero-ETL without the hassle of data migration and duplicate cost, yet better performance and scalability than most of the native graph analytics options.
-- Neo4j Bolt protocol support gives instant access to the tools available, including graph visualization and the MCP server.
+- Neo4j Bolt protocol support gives access to the tools available based on the Bolt protocol.
 ---
 ## 🚀 What's New in v0.6.2-dev
 
@@ -21,6 +21,7 @@
 
 - **Neo4j Browser Support** - Connect Neo4j Browser directly to ClickGraph via Bolt protocol for live graph visualization. See [`demos/neo4j-browser/`](demos/neo4j-browser/README.md) for a ready-to-run demo.
 - **Graph-Notebook Support** - Run Jupyter graph notebooks against your ClickHouse data using the `graph-notebook` library. See [`demos/graph-notebook/`](demos/graph-notebook/README.md) for setup instructions.
+- **Numerous rounds of refactoring** - help to improve the code quality, including the following.
 - **Improved WITH Clause Correctness** - Chained `WITH` queries (multi-step aggregation, filtering, and renaming) now produce correct results across a wider range of patterns.
 - **More Reliable Query Results** - Fixed result ordering, column projection in UNION queries, and variable resolution after `WITH` — queries return what Cypher semantics require.
 - **LDBC SNB Progress** - 14/37 benchmark queries passing (38%), up from 10/37 (27%).
@@ -42,16 +43,14 @@
   - **Use cases**: `ch.cityHash64()`, `ch.murmurHash3_64()`, `chagg.uniq()`, specialized aggregations
   - **Example**: `RETURN ch.cityHash64(u.email) AS hash`
 
-### Benchmarks & Validation
+### Benchmarks
+
+- **Ontime Flights** - a benchmark for airline flights illustrating the power/performance.
 
 - **LDBC SNB (Work In Progress)** - Social Network Benchmark implementation
   - **Status**: Schema mapping complete, query adaptation in progress
   - **Scale**: Designed for scale factors 1-100 (1K-100M edges)
   - **Purpose**: Industry-standard graph database benchmarking
-
-- **MCP Server Validation** - Model Context Protocol integration testing
-  - **Status**: validated
-  - **Purpose**: LLM tool integration for graph queries
 
 ### Quality Improvements
 
@@ -62,6 +61,7 @@
 
 ### Previous Major Features (v0.5.x)
 
+- **Diverse schema variations** - To fit existing database schemas.
 - **Cross-table queries** - Zeek log correlation, multi-table JOINs (v0.5.4)
 - **Smart type inference** - Automatic node/relationship type inference (v0.5.4)
 - **FK-Edge patterns** - File systems, org charts with VLP (v0.5.4)
