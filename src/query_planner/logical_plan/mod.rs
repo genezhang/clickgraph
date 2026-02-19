@@ -878,10 +878,9 @@ pub struct GraphJoins {
     #[serde(with = "serde_arc")]
     pub input: Arc<LogicalPlan>,
 
-    /// DEPRECATED: These pre-computed joins are incorrect for multi-hop patterns.
-    /// Only used as fallback for extract_from(). The correct approach is to call
-    /// input.extract_joins() which handles nested GraphRel recursively.
-    /// TODO: Remove this field in future refactor after validating all tests pass.
+    /// Pre-computed joins from the planning phase (join_generation module).
+    /// This is the single source of truth for join conditions and ordering.
+    /// The rendering phase converts these to render_plan::Join 1:1.
     pub joins: Vec<Join>,
 
     /// Aliases that came from OPTIONAL MATCH clauses (for correct FROM table selection)
