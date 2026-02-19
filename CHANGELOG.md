@@ -1,4 +1,22 @@
-## [0.6.2-dev] - Unreleased
+## [0.6.2-dev] - 2026-02-19
+
+### 🐛 Bug Fixes
+
+- **Neo4j Browser click-to-expand regression fixes** (Feb 19, 2026, PR #116): Fixed 5 bugs introduced by the scope resolution redesign (PR #115) that completely broke click-to-expand in Neo4j Browser.
+  - **Bug 1 — filter_tagging crash**: When TypeInference prunes all relationship types, `filter_tagging` crashed with no table context. Fixed by propagating `Empty` plan on error.
+  - **Bug 2a — VLP multi-type inference**: Phase 1 computed the right `GraphNode` before `plan_ctx` was updated with inferred labels, causing Phase 2 to generate empty `WHERE 0=1` UNION branches. Fixed by re-running `infer_labels_recursive` on the right node after multi-type detection.
+  - **Bug 2b — VLP+WITH type mismatch**: JOIN between WITH CTEs and VLP CTEs failed (`UInt64` vs `String`). Fixed by wrapping node id columns in `toString()`.
+  - **Bug 2c — extract_node_labels not polymorphic**: Returned only primary label when multiple node types were present. Fixed to return all types.
+  - **Bug 3 — empty SQL for pruned MATCH**: `is_return_only_query()` misidentified pruned MATCH as pure RETURN. Fixed by checking Projection items for `TableAlias` (MATCH) vs `Literal` (RETURN).
+  - **Noise fix**: HTTP OPTIONS/GET probes from Neo4j Browser on the Bolt port logged as ERROR. Downgraded to DEBUG.
+  - **Verification**: User node expansion returns exactly 11 rows (3 FOLLOWS-out, 3 FOLLOWS-in, 2 AUTHORED, 3 LIKED) matching raw ClickHouse counts.
+
+### ⚙️ Infrastructure
+
+- **Neo4j Browser demo improvements** (Feb 19, 2026, PR #116):
+  - All 5 ClickHouse tables migrated from `Memory` to `MergeTree` ENGINE — data now persists across container restarts.
+  - Removed duplicate data loading from `setup.sh`; `init-db.sql` is the single data entrypoint.
+  - `clickgraph` service updated to official image `genezhang/clickgraph:v0.6.2-dev`.
 
 ### 🚀 Features
 
