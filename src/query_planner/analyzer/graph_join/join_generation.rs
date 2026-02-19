@@ -413,15 +413,25 @@ fn redistribute_conditions(joins: &mut [Join], duplicate: &Join) {
 // =============================================================================
 
 /// Select the anchor (FROM) table from collected joins.
-/// Prefers non-optional FROM markers (INNER), falls back to optional (LEFT).
+/// Priority: base table (INNER) > CTE (INNER) > base table (LEFT) > CTE (LEFT).
+/// CTE joins (table_name starts with "with_") are deprioritized because the
+/// pattern's base table is usually the better FROM anchor.
 pub fn select_anchor(joins: &[Join]) -> Option<String> {
-    // Prefer non-optional FROM marker
+    let is_cte = |j: &Join| j.table_name.starts_with("with_");
+
+    // 1st: non-optional base table FROM marker
+    for join in joins {
+        if join.joining_on.is_empty() && join.join_type != JoinType::Left && !is_cte(join) {
+            return Some(join.table_alias.clone());
+        }
+    }
+    // 2nd: non-optional CTE FROM marker (when CTE is the only source)
     for join in joins {
         if join.joining_on.is_empty() && join.join_type != JoinType::Left {
             return Some(join.table_alias.clone());
         }
     }
-    // Fall back to any FROM marker
+    // 3rd: any FROM marker (including LEFT)
     for join in joins {
         if join.joining_on.is_empty() {
             return Some(join.table_alias.clone());

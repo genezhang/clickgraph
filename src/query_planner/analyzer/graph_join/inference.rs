@@ -1509,19 +1509,23 @@ impl GraphJoinInference {
                             graph_node.alias,
                             cte_name
                         );
-                        // Mark this alias as already joined (it comes from the CTE)
-                        // This prevents duplicate joins and ensures subsequent patterns
-                        // reference the CTE columns instead of creating new ViewScans
+                        // Generate a real Join entry for the CTE so it appears in the
+                        // SQL FROM/JOIN chain. Without this, downstream pattern JOINs
+                        // reference the CTE alias but it's never in the query.
+                        // The CTE Join has empty joining_on (FROM candidate / CROSS JOIN).
+                        // select_anchor() prefers base tables, so this becomes CROSS JOIN
+                        // unless the CTE is the only source.
+                        collected_graph_joins.push(Join {
+                            table_name: cte_name.clone(),
+                            table_alias: graph_node.alias.clone(),
+                            joining_on: vec![],
+                            join_type: JoinType::Inner,
+                            pre_filter: None,
+                            from_id_column: None,
+                            to_id_column: None,
+                            graph_rel: None,
+                        });
                         join_ctx.insert(graph_node.alias.clone());
-
-                        // If this GraphNode has a ViewScan input, we should skip it
-                        // because the data comes from the CTE, not a fresh table scan
-                        // But we still need to recurse in case there's nested structure
-                        crate::debug_print!(
-                            "  ✓ Skipping ViewScan for '{}' (data from CTE '{}')",
-                            graph_node.alias,
-                            cte_name
-                        );
                     } else {
                         log::info!(
                             "  ✗ TableCtx for '{}' has NO CTE reference",

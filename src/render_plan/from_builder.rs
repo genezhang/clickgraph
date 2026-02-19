@@ -35,7 +35,7 @@
 
 use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
 use crate::query_planner::logical_plan::LogicalPlan;
-use crate::utils::cte_naming::{extract_cte_base_name, is_generated_cte_name};
+use crate::utils::cte_naming::is_generated_cte_name;
 use log::debug;
 use std::sync::Arc;
 
@@ -1278,95 +1278,10 @@ impl LogicalPlan {
                 }));
             }
         } else {
-            // No anchor_table - likely cleared due to scope barrier
-            // PRIORITY: If we have CTE references, use the LATEST CTE as FROM
-            // The CTE references represent variables that are in scope after WITH clauses
-            // We want the LAST CTE (highest sequence number) as it represents the final scope
-
-            if !graph_joins.cte_references.is_empty() {
-                log::debug!(
-                    "🔍 anchor_table is None, but have {} CTE references - finding latest CTE as FROM",
-                    graph_joins.cte_references.len()
-                );
-
-                // Find the CTE with the highest sequence number (format: with_*_cte_N)
-                // This is the most recent WITH clause's output
-                let mut best_cte: Option<(&String, &String, usize)> = None;
-                for (alias, cte_name) in &graph_joins.cte_references {
-                    // Extract sequence number from CTE name using centralized utility
-                    // Format: "with_tag_cte_1" or "with_inValidPostCount_postCount_tag_cte_1"
-                    // Or base name without counter: "with_tag_cte" or "with_inValidPostCount_postCount_tag_cte"
-                    let seq_num = if let Some(base_name) = extract_cte_base_name(cte_name) {
-                        // Counter is everything after base_name
-                        let counter_str = &cte_name[base_name.len()..];
-                        if let Some(num_str) = counter_str.strip_prefix('_') {
-                            num_str.parse::<usize>().unwrap_or(0)
-                        } else {
-                            0 // Base name without counter
-                        }
-                    } else {
-                        0
-                    };
-
-                    // Keep the CTE with highest sequence number (latest in the chain)
-                    // Tie-breaker: prefer longer CTE names (more aliases = more complete)
-                    match &best_cte {
-                        None => best_cte = Some((alias, cte_name, seq_num)),
-                        Some((_, current_name, current_seq)) => {
-                            if seq_num > *current_seq
-                                || (seq_num == *current_seq && cte_name.len() > current_name.len())
-                            {
-                                best_cte = Some((alias, cte_name, seq_num));
-                            }
-                        }
-                    }
-                }
-
-                if let Some((alias, cte_name, _)) = best_cte {
-                    log::info!(
-                        "✅ Using latest CTE '{}' AS '{}' as FROM (from cte_references)",
-                        cte_name,
-                        alias
-                    );
-                    return Ok(Some(ViewTableRef {
-                        source: Arc::new(LogicalPlan::Empty),
-                        name: cte_name.clone(),
-                        alias: Some(alias.clone()),
-                        use_final: false,
-                    }));
-                }
-            }
-
-            // SECONDARY FALLBACK: Pick first join as FROM table
-            log::debug!("🔍 anchor_table is None and no CTE references, using first join as FROM");
-            if let Some(first_join) = graph_joins.joins.first() {
-                // Check if this join has a CTE reference
-                if let Some(cte_name) = graph_joins.cte_references.get(&first_join.table_alias) {
-                    log::info!(
-                        "✅ Using first join '{}' → CTE '{}' as FROM",
-                        first_join.table_alias,
-                        cte_name
-                    );
-                    return Ok(Some(ViewTableRef {
-                        source: Arc::new(LogicalPlan::Empty),
-                        name: cte_name.clone(),
-                        alias: Some(first_join.table_alias.clone()),
-                        use_final: false,
-                    }));
-                } else {
-                    log::info!(
-                        "✅ Using first join '{}' (table '{}') as FROM",
-                        first_join.table_alias,
-                        first_join.table_name
-                    );
-                    return Ok(Some(ViewTableRef {
-                        source: Arc::new(LogicalPlan::Empty),
-                        name: first_join.table_name.clone(),
-                        alias: Some(first_join.table_alias.clone()),
-                        use_final: false,
-                    }));
-                }
-            }
+            // No anchor_table — CTE join generation now produces proper Join entries
+            // with CTE table_name, so the FROM marker loop above (line 798) should
+            // have found one. If we reach here, it's a genuine edge case (no joins at all).
+            log::debug!("🔍 anchor_table is None and no FROM marker found — no joins to process");
         }
 
         // If we still can't find FROM, this is a real bug
