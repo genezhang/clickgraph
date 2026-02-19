@@ -34,7 +34,6 @@ services:
     volumes:
       - clickhouse_demo_data:/var/lib/clickhouse
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
-      - ./001-init.sh:/docker-entrypoint-initdb.d/001-init.sh:ro
 
   neo4j:
     image: neo4j:latest
@@ -56,10 +55,7 @@ services:
       - neo4j_demo_logs:/logs
 
   clickgraph:
-    # For now, build locally. After release, use: image: genezhang/clickgraph:latest
-    build:
-      context: ../..
-      dockerfile: Dockerfile
+    image: genezhang/clickgraph:v0.6.2-dev
     container_name: clickgraph-demo
     depends_on:
       clickhouse:

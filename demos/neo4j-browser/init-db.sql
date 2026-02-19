@@ -1,5 +1,7 @@
 -- ClickGraph Demo Data Initialization
 -- Creates and populates demo tables for social network graph
+-- Note: MergeTree persists data across container restarts.
+-- This file runs automatically via docker-entrypoint-initdb.d on first container start.
 
 -- Users table
 CREATE TABLE IF NOT EXISTS social.users (
@@ -7,35 +9,35 @@ CREATE TABLE IF NOT EXISTS social.users (
   name String,
   email String,
   created_at DateTime DEFAULT now()
-) ENGINE = Memory;
+) ENGINE = MergeTree() ORDER BY user_id;
 
 -- Posts table
 CREATE TABLE IF NOT EXISTS social.posts (
   post_id UInt32,
   content String,
   created_at DateTime DEFAULT now()
-) ENGINE = Memory;
+) ENGINE = MergeTree() ORDER BY post_id;
 
 -- AUTHORED relationship (User -> Post)
 CREATE TABLE IF NOT EXISTS social.post_authored (
   user_id UInt32,
   post_id UInt32,
   created_at DateTime DEFAULT now()
-) ENGINE = Memory;
+) ENGINE = MergeTree() ORDER BY (user_id, post_id);
 
 -- LIKED relationship (User -> Post)
 CREATE TABLE IF NOT EXISTS social.post_likes (
   user_id UInt32,
   post_id UInt32,
   created_at DateTime DEFAULT now()
-) ENGINE = Memory;
+) ENGINE = MergeTree() ORDER BY (user_id, post_id);
 
 -- User follows User relationship
 CREATE TABLE IF NOT EXISTS social.user_follows (
   follower_id UInt32,
   followed_id UInt32,
   created_at DateTime DEFAULT now()
-) ENGINE = Memory;
+) ENGINE = MergeTree() ORDER BY (follower_id, followed_id);
 -- Insert sample users (30 users)
 INSERT INTO social.users VALUES
   (1, 'Alice', 'alice@example.com', '2026-01-01 11:00:00'),

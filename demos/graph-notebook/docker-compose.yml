@@ -3,8 +3,6 @@
 #
 # Usage: docker-compose up
 # Then open: http://localhost:8888 (token displayed in logs)
-#
-# Note: This uses local build. After release, use: image: genezhang/clickgraph:latest
 
 version: '3.8'
 
@@ -28,13 +26,9 @@ services:
     volumes:
       - clickhouse_notebook_data:/var/lib/clickhouse
       - ../neo4j-browser/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
-      - ../neo4j-browser/001-init.sh:/docker-entrypoint-initdb.d/001-init.sh:ro
 
   clickgraph:
-    # For now, build locally. After release, use: image: genezhang/clickgraph:latest
-    build:
-      context: ../..
-      dockerfile: Dockerfile
+    image: genezhang/clickgraph:v0.6.2-dev
     container_name: clickgraph-notebook-demo
     depends_on:
       clickhouse:
