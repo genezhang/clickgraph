@@ -6305,6 +6305,11 @@ pub(crate) fn build_chained_with_match_cte_plan(
     let mut scope_cte_variables: HashMap<String, super::variable_scope::CteVariableInfo> =
         HashMap::new();
 
+    // Unified variable registry: tracks all visible variables with their types, sources,
+    // and property mappings. Updated as each CTE is built. Attached to CTEs and the final
+    // RenderPlan for use by the SQL renderer.
+    let mut var_registry = crate::query_planner::typed_variable::VariableRegistry::new();
+
     fn show_plan_structure(plan: &LogicalPlan, indent: usize) {
         let prefix = "  ".repeat(indent);
         match plan {
@@ -8455,15 +8460,40 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     alias.clone(),
                     super::variable_scope::CteVariableInfo {
                         cte_name: cte_name.clone(),
-                        property_mapping: per_alias_mapping,
-                        labels,
+                        property_mapping: per_alias_mapping.clone(),
+                        labels: labels.clone(),
                     },
                 );
+
+                // Update unified variable registry: define/overwrite variable as CTE-sourced
+                // with its property mapping so the SQL renderer can resolve properties.
+                {
+                    use crate::query_planner::typed_variable::VariableSource;
+                    let cte_source = VariableSource::Cte {
+                        cte_name: cte_name.clone(),
+                        property_mapping: per_alias_mapping.clone(),
+                    };
+                    if labels.is_empty() {
+                        // No labels → scalar variable (e.g., computed column, count, etc.)
+                        var_registry.define_scalar(alias.clone(), cte_source);
+                    } else {
+                        // Has labels → node variable (relationship labels would need
+                        // more context; treating as node is correct for most WITH exports)
+                        var_registry.define_node(alias.clone(), labels.clone(), cte_source);
+                    }
+                }
                 log::info!(
                     "🔧 build_chained: scope_cte_variables updated for alias '{}' → CTE '{}'",
                     alias,
                     cte_name
                 );
+            }
+
+            // Attach current registry snapshot to the CTE just built
+            if let Some(last_cte) = all_ctes.last_mut() {
+                if last_cte.cte_name == cte_name {
+                    last_cte.variable_registry = Some(var_registry.clone());
+                }
             }
 
             log::info!(
@@ -9288,6 +9318,9 @@ pub(crate) fn build_chained_with_match_cte_plan(
     // But b doesn't exist in SQL - the VLP CTE is joined as "t"
     // Solution: Rewrite b.end_id -> t.end_id using VLP CTE metadata
     rewrite_vlp_aggregate_aliases(&mut render_plan)?;
+
+    // Attach the final variable registry to the outer render plan
+    render_plan.variable_registry = Some(var_registry);
 
     log::info!(
         "🔧 build_chained_with_match_cte_plan: Success - final plan has {} CTEs",
