@@ -27,6 +27,10 @@ plan_builder.rs          ← trait RenderPlanBuilder: LogicalPlan → RenderPlan
     │
     ├─ render_expr.rs (1.2K)            ← RenderExpr enum (Column, Literal, Operator, etc.)
     │
+    ├─ variable_scope.rs (562)          ← **PR #115+#120**: VariableScope, CteVariableInfo,
+    │                                       rewrite_render_plan_with_scope() — scope-aware
+    │                                       variable resolution across WITH barriers
+    │
     ├─ select_builder.rs, from_builder.rs, filter_builder.rs, group_by_builder.rs
     │
     └─ mod.rs (531)                     ← RenderPlan, Join, Cte, SelectItem structs
@@ -424,6 +428,56 @@ The fix is incremental — no big-bang rewrite:
    fallback code in `build_property_mapping_from_columns()`.
 
 Each phase is independently testable and improves correctness.
+
+### 11. Scope-Aware CTE Variable Resolution (PR #120) ⚠️ INFRASTRUCTURE
+
+**Status**: Infrastructure complete (Feb 2026). Provides the data path for correct
+property resolution; remaining LDBC failures are planning bugs, not scope bugs.
+
+#### Architecture
+
+```
+build_chained_with_match_cte_plan() loop
+    │
+    ├─ Each WITH iteration creates CTE with p{N}_ columns
+    │   └─ Records property_mapping: (alias, cypher_prop) → cte_column_name
+    │
+    ├─ scope_cte_variables stores CteVariableInfo per alias
+    │   └─ CteVariableInfo { cte_name, property_mapping, labels }
+    │
+    ├─ VariableRegistry built from scope_cte_variables
+    │   └─ VariableSource::Cte { cte_name, property_mapping }
+    │
+    └─ Task-local QueryContext carries VariableRegistry
+        └─ PropertyAccessExp::to_sql() calls resolve_with_current_registry()
+```
+
+#### Key Components
+
+- **`variable_scope.rs`** — `VariableScope`, `CteVariableInfo`, `rewrite_render_plan_with_scope()`:
+  Expands bare CTE node variables into individual columns in SELECT/WHERE/ORDER BY.
+  Handles UNION branch recursion and WITH barrier scope clearing.
+
+- **`VariableRegistry`** (`typed_variable.rs`) — Runtime variable resolution:
+  `VariableSource::Cte { cte_name, property_mapping }` enables
+  `registry.resolve(alias, property)` → `(cte_name, cte_column_name)`.
+  Per-CTE save/restore in `Cte::to_sql()`.
+
+- **`query_context.rs`** — Task-local `set_current_registry()` / `get_current_registry()`:
+  Carries the VariableRegistry through the SQL rendering phase without
+  threading parameters through every function.
+
+- **`rewrite_logical_expr_cte_refs()`** (`plan_builder_utils.rs`) — Expression rewriter:
+  Accepts `cte_property_mappings` parameter. When rewriting a PropertyAccess
+  (alias→CTE name), also resolves the column name using the mapping.
+
+#### Evidence
+
+2-WITH chain with bidirectional KNOWS generates correct SQL:
+```sql
+-- Before: b.p1_b_id (wrong — 'b' not a FROM alias)
+-- After:  a_b.p1_b_id (correct — CTE alias as FROM)
+```
 
 ## Common Bug Patterns
 

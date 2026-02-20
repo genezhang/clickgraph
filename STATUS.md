@@ -1,15 +1,15 @@
 # ClickGraph Status
 
-*Updated: February 19, 2026*
+*Updated: February 20, 2026*
 
 ## Current Version: v0.6.2-dev
 
 Read-only Cypher-to-ClickHouse SQL query engine with Neo4j Browser compatibility.
 
-**Tests**: 1,032 unit + integration at main parity  
-**Latest Work**: Variable scope resolution redesign (branch `fix/variable-scope-resolution`) — zero regressions, LDBC +4 queries  
+**Tests**: 1,111 unit (zero regressions)  
+**LDBC Mini**: 13/37 (35%) — maintained baseline through 2 architecture PRs  
 **Benchmark**: 18/18 queries (100%) at 5000 scale (954.9M rows)  
-**Architecture**: ✅ VariableScope replaces reverse_mapping hack (-1,362 net lines)
+**Architecture**: ✅ Anchor-aware join generation (-374 net lines) + scope-aware CTE variable resolution (+411 lines)
 
 ## What Works
 
@@ -20,6 +20,8 @@ Read-only Cypher-to-ClickHouse SQL query engine with Neo4j Browser compatibility
 - **Functions**: String, numeric, date, type coercion, list operations
 - **Multi-relationship**: `[:TYPE1|TYPE2]` with UNION SQL generation
 - **Variable Scope Resolution**: `VariableScope` correctly resolves variables across WITH barriers — CTE-scoped vars use CTE columns, table vars use schema columns; covers SELECT, WHERE, ORDER BY, GROUP BY, HAVING, JOINs
+- **Scope-Aware CTE/UNION Rendering**: Task-local `VariableRegistry` with `property_mapping` on `VariableSource::Cte` enables correct column resolution during SQL rendering; per-CTE save/restore; WITH barrier scope clearing; UNION branch recursion
+- **Anchor-Aware Join Generation**: Generic 64-line loop + 810-line module replaces ~1200 lines of per-strategy handlers; topological sort on schema-independent join graph; handles OPTIONAL MATCH shared-node patterns without cartesian products
 - **Unified Type Inference**: Single 4-phase pass (SchemaInference merged Feb 2026) with direction-aware UNION generation
   - **Phase 0**: Relationship-based label inference
   - **Phase 1**: Filter→GraphRel UNION with WHERE constraint extraction

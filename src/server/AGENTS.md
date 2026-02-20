@@ -86,7 +86,7 @@ handlers.rs::query_handler()
 | `sql_generation_handler.rs` | 425 | `POST /query/sql` — translate-only endpoint, no ClickHouse execution, structured error responses |
 | `graph_catalog.rs` | 858 | Schema lifecycle: `initialize_global_schema`, `load_schema_from_content`, `get_graph_schema_by_name`, DB fallback, schema validation, `monitor_schema_updates` |
 | `query_cache.rs` | 581 | LRU cache: `QueryCache`, `QueryCacheKey`, `ReplanOption` (CYPHER replan=force/skip), `CacheMetrics`, schema-scoped invalidation |
-| `query_context.rs` | 403 | **Task-local context** via `tokio::task_local!`: schema, denormalized aliases, relationship columns, CTE property mappings, multi-type VLP aliases |
+| `query_context.rs` | 456 | **Task-local context** via `tokio::task_local!`: schema, denormalized aliases, relationship columns, CTE property mappings, multi-type VLP aliases, **VariableRegistry** (PR #120) |
 | `parameter_substitution.rs` | 368 | `substitute_parameters()`, `find_unsubstituted_parameter()`, SQL injection prevention via string escaping |
 | `models.rs` | 257 | `QueryRequest`, `OutputFormat`, `SqlDialect`, `SqlGenerationRequest/Response`, `SqlOnlyResponse` |
 | `connection_pool.rs` | 158 | `RoleConnectionPool`: lazy-initialized per-role ClickHouse client pools with read/write lock |
@@ -199,6 +199,9 @@ pub struct QueryContext {
     pub relationship_columns: HashMap<String, (String, String)>,
     pub cte_property_mappings: HashMap<String, HashMap<String, String>>,
     pub multi_type_vlp_aliases: HashMap<String, String>,
+    // PR #120: Task-local VariableRegistry for scope-aware property resolution
+    // Set/get via set_current_registry() / get_current_registry()
+    // Per-CTE save/restore in Cte::to_sql()
 }
 ```
 
