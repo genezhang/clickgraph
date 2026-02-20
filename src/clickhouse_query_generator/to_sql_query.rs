@@ -3311,13 +3311,19 @@ impl RenderExpr {
                 // Match-sourced variables are already resolved to DB columns during planning,
                 // so we only need registry resolution for CTE-sourced variables where the
                 // PropertyAccess.column is a Cypher property name that needs CTE column mapping.
-                if let Some(resolved) = crate::server::query_context::resolve_with_current_registry(&table_alias.0, col_name) {
+                if let Some(resolved) = crate::server::query_context::resolve_with_current_registry(
+                    &table_alias.0,
+                    col_name,
+                ) {
                     use crate::query_planner::typed_variable::ResolvedProperty;
                     match resolved {
                         ResolvedProperty::CteColumn { sql_alias, column } => {
                             log::info!(
                                 "🔧 VariableRegistry resolved: {}.{} → {}.{}",
-                                table_alias.0, col_name, sql_alias, column
+                                table_alias.0,
+                                col_name,
+                                sql_alias,
+                                column
                             );
                             return format!("{}.{}", sql_alias, column);
                         }

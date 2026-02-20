@@ -69,7 +69,8 @@ pub struct QueryContext {
     /// Set from the CTE or RenderPlan being rendered; used by PropertyAccessExp::to_sql()
     /// to resolve cypher_alias.property → correct SQL column.
     /// Wrapped in Arc to match RenderPlan/Cte fields and avoid cloning overhead.
-    pub current_variable_registry: Option<std::sync::Arc<crate::query_planner::typed_variable::VariableRegistry>>,
+    pub current_variable_registry:
+        Option<std::sync::Arc<crate::query_planner::typed_variable::VariableRegistry>>,
 }
 
 impl QueryContext {

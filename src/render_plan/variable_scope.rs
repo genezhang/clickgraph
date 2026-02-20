@@ -112,11 +112,17 @@ impl<'a> VariableScope<'a> {
             // Property not in Cypher→CTE mapping by key, but it might already be
             // a resolved CTE column name (e.g., join_builder produced b.p1_b_id
             // where p1_b_id is already the CTE column). Fix the table alias.
-            if cte_info.property_mapping.values().any(|v| v == cypher_property) {
+            if cte_info
+                .property_mapping
+                .values()
+                .any(|v| v == cypher_property)
+            {
                 let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
                 log::debug!(
                     "VariableScope: {}.{} → already-resolved CTE column, fixing alias to {}",
-                    alias, cypher_property, from_alias
+                    alias,
+                    cypher_property,
+                    from_alias
                 );
                 return ResolvedProperty::CteColumn {
                     cte_name: from_alias,

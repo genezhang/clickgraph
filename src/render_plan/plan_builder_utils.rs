@@ -7910,7 +7910,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     })),
                     fixed_path_info: None,
                     is_multi_label_scan: false,
-                                    variable_registry: None,
+                    variable_registry: None,
                 }
             };
 

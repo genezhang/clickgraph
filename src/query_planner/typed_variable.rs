@@ -141,7 +141,10 @@ impl NodeVariable {
     pub fn from_cte(labels: Vec<String>, cte_name: String) -> Self {
         Self {
             labels,
-            source: VariableSource::Cte { cte_name, property_mapping: Box::new(HashMap::new()) },
+            source: VariableSource::Cte {
+                cte_name,
+                property_mapping: Box::new(HashMap::new()),
+            },
             accessed_properties: Vec::new(),
         }
     }
@@ -212,7 +215,10 @@ impl RelVariable {
     ) -> Self {
         Self {
             rel_types,
-            source: VariableSource::Cte { cte_name, property_mapping: Box::new(HashMap::new()) },
+            source: VariableSource::Cte {
+                cte_name,
+                property_mapping: Box::new(HashMap::new()),
+            },
             from_node_label,
             to_node_label,
             accessed_properties: Vec::new(),
@@ -251,7 +257,10 @@ impl ScalarVariable {
     /// Create a scalar variable from a CTE (most common case)
     pub fn from_cte(cte_name: String) -> Self {
         Self {
-            source: VariableSource::Cte { cte_name, property_mapping: Box::new(HashMap::new()) },
+            source: VariableSource::Cte {
+                cte_name,
+                property_mapping: Box::new(HashMap::new()),
+            },
             data_type: None,
         }
     }
@@ -346,7 +355,10 @@ impl PathVariable {
     /// Create a path variable exported through a CTE
     pub fn from_cte(cte_name: String) -> Self {
         Self {
-            source: VariableSource::Cte { cte_name, property_mapping: Box::new(HashMap::new()) },
+            source: VariableSource::Cte {
+                cte_name,
+                property_mapping: Box::new(HashMap::new()),
+            },
             start_node: None,
             end_node: None,
             relationship: None,
@@ -376,7 +388,10 @@ impl CollectionVariable {
     /// Create a collection variable from a CTE
     pub fn from_cte(cte_name: String, element_type: CollectionElementType) -> Self {
         Self {
-            source: VariableSource::Cte { cte_name, property_mapping: Box::new(HashMap::new()) },
+            source: VariableSource::Cte {
+                cte_name,
+                property_mapping: Box::new(HashMap::new()),
+            },
             element_type,
         }
     }
@@ -1011,18 +1026,25 @@ impl VariableRegistry {
                     if let Some(label) = labels.first() {
                         // Check node schemas
                         if let Some(node_schema) = schema.all_node_schemas().get(label.as_str()) {
-                            if let Some(prop_val) = node_schema.property_mappings.get(cypher_property) {
+                            if let Some(prop_val) =
+                                node_schema.property_mappings.get(cypher_property)
+                            {
                                 let db_col = prop_val.raw().to_string();
                                 log::debug!(
                                     "VariableRegistry::resolve: {}.{} → DB column {} (label: {})",
-                                    alias, cypher_property, db_col, label
+                                    alias,
+                                    cypher_property,
+                                    db_col,
+                                    label
                                 );
                                 return ResolvedProperty::DbColumn(db_col);
                             }
                         }
                         // Check relationship schemas
                         if let Some(rel_schema) = schema.get_relationships_schema_opt(label) {
-                            if let Some(prop_val) = rel_schema.property_mappings.get(cypher_property) {
+                            if let Some(prop_val) =
+                                rel_schema.property_mappings.get(cypher_property)
+                            {
                                 let db_col = prop_val.raw().to_string();
                                 log::debug!(
                                     "VariableRegistry::resolve: {}.{} → DB column {} (rel_type: {})",
@@ -1046,27 +1068,42 @@ impl VariableRegistry {
         if let Some(var) = self.variables.get_mut(alias) {
             match var {
                 TypedVariable::Node(n) => {
-                    if let VariableSource::Cte { property_mapping, .. } = &mut n.source {
+                    if let VariableSource::Cte {
+                        property_mapping, ..
+                    } = &mut n.source
+                    {
                         *property_mapping = Box::new(mapping);
                     }
                 }
                 TypedVariable::Relationship(r) => {
-                    if let VariableSource::Cte { property_mapping, .. } = &mut r.source {
+                    if let VariableSource::Cte {
+                        property_mapping, ..
+                    } = &mut r.source
+                    {
                         *property_mapping = Box::new(mapping);
                     }
                 }
                 TypedVariable::Scalar(s) => {
-                    if let VariableSource::Cte { property_mapping, .. } = &mut s.source {
+                    if let VariableSource::Cte {
+                        property_mapping, ..
+                    } = &mut s.source
+                    {
                         *property_mapping = Box::new(mapping);
                     }
                 }
                 TypedVariable::Path(p) => {
-                    if let VariableSource::Cte { property_mapping, .. } = &mut p.source {
+                    if let VariableSource::Cte {
+                        property_mapping, ..
+                    } = &mut p.source
+                    {
                         *property_mapping = Box::new(mapping);
                     }
                 }
                 TypedVariable::Collection(c) => {
-                    if let VariableSource::Cte { property_mapping, .. } = &mut c.source {
+                    if let VariableSource::Cte {
+                        property_mapping, ..
+                    } = &mut c.source
+                    {
                         *property_mapping = Box::new(mapping);
                     }
                 }
