@@ -8430,6 +8430,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
             // Update scope CTE variables: record each exported alias's property mapping
             // so downstream rendering resolves CTE variables correctly.
+            //
+            // WITH barrier: snapshot body registry, then clear accumulated scope
+            // so only current CTE's exports are visible in the next scope.
+            let body_registry = std::sync::Arc::new(var_registry.clone());
+            scope_cte_variables.clear();
+            var_registry.clear();
+
             for alias in &original_exported_aliases {
                 if alias.is_empty() {
                     continue;
@@ -8489,10 +8496,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 );
             }
 
-            // Attach current registry snapshot to the CTE just built
+            // Attach body registry (pre-barrier snapshot) to the CTE for runtime resolution
             if let Some(last_cte) = all_ctes.last_mut() {
                 if last_cte.cte_name == cte_name {
-                    last_cte.variable_registry = Some(std::sync::Arc::new(var_registry.clone()));
+                    last_cte.variable_registry = Some(body_registry);
                 }
             }
 

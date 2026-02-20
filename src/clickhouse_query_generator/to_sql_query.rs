@@ -2590,8 +2590,20 @@ impl ToSql for CteItems {
 
 impl ToSql for Cte {
     fn to_sql(&self) -> String {
+        // Per-CTE registry: set this CTE's variable registry as task-local
+        // so PropertyAccessExp::to_sql() can resolve CTE-scoped variables.
+        let saved_registry = if self.variable_registry.is_some() {
+            let prev = crate::server::query_context::get_current_variable_registry();
+            if let Some(ref reg) = self.variable_registry {
+                crate::server::query_context::set_current_variable_registry(reg.clone());
+            }
+            prev
+        } else {
+            None
+        };
+
         // Handle both structured and raw SQL content
-        match &self.content {
+        let result = match &self.content {
             CteContent::Structured(plan) => {
                 // For structured content, render only the query body (not nested CTEs)
                 // CTEs should already be hoisted to the top level
@@ -2802,7 +2814,15 @@ impl ToSql for Cte {
                     format!("{} AS (\n{}\n)", self.cte_name, sql)
                 }
             }
+        };
+
+        // Restore previous registry
+        match saved_registry {
+            Some(prev) => crate::server::query_context::set_current_variable_registry(prev),
+            None => crate::server::query_context::clear_current_variable_registry(),
         }
+
+        result
     }
 }
 

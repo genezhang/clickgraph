@@ -109,6 +109,20 @@ impl<'a> VariableScope<'a> {
                     column: cte_col.clone(),
                 };
             }
+            // Property not in Cypher→CTE mapping by key, but it might already be
+            // a resolved CTE column name (e.g., join_builder produced b.p1_b_id
+            // where p1_b_id is already the CTE column). Fix the table alias.
+            if cte_info.property_mapping.values().any(|v| v == cypher_property) {
+                let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
+                log::debug!(
+                    "VariableScope: {}.{} → already-resolved CTE column, fixing alias to {}",
+                    alias, cypher_property, from_alias
+                );
+                return ResolvedProperty::CteColumn {
+                    cte_name: from_alias,
+                    column: cypher_property.to_string(),
+                };
+            }
             log::debug!(
                 "VariableScope: {}.{} is CTE-scoped but property not found in mapping",
                 alias,
@@ -246,7 +260,7 @@ impl<'a> VariableScope<'a> {
 use super::render_expr::{
     ColumnAlias, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
 };
-use super::{FilterItems, GroupByExpressions, OrderByItems, RenderPlan, SelectItem};
+use super::{FilterItems, GroupByExpressions, OrderByItems, RenderPlan, SelectItem, UnionItems};
 use crate::graph_catalog::expression_parser::PropertyValue;
 
 /// Rewrite all expressions in a RenderPlan using scope-based resolution.
@@ -328,6 +342,13 @@ pub fn rewrite_render_plan_with_scope(plan: &mut RenderPlan, scope: &VariableSco
         }
         if let Some(ref pre_filter) = join.pre_filter {
             join.pre_filter = Some(rewrite_render_expr(pre_filter, scope));
+        }
+    }
+
+    // Rewrite UNION branches (e.g., bidirectional relationship expansions)
+    if let UnionItems(Some(ref mut union)) = plan.union {
+        for branch in &mut union.input {
+            rewrite_render_plan_with_scope(branch, scope);
         }
     }
 }

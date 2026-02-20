@@ -3004,6 +3004,13 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                     apply_wrappers(self, &mut base_render)?;
 
+                    // Apply scope-based property resolution to UNION render plans.
+                    // This must happen here because this path returns early, bypassing
+                    // the main scope rewrite at the end of the GraphJoins handler.
+                    if let Some(s) = scope {
+                        super::variable_scope::rewrite_render_plan_with_scope(&mut base_render, s);
+                    }
+
                     return Ok(base_render);
                 }
             }
