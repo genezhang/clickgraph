@@ -1955,6 +1955,11 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
     // TASK-LOCAL: Set ALL contexts for this async task's rendering context
     set_all_render_contexts(relationship_columns, cte_mappings, multi_type_aliases);
 
+    // Set the variable registry from the outer render plan for property resolution
+    if let Some(ref registry) = plan.variable_registry {
+        crate::server::query_context::set_current_variable_registry(registry.clone());
+    }
+
     let mut sql = String::new();
 
     // If there's a Union, wrap it in a subquery for correct ClickHouse behavior.
@@ -3279,6 +3284,33 @@ impl RenderExpr {
                             "JSON_VALUE({}.end_properties, '$.{}')",
                             table_alias.0, col_name
                         );
+                    }
+                }
+
+                // Resolve via unified VariableRegistry (primary path for CTE-scoped variables)
+                if let Some(registry) = crate::server::query_context::get_current_variable_registry() {
+                    if let Some(schema) = crate::server::query_context::get_current_schema() {
+                        use crate::query_planner::typed_variable::ResolvedProperty;
+                        let resolved = registry.resolve(&table_alias.0, col_name, &schema);
+                        match resolved {
+                            ResolvedProperty::CteColumn { sql_alias, column } => {
+                                log::info!(
+                                    "🔧 VariableRegistry resolved: {}.{} → {}.{}",
+                                    table_alias.0, col_name, sql_alias, column
+                                );
+                                return format!("{}.{}", sql_alias, column);
+                            }
+                            ResolvedProperty::DbColumn(db_col) => {
+                                log::info!(
+                                    "🔧 VariableRegistry resolved: {}.{} → {}.{} (DB column)",
+                                    table_alias.0, col_name, table_alias.0, db_col
+                                );
+                                return format!("{}.{}", table_alias.0, db_col);
+                            }
+                            ResolvedProperty::Unresolved => {
+                                // Fall through to legacy paths
+                            }
+                        }
                     }
                 }
 
