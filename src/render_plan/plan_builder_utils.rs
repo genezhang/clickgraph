@@ -7533,6 +7533,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                     union: UnionItems(None),
                                     fixed_path_info: None,
                                     is_multi_label_scan: false,
+                                    variable_registry: None,
                                 };
                                 rename_branch_aliases(&mut first_branch.select, &rename_alias);
 
@@ -7904,6 +7905,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     })),
                     fixed_path_info: None,
                     is_multi_label_scan: false,
+                                    variable_registry: None,
                 }
             };
 

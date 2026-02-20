@@ -334,6 +334,7 @@ fn move_first_branch_into_union(plan: RenderPlan) -> Option<Union> {
                 union: UnionItems(None),
                 fixed_path_info: None,
                 is_multi_label_scan: false,
+                    variable_registry: None,
             };
             union.input.insert(0, first_branch);
         }
@@ -864,6 +865,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     union,
                     fixed_path_info: None,
                     is_multi_label_scan: false,
+                    variable_registry: None,
                     // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
                 };
 
@@ -1088,6 +1090,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         union,
                         fixed_path_info: None,
                         is_multi_label_scan: false,
+                    variable_registry: None,
                         // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
                     };
 
@@ -1123,6 +1126,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         union: UnionItems(None),
                         fixed_path_info: None,
                         is_multi_label_scan: false,
+                    variable_registry: None,
                         // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
                     };
 
@@ -1184,6 +1188,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         union,
                         fixed_path_info: None,
                         is_multi_label_scan: false,
+                    variable_registry: None,
                         // cte_column_registry: temp_render_plan.cte_column_registry, // REMOVED: No longer used
                     };
 
@@ -1404,6 +1409,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         union: UnionItems(None),
                         fixed_path_info: None,
                         is_multi_label_scan: false,
+                    variable_registry: None,
                     });
                 }
 
@@ -1592,6 +1598,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     union: UnionItems(None),
                     fixed_path_info: None,
                     is_multi_label_scan: false,
+                    variable_registry: None,
                     // cte_column_registry: CteColumnRegistry::new(), // REMOVED: No longer used
                 })
             }
@@ -1828,6 +1835,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         union: UnionItems(None),
                         fixed_path_info: None,
                         is_multi_label_scan: false,
+                    variable_registry: None,
                     }))
                 }; // end of if/else is_denormalized_input
 
@@ -1881,6 +1889,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     union,
                     fixed_path_info: None,
                     is_multi_label_scan: false,
+                    variable_registry: None,
                     // cte_column_registry: registry, // REMOVED: No longer used
                 })
             }
@@ -2212,6 +2221,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         union: UnionItems(None),
                         fixed_path_info: None,
                         is_multi_label_scan: true, // Prevent Projection from overwriting SELECT
+                        variable_registry: None,
                     };
 
                     return Ok(render_plan);
@@ -2360,6 +2370,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     union: UnionItems(None),
                     fixed_path_info: None,
                     is_multi_label_scan: false,
+                    variable_registry: None,
                 })
             }
             _ => Err(RenderBuildError::UnsupportedFeature(format!(
@@ -2528,6 +2539,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     union: UnionItems(None),
                     fixed_path_info: None,
                     is_multi_label_scan: false,
+                    variable_registry: None,
                 });
             }
         }
@@ -2951,6 +2963,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             })),
                             fixed_path_info: None,
                             is_multi_label_scan: false,
+                    variable_registry: None,
                         };
                     } else if !all_renders.is_empty() {
                         let render_union_type =
@@ -3085,6 +3098,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 union,
                 fixed_path_info: None,
                 is_multi_label_scan: false,
+                    variable_registry: None,
             };
 
             rewrite_vlp_union_branch_aliases(&mut render_plan)?;
@@ -3442,6 +3456,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 union,
                 fixed_path_info: None,
                 is_multi_label_scan: false,
+                    variable_registry: None,
             });
         }
 
