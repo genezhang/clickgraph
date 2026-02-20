@@ -176,7 +176,7 @@ fn build_cte_property_mappings(plan: &RenderPlan) -> HashMap<String, HashMap<Str
 
     // Also scan JOINs for CTE aliases (Step 1 now generates CTE Joins)
     for join in &plan.joins.0 {
-        if join.table_name.starts_with("with_") {
+        if join.table_name.starts_with("with_") || join.table_name.starts_with("vlp_") {
             let alias = &join.table_alias;
             if let Some(cte_mapping) = map.get(&join.table_name).cloned() {
                 if alias != &join.table_name {
