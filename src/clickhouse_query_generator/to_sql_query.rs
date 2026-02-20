@@ -3287,29 +3287,23 @@ impl RenderExpr {
                     }
                 }
 
-                // Resolve via unified VariableRegistry (primary path for CTE-scoped variables)
-                if let Some(registry) = crate::server::query_context::get_current_variable_registry() {
-                    if let Some(schema) = crate::server::query_context::get_current_schema() {
-                        use crate::query_planner::typed_variable::ResolvedProperty;
-                        let resolved = registry.resolve(&table_alias.0, col_name, &schema);
-                        match resolved {
-                            ResolvedProperty::CteColumn { sql_alias, column } => {
-                                log::info!(
-                                    "🔧 VariableRegistry resolved: {}.{} → {}.{}",
-                                    table_alias.0, col_name, sql_alias, column
-                                );
-                                return format!("{}.{}", sql_alias, column);
-                            }
-                            ResolvedProperty::DbColumn(db_col) => {
-                                log::info!(
-                                    "🔧 VariableRegistry resolved: {}.{} → {}.{} (DB column)",
-                                    table_alias.0, col_name, table_alias.0, db_col
-                                );
-                                return format!("{}.{}", table_alias.0, db_col);
-                            }
-                            ResolvedProperty::Unresolved => {
-                                // Fall through to legacy paths
-                            }
+                // Resolve via unified VariableRegistry for CTE-scoped variables only.
+                // Match-sourced variables are already resolved to DB columns during planning,
+                // so we only need registry resolution for CTE-sourced variables where the
+                // PropertyAccess.column is a Cypher property name that needs CTE column mapping.
+                if let Some(resolved) = crate::server::query_context::resolve_with_current_registry(&table_alias.0, col_name) {
+                    use crate::query_planner::typed_variable::ResolvedProperty;
+                    match resolved {
+                        ResolvedProperty::CteColumn { sql_alias, column } => {
+                            log::info!(
+                                "🔧 VariableRegistry resolved: {}.{} → {}.{}",
+                                table_alias.0, col_name, sql_alias, column
+                            );
+                            return format!("{}.{}", sql_alias, column);
+                        }
+                        ResolvedProperty::DbColumn(_) | ResolvedProperty::Unresolved => {
+                            // Match-sourced or unresolved: skip — PropertyAccess already has
+                            // the correct DB column from planning. Fall through.
                         }
                     }
                 }

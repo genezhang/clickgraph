@@ -369,6 +369,23 @@ pub fn get_current_variable_registry(
         .flatten()
 }
 
+/// Resolve a property using the current variable registry (if available).
+/// This avoids cloning the entire registry; resolution happens inside the task-local borrow.
+pub fn resolve_with_current_registry(
+    alias: &str,
+    property: &str,
+) -> Option<crate::query_planner::typed_variable::ResolvedProperty> {
+    QUERY_CONTEXT
+        .try_with(|ctx| {
+            let ctx = ctx.borrow();
+            let registry = ctx.current_variable_registry.as_ref()?;
+            let schema = ctx.schema.as_ref()?;
+            Some(registry.resolve(alias, property, schema))
+        })
+        .ok()
+        .flatten()
+}
+
 /// Clear the current variable registry
 pub fn clear_current_variable_registry() {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
