@@ -8471,7 +8471,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     use crate::query_planner::typed_variable::VariableSource;
                     let cte_source = VariableSource::Cte {
                         cte_name: cte_name.clone(),
-                        property_mapping: per_alias_mapping.clone(),
+                        property_mapping: Box::new(per_alias_mapping.clone()),
                     };
                     if labels.is_empty() {
                         // No labels → scalar variable (e.g., computed column, count, etc.)
@@ -8492,7 +8492,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // Attach current registry snapshot to the CTE just built
             if let Some(last_cte) = all_ctes.last_mut() {
                 if last_cte.cte_name == cte_name {
-                    last_cte.variable_registry = Some(var_registry.clone());
+                    last_cte.variable_registry = Some(std::sync::Arc::new(var_registry.clone()));
                 }
             }
 
@@ -9320,7 +9320,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
     rewrite_vlp_aggregate_aliases(&mut render_plan)?;
 
     // Attach the final variable registry to the outer render plan
-    render_plan.variable_registry = Some(var_registry);
+    render_plan.variable_registry = Some(std::sync::Arc::new(var_registry));
 
     log::info!(
         "🔧 build_chained_with_match_cte_plan: Success - final plan has {} CTEs",

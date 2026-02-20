@@ -110,8 +110,9 @@ pub struct RenderPlan {
     /// Variable registry for scope-aware property resolution during SQL rendering.
     /// Contains TypedVariable entries with property_mapping for CTE-sourced variables.
     /// Set during render plan building; consumed by `PropertyAccessExp::to_sql()`.
+    /// Wrapped in Arc to avoid deep-clone stack overflow on complex query plans.
     #[serde(skip)]
-    pub variable_registry: Option<crate::query_planner::typed_variable::VariableRegistry>,
+    pub variable_registry: Option<std::sync::Arc<crate::query_planner::typed_variable::VariableRegistry>>,
 }
 
 /// Metadata for simple/fixed path patterns (non-VLP)
@@ -328,8 +329,9 @@ pub struct Cte {
     pub with_exported_aliases: Vec<String>,
     /// Variable registry capturing the Cypher scope at the point this CTE was built.
     /// Used during SQL rendering to resolve `alias.property` → correct CTE or DB column.
+    /// Wrapped in Arc to avoid deep-clone stack overflow on complex query plans.
     #[serde(skip)]
-    pub variable_registry: Option<crate::query_planner::typed_variable::VariableRegistry>,
+    pub variable_registry: Option<std::sync::Arc<crate::query_planner::typed_variable::VariableRegistry>>,
 }
 
 impl Cte {

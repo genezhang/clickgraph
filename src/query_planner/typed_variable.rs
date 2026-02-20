@@ -53,7 +53,8 @@ pub enum VariableSource {
         /// Maps Cypher property name → CTE column name.
         /// Example: "birthday" → "p6_friend_birthday"
         /// Starts empty during planning, populated when CTE is built.
-        property_mapping: HashMap<String, String>,
+        /// Boxed to keep VariableSource enum small (avoids stack overflow in recursive plans).
+        property_mapping: Box<HashMap<String, String>>,
     },
 
     /// Variable comes from a query parameter ($param)
@@ -140,7 +141,7 @@ impl NodeVariable {
     pub fn from_cte(labels: Vec<String>, cte_name: String) -> Self {
         Self {
             labels,
-            source: VariableSource::Cte { cte_name, property_mapping: HashMap::new() },
+            source: VariableSource::Cte { cte_name, property_mapping: Box::new(HashMap::new()) },
             accessed_properties: Vec::new(),
         }
     }
@@ -211,7 +212,7 @@ impl RelVariable {
     ) -> Self {
         Self {
             rel_types,
-            source: VariableSource::Cte { cte_name, property_mapping: HashMap::new() },
+            source: VariableSource::Cte { cte_name, property_mapping: Box::new(HashMap::new()) },
             from_node_label,
             to_node_label,
             accessed_properties: Vec::new(),
@@ -250,7 +251,7 @@ impl ScalarVariable {
     /// Create a scalar variable from a CTE (most common case)
     pub fn from_cte(cte_name: String) -> Self {
         Self {
-            source: VariableSource::Cte { cte_name, property_mapping: HashMap::new() },
+            source: VariableSource::Cte { cte_name, property_mapping: Box::new(HashMap::new()) },
             data_type: None,
         }
     }
@@ -345,7 +346,7 @@ impl PathVariable {
     /// Create a path variable exported through a CTE
     pub fn from_cte(cte_name: String) -> Self {
         Self {
-            source: VariableSource::Cte { cte_name, property_mapping: HashMap::new() },
+            source: VariableSource::Cte { cte_name, property_mapping: Box::new(HashMap::new()) },
             start_node: None,
             end_node: None,
             relationship: None,
@@ -375,7 +376,7 @@ impl CollectionVariable {
     /// Create a collection variable from a CTE
     pub fn from_cte(cte_name: String, element_type: CollectionElementType) -> Self {
         Self {
-            source: VariableSource::Cte { cte_name, property_mapping: HashMap::new() },
+            source: VariableSource::Cte { cte_name, property_mapping: Box::new(HashMap::new()) },
             element_type,
         }
     }
@@ -1046,27 +1047,27 @@ impl VariableRegistry {
             match var {
                 TypedVariable::Node(n) => {
                     if let VariableSource::Cte { property_mapping, .. } = &mut n.source {
-                        *property_mapping = mapping;
+                        *property_mapping = Box::new(mapping);
                     }
                 }
                 TypedVariable::Relationship(r) => {
                     if let VariableSource::Cte { property_mapping, .. } = &mut r.source {
-                        *property_mapping = mapping;
+                        *property_mapping = Box::new(mapping);
                     }
                 }
                 TypedVariable::Scalar(s) => {
                     if let VariableSource::Cte { property_mapping, .. } = &mut s.source {
-                        *property_mapping = mapping;
+                        *property_mapping = Box::new(mapping);
                     }
                 }
                 TypedVariable::Path(p) => {
                     if let VariableSource::Cte { property_mapping, .. } = &mut p.source {
-                        *property_mapping = mapping;
+                        *property_mapping = Box::new(mapping);
                     }
                 }
                 TypedVariable::Collection(c) => {
                     if let VariableSource::Cte { property_mapping, .. } = &mut c.source {
-                        *property_mapping = mapping;
+                        *property_mapping = Box::new(mapping);
                     }
                 }
             }
@@ -1207,7 +1208,7 @@ mod tests {
             "count",
             VariableSource::Cte {
                 cte_name: "with_cte_1".to_string(),
-                property_mapping: HashMap::new(),
+                property_mapping: Box::new(HashMap::new()),
             },
         );
 
