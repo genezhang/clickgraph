@@ -64,6 +64,13 @@ pub struct QueryContext {
     /// Multi-type VLP aliases: alias → cte_name
     /// For aliases that are multi-type VLP endpoints requiring JSON extraction
     pub multi_type_vlp_aliases: HashMap<String, String>,
+
+    /// Current variable registry for SQL rendering.
+    /// Set from the CTE or RenderPlan being rendered; used by PropertyAccessExp::to_sql()
+    /// to resolve cypher_alias.property → correct SQL column.
+    /// Wrapped in Arc to match RenderPlan/Cte fields and avoid cloning overhead.
+    pub current_variable_registry:
+        Option<std::sync::Arc<crate::query_planner::typed_variable::VariableRegistry>>,
 }
 
 impl QueryContext {
@@ -339,6 +346,52 @@ pub fn is_multi_type_vlp_alias(alias: &str) -> bool {
 pub fn clear_multi_type_vlp_aliases() {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
         ctx.borrow_mut().multi_type_vlp_aliases.clear();
+    });
+}
+
+// ============================================================================
+// VARIABLE REGISTRY ACCESSORS
+// ============================================================================
+
+/// Set the current variable registry for SQL rendering
+pub fn set_current_variable_registry(
+    registry: std::sync::Arc<crate::query_planner::typed_variable::VariableRegistry>,
+) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().current_variable_registry = Some(registry);
+    });
+}
+
+/// Get the current variable registry (for property resolution during SQL rendering)
+pub fn get_current_variable_registry(
+) -> Option<std::sync::Arc<crate::query_planner::typed_variable::VariableRegistry>> {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().current_variable_registry.clone())
+        .ok()
+        .flatten()
+}
+
+/// Resolve a property using the current variable registry (if available).
+/// This avoids cloning the entire registry; resolution happens inside the task-local borrow.
+pub fn resolve_with_current_registry(
+    alias: &str,
+    property: &str,
+) -> Option<crate::query_planner::typed_variable::ResolvedProperty> {
+    QUERY_CONTEXT
+        .try_with(|ctx| {
+            let ctx = ctx.borrow();
+            let registry = ctx.current_variable_registry.as_ref()?;
+            let schema = ctx.schema.as_ref()?;
+            Some(registry.resolve(alias, property, schema))
+        })
+        .ok()
+        .flatten()
+}
+
+/// Clear the current variable registry
+pub fn clear_current_variable_registry() {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().current_variable_registry = None;
     });
 }
 

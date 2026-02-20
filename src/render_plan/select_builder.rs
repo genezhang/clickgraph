@@ -279,7 +279,7 @@ impl SelectBuilder for LogicalPlan {
                                                     Some(plan_ctx),
                                                 );
                                             }
-                                            VariableSource::Cte { cte_name } => {
+                                            VariableSource::Cte { cte_name, .. } => {
                                                 // CTE: parse CTE name, compute FROM alias, expand
                                                 self.expand_cte_entity(
                                                     &table_alias.0,
@@ -310,7 +310,7 @@ impl SelectBuilder for LogicalPlan {
                                         );
                                         // Scalar - single item, no expansion
                                         match &typed_var.source() {
-                                            VariableSource::Cte { cte_name } => {
+                                            VariableSource::Cte { cte_name, .. } => {
                                                 self.expand_cte_scalar(
                                                     &table_alias.0,
                                                     cte_name,
@@ -2101,7 +2101,7 @@ impl LogicalPlan {
                                     Some(ctx),
                                 );
                             }
-                            VariableSource::Cte { cte_name } => {
+                            VariableSource::Cte { cte_name, .. } => {
                                 self.expand_cte_entity(
                                     &start_alias,
                                     typed_var,
@@ -2131,7 +2131,7 @@ impl LogicalPlan {
                                     Some(ctx),
                                 );
                             }
-                            VariableSource::Cte { cte_name } => {
+                            VariableSource::Cte { cte_name, .. } => {
                                 self.expand_cte_entity(
                                     &end_alias,
                                     typed_var,
@@ -2168,7 +2168,7 @@ impl LogicalPlan {
                                         Some(ctx),
                                     );
                                 }
-                                VariableSource::Cte { cte_name } => {
+                                VariableSource::Cte { cte_name, .. } => {
                                     self.expand_cte_entity(
                                         &rel_alias,
                                         typed_var,

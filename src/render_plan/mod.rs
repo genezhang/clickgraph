@@ -107,6 +107,13 @@ pub struct RenderPlan {
     /// When true, the SELECT items should NOT be overwritten by Projection
     /// as they contain the special _label, _id, _properties columns
     pub is_multi_label_scan: bool,
+    /// Variable registry for scope-aware property resolution during SQL rendering.
+    /// Contains TypedVariable entries with property_mapping for CTE-sourced variables.
+    /// Set during render plan building; consumed by `PropertyAccessExp::to_sql()`.
+    /// Wrapped in Arc to avoid deep-clone stack overflow on complex query plans.
+    #[serde(skip)]
+    pub variable_registry:
+        Option<std::sync::Arc<crate::query_planner::typed_variable::VariableRegistry>>,
 }
 
 /// Metadata for simple/fixed path patterns (non-VLP)
@@ -321,6 +328,12 @@ pub struct Cte {
     /// Used to build cte_references without relying on CTE name parsing, which fails for
     /// aliases containing underscores.
     pub with_exported_aliases: Vec<String>,
+    /// Variable registry capturing the Cypher scope at the point this CTE was built.
+    /// Used during SQL rendering to resolve `alias.property` → correct CTE or DB column.
+    /// Wrapped in Arc to avoid deep-clone stack overflow on complex query plans.
+    #[serde(skip)]
+    pub variable_registry:
+        Option<std::sync::Arc<crate::query_planner::typed_variable::VariableRegistry>>,
 }
 
 impl Cte {
@@ -343,6 +356,7 @@ impl Cte {
             from_alias: None,
             outer_where_filters: None,
             with_exported_aliases: Vec::new(),
+            variable_registry: None,
         }
     }
 
@@ -396,6 +410,7 @@ impl Cte {
             from_alias: Some(VLP_CTE_FROM_ALIAS.to_string()), // VLP CTEs use standard FROM alias
             outer_where_filters: None,
             with_exported_aliases: Vec::new(),
+            variable_registry: None,
         }
     }
 
@@ -433,6 +448,7 @@ impl Cte {
             from_alias: Some(from_alias),
             outer_where_filters: None,
             with_exported_aliases: Vec::new(),
+            variable_registry: None,
         }
     }
 

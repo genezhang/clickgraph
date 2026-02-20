@@ -1955,6 +1955,11 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
     // TASK-LOCAL: Set ALL contexts for this async task's rendering context
     set_all_render_contexts(relationship_columns, cte_mappings, multi_type_aliases);
 
+    // Set the variable registry from the outer render plan for property resolution
+    if let Some(ref registry) = plan.variable_registry {
+        crate::server::query_context::set_current_variable_registry(registry.clone());
+    }
+
     let mut sql = String::new();
 
     // If there's a Union, wrap it in a subquery for correct ClickHouse behavior.
@@ -2585,8 +2590,20 @@ impl ToSql for CteItems {
 
 impl ToSql for Cte {
     fn to_sql(&self) -> String {
+        // Per-CTE registry: set this CTE's variable registry as task-local
+        // so PropertyAccessExp::to_sql() can resolve CTE-scoped variables.
+        let saved_registry = if self.variable_registry.is_some() {
+            let prev = crate::server::query_context::get_current_variable_registry();
+            if let Some(ref reg) = self.variable_registry {
+                crate::server::query_context::set_current_variable_registry(reg.clone());
+            }
+            prev
+        } else {
+            None
+        };
+
         // Handle both structured and raw SQL content
-        match &self.content {
+        let result = match &self.content {
             CteContent::Structured(plan) => {
                 // For structured content, render only the query body (not nested CTEs)
                 // CTEs should already be hoisted to the top level
@@ -2797,7 +2814,15 @@ impl ToSql for Cte {
                     format!("{} AS (\n{}\n)", self.cte_name, sql)
                 }
             }
+        };
+
+        // Restore previous registry
+        match saved_registry {
+            Some(prev) => crate::server::query_context::set_current_variable_registry(prev),
+            None => crate::server::query_context::clear_current_variable_registry(),
         }
+
+        result
     }
 }
 
@@ -3279,6 +3304,33 @@ impl RenderExpr {
                             "JSON_VALUE({}.end_properties, '$.{}')",
                             table_alias.0, col_name
                         );
+                    }
+                }
+
+                // Resolve via unified VariableRegistry for CTE-scoped variables only.
+                // Match-sourced variables are already resolved to DB columns during planning,
+                // so we only need registry resolution for CTE-sourced variables where the
+                // PropertyAccess.column is a Cypher property name that needs CTE column mapping.
+                if let Some(resolved) = crate::server::query_context::resolve_with_current_registry(
+                    &table_alias.0,
+                    col_name,
+                ) {
+                    use crate::query_planner::typed_variable::ResolvedProperty;
+                    match resolved {
+                        ResolvedProperty::CteColumn { sql_alias, column } => {
+                            log::info!(
+                                "🔧 VariableRegistry resolved: {}.{} → {}.{}",
+                                table_alias.0,
+                                col_name,
+                                sql_alias,
+                                column
+                            );
+                            return format!("{}.{}", sql_alias, column);
+                        }
+                        ResolvedProperty::DbColumn(_) | ResolvedProperty::Unresolved => {
+                            // Match-sourced or unresolved: skip — PropertyAccess already has
+                            // the correct DB column from planning. Fall through.
+                        }
                     }
                 }
 

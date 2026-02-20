@@ -50,6 +50,11 @@ pub enum VariableSource {
     Cte {
         /// The CTE name (e.g., "with_a_cte_1")
         cte_name: String,
+        /// Maps Cypher property name → CTE column name.
+        /// Example: "birthday" → "p6_friend_birthday"
+        /// Starts empty during planning, populated when CTE is built.
+        /// Boxed to keep VariableSource enum small (avoids stack overflow in recursive plans).
+        property_mapping: Box<HashMap<String, String>>,
     },
 
     /// Variable comes from a query parameter ($param)
@@ -60,6 +65,22 @@ pub enum VariableSource {
         /// The source array expression being unwound
         source_array: String,
     },
+}
+
+/// Result of resolving a variable property reference.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResolvedProperty {
+    /// Variable is CTE-scoped: use this column qualified by the SQL alias
+    CteColumn {
+        /// SQL alias for the CTE (typically the Cypher alias, e.g., "friend")
+        sql_alias: String,
+        /// CTE column name (e.g., "p6_friend_birthday")
+        column: String,
+    },
+    /// Variable is table-scoped: use this DB column name
+    DbColumn(String),
+    /// Cannot resolve in current registry
+    Unresolved,
 }
 
 /// What type of elements a collection contains
@@ -120,7 +141,10 @@ impl NodeVariable {
     pub fn from_cte(labels: Vec<String>, cte_name: String) -> Self {
         Self {
             labels,
-            source: VariableSource::Cte { cte_name },
+            source: VariableSource::Cte {
+                cte_name,
+                property_mapping: Box::new(HashMap::new()),
+            },
             accessed_properties: Vec::new(),
         }
     }
@@ -191,7 +215,10 @@ impl RelVariable {
     ) -> Self {
         Self {
             rel_types,
-            source: VariableSource::Cte { cte_name },
+            source: VariableSource::Cte {
+                cte_name,
+                property_mapping: Box::new(HashMap::new()),
+            },
             from_node_label,
             to_node_label,
             accessed_properties: Vec::new(),
@@ -230,7 +257,10 @@ impl ScalarVariable {
     /// Create a scalar variable from a CTE (most common case)
     pub fn from_cte(cte_name: String) -> Self {
         Self {
-            source: VariableSource::Cte { cte_name },
+            source: VariableSource::Cte {
+                cte_name,
+                property_mapping: Box::new(HashMap::new()),
+            },
             data_type: None,
         }
     }
@@ -325,7 +355,10 @@ impl PathVariable {
     /// Create a path variable exported through a CTE
     pub fn from_cte(cte_name: String) -> Self {
         Self {
-            source: VariableSource::Cte { cte_name },
+            source: VariableSource::Cte {
+                cte_name,
+                property_mapping: Box::new(HashMap::new()),
+            },
             start_node: None,
             end_node: None,
             relationship: None,
@@ -355,7 +388,10 @@ impl CollectionVariable {
     /// Create a collection variable from a CTE
     pub fn from_cte(cte_name: String, element_type: CollectionElementType) -> Self {
         Self {
-            source: VariableSource::Cte { cte_name },
+            source: VariableSource::Cte {
+                cte_name,
+                property_mapping: Box::new(HashMap::new()),
+            },
             element_type,
         }
     }
@@ -535,7 +571,7 @@ impl TypedVariable {
     /// Get CTE name if this variable came from a CTE
     pub fn cte_name(&self) -> Option<&str> {
         match self.source() {
-            VariableSource::Cte { cte_name } => Some(cte_name.as_str()),
+            VariableSource::Cte { cte_name, .. } => Some(cte_name.as_str()),
             _ => None,
         }
     }
@@ -647,7 +683,7 @@ impl TypedVariable {
 ///
 /// This provides the `define_*` and `lookup` API described in the design doc.
 /// It's designed to be embedded in `PlanCtx`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct VariableRegistry {
     /// Map from variable name to typed variable
     variables: HashMap<String, TypedVariable>,
@@ -679,7 +715,7 @@ impl VariableRegistry {
     ) {
         let var = match source {
             VariableSource::Match => TypedVariable::node_from_match(labels),
-            VariableSource::Cte { cte_name } => TypedVariable::node_from_cte(labels, cte_name),
+            VariableSource::Cte { cte_name, .. } => TypedVariable::node_from_cte(labels, cte_name),
             _ => TypedVariable::node_from_match(labels), // Fallback
         };
         self.variables.insert(name.into(), var);
@@ -710,7 +746,7 @@ impl VariableRegistry {
     ) {
         let var = match source {
             VariableSource::Match => TypedVariable::rel_from_match(rel_types, from_label, to_label),
-            VariableSource::Cte { cte_name } => {
+            VariableSource::Cte { cte_name, .. } => {
                 TypedVariable::rel_from_cte(rel_types, cte_name, from_label, to_label)
             }
             _ => TypedVariable::rel_from_match(rel_types, from_label, to_label), // Fallback
@@ -738,7 +774,7 @@ impl VariableRegistry {
     ) {
         let mut var = match source {
             VariableSource::Match => TypedVariable::rel_from_match(rel_types, from_label, to_label),
-            VariableSource::Cte { cte_name } => {
+            VariableSource::Cte { cte_name, .. } => {
                 TypedVariable::rel_from_cte(rel_types, cte_name, from_label, to_label)
             }
             _ => TypedVariable::rel_from_match(rel_types, from_label, to_label), // Fallback
@@ -757,7 +793,7 @@ impl VariableRegistry {
     /// * `source` - Where the variable came from
     pub fn define_scalar(&mut self, name: impl Into<String>, source: VariableSource) {
         let var = match source {
-            VariableSource::Cte { cte_name } => TypedVariable::scalar_from_cte(cte_name),
+            VariableSource::Cte { cte_name, .. } => TypedVariable::scalar_from_cte(cte_name),
             VariableSource::Parameter => TypedVariable::scalar_from_parameter(),
             VariableSource::Unwind { source_array } => {
                 TypedVariable::Scalar(ScalarVariable::from_unwind(source_array))
@@ -809,7 +845,7 @@ impl VariableRegistry {
         source: VariableSource,
     ) {
         let var = match source {
-            VariableSource::Cte { cte_name } => {
+            VariableSource::Cte { cte_name, .. } => {
                 TypedVariable::collection_from_cte(cte_name, element_type)
             }
             VariableSource::Unwind { source_array } => TypedVariable::Collection(
@@ -921,6 +957,189 @@ impl VariableRegistry {
     pub fn clear(&mut self) {
         self.variables.clear();
     }
+
+    // ========================================================================
+    // Resolution (Unified variable → SQL column)
+    // ========================================================================
+
+    /// Resolve `alias.property` to a SQL column reference.
+    ///
+    /// This is THE single resolution method for the entire pipeline.
+    /// - CTE-sourced variables use `property_mapping` to resolve.
+    /// - Match-sourced variables use the schema to resolve.
+    ///
+    /// # Arguments
+    /// * `alias` - Cypher variable name (e.g., "friend")
+    /// * `cypher_property` - Cypher property name (e.g., "birthday")
+    /// * `schema` - Graph schema for base table property resolution
+    pub fn resolve(
+        &self,
+        alias: &str,
+        cypher_property: &str,
+        schema: &crate::graph_catalog::graph_schema::GraphSchema,
+    ) -> ResolvedProperty {
+        let Some(var) = self.variables.get(alias) else {
+            return ResolvedProperty::Unresolved;
+        };
+
+        match var.source() {
+            VariableSource::Cte {
+                cte_name,
+                property_mapping,
+            } => {
+                if let Some(cte_col) = property_mapping.get(cypher_property) {
+                    let sql_alias = extract_from_alias_from_cte_name(cte_name);
+                    log::debug!(
+                        "VariableRegistry::resolve: {}.{} → CTE {}.{}",
+                        alias,
+                        cypher_property,
+                        sql_alias,
+                        cte_col
+                    );
+                    ResolvedProperty::CteColumn {
+                        sql_alias,
+                        column: cte_col.clone(),
+                    }
+                } else if property_mapping.is_empty() {
+                    // Scalar or not-yet-populated mapping — try as direct column name
+                    // (e.g., scalar `cnt` from `WITH count(*) AS cnt`)
+                    log::debug!(
+                        "VariableRegistry::resolve: {}.{} has empty property_mapping (scalar?)",
+                        alias,
+                        cypher_property
+                    );
+                    ResolvedProperty::Unresolved
+                } else {
+                    log::debug!(
+                        "VariableRegistry::resolve: {}.{} is CTE-scoped but '{}' not in mapping {:?}",
+                        alias,
+                        cypher_property,
+                        cypher_property,
+                        property_mapping.keys().collect::<Vec<_>>()
+                    );
+                    ResolvedProperty::Unresolved
+                }
+            }
+            VariableSource::Match => {
+                // Base table variable: resolve via schema using labels from TypedVariable
+                if let Some(labels) = var.labels_or_types() {
+                    if let Some(label) = labels.first() {
+                        // Check node schemas
+                        if let Some(node_schema) = schema.all_node_schemas().get(label.as_str()) {
+                            if let Some(prop_val) =
+                                node_schema.property_mappings.get(cypher_property)
+                            {
+                                let db_col = prop_val.raw().to_string();
+                                log::debug!(
+                                    "VariableRegistry::resolve: {}.{} → DB column {} (label: {})",
+                                    alias,
+                                    cypher_property,
+                                    db_col,
+                                    label
+                                );
+                                return ResolvedProperty::DbColumn(db_col);
+                            }
+                        }
+                        // Check relationship schemas
+                        if let Some(rel_schema) = schema.get_relationships_schema_opt(label) {
+                            if let Some(prop_val) =
+                                rel_schema.property_mappings.get(cypher_property)
+                            {
+                                let db_col = prop_val.raw().to_string();
+                                log::debug!(
+                                    "VariableRegistry::resolve: {}.{} → DB column {} (rel_type: {})",
+                                    alias, cypher_property, db_col, label
+                                );
+                                return ResolvedProperty::DbColumn(db_col);
+                            }
+                        }
+                    }
+                }
+                ResolvedProperty::Unresolved
+            }
+            _ => ResolvedProperty::Unresolved,
+        }
+    }
+
+    /// Update the property mapping for a CTE-sourced variable.
+    ///
+    /// Called after CTE columns are known (during render plan building).
+    pub fn set_property_mapping(&mut self, alias: &str, mapping: HashMap<String, String>) {
+        if let Some(var) = self.variables.get_mut(alias) {
+            match var {
+                TypedVariable::Node(n) => {
+                    if let VariableSource::Cte {
+                        property_mapping, ..
+                    } = &mut n.source
+                    {
+                        *property_mapping = Box::new(mapping);
+                    }
+                }
+                TypedVariable::Relationship(r) => {
+                    if let VariableSource::Cte {
+                        property_mapping, ..
+                    } = &mut r.source
+                    {
+                        *property_mapping = Box::new(mapping);
+                    }
+                }
+                TypedVariable::Scalar(s) => {
+                    if let VariableSource::Cte {
+                        property_mapping, ..
+                    } = &mut s.source
+                    {
+                        *property_mapping = Box::new(mapping);
+                    }
+                }
+                TypedVariable::Path(p) => {
+                    if let VariableSource::Cte {
+                        property_mapping, ..
+                    } = &mut p.source
+                    {
+                        *property_mapping = Box::new(mapping);
+                    }
+                }
+                TypedVariable::Collection(c) => {
+                    if let VariableSource::Cte {
+                        property_mapping, ..
+                    } = &mut c.source
+                    {
+                        *property_mapping = Box::new(mapping);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Extract the FROM alias from a CTE name.
+/// E.g., "with_post_tag_cte_1" → "post_tag", "with_a_cte" → "a"
+pub fn extract_from_alias_from_cte_name(cte_name: &str) -> String {
+    let base = cte_name.strip_prefix("with_").unwrap_or(cte_name);
+
+    // Handle unnumbered suffix "_cte"
+    if let Some(stripped) = base.strip_suffix("_cte") {
+        return stripped.to_string();
+    }
+
+    // Handle numbered suffixes like "_cte_1", "_cte_2", ..., "_cte_<digits>"
+    if let Some(pos) = base.rfind("_cte_") {
+        let suffix = &base[pos + "_cte_".len()..];
+        if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
+            return base[..pos].to_string();
+        }
+    }
+
+    // Fallback: return the base name
+    log::debug!(
+        "extract_from_alias_from_cte_name: unexpected CTE name format '{}', using '{}' as FROM alias",
+        cte_name, base
+    );
+    base.to_string()
 }
 
 // ============================================================================
@@ -1026,6 +1245,7 @@ mod tests {
             "count",
             VariableSource::Cte {
                 cte_name: "with_cte_1".to_string(),
+                property_mapping: Box::new(HashMap::new()),
             },
         );
 

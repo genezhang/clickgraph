@@ -915,6 +915,7 @@ impl PlanCtx {
                         table_ctx.get_to_node_label().cloned(),
                         VariableSource::Cte {
                             cte_name: cte_name.to_string(),
+                            property_mapping: Box::new(HashMap::new()),
                         },
                     );
                 } else if table_ctx.is_path_variable() {
@@ -931,6 +932,7 @@ impl PlanCtx {
                         alias.clone(),
                         VariableSource::Cte {
                             cte_name: cte_name.to_string(),
+                            property_mapping: Box::new(HashMap::new()),
                         },
                     );
                 } else {
@@ -939,6 +941,7 @@ impl PlanCtx {
                         labels.unwrap_or_default(),
                         VariableSource::Cte {
                             cte_name: cte_name.to_string(),
+                            property_mapping: Box::new(HashMap::new()),
                         },
                     );
                 }
@@ -957,6 +960,7 @@ impl PlanCtx {
                     alias.clone(),
                     VariableSource::Cte {
                         cte_name: cte_name.to_string(),
+                        property_mapping: Box::new(HashMap::new()),
                     },
                 );
             }
@@ -1275,8 +1279,14 @@ impl PlanCtx {
         labels: Vec<String>,
         cte_name: String,
     ) {
-        self.variables
-            .define_node(name, labels, VariableSource::Cte { cte_name });
+        self.variables.define_node(
+            name,
+            labels,
+            VariableSource::Cte {
+                cte_name,
+                property_mapping: Box::new(HashMap::new()),
+            },
+        );
     }
 
     /// Define a relationship variable in the current scope
@@ -1324,7 +1334,10 @@ impl PlanCtx {
             rel_types,
             from_label,
             to_label,
-            VariableSource::Cte { cte_name },
+            VariableSource::Cte {
+                cte_name,
+                property_mapping: Box::new(HashMap::new()),
+            },
             direction,
         );
     }
@@ -1340,8 +1353,13 @@ impl PlanCtx {
     /// WITH count(b) as follower_count → plan_ctx.define_scalar("follower_count", "with_cte_1")
     /// ```
     pub fn define_scalar(&mut self, name: impl Into<String>, cte_name: String) {
-        self.variables
-            .define_scalar(name, VariableSource::Cte { cte_name });
+        self.variables.define_scalar(
+            name,
+            VariableSource::Cte {
+                cte_name,
+                property_mapping: Box::new(HashMap::new()),
+            },
+        );
     }
 
     /// Define a scalar from UNWIND
@@ -1400,8 +1418,14 @@ impl PlanCtx {
         element_type: CollectionElementType,
         cte_name: String,
     ) {
-        self.variables
-            .define_collection(name, element_type, VariableSource::Cte { cte_name });
+        self.variables.define_collection(
+            name,
+            element_type,
+            VariableSource::Cte {
+                cte_name,
+                property_mapping: Box::new(HashMap::new()),
+            },
+        );
     }
 
     // ========================================================================

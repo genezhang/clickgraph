@@ -338,6 +338,7 @@ pub fn generate_vlp_cte_via_manager(
         // Pass through outer_where_filters for denormalized VLP end node filtering
         outer_where_filters: result.outer_where_filters.clone(),
         with_exported_aliases: Vec::new(),
+        variable_registry: None,
     };
 
     log::info!(
@@ -2869,6 +2870,7 @@ pub fn extract_ctes_with_context(
                                     from_alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
                                     outer_where_filters: None, // Multi-type VLP doesn't need outer filters
                                     with_exported_aliases: Vec::new(),
+                                    variable_registry: None,
                                 };
 
                                 // Register CTE name in context for deterministic FROM/JOIN references
