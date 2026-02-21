@@ -3110,6 +3110,57 @@ fn collect_with_cte_table_aliases(
     result
 }
 
+/// Strip table alias from resolved CTE property accesses, recursively.
+/// Converts `PropertyAccessExp(table_alias, column)` → `Column(column)` so ORDER BY
+/// references output column aliases (visible after GROUP BY) instead of internal table references.
+fn strip_table_alias_from_resolved(expr: &RenderExpr) -> RenderExpr {
+    use super::render_expr::*;
+    use crate::graph_catalog::expression_parser::PropertyValue;
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            if let PropertyValue::Column(col) = &pa.column {
+                RenderExpr::Column(Column(PropertyValue::Column(col.clone())))
+            } else {
+                expr.clone()
+            }
+        }
+        RenderExpr::OperatorApplicationExp(oa) => {
+            let new_ops: Vec<RenderExpr> = oa
+                .operands
+                .iter()
+                .map(strip_table_alias_from_resolved)
+                .collect();
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: oa.operator.clone(),
+                operands: new_ops,
+            })
+        }
+        RenderExpr::ScalarFnCall(sf) => {
+            let new_args: Vec<RenderExpr> = sf
+                .args
+                .iter()
+                .map(strip_table_alias_from_resolved)
+                .collect();
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: sf.name.clone(),
+                args: new_args,
+            })
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            let new_args: Vec<RenderExpr> = agg
+                .args
+                .iter()
+                .map(strip_table_alias_from_resolved)
+                .collect();
+            RenderExpr::AggregateFnCall(AggregateFnCall {
+                name: agg.name.clone(),
+                args: new_args,
+            })
+        }
+        _ => expr.clone(),
+    }
+}
+
 /// Rewrite join conditions in a rendered plan that reference CTE aliases.
 /// When a join condition uses `cte_alias.base_column` (e.g., `friend.id`),
 /// replace it with the CTE's prefixed column (e.g., `friend.p6_friend_id`).
@@ -7930,26 +7981,54 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     }
                 }
 
+                // Build scope-aware rewrite context for ORDER BY and WHERE/HAVING
+                // from WithClause. This maps Cypher property names to CTE column names.
+                use crate::query_planner::logical_expr::expression_rewriter::{
+                    rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+                };
+                let with_rewrite_ctx = if let Some(s) = body_scope_ref {
+                    ExpressionRewriteContext::with_scope(plan_to_render, s)
+                } else {
+                    ExpressionRewriteContext::new(plan_to_render)
+                };
+
                 // Apply WithClause's ORDER BY, SKIP, LIMIT to the rendered plan
                 if let Some(order_by_items) = with_order_by {
                     log::debug!(
                         "🔧 build_chained_with_match_cte_plan: Applying ORDER BY from WithClause"
                     );
+                    let has_cte_scope = body_scope_ref.is_some();
                     let render_order_by: Vec<OrderByItem> = order_by_items
                         .iter()
                         .filter_map(|item| {
-                            let expr_result: Result<RenderExpr, _> =
-                                item.expression.clone().try_into();
-                            expr_result.ok().map(|expr| OrderByItem {
-                                expression: expr,
-                                order: match item.order {
-                                    crate::query_planner::logical_plan::OrderByOrder::Asc => {
-                                        OrderByOrder::Asc
-                                    }
-                                    crate::query_planner::logical_plan::OrderByOrder::Desc => {
-                                        OrderByOrder::Desc
-                                    }
-                                },
+                            let rewritten = rewrite_expression_with_property_mapping(
+                                &item.expression,
+                                &with_rewrite_ctx,
+                            );
+                            let expr_result: Result<RenderExpr, _> = rewritten.try_into();
+                            expr_result.ok().map(|expr| {
+                                // Strip table aliases only when CTE scope was used.
+                                // CTE scope resolves to CTE names as table aliases,
+                                // which need stripping for bare output column references
+                                // (especially after GROUP BY over UNION subqueries).
+                                // Without scope (first WITH), keep original table aliases
+                                // since they reference actual FROM/JOIN tables.
+                                let final_expr = if has_cte_scope {
+                                    strip_table_alias_from_resolved(&expr)
+                                } else {
+                                    expr
+                                };
+                                OrderByItem {
+                                    expression: final_expr,
+                                    order: match item.order {
+                                        crate::query_planner::logical_plan::OrderByOrder::Asc => {
+                                            OrderByOrder::Asc
+                                        }
+                                        crate::query_planner::logical_plan::OrderByOrder::Desc => {
+                                            OrderByOrder::Desc
+                                        }
+                                    },
+                                }
                             })
                         })
                         .collect();
@@ -7976,8 +8055,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         "🔧 build_chained_with_match_cte_plan: Applying WHERE clause from WITH"
                     );
 
-                    // Convert LogicalExpr to RenderExpr
-                    let where_render_expr: RenderExpr = where_predicate.try_into()?;
+                    // Rewrite through scope to map Cypher properties to CTE columns
+                    let where_rewritten = rewrite_expression_with_property_mapping(
+                        &where_predicate,
+                        &with_rewrite_ctx,
+                    );
+                    let where_render_expr: RenderExpr = where_rewritten.try_into()?;
 
                     if !rendered.group_by.0.is_empty() {
                         // We have GROUP BY - WHERE becomes HAVING
@@ -8017,12 +8100,83 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 // while the FROM/JOINs use individual aliases (e.g., "tag"). This post-processing step
                 // rewrites orphaned composite alias references to match the actual FROM/JOIN aliases.
                 // MUST be called AFTER all modifications to `rendered` (SELECT, GROUP BY, ORDER BY, etc.)
-                if let Some(ref bs) = body_scope_ref {
-                    super::variable_scope::fix_orphan_table_aliases(&mut rendered, bs);
-                    // Also rewrite bare variable references (e.g., toString(message))
-                    // that fix_orphan_table_aliases doesn't handle (it only fixes PropertyAccessExp).
-                    // Only rewrites bare TableAlias/ColumnAlias/Column, leaves PropertyAccessExp alone.
-                    super::variable_scope::rewrite_bare_variables_in_plan(&mut rendered, bs);
+                //
+                // Build an augmented scope that includes VLP-derived variables from all_ctes.
+                // VLP CTEs have been hoisted into all_ctes by this point, so we can extract
+                // variable→column mappings for bare variable rewriting (e.g., `friend` → `t.end_id`).
+                let augmented_scope = {
+                    let mut vars = scope_cte_variables.clone();
+                    for vlp_cte in &all_ctes {
+                        // Only process actual VLP CTEs (which have from_alias set).
+                        // Normal WITH CTEs may have non-empty columns but no from_alias.
+                        if vlp_cte.columns.is_empty() || vlp_cte.from_alias.is_none() {
+                            continue;
+                        }
+                        let vlp_from_alias = vlp_cte.from_alias.clone().unwrap();
+                        // Group columns by cypher_alias to build per-alias property mappings
+                        let mut alias_props: HashMap<String, HashMap<String, String>> =
+                            HashMap::new();
+                        let mut alias_labels: HashMap<String, Vec<String>> = HashMap::new();
+                        for col in &vlp_cte.columns {
+                            if col.cypher_alias.is_empty() {
+                                continue;
+                            }
+                            alias_props
+                                .entry(col.cypher_alias.clone())
+                                .or_default()
+                                .insert(col.cypher_property.clone(), col.cte_column_name.clone());
+                        }
+                        if let Some(ref start_alias) = vlp_cte.vlp_cypher_start_alias {
+                            if let Some(ref table) = vlp_cte.vlp_start_table {
+                                let label = table.rsplit('.').next().unwrap_or(table);
+                                alias_labels
+                                    .entry(start_alias.clone())
+                                    .or_default()
+                                    .push(label.to_string());
+                            }
+                        }
+                        if let Some(ref end_alias) = vlp_cte.vlp_cypher_end_alias {
+                            if let Some(ref table) = vlp_cte.vlp_end_table {
+                                let label = table.rsplit('.').next().unwrap_or(table);
+                                alias_labels
+                                    .entry(end_alias.clone())
+                                    .or_default()
+                                    .push(label.to_string());
+                            }
+                        }
+                        for (alias, prop_map) in alias_props {
+                            if vars.contains_key(&alias) {
+                                continue; // Don't overwrite prior WITH variables
+                            }
+                            log::debug!(
+                                "🔧 Augmenting scope with VLP variable '{}' from CTE '{}' ({} props, from_alias='{}')",
+                                alias, vlp_cte.cte_name, prop_map.len(), vlp_from_alias
+                            );
+                            vars.insert(
+                                alias.clone(),
+                                super::variable_scope::CteVariableInfo {
+                                    cte_name: vlp_cte.cte_name.clone(),
+                                    property_mapping: prop_map,
+                                    labels: alias_labels.remove(&alias).unwrap_or_default(),
+                                    from_alias_override: Some(vlp_from_alias.clone()),
+                                },
+                            );
+                        }
+                    }
+                    vars
+                };
+                let has_augmented = !augmented_scope.is_empty();
+                if has_augmented || body_scope_ref.is_some() {
+                    let aug_scope = super::variable_scope::VariableScope::with_cte_variables(
+                        schema,
+                        &current_plan,
+                        augmented_scope,
+                    );
+                    super::variable_scope::fix_orphan_table_aliases(&mut rendered, &aug_scope);
+                    super::variable_scope::rewrite_bare_variables_in_plan(
+                        &mut rendered,
+                        &aug_scope,
+                    );
                 }
 
                 rendered_plans.push(rendered);
@@ -8845,6 +8999,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         cte_name: cte_name.clone(),
                         property_mapping: per_alias_mapping.clone(),
                         labels: labels.clone(),
+                        from_alias_override: None,
                     },
                 );
 
@@ -8900,6 +9055,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         cte_name: cte_name.clone(),
                         property_mapping: composite_mapping.clone(),
                         labels: Vec::new(),
+                        from_alias_override: None,
                     },
                 );
                 log::info!(

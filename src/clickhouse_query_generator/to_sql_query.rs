@@ -3019,6 +3019,18 @@ impl RenderExpr {
                         return raw_value.to_string();
                     }
 
+                    // CTE column names use p{N}_ prefix (e.g., p6_friend_lastName).
+                    // These are output aliases after GROUP BY/UNION and should NOT get
+                    // a heuristic table prefix.
+                    if raw_value.starts_with('p') {
+                        let rest = &raw_value[1..];
+                        if let Some(pos) = rest.find('_') {
+                            if pos > 0 && rest[..pos].chars().all(|c| c.is_ascii_digit()) {
+                                return raw_value.to_string();
+                            }
+                        }
+                    }
+
                     // ⚠️ TECHNICAL DEBT: Heuristic table alias inference (Temporary workaround)
                     //
                     // CONTEXT: This uses pattern matching on column names to infer the correct table alias.

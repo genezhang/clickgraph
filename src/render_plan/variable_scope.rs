@@ -27,6 +27,19 @@ pub struct CteVariableInfo {
     pub property_mapping: HashMap<String, String>,
     /// Original node/relationship labels (preserved across WITH for schema lookups)
     pub labels: Vec<String>,
+    /// Override for FROM alias (used by VLP CTEs where the FROM alias is "t"
+    /// but `extract_from_alias_from_cte_name` can't derive it from the CTE name)
+    pub from_alias_override: Option<String>,
+}
+
+impl CteVariableInfo {
+    /// Get the effective FROM alias for SQL references.
+    /// Uses `from_alias_override` if set, otherwise derives from CTE name.
+    pub fn effective_from_alias(&self) -> String {
+        self.from_alias_override
+            .clone()
+            .unwrap_or_else(|| extract_from_alias_from_cte_name(&self.cte_name))
+    }
 }
 
 /// Result of resolving a variable property reference.
@@ -96,7 +109,7 @@ impl<'a> VariableScope<'a> {
             if let Some(cte_col) = cte_info.property_mapping.get(cypher_property) {
                 // Use FROM alias (e.g., "post_tag") not CTE name (e.g., "with_post_tag_cte_1")
                 // because SQL requires referencing the FROM alias when one is defined
-                let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
+                let from_alias = cte_info.effective_from_alias();
                 log::debug!(
                     "VariableScope: {}.{} → CTE column {}.{}",
                     alias,
@@ -117,7 +130,7 @@ impl<'a> VariableScope<'a> {
                 .values()
                 .any(|v| v == cypher_property)
             {
-                let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
+                let from_alias = cte_info.effective_from_alias();
                 log::debug!(
                     "VariableScope: {}.{} → already-resolved CTE column, fixing alias to {}",
                     alias,
@@ -148,7 +161,7 @@ impl<'a> VariableScope<'a> {
             }
             found_cte = true;
             if let Some(cte_col) = cte_info.property_mapping.get(cypher_property) {
-                let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
+                let from_alias = cte_info.effective_from_alias();
                 log::debug!(
                     "VariableScope: {}.{} → CTE column (by cte_name) {}.{}",
                     alias,
@@ -229,6 +242,7 @@ impl<'a> VariableScope<'a> {
                 cte_name: cte_name.to_string(),
                 property_mapping: property_mapping.clone(),
                 labels,
+                from_alias_override: None,
             },
         );
         self.plan = new_plan;
@@ -278,7 +292,7 @@ pub fn rewrite_render_plan_with_scope(plan: &mut RenderPlan, scope: &VariableSco
     for item in &plan.select.items {
         if let RenderExpr::TableAlias(TableAlias(alias_name)) = &item.expression {
             if let Some(cte_info) = scope.get_cte_info(alias_name) {
-                let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
+                let from_alias = cte_info.effective_from_alias();
                 if !cte_info.property_mapping.is_empty() {
                     // Expand node CTE variable into individual property columns
                     let mut props: Vec<_> = cte_info.property_mapping.iter().collect();
@@ -510,7 +524,7 @@ fn rewrite_bare_variables(expr: &RenderExpr, scope: &VariableScope) -> RenderExp
         RenderExpr::TableAlias(TableAlias(alias_name))
         | RenderExpr::ColumnAlias(ColumnAlias(alias_name)) => {
             if let Some(cte_info) = scope.get_cte_info(alias_name) {
-                let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
+                let from_alias = cte_info.effective_from_alias();
                 if cte_info.property_mapping.is_empty() {
                     RenderExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: TableAlias(from_alias),
@@ -531,7 +545,7 @@ fn rewrite_bare_variables(expr: &RenderExpr, scope: &VariableScope) -> RenderExp
         RenderExpr::Column(col) => {
             if let PropertyValue::Column(col_name) = &col.0 {
                 if let Some(cte_info) = scope.get_cte_info(col_name) {
-                    let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
+                    let from_alias = cte_info.effective_from_alias();
                     if cte_info.property_mapping.is_empty() {
                         return RenderExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(from_alias),
@@ -696,7 +710,7 @@ pub fn rewrite_render_expr(expr: &RenderExpr, scope: &VariableScope) -> RenderEx
         RenderExpr::TableAlias(TableAlias(alias_name))
         | RenderExpr::ColumnAlias(ColumnAlias(alias_name)) => {
             if let Some(cte_info) = scope.get_cte_info(alias_name) {
-                let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
+                let from_alias = cte_info.effective_from_alias();
                 if cte_info.property_mapping.is_empty() {
                     // Scalar CTE variable: rewrite to from_alias.variable_name
                     RenderExpr::PropertyAccessExp(PropertyAccess {
@@ -720,7 +734,7 @@ pub fn rewrite_render_expr(expr: &RenderExpr, scope: &VariableScope) -> RenderEx
         RenderExpr::Column(col) => {
             if let PropertyValue::Column(col_name) = &col.0 {
                 if let Some(cte_info) = scope.get_cte_info(col_name) {
-                    let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
+                    let from_alias = cte_info.effective_from_alias();
                     if cte_info.property_mapping.is_empty() {
                         return RenderExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: TableAlias(from_alias),
@@ -810,7 +824,7 @@ fn fix_orphan_table_aliases_impl(
             if seen_cte_names.contains(&cte_info.cte_name) {
                 continue;
             }
-            let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
+            let from_alias = cte_info.effective_from_alias();
             // Don't add if from_alias collides with an existing valid alias
             if valid_aliases.contains(&from_alias) {
                 continue;
@@ -1024,6 +1038,7 @@ mod tests {
                 ("id".to_string(), "p6_friend_id".to_string()),
             ]),
             labels: vec!["Person".to_string()],
+            from_alias_override: None,
         };
         let cloned = info.clone();
         assert_eq!(cloned.cte_name, "cte_0");
