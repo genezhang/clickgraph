@@ -5182,7 +5182,11 @@ pub(crate) fn expand_table_alias_to_select_items(
                 if let Ok(node_schema) = ctx.schema().node_schema(&label) {
                     let properties = extract_sorted_properties(&node_schema.property_mappings);
                     if !properties.is_empty() {
-                        let id_col = node_schema.node_id.id.columns().first()
+                        let id_col = node_schema
+                            .node_id
+                            .id
+                            .columns()
+                            .first()
                             .unwrap_or(&"id")
                             .to_string();
                         let property_requirements = ctx.get_property_requirements();
