@@ -5386,9 +5386,11 @@ fn rewrite_logical_expr_cte_refs(
             // Check if the table_alias references an old CTE name that needs updating
             if let Some(new_cte_name) = cte_references.get(&prop.table_alias.0) {
                 // Also resolve the column name to the CTE column name if mapping exists
-                let resolved_column = cte_property_mappings.get(&prop.table_alias.0).and_then(
-                    |mapping| {
-                        let prop_name = match &prop.column {
+                let resolved_column =
+                    cte_property_mappings
+                        .get(&prop.table_alias.0)
+                        .and_then(|mapping| {
+                            let prop_name = match &prop.column {
                             crate::graph_catalog::expression_parser::PropertyValue::Column(c) => {
                                 c.as_str()
                             }
@@ -5396,9 +5398,8 @@ fn rewrite_logical_expr_cte_refs(
                                 e,
                             ) => e.as_str(),
                         };
-                        mapping.get(prop_name).cloned()
-                    },
-                );
+                            mapping.get(prop_name).cloned()
+                        });
 
                 let new_column = if let Some(ref cte_col) = resolved_column {
                     log::info!(
@@ -5545,6 +5546,44 @@ fn rewrite_render_expr_cte_refs(
         }
         // Other expression types don't contain PropertyAccessExp, so clone as-is
         _ => expr.clone(),
+    }
+}
+
+/// Find aliases that are fresh table scans (GraphNode → ViewScan) in a plan tree.
+/// Used to filter CTE references when propagating into inner scopes — fresh scans
+/// should use raw table columns, not CTE column names.
+fn find_fresh_table_scan_aliases_in_plan(plan: &LogicalPlan) -> std::collections::HashSet<String> {
+    let mut aliases = std::collections::HashSet::new();
+    collect_fresh_scan_aliases(plan, &mut aliases);
+    aliases
+}
+
+fn collect_fresh_scan_aliases(plan: &LogicalPlan, aliases: &mut std::collections::HashSet<String>) {
+    match plan {
+        LogicalPlan::GraphNode(gn) => {
+            if matches!(gn.input.as_ref(), LogicalPlan::ViewScan(_)) {
+                aliases.insert(gn.alias.clone());
+            }
+            collect_fresh_scan_aliases(&gn.input, aliases);
+        }
+        LogicalPlan::GraphRel(gr) => {
+            collect_fresh_scan_aliases(&gr.left, aliases);
+            collect_fresh_scan_aliases(&gr.right, aliases);
+        }
+        LogicalPlan::Projection(p) => collect_fresh_scan_aliases(&p.input, aliases),
+        LogicalPlan::Filter(f) => collect_fresh_scan_aliases(&f.input, aliases),
+        LogicalPlan::GroupBy(gb) => collect_fresh_scan_aliases(&gb.input, aliases),
+        LogicalPlan::OrderBy(ob) => collect_fresh_scan_aliases(&ob.input, aliases),
+        LogicalPlan::CartesianProduct(cp) => {
+            collect_fresh_scan_aliases(&cp.left, aliases);
+            collect_fresh_scan_aliases(&cp.right, aliases);
+        }
+        LogicalPlan::Unwind(uw) => collect_fresh_scan_aliases(&uw.input, aliases),
+        LogicalPlan::GraphJoins(gj) => collect_fresh_scan_aliases(&gj.input, aliases),
+        LogicalPlan::Skip(s) => collect_fresh_scan_aliases(&s.input, aliases),
+        LogicalPlan::Limit(l) => collect_fresh_scan_aliases(&l.input, aliases),
+        LogicalPlan::WithClause(_) => {} // Stop at WITH boundary
+        _ => {}
     }
 }
 
@@ -5724,9 +5763,41 @@ pub(crate) fn update_graph_joins_cte_refs(
             }))
         }
         LogicalPlan::WithClause(wc) => {
-            // Update the WithClause's cte_name and cte_references if applicable
+            // CRITICAL: Filter CTE references for inner scope.
+            // Aliases that are fresh table scans (GraphNode → ViewScan) in the inner scope
+            // should NOT inherit outer CTE references. Otherwise, join conditions for fresh
+            // scans get rewritten to use CTE column names (e.g., country.p7_country_id
+            // instead of country.id), causing resolution failures.
+            let fresh_aliases = find_fresh_table_scan_aliases_in_plan(&wc.input);
+            let inner_cte_refs: std::collections::HashMap<String, String> = if fresh_aliases
+                .is_empty()
+            {
+                cte_references.clone()
+            } else {
+                log::debug!(
+                    "🔧 update_graph_joins_cte_refs: Filtering CTE refs for fresh scans in inner scope: {:?}",
+                    fresh_aliases
+                );
+                cte_references
+                    .iter()
+                    .filter(|(alias, _)| !fresh_aliases.contains(*alias))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            };
+            let inner_prop_mappings: std::collections::HashMap<
+                String,
+                std::collections::HashMap<String, String>,
+            > = if fresh_aliases.is_empty() {
+                cte_property_mappings.clone()
+            } else {
+                cte_property_mappings
+                    .iter()
+                    .filter(|(alias, _)| !fresh_aliases.contains(*alias))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            };
             let new_input =
-                update_graph_joins_cte_refs(&wc.input, cte_references, cte_property_mappings)?;
+                update_graph_joins_cte_refs(&wc.input, &inner_cte_refs, &inner_prop_mappings)?;
 
             // Check if this WithClause's cte_name needs updating
             let updated_cte_name = if let Some(ref old_cte_name) = wc.cte_name {

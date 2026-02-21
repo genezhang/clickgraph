@@ -1222,6 +1222,28 @@ impl GraphSchema {
         None
     }
 
+    /// Get ALL relationship schemas for a simple type name (e.g., "HAS_CREATOR").
+    /// Returns all schemas matching the type, not just the alphabetically first one.
+    /// For composite keys (e.g., "HAS_CREATOR::Comment::Person"), returns a single-element vec.
+    pub fn get_all_rel_schemas_for_type(&self, rel_type: &str) -> Vec<&RelationshipSchema> {
+        // Exact match (composite key)
+        if let Some(schema) = self.relationships.get(rel_type) {
+            return vec![schema];
+        }
+
+        // Simple type name — return ALL matching schemas
+        if !rel_type.contains("::") {
+            if let Some(composite_keys) = self.rel_type_index.get(rel_type) {
+                return composite_keys
+                    .iter()
+                    .filter_map(|key| self.relationships.get(key))
+                    .collect();
+            }
+        }
+
+        vec![]
+    }
+
     /// Get the rel_type_index for debugging purposes
     pub fn get_rel_type_index(&self) -> &HashMap<String, Vec<String>> {
         &self.rel_type_index
