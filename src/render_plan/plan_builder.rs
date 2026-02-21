@@ -3330,6 +3330,13 @@ impl RenderPlanBuilder for LogicalPlan {
                 distinct: p.distinct,
             };
 
+            // Apply scope-based property resolution to the new SELECT items.
+            // The Projection overwrites the inner render plan's SELECT with fresh items
+            // extracted from the logical plan, so scope rewriting must be re-applied.
+            if let Some(s) = scope {
+                super::variable_scope::rewrite_render_plan_with_scope(&mut render_plan, s);
+            }
+
             return Ok(render_plan);
         }
 

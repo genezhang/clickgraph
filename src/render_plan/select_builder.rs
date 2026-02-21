@@ -1698,10 +1698,14 @@ impl LogicalPlan {
     fn find_cte_original_alias(&self, cte_name: &str) -> Option<String> {
         match self {
             LogicalPlan::GraphJoins(gj) => {
-                for (alias, name) in &gj.cte_references {
-                    if name == cte_name {
-                        return Some(alias.clone());
-                    }
+                // Collect all matching aliases and pick the smallest for determinism
+                let mut matches: Vec<&String> = gj.cte_references.iter()
+                    .filter(|(_, name)| name.as_str() == cte_name)
+                    .map(|(alias, _)| alias)
+                    .collect();
+                matches.sort();
+                if let Some(alias) = matches.first() {
+                    return Some((*alias).clone());
                 }
                 gj.input.find_cte_original_alias(cte_name)
             }
@@ -1712,10 +1716,13 @@ impl LogicalPlan {
             LogicalPlan::Projection(p) => p.input.find_cte_original_alias(cte_name),
             LogicalPlan::Filter(f) => f.input.find_cte_original_alias(cte_name),
             LogicalPlan::GraphRel(gr) => {
-                for (alias, name) in &gr.cte_references {
-                    if name == cte_name {
-                        return Some(alias.clone());
-                    }
+                let mut matches: Vec<&String> = gr.cte_references.iter()
+                    .filter(|(_, name)| name.as_str() == cte_name)
+                    .map(|(alias, _)| alias)
+                    .collect();
+                matches.sort();
+                if let Some(alias) = matches.first() {
+                    return Some((*alias).clone());
                 }
                 gr.left
                     .find_cte_original_alias(cte_name)

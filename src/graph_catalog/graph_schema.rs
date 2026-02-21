@@ -91,6 +91,14 @@ pub struct NodeSchema {
 }
 
 impl NodeSchema {
+    /// Returns property_mappings as a sorted Vec for deterministic iteration.
+    /// Must be used whenever property order affects SQL output (CTE columns, SELECT items, etc.)
+    pub fn sorted_properties(&self) -> Vec<(&String, &PropertyValue)> {
+        let mut props: Vec<_> = self.property_mappings.iter().collect();
+        props.sort_by_key(|(k, _)| k.as_str());
+        props
+    }
+
     /// Determine if FINAL should be used for this node
     pub fn should_use_final(&self) -> bool {
         // 1. Check explicit override (user choice takes precedence)
@@ -622,6 +630,11 @@ impl GraphSchema {
                 .entry(type_name.to_string())
                 .or_default()
                 .push(composite_key.clone());
+        }
+
+        // Sort each Vec for deterministic ordering (HashMap iteration order is random)
+        for keys in index.values_mut() {
+            keys.sort();
         }
 
         index

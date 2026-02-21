@@ -1458,7 +1458,9 @@ pub(super) fn get_relationship_columns_by_table(table_name: &str) -> Option<(Str
     use crate::server::query_context::get_current_schema_with_fallback as get_current_schema;
 
     let schema = get_current_schema()?;
-    for (_key, rel_schema) in schema.get_relationships_schemas().iter() {
+    let mut sorted_rels: Vec<_> = schema.get_relationships_schemas().iter().collect();
+    sorted_rels.sort_by_key(|(k, _)| k.as_str());
+    for (_key, rel_schema) in sorted_rels {
         if rel_schema.table_name == table_name {
             return Some((rel_schema.from_id.to_string(), rel_schema.to_id.to_string()));
         }

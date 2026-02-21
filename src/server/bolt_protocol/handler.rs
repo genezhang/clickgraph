@@ -1758,6 +1758,9 @@ impl BoltHandler {
             label_constraints_from_second_pass.len()
         );
 
+        // Reset global counters for deterministic SQL generation
+        crate::query_planner::logical_plan::reset_all_counters();
+
         // Generate logical plan using transformed statement
         let (logical_plan, mut plan_ctx) = match query_planner::evaluate_read_statement(
             transformed_for_planning,

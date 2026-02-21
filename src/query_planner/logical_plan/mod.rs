@@ -322,6 +322,13 @@ pub fn reset_alias_counter() {
     ALIAS_COUNTER.store(1, Ordering::SeqCst);
 }
 
+/// Reset all global counters for deterministic SQL generation.
+/// Call at the start of each query to ensure identical input produces identical output.
+pub fn reset_all_counters() {
+    ALIAS_COUNTER.store(1, Ordering::SeqCst);
+    CTE_COUNTER.store(1, Ordering::SeqCst);
+}
+
 static CTE_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 /// Generate a simple, human-readable CTE name.

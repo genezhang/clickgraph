@@ -2420,13 +2420,16 @@ pub fn extract_from(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<FromTa
                         };
 
                         // Keep the CTE with highest sequence number (latest in the chain)
-                        // Tie-breaker: prefer longer CTE names (more aliases = more complete)
+                        // Tie-breakers: prefer longer CTE names, then alphabetical for determinism
                         match &best_cte {
                             None => best_cte = Some((alias, cte_name, seq_num)),
                             Some((_, current_name, current_seq)) => {
                                 if seq_num > *current_seq
                                     || (seq_num == *current_seq
                                         && cte_name.len() > current_name.len())
+                                    || (seq_num == *current_seq
+                                        && cte_name.len() == current_name.len()
+                                        && cte_name.as_str() > current_name.as_str())
                                 {
                                     best_cte = Some((alias, cte_name, seq_num));
                                 }
@@ -5367,6 +5370,7 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
 fn rewrite_logical_expr_cte_refs(
     expr: &crate::query_planner::logical_expr::LogicalExpr,
     cte_references: &std::collections::HashMap<String, String>,
+    cte_property_mappings: &std::collections::HashMap<String, std::collections::HashMap<String, String>>,
 ) -> crate::query_planner::logical_expr::LogicalExpr {
     use crate::query_planner::logical_expr::LogicalExpr;
 
@@ -5374,16 +5378,41 @@ fn rewrite_logical_expr_cte_refs(
         LogicalExpr::PropertyAccessExp(prop) => {
             // Check if the table_alias references an old CTE name that needs updating
             if let Some(new_cte_name) = cte_references.get(&prop.table_alias.0) {
-                log::info!(
-                    "🔧 rewrite_logical_expr_cte_refs: Updating PropertyAccessExp table_alias '{}' → '{}'",
-                    prop.table_alias.0,
-                    new_cte_name
-                );
+                // Also resolve the column name to the CTE column name if mapping exists
+                let resolved_column = cte_property_mappings
+                    .get(&prop.table_alias.0)
+                    .and_then(|mapping| {
+                        let prop_name = match &prop.column {
+                            crate::graph_catalog::expression_parser::PropertyValue::Column(c) => c.as_str(),
+                            crate::graph_catalog::expression_parser::PropertyValue::Expression(e) => e.as_str(),
+                        };
+                        mapping.get(prop_name).cloned()
+                    });
+
+                let new_column = if let Some(ref cte_col) = resolved_column {
+                    log::info!(
+                        "🔧 rewrite_logical_expr_cte_refs: {}.{} → {}.{} (alias + column resolved)",
+                        prop.table_alias.0,
+                        prop.column.raw(),
+                        new_cte_name,
+                        cte_col
+                    );
+                    crate::graph_catalog::expression_parser::PropertyValue::Column(cte_col.clone())
+                } else {
+                    log::info!(
+                        "🔧 rewrite_logical_expr_cte_refs: Updating table_alias '{}' → '{}' (column '{}' not in CTE mapping)",
+                        prop.table_alias.0,
+                        new_cte_name,
+                        prop.column.raw()
+                    );
+                    prop.column.clone()
+                };
+
                 LogicalExpr::PropertyAccessExp(crate::query_planner::logical_expr::PropertyAccess {
                     table_alias: crate::query_planner::logical_expr::TableAlias(
                         new_cte_name.clone(),
                     ),
-                    column: prop.column.clone(),
+                    column: new_column,
                 })
             } else {
                 expr.clone()
@@ -5393,7 +5422,7 @@ fn rewrite_logical_expr_cte_refs(
             let new_operands: Vec<_> = op
                 .operands
                 .iter()
-                .map(|operand| rewrite_logical_expr_cte_refs(operand, cte_references))
+                .map(|operand| rewrite_logical_expr_cte_refs(operand, cte_references, cte_property_mappings))
                 .collect();
             LogicalExpr::OperatorApplicationExp(
                 crate::query_planner::logical_expr::OperatorApplication {
@@ -5406,7 +5435,7 @@ fn rewrite_logical_expr_cte_refs(
             let new_args: Vec<_> = func
                 .args
                 .iter()
-                .map(|arg| rewrite_logical_expr_cte_refs(arg, cte_references))
+                .map(|arg| rewrite_logical_expr_cte_refs(arg, cte_references, cte_property_mappings))
                 .collect();
             LogicalExpr::ScalarFnCall(crate::query_planner::logical_expr::ScalarFnCall {
                 name: func.name.clone(),
@@ -5417,7 +5446,7 @@ fn rewrite_logical_expr_cte_refs(
             let new_args: Vec<_> = agg
                 .args
                 .iter()
-                .map(|arg| rewrite_logical_expr_cte_refs(arg, cte_references))
+                .map(|arg| rewrite_logical_expr_cte_refs(arg, cte_references, cte_property_mappings))
                 .collect();
             LogicalExpr::AggregateFnCall(crate::query_planner::logical_expr::AggregateFnCall {
                 name: agg.name.clone(),
@@ -5427,7 +5456,7 @@ fn rewrite_logical_expr_cte_refs(
         LogicalExpr::List(items) => {
             let new_items: Vec<_> = items
                 .iter()
-                .map(|item| rewrite_logical_expr_cte_refs(item, cte_references))
+                .map(|item| rewrite_logical_expr_cte_refs(item, cte_references, cte_property_mappings))
                 .collect();
             LogicalExpr::List(new_items)
         }
@@ -5503,6 +5532,7 @@ fn rewrite_render_expr_cte_refs(
 pub(crate) fn update_graph_joins_cte_refs(
     plan: &LogicalPlan,
     cte_references: &std::collections::HashMap<String, String>,
+    cte_property_mappings: &std::collections::HashMap<String, std::collections::HashMap<String, String>>,
 ) -> RenderPlanBuilderResult<LogicalPlan> {
     use crate::query_planner::logical_plan::*;
     use std::sync::Arc;
@@ -5515,7 +5545,7 @@ pub(crate) fn update_graph_joins_cte_refs(
                 cte_references
             );
 
-            let new_input = update_graph_joins_cte_refs(&gj.input, cte_references)?;
+            let new_input = update_graph_joins_cte_refs(&gj.input, cte_references, cte_property_mappings)?;
 
             // CRITICAL FIX: Update anchor_table considering WITH clause scope barriers
             // Problem: After WITH clauses, only exported variables remain in scope.
@@ -5627,9 +5657,9 @@ pub(crate) fn update_graph_joins_cte_refs(
             );
 
             // Recursively update children
-            let new_left = update_graph_joins_cte_refs(&gr.left, cte_references)?;
-            let new_center = update_graph_joins_cte_refs(&gr.center, cte_references)?;
-            let new_right = update_graph_joins_cte_refs(&gr.right, cte_references)?;
+            let new_left = update_graph_joins_cte_refs(&gr.left, cte_references, cte_property_mappings)?;
+            let new_center = update_graph_joins_cte_refs(&gr.center, cte_references, cte_property_mappings)?;
+            let new_right = update_graph_joins_cte_refs(&gr.right, cte_references, cte_property_mappings)?;
 
             Ok(LogicalPlan::GraphRel(GraphRel {
                 left: Arc::new(new_left),
@@ -5640,7 +5670,7 @@ pub(crate) fn update_graph_joins_cte_refs(
             }))
         }
         LogicalPlan::Projection(proj) => {
-            let new_input = update_graph_joins_cte_refs(&proj.input, cte_references)?;
+            let new_input = update_graph_joins_cte_refs(&proj.input, cte_references, cte_property_mappings)?;
 
             // 🔧 FIX: Update PropertyAccessExp expressions in projection items with updated CTE names
             let updated_items: Vec<_> = proj
@@ -5648,7 +5678,7 @@ pub(crate) fn update_graph_joins_cte_refs(
                 .iter()
                 .map(|item| {
                     let updated_expr =
-                        rewrite_logical_expr_cte_refs(&item.expression, cte_references);
+                        rewrite_logical_expr_cte_refs(&item.expression, cte_references, cte_property_mappings);
                     crate::query_planner::logical_plan::ProjectionItem {
                         expression: updated_expr,
                         col_alias: item.col_alias.clone(),
@@ -5665,7 +5695,7 @@ pub(crate) fn update_graph_joins_cte_refs(
         }
         LogicalPlan::WithClause(wc) => {
             // Update the WithClause's cte_name and cte_references if applicable
-            let new_input = update_graph_joins_cte_refs(&wc.input, cte_references)?;
+            let new_input = update_graph_joins_cte_refs(&wc.input, cte_references, cte_property_mappings)?;
 
             // Check if this WithClause's cte_name needs updating
             let updated_cte_name = if let Some(ref old_cte_name) = wc.cte_name {
@@ -5693,24 +5723,24 @@ pub(crate) fn update_graph_joins_cte_refs(
             }))
         }
         LogicalPlan::Filter(f) => {
-            let new_input = update_graph_joins_cte_refs(&f.input, cte_references)?;
-            let updated_predicate = rewrite_logical_expr_cte_refs(&f.predicate, cte_references);
+            let new_input = update_graph_joins_cte_refs(&f.input, cte_references, cte_property_mappings)?;
+            let updated_predicate = rewrite_logical_expr_cte_refs(&f.predicate, cte_references, cte_property_mappings);
             Ok(LogicalPlan::Filter(Filter {
                 input: Arc::new(new_input),
                 predicate: updated_predicate,
             }))
         }
         LogicalPlan::GroupBy(gb) => {
-            let new_input = update_graph_joins_cte_refs(&gb.input, cte_references)?;
+            let new_input = update_graph_joins_cte_refs(&gb.input, cte_references, cte_property_mappings)?;
             let updated_expressions: Vec<_> = gb
                 .expressions
                 .iter()
-                .map(|expr| rewrite_logical_expr_cte_refs(expr, cte_references))
+                .map(|expr| rewrite_logical_expr_cte_refs(expr, cte_references, cte_property_mappings))
                 .collect();
             let updated_having = gb
                 .having_clause
                 .as_ref()
-                .map(|h| rewrite_logical_expr_cte_refs(h, cte_references));
+                .map(|h| rewrite_logical_expr_cte_refs(h, cte_references, cte_property_mappings));
             Ok(LogicalPlan::GroupBy(GroupBy {
                 input: Arc::new(new_input),
                 expressions: updated_expressions,
@@ -5720,12 +5750,12 @@ pub(crate) fn update_graph_joins_cte_refs(
             }))
         }
         LogicalPlan::OrderBy(ob) => {
-            let new_input = update_graph_joins_cte_refs(&ob.input, cte_references)?;
+            let new_input = update_graph_joins_cte_refs(&ob.input, cte_references, cte_property_mappings)?;
             let updated_items: Vec<_> = ob
                 .items
                 .iter()
                 .map(|item| crate::query_planner::logical_plan::OrderByItem {
-                    expression: rewrite_logical_expr_cte_refs(&item.expression, cte_references),
+                    expression: rewrite_logical_expr_cte_refs(&item.expression, cte_references, cte_property_mappings),
                     order: item.order.clone(),
                 })
                 .collect();
@@ -5735,14 +5765,14 @@ pub(crate) fn update_graph_joins_cte_refs(
             }))
         }
         LogicalPlan::Limit(lim) => {
-            let new_input = update_graph_joins_cte_refs(&lim.input, cte_references)?;
+            let new_input = update_graph_joins_cte_refs(&lim.input, cte_references, cte_property_mappings)?;
             Ok(LogicalPlan::Limit(Limit {
                 input: Arc::new(new_input),
                 count: lim.count,
             }))
         }
         LogicalPlan::Skip(skip) => {
-            let new_input = update_graph_joins_cte_refs(&skip.input, cte_references)?;
+            let new_input = update_graph_joins_cte_refs(&skip.input, cte_references, cte_property_mappings)?;
             Ok(LogicalPlan::Skip(Skip {
                 input: Arc::new(new_input),
                 count: skip.count,
@@ -5753,7 +5783,7 @@ pub(crate) fn update_graph_joins_cte_refs(
                 .inputs
                 .iter()
                 .map(|input| {
-                    update_graph_joins_cte_refs(input, cte_references).map(|p| Arc::new(p))
+                    update_graph_joins_cte_refs(input, cte_references, cte_property_mappings).map(|p| Arc::new(p))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(LogicalPlan::Union(Union {
@@ -5762,8 +5792,8 @@ pub(crate) fn update_graph_joins_cte_refs(
             }))
         }
         LogicalPlan::CartesianProduct(cp) => {
-            let new_left = update_graph_joins_cte_refs(&cp.left, cte_references)?;
-            let new_right = update_graph_joins_cte_refs(&cp.right, cte_references)?;
+            let new_left = update_graph_joins_cte_refs(&cp.left, cte_references, cte_property_mappings)?;
+            let new_right = update_graph_joins_cte_refs(&cp.right, cte_references, cte_property_mappings)?;
             Ok(LogicalPlan::CartesianProduct(CartesianProduct {
                 left: Arc::new(new_left),
                 right: Arc::new(new_right),
@@ -6314,19 +6344,26 @@ pub(crate) fn build_chained_with_match_cte_plan(
         let prefix = "  ".repeat(indent);
         match plan {
             LogicalPlan::WithClause(wc) => {
+                let key = if !wc.exported_aliases.is_empty() {
+                    let mut aliases = wc.exported_aliases.clone();
+                    aliases.sort();
+                    aliases.join("_")
+                } else {
+                    "?".to_string()
+                };
                 log::debug!(
-                    "{}WithClause(exported_aliases={:?})",
+                    "{}WITH[{}]",
                     prefix,
-                    wc.exported_aliases
+                    key,
                 );
                 show_plan_structure(&wc.input, indent + 1);
             }
             LogicalPlan::Projection(proj) => {
-                log::debug!("{}Projection", prefix);
+                log::debug!("{}Proj({})", prefix, proj.items.len());
                 show_plan_structure(&proj.input, indent + 1);
             }
             LogicalPlan::GraphJoins(gj) => {
-                log::debug!("{}GraphJoins", prefix);
+                log::debug!("{}GJoins({})", prefix, gj.joins.len());
                 show_plan_structure(&gj.input, indent + 1);
             }
             LogicalPlan::Filter(f) => {
@@ -6334,14 +6371,47 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 show_plan_structure(&f.input, indent + 1);
             }
             LogicalPlan::Limit(l) => {
-                log::debug!("{}Limit(count={})", prefix, l.count);
+                log::debug!("{}Limit({})", prefix, l.count);
                 show_plan_structure(&l.input, indent + 1);
             }
             LogicalPlan::ViewScan(vs) => {
-                log::debug!("{}ViewScan(table='{}')", prefix, vs.source_table);
+                log::debug!("{}VS('{}')", prefix, vs.source_table);
             }
             LogicalPlan::GraphNode(gn) => {
-                log::debug!("{}GraphNode(alias='{}')", prefix, gn.alias);
+                log::debug!("{}GN('{}')", prefix, gn.alias);
+            }
+            LogicalPlan::Union(u) => {
+                log::debug!("{}Union({}br)", prefix, u.inputs.len());
+                for (i, input) in u.inputs.iter().enumerate() {
+                    log::debug!("{}  br{}:", prefix, i);
+                    show_plan_structure(input, indent + 2);
+                }
+            }
+            LogicalPlan::GraphRel(gr) => {
+                log::debug!("{}GR({}->{}, {:?})", prefix, gr.left_connection, gr.right_connection,
+                    gr.labels.as_ref().map(|l| l.join(",")).unwrap_or_default());
+                show_plan_structure(&gr.left, indent + 1);
+                show_plan_structure(&gr.right, indent + 1);
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                log::debug!("{}CP", prefix);
+                show_plan_structure(&cp.left, indent + 1);
+                show_plan_structure(&cp.right, indent + 1);
+            }
+            LogicalPlan::GroupBy(_) => {
+                log::debug!("{}GroupBy", prefix);
+            }
+            LogicalPlan::OrderBy(ob) => {
+                log::debug!("{}OrderBy", prefix);
+                show_plan_structure(&ob.input, indent + 1);
+            }
+            LogicalPlan::Skip(s) => {
+                log::debug!("{}Skip({})", prefix, s.count);
+                show_plan_structure(&s.input, indent + 1);
+            }
+            LogicalPlan::Unwind(u) => {
+                log::debug!("{}Unwind('{}')", prefix, u.alias);
+                show_plan_structure(&u.input, indent + 1);
             }
             other => {
                 log::debug!("{}{:?}", prefix, std::mem::discriminant(other));
@@ -6489,11 +6559,11 @@ pub(crate) fn build_chained_with_match_cte_plan(
             std::collections::HashMap::new();
 
         for (alias, plans) in grouped_withs {
-            // CRITICAL: Skip aliases that were already processed in previous iterations
-            if processed_cte_aliases.contains(&alias) {
-                log::debug!("🔧 build_chained_with_match_cte_plan: Skipping alias '{}' - already processed in previous iteration", alias);
-                continue;
-            }
+            // NOTE: We do NOT skip aliases that were processed in previous iterations.
+            // Multiple WITH clauses can share the same alias key (e.g., two consecutive
+            // "WITH DISTINCT country, a, b" barriers). Each must be processed as a separate CTE.
+            // The innermost filtering below handles ordering: only WITHs whose input has
+            // no nested WITH clauses are processed in each iteration.
 
             // Record original count before filtering
             let original_count = plans.len();
@@ -6505,7 +6575,9 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     if let LogicalPlan::WithClause(wc) = plan {
                         let has_nested = plan_contains_with_clause(&wc.input);
                         if has_nested {
-                            log::debug!("🔧 build_chained_with_match_cte_plan: Skipping WITH '{}' with nested WITH clauses (will process in next iteration)", alias);
+                            log::debug!("🔧 build_chained_with_match_cte_plan: Skipping WITH '{}' with nested WITH clauses (will process in next iteration). Input plan type: {:?}", alias, std::mem::discriminant(wc.input.as_ref()));
+                            // Show what's inside this WITH's input tree
+                            show_plan_structure(&wc.input, 0);
                         } else {
                             log::debug!("🔧 build_chained_with_match_cte_plan: Keeping innermost WITH '{}' for processing", alias);
                             // Capture the original analyzer CTE name for this innermost WithClause
@@ -6614,7 +6686,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
             let with_plans: Vec<LogicalPlan> = with_plans
                 .into_iter()
-                .map(|plan| update_graph_joins_cte_refs(&plan, &cte_references_for_rendering))
+                .map(|plan| update_graph_joins_cte_refs(&plan, &cte_references_for_rendering, &std::collections::HashMap::new()))
                 .collect::<Result<Vec<_>, _>>()?;
 
             // DEBUG: Check what cte_references exist in with_plans AFTER update
@@ -6882,6 +6954,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     log::debug!("🔧 build_chained_with_match_cte_plan: Plan has no nested WITH clauses, rendering directly with plan_ctx");
                     plan_to_render.to_render_plan_with_ctx(schema, plan_ctx, body_scope_ref)?
                 };
+
                 // CRITICAL: Extract CTE schemas from nested rendering
                 // When rendering nested WITHs, the recursive call builds CTEs that we need
                 // to reference. Extract their schemas and add to our cte_schemas map.
@@ -7294,10 +7367,22 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     });
 
                     let has_aggregation = items.iter().any(|item| {
-                        matches!(
-                            &item.expression,
-                            crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)
-                        )
+                        /// Recursively check if an expression contains an aggregate function
+                        fn contains_aggregate(expr: &crate::query_planner::logical_expr::LogicalExpr) -> bool {
+                            use crate::query_planner::logical_expr::LogicalExpr;
+                            match expr {
+                                LogicalExpr::AggregateFnCall(_) => true,
+                                LogicalExpr::ScalarFnCall(f) => f.args.iter().any(contains_aggregate),
+                                LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => op.operands.iter().any(contains_aggregate),
+                                LogicalExpr::Case(c) => {
+                                    c.when_then.iter().any(|(cond, val)| contains_aggregate(cond) || contains_aggregate(val))
+                                        || c.else_expr.as_ref().map_or(false, |e| contains_aggregate(e))
+                                }
+                                LogicalExpr::List(items) => items.iter().any(contains_aggregate),
+                                _ => false,
+                            }
+                        }
+                        contains_aggregate(&item.expression)
                     });
 
                     let has_table_alias = items.iter().any(|item| {
@@ -7581,8 +7666,33 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             // 2. ANY() picks the single value in each group (safe for PK)
                             // 3. GROUP BY 1 column is much faster than GROUP BY 7 columns
                             if has_aggregation {
+                                /// Check if a LogicalExpr is a constant literal (no need to GROUP BY)
+                                fn is_literal_expr(expr: &crate::query_planner::logical_expr::LogicalExpr) -> bool {
+                                    matches!(expr, crate::query_planner::logical_expr::LogicalExpr::Literal(_))
+                                }
+
+                                /// Check if a LogicalExpr contains an aggregate function (recursively)
+                                fn contains_aggregate(expr: &crate::query_planner::logical_expr::LogicalExpr) -> bool {
+                                    use crate::query_planner::logical_expr::LogicalExpr;
+                                    match expr {
+                                        LogicalExpr::AggregateFnCall(_) => true,
+                                        LogicalExpr::OperatorApplicationExp(op) => {
+                                            op.operands.iter().any(contains_aggregate)
+                                        }
+                                        LogicalExpr::ScalarFnCall(f) => {
+                                            f.args.iter().any(contains_aggregate)
+                                        }
+                                        _ => false,
+                                    }
+                                }
+
                                 let group_by_exprs: Vec<RenderExpr> = items.iter()
-                                            .filter(|item| !matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)))
+                                            .filter(|item| {
+                                                // Exclude: direct aggregates, literals, and expressions containing aggregates
+                                                !matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_))
+                                                && !is_literal_expr(&item.expression)
+                                                && !contains_aggregate(&item.expression)
+                                            })
                                             .flat_map(|item| {
                                                 // For TableAlias, only GROUP BY the ID column
                                                 // (other columns are wrapped with ANY() in SELECT)
@@ -7606,8 +7716,18 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                         expr_vec
                                                     }
                                                     _ => {
-                                                        // Not a TableAlias, convert normally
-                                                        let expr_vec: Vec<RenderExpr> = item.expression.clone().try_into().ok().into_iter().collect();
+                                                        // Apply property mapping rewriting before converting to RenderExpr.
+                                                        // This ensures CTE-scoped columns resolve correctly (e.g., message.length → p7_message_length).
+                                                        use crate::query_planner::logical_expr::expression_rewriter::{
+                                                            ExpressionRewriteContext, rewrite_expression_with_property_mapping,
+                                                        };
+                                                        let rewrite_ctx = if let Some(s) = body_scope_ref {
+                                                            ExpressionRewriteContext::with_scope(plan_to_render, s)
+                                                        } else {
+                                                            ExpressionRewriteContext::new(plan_to_render)
+                                                        };
+                                                        let rewritten = rewrite_expression_with_property_mapping(&item.expression, &rewrite_ctx);
+                                                        let expr_vec: Vec<RenderExpr> = rewritten.try_into().ok().into_iter().collect();
                                                         expr_vec
                                                     }
                                                 }
@@ -7699,6 +7819,19 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         &cte_references,
                         &cte_schemas,
                     );
+                }
+
+                // Fix composite alias references in the rendered plan.
+                // CTE body plans may have expressions using composite aliases (e.g., "countWindow1_tag")
+                // while the FROM/JOINs use individual aliases (e.g., "tag"). This post-processing step
+                // rewrites orphaned composite alias references to match the actual FROM/JOIN aliases.
+                // MUST be called AFTER all modifications to `rendered` (SELECT, GROUP BY, ORDER BY, etc.)
+                if let Some(ref bs) = body_scope_ref {
+                    super::variable_scope::fix_orphan_table_aliases(&mut rendered, bs);
+                    // Also rewrite bare variable references (e.g., toString(message))
+                    // that fix_orphan_table_aliases doesn't handle (it only fixes PropertyAccessExp).
+                    // Only rewrites bare TableAlias/ColumnAlias/Column, leaves PropertyAccessExp alone.
+                    super::variable_scope::rewrite_bare_variables_in_plan(&mut rendered, bs);
                 }
 
                 rendered_plans.push(rendered);
@@ -8363,6 +8496,48 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     LogicalPlan::ViewScan(vs) => {
                         log::debug!("{}ViewScan(table='{}')", prefix, vs.source_table);
                     }
+                    LogicalPlan::Union(u) => {
+                        log::debug!("{}Union({} branches)", prefix, u.inputs.len());
+                        for (i, input) in u.inputs.iter().enumerate() {
+                            log::debug!("{}  Branch {}:", prefix, i);
+                            show_with_structure(input, indent + 2);
+                        }
+                    }
+                    LogicalPlan::GraphRel(gr) => {
+                        log::debug!("{}GraphRel(l='{}', r='{}', dir={:?})", prefix, gr.left_connection, gr.right_connection,
+                            gr.labels.as_ref().map(|l| l.join(",")).unwrap_or_default());
+                        log::debug!("{}  left:", prefix);
+                        show_with_structure(&gr.left, indent + 2);
+                        log::debug!("{}  right:", prefix);
+                        show_with_structure(&gr.right, indent + 2);
+                    }
+                    LogicalPlan::Filter(f) => {
+                        log::debug!("{}Filter", prefix);
+                        show_with_structure(&f.input, indent + 1);
+                    }
+                    LogicalPlan::CartesianProduct(cp) => {
+                        log::debug!("{}CartesianProduct", prefix);
+                        log::debug!("{}  left:", prefix);
+                        show_with_structure(&cp.left, indent + 2);
+                        log::debug!("{}  right:", prefix);
+                        show_with_structure(&cp.right, indent + 2);
+                    }
+                    LogicalPlan::GroupBy(gb) => {
+                        log::debug!("{}GroupBy", prefix);
+                        show_with_structure(&gb.input, indent + 1);
+                    }
+                    LogicalPlan::OrderBy(ob) => {
+                        log::debug!("{}OrderBy", prefix);
+                        show_with_structure(&ob.input, indent + 1);
+                    }
+                    LogicalPlan::Skip(s) => {
+                        log::debug!("{}Skip({})", prefix, s.count);
+                        show_with_structure(&s.input, indent + 1);
+                    }
+                    LogicalPlan::Unwind(u) => {
+                        log::debug!("{}Unwind(alias='{}')", prefix, u.alias);
+                        show_with_structure(&u.input, indent + 1);
+                    }
                     other => {
                         log::debug!("{}Other({:?})", prefix, std::mem::discriminant(other));
                     }
@@ -8493,6 +8668,43 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     "🔧 build_chained: scope_cte_variables updated for alias '{}' → CTE '{}'",
                     alias,
                     cte_name
+                );
+            }
+
+            // CRITICAL FIX: Also add the COMPOSITE alias (e.g., "countWindow1_tag") to scope_cte_variables.
+            // The analyzer creates expressions with the composite alias as table_alias in PropertyAccessExp.
+            // Without this, scope-aware rewriting in subsequent CTE bodies can't resolve composite aliases.
+            // The composite alias's property_mapping merges ALL individual aliases' mappings, plus
+            // identity entries for scalar aliases (which are direct CTE column names).
+            if original_exported_aliases.len() > 1 {
+                let mut composite_mapping: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
+                for alias in &original_exported_aliases {
+                    if let Some(info) = scope_cte_variables.get(alias) {
+                        // Merge Cypher→CTE column mappings from this individual alias
+                        composite_mapping.extend(
+                            info.property_mapping
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone())),
+                        );
+                        // Scalar variables (empty property_mapping) are direct column names in the CTE
+                        if info.property_mapping.is_empty() {
+                            composite_mapping.insert(alias.clone(), alias.clone());
+                        }
+                    }
+                }
+                scope_cte_variables.insert(
+                    with_alias.clone(),
+                    super::variable_scope::CteVariableInfo {
+                        cte_name: cte_name.clone(),
+                        property_mapping: composite_mapping.clone(),
+                        labels: Vec::new(),
+                    },
+                );
+                log::info!(
+                    "🔧 build_chained: Added composite alias '{}' to scope_cte_variables with {} properties",
+                    with_alias,
+                    composite_mapping.len()
                 );
             }
 
@@ -8659,8 +8871,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
             // CRITICAL: Update all GraphJoins.cte_references with the latest CTE mapping
             // After replacement, the plan may have GraphJoins with stale cte_references from analyzer
+            // Build property mappings from scope_cte_variables for column resolution
+            let cte_prop_mappings: std::collections::HashMap<String, std::collections::HashMap<String, String>> =
+                scope_cte_variables.iter()
+                    .map(|(alias, info)| (alias.clone(), info.property_mapping.clone()))
+                    .collect();
             log::debug!("🔧 build_chained_with_match_cte_plan: Updating GraphJoins.cte_references with latest mapping: {:?}", cte_references);
-            current_plan = update_graph_joins_cte_refs(&current_plan, &cte_references)?;
+            current_plan = update_graph_joins_cte_refs(&current_plan, &cte_references, &cte_prop_mappings)?;
         }
     }
 
@@ -8880,7 +9097,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
             }
 
             // For each CTE that's referenced, create a JOIN
-            for (cte_name, aliases) in cte_join_needed {
+            // Sort for deterministic ordering
+            let mut sorted_cte_joins: Vec<_> = cte_join_needed.into_iter().collect();
+            sorted_cte_joins.sort_by(|a, b| a.0.cmp(&b.0));
+            for (cte_name, aliases) in sorted_cte_joins {
                 // Extract CTE alias part from name: "with_a_b_cte_1" -> "a_b"
                 let cte_alias = if let Some(stripped) = cte_name.strip_prefix("with_") {
                     if let Some(cte_pos) = stripped.rfind("_cte") {
@@ -9103,14 +9323,21 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                             }
                                         };
 
+                                        // Wrap VLP side in toString() too, ensuring both sides are String.
+                                        // VLP start_id/end_id may be UInt64 or String depending on
+                                        // generation path, and rhs_expr already uses toString().
+                                        let lhs_expr = RenderExpr::ScalarFnCall(ScalarFnCall {
+                                            name: "toString".to_string(),
+                                            args: vec![RenderExpr::Column(Column(
+                                                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                    format!("{}.{}", from_alias, vlp_id_col)
+                                                )
+                                            ))],
+                                        });
                                         let join_cond = OperatorApplication {
                                             operator: Operator::Equal,
                                             operands: vec![
-                                                RenderExpr::Column(Column(
-                                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                        format!("{}.{}", from_alias, vlp_id_col)
-                                                    )
-                                                )),
+                                                lhs_expr,
                                                 rhs_expr,
                                             ],
                                         };
@@ -9237,15 +9464,21 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                     &render_plan.ctes,
                                                 )
                                             };
+                                            // Wrap BOTH sides in toString() to handle type mismatches:
+                                            // VLP start_id/end_id may be UInt64 or String depending on generation path.
+                                            // CTE columns are typically UInt64 (raw IDs). toString() on both sides
+                                            // ensures consistent String comparison regardless of input types.
                                             let cond = OperatorApplication {
                                                 operator: Operator::Equal,
                                                 operands: vec![
-                                                    RenderExpr::Column(Column(
-                                                        crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                            format!("{}.{}", from_alias, vlp_id_col)
-                                                        )
-                                                    )),
-                                                    // toString() to match the String type of start_id/end_id in VLP CTE
+                                                    RenderExpr::ScalarFnCall(ScalarFnCall {
+                                                        name: "toString".to_string(),
+                                                        args: vec![RenderExpr::Column(Column(
+                                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                                format!("{}.{}", from_alias, vlp_id_col)
+                                                            )
+                                                        ))],
+                                                    }),
                                                     RenderExpr::ScalarFnCall(ScalarFnCall {
                                                         name: "toString".to_string(),
                                                         args: vec![RenderExpr::Column(Column(
@@ -11624,7 +11857,9 @@ pub(super) fn build_pattern_comprehension_sql(
 
     let mut branches: Vec<String> = Vec::new();
 
-    for (rel_key, rel_schema) in schema.get_relationships_schemas() {
+    let mut sorted_rels: Vec<_> = schema.get_relationships_schemas().iter().collect();
+    sorted_rels.sort_by_key(|(k, _)| k.as_str());
+    for (rel_key, rel_schema) in sorted_rels {
         // Extract base relationship type from key (keys may be "TYPE::From::To")
         let rel_name = rel_key.split("::").next().unwrap_or(rel_key);
         // If specific rel types are requested, filter
@@ -11853,7 +12088,9 @@ pub(super) fn find_node_id_column_from_schema(
     }
 
     // Fallback: look through relationship schemas for from_node/to_node matching
-    for rel_schema in schema.get_relationships_schemas().values() {
+    let mut sorted_rels: Vec<_> = schema.get_relationships_schemas().iter().collect();
+    sorted_rels.sort_by_key(|(k, _)| k.as_str());
+    for (_, rel_schema) in sorted_rels {
         if rel_schema.from_node.eq_ignore_ascii_case(label) {
             return rel_schema.from_id.first_column().to_string();
         }

@@ -1309,12 +1309,13 @@ impl LogicalPlan {
                     };
 
                     // Keep the CTE with highest sequence number (latest in the chain)
-                    // Tie-breaker: prefer longer CTE names (more aliases = more complete)
+                    // Tie-breakers: prefer longer CTE names, then alphabetical order for determinism
                     match &best_cte {
                         None => best_cte = Some((alias, cte_name, seq_num)),
                         Some((_, current_name, current_seq)) => {
                             if seq_num > *current_seq
                                 || (seq_num == *current_seq && cte_name.len() > current_name.len())
+                                || (seq_num == *current_seq && cte_name.len() == current_name.len() && cte_name.as_str() > current_name.as_str())
                             {
                                 best_cte = Some((alias, cte_name, seq_num));
                             }

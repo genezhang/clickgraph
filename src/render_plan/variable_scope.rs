@@ -264,7 +264,7 @@ impl<'a> VariableScope<'a> {
 // --- Scope-aware RenderPlan rewriting ---
 
 use super::render_expr::{
-    ColumnAlias, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+    Column, ColumnAlias, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
 };
 use super::{FilterItems, GroupByExpressions, OrderByItems, RenderPlan, SelectItem, UnionItems};
 use crate::graph_catalog::expression_parser::PropertyValue;
@@ -356,6 +356,199 @@ pub fn rewrite_render_plan_with_scope(plan: &mut RenderPlan, scope: &VariableSco
         for branch in &mut union.input {
             rewrite_render_plan_with_scope(branch, scope);
         }
+    }
+}
+
+/// Rewrite only bare variable references (TableAlias, ColumnAlias, Column) in a RenderPlan,
+/// without touching PropertyAccessExp. This is for CTE body rendering where
+/// `fix_orphan_table_aliases` already handles PropertyAccessExp resolution.
+pub fn rewrite_bare_variables_in_plan(plan: &mut RenderPlan, scope: &VariableScope) {
+    // Rewrite SELECT item expressions
+    for item in &mut plan.select.items {
+        item.expression = rewrite_bare_variables(&item.expression, scope);
+    }
+
+    // Rewrite WHERE filters
+    if let FilterItems(Some(ref filter)) = plan.filters {
+        plan.filters = FilterItems(Some(rewrite_bare_variables(filter, scope)));
+    }
+
+    // Rewrite ORDER BY
+    for item in &mut plan.order_by.0 {
+        item.expression = rewrite_bare_variables(&item.expression, scope);
+    }
+
+    // Rewrite GROUP BY
+    let rewritten_gb: Vec<RenderExpr> = plan
+        .group_by
+        .0
+        .iter()
+        .map(|expr| rewrite_bare_variables(expr, scope))
+        .collect();
+    plan.group_by = GroupByExpressions(rewritten_gb);
+
+    // Rewrite HAVING
+    if let Some(ref having) = plan.having_clause {
+        plan.having_clause = Some(rewrite_bare_variables(having, scope));
+    }
+
+    // Rewrite JOIN conditions
+    for join in &mut plan.joins.0 {
+        for cond in &mut join.joining_on {
+            cond.operands = cond
+                .operands
+                .iter()
+                .map(|op| rewrite_bare_variables(op, scope))
+                .collect();
+        }
+        if let Some(ref pre_filter) = join.pre_filter {
+            join.pre_filter = Some(rewrite_bare_variables(pre_filter, scope));
+        }
+    }
+
+    // Rewrite UNION branches
+    if let UnionItems(Some(ref mut union)) = plan.union {
+        for branch in &mut union.input {
+            rewrite_bare_variables_in_plan(branch, scope);
+        }
+    }
+}
+
+/// Recursively rewrite only bare variable references (TableAlias, ColumnAlias, Column)
+/// to qualified CTE column references, leaving PropertyAccessExp untouched.
+fn rewrite_bare_variables(expr: &RenderExpr, scope: &VariableScope) -> RenderExpr {
+    match expr {
+        // Leave PropertyAccessExp untouched — fix_orphan_table_aliases handles these
+        RenderExpr::PropertyAccessExp(_) => expr.clone(),
+        // Recurse into compound expressions
+        RenderExpr::OperatorApplicationExp(oa) => {
+            let rewritten_operands: Vec<RenderExpr> = oa
+                .operands
+                .iter()
+                .map(|op| rewrite_bare_variables(op, scope))
+                .collect();
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: oa.operator.clone(),
+                operands: rewritten_operands,
+            })
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            let rewritten_args: Vec<RenderExpr> = agg
+                .args
+                .iter()
+                .map(|arg| rewrite_bare_variables(arg, scope))
+                .collect();
+            RenderExpr::AggregateFnCall(super::render_expr::AggregateFnCall {
+                name: agg.name.clone(),
+                args: rewritten_args,
+            })
+        }
+        RenderExpr::ScalarFnCall(sf) => {
+            let rewritten_args: Vec<RenderExpr> = sf
+                .args
+                .iter()
+                .map(|arg| rewrite_bare_variables(arg, scope))
+                .collect();
+            RenderExpr::ScalarFnCall(super::render_expr::ScalarFnCall {
+                name: sf.name.clone(),
+                args: rewritten_args,
+            })
+        }
+        RenderExpr::Case(case) => {
+            let rewritten_expr = case
+                .expr
+                .as_ref()
+                .map(|e| Box::new(rewrite_bare_variables(e, scope)));
+            let rewritten_when_then: Vec<(RenderExpr, RenderExpr)> = case
+                .when_then
+                .iter()
+                .map(|(cond, val)| {
+                    (
+                        rewrite_bare_variables(cond, scope),
+                        rewrite_bare_variables(val, scope),
+                    )
+                })
+                .collect();
+            let rewritten_else = case
+                .else_expr
+                .as_ref()
+                .map(|e| Box::new(rewrite_bare_variables(e, scope)));
+            RenderExpr::Case(super::render_expr::RenderCase {
+                expr: rewritten_expr,
+                when_then: rewritten_when_then,
+                else_expr: rewritten_else,
+            })
+        }
+        RenderExpr::List(items) => {
+            let rewritten: Vec<RenderExpr> = items
+                .iter()
+                .map(|item| rewrite_bare_variables(item, scope))
+                .collect();
+            RenderExpr::List(rewritten)
+        }
+        RenderExpr::ArraySubscript { array, index } => RenderExpr::ArraySubscript {
+            array: Box::new(rewrite_bare_variables(array, scope)),
+            index: Box::new(rewrite_bare_variables(index, scope)),
+        },
+        RenderExpr::ArraySlicing { array, from, to } => RenderExpr::ArraySlicing {
+            array: Box::new(rewrite_bare_variables(array, scope)),
+            from: from
+                .as_ref()
+                .map(|f| Box::new(rewrite_bare_variables(f, scope))),
+            to: to
+                .as_ref()
+                .map(|t| Box::new(rewrite_bare_variables(t, scope))),
+        },
+        RenderExpr::MapLiteral(entries) => {
+            let rewritten: Vec<(String, RenderExpr)> = entries
+                .iter()
+                .map(|(k, v)| (k.clone(), rewrite_bare_variables(v, scope)))
+                .collect();
+            RenderExpr::MapLiteral(rewritten)
+        }
+        // Bare variable references — rewrite CTE variables to qualified column references
+        RenderExpr::TableAlias(TableAlias(alias_name))
+        | RenderExpr::ColumnAlias(ColumnAlias(alias_name)) => {
+            if let Some(cte_info) = scope.get_cte_info(alias_name) {
+                let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
+                if cte_info.property_mapping.is_empty() {
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(from_alias),
+                        column: PropertyValue::Column(alias_name.clone()),
+                    })
+                } else if let Some(id_col) = cte_info.property_mapping.get("id") {
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(from_alias),
+                        column: PropertyValue::Column(id_col.clone()),
+                    })
+                } else {
+                    expr.clone()
+                }
+            } else {
+                expr.clone()
+            }
+        }
+        RenderExpr::Column(col) => {
+            if let PropertyValue::Column(col_name) = &col.0 {
+                if let Some(cte_info) = scope.get_cte_info(col_name) {
+                    let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
+                    if cte_info.property_mapping.is_empty() {
+                        return RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(from_alias),
+                            column: PropertyValue::Column(col_name.clone()),
+                        });
+                    } else if let Some(id_col) = cte_info.property_mapping.get("id") {
+                        return RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(from_alias),
+                            column: PropertyValue::Column(id_col.clone()),
+                        });
+                    }
+                }
+            }
+            expr.clone()
+        }
+        // Leaf nodes — no rewriting needed
+        _ => expr.clone(),
     }
 }
 
@@ -499,19 +692,304 @@ pub fn rewrite_render_expr(expr: &RenderExpr, scope: &VariableScope) -> RenderEx
                 .collect();
             RenderExpr::MapLiteral(rewritten)
         }
+        // Bare variable references — rewrite CTE variables to qualified column references
+        RenderExpr::TableAlias(TableAlias(alias_name))
+        | RenderExpr::ColumnAlias(ColumnAlias(alias_name)) => {
+            if let Some(cte_info) = scope.get_cte_info(alias_name) {
+                let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
+                if cte_info.property_mapping.is_empty() {
+                    // Scalar CTE variable: rewrite to from_alias.variable_name
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(from_alias),
+                        column: PropertyValue::Column(alias_name.clone()),
+                    })
+                } else if let Some(id_col) = cte_info.property_mapping.get("id") {
+                    // Node CTE variable: rewrite bare reference to its ID column
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(from_alias),
+                        column: PropertyValue::Column(id_col.clone()),
+                    })
+                } else {
+                    expr.clone()
+                }
+            } else {
+                expr.clone()
+            }
+        }
+        // Column references — may also be bare CTE variable references
+        RenderExpr::Column(col) => {
+            if let PropertyValue::Column(col_name) = &col.0 {
+                if let Some(cte_info) = scope.get_cte_info(col_name) {
+                    let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
+                    if cte_info.property_mapping.is_empty() {
+                        return RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(from_alias),
+                            column: PropertyValue::Column(col_name.clone()),
+                        });
+                    } else if let Some(id_col) = cte_info.property_mapping.get("id") {
+                        return RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(from_alias),
+                            column: PropertyValue::Column(id_col.clone()),
+                        });
+                    }
+                }
+            }
+            expr.clone()
+        }
         // Leaf nodes — no rewriting needed
         RenderExpr::Literal(_)
         | RenderExpr::Raw(_)
         | RenderExpr::Star
-        | RenderExpr::TableAlias(_)
-        | RenderExpr::ColumnAlias(_)
-        | RenderExpr::Column(_)
         | RenderExpr::Parameter(_)
         | RenderExpr::InSubquery(_)
         | RenderExpr::ExistsSubquery(_)
         | RenderExpr::ReduceExpr(_)
         | RenderExpr::PatternCount(_)
         | RenderExpr::CteEntityRef(_) => expr.clone(),
+    }
+}
+
+/// Post-process a RenderPlan to fix orphaned composite alias references.
+///
+/// After scope-based rewriting, some expressions may reference composite aliases
+/// (e.g., "countWindow1_tag") that don't match any FROM/JOIN alias in the render plan.
+/// This happens because CTE body rendering uses individual aliases (e.g., "tag") as
+/// FROM aliases, while the logical plan's expressions use composite aliases.
+///
+/// This function:
+/// 1. Collects all valid FROM/JOIN aliases
+/// 2. For any expression table_alias not in FROM/JOINs, checks scope CTE variables
+/// 3. If the CTE name matches a FROM/JOIN entry, replaces the table_alias with the FROM/JOIN alias
+pub fn fix_orphan_table_aliases(plan: &mut RenderPlan, scope: &VariableScope) {
+    fix_orphan_table_aliases_impl(plan, scope, true);
+}
+
+fn fix_orphan_table_aliases_impl(plan: &mut RenderPlan, scope: &VariableScope, add_cross_joins: bool) {
+    use std::collections::HashMap;
+
+    // 1. Build mapping: CTE name → FROM/JOIN alias
+    let mut cte_name_to_from_alias: HashMap<String, String> = HashMap::new();
+    let mut valid_aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Check main FROM
+    if let super::FromTableItem(Some(ref from_table)) = plan.from {
+        if let Some(ref alias) = from_table.alias {
+            valid_aliases.insert(alias.clone());
+            if from_table.name.starts_with("with_") {
+                cte_name_to_from_alias.insert(from_table.name.clone(), alias.clone());
+            }
+        } else {
+            valid_aliases.insert(from_table.name.clone());
+        }
+    }
+
+    // Check JOINs
+    for join in &plan.joins.0 {
+        valid_aliases.insert(join.table_alias.clone());
+        if join.table_name.starts_with("with_") {
+            cte_name_to_from_alias.insert(join.table_name.clone(), join.table_alias.clone());
+        }
+    }
+
+    // 2. Find CTE-scoped variables whose CTE is NOT in FROM/JOINs and add CROSS JOINs.
+    // This handles cases like: WITH knownTag.id AS knownTagId ... WHERE t.id = knownTagId
+    // where knownTagId comes from a previous CTE but the current CTE body doesn't reference it.
+    // Skip in UNION branches (add_cross_joins=false) to avoid spurious joins.
+    if add_cross_joins {
+        let mut missing_ctes: Vec<(String, String)> = Vec::new(); // (cte_name, from_alias)
+        let mut seen_cte_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (_alias, cte_info) in scope.cte_variables() {
+            if cte_name_to_from_alias.contains_key(&cte_info.cte_name) {
+                continue;
+            }
+            if seen_cte_names.contains(&cte_info.cte_name) {
+                continue;
+            }
+            let from_alias = extract_from_alias_from_cte_name(&cte_info.cte_name);
+            // Don't add if from_alias collides with an existing valid alias
+            if valid_aliases.contains(&from_alias) {
+                continue;
+            }
+            seen_cte_names.insert(cte_info.cte_name.clone());
+            missing_ctes.push((cte_info.cte_name.clone(), from_alias));
+        }
+        // Sort for deterministic ordering
+        missing_ctes.sort();
+        for (cte_name, from_alias) in &missing_ctes {
+            log::info!(
+                "🔧 fix_orphan_table_aliases: Adding CROSS JOIN for missing CTE {} AS {}",
+                cte_name,
+                from_alias
+            );
+            plan.joins.0.push(super::Join {
+                table_name: cte_name.clone(),
+                table_alias: from_alias.clone(),
+                joining_on: vec![],
+                join_type: super::JoinType::Join,
+                pre_filter: None,
+                from_id_column: None,
+                to_id_column: None,
+                graph_rel: None,
+            });
+            valid_aliases.insert(from_alias.clone());
+            cte_name_to_from_alias.insert(cte_name.clone(), from_alias.clone());
+        }
+    }
+
+    if cte_name_to_from_alias.is_empty() {
+        return; // No CTE references in FROM/JOINs, nothing to fix
+    }
+
+    // 3. Build mapping: orphaned composite alias → correct FROM alias
+    let mut alias_replacements: HashMap<String, String> = HashMap::new();
+    for (alias, cte_info) in scope.cte_variables() {
+        if valid_aliases.contains(alias) {
+            continue; // This alias is already a valid FROM/JOIN alias
+        }
+        if let Some(from_alias) = cte_name_to_from_alias.get(&cte_info.cte_name) {
+            alias_replacements.insert(alias.clone(), from_alias.clone());
+        }
+    }
+
+    if alias_replacements.is_empty() {
+        return; // No orphaned aliases to fix
+    }
+
+    log::info!(
+        "🔧 fix_orphan_table_aliases: Fixing {} orphaned aliases: {:?}",
+        alias_replacements.len(),
+        alias_replacements
+    );
+
+    // 4. Rewrite all expressions
+    let rewrite = |expr: &RenderExpr| -> RenderExpr {
+        rewrite_expr_table_aliases(expr, &alias_replacements)
+    };
+
+    // SELECT
+    for item in &mut plan.select.items {
+        item.expression = rewrite(&item.expression);
+    }
+
+    // WHERE
+    if let FilterItems(Some(ref filter)) = plan.filters {
+        plan.filters = FilterItems(Some(rewrite(filter)));
+    }
+
+    // GROUP BY
+    let new_gb: Vec<RenderExpr> = plan.group_by.0.iter().map(|e| rewrite(e)).collect();
+    plan.group_by = GroupByExpressions(new_gb);
+
+    // ORDER BY
+    for item in &mut plan.order_by.0 {
+        item.expression = rewrite(&item.expression);
+    }
+
+    // HAVING
+    if let Some(ref having) = plan.having_clause {
+        plan.having_clause = Some(rewrite(having));
+    }
+
+    // JOIN conditions
+    for join in &mut plan.joins.0 {
+        for cond in &mut join.joining_on {
+            cond.operands = cond.operands.iter().map(|op| rewrite(op)).collect();
+        }
+        if let Some(ref pf) = join.pre_filter {
+            join.pre_filter = Some(rewrite(pf));
+        }
+    }
+
+    // UNION branches - don't add CROSS JOINs in nested branches
+    if let UnionItems(Some(ref mut union)) = plan.union {
+        for branch in &mut union.input {
+            fix_orphan_table_aliases_impl(branch, scope, false);
+        }
+    }
+}
+
+/// Recursively rewrite table aliases in a RenderExpr using a replacement map.
+fn rewrite_expr_table_aliases(
+    expr: &RenderExpr,
+    replacements: &std::collections::HashMap<String, String>,
+) -> RenderExpr {
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            if let Some(new_alias) = replacements.get(&pa.table_alias.0) {
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(new_alias.clone()),
+                    column: pa.column.clone(),
+                })
+            } else {
+                expr.clone()
+            }
+        }
+        RenderExpr::OperatorApplicationExp(oa) => {
+            let new_operands: Vec<RenderExpr> = oa
+                .operands
+                .iter()
+                .map(|op| rewrite_expr_table_aliases(op, replacements))
+                .collect();
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: oa.operator.clone(),
+                operands: new_operands,
+            })
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            let new_args: Vec<RenderExpr> = agg
+                .args
+                .iter()
+                .map(|arg| rewrite_expr_table_aliases(arg, replacements))
+                .collect();
+            RenderExpr::AggregateFnCall(super::render_expr::AggregateFnCall {
+                name: agg.name.clone(),
+                args: new_args,
+            })
+        }
+        RenderExpr::ScalarFnCall(sf) => {
+            let new_args: Vec<RenderExpr> = sf
+                .args
+                .iter()
+                .map(|arg| rewrite_expr_table_aliases(arg, replacements))
+                .collect();
+            RenderExpr::ScalarFnCall(super::render_expr::ScalarFnCall {
+                name: sf.name.clone(),
+                args: new_args,
+            })
+        }
+        RenderExpr::Case(case) => {
+            let new_expr = case
+                .expr
+                .as_ref()
+                .map(|e| Box::new(rewrite_expr_table_aliases(e, replacements)));
+            let new_when_then: Vec<(RenderExpr, RenderExpr)> = case
+                .when_then
+                .iter()
+                .map(|(c, v)| {
+                    (
+                        rewrite_expr_table_aliases(c, replacements),
+                        rewrite_expr_table_aliases(v, replacements),
+                    )
+                })
+                .collect();
+            let new_else = case
+                .else_expr
+                .as_ref()
+                .map(|e| Box::new(rewrite_expr_table_aliases(e, replacements)));
+            RenderExpr::Case(super::render_expr::RenderCase {
+                expr: new_expr,
+                when_then: new_when_then,
+                else_expr: new_else,
+            })
+        }
+        RenderExpr::List(items) => {
+            let new_items: Vec<RenderExpr> = items
+                .iter()
+                .map(|item| rewrite_expr_table_aliases(item, replacements))
+                .collect();
+            RenderExpr::List(new_items)
+        }
+        _ => expr.clone(),
     }
 }
 

@@ -1777,6 +1777,12 @@ impl TypeInference {
             })
             .collect();
 
+        // NOTE: matches come from HashMap iteration - order is non-deterministic.
+        // We intentionally do NOT sort here because the first match determines
+        // which schema is used for join column resolution, and changing the order
+        // can break existing working queries (e.g., bi-6 uses Message_hasTag_Tag
+        // table but needs the right from_id column for joins).
+
         log::debug!(
             "🔍 TypeInference: Found {} matching relationship(s) in schema",
             matches.len()
@@ -1796,12 +1802,13 @@ impl TypeInference {
         }
 
         // Check if too many edge types
-        let unique_edge_types: Vec<String> = matches
+        let mut unique_edge_types: Vec<String> = matches
             .iter()
             .map(|(key, _)| key.split("::").next().unwrap_or(key).to_string())
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
+        unique_edge_types.sort(); // Deterministic ordering
 
         if unique_edge_types.len() > plan_ctx.max_inferred_types && known_edge_types.is_none() {
             return Err(AnalyzerError::InvalidPlan(format!(
@@ -2001,18 +2008,22 @@ impl TypeInference {
                     combinations.clone(),
                 );
 
-                // Set first combination types in TableCtx for backward compatibility
+                // Set first combination types in TableCtx for backward compatibility.
+                // Only set labels where all combinations AGREE (unambiguous).
+                // Don't set ambiguous labels - let parent patterns narrow them down.
                 if let Some(first_combo) = combinations.first() {
-                    if inferred_left_label.is_none() && known_left_clone.is_none() {
+                    let all_from_same = combinations.iter().all(|c| c.from_label == first_combo.from_label);
+                    if all_from_same && inferred_left_label.is_none() && known_left_clone.is_none() {
                         self.update_node_label_in_ctx(
                             left_connection,
                             &first_combo.from_label,
                             "from",
-                            "multi-type pattern",
+                            "multi-type pattern (unanimous)",
                             plan_ctx,
                         );
                     }
-                    if inferred_right_label.is_none() && known_right_clone.is_none() {
+                    let all_to_same = combinations.iter().all(|c| c.to_label == first_combo.to_label);
+                    if all_to_same && inferred_right_label.is_none() && known_right_clone.is_none() {
                         self.update_node_label_in_ctx(
                             right_connection,
                             &first_combo.to_label,
