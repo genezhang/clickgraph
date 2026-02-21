@@ -85,7 +85,7 @@ impl AnalyzerPass for GraphJoinInference {
         );
 
         // Phase 1: Build pattern graph metadata (caches reference checks)
-        let pattern_metadata = Self::build_pattern_metadata(&logical_plan, plan_ctx)?;
+        let mut pattern_metadata = Self::build_pattern_metadata(&logical_plan, plan_ctx)?;
         log::debug!(
             "📊 Pattern metadata built: {} nodes, {} edges",
             pattern_metadata.nodes.len(),
@@ -125,6 +125,25 @@ impl AnalyzerPass for GraphJoinInference {
         // Phase 2: Generate cross-branch joins using metadata (simplified!)
         // Instead of tracking NodeAppearance during traversal, use pre-computed
         // appearance_count from metadata to identify shared nodes naturally.
+        //
+        // CRITICAL FIX: Mark anchor nodes (FROM markers with empty joining_on) as
+        // "referenced" before cross-branch generation. When a node is the anchor/FROM
+        // table, all edges connecting to it already JOIN against it via its ID column,
+        // so cross-branch joins would be redundant.
+        for join in &collected_graph_joins {
+            if join.joining_on.is_empty() {
+                if let Some(node_info) = pattern_metadata.nodes.get_mut(&join.table_alias) {
+                    if !node_info.is_referenced {
+                        log::debug!(
+                            "🔧 Marking anchor node '{}' as referenced for cross-branch skip",
+                            join.table_alias
+                        );
+                        node_info.is_referenced = true;
+                    }
+                }
+            }
+        }
+
         log::debug!("🔍 Phase 2: Generating cross-branch joins from metadata...");
         let cross_branch_joins = super::cross_branch::generate_cross_branch_joins_from_metadata(
             &pattern_metadata,

@@ -102,6 +102,15 @@ fn find_graph_rel(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_p
     }
 }
 
+/// Extract the node label from the end (rightmost) node of a potentially nested GraphRel.
+/// For nested patterns like (a)-[r1]->(b)-[r2]->(c), this follows rel.right to find c's label.
+fn extract_end_node_label(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphRel(rel) => extract_end_node_label(&rel.right),
+        _ => extract_node_label_from_viewscan(plan),
+    }
+}
+
 /// Build JOIN equality condition(s) for an Identifier pair.
 /// For single IDs: creates one `left.col = right.col` condition.
 /// For composite IDs: creates AND of per-column equalities.
@@ -2045,14 +2054,29 @@ impl JoinBuilder for LogicalPlan {
                     None
                 }
 
-                let start_table = get_start_table_name_or_cte(&graph_rel.left).or_else(|_| {
-                    // Fallback: try to get from relationship schema
-                    get_table_from_rel_schema(&graph_rel.labels, true).ok_or_else(|| {
-                        RenderBuildError::MissingTableInfo(
-                            "start node table in extract_joins".to_string(),
-                        )
-                    })
-                })?;
+                // MULTI-HOP FIX: For start table, when left is a nested GraphRel,
+                // use extract_end_node_table_name which follows rel.right to get the
+                // shared node's table (not the relationship table from rel.center).
+                // Falls back to original behavior if extraction fails (e.g., VLP patterns).
+                let start_table = if let LogicalPlan::GraphRel(_) = graph_rel.left.as_ref() {
+                    extract_end_node_table_name(&graph_rel.left)
+                        .or_else(|| {
+                            // Fallback: try original path for cases extract_end_node_table_name can't handle
+                            get_start_table_name_or_cte(&graph_rel.left).ok()
+                        })
+                        .or_else(|| get_table_from_rel_schema(&graph_rel.labels, true))
+                        .ok_or_else(|| RenderBuildError::MissingTableInfo(
+                            "start node table in extract_joins (multi-hop)".to_string()
+                        ))?
+                } else {
+                    get_start_table_name_or_cte(&graph_rel.left).or_else(|_| {
+                        get_table_from_rel_schema(&graph_rel.labels, true).ok_or_else(|| {
+                            RenderBuildError::MissingTableInfo(
+                                "start node table in extract_joins".to_string(),
+                            )
+                        })
+                    })?
+                };
 
                 // CRITICAL FIX: Use get_end_table_name_or_cte for the right side
                 // This correctly handles nested GraphRel patterns (multi-hop traversals)
@@ -2067,7 +2091,13 @@ impl JoinBuilder for LogicalPlan {
                 })?;
 
                 // Also extract labels for schema filter generation (optional for CTEs)
-                let start_label = extract_node_label_from_viewscan(&graph_rel.left);
+                // MULTI-HOP FIX: For nested GraphRel left, extract label from the inner's
+                // right node (the shared node between the two hops).
+                let start_label = if let LogicalPlan::GraphRel(_) = graph_rel.left.as_ref() {
+                    extract_end_node_label(&graph_rel.left)
+                } else {
+                    extract_node_label_from_viewscan(&graph_rel.left)
+                };
                 let end_label = extract_node_label_from_viewscan(&graph_rel.right);
 
                 // Get relationship table with parameterized view syntax if applicable
