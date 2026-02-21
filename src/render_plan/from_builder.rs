@@ -793,7 +793,59 @@ impl LogicalPlan {
                 use_final: false,
             }));
         }
-        log::info!("🔍 No multi-type found, proceeding with FROM marker...");
+        log::info!("🔍 No multi-type found, checking for VLP in chained patterns...");
+
+        // Check for VLP in non-empty joins case (chained patterns like
+        // (person)<-[:HAS_CREATOR]-(post)<-[:REPLY_OF*0..]-(reply))
+        // The VLP CTE should be the FROM table, with other tables JOINed to it.
+        if let Some(graph_rel) = find_vlp_graph_rel(&graph_joins.input) {
+            let is_implicit_one_hop = graph_rel
+                .variable_length
+                .as_ref()
+                .map(|spec| spec.min_hops == Some(1) && spec.max_hops == Some(1))
+                .unwrap_or(false);
+            let is_optional = graph_rel.is_optional.unwrap_or(false);
+
+            if !is_implicit_one_hop && !is_optional {
+                let start_alias = &graph_rel.left_connection;
+                let end_alias = &graph_rel.right_connection;
+                let cte_name = if graph_rel.pattern_combinations.is_some() {
+                    format!("vlp_multi_type_{}_{}", start_alias, end_alias)
+                } else {
+                    format!("vlp_{}_{}", start_alias, end_alias)
+                };
+
+                // Verify CTE was registered (confirms it was actually generated)
+                if let Some(registered_name) =
+                    crate::server::query_context::get_relationship_cte_name(&graph_rel.alias)
+                {
+                    log::info!(
+                        "🎯 VLP in chained pattern: Using registered CTE '{}' as FROM (alias='{}')",
+                        registered_name,
+                        graph_rel.alias
+                    );
+                    return Ok(Some(ViewTableRef {
+                        source: Arc::new(LogicalPlan::Empty),
+                        name: registered_name,
+                        alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
+                        use_final: false,
+                    }));
+                }
+
+                log::info!(
+                    "🎯 VLP in chained pattern: Using computed CTE '{}' as FROM",
+                    cte_name
+                );
+                return Ok(Some(ViewTableRef {
+                    source: Arc::new(LogicalPlan::Empty),
+                    name: cte_name,
+                    alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
+                    use_final: false,
+                }));
+            }
+        }
+
+        log::info!("🔍 No VLP found, proceeding with FROM marker...");
 
         for join in &graph_joins.joins {
             if join.joining_on.is_empty() {
