@@ -764,7 +764,11 @@ pub fn fix_orphan_table_aliases(plan: &mut RenderPlan, scope: &VariableScope) {
     fix_orphan_table_aliases_impl(plan, scope, true);
 }
 
-fn fix_orphan_table_aliases_impl(plan: &mut RenderPlan, scope: &VariableScope, add_cross_joins: bool) {
+fn fix_orphan_table_aliases_impl(
+    plan: &mut RenderPlan,
+    scope: &VariableScope,
+    add_cross_joins: bool,
+) {
     use std::collections::HashMap;
 
     // 1. Build mapping: CTE name → FROM/JOIN alias
@@ -797,7 +801,8 @@ fn fix_orphan_table_aliases_impl(plan: &mut RenderPlan, scope: &VariableScope, a
     // Skip in UNION branches (add_cross_joins=false) to avoid spurious joins.
     if add_cross_joins {
         let mut missing_ctes: Vec<(String, String)> = Vec::new(); // (cte_name, from_alias)
-        let mut seen_cte_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut seen_cte_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for (_alias, cte_info) in scope.cte_variables() {
             if cte_name_to_from_alias.contains_key(&cte_info.cte_name) {
                 continue;
@@ -862,9 +867,8 @@ fn fix_orphan_table_aliases_impl(plan: &mut RenderPlan, scope: &VariableScope, a
     );
 
     // 4. Rewrite all expressions
-    let rewrite = |expr: &RenderExpr| -> RenderExpr {
-        rewrite_expr_table_aliases(expr, &alias_replacements)
-    };
+    let rewrite =
+        |expr: &RenderExpr| -> RenderExpr { rewrite_expr_table_aliases(expr, &alias_replacements) };
 
     // SELECT
     for item in &mut plan.select.items {

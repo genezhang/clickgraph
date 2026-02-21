@@ -726,11 +726,17 @@ pub(super) fn render_expr_to_sql_string(
 }
 
 /// Helper to extract ID column name from ViewScan
+///
+/// For GraphRel, follows rel.right (end node) rather than rel.center (relationship table).
+/// This is correct because callers always pass graph_rel.left or graph_rel.right
+/// expecting a NODE's ID column, not a relationship table's FK column.
+/// For nested patterns like (a)-[:R1]->(b)-[:R2]->(c), extract_id_column(&outer.left)
+/// follows the inner GraphRel's right to get b's ID (the connection point).
 pub(super) fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
     match plan {
         LogicalPlan::ViewScan(view_scan) => Some(view_scan.id_column.clone()),
         LogicalPlan::GraphNode(node) => extract_id_column(&node.input),
-        LogicalPlan::GraphRel(rel) => extract_id_column(&rel.center),
+        LogicalPlan::GraphRel(rel) => extract_id_column(&rel.right),
         LogicalPlan::Filter(filter) => extract_id_column(&filter.input),
         LogicalPlan::Projection(proj) => extract_id_column(&proj.input),
         // For WithClause, recurse into input to get ID column from underlying node

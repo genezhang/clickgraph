@@ -1343,14 +1343,18 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // the start table and use NULL/empty for missing end columns.
         let cross_type = self.start_node_table != self.end_node_table;
         let start_table_columns: std::collections::HashSet<String> = if cross_type {
-            let mut cols: std::collections::HashSet<String> = self.properties.iter()
+            let mut cols: std::collections::HashSet<String> = self
+                .properties
+                .iter()
                 .filter(|p| p.cypher_alias == self.start_cypher_alias)
                 .map(|p| p.column_name.clone())
                 .collect();
             cols.insert(self.start_node_id_column.clone());
             log::info!(
                 "🔧 VLP zero-hop cross-type: start_table={}, end_table={}, start_columns={:?}",
-                self.start_node_table, self.end_node_table, cols
+                self.start_node_table,
+                self.end_node_table,
+                cols
             );
             cols
         } else {

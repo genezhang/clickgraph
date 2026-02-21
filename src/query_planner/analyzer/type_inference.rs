@@ -2012,8 +2012,11 @@ impl TypeInference {
                 // Only set labels where all combinations AGREE (unambiguous).
                 // Don't set ambiguous labels - let parent patterns narrow them down.
                 if let Some(first_combo) = combinations.first() {
-                    let all_from_same = combinations.iter().all(|c| c.from_label == first_combo.from_label);
-                    if all_from_same && inferred_left_label.is_none() && known_left_clone.is_none() {
+                    let all_from_same = combinations
+                        .iter()
+                        .all(|c| c.from_label == first_combo.from_label);
+                    if all_from_same && inferred_left_label.is_none() && known_left_clone.is_none()
+                    {
                         self.update_node_label_in_ctx(
                             left_connection,
                             &first_combo.from_label,
@@ -2022,8 +2025,11 @@ impl TypeInference {
                             plan_ctx,
                         );
                     }
-                    let all_to_same = combinations.iter().all(|c| c.to_label == first_combo.to_label);
-                    if all_to_same && inferred_right_label.is_none() && known_right_clone.is_none() {
+                    let all_to_same = combinations
+                        .iter()
+                        .all(|c| c.to_label == first_combo.to_label);
+                    if all_to_same && inferred_right_label.is_none() && known_right_clone.is_none()
+                    {
                         self.update_node_label_in_ctx(
                             right_connection,
                             &first_combo.to_label,

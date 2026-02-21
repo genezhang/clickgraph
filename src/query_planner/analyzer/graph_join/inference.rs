@@ -79,11 +79,6 @@ impl AnalyzerPass for GraphJoinInference {
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
-        println!(
-            "DEBUG GraphJoinInference: analyze_with_graph_schema called, plan type: {:?}",
-            std::mem::discriminant(&*logical_plan)
-        );
-
         // Phase 1: Build pattern graph metadata (caches reference checks)
         let mut pattern_metadata = Self::build_pattern_metadata(&logical_plan, plan_ctx)?;
         log::debug!(
@@ -163,17 +158,6 @@ impl AnalyzerPass for GraphJoinInference {
         // Prevents duplicate traversal of same relationship in multi-hop patterns
         let uniqueness_constraints =
             crate::query_planner::analyzer::graph_join::cross_branch::generate_relationship_uniqueness_constraints(&pattern_metadata, graph_schema);
-
-        println!(
-            "DEBUG GraphJoinInference: collected_graph_joins.len() = {}",
-            collected_graph_joins.len()
-        );
-        for (i, join) in collected_graph_joins.iter().enumerate() {
-            println!(
-                "DEBUG GraphJoinInference: JOIN #{}: {} (alias {}) on {:?}",
-                i, join.table_name, join.table_alias, join.joining_on
-            );
-        }
 
         // CRITICAL: Always wrap in GraphJoins, even if empty!
         // Empty joins vector = fully denormalized pattern (no JOINs needed)
@@ -323,14 +307,73 @@ impl GraphJoinInference {
             LogicalPlan::Unwind(uw) => {
                 Self::extract_pattern_info(&uw.input, plan_ctx, metadata)?;
             }
-            LogicalPlan::WithClause(wc) => {
-                Self::extract_pattern_info(&wc.input, plan_ctx, metadata)?;
+            LogicalPlan::WithClause(_wc) => {
+                // CRITICAL: Don't recurse into WithClause! It's a scope boundary.
+                // Patterns inside belong to a different scope and should NOT be
+                // mixed with the outer scope's metadata (would create orphan
+                // cross-branch joins that crash topo_sort_joins).
             }
             // Leaf nodes - nothing to extract
             LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::PageRank(_) => {}
         }
 
         Ok(())
+    }
+
+    /// Find aliases that are fresh table scans (GraphNode → ViewScan) in a plan tree.
+    /// Stops at WithClause boundaries since those belong to a different scope.
+    fn find_fresh_table_scan_aliases(plan: &LogicalPlan) -> HashSet<String> {
+        let mut aliases = HashSet::new();
+        Self::collect_fresh_scan_aliases(plan, &mut aliases);
+        aliases
+    }
+
+    fn collect_fresh_scan_aliases(plan: &LogicalPlan, aliases: &mut HashSet<String>) {
+        match plan {
+            LogicalPlan::GraphNode(gn) => {
+                // A GraphNode with ViewScan input is a fresh table scan
+                if matches!(gn.input.as_ref(), LogicalPlan::ViewScan(_)) {
+                    aliases.insert(gn.alias.clone());
+                }
+                Self::collect_fresh_scan_aliases(&gn.input, aliases);
+            }
+            LogicalPlan::GraphRel(gr) => {
+                Self::collect_fresh_scan_aliases(&gr.left, aliases);
+                Self::collect_fresh_scan_aliases(&gr.right, aliases);
+            }
+            LogicalPlan::Projection(p) => {
+                Self::collect_fresh_scan_aliases(&p.input, aliases);
+            }
+            LogicalPlan::Filter(f) => {
+                Self::collect_fresh_scan_aliases(&f.input, aliases);
+            }
+            LogicalPlan::GroupBy(gb) => {
+                Self::collect_fresh_scan_aliases(&gb.input, aliases);
+            }
+            LogicalPlan::OrderBy(ob) => {
+                Self::collect_fresh_scan_aliases(&ob.input, aliases);
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                Self::collect_fresh_scan_aliases(&cp.left, aliases);
+                Self::collect_fresh_scan_aliases(&cp.right, aliases);
+            }
+            LogicalPlan::Unwind(uw) => {
+                Self::collect_fresh_scan_aliases(&uw.input, aliases);
+            }
+            LogicalPlan::GraphJoins(gj) => {
+                Self::collect_fresh_scan_aliases(&gj.input, aliases);
+            }
+            LogicalPlan::Skip(s) => Self::collect_fresh_scan_aliases(&s.input, aliases),
+            LogicalPlan::Limit(l) => Self::collect_fresh_scan_aliases(&l.input, aliases),
+            // Stop at WITH boundary — different scope
+            LogicalPlan::WithClause(_) => {}
+            // Leaf nodes
+            LogicalPlan::ViewScan(_)
+            | LogicalPlan::Empty
+            | LogicalPlan::PageRank(_)
+            | LogicalPlan::Cte(_)
+            | LogicalPlan::Union(_) => {}
+        }
     }
 
     /// Extract node info from an alias if not already present
@@ -833,24 +876,7 @@ impl GraphJoinInference {
                 )?;
 
                 // Get the processed child (or original if unchanged)
-                let processed_child = match &child_tf {
-                    Transformed::Yes(p) => p.clone(),
-                    Transformed::No(p) => p.clone(),
-                };
-
-                // DEBUG: Check cte_references in processed_child
-                fn count_with_cte_refs(plan: &LogicalPlan) -> usize {
-                    match plan {
-                        LogicalPlan::WithClause(wc) => {
-                            wc.cte_references.len() + count_with_cte_refs(&wc.input)
-                        }
-                        _ => 0,
-                    }
-                }
-                eprintln!(
-                    "🔬 GraphJoinInference Projection: processed_child has {} cte_references",
-                    count_with_cte_refs(&processed_child)
-                );
+                let processed_child = child_tf.get_plan();
 
                 // Build the new projection with the processed child
                 let new_projection = Arc::new(LogicalPlan::Projection(
@@ -886,14 +912,6 @@ impl GraphJoinInference {
                     if let Some(cte_name) = table_ctx.get_cte_name() {
                         cte_references.insert(alias.clone(), cte_name.clone());
                     }
-                }
-
-                println!(
-                    "DEBUG GraphJoinInference: Creating GraphJoins with {} joins",
-                    joins_with_pre_filter.len()
-                );
-                for (i, join) in joins_with_pre_filter.iter().enumerate() {
-                    println!("  JOIN #{}: {} AS {}", i, join.table_name, join.table_alias);
                 }
 
                 // Separate correlation_predicates into JOIN conditions and WHERE predicates
@@ -1435,36 +1453,220 @@ impl GraphJoinInference {
                 }
             }
             LogicalPlan::WithClause(with_clause) => {
-                // CRITICAL: WITH creates a scope boundary - DON'T traverse into it!
-                // The WithScopeSplitter pass has already marked this as a boundary.
-                // Joins should only be computed within each scope, not across scopes.
+                // WITH creates a scope boundary. Joins for the OUTER scope are computed
+                // separately (by the caller). Here we compute joins for the INNER scope
+                // (the CTE body) so that CTE rendering produces correct FROM/JOIN chains.
                 //
-                // Why: WITH materializes intermediate results. The pattern BEFORE the WITH
-                // is independent from the pattern AFTER the WITH. Computing joins across
-                // this boundary would waste work and create stale join data.
-                //
-                // Example:
-                //   MATCH (a)-[:F]->(b) WITH a, b  [Scope 1: compute joins for a→b]
-                //   MATCH (b)-[:F]->(c) RETURN c   [Scope 2: compute joins for b→c]
-                //
-                // GraphJoinInference should compute:
-                //   - Scope 1: joins for (a)-[:F]->(b)
-                //   - Scope 2: joins for (b)-[:F]->(c)
-                // NOT: joins for the entire (a)-[:F]->(b)-[:F]->(c) pattern!
+                // Without this, CTE bodies are rendered using raw GraphRel patterns which
+                // often produce wrong anchor selection, missing tables, or wrong join ordering.
                 log::info!(
-                    "⛔ GraphJoinInference: Encountered WITH scope boundary with {} exported aliases - NOT traversing",
+                    "🔧 GraphJoinInference: WITH scope boundary with {} exported aliases - processing inner scope for CTE body",
                     with_clause.exported_aliases.len()
                 );
 
-                // CRITICAL: Preserve cte_references from VariableResolver!
-                // VariableResolver already populated the correct cte_references.
-                // We should NOT overwrite them with our lookup logic.
-                eprintln!("🔬 GraphJoinInference::build_graph_joins: WithClause has {} cte_references: {:?}",
-                           with_clause.cte_references.len(), with_clause.cte_references);
+                // Step 1: Build pattern metadata for the inner scope
+                let mut inner_plan_ctx = plan_ctx.clone();
 
-                // IMPORTANT: Return the logical_plan parameter directly, NOT plan.clone()
-                // This preserves the cte_references that VariableResolver populated
-                Transformed::No(logical_plan.clone())
+                // CRITICAL: Clear CTE references for aliases that are fresh table scans
+                // in this inner scope. register_with_cte_references (called before traversal)
+                // sets CTE refs for exported aliases, but inside the CTE body those aliases
+                // may be fresh ViewScan table scans. Without clearing, GraphNode handler
+                // marks them as "already joined" and no FROM marker is created.
+                //
+                // We only clear refs for aliases that appear as GraphNode→ViewScan in the
+                // inner scope. Aliases from PREVIOUS CTEs (multi-WITH chains) are preserved.
+                let fresh_scan_aliases =
+                    Self::find_fresh_table_scan_aliases(with_clause.input.as_ref());
+                if !fresh_scan_aliases.is_empty() {
+                    log::debug!(
+                        "🔧 Inner scope: clearing CTE refs for fresh scans: {:?}",
+                        fresh_scan_aliases
+                    );
+                    for alias in &fresh_scan_aliases {
+                        if let Some(table_ctx) =
+                            inner_plan_ctx.get_mut_alias_table_ctx_map().get_mut(alias)
+                        {
+                            table_ctx.set_cte_reference(None);
+                        }
+                    }
+                }
+
+                let mut inner_metadata =
+                    Self::build_pattern_metadata(with_clause.input.as_ref(), &inner_plan_ctx)
+                        .unwrap_or_default();
+
+                // Step 2: Collect joins for the inner scope
+                let mut inner_joins = Vec::new();
+                let mut inner_join_ctx = JoinContext::new();
+                let mut inner_plan_ctx_mut = inner_plan_ctx;
+                let inner_inference = GraphJoinInference::new();
+                inner_inference.collect_graph_joins(
+                    with_clause.input.clone(),
+                    with_clause.input.clone(),
+                    &mut inner_plan_ctx_mut,
+                    graph_schema,
+                    &mut inner_joins,
+                    &mut inner_join_ctx,
+                    &HashSet::new(),
+                    &mut HashMap::new(),
+                    &inner_metadata,
+                )?;
+
+                log::debug!(
+                    "🔧 GraphJoinInference: Collected {} inner joins for WITH CTE body",
+                    inner_joins.len(),
+                );
+
+                // Step 3: Recursively process the inner plan for nested WithClauses
+                let processed_input = Self::build_graph_joins(
+                    with_clause.input.clone(),
+                    &mut Vec::new(), // Inner scope has its own joins, not outer
+                    &mut Vec::new(),
+                    HashSet::new(),
+                    plan_ctx,
+                    graph_schema,
+                    captured_cte_refs,
+                );
+                // Handle inner scope failures gracefully — don't kill outer scope
+                let (inner_was_transformed, inner_plan) = match processed_input {
+                    Ok(tf) => {
+                        let was_transformed = matches!(tf, Transformed::Yes(_));
+                        (was_transformed, tf.get_plan())
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "⚠️ Inner scope build_graph_joins failed: {:?}, using original input",
+                            e
+                        );
+                        (false, with_clause.input.clone())
+                    }
+                };
+
+                if !inner_joins.is_empty() {
+                    // Mark anchor nodes as referenced (prevents redundant cross-branch joins)
+                    for join in &inner_joins {
+                        if join.joining_on.is_empty() {
+                            if let Some(node_info) = inner_metadata.nodes.get_mut(&join.table_alias)
+                            {
+                                if !node_info.is_referenced {
+                                    node_info.is_referenced = true;
+                                }
+                            }
+                        }
+                    }
+
+                    // Generate cross-branch joins for the inner scope
+                    let cross_branch_joins =
+                        super::cross_branch::generate_cross_branch_joins_from_metadata(
+                            &inner_metadata,
+                            &inner_plan_ctx_mut,
+                            graph_schema,
+                        );
+                    match cross_branch_joins {
+                        Ok(cbs) if !cbs.is_empty() => {
+                            log::info!("🔧 Inner scope: {} cross-branch joins", cbs.len());
+                            inner_joins.extend(cbs);
+                        }
+                        Err(e) => {
+                            log::warn!("⚠️ Inner scope cross-branch failed: {:?}", e);
+                        }
+                        _ => {}
+                    }
+
+                    // Topological sort and anchor selection
+                    let anchor_table = super::join_generation::select_anchor(&inner_joins);
+                    let topo_result =
+                        super::join_generation::topo_sort_joins(inner_joins, &HashSet::new());
+
+                    match topo_result {
+                        Ok(reordered_joins) => {
+                            log::info!(
+                                "🔧 Inner scope GraphJoins: anchor={:?}, {} joins",
+                                anchor_table,
+                                reordered_joins.len()
+                            );
+
+                            // Wrap inner plan with GraphJoins
+                            let graph_joins_node = Arc::new(LogicalPlan::GraphJoins(GraphJoins {
+                                input: inner_plan.clone(),
+                                joins: reordered_joins,
+                                optional_aliases: HashSet::new(),
+                                anchor_table,
+                                cte_references: std::collections::HashMap::new(),
+                                correlation_predicates: vec![],
+                            }));
+
+                            // Return modified WithClause with GraphJoins-wrapped input
+                            Transformed::Yes(Arc::new(LogicalPlan::WithClause(
+                                crate::query_planner::logical_plan::WithClause {
+                                    input: graph_joins_node,
+                                    items: with_clause.items.clone(),
+                                    exported_aliases: with_clause.exported_aliases.clone(),
+                                    distinct: with_clause.distinct,
+                                    order_by: with_clause.order_by.clone(),
+                                    skip: with_clause.skip,
+                                    limit: with_clause.limit,
+                                    where_clause: with_clause.where_clause.clone(),
+                                    cte_name: with_clause.cte_name.clone(),
+                                    cte_references: with_clause.cte_references.clone(),
+                                    pattern_comprehensions: with_clause
+                                        .pattern_comprehensions
+                                        .clone(),
+                                },
+                            )))
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "⚠️ Inner scope topo_sort failed: {:?}, skipping GraphJoins for this scope",
+                                e
+                            );
+                            // Fall back: propagate inner plan transformation if any
+                            if inner_was_transformed {
+                                Transformed::Yes(Arc::new(LogicalPlan::WithClause(
+                                    crate::query_planner::logical_plan::WithClause {
+                                        input: inner_plan,
+                                        items: with_clause.items.clone(),
+                                        exported_aliases: with_clause.exported_aliases.clone(),
+                                        distinct: with_clause.distinct,
+                                        order_by: with_clause.order_by.clone(),
+                                        skip: with_clause.skip,
+                                        limit: with_clause.limit,
+                                        where_clause: with_clause.where_clause.clone(),
+                                        cte_name: with_clause.cte_name.clone(),
+                                        cte_references: with_clause.cte_references.clone(),
+                                        pattern_comprehensions: with_clause
+                                            .pattern_comprehensions
+                                            .clone(),
+                                    },
+                                )))
+                            } else {
+                                Transformed::No(logical_plan.clone())
+                            }
+                        }
+                    }
+                } else {
+                    // No joins in inner scope (e.g., bare node scan, CTE-only)
+                    // Still propagate nested WithClause processing
+                    if inner_was_transformed {
+                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(
+                            crate::query_planner::logical_plan::WithClause {
+                                input: inner_plan,
+                                items: with_clause.items.clone(),
+                                exported_aliases: with_clause.exported_aliases.clone(),
+                                distinct: with_clause.distinct,
+                                order_by: with_clause.order_by.clone(),
+                                skip: with_clause.skip,
+                                limit: with_clause.limit,
+                                where_clause: with_clause.where_clause.clone(),
+                                cte_name: with_clause.cte_name.clone(),
+                                cte_references: with_clause.cte_references.clone(),
+                                pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
+                            },
+                        )))
+                    } else {
+                        Transformed::No(logical_plan.clone())
+                    }
+                }
             }
         };
         Ok(transformed_plan)

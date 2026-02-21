@@ -1699,7 +1699,9 @@ impl LogicalPlan {
         match self {
             LogicalPlan::GraphJoins(gj) => {
                 // Collect all matching aliases and pick the smallest for determinism
-                let mut matches: Vec<&String> = gj.cte_references.iter()
+                let mut matches: Vec<&String> = gj
+                    .cte_references
+                    .iter()
                     .filter(|(_, name)| name.as_str() == cte_name)
                     .map(|(alias, _)| alias)
                     .collect();
@@ -1716,7 +1718,9 @@ impl LogicalPlan {
             LogicalPlan::Projection(p) => p.input.find_cte_original_alias(cte_name),
             LogicalPlan::Filter(f) => f.input.find_cte_original_alias(cte_name),
             LogicalPlan::GraphRel(gr) => {
-                let mut matches: Vec<&String> = gr.cte_references.iter()
+                let mut matches: Vec<&String> = gr
+                    .cte_references
+                    .iter()
                     .filter(|(_, name)| name.as_str() == cte_name)
                     .map(|(alias, _)| alias)
                     .collect();

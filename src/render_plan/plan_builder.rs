@@ -1015,11 +1015,16 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Generate unique names to avoid conflicts
                     let vlp_alias = format!("__vlp_{}_{}", gr.left_connection, gr.right_connection);
                     let cte_name = format!("vlp_{}_{}", gr.left_connection, gr.right_connection);
-                    let start_id_column = extract_id_column(&gr.left).ok_or_else(|| {
-                        RenderBuildError::MissingTableInfo(
-                            "start node ID column for optional VLP".to_string(),
-                        )
-                    })?;
+                    // Use extract_end_node_id_column instead of extract_id_column
+                    // because when gr.left is a nested GraphRel (e.g., (person)<-[:HAS_CREATOR]-(message)),
+                    // extract_id_column follows rel.center (relationship table) returning e.g. "MessageId",
+                    // while extract_end_node_id_column follows rel.right (end node) returning the correct "id".
+                    let start_id_column =
+                        extract_end_node_id_column(&gr.left).ok_or_else(|| {
+                            RenderBuildError::MissingTableInfo(
+                                "start node ID column for optional VLP".to_string(),
+                            )
+                        })?;
 
                     // Create join condition using the dynamic VLP alias and start node ID column
                     let join_condition = OperatorApplication {

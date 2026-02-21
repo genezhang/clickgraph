@@ -428,7 +428,8 @@ pub(crate) fn extract_var_len_properties(
                                 if let Some(node_schema) = schema.all_node_schemas().get(node_label)
                                 {
                                     // Create a property for each mapping (sorted for deterministic ordering)
-                                    let mut sorted_props: Vec<_> = node_schema.property_mappings.iter().collect();
+                                    let mut sorted_props: Vec<_> =
+                                        node_schema.property_mappings.iter().collect();
                                     sorted_props.sort_by_key(|(k, _)| k.as_str());
                                     for (prop_name, prop_value) in sorted_props {
                                         properties.push(NodeProperty {

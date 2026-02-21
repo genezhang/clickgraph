@@ -1315,7 +1315,9 @@ impl LogicalPlan {
                         Some((_, current_name, current_seq)) => {
                             if seq_num > *current_seq
                                 || (seq_num == *current_seq && cte_name.len() > current_name.len())
-                                || (seq_num == *current_seq && cte_name.len() == current_name.len() && cte_name.as_str() > current_name.as_str())
+                                || (seq_num == *current_seq
+                                    && cte_name.len() == current_name.len()
+                                    && cte_name.as_str() > current_name.as_str())
                             {
                                 best_cte = Some((alias, cte_name, seq_num));
                             }

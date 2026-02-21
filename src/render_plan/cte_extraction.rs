@@ -1896,10 +1896,12 @@ pub fn extract_ctes_with_context(
                 // Also extract labels for filter categorization and property extraction
                 // These are optional - not all nodes have labels (e.g., CTEs)
                 // ✅ FIX: Use schema-aware label extraction to support multi-schema queries
-                let start_label = extract_node_label_from_viewscan_with_schema(&graph_rel.left, schema)
-                    .unwrap_or_default();
-                let end_label = extract_node_label_from_viewscan_with_schema(&graph_rel.right, schema)
-                    .unwrap_or_default();
+                let start_label =
+                    extract_node_label_from_viewscan_with_schema(&graph_rel.left, schema)
+                        .unwrap_or_default();
+                let end_label =
+                    extract_node_label_from_viewscan_with_schema(&graph_rel.right, schema)
+                        .unwrap_or_default();
 
                 // 🔧 PARAMETERIZED VIEW FIX: Get rel_table with parameterized view syntax if applicable
                 // First try to extract parameterized table from ViewScan, fallback to schema lookup
@@ -2530,7 +2532,8 @@ pub fn extract_ctes_with_context(
                             // Get the node's ID column to skip it from properties
                             let start_id_column = start_node_schema.node_id.column();
                             // Sort keys for deterministic column ordering
-                            let mut sorted_props: Vec<_> = start_node_schema.property_mappings.iter().collect();
+                            let mut sorted_props: Vec<_> =
+                                start_node_schema.property_mappings.iter().collect();
                             sorted_props.sort_by_key(|(k, _)| k.as_str());
                             for (prop_name, prop_value) in sorted_props {
                                 // Skip ID property - it's already added as start_id/end_id in CTE
@@ -2566,7 +2569,8 @@ pub fn extract_ctes_with_context(
                             // Get the node's ID column to skip it from properties
                             let end_id_column = end_node_schema.node_id.column();
                             // Sort keys for deterministic column ordering
-                            let mut sorted_props: Vec<_> = end_node_schema.property_mappings.iter().collect();
+                            let mut sorted_props: Vec<_> =
+                                end_node_schema.property_mappings.iter().collect();
                             sorted_props.sort_by_key(|(k, _)| k.as_str());
                             for (prop_name, prop_value) in sorted_props {
                                 // Skip ID property - it's already added as start_id/end_id in CTE

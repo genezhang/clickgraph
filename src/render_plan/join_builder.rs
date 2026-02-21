@@ -1497,18 +1497,19 @@ impl JoinBuilder for LogicalPlan {
                             );
 
                             // Check if non_shared_alias matches an immediate connection of the deeper GraphRel
-                            let non_shared_at_immediate =
-                                non_shared_alias == &deeper_rel.right_connection
-                                    || non_shared_alias == &deeper_rel.left_connection;
+                            let non_shared_at_immediate = non_shared_alias
+                                == &deeper_rel.right_connection
+                                || non_shared_alias == &deeper_rel.left_connection;
 
                             if non_shared_at_immediate {
                                 // Non-shared node is directly accessible from the deeper GraphRel
                                 // Extract from the matching side (right if right_connection matches, else left)
-                                let (imm_plan, use_end) = if non_shared_alias == &deeper_rel.right_connection {
-                                    (&deeper_rel.right, true)
-                                } else {
-                                    (&deeper_rel.left, false)
-                                };
+                                let (imm_plan, use_end) =
+                                    if non_shared_alias == &deeper_rel.right_connection {
+                                        (&deeper_rel.right, true)
+                                    } else {
+                                        (&deeper_rel.left, false)
+                                    };
                                 let immediate_table = if use_end {
                                     extract_end_node_table_name(imm_plan)
                                 } else {
@@ -1519,7 +1520,8 @@ impl JoinBuilder for LogicalPlan {
                                         extract_end_node_id_column(imm_plan)
                                     } else {
                                         extract_id_column(imm_plan)
-                                    }.unwrap_or_else(|| "id".to_string());
+                                    }
+                                    .unwrap_or_else(|| "id".to_string());
 
                                     let immediate_label =
                                         extract_node_label_from_viewscan(imm_plan);
@@ -1569,7 +1571,8 @@ impl JoinBuilder for LogicalPlan {
                                     });
 
                                 if let Some((non_shared_table, from_label)) = non_shared_table_opt {
-                                    let non_shared_node_id: Identifier = schema.node_schema_opt(&from_label)
+                                    let non_shared_node_id: Identifier = schema
+                                        .node_schema_opt(&from_label)
                                         .map(|ns| ns.node_id.id.clone())
                                         .unwrap_or_else(|| Identifier::Single("id".to_string()));
                                     let non_shared_conditions = build_identifier_join_conditions(
@@ -1593,11 +1596,10 @@ impl JoinBuilder for LogicalPlan {
                             }
 
                             // Recursively extract JOINs for the deeper GraphRel chain
-                            let mut deeper_joins =
-                                <LogicalPlan as JoinBuilder>::extract_joins(
-                                    &inner_rel.left,
-                                    schema,
-                                )?;
+                            let mut deeper_joins = <LogicalPlan as JoinBuilder>::extract_joins(
+                                &inner_rel.left,
+                                schema,
+                            )?;
                             println!(
                                 "  ↳ Got {} deeper joins from recursive extraction",
                                 deeper_joins.len()
@@ -1695,17 +1697,18 @@ impl JoinBuilder for LogicalPlan {
                             );
 
                             // Check if non_shared_alias matches an immediate connection of deeper GraphRel
-                            let non_shared_at_immediate =
-                                non_shared_alias == &deeper_rel.left_connection
-                                    || non_shared_alias == &deeper_rel.right_connection;
+                            let non_shared_at_immediate = non_shared_alias
+                                == &deeper_rel.left_connection
+                                || non_shared_alias == &deeper_rel.right_connection;
 
                             if non_shared_at_immediate {
                                 // Non-shared node is directly accessible from the deeper GraphRel
-                                let (imm_plan, use_end) = if non_shared_alias == &deeper_rel.left_connection {
-                                    (&deeper_rel.left, false)
-                                } else {
-                                    (&deeper_rel.right, true)
-                                };
+                                let (imm_plan, use_end) =
+                                    if non_shared_alias == &deeper_rel.left_connection {
+                                        (&deeper_rel.left, false)
+                                    } else {
+                                        (&deeper_rel.right, true)
+                                    };
                                 let immediate_table = if use_end {
                                     extract_end_node_table_name(imm_plan)
                                 } else {
@@ -1716,7 +1719,8 @@ impl JoinBuilder for LogicalPlan {
                                         extract_end_node_id_column(imm_plan)
                                     } else {
                                         extract_id_column(imm_plan)
-                                    }.unwrap_or_else(|| "id".to_string());
+                                    }
+                                    .unwrap_or_else(|| "id".to_string());
 
                                     let immediate_label =
                                         extract_node_label_from_viewscan(imm_plan);
@@ -1765,7 +1769,8 @@ impl JoinBuilder for LogicalPlan {
                                     });
 
                                 if let Some((non_shared_table, to_label)) = non_shared_table_opt {
-                                    let non_shared_node_id: Identifier = schema.node_schema_opt(&to_label)
+                                    let non_shared_node_id: Identifier = schema
+                                        .node_schema_opt(&to_label)
                                         .map(|ns| ns.node_id.id.clone())
                                         .unwrap_or_else(|| Identifier::Single("id".to_string()));
                                     let non_shared_conditions = build_identifier_join_conditions(
@@ -1789,11 +1794,10 @@ impl JoinBuilder for LogicalPlan {
                             }
 
                             // Recursively extract JOINs for the deeper GraphRel chain
-                            let mut deeper_joins =
-                                <LogicalPlan as JoinBuilder>::extract_joins(
-                                    &inner_rel.right,
-                                    schema,
-                                )?;
+                            let mut deeper_joins = <LogicalPlan as JoinBuilder>::extract_joins(
+                                &inner_rel.right,
+                                schema,
+                            )?;
                             println!(
                                 "  ↳ Got {} deeper joins from recursive extraction",
                                 deeper_joins.len()
@@ -2065,9 +2069,11 @@ impl JoinBuilder for LogicalPlan {
                             get_start_table_name_or_cte(&graph_rel.left).ok()
                         })
                         .or_else(|| get_table_from_rel_schema(&graph_rel.labels, true))
-                        .ok_or_else(|| RenderBuildError::MissingTableInfo(
-                            "start node table in extract_joins (multi-hop)".to_string()
-                        ))?
+                        .ok_or_else(|| {
+                            RenderBuildError::MissingTableInfo(
+                                "start node table in extract_joins (multi-hop)".to_string(),
+                            )
+                        })?
                 } else {
                     get_start_table_name_or_cte(&graph_rel.left).or_else(|_| {
                         get_table_from_rel_schema(&graph_rel.labels, true).ok_or_else(|| {
