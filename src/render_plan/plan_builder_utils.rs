@@ -5171,8 +5171,49 @@ pub(crate) fn expand_table_alias_to_select_items(
         }
     }
 
+    // STEP 4: Fallback - use PlanCtx + schema to get properties
+    // This handles cases where the alias exists in JOINs but its GraphNode isn't in the plan tree,
+    // e.g., shared variables in comma-separated MATCH patterns:
+    //   MATCH (a:Person)-[:IS_LOCATED_IN]->(:City), (a)-[:KNOWS]-(b:Person)
+    //   WITH a, b  -- 'a' is in JOINs but its GraphNode has Empty input
+    if let Some(ctx) = plan_ctx {
+        if let Ok(table_ctx) = ctx.get_table_ctx(alias) {
+            if let Some(label) = table_ctx.get_label_opt() {
+                if let Ok(node_schema) = ctx.schema().node_schema(&label) {
+                    let properties = extract_sorted_properties(&node_schema.property_mappings);
+                    if !properties.is_empty() {
+                        let id_col = node_schema.node_id.id.columns().first()
+                            .unwrap_or(&"id")
+                            .to_string();
+                        let property_requirements = ctx.get_property_requirements();
+
+                        use crate::render_plan::property_expansion::{
+                            expand_alias_to_select_items_unified, PropertyAliasFormat,
+                        };
+                        let items = expand_alias_to_select_items_unified(
+                            alias,
+                            properties,
+                            &id_col,
+                            Some(alias.to_string()),
+                            has_aggregation,
+                            PropertyAliasFormat::Underscore,
+                            property_requirements,
+                        );
+
+                        log::info!(
+                            "🔧 expand_table_alias_to_select_items: Found alias '{}' via schema fallback (label='{}', {} properties)",
+                            alias, label, items.len()
+                        );
+
+                        return items;
+                    }
+                }
+            }
+        }
+    }
+
     log::debug!(
-        "🔧 expand_table_alias_to_select_items: Alias '{}' not found (not in CTE refs, not in base tables)",
+        "🔧 expand_table_alias_to_select_items: Alias '{}' not found (not in CTE refs, not in base tables, not in schema)",
         alias
     );
     Vec::new()
