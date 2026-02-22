@@ -531,6 +531,23 @@ impl LogicalPlan {
 
         // DEFAULT BEHAVIOR: Use left as primary, right as fallback
         // This works for most patterns where the required node is on the left.
+        // IMPORTANT: If left is Empty AND right is CTE-backed (common in UNION reverse
+        // branches for undirected edges after WITH), use the right side as FROM.
+        // Empty returns system.one which is incorrect when a CTE node exists on the right.
+        // We only do this for CTE-backed nodes (source_table starts with "with_") because
+        // for regular tables, the existing system.one + JOIN approach works correctly.
+        if matches!(graph_rel.left.as_ref(), LogicalPlan::Empty) {
+            if let Some(right_table) = extract_table_name(&graph_rel.right) {
+                if is_generated_cte_name(&right_table) {
+                    log::debug!(
+                        "🔍 extract_from_graph_rel: left is Empty, right is CTE '{}', using right as FROM",
+                        right_table
+                    );
+                    return Ok(from_table_to_view_ref(graph_rel.right.extract_from()?));
+                }
+            }
+        }
+
         let (primary_from, fallback_from) = (
             graph_rel.left.extract_from(),
             graph_rel.right.extract_from(),
