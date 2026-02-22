@@ -35,8 +35,8 @@ use std::{
 // Import metadata module types and functions
 use super::helpers;
 use super::metadata::{
-    plan_references_alias as metadata_plan_references_alias, PatternEdgeInfo, PatternGraphMetadata,
-    PatternNodeInfo,
+    expr_references_alias, plan_references_alias as metadata_plan_references_alias,
+    PatternEdgeInfo, PatternGraphMetadata, PatternNodeInfo,
 };
 
 use crate::{
@@ -1494,6 +1494,36 @@ impl GraphJoinInference {
                 let mut inner_metadata =
                     Self::build_pattern_metadata(with_clause.input.as_ref(), &inner_plan_ctx)
                         .unwrap_or_default();
+
+                // WITH items, WHERE, and ORDER BY reference aliases from the inner
+                // scope. build_pattern_metadata only checks with_clause.input,
+                // so nodes referenced solely in these clauses appear unreferenced,
+                // causing SingleTableScan to wrongly fire. Fix: scan all WITH
+                // sub-expressions for alias references.
+                let mark_references = |expr: &LogicalExpr, metadata: &mut PatternGraphMetadata| {
+                    for (alias, node_info) in metadata.nodes.iter_mut() {
+                        if !node_info.is_referenced && expr_references_alias(expr, alias) {
+                            node_info.is_referenced = true;
+                        }
+                    }
+                    for edge_info in metadata.edges.iter_mut() {
+                        if !edge_info.is_referenced && expr_references_alias(expr, &edge_info.alias)
+                        {
+                            edge_info.is_referenced = true;
+                        }
+                    }
+                };
+                for item in &with_clause.items {
+                    mark_references(&item.expression, &mut inner_metadata);
+                }
+                if let Some(where_expr) = &with_clause.where_clause {
+                    mark_references(where_expr, &mut inner_metadata);
+                }
+                if let Some(order_items) = &with_clause.order_by {
+                    for ob in order_items {
+                        mark_references(&ob.expression, &mut inner_metadata);
+                    }
+                }
 
                 // Step 2: Collect joins for the inner scope
                 let mut inner_joins = Vec::new();
