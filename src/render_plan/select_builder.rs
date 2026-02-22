@@ -887,6 +887,67 @@ impl SelectBuilder for LogicalPlan {
                                 col_name
                             );
 
+                            // 🔧 FIX: Check if this is a multi-type VLP endpoint first
+                            // Multi-type VLP endpoints need JSON extraction, not direct column access
+                            if let Some(gr) = self.find_graph_rel_for_alias(cypher_alias) {
+                                let is_multi_type_vlp =
+                                    gr.labels.as_ref().is_some_and(|l| l.len() > 1);
+                                let has_pattern_combinations = gr.pattern_combinations.is_some();
+
+                                if is_multi_type_vlp || has_pattern_combinations {
+                                    // For VLP multi-type, CTE alias is "t"
+                                    // For pattern_combinations, CTE alias is the relationship alias
+                                    let cte_alias = if has_pattern_combinations {
+                                        gr.alias.clone()
+                                    } else {
+                                        "t".to_string()
+                                    };
+                                    let position = if gr.left_connection == *cypher_alias {
+                                        "start"
+                                    } else {
+                                        "end"
+                                    };
+
+                                    log::info!(
+                                        "🎯 Multi-type VLP property access: '{}.{}' -> extracting from {}_properties JSON in CTE '{}'",
+                                        cypher_alias, col_name, position, cte_alias
+                                    );
+
+                                    // Extract property from JSON blob using JSONExtractString
+                                    // JSONExtractString(json_column, 'property_name')
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::ScalarFnCall(ScalarFnCall {
+                                            name: "JSONExtractString".to_string(),
+                                            args: vec![
+                                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                    table_alias: RenderTableAlias(
+                                                        cte_alias.clone(),
+                                                    ),
+                                                    column: PropertyValue::Column(format!(
+                                                        "{}_properties",
+                                                        position
+                                                    )),
+                                                }),
+                                                RenderExpr::Literal(Literal::String(
+                                                    col_name.to_string(),
+                                                )),
+                                            ],
+                                        }),
+                                        col_alias: item
+                                            .col_alias
+                                            .as_ref()
+                                            .map(|ca| ColumnAlias(ca.0.clone()))
+                                            .or_else(|| {
+                                                Some(ColumnAlias(format!(
+                                                    "{}.{}",
+                                                    cypher_alias, col_name
+                                                )))
+                                            }),
+                                    });
+                                    continue;
+                                }
+                            }
+
                             // ✅ DETERMINISTIC LOGIC: Check if this variable comes from a CTE
                             // VLP endpoint nodes and WITH clause variables are CTE-sourced
                             // For CTE variables, properties should reference the CTE alias directly,
