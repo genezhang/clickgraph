@@ -334,8 +334,13 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             // IMPORTANT: Empty CTE must have ALL columns that non-empty CTEs have for UNION compatibility
             // Columns: end_type, end_id, start_id, start_type, end_properties, start_properties,
             //          hop_count, path_relationships, rel_properties
+<<<<<<< fix/vlp-heterogeneous-multi-type
             // Use native types for ID columns to match non-empty CTEs
             return Ok("SELECT '' AS end_type, CAST(0, 'UInt64') AS end_id, CAST(0, 'UInt64') AS start_id, '' AS start_type, '{}' AS end_properties, '{}' AS start_properties, 0 AS hop_count, CAST([], 'Array(String)') AS path_relationships, CAST([], 'Array(String)') AS rel_properties WHERE 0 = 1".to_string());
+=======
+            // Use proper types for all columns to match the non-empty CTE
+            return Ok("SELECT '' AS end_type, CAST('', 'String') AS end_id, CAST('', 'String') AS start_id, '' AS start_type, '{}' AS end_properties, '{}' AS start_properties, 0 AS hop_count, CAST([], 'Array(String)') AS path_relationships, CAST([], 'Array(String)') AS rel_properties WHERE 0 = 1".to_string());
+>>>>>>> main
         }
 
         log::error!(
