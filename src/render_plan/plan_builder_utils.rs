@@ -10964,8 +10964,13 @@ pub(crate) fn collapse_passthrough_with(
 ///
 /// This function:
 /// 1. Traverses the plan to find GraphJoins nodes
-/// 2. Removes joins where BOTH endpoints are in the exported_aliases set
-/// 3. Keeps joins where at least one endpoint is NOT in the CTE
+/// 2. Identifies CTE-backed joins (alias in exported_aliases set)
+/// 3. Uses position-aware pruning strategy:
+///    - Prefix: CTE join is at the start of the chain → remove all joins up to
+///      and including the last CTE join (they are materialized in the CTE)
+///    - Suffix/middle: CTE join is at the end or middle → only remove the CTE
+///      join itself, keeping intermediate relationship joins that connect FROM
+///      to the CTE node
 pub(crate) fn prune_joins_covered_by_cte(
     plan: &LogicalPlan,
     cte_name: &str,
@@ -11020,10 +11025,16 @@ pub(crate) fn prune_joins_covered_by_cte(
                     last_cte_idx
                 );
 
-                // Determine pruning strategy: if the CTE join is a prefix (first few joins
-                // lead to the CTE node), remove everything up to the CTE join.
-                // Otherwise (CTE join is in the middle or at the end), only remove
-                // the CTE join itself.
+                // Determine pruning strategy based on CTE join position.
+                // This is a positional heuristic: if the CTE join appears in the first
+                // half of the chain, it's likely a prefix (pre-WITH nodes leading to CTE),
+                // so we remove everything up to and including it. If it appears in the
+                // second half, it's likely a suffix (post-WITH relationships connecting TO
+                // the CTE), so we only remove the CTE join itself.
+                //
+                // NOTE: This heuristic works for all known LDBC patterns but could produce
+                // incorrect results for chains where a CTE join is in the exact middle.
+                // A more robust approach would use structural analysis of join connectivity.
                 let is_prefix_cte = first_cte_idx == 0 || (last_cte_idx < gj.joins.len() / 2);
 
                 for (idx, join) in gj.joins.iter().enumerate() {
@@ -11207,8 +11218,9 @@ pub(crate) fn prune_joins_covered_by_cte(
 ///
 /// This function:
 /// 1. Traverses the plan to find GraphJoins nodes
-/// 2. Removes joins where BOTH endpoints are in the exported_aliases set
-/// 3. Keeps joins where at least one endpoint is NOT in the CTE
+/// 2. Identifies CTE-backed joins and uses position-aware pruning
+///    (see `prune_joins_covered_by_cte` for details)
+/// 3. Replaces the WITH clause with a CTE reference
 pub(crate) fn replace_with_clause_with_cte_reference_v2(
     plan: &LogicalPlan,
     with_alias: &str,
