@@ -988,6 +988,19 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                         properties.len()
                     );
 
+                    // 🔧 FIX: Always generate start_properties JSON blob for single-type start nodes
+                    // The outer SELECT uses JSONExtractString(t.start_properties, 'prop')
+                    // even when Individual mode is selected
+                    if self.start_labels.len() == 1 {
+                        if let Some(node_schema) = self.schema.all_node_schemas().get(start_type) {
+                            let json_sql = generate_json_properties_from_schema_without_aliases(
+                                node_schema,
+                                start_alias_sql,
+                            );
+                            items.push(format!("{} AS start_properties", json_sql));
+                        }
+                    }
+
                     for prop_info in properties {
                         items.push(format!(
                             "{}.{} AS start_{}",

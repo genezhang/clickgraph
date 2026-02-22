@@ -203,13 +203,25 @@ fn transform_bidirectional(
                     ));
                 }
 
+                // 🔧 FIX: Use UNION DISTINCT when Projection has DISTINCT
+                // This ensures deduplication across bidirectional branches
+                let union_type = if proj.distinct {
+                    crate::debug_print!(
+                        "🔄 BidirectionalUnion: Using UNION DISTINCT (Projection has DISTINCT)"
+                    );
+                    UnionType::Distinct
+                } else {
+                    UnionType::All
+                };
+
                 let union = Union {
                     inputs: branches,
-                    union_type: UnionType::All,
+                    union_type,
                 };
 
                 crate::debug_print!(
-                    "🔄 BidirectionalUnion: Created UNION ALL with {} branches (with column swaps)",
+                    "🔄 BidirectionalUnion: Created UNION {:?} with {} branches (with column swaps)",
+                    union.union_type,
                     union.inputs.len()
                 );
 
