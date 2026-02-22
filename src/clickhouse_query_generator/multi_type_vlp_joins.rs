@@ -177,6 +177,109 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         }
     }
 
+    /// Get the ID type (SchemaType) for a node label
+    ///
+    /// Returns None if the node label is not found in the schema.
+    fn get_node_id_type(
+        &self,
+        node_label: &str,
+    ) -> Option<crate::graph_catalog::schema_types::SchemaType> {
+        self.schema
+            .all_node_schemas()
+            .get(node_label)
+            .map(|node_schema| node_schema.node_id.dtype.clone())
+    }
+
+    /// Check if heterogeneous end node types have incompatible ID types
+    ///
+    /// Returns true if end nodes have different ID types (e.g., one Integer, one String)
+    /// and we need to convert all end_id values to String for UNION compatibility.
+    fn needs_string_conversion_for_end_id(&self) -> bool {
+        if self.end_labels.len() <= 1 {
+            return false;
+        }
+
+        let types: Vec<_> = self
+            .end_labels
+            .iter()
+            .filter_map(|label| self.get_node_id_type(label))
+            .collect();
+
+        if types.is_empty() {
+            return false;
+        }
+
+        // Check if all types are the same
+        let first = &types[0];
+        !types
+            .iter()
+            .all(|t| std::mem::discriminant(t) == std::mem::discriminant(first))
+    }
+
+    /// Get a unified ID type for end nodes (for UNION compatibility)
+    ///
+    /// If all end nodes have the same type, return that type.
+    /// If different types, return String (safe common type).
+    fn get_unified_end_id_type(&self) -> crate::graph_catalog::schema_types::SchemaType {
+        if self.needs_string_conversion_for_end_id() {
+            // Heterogeneous types - use String as common type
+            crate::graph_catalog::schema_types::SchemaType::String
+        } else if let Some(first_end_label) = self.end_labels.first() {
+            // All same type (or single end type) - use that type
+            self.get_node_id_type(first_end_label)
+                .unwrap_or(crate::graph_catalog::schema_types::SchemaType::Integer)
+        } else {
+            // Fallback
+            crate::graph_catalog::schema_types::SchemaType::Integer
+        }
+    }
+
+    /// Generate SQL for an empty CTE placeholder with correct types
+    ///
+    /// This is used when no valid paths are found but we need a syntactically valid CTE
+    /// for UNION compatibility.
+    fn generate_empty_cte_sql(&self) -> String {
+        use crate::graph_catalog::schema_types::SchemaType;
+
+        // Get the start node's ID type
+        let start_id_type = self
+            .start_labels
+            .first()
+            .and_then(|label| self.get_node_id_type(label))
+            .unwrap_or(SchemaType::Integer);
+
+        // Get unified end ID type (handles heterogeneous end types)
+        let end_id_type = self.get_unified_end_id_type();
+
+        // Check if start_id needs String conversion for UNION compatibility
+        // (when end_id is String due to heterogeneous types)
+        let start_id_needs_string = self.needs_string_conversion_for_end_id();
+
+        let start_id_sql = if start_id_needs_string {
+            "CAST('', 'String')".to_string()
+        } else {
+            format!(
+                "CAST({}, '{}')",
+                start_id_type.default_value(),
+                start_id_type.to_clickhouse_type()
+            )
+        };
+
+        let end_id_sql = format!(
+            "CAST({}, '{}')",
+            end_id_type.default_value(),
+            end_id_type.to_clickhouse_type()
+        );
+
+        format!(
+            "SELECT '' AS end_type, {} AS end_id, {} AS start_id, '' AS start_type, \
+             '{{}}' AS end_properties, '{{}}' AS start_properties, \
+             0 AS hop_count, CAST([], 'Array(String)') AS path_relationships, \
+             CAST([], 'Array(String)') AS rel_properties WHERE 0 = 1",
+            end_id_sql, start_id_sql
+        )
+    }
+
     /// Add a property projection for heterogeneous types
     pub fn add_property(
         &mut self,
@@ -332,10 +435,8 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             // Return an empty-result CTE instead of an error so UNION branches
             // with no valid paths are silently skipped
             // IMPORTANT: Empty CTE must have ALL columns that non-empty CTEs have for UNION compatibility
-            // Columns: end_type, end_id, start_id, start_type, end_properties, start_properties,
-            //          hop_count, path_relationships, rel_properties
-            // Use proper types for all columns to match the non-empty CTE
-            return Ok("SELECT '' AS end_type, CAST('', 'String') AS end_id, CAST('', 'String') AS start_id, '' AS start_type, '{}' AS end_properties, '{}' AS start_properties, 0 AS hop_count, CAST([], 'Array(String)') AS path_relationships, CAST([], 'Array(String)') AS rel_properties WHERE 0 = 1".to_string());
+            // Use proper types based on schema for ID columns
+            return Ok(self.generate_empty_cte_sql());
         }
 
         log::error!(
@@ -586,8 +687,8 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
     ///
     /// Output columns follow the VLP CTE convention:
     /// - `end_type`: Discriminator for the end node type (e.g., 'User', 'Post')  
-    /// - `end_id`: ID of the end node as String (handles single/composite IDs)
-    /// - `start_id`: ID of the start node as String (handles single/composite IDs)
+    /// - `end_id`: ID of the end node (native type or String for heterogeneous)
+    /// - `start_id`: ID of the start node (native type)
     /// - `end_properties`: JSON string containing all node properties
     /// - `hop_count`: Number of hops in the path (for length(p) function)
     /// - `path_relationships`: Array of relationship types (for relationships(p) function)
@@ -611,22 +712,46 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         // Add type discriminator column
         items.push(format!("'{}' AS end_type", node_type));
 
-        // Add end node ID as String (handles UNION type compatibility)
+        // Determine if we need String conversion for heterogeneous end types
+        let needs_string_conversion = self.needs_string_conversion_for_end_id();
+
+        // Add end node ID
+        // - For heterogeneous types with incompatible IDs: convert to String
+        // - For homogeneous types: use native type for WHERE clause compatibility
         if let Ok(node_schema) = self
             .schema
             .all_node_schemas()
             .get(node_type)
             .ok_or("Node not found")
         {
-            let end_id_sql = format!(
-                "{} AS {}",
-                node_schema.node_id.id.to_pipe_joined_sql(node_alias),
-                VLP_END_ID_COLUMN
-            );
+            let end_id_sql = if needs_string_conversion {
+                // Convert to String for UNION compatibility across heterogeneous types
+                // Handle both single and composite IDs
+                match &node_schema.node_id.id {
+                    Identifier::Single(col) => {
+                        format!("toString({}.{}) AS {}", node_alias, col, VLP_END_ID_COLUMN)
+                    }
+                    Identifier::Composite(cols) => {
+                        // Composite ID: concatenate all parts with delimiter
+                        let parts: Vec<String> = cols
+                            .iter()
+                            .map(|c| format!("toString({}.{})", node_alias, c))
+                            .collect();
+                        format!("concat({}, '|') AS {}", parts.join(", "), VLP_END_ID_COLUMN)
+                    }
+                }
+            } else {
+                // Use native type
+                format!(
+                    "{} AS {}",
+                    node_schema.node_id.id.to_sql_native(node_alias),
+                    VLP_END_ID_COLUMN
+                )
+            };
             items.push(end_id_sql);
         }
 
-        // Add start node ID as String
+        // Add start node ID - always use native type (all branches have same start type)
         if let Ok(start_type) = self.start_labels.first().ok_or("No start type") {
             if let Ok(node_schema) = self
                 .schema
@@ -634,11 +759,34 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 .get(start_type)
                 .ok_or("Node not found")
             {
-                let start_id_sql = format!(
-                    "{} AS {}",
-                    node_schema.node_id.id.to_pipe_joined_sql(start_alias_sql),
-                    VLP_START_ID_COLUMN
-                );
+                let start_id_sql = if needs_string_conversion {
+                    // Convert to String for UNION compatibility
+                    match &node_schema.node_id.id {
+                        Identifier::Single(col) => {
+                            format!(
+                                "toString({}.{}) AS {}",
+                                start_alias_sql, col, VLP_START_ID_COLUMN
+                            )
+                        }
+                        Identifier::Composite(cols) => {
+                            let parts: Vec<String> = cols
+                                .iter()
+                                .map(|c| format!("toString({}.{})", start_alias_sql, c))
+                                .collect();
+                            format!(
+                                "concat({}, '|') AS {}",
+                                parts.join(", "),
+                                VLP_START_ID_COLUMN
+                            )
+                        }
+                    }
+                } else {
+                    format!(
+                        "{} AS {}",
+                        node_schema.node_id.id.to_sql_native(start_alias_sql),
+                        VLP_START_ID_COLUMN
+                    )
+                };
                 items.push(start_id_sql);
             }
         }

@@ -350,11 +350,17 @@ fn find_edges_from_node<'a>(
         );
 
         // Match by relationship type (handle both simple and composite keys)
-        let matches_type = if key.contains("::") {
-            // Composite key: "TYPE::FROM::TO"
+        // rel_type can be either:
+        // - Simple type: "FOLLOWS" (match any schema key with that base type)
+        // - Composite key: "FOLLOWS::User::User" (require exact match)
+        let matches_type = if rel_type.contains("::") {
+            // rel_type is a composite key - require exact match with schema key
+            key == rel_type
+        } else if key.contains("::") {
+            // rel_type is simple, key is composite - match base type
             key.split("::").next() == Some(rel_type)
         } else {
-            // Simple key: "TYPE"
+            // Both are simple - exact match
             key == rel_type
         };
 
@@ -394,9 +400,16 @@ fn find_edges_to_node<'a>(
     let mut edges = Vec::new();
 
     for (key, rel_schema) in schema.get_relationships_schemas() {
-        let matches_type = if key.contains("::") {
+        // Match by relationship type (handle both simple and composite keys)
+        // Same logic as find_edges_from_node - see that function for details
+        let matches_type = if rel_type.contains("::") {
+            // rel_type is a composite key - require exact match with schema key
+            key == rel_type
+        } else if key.contains("::") {
+            // rel_type is simple, key is composite - match base type
             key.split("::").next() == Some(rel_type)
         } else {
+            // Both are simple - exact match
             key == rel_type
         };
 

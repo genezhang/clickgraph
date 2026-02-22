@@ -528,72 +528,122 @@ fn rewrite_vlp_branch_select(branch: &mut RenderPlan) {
         }
     }
 
+    // Check if FROM references a VLP CTE (starts with "vlp_")
+    // The VLP CTE is defined at the parent level, not in branch.ctes
+    let from_is_vlp = branch
+        .from
+        .0
+        .as_ref()
+        .is_some_and(|f| f.name.starts_with("vlp_"));
+
+    if !from_is_vlp {
+        return;
+    }
+
+    // Find VLP CTE info from branch's own CTEs (may be empty for child branches)
+    // Fall back to inferring from the plan context
     let vlp_cte = branch
         .ctes
         .0
         .iter()
         .find(|cte| cte.vlp_cypher_start_alias.is_some());
-    if let Some(vlp_cte) = vlp_cte {
-        if let Some(from_ref) = &branch.from.0 {
-            if !from_ref.name.starts_with("vlp_") {
-                return;
+
+    let (mut start_alias, mut end_alias, path_variable) = if let Some(vlp_cte) = vlp_cte {
+        (
+            vlp_cte.vlp_cypher_start_alias.clone(),
+            vlp_cte.vlp_cypher_end_alias.clone(),
+            vlp_cte.vlp_path_variable.clone(),
+        )
+    } else {
+        // No VLP CTE in branch.ctes - infer from filter expressions
+        // Look for property accesses like "u.user_id" in filters to determine start alias
+        let start_alias = if let Some(ref filter) = branch.filters.0 {
+            extract_alias_from_filter(filter)
+        } else {
+            None
+        };
+        (start_alias, None, None)
+    };
+
+    // Skip rewriting if we couldn't determine start_alias
+    let Some(_) = start_alias else {
+        return;
+    };
+
+    // Skip rewriting aliases that are covered by WITH CTE JOINs
+    // These aliases reference WITH CTE columns, not VLP CTE columns
+    for join in &branch.joins.0 {
+        if join.table_name.starts_with("with_") {
+            if start_alias.as_deref() == Some(&join.table_alias) {
+                log::info!(
+                    "🔧 VLP branch: Skipping start alias '{}' rewrite (covered by WITH CTE '{}')",
+                    join.table_alias,
+                    join.table_name
+                );
+                start_alias = None;
+            }
+            if end_alias.as_deref() == Some(&join.table_alias) {
+                log::info!(
+                    "🔧 VLP branch: Skipping end alias '{}' rewrite (covered by WITH CTE '{}')",
+                    join.table_alias,
+                    join.table_name
+                );
+                end_alias = None;
             }
         }
+    }
 
-        let mut start_alias = vlp_cte.vlp_cypher_start_alias.clone();
-        let mut end_alias = vlp_cte.vlp_cypher_end_alias.clone();
-        let path_variable = vlp_cte.vlp_path_variable.clone();
+    log::info!(
+        "🔧 VLP UNION branch rewriting: start={:?}, end={:?}",
+        start_alias,
+        end_alias
+    );
 
-        // Skip rewriting aliases that are covered by WITH CTE JOINs
-        // These aliases reference WITH CTE columns, not VLP CTE columns
-        for join in &branch.joins.0 {
-            if join.table_name.starts_with("with_") {
-                if start_alias.as_deref() == Some(&join.table_alias) {
-                    log::info!(
-                        "🔧 VLP branch: Skipping start alias '{}' rewrite (covered by WITH CTE '{}')",
-                        join.table_alias, join.table_name
-                    );
-                    start_alias = None;
-                }
-                if end_alias.as_deref() == Some(&join.table_alias) {
-                    log::info!(
-                        "🔧 VLP branch: Skipping end alias '{}' rewrite (covered by WITH CTE '{}')",
-                        join.table_alias,
-                        join.table_name
-                    );
-                    end_alias = None;
-                }
-            }
-        }
-
-        log::info!(
-            "🔧 VLP UNION branch rewriting: start={:?}, end={:?}",
-            start_alias,
-            end_alias
+    for item in branch.select.items.iter_mut() {
+        item.expression = rewrite_expr_for_vlp(
+            &item.expression,
+            &start_alias,
+            &end_alias,
+            &path_variable,
+            false,
         );
+    }
+    for group_expr in branch.group_by.0.iter_mut() {
+        *group_expr =
+            rewrite_expr_for_vlp(group_expr, &start_alias, &end_alias, &path_variable, false);
+    }
+    for order_item in branch.order_by.0.iter_mut() {
+        order_item.expression = rewrite_expr_for_vlp(
+            &order_item.expression,
+            &start_alias,
+            &end_alias,
+            &path_variable,
+            false,
+        );
+    }
+    // 🔧 FIX: Also rewrite WHERE clause (filters) for VLP UNION branches
+    // Without this, branches with LIMIT get wrapped in subqueries with unrewritten WHERE clauses
+    if let Some(ref filter_expr) = branch.filters.0 {
+        let rewritten =
+            rewrite_expr_for_vlp(filter_expr, &start_alias, &end_alias, &path_variable, false);
+        branch.filters.0 = Some(rewritten);
+    }
+}
 
-        for item in branch.select.items.iter_mut() {
-            item.expression = rewrite_expr_for_vlp(
-                &item.expression,
-                &start_alias,
-                &end_alias,
-                &path_variable,
-                false,
-            );
+/// Extract table alias from a filter expression (e.g., "u.user_id" -> "u")
+fn extract_alias_from_filter(expr: &RenderExpr) -> Option<String> {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => Some(prop.table_alias.0.clone()),
+        RenderExpr::OperatorApplicationExp(op) => {
+            // Check first operand
+            for operand in &op.operands {
+                if let Some(alias) = extract_alias_from_filter(operand) {
+                    return Some(alias);
+                }
+            }
+            None
         }
-        for group_expr in branch.group_by.0.iter_mut() {
-            *group_expr =
-                rewrite_expr_for_vlp(group_expr, &start_alias, &end_alias, &path_variable, false);
-        }
-        for order_item in branch.order_by.0.iter_mut() {
-            order_item.expression = rewrite_expr_for_vlp(
-                &order_item.expression,
-                &start_alias,
-                &end_alias,
-                &path_variable,
-                false,
-            );
-        }
+        _ => None,
     }
 }
 
