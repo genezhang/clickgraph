@@ -8163,6 +8163,82 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             );
                         }
                     }
+                    // Also add composite alias entries from cte_references, but ONLY if
+                    // the composite alias is actually referenced as a table prefix in the
+                    // rendered plan. This avoids spurious CROSS JOINs for unreferenced CTEs.
+                    // After scope_cte_variables.clear(), composite aliases from earlier WITHs
+                    // are lost (only individual aliases from the current WITH are present).
+                    // This allows fix_orphan_table_aliases to map composite aliases
+                    // (e.g., "country_messageCount_months_zombie") to the correct FROM/JOIN alias.
+                    let mut used_aliases = std::collections::HashSet::new();
+                    for item in &rendered.select.items {
+                        collect_aliases_from_single_render_expr(
+                            &item.expression,
+                            &mut used_aliases,
+                        );
+                    }
+                    if let FilterItems(Some(ref filter)) = rendered.filters {
+                        collect_aliases_from_single_render_expr(filter, &mut used_aliases);
+                    }
+                    for gi in &rendered.group_by.0 {
+                        collect_aliases_from_single_render_expr(gi, &mut used_aliases);
+                    }
+                    for oi in &rendered.order_by.0 {
+                        collect_aliases_from_single_render_expr(&oi.expression, &mut used_aliases);
+                    }
+                    if let Some(ref having) = rendered.having_clause {
+                        collect_aliases_from_single_render_expr(having, &mut used_aliases);
+                    }
+                    for (ref_alias, ref_cte_name) in &cte_references {
+                        if vars.contains_key(ref_alias) {
+                            continue; // Already in scope (individual alias or VLP)
+                        }
+                        if !ref_cte_name.starts_with("with_") {
+                            continue;
+                        }
+                        if !used_aliases.contains(ref_alias) {
+                            continue; // Not referenced in rendered expressions
+                        }
+                        // Only add TRUE composite aliases (multi-alias combinations like
+                        // "country_messageCount_months_zombie"). Skip individual aliases
+                        // to avoid polluting the scope with stale CTE references.
+                        // A composite alias has the form "alias1_alias2_..." and the CTE
+                        // name is "with_{composite}_cte_{N}".
+                        let expected_cte_prefix = format!("with_{}_cte_", ref_alias);
+                        if !ref_cte_name.starts_with(&expected_cte_prefix) {
+                            continue; // Not a composite alias for this CTE
+                        }
+                        // Build property mapping from the CTE's columns in all_ctes
+                        let mut cte_prop_map: HashMap<String, String> = HashMap::new();
+                        for cte in &all_ctes {
+                            if cte.cte_name == *ref_cte_name {
+                                for col in &cte.columns {
+                                    if !col.cypher_property.is_empty() {
+                                        cte_prop_map.insert(
+                                            col.cypher_property.clone(),
+                                            col.cte_column_name.clone(),
+                                        );
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                        log::debug!(
+                            "🔧 Augmenting scope with composite alias '{}' → CTE '{}' ({} props)",
+                            ref_alias,
+                            ref_cte_name,
+                            cte_prop_map.len()
+                        );
+                        vars.insert(
+                            ref_alias.clone(),
+                            super::variable_scope::CteVariableInfo {
+                                cte_name: ref_cte_name.clone(),
+                                property_mapping: cte_prop_map,
+                                labels: vec![],
+                                from_alias_override: None,
+                            },
+                        );
+                    }
                     vars
                 };
                 let has_augmented = !augmented_scope.is_empty();
@@ -8173,6 +8249,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         augmented_scope,
                     );
                     super::variable_scope::fix_orphan_table_aliases(&mut rendered, &aug_scope);
+                    super::variable_scope::rewrite_cte_property_columns(&mut rendered, &aug_scope);
                     super::variable_scope::rewrite_bare_variables_in_plan(
                         &mut rendered,
                         &aug_scope,
