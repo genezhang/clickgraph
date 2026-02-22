@@ -65,6 +65,10 @@ pub struct QueryContext {
     /// For aliases that are multi-type VLP endpoints requiring JSON extraction
     pub multi_type_vlp_aliases: HashMap<String, String>,
 
+    /// VLP CTE outer-query aliases: cte_name → vlp_alias (e.g., "vlp_u1_u2" → "t0")
+    /// Used by FROM/JOIN builders to assign unique aliases per VLP CTE.
+    pub vlp_cte_outer_aliases: HashMap<String, String>,
+
     /// Current variable registry for SQL rendering.
     /// Set from the CTE or RenderPlan being rendered; used by PropertyAccessExp::to_sql()
     /// to resolve cypher_alias.property → correct SQL column.
@@ -331,6 +335,25 @@ pub fn register_relationship_cte_name(alias: &str, cte_name: &str) {
 pub fn get_relationship_cte_name(alias: &str) -> Option<String> {
     QUERY_CONTEXT
         .try_with(|ctx| ctx.borrow().multi_type_vlp_aliases.get(alias).cloned())
+        .ok()
+        .flatten()
+}
+
+/// Register a VLP CTE's outer-query alias (e.g., "vlp_u1_u2" → "t0")
+/// Called during CTE extraction to assign unique aliases per VLP.
+pub fn register_vlp_cte_outer_alias(cte_name: &str, vlp_alias: &str) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut()
+            .vlp_cte_outer_aliases
+            .insert(cte_name.to_string(), vlp_alias.to_string());
+    });
+}
+
+/// Get the outer-query alias for a VLP CTE by CTE name
+/// Returns None if not registered, falling back to VLP_CTE_FROM_ALIAS
+pub fn get_vlp_cte_outer_alias(cte_name: &str) -> Option<String> {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().vlp_cte_outer_aliases.get(cte_name).cloned())
         .ok()
         .flatten()
 }

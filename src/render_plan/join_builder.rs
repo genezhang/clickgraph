@@ -1228,11 +1228,16 @@ impl JoinBuilder for LogicalPlan {
                                 &graph_rel.left_connection, &graph_rel.right_connection
                             );
 
+                            // Look up per-VLP unique alias from query context
+                            let vlp_alias =
+                                crate::server::query_context::get_vlp_cte_outer_alias(&cte_name)
+                                    .unwrap_or_else(|| VLP_CTE_FROM_ALIAS.to_string());
+
                             // Get the start node's ID column
                             let start_id_col = extract_id_column(&graph_rel.left)
                                 .unwrap_or_else(|| "user_id".to_string());
 
-                            // Create LEFT JOIN condition: a.user_id = t.start_id
+                            // Create LEFT JOIN condition: a.user_id = t0.start_id
                             let join_condition = vec![OperatorApplication {
                                 operator: Operator::Equal,
                                 operands: vec![
@@ -1241,7 +1246,7 @@ impl JoinBuilder for LogicalPlan {
                                         column: PropertyValue::Column(start_id_col.clone()),
                                     }),
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: TableAlias(VLP_CTE_FROM_ALIAS.to_string()),
+                                        table_alias: TableAlias(vlp_alias.clone()),
                                         column: PropertyValue::Column("start_id".to_string()),
                                     }),
                                 ],
@@ -1250,7 +1255,7 @@ impl JoinBuilder for LogicalPlan {
                             let vlp_join = Join {
                                 join_type: JoinType::Left,
                                 table_name: cte_name.clone(),
-                                table_alias: VLP_CTE_FROM_ALIAS.to_string(),
+                                table_alias: vlp_alias.clone(),
                                 joining_on: join_condition,
                                 pre_filter: None,
                                 from_id_column: None,
@@ -1261,13 +1266,9 @@ impl JoinBuilder for LogicalPlan {
                             crate::debug_println!(
                                 "DEBUG: Created OPTIONAL VLP LEFT JOIN: {} AS {}",
                                 cte_name,
-                                VLP_CTE_FROM_ALIAS
+                                vlp_alias
                             );
-                            log::info!(
-                                "✓ Created LEFT JOIN: {} AS {}",
-                                cte_name,
-                                VLP_CTE_FROM_ALIAS
-                            );
+                            log::info!("✓ Created LEFT JOIN: {} AS {}", cte_name, vlp_alias);
                             return Ok(vec![vlp_join]);
                         } else {
                             // Required VLP: CTE used as FROM, no joins needed

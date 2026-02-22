@@ -79,6 +79,9 @@ impl AnalyzerPass for GraphJoinInference {
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
+        // Reset per-query VLP alias counter for deterministic output
+        crate::query_planner::join_context::reset_vlp_alias_counter();
+
         // Phase 1: Build pattern graph metadata (caches reference checks)
         let mut pattern_metadata = Self::build_pattern_metadata(&logical_plan, plan_ctx)?;
         log::debug!(
@@ -121,20 +124,37 @@ impl AnalyzerPass for GraphJoinInference {
         // Instead of tracking NodeAppearance during traversal, use pre-computed
         // appearance_count from metadata to identify shared nodes naturally.
         //
-        // CRITICAL FIX: Mark anchor nodes (FROM markers with empty joining_on) as
-        // "referenced" before cross-branch generation. When a node is the anchor/FROM
-        // table, all edges connecting to it already JOIN against it via its ID column,
-        // so cross-branch joins would be redundant.
+        // CRITICAL FIX: Mark ALL node aliases that already have their own JOIN entry
+        // in collected_graph_joins as "referenced". When a node has a table JOIN,
+        // the edges on either side are connected through it — cross-branch joins
+        // would be redundant and create conflicting dependency chains.
+        //
+        // This covers:
+        // - Anchor/FROM nodes (empty joining_on)
+        // - Intermediate nodes with explicit table JOINs (e.g., person2, comment)
         for join in &collected_graph_joins {
-            if join.joining_on.is_empty() {
-                if let Some(node_info) = pattern_metadata.nodes.get_mut(&join.table_alias) {
-                    if !node_info.is_referenced {
-                        log::debug!(
-                            "🔧 Marking anchor node '{}' as referenced for cross-branch skip",
-                            join.table_alias
-                        );
-                        node_info.is_referenced = true;
-                    }
+            if let Some(node_info) = pattern_metadata.nodes.get_mut(&join.table_alias) {
+                if !node_info.is_referenced {
+                    log::debug!(
+                        "🔧 Marking joined node '{}' as referenced for cross-branch skip",
+                        join.table_alias
+                    );
+                    node_info.is_referenced = true;
+                }
+            }
+        }
+
+        // Also mark VLP endpoint nodes as referenced — the VLP CTE provides
+        // the connection between edges that meet at these nodes, so cross-branch
+        // joins would reference a skipped VLP relationship alias.
+        for (alias, _info) in join_ctx.vlp_endpoints() {
+            if let Some(node_info) = pattern_metadata.nodes.get_mut(alias) {
+                if !node_info.is_referenced {
+                    log::debug!(
+                        "🔧 Marking VLP endpoint '{}' as referenced for cross-branch skip",
+                        alias
+                    );
+                    node_info.is_referenced = true;
                 }
             }
         }
@@ -2894,13 +2914,21 @@ impl GraphJoinInference {
                 .expect("Node ID must have at least one column")
                 .to_string();
 
+            // Get the unique VLP alias from the endpoint marked in should_skip_for_vlp
+            let vlp_alias = join_ctx
+                .get_vlp_endpoint(&right_alias)
+                .map(|info| info.vlp_alias.clone())
+                .unwrap_or_else(|| {
+                    crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string()
+                });
+
             let vlp_join = Join {
                 table_name: cte_name.clone(),
-                table_alias: "t".to_string(), // VLP_CTE_FROM_ALIAS
+                table_alias: vlp_alias.clone(),
                 joining_on: vec![helpers::eq_condition(
                     &left_alias,
                     &left_id_col,
-                    "t",
+                    &vlp_alias,
                     "start_id",
                 )],
                 join_type: JoinType::Left,
@@ -2912,9 +2940,10 @@ impl GraphJoinInference {
             collected_graph_joins.push(vlp_join);
 
             crate::debug_print!(
-                "    ✅ Created OPTIONAL VLP joins: FROM {} LEFT JOIN {} AS t",
+                "    ✅ Created OPTIONAL VLP joins: FROM {} LEFT JOIN {} AS {}",
                 left_alias,
-                cte_name
+                cte_name,
+                vlp_alias
             );
             crate::debug_print!("    +- infer_graph_join EXIT\n");
 
@@ -2994,12 +3023,14 @@ impl GraphJoinInference {
 
                 // Only mark the END node as VLP endpoint for optional VLP
                 // The START/anchor node stays as regular table
+                let vlp_alias = crate::query_planner::join_context::next_vlp_alias();
                 join_ctx.mark_vlp_endpoint(
                     right_alias.clone(),
                     VlpEndpointInfo {
                         position: VlpPosition::End,
                         other_endpoint_alias: left_alias.clone(),
                         rel_alias: rel_alias.clone(),
+                        vlp_alias,
                     },
                 );
 
@@ -3022,13 +3053,15 @@ impl GraphJoinInference {
                 let rel_alias = graph_rel.alias.to_string();
 
                 // Mark VLP endpoints with proper CTE access information
-                // This is the key fix: subsequent JOINs will now use t.start_id/t.end_id
+                // This is the key fix: subsequent JOINs will now use t{N}.start_id/t{N}.end_id
+                let vlp_alias = crate::query_planner::join_context::next_vlp_alias();
                 join_ctx.mark_vlp_endpoint(
                     left_alias.clone(),
                     VlpEndpointInfo {
                         position: VlpPosition::Start,
                         other_endpoint_alias: right_alias.clone(),
                         rel_alias: rel_alias.clone(),
+                        vlp_alias: vlp_alias.clone(),
                     },
                 );
                 join_ctx.mark_vlp_endpoint(
@@ -3037,6 +3070,7 @@ impl GraphJoinInference {
                         position: VlpPosition::End,
                         other_endpoint_alias: left_alias.clone(),
                         rel_alias: rel_alias.clone(),
+                        vlp_alias,
                     },
                 );
 

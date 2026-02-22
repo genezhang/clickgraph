@@ -1848,10 +1848,20 @@ pub fn extract_ctes_with_context(
             )
         }
         LogicalPlan::GraphRel(graph_rel) => {
+            log::debug!(
+                "🔍 CTE extraction: GraphRel alias='{}' left='{}' right='{}' vlp={:?}",
+                graph_rel.alias,
+                graph_rel.left_connection,
+                graph_rel.right_connection,
+                graph_rel.variable_length.is_some(),
+            );
             // Handle variable-length paths with context
             if let Some(spec) = &graph_rel.variable_length {
                 log::debug!(
-                    "🔧 VLP ENTRY: Entering variable-length path handling for spec={:?}",
+                    "🔧 VLP ENTRY: alias='{}' left='{}' right='{}' spec={:?}",
+                    graph_rel.alias,
+                    graph_rel.left_connection,
+                    graph_rel.right_connection,
                     spec
                 );
                 log::debug!("🔧 VLP: Entering variable-length path handling");
@@ -3114,7 +3124,7 @@ pub fn extract_ctes_with_context(
                     log::info!("  rel_filters_sql: {:?}", rel_filters_sql);
 
                     // Generate VLP CTE via unified CteManager API
-                    let var_len_cte = generate_vlp_cte_via_manager(
+                    let mut var_len_cte = generate_vlp_cte_via_manager(
                         &pattern_ctx,
                         schema,
                         spec.clone(),
@@ -3131,6 +3141,15 @@ pub fn extract_ctes_with_context(
                         Some(end_label.clone()),
                         graph_rel.is_optional,
                     )?;
+
+                    // NOTE: Per-VLP unique aliases are assigned during inference (in
+                    // VlpEndpointInfo.vlp_alias) and used for join condition generation.
+                    // However, expression rendering (VLPExprRewriter, select_builder,
+                    // to_sql_query) still uses the hardcoded VLP_CTE_FROM_ALIAS ("t").
+                    // Until expression rendering is updated, we keep from_alias as "t"
+                    // and don't register per-VLP aliases in the query context.
+                    // Multi-VLP queries (bi-17) will need comprehensive render-phase
+                    // updates to use per-VLP aliases in expressions.
 
                     // Also extract CTEs from child plans
                     let mut child_ctes = extract_ctes_with_context(
@@ -3717,13 +3736,19 @@ pub fn extract_ctes_with_context(
                 plan_ctx,
             )
         }
-        LogicalPlan::GraphJoins(graph_joins) => extract_ctes_with_context(
-            &graph_joins.input,
-            last_node_alias,
-            context,
-            schema,
-            plan_ctx,
-        ),
+        LogicalPlan::GraphJoins(graph_joins) => {
+            log::debug!(
+                "🔍 CTE extraction: GraphJoins input type: {:?}",
+                std::mem::discriminant(graph_joins.input.as_ref())
+            );
+            extract_ctes_with_context(
+                &graph_joins.input,
+                last_node_alias,
+                context,
+                schema,
+                plan_ctx,
+            )
+        }
         LogicalPlan::GroupBy(group_by) => {
             log::info!("🔍 CTE extraction: Delegating from GroupBy to input plan");
             extract_ctes_with_context(&group_by.input, last_node_alias, context, schema, plan_ctx)
@@ -3765,11 +3790,15 @@ pub fn extract_ctes_with_context(
             extract_ctes_with_context(&u.input, last_node_alias, context, schema, plan_ctx)
         }
         LogicalPlan::CartesianProduct(cp) => {
-            println!("DEBUG CTE Extraction: Processing CartesianProduct");
+            log::debug!(
+                "🔍 CTE extraction: CartesianProduct - left={:?}, right={:?}",
+                std::mem::discriminant(cp.left.as_ref()),
+                std::mem::discriminant(cp.right.as_ref()),
+            );
             let mut ctes =
                 extract_ctes_with_context(&cp.left, last_node_alias, context, schema, plan_ctx)?;
-            println!(
-                "DEBUG CTE Extraction: CartesianProduct left side returned {} CTEs",
+            log::debug!(
+                "🔍 CTE extraction: CartesianProduct left returned {} CTEs",
                 ctes.len()
             );
             ctes.append(&mut extract_ctes_with_context(
@@ -3779,8 +3808,8 @@ pub fn extract_ctes_with_context(
                 schema,
                 plan_ctx,
             )?);
-            println!(
-                "DEBUG CTE Extraction: CartesianProduct total {} CTEs",
+            log::debug!(
+                "🔍 CTE extraction: CartesianProduct total {} CTEs",
                 ctes.len()
             );
             Ok(ctes)
